@@ -229,7 +229,159 @@ func expHistogramMergeSumMapBudgetGuardExpr(maxCostUnits int64) chplan.Expr {
 // wrapExpHistogramMergeSumMapBudgetGuard wraps merged — the raw sumMap
 // merge [chplan.Aggregate] built by [expHistogramGroupMergeSumMap] — in
 // this file's own budget guard, the sumMap-path counterpart of
-// [wrapExpHistogramMergeBudgetGuard].
-func wrapExpHistogramMergeSumMapBudgetGuard(merged chplan.Node, maxCostUnits int64) chplan.Node {
-	return &chplan.Filter{Input: merged, Predicate: expHistogramMergeSumMapBudgetGuardExpr(maxCostUnits)}
+// [wrapExpHistogramMergeBudgetGuard]. multiGroup selects between the
+// single-group guard above (byte-identical to before cerberus issue #2865,
+// no golden churn) and [expHistogramMergeSumMapMultiGroupBudgetGuardExpr]
+// below — see this file's "Multi-group calibration" section for why
+// multi-group needs a genuinely different guard, not just a wider single-
+// group one.
+func wrapExpHistogramMergeSumMapBudgetGuard(merged chplan.Node, maxCostUnits int64, multiGroup bool) chplan.Node {
+	predicate := expHistogramMergeSumMapBudgetGuardExpr(maxCostUnits)
+	if multiGroup {
+		predicate = expHistogramMergeSumMapMultiGroupBudgetGuardExpr(maxCostUnits)
+	}
+	return &chplan.Filter{Input: merged, Predicate: predicate}
+}
+
+// # Multi-group calibration (cerberus issue #2865, real ClickHouse 26.6,
+// # a standalone `docker run clickhouse/clickhouse-server:26.6-alpine`
+// # container — not chDB — seeded with otel_metrics_exponential_histogram-
+// # shaped rows and measured via the ACTUAL emitted SQL for `sum
+// # by(route)(<selector>)` (chsql.Emit over promql.LowerAtRangeOpts's own
+// # output, not a hand-written approximation — the same discipline this
+// # file's single-group table above uses) run through
+// # `SYSTEM FLUSH LOGS` + `system.query_log.memory_usage`)
+//
+// The guard above (unchanged since #2834) bounds each OUTPUT GROUP
+// independently: it is a Filter predicate evaluated per row of the merge
+// Aggregate's OWN output, one row per group, so it can only ever see that
+// one group's own width/row shape. That is not the whole cost once a query
+// can produce MANY groups, because [expHistogramMergeScaleWindowProject]'s
+// WindowExpr pre-pass (exp_histogram_merge_summap.go) must materialise
+// EVERY row of perSeries — across every group in the query at once —
+// before pass 2's Aggregate (and this guard) ever runs.
+//
+// A real measurement isolates the group-count axis directly: fixed width
+// (160 buckets, the realistic OTel-SDK-default this file's own single-
+// group table is calibrated on) and exactly one row per group, so total
+// rows and group count move together and the row-count axis stays
+// negligible:
+//
+//	groups   total rows   peak memory   MiB/group
+//	  1,000       1,000       12.1 MiB     0.0121
+//	  4,096       4,096       44.2 MiB     0.0108
+//	 10,000      10,000      105.4 MiB     0.0105
+//	 40,000      40,000      381.1 MiB     0.0095
+//	100,000     100,000      960.6 MiB     0.0096
+//	200,000     200,000     1896.5 MiB     0.0095
+//
+// A second sweep isolates the row-count axis instead, holding group count
+// low (100, far inside the ceiling below) and width fixed at 160 while
+// rows/group grows:
+//
+//	groups   rows/group   total rows   peak memory
+//	  100          100       10,000       27.8 MiB
+//	  100        1,000      100,000       78.7 MiB
+//	  100        1,500      150,000       67.2 MiB
+//
+// Two things fall out of this pair of sweeps:
+//
+//  1. Group count is the DOMINANT axis, converging to a real, roughly
+//     constant ~0.0095 MiB/group as fixed per-query overhead amortises
+//     away (the 1,000-group point's higher apparent rate is that
+//     overhead, not a different regime) — confirming this issue's own
+//     scoping-session prediction that group count is a real, independent
+//     cost axis the per-group guard cannot see: 200,000 tiny groups
+//     (1 row each) cost 1896.5 MiB, while 100,000 rows spread over only
+//     100 groups cost a mere 78.7 MiB — same order of total rows, 24x
+//     less memory, because it is FEWER GROUPS.
+//  2. Total rows at LOW, fixed group count is comparatively cheap and
+//     does not grow as steeply (78.7 MiB at 100,000 rows / 100 groups,
+//     the 150,000-row point's lower reading a measurement-noise artifact
+//     of a single run rather than a real reversal) — the opposite
+//     ordering from the single-group guard's own width^2 term, and why
+//     this guard bounds the two axes SEPARATELY rather than folding one
+//     into the other the way the single-group guard folds rows into its
+//     flat row-count backstop.
+//
+// [maxHistogramMergeSumMapGroupCountGuard] is pinned at the exact,
+// measured 40,000-group checkpoint (381.1 MiB, ~37% of the 1024 MiB
+// CERBERUS_CH_QUERY_MAX_MEMORY default target — comfortable headroom for
+// the second ladder, concurrent load and the per-group cost this axis
+// deliberately ignores, the same margin discipline
+// [maxHistogramMergeCostUnits]'s own doc uses) rather than the
+// 100,000/200,000 points above, which already consume 94%-185% of that
+// budget on group count ALONE. [maxHistogramMergeSumMapTotalRowCountGuard]
+// is set well above its own measured checkpoints (100,000 rows at 100
+// groups costs under 80 MiB) at a round, still-conservative 200,000 —
+// this axis exists to catch the "few groups, each with an enormous row
+// count" shape the group-count ceiling cannot see on its own (each
+// individual group's OWN row count is separately bounded by the existing,
+// unchanged [maxHistogramMergeRowCountOverflowGuard] backstop, reused via
+// [expHistogramMergeSumMapCostOverBudgetExpr] below), not the common case.
+//
+// Both new ceilings are independent of [maxHistogramMergeCostUnits] /
+// [sumMapMergeCostMultiplier] (the existing, unchanged per-group knob):
+// they bound the WindowExpr pre-pass's own total-scale cost, a mechanism
+// the single-group guard's cost model never had to account for, so folding
+// them into the SAME operator override would conflate two different real
+// cost drivers behind one number. A future session that wants operator
+// control over these too can add it the same way cerberus issue #2667
+// added [EnvHistogramMergeMaxCostUnits] for the per-group ceiling — not
+// done here to keep this issue's own scope to the guard's EXISTENCE and
+// calibration, not a new knob no operator has asked for yet.
+const (
+	// maxHistogramMergeSumMapTotalRowCountGuard bounds the TOTAL row count
+	// entering the WindowExpr pre-pass across every group in a multi-group
+	// merge — see this file's "Multi-group calibration" section above for
+	// why this is set well above its own measured checkpoints (a backstop
+	// for the "few huge groups" shape, not a common-case ceiling).
+	maxHistogramMergeSumMapTotalRowCountGuard = 200_000
+
+	// maxHistogramMergeSumMapGroupCountGuard bounds the TOTAL number of
+	// DISTINCT output groups a multi-group merge may produce — see this
+	// file's "Multi-group calibration" section above for the measured
+	// 40,000-group / 381.1 MiB checkpoint this is pinned at.
+	maxHistogramMergeSumMapGroupCountGuard = 40_000
+)
+
+// expHistogramMergeSumMapMultiGroupCostOverBudgetExpr widens
+// [expHistogramMergeSumMapCostOverBudgetExpr]'s per-group check with the
+// two multi-group-only axes this file's "Multi-group calibration" section
+// measures: the TOTAL row count and TOTAL distinct group count across the
+// whole query, both collected once per output row via max() over the
+// WindowExpr pre-pass's own whole-query-partitioned columns
+// (exp_histogram_merge_summap.go's expHistogramMergeScaleWindowProject).
+func expHistogramMergeSumMapMultiGroupCostOverBudgetExpr(rowCount chplan.Expr, maxCostUnits int64) chplan.Expr {
+	totalRowCount := &chplan.ColumnRef{Name: hqAggMultiGroupTotalRowCountAlias}
+	totalGroupCount := &chplan.ColumnRef{Name: hqAggMultiGroupTotalGroupCountAlias}
+	return orExpr(
+		expHistogramMergeSumMapCostOverBudgetExpr(rowCount, maxCostUnits),
+		orExpr(
+			gtLit(totalRowCount, maxHistogramMergeSumMapTotalRowCountGuard),
+			gtLit(totalGroupCount, maxHistogramMergeSumMapGroupCountGuard),
+		),
+	)
+}
+
+// expHistogramMergeSumMapMultiGroupBudgetGuardExpr is
+// [expHistogramMergeSumMapBudgetGuardExpr]'s multi-group counterpart:
+// identical throwIf(...) = 0 shape, reading the SAME per-group columns
+// plus the two multi-group totals through
+// [expHistogramMergeSumMapMultiGroupCostOverBudgetExpr].
+func expHistogramMergeSumMapMultiGroupBudgetGuardExpr(maxCostUnits int64) chplan.Expr {
+	scalesArr := &chplan.ColumnRef{Name: hqAggScalesArrayAlias}
+	seriesCount := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{scalesArr}}
+
+	return &chplan.Binary{
+		Op: chplan.OpEq,
+		Left: &chplan.FuncCall{
+			Fn: chplan.FnThrowIf,
+			Args: []chplan.Expr{
+				expHistogramMergeSumMapMultiGroupCostOverBudgetExpr(seriesCount, maxCostUnits),
+				&chplan.InlineString{V: chplan.HistogramMergeBudgetMessage},
+			},
+		},
+		Right: &chplan.LitInt{V: 0},
+	}
 }

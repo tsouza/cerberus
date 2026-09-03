@@ -1,0 +1,48 @@
+-- query.promql --
+sum by(route) (http_server_duration_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- experimental_exp_histogram_merge_summap --
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- cerberus issue #2865's multi-group counterpart of
+-- exp_histogram_merge_summap.txtar's SINGLE-group sibling: same query
+-- shape (sum() over a native-histogram selector, chopt
+-- exp_histogram_merge_summap opted in via the
+-- `experimental_exp_histogram_merge_summap` marker section) but with a
+-- `by(route)` clause, producing TWO output groups from ONE query — the
+-- shape [NativeExpHistogramMergeLowerer] fell back to the classic
+-- groupArray + picker fold for before this issue.
+--
+-- route=api carries two series at DIFFERENT Scales (0 and 1), exercising
+-- the SAME downscale-collapse merge exp_histogram_merge_summap.txtar
+-- pins, but now resolved by the WindowExpr `min(Scale) OVER (PARTITION BY
+-- ...)` pre-pass (expHistogramMergeScaleWindowProject) instead of the
+-- single-group ScalarSubquery. route=web carries exactly ONE series — the
+-- singleton-partition case, proving that group's own mergedScale comes
+-- from ITS OWN partition (its one row's own Scale, 2) and is not
+-- corrupted by route=api's coarser scale-0 minimum.
+--
+-- This is a chDB-backed differential proof too
+-- (exp_histogram_merge_summap_multigroup_chdb_test.go's
+-- TestExpHistogramMergeSumMapMultiGroupDifferential_By), so expected_rows
+-- below is cross-checked against the classic fold's own output by that
+-- test, not just hand-derived.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('route', 'api', 'series', 'fine'),   toDateTime64('2026-01-01 00:00:00', 9), 10, 1.0, 1, 0, 0, [1, 2, 3, 4], 0, []),
+    ('http_server_duration_exp_hist', map('route', 'api', 'series', 'coarse'), toDateTime64('2026-01-01 00:00:00', 9), 15, 2.0, 0, 0, 0, [5, 10],      0, []),
+    ('http_server_duration_exp_hist', map('route', 'web', 'series', 'solo'),   toDateTime64('2026-01-01 00:00:00', 9), 6,  3.0, 2, 0, -1, [1, 2, 3],   0, []);
