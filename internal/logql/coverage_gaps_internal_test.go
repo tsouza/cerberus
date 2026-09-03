@@ -371,3 +371,50 @@ func TestJPToken_Text(t *testing.T) {
 		}
 	}
 }
+
+// TestMatchesIPPattern_IntervalTestIsTheFamilyCheck pins the two facts
+// [MatchesIPPattern]'s candidate loop leans on instead of an explicit
+// parse-error / family guard, using patterns whose interval covers their
+// WHOLE family so nothing but netip.Addr.Compare's BitLen-first ordering can
+// exclude the candidate:
+//
+//   - a candidate netip.ParseAddr rejected is the zero Addr (BitLen 0), which
+//     sorts below every valid address and so falls outside even `0.0.0.0/0`
+//     and `::/0`;
+//   - a v4 candidate (BitLen 32) sorts below `::` and so falls outside even
+//     `::/0`. That leg is reachable because the v6 candidate charset admits
+//     dotted runs; the reverse cannot arise, since the v4 charset `[0-9.]+`
+//     never yields a run netip.ParseAddr reads as v6.
+//
+// Weaken the interval test — drop either bound, or compare the candidate by
+// anything that is not family-aware — and these cases start matching.
+func TestMatchesIPPattern_IntervalTestIsTheFamilyCheck(t *testing.T) {
+	cases := []struct {
+		name    string
+		subject string
+		pattern string
+		want    bool
+	}{
+		{"unparseable candidate against the whole v4 space", "999.999.999.999", "0.0.0.0/0", false},
+		{"dotted run that is not an address, whole v4 space", "1.2.3.4.5", "0.0.0.0/0", false},
+		{"unparseable candidate against the whole v6 space", "deadbeef", "::/0", false},
+		{"no v4-charset run parses, whole v4 space", "2001:db8::5", "0.0.0.0/0", false},
+		{"v4 candidate against the whole v6 space", "10.0.0.1", "::/0", false},
+		// Controls: the same all-inclusive patterns DO match their own family,
+		// so the cases above fail for the family / parse reason and not
+		// because the interval excludes everything.
+		{"v4 candidate against the whole v4 space", "10.0.0.1", "0.0.0.0/0", true},
+		{"v6 candidate against the whole v6 space", "2001:db8::5", "::/0", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := MatchesIPPattern(tc.subject, tc.pattern)
+			if err != nil {
+				t.Fatalf("MatchesIPPattern: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("MatchesIPPattern(%q, %q) = %v, want %v", tc.subject, tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
