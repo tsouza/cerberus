@@ -58,8 +58,28 @@ func scanSourceGroups(src string) ([]sourceGroup, bool) {
 	open := []int{wholePatternGroup}
 	captures := 0
 
+	// Single-advance walker, the form [lsyntax.NormalizeDottedLabels] uses
+	// and for the same reason. Every iteration ends with exactly one
+	// `i = next`, and `next` holds the following byte BEFORE the dispatch
+	// runs, so an arm that computes no offset of its own still consumes a
+	// byte.
+	//
+	// Nothing forced that when each arm advanced the cursor itself. An arm
+	// that returned the cursor it was given spun on that byte forever,
+	// appending to `groups` or `alternations` on every lap — and the pattern
+	// is a user's own regex arriving over HTTP, so the spin was an unbounded
+	// allocation driven by untrusted text. A guard could catch that after the
+	// fact; this shape makes it UNREPRESENTABLE, which is the stronger of the
+	// two. Forgetting to advance is no longer a thing an arm can do.
+	//
+	// What the shape does not decide on its own is the three arms that DO
+	// write `next`: each takes its offset from endOfQuotedRun, skipCharClass
+	// or classifyGroupOpen. All three return an offset strictly past the byte
+	// they were handed, which is their own contract rather than this loop's,
+	// so it is asserted directly over a corpus by
+	// [TestScannerHelpersAlwaysConsumeAByte].
 	for i := 0; i < len(src); {
-		start := i
+		next := i + 1
 		switch src[i] {
 		case '\\':
 			// An escape covers the next byte whatever it is, so a `\(`
@@ -74,20 +94,19 @@ func scanSourceGroups(src string) ([]sourceGroup, bool) {
 				// `(` inside it would be counted as a group — shifting every
 				// later capture index and pointing the rewrite at literal
 				// text.
-				i = endOfQuotedRun(src, i)
+				next = endOfQuotedRun(src, i)
 			} else {
-				i += 2
+				next = i + 2
 			}
 		case '[':
 			end, ok := skipCharClass(src, i)
 			if !ok {
 				return nil, false
 			}
-			i = end
+			next = end
 		case '|':
 			innermost := open[len(open)-1]
 			groups[innermost].alternations = append(groups[innermost].alternations, i)
-			i++
 		case '(':
 			bodyStart, capturing, ok := classifyGroupOpen(src, i)
 			if !ok {
@@ -105,28 +124,15 @@ func scanSourceGroups(src string) ([]sourceGroup, bool) {
 			}
 			groups = append(groups, g)
 			open = append(open, len(groups)-1)
-			i = bodyStart
+			next = bodyStart
 		case ')':
 			if len(open) == 1 {
 				return nil, false
 			}
 			groups[open[len(open)-1]].bodyEnd = i
 			open = open[:len(open)-1]
-			i++
-		default:
-			i++
 		}
-		// Progress invariant. Every arm above computes its own end offset,
-		// so nothing structurally forces one to consume a byte; an arm that
-		// returns the cursor it was given spins on that byte forever,
-		// appending to `groups` or `alternations` on every lap. The pattern
-		// is a user's own regex arriving over HTTP, so that spin is an
-		// unbounded allocation driven by untrusted text. Declining is the
-		// answer this scanner already gives to everything it cannot
-		// classify, and a cursor that will not move is exactly that.
-		if i <= start {
-			return nil, false
-		}
+		i = next
 	}
 	if len(open) != 1 {
 		return nil, false
@@ -148,8 +154,12 @@ func skipCharClass(src string, i int) (int, bool) {
 	if j < len(src) && src[j] == ']' {
 		j++
 	}
+	// Single-advance walker — see scanSourceGroups, whose runaway this scan
+	// shares. Only the two arms that skip more than one byte write `next`,
+	// and both compute an offset strictly past `j`; every other byte of a
+	// class is stepped over by the default advance.
 	for j < len(src) {
-		start := j
+		next := j + 1
 		switch src[j] {
 		case '\\':
 			// No bounds guard here, unlike the escape arm of
@@ -157,29 +167,23 @@ func skipCharClass(src string, i int) (int, bool) {
 			// backslash puts j past the end, which ends the loop and falls
 			// through to the same `return 0, false` a guard would have
 			// taken.
-			j += 2
+			next = j + 2
 		case '[':
 			// A POSIX name such as `[:alpha:]` nests inside the class and
-			// carries its own `]`, which is not the class's terminator.
+			// carries its own `]`, which is not the class's terminator. A
+			// `[` opening no POSIX name is an ordinary member, which the
+			// default advance already steps over.
 			if j+1 < len(src) && src[j+1] == ':' {
 				end := strings.Index(src[j+2:], ":]")
 				if end < 0 {
 					return 0, false
 				}
-				j += 2 + end + 2
-			} else {
-				j++
+				next = j + 2 + end + 2
 			}
 		case ']':
 			return j + 1, true
-		default:
-			j++
 		}
-		// Progress invariant — see scanSourceGroups. A class scan that
-		// stops advancing runs away on the same untrusted pattern.
-		if j <= start {
-			return 0, false
-		}
+		j = next
 	}
 	return 0, false
 }

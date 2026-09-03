@@ -770,3 +770,173 @@ func TestCarriersNeedingProbesIgnoresUnsharedNames(t *testing.T) {
 // index of a '(', and `bar` is the byte index of a '|'. One byte cannot be
 // both, so offset == bar is unreachable and the two comparisons agree on
 // every offset a caller can supply.
+
+// anchorBreakoutWitnesses are the regexes that reach the two arms
+// [planCaptureProbes] applies to its OWN rewrite after the scanner has
+// picked a span — the read-back against the compiler, and the removal of
+// the anchoring wrapper. Both arms are about the same event, which no
+// other test in this package produces: a probe boundary landing at an END
+// of the anchored pattern rather than strictly inside it.
+//
+// The event needs a regex whose own `)` closes the `^(?s:` wrapper early.
+// Reference Prometheus anchors the same way, so `a)|b` is a pattern a
+// user may legitimately write and cerberus must accept: after anchoring
+// it is `^(?s:a)|b$`, a top-level alternation whose second arm sits
+// BESIDE the wrapper instead of inside it. A carrier in that second arm
+// has the whole arm — the wrapper's closing `)$` included — as its
+// nearest probeable span, so the probe cerberus would insert brackets
+// text the wrapper was supposed to bracket.
+//
+// The two witnesses differ by a trailing `\Q`, which quotes the rest of
+// the pattern. Without it the probed pattern still compiles and it is the
+// wrapper check that refuses the rewrite; with it the probe's own closing
+// parenthesis falls inside the quoted run, so the pattern the rewrite
+// produces does not compile at all and the read-back refuses it first.
+var anchorBreakoutWitnesses = []struct {
+	name  string
+	regex string
+	// probed is the pattern the rewrite would hand back if the arm under
+	// test were not there. It is written out rather than derived so that
+	// a change in which span gets probed is visible here as a diff.
+	probed string
+}{
+	{
+		name:   "probe_swallows_the_closing_wrapper",
+		regex:  `a)|(?P<d>b?)(?P<d>c`,
+		probed: `^(?s:a)|(?P<` + probeNamePrefix + `0>(?P<d>b?)(?P<d>c)$)`,
+	},
+	{
+		name:   "quoted_run_swallows_the_probe",
+		regex:  `a)|(?P<d>b?)(?P<d>c)\Q`,
+		probed: `^(?s:a)|(?P<` + probeNamePrefix + `0>(?P<d>b?)(?P<d>c)\Q)$)`,
+	},
+}
+
+// TestPlanCaptureProbesRefusesARewriteItCannotHandBack pins that a rewrite
+// which does not survive its own verification is refused rather than
+// trimmed, patched, or handed back anyway.
+//
+// The assertion is the CONTRACT, not the decline: whenever the planner
+// reports success, the pattern it returns must be the caller's own
+// spelling with capture groups added and nothing else — it re-anchors to
+// a pattern that compiles, carries exactly the original's capture groups
+// in the original's order once the probes are struck out, and accepts
+// exactly the strings the user's own pattern accepts. Asserting only
+// "it declines" would be satisfied by a planner that declined for the
+// wrong reason.
+//
+// The two arms are not independent, and this test does not pretend they
+// are. The wrapper check is the one the contract catches: with its early
+// return removed the planner hands back the anchored text it was given,
+// and this test fails. The read-back's early return is DOMINATED by it —
+// removing that one leaves the plan at its zero value, whose empty regex
+// the wrapper check refuses instead, so no input tells the two apart and
+// the whole package passes with the mutation applied. What the read-back
+// verification itself does is pinned by
+// [TestReadBackPlanRejectsInvalidRewriteMetadata]; the second witness
+// here is what drives a real rewrite into it.
+func TestPlanCaptureProbesRefusesARewriteItCannotHandBack(t *testing.T) {
+	t.Parallel()
+
+	inputs := stringsUpTo("abc", 3)
+
+	for _, w := range anchorBreakoutWitnesses {
+		t.Run(w.name, func(t *testing.T) {
+			t.Parallel()
+
+			anchored := anchorRegex(w.regex)
+			original, err := regexp.Compile(anchored)
+			if err != nil {
+				t.Fatalf("anchoring %q gives %q, which must compile for this witness to be "+
+					"about the rewrite at all: %v", w.regex, anchored, err)
+			}
+
+			// The span the scanner picks is what makes this witness the
+			// shape it claims to be: it reaches the END of the anchored
+			// pattern, so the probe's own parenthesis lands past the
+			// wrapper's. Pinning it here means a future change that made
+			// the planner choose a different span would surface as this
+			// test losing its subject rather than as a silent pass.
+			groups, ok := scanSourceGroups(anchored)
+			if !ok {
+				t.Fatalf("the scanner declined %q outright, so this witness never reaches the "+
+					"rewrite it is about", anchored)
+			}
+			span, ok := probeSpanFor(anchored, groups, groupIndexOf(groups, 1))
+			if !ok || span.end != len(anchored) {
+				t.Fatalf("probeSpanFor(%q) chose %v (ok=%v); this witness is only about the "+
+					"rewrite arms when the span reaches the end of the anchored pattern, at %d",
+					anchored, span, ok, len(anchored))
+			}
+			probed, _, ok := insertProbes(anchored, map[int]sourceSpan{1: span})
+			if !ok || probed != w.probed {
+				t.Fatalf("insertProbes produced (%q, ok=%v), want %q", probed, ok, w.probed)
+			}
+
+			// The planner's own entry, driven with the carriers the
+			// public path asks for rather than a hand-written list.
+			need := newCaptureGroups(w.regex, withoutCaptureProbes).carriersNeedingProbes()
+			if len(need) == 0 {
+				t.Fatalf("no carrier of %q needs a probe, so planCaptureProbes is never asked "+
+					"and this witness proves nothing about it", w.regex)
+			}
+			plan, ok := planCaptureProbes(w.regex, need)
+			if ok {
+				assertPlanIsTheCallersOwnPattern(t, w.regex, original, plan, inputs)
+				t.Fatalf("planCaptureProbes accepted %q, whose rewrite is %q — a pattern that "+
+					"is not the caller's own spelling and cannot be re-anchored by the emitter",
+					w.regex, plan.regex)
+			}
+
+			// And the decline reaches the caller as a rejection rather
+			// than as a wrong answer: no probed regex is emitted.
+			got, err := ReplacementToCH("$d", w.regex)
+			if err == nil {
+				t.Fatalf("ReplacementToCH accepted %q; with no probe plan the shared name %q "+
+					"stays unanswerable and must be rejected", w.regex, "d")
+			}
+			if got.ProbedRegex != "" {
+				t.Errorf("ReplacementToCH rejected %q but still returned the rewrite %q",
+					w.regex, got.ProbedRegex)
+			}
+		})
+	}
+}
+
+// assertPlanIsTheCallersOwnPattern checks the postcondition every accepted
+// plan owes its caller: re-anchoring the rewrite must give a pattern that
+// compiles, that carries the original's capture groups — same count, same
+// names, same order — once the probes are struck out, and that accepts and
+// captures exactly what the original does.
+func assertPlanIsTheCallersOwnPattern(
+	t *testing.T, regex string, original *regexp.Regexp, plan captureProbePlan, inputs []string,
+) {
+	t.Helper()
+
+	probed, err := regexp.Compile(anchorRegex(plan.regex))
+	if err != nil {
+		t.Errorf("regex %q: the plan's rewrite %q does not survive the emitter's own "+
+			"anchoring: %v", regex, plan.regex, err)
+		return
+	}
+	positions := originalGroupPositions(t, original, probed, regex)
+	for _, src := range inputs {
+		before := original.FindStringSubmatchIndex(src)
+		after := probed.FindStringSubmatchIndex(src)
+		if (before == nil) != (after == nil) {
+			t.Errorf("regex %q rewritten to %q: %q matches %v before and %v after",
+				regex, plan.regex, src, before != nil, after != nil)
+			return
+		}
+		if before == nil {
+			continue
+		}
+		for group, at := range positions {
+			if before[2*group] != after[2*at] || before[2*group+1] != after[2*at+1] {
+				t.Errorf("regex %q rewritten to %q: on %q capture group %d moved",
+					regex, plan.regex, src, group)
+				return
+			}
+		}
+	}
+}

@@ -358,16 +358,6 @@ func TestEmptyCapturesReplacement(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// label_replace.go:resolveSegments:`if i <= prev` and
-// label_replace.go:EmptyCapturesReplacement:`if i <= prev`, both
-// CONDITIONALS_BOUNDARY (`<=` -> `<`). Each is the progress invariant on a
-// step-based template scan, and it declines when a step hands the cursor
-// back unmoved; the mutant declines only when a step hands it back SMALLER.
-// replacementStep and emptyCapturesStep return a byte count, never a
-// position, and every branch of both returns 1, 2, or 1 + ref.width with
-// ref.width >= 1 — so the cursor never moves backwards and the two forms
-// differ only over a state no template produces.
-//
 // label_replace.go:`for end < len(rest)` (CONDITIONALS_BOUNDARY, extractRef's
 // loop condition, `<` -> `<=`). The extra iteration the mutant admits runs
 // at end == len(rest), where `rest[end:]` is the empty string — a legal
@@ -377,3 +367,55 @@ func TestEmptyCapturesReplacement(t *testing.T) {
 // `end += size`. The mutant therefore leaves `end` where the original's loop
 // condition stopped it, and every read below — the empty-name check, `name`,
 // `width`, the closing-brace check — sees the same value.
+
+// TestReplacementStepsAlwaysConsumeAByte pins, for the two template
+// walkers, the same residual [TestScannerHelpersAlwaysConsumeAByte] pins
+// for the scanner.
+//
+// [resolveSegments] and [EmptyCapturesReplacement] have no arms to default:
+// the whole dispatch is inside one step function, so their single-advance
+// form puts the floor on the step itself (`i += max(step, 1)`). That floor
+// makes a stall impossible whatever the step returns, which is what the
+// deleted progress guards were for — but it would silently hide a step that
+// returned a WRONG count rather than no count, so the contract those
+// functions document is asserted here directly, over every template shape
+// and a sweep of every single byte in every position each is read at.
+func TestReplacementStepsAlwaysConsumeAByte(t *testing.T) {
+	t.Parallel()
+
+	templates := []string{
+		``, `$`, `$$`, `$1`, `${1}`, `$name`, `${name}`, `$-`, `${unclosed`,
+		`a$1b`, `$$1`, `$0`, `$10`, `${}`, `$_`, `x$namey`, `$1$2$3`,
+		`\$1`, `$${name}`, `${na me}`, `$名`, `${名}`,
+	}
+	for b := range 256 {
+		c := string([]byte{byte(b)})
+		templates = append(templates, c, `$`+c, `${`+c, `${`+c+`}`, `a$`+c+`b`)
+	}
+
+	groups := newCaptureGroups(nineCaptureRegex, withoutCaptureProbes)
+	steps := 0
+	for _, repl := range templates {
+		for i := range len(repl) {
+			var b strings.Builder
+			if _, step, err := replacementStep(&b, repl, i, groups); err == nil {
+				steps++
+				if step < 1 {
+					t.Fatalf("replacementStep(%q, %d) consumed %d bytes; its contract is at "+
+						"least one, and a template is user-supplied", repl, i, step)
+				}
+			}
+
+			var e strings.Builder
+			steps++
+			if step := emptyCapturesStep(&e, repl, i); step < 1 {
+				t.Fatalf("emptyCapturesStep(%q, %d) consumed %d bytes; its doc comment says "+
+					"always >= 1", repl, i, step)
+			}
+		}
+	}
+	if steps == 0 {
+		t.Fatal("no step was taken — this test would pass vacuously")
+	}
+	t.Logf("every one of %d template steps consumed at least one byte", steps)
+}
