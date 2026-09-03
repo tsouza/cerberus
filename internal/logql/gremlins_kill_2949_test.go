@@ -111,3 +111,35 @@ func findVectorSetOp(n chplan.Node) *chplan.VectorSetOp {
 	}
 	return nil
 }
+
+// NOT KILLABLE — documented, not defended by a test. With the two
+// outer-by threading mutants killed in vector_aggregation_mutation_test.go
+// these are the LIVED mutants phase4-logql-aggregation has left, and no
+// input distinguishes any of them.
+//
+// lang.go:`err == nil && parsed != nil` — INVERT_LOGICAL (`&&` -> `||`).
+// The two operands are not independent: they are the same fact. The guard
+// runs only under `HasLabelMutatingStage(expr)`, and BOTH of that
+// predicate's true-returning paths require expr to be a
+// *syntax.PipelineExpr. PipelineLabelsExpr on a *syntax.PipelineExpr
+// returns `(nil, err)` on failure and otherwise a labelsExpr that starts
+// non-nil and is only ever replaced by a non-nil merge — so `err == nil`
+// holds exactly when `parsed != nil`. The `||` form therefore selects the
+// same iterations as the `&&` form. (The two CONDITIONALS_NEGATION mutants
+// on the same line ARE killed: negating either operand breaks the
+// correlation instead of preserving it.) The redundancy itself is a
+// finding rather than a defence, and is tracked as cerberus issue #2973.
+//
+// range_aggregation.go:`len(e.Left.Unwrap.PostFilters) > 0` —
+// CONDITIONALS_BOUNDARY (`>` -> `>=`), so the mutant also enters the body
+// with an EMPTY post-filter list. applyUnwrapPostFilters is the identity
+// on an empty list: it peels the top-level Filter, folds no predicate onto
+// it, wraps the labels with an empty mark set (wrapLabelsWithMarks returns
+// its argument unchanged for zero marks) and rebuilds the same Filter over
+// the same Input with the same Predicate. Its third result is
+// `len(marks) > 0` — false — so the caller's `hasErrorMarks` is unchanged
+// too. Every field of every returned value is identical.
+//
+// range_aggregation.go:`len(e.Grouping.Groups)*2` — ARITHMETIC_BASE on a
+// make() CAPACITY hint, equivalent for the reason spelled out in
+// vector_aggregation_mutation_test.go's header for the sibling site.
