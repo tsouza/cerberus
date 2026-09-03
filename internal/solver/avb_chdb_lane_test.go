@@ -372,6 +372,101 @@ func TestSolver_AvsB_ChDB_Differential(t *testing.T) {
 		routed, len(laneFixtures), totalNaNCells, totalDupTimestampGroups)
 }
 
+// nativeQuantileHistogramFixture is the SAME classic-histogram
+// histogram_quantile shape laneFixtures' last entry already proves under the
+// DEFAULT (fan-out) emission, reused here to prove the OPT-IN native
+// quantilePrometheusHistogram emission too (promql.NativeQuantileRankWalkLowerer,
+// chopt.FeatureQuantilePromHistogram). internal/chplan/sliceinvariant.go's
+// *chplan.HistogramQuantile registry entry ARGUES the same per-(series,
+// anchor) locality holds under either emission — coalescing/rank-walk is
+// replaced by an ARRAY JOIN + GROUP BY that never spans more than the one
+// input row's own exploded sub-rows — but until now that argument was only
+// empirically PROVEN end-to-end for the fan-out emission (via laneFixtures
+// above). TestSolver_AvsB_ChDB_Differential_NativeQuantileHistogram below
+// closes that gap: cerberus issue #2791.
+const nativeQuantileHistogramFixture = "histogram_quantile(0.99, sum by (le, job) (rate(http_latency_seconds_bucket[5m])))"
+
+// TestSolver_AvsB_ChDB_Differential_NativeQuantileHistogram is
+// TestSolver_AvsB_ChDB_Differential narrowed to ONE fixture
+// (nativeQuantileHistogramFixture) and lowered via promql.LowerAtRangeOpts
+// with LowerOpts.Lowerers.QuantileRankWalk =
+// promql.NativeQuantileRankWalkLowerer{} instead of optimizedPlan's default
+// (zero-opts) promql.LowerAtRange — so the lowered chplan.HistogramQuantile
+// node carries UseNativeQuantileAggregate = true and chsql.Emit renders the
+// ClickHouse-native quantilePrometheusHistogram(...) aggregate
+// (internal/chsql/histogram_quantile_rankwalk_native.go) instead of the
+// hand-rolled arrayMap/arraySort rank walk. Everything else — laneSeed,
+// execLane, the Mode="sharded" force-routing, the byte-for-byte route-A /
+// concatenated-route-B comparison — mirrors the main differential loop
+// above exactly, so a divergence here is exactly as actionable as a
+// divergence there.
+func TestSolver_AvsB_ChDB_Differential_NativeQuantileHistogram(t *testing.T) {
+	ctx := context.Background()
+	db := openLaneChDB(t)
+	applyLaneSeed(t, db, laneSeed)
+
+	cfg := solver.DefaultConfig()
+	cfg.Mode = solver.ModeSharded // K_min routing: every eligible plan routes.
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("sharded Config invalid: %v", err)
+	}
+
+	opts := promql.LowerOpts{
+		Lowerers: promql.RangeLowerers{
+			QuantileRankWalk: promql.NativeQuantileRankWalkLowerer{},
+		},
+	}
+	plan := optimizedPlanWithOpts(t, ctx, nativeQuantileHistogramFixture, laneStart, laneEnd, laneStep, opts)
+
+	pl := &solver.Planner{Cfg: cfg}
+	gs, ge, gstep := solver.GridOf(plan)
+	dec, isRouted := pl.Plan(plan, solver.RequestMeta{
+		Lang:  solver.LangPromQL,
+		Start: gs,
+		End:   ge,
+		Step:  gstep,
+	})
+
+	// Coverage gate: a fixture the Planner declines to route proves nothing
+	// (mirrors the main differential loop's same gate).
+	if !isRouted {
+		t.Fatalf("native-quantile fixture %q did NOT force-route under Mode=sharded (reason=%q); "+
+			"the A-vs-B lane only proves parity for routed plans — a non-routed "+
+			"fixture is a coverage hole, not a pass", nativeQuantileHistogramFixture, dec.Reason)
+	}
+	if dec.K < 2 {
+		t.Fatalf("native-quantile fixture %q routed with K=%d, want K >= 2", nativeQuantileHistogramFixture, dec.K)
+	}
+
+	// Route A: emit + execute the whole optimized (native-emission) plan.
+	aSQL, aArgs, err := chsql.Emit(ctx, plan)
+	if err != nil {
+		t.Fatalf("emit route A for %q: %v", nativeQuantileHistogramFixture, err)
+	}
+	routeA := execLane(t, db, nativeQuantileHistogramFixture, "route-A", aSQL, aArgs)
+	if len(routeA) == 0 {
+		t.Fatalf("native-quantile fixture %q: route A returned zero rows — the seed does not "+
+			"exercise this shape; an empty oracle proves nothing", nativeQuantileHistogramFixture)
+	}
+
+	// Route B: emit + execute every shard, concatenating oldest-first
+	// (dec.Slices is oldest-first — the order shardCursor drains them).
+	var routeB [][]any
+	for _, sl := range dec.Slices {
+		sSQL, sArgs, err := chsql.Emit(ctx, sl.Plan)
+		if err != nil {
+			t.Fatalf("emit shard %d [%v,%v] for %q: %v", sl.Index, sl.Start, sl.End, nativeQuantileHistogramFixture, err)
+		}
+		label := fmt.Sprintf("shard-%d", sl.Index)
+		routeB = append(routeB, execLane(t, db, nativeQuantileHistogramFixture, label, sSQL, sArgs)...)
+	}
+
+	assertRowSetsEqual(t, nativeQuantileHistogramFixture+" [native quantilePrometheusHistogram]", routeA, routeB)
+
+	t.Logf("native-quantile A-vs-B chDB differential: routed K=%d, route-A rows=%d, route-B rows=%d "+
+		"(across %d shards) — zero diffs", dec.K, len(routeA), len(routeB), len(dec.Slices))
+}
+
 // optimizedPlan lowers query at the lane grid and runs the default optimizer,
 // returning the post-optimize plan the Planner classifies and chsql.Emit
 // serializes — the exact route-A pipeline.
@@ -386,12 +481,25 @@ func optimizedPlan(t *testing.T, ctx context.Context, query string) chplan.Node 
 // this file shares.
 func optimizedPlanAt(t *testing.T, ctx context.Context, query string, start, end time.Time, step time.Duration) chplan.Node {
 	t.Helper()
+	return optimizedPlanWithOpts(t, ctx, query, start, end, step, promql.LowerOpts{})
+}
+
+// optimizedPlanWithOpts is optimizedPlanAt generalized over
+// promql.LowerOpts: TestSolver_AvsB_ChDB_Differential_NativeQuantileHistogram
+// below opts into the ClickHouse-native quantilePrometheusHistogram
+// emission via LowerOpts.Lowerers.QuantileRankWalk so the SAME
+// histogram_quantile shape optimizedPlan/optimizedPlanAt lower through the
+// default hand-rolled rank walk instead lowers through the native emission
+// (cerberus issue #2791). Every other caller passes the zero LowerOpts,
+// which reproduces promql.LowerAtRange's behaviour byte-for-byte.
+func optimizedPlanWithOpts(t *testing.T, ctx context.Context, query string, start, end time.Time, step time.Duration, opts promql.LowerOpts) chplan.Node {
+	t.Helper()
 	p := parser.NewParser(parser.Options{})
 	expr, err := p.ParseExpr(query)
 	if err != nil {
 		t.Fatalf("parse %q: %v", query, err)
 	}
-	plan, err := promql.LowerAtRange(ctx, expr, schema.DefaultOTelMetrics(), start, end, step)
+	plan, err := promql.LowerAtRangeOpts(ctx, expr, schema.DefaultOTelMetrics(), start, end, step, opts)
 	if err != nil {
 		t.Fatalf("lower %q: %v", query, err)
 	}
