@@ -107,7 +107,7 @@ func TestPipelineLineExprSeedsFirstUnpackWithBodyColumn(t *testing.T) {
 // singles out.
 //
 // An `__error__` filter that follows a dynamic label stage (`| pattern`,
-// per [isDynamicLabelStage]) is deliberately NOT lowered into SQL —
+// per [IsDynamicLabelStage]) is deliberately NOT lowered into SQL —
 // internal/api/loki's newLabelFilterStep re-applies it in Go once the
 // stage's transform has computed the row's real `__error__` label.
 // Skipping it must not abandon the stages BEHIND it, which still lower

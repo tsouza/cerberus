@@ -55,17 +55,26 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 	}
 
 	var steps []lineTransform
-	// dynamicLabels mirrors internal/logql/lower.go's
-	// lowerPipelineWithLabels gate: once a `| pattern` stage runs, the
-	// lowering skips SQL predicate generation for any downstream
-	// LabelFilterExpr that tests the `__error__` / `__error_details__`
-	// family specifically (see that function's doc comment for why — the
-	// structured-metadata SQL fallback used for ordinary label names is
-	// actively wrong for these two magic keys). Such filters have to be
-	// applied here instead, once the dynamic stage's own step has
-	// actually computed them.
+	// dynamicLabels calls internal/logql.IsDynamicLabelStage — the SAME
+	// predicate lowerPipelineWithLabels' own dynamicLabels gate uses —
+	// rather than re-deciding "is this stage dynamic" from this file's own
+	// switch shape. Once a `| pattern` stage runs, the lowering skips SQL
+	// predicate generation for any downstream LabelFilterExpr that tests
+	// the `__error__` / `__error_details__` family specifically (see
+	// IsDynamicLabelStage's doc comment for why — the structured-metadata
+	// SQL fallback used for ordinary label names is actively wrong for
+	// these two magic keys). Such filters have to be applied here
+	// instead, once the dynamic stage's own step has actually computed
+	// them. Calling the shared predicate (rather than setting this flag
+	// inline in the LineParserExpr/OpParserTypePattern arm below, as a
+	// literal `true`) is what keeps this gate from silently diverging
+	// from lowerPipelineWithLabels' if IsDynamicLabelStage's own
+	// definition of "dynamic" ever changes or widens.
 	dynamicLabels := false
 	for _, st := range pipe.MultiStages {
+		if logql.IsDynamicLabelStage(st) {
+			dynamicLabels = true
+		}
 		switch v := st.(type) {
 		case *syntax.LineFmtExpr:
 			step, err := newLineFormatStep(v.Value)
@@ -91,7 +100,6 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 					return nil, err
 				}
 				steps = append(steps, step)
-				dynamicLabels = true
 			}
 		case *syntax.DropLabelsExpr, *syntax.KeepLabelsExpr:
 			// In a multi-case type switch v keeps the type-switch

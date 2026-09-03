@@ -278,7 +278,7 @@ func maybePushLogLineLimit(expr syntax.Expr, plan chplan.Node, s schema.Logs, lc
 // This mirrors [lowerPipelineWithLabels]'s own dynamicLabels gate
 // stage-for-stage, built off the SAME two exported primitives both that
 // gate and postProcessExtract's own dynamicLabels gate use —
-// [isDynamicLabelStage] and [FiltersErrorLabel] — so all three call sites
+// [IsDynamicLabelStage] and [FiltersErrorLabel] — so all three call sites
 // derive from one shared answer to "does this pipeline shape need a
 // Go-side re-filter" rather than three that could drift apart. See
 // unpackParseDetailStep's doc comment in post_process.go for why a second
@@ -302,7 +302,7 @@ func pipelineCanDropRowsInGo(stages syntax.MultiStageExpr) bool {
 		if lf, ok := stage.(*syntax.LabelFilterExpr); ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer) {
 			return true
 		}
-		if isDynamicLabelStage(stage) {
+		if IsDynamicLabelStage(stage) {
 			dynamicLabels = true
 		}
 	}
@@ -429,7 +429,7 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 		if newLabels != nil {
 			labelsExpr = newLabels
 		}
-		if isDynamicLabelStage(stage) {
+		if IsDynamicLabelStage(stage) {
 			dynamicLabels = true
 		}
 		// Post-fetch stages (`| line_format`, `| decolorize`) return a
@@ -450,12 +450,15 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, nil
 }
 
-// isDynamicLabelStage reports whether stage is a `| pattern` parser
+// IsDynamicLabelStage reports whether stage is a `| pattern` parser
 // stage — see [lowerPipelineWithLabels]'s dynamicLabels gate. `| unpack`
 // is deliberately NOT one: its `__error__` markers come from SQL, so a
 // following `__error__` filter lowers normally and needs no Go-side
-// re-evaluation. internal/api/loki's pipelineSteps draws the same line.
-func isDynamicLabelStage(stage syntax.StageExpr) bool {
+// re-evaluation. Exported so internal/api/loki's postProcessExtract can
+// apply the exact same gate when deciding which stages need a Go-side
+// dynamicLabels re-evaluation (see post_process.go) — mirroring why
+// [FiltersErrorLabel] just below is exported for the same caller.
+func IsDynamicLabelStage(stage syntax.StageExpr) bool {
 	lp, ok := stage.(*syntax.LineParserExpr)
 	if !ok {
 		return false

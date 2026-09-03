@@ -75,7 +75,7 @@ func TestLogLineLimitPushdown_ShapeAndGating(t *testing.T) {
 		},
 
 		// The one unsafe shape: pattern's own extraction runs entirely in Go
-		// (see internal/logql/lower.go's isDynamicLabelStage — only `| pattern`
+		// (see internal/logql/lower.go's IsDynamicLabelStage — only `| pattern`
 		// sets dynamicLabels), so a downstream __error__/__error_details__
 		// filter is evaluated ONLY in Go
 		// (internal/api/loki/post_process.go's newLabelFilterStep) — the SQL
