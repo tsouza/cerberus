@@ -1,0 +1,11 @@
+{
+  "query": "exp_histogram_merge_summap_multigroup/fanout",
+  "lowering": "fanout",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}

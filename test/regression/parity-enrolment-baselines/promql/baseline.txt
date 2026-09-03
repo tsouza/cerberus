@@ -183,6 +183,7 @@ exp_histogram_increase_resolution_change.txtar
 exp_histogram_increase_scale_coarsening_hides_reset.txtar
 exp_histogram_irate.txtar
 exp_histogram_merge_summap.txtar
+exp_histogram_merge_summap_multigroup.txtar
 exp_histogram_rate.txtar
 exp_histogram_rate_range.txtar
 exp_histogram_resets.txtar
