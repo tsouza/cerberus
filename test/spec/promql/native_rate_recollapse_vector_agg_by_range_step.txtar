@@ -67,7 +67,36 @@ INSERT INTO otel_metrics_gauge VALUES
     ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:04:00', 9), 4.0),
     ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:05:00', 9), 4.0);
 -- expected_rows --
-[]
+[
+  ["", {}, "2026-01-01T00:01:00Z", 0.0033333333333333335],
+  ["", {}, "2026-01-01T00:01:30Z", 0.005],
+  ["", {}, "2026-01-01T00:02:00Z", 0.015],
+  ["", {}, "2026-01-01T00:02:30Z", 0.018333333333333333],
+  ["", {}, "2026-01-01T00:03:00Z", 0.018333333333333333],
+  ["", {}, "2026-01-01T00:03:30Z", 0.021111111111111112],
+  ["", {}, "2026-01-01T00:04:00Z", 0.030833333333333334],
+  ["", {}, "2026-01-01T00:04:30Z", 0.03208333333333333],
+  ["", {}, "2026-01-01T00:05:00Z", 0.03666666666666667]
+]
 -- args --
+[0] string = ""
+[1] string = "dc"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "dc"
+[10] string = "load_state"
+[11] string = "load.state"
+[12] string = "load/state"
 -- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(FnMap("dc", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  RangeWindowGridNativeVectorAgg fn=sum groupBy=[Attributes["dc"] AS gkey_0] anchorAlias=bucket_ts
+    RangeWindowGridNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[ResourceAttributes, Attributes, ServiceName] recollapse=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Filter predicate=(MetricName IN ("load_state", "load.state", "load/state"))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `gkey_0` AS `gkey_0`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `bucket_ts`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, sumForEach(`grid`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `shaped_key_0` AS `Attributes`, `grid` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `shaped_key_0`, timeSeriesRateToGridMerge(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`grid_state`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `ResourceAttributes`, `Attributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `ResourceAttributes`, `Attributes`, `ServiceName`) GROUP BY `shaped_key_0`)) GROUP BY `gkey_0`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL)
