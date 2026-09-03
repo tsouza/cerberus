@@ -72,7 +72,26 @@ being scheduled — a PR then sits blocked on contexts that can never report.
 
 `markdownlint-cli2` with `.markdownlint.yaml`. `MD060` pins table-column-style to `aligned`; the
 `pre-commit` hook pads cell widths with `scripts/align-md-tables.py` before the auto-fixer runs,
-because that rule has no auto-fixer of its own.
+because that rule has no auto-fixer of its own. `just fmt-md` therefore does not fix everything
+`just lint-md` reports — when MD060 survives the fix pass it names the padding script rather than
+leaving a clean-looking run that still fails the lint.
+
+The engine version is declared exactly once, as `PINNED_CLI2_VERSION` in
+`.github/scripts/markdownlint-run.mjs`, and all three callers route through that module: the
+`lint-md` / `fmt-md` recipes, lefthook's `markdownlint` hook, and the `lint` job. They used to
+resolve to three different engines — a Justfile pin, a bundled action, and whatever binary was on a
+developer's `$PATH`. Because markdownlint IGNORES a config key naming a rule it does not implement
+rather than rejecting it, the `MD060` key configured nothing under the older local pin: `just
+lint-md` reported success on a table CI then failed on. The failure mode is silent and in the
+dangerous direction, and it generalises past MD060 — any rule the repo configures ahead of the
+local pin is enforced in CI and invisible locally, so invariant 5's "reproduce the red check
+locally" cannot be satisfied for it.
+
+Bumping the engine is one literal, and the bump belongs in the same change as whatever the newer
+engine surfaces. The hook is the one caller that cannot use `npm exec` — npm's startup alone is
+~4s against a sub-second `pre-commit` budget — so it prefers a `$PATH` binary, but only at exactly
+the pinned version, and otherwise falls back to the pinned `npm exec`. `just install-tools`
+installs the matching binary so that fast path is the default.
 
 ## Mutation testing — the gremlins fork
 
