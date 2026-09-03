@@ -157,41 +157,51 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 //
 //	schema_lookup.go:`make([]chplan.Expr, 0, len(pairs)*2)`
 //	resource_attributes.go:`make(map[string]struct{}, len(dedicatedResourceKeys)*2)`
-//	histogram_quantile_native_window.go:`len(keyAliases)+len(aggs)+len(extraAliases)+1`
-//	histogram_quantile_native_window.go:`len(keyAliases)+len(scalars)+7`
-//	histogram_native_resets.go:`make([]chplan.Projection, 0, len(keyAliases)+1)`
-//	histogram_native_scalar_binop.go:`len(passthroughCols)+1+5`
-//	histogram_quantile.go:`projections := make([]chplan.Projection, 0, len(passthrough)+2)`
-//	histogram_quantile.go:`make([]chplan.Expr, 0, len(labels)*2)`
 //
-// The first two `+` expressions each carry TWO mutants, one per operator; the
-// `passthrough+2` citation names its assignment because two sibling statements
-// in the same method allocate with the identical capacity expression.
+// This class USED to carry six more citations, and the reason it gave for all
+// eight — "a slice's capacity is not observable behaviour: `append` grows past
+// a short one, and every element, ordering and identity is unchanged" — was
+// true in its premise and wrong in its conclusion. Observability is not
+// confined to the emitted SQL or to the elements: `cap` is readable on any
+// slice a test can reach, and six of the eight sized a slice that becomes an
+// exported field of a value its builder RETURNS. Those six are killed in
+// capacity_hint_mutation_test.go, one test each, and their citations moved
+// there with them (cerberus issue #2984). docs/test-strategy.md's "When a
+// capacity mutant is equivalent" states the rule the eight were adjudicated
+// against without.
 //
-// A slice's capacity is not observable behaviour: `append` grows past a short
-// one, and every element, ordering and identity is unchanged. The one way a
-// capacity rewrite CAN be observed is a negative argument, which makes `make`
-// panic — so each site was checked for that rather than waved through:
+// The two that remain fail that rule on DIFFERENT halves of it, which is why
+// neither inherits the other's argument:
 //
-//   - The `*2` and `/2` forms cannot go negative from a length.
-//   - `len(passthroughCols)+1+5` reads the `passthroughCols` slice literal
-//     built immediately above it with exactly six elements, so the two
-//     rewrites compute 10 and 2. Neither is negative.
-//   - `projections := make(..., len(passthrough)+2)` sits in
-//     classicBucketShaping.reshape's `sh.fold == nil` branch. The only shaping
-//     constructed with a nil fold is
-//     histogram_quantile_range.go:`classicBucketShaping{aggs: classicBucketLatestAggs(s)}`,
-//     and both of its reshape call sites —
-//     histogram_quantile_range.go:`shaping.reshape(guardedCollapse,` and
-//     histogram_quantile_range.go:`shaping.reshape(agg,` — pass a TWO-element
-//     passthrough, so the rewrite computes 0. Instrumenting the branch across
-//     the whole package suite observed `foldNil: true` only ever with
-//     `passthrough: 2`; the one-element call site,
-//     histogram_quantile.go:`shaping.reshape(guardedAgg,`, never reaches the
-//     nil-fold branch.
-//   - `len(keyAliases)+1` and the `+len(...)+N` forms are reached only with
-//     the aggregation's own alias set, which the emitting code has already
-//     populated.
+//   - `make(map[string]struct{}, len(dedicatedResourceKeys)*2)` sizes a MAP.
+//     Go publishes no accessor for a map's capacity — `len` counts the entries
+//     the loop inserted, `cap` is not defined for maps at all, and the runtime
+//     hint reaches no exported or unexported surface. No test in any package
+//     can read the rewritten arithmetic back, so the escape question never
+//     arises: this one is unobservable whatever the map does next.
+//
+//   - `make([]chplan.Expr, 0, len(pairs)*2)` DOES escape — the slice becomes
+//     the `map(...)` FuncCall's exported `Args` inside the expression
+//     augmentAttributesForTopLevelExpr returns — and it is still unkillable,
+//     because the finished capacity does not distinguish the mutant gremlins
+//     writes. That mutant is `*` -> `/` (ARITHMETIC_BASE rewrites each
+//     arithmetic token to exactly one other, so this hint carries one mutant,
+//     not four). `pairs` is promqlTopLevelKeys' answer over
+//     resource_attributes.go:`var dedicatedResourceKeys = []dedicatedResourceKey{`,
+//     which holds one entry, and the function returns before the `make` when
+//     that answer is empty — so `pairs` is 1 at every reachable call. The
+//     unmutated hint is 2 and the mutated one is 0, and the single
+//     `append(args, key, value)` that follows grows a zero-capacity slice
+//     straight to capacity 2: `append` asks for length 2, which exceeds twice
+//     the old capacity, so the runtime allocates exactly the two elements
+//     asked for. Both builds finish at len 2 / cap 2, so a `cap` assertion
+//     reads the SAME number either way.
+//
+//     This equivalence is a property of the registry's current size, exactly
+//     as class 3's is: at two dedicated keys the true hint is 4 and the mutant
+//     hint is 1, whose growth finishes at capacity 4 as well — but at three
+//     the mutant finishes at 8 against a true 6, and the mutant becomes
+//     killable and should be killed rather than re-adjudicated.
 //
 // 2. A BOUND THE ENCLOSING CODE HAS ALREADY NORMALISED.
 //

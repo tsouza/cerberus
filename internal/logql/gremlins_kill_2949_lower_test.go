@@ -165,8 +165,8 @@ func planPredicateHasLiteral(plan chplan.Node, want string) bool {
 	return found
 }
 
-// NOT KILLABLE — documented, not defended by a test. These are the four
-// LIVED mutants phase4-logql-lower reports that no input can distinguish.
+// NOT KILLABLE — documented, not defended by a test. These are the LIVED
+// mutants phase4-logql-lower reports that no input can distinguish.
 //
 // lower.go:`extension <= 0` — CONDITIONALS_BOUNDARY (`<=` -> `<`).
 // The two forms differ only at extension == 0, and there the guarded body
@@ -177,14 +177,19 @@ func planPredicateHasLiteral(plan chplan.Node, want string) bool {
 // returns early. Nothing downstream can see a difference because there is
 // none to see.
 //
-// lower.go:`len(fields)*2` and lower.go:`len(segments)+1` —
-// ARITHMETIC_BASE on a make() CAPACITY hint. Both slices are built with
-// append from length 0, so contents and ordering are identical whatever
-// the pre-sized cap, and a capacity is not reachable from the returned
-// plan. Neither mutated form can go negative and panic either: `len(...)`
-// is never negative, and `len(segments)` is never 0 at that point — the
-// only producer of `segments` is jsonPathParse, which returns a non-empty
-// slice or an error, and the error path returns before the make().
+// The ARITHMETIC_BASE mutants on mergeParsedFields's and
+// jsonExtractStringExpr's capacity hints were adjudicated EQUIVALENT here,
+// and that was wrong (cerberus issue #2984). The argument ran: both slices
+// are built with append from length 0, so contents and ordering are
+// identical whatever the pre-sized cap, and a capacity is not reachable
+// from the returned plan. The first half is true and the second is false —
+// one slice becomes the map literal's exported Args inside the mapMerge the
+// first function returns, and the other IS the JSONExtractString FuncCall's
+// Args. Their verdicts now live with the kills, in
+// [TestMergeParsedFields_CapHintMutantKilled] and
+// [TestJSONExtractStringExpr_CapHintMutantKilled], which is where the
+// citations went too: a mutant carries one verdict, so leaving them under a
+// footer here would leave them carrying two.
 //
 // lower.go:`len(candidates) <= 1` — CONDITIONALS_BOUNDARY (`<=` -> `<`).
 // The forms differ only at len(candidates) == 1, and there they build the

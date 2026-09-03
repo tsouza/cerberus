@@ -1397,20 +1397,48 @@ hold, and each has to be checked at the site:
   same function earns opposite verdicts. Reaching the header through an
   unexported field is enough; the closure in `exemplars.go` that settled
   cerberus issue #2958 is the one shape Go offers no way to read at all.
-- **The appends do not fill the hint exactly.** Where they DO — the
-  builder appends exactly as many elements as it pre-allocated for — the
-  finished slice still reports the hint, `cap` reads the arithmetic
-  straight back, and every substitution is observable. Under-filling
-  leaves the mutated hint on the slice, over-filling re-grows through the
-  runtime's size classes; neither lands back on the true capacity by
-  accident, but "does not land back" is a claim to assert rather than
-  narrate, per "How a note states a number" below.
+- **The finished capacity does not read the hint back.** `cap` is the
+  observation, and it answers the hint only while the builder has not
+  grown past the pre-allocation. Where it has not — whether the appends
+  fill the hint exactly or leave it under-filled, since an under-filled
+  slice never grows and keeps the capacity it was made with — the
+  finished slice still reports the hint and `cap` reads the arithmetic
+  straight back.
 
-Both cap-hint pairings in `detected_level_test.go` are written that way:
-one test asserts `cap` against a derived count, and a second enumerates
-every operator substitution and asserts the resulting capacity differs.
-That second test is what makes the first re-checkable, and it is what a
-prose equivalence note cannot do for itself.
+  That is necessary and not sufficient, and the gap is where the sweep
+  found its one real equivalence: the MUTATED hint has to finish on a
+  different capacity too, and `append`'s growth schedule can land it back
+  on the true one. `internal/promql/schema_lookup.go`'s
+  `make([]chplan.Expr, 0, len(pairs)*2)` escapes into a returned
+  expression's exported `Args` and still survives, because `pairs` is 1
+  at every reachable call: the true hint is 2, the `*` -> `/` rewrite
+  gives 0, and the single two-element `append` grows a zero-capacity
+  slice to exactly capacity 2. Both builds finish at cap 2. "Does not
+  land back" is therefore a claim to assert rather than narrate, per
+  "How a note states a number" below.
+
+`ARITHMETIC_BASE` rewrites each arithmetic token to exactly **one**
+other token — `+`->`-`, `-`->`+`, `*`->`/`, `/`->`*`, `%`->`*`, the
+mapping the pinned `tsouza/gremlins` fork carries in
+`internal/engine/mappings.go` — so a hint spelling P operators carries P
+mutants and a completed run reports P verdicts on its line.
+Adjudicating against the four other operators instead answers about
+mutants no run emits, and the two answers differ: the `schema_lookup.go`
+hint above is unkillable under the `/` gremlins writes and killable
+under a `+` it never writes.
+
+`test/capmutant` is the shared driver. `AssertKilled` takes the hint's
+operator positions, a replay of the builder's append sequence, and a
+closure that reads the capacity back through the escape surface; it
+asserts the real value's capacity against the unmutated hint, checks the
+replay against the real builder so a drifted simulation is reported
+rather than trusted, and then requires each emitted mutant to move the
+finished capacity. That last step is what makes the first re-checkable,
+and it is what a prose equivalence note cannot do for itself.
+`internal/{chplan,logql,promql}/capacity_hint_mutation_test.go` carry
+one call per adjudicated hint; `detected_level_test.go`'s two pairings
+predate the driver and enumerate a deliberate superset of the mutant
+set, which its own comment says.
 
 Cerberus issue #2974 asked whether `tsouza/gremlins` should stop
 EMITTING these instead — a generator-side narrowing in the family of

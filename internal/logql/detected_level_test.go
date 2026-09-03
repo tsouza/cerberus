@@ -512,10 +512,22 @@ func TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape(t *testing.T) {
 	}
 }
 
-// capHintOps are the binary arithmetic operators gremlins' ARITHMETIC_BASE
-// operator substitutes into an expression. Applying each of them to each
-// operator position of the capacity hint enumerates that hint's whole mutant
-// set.
+// capHintOps are the binary arithmetic operators the two enumerations below
+// substitute into each operator position of a capacity hint.
+//
+// This is deliberately a SUPERSET of the mutant set a run reports, and saying
+// so is the point: gremlins' ARITHMETIC_BASE rewrites each arithmetic token to
+// exactly ONE other token (`+`->`-`, `-`->`+`, `*`->`/`, `/`->`*`, `%`->`*`),
+// so a hint spelling P operators carries P mutants and not 4P. The
+// authoritative table is `Substitution` in test/capmutant, which mirrors the
+// pinned tsouza/gremlins fork's own mapping; requiring the four other operators to be
+// distinguished as well is strictly stronger than the lane needs and costs
+// nothing here, because both of this file's hints distinguish all of them.
+//
+// A hint that did NOT would have to be adjudicated against the real table
+// rather than this one — internal/promql/schema_lookup.go's `len(pairs)*2` is
+// exactly that case, and over-approximating there would have claimed a kill
+// the lane cannot collect.
 var capHintOps = []string{"+", "-", "*", "/", "%"}
 
 // applyCapHintOp evaluates `a op b` for the operators ARITHMETIC_BASE can
@@ -593,8 +605,9 @@ func capAfterBuild(hint, groups int) (length, capacity int) {
 
 // TestNormaliseLevelExpr_CapHintMutantsAreKilled proves that the `cap`
 // assertion in [TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape] actually
-// discriminates. For every ARITHMETIC_BASE operator substitution gremlins can
-// make in detected_level.go:`(len(levelNormalizationGroups)+1)*2+1`, the
+// discriminates. For every operator substitution [capHintOps] enumerates in
+// detected_level.go:`(len(levelNormalizationGroups)+1)*2+1` — a superset of
+// the one-per-token set ARITHMETIC_BASE actually emits, see [capHintOps] — the
 // capacity the finished slice ends up with must differ from the capacity the
 // unmutated hint produces — otherwise that assertion passes on the mutant and
 // the equivalence note above is claiming a kill it does not deliver.
@@ -915,11 +928,12 @@ func sourceCapHint(t *testing.T, n int, mulOp, tailOp string) int {
 
 // TestDetectedLevelSource_CapHintMutantsAreKilled proves that the `cap`
 // assertion in [TestDetectedLevelSource_PrecedenceCascade] actually
-// discriminates. For every ARITHMETIC_BASE operator substitution gremlins can
-// make in detected_level.go:`args := make([]chplan.Expr, 0, len(keys)*2+1)`,
-// the capacity the finished slice ends up with must differ from the capacity
-// the unmutated hint produces — otherwise that assertion passes on the mutant
-// and claims a kill it does not deliver.
+// discriminates. For every operator substitution [capHintOps] enumerates in
+// detected_level.go:`args := make([]chplan.Expr, 0, len(keys)*2+1)` — a
+// superset of the one-per-token set ARITHMETIC_BASE actually emits, see
+// [capHintOps] — the capacity the finished slice ends up with must differ from
+// the capacity the unmutated hint produces — otherwise that assertion passes
+// on the mutant and claims a kill it does not deliver.
 //
 // NOT KILLABLE — the third ARITHMETIC_BASE mutant this function carries, on
 // the sibling hint detected_level.go:`keys := make([]string, 0,
@@ -932,10 +946,12 @@ func sourceCapHint(t *testing.T, n int, mulOp, tailOp string) int {
 // and measured with `len` inside [detectedLevelSourceExpr] and never stored,
 // returned or captured, so no caller — test or otherwise — holds the header
 // whose capacity the mutation changes. Nor does that mutant die on a panic:
-// `allowedLevelFields` carries four fixed entries, so every substitution
-// (`-` → 3, `*` → 4, `/` → 4, `%` → 0) stays non-negative and `make` accepts
-// it. It is an equivalent mutant, and the only honest thing to do with it is
-// leave it counted as a survivor.
+// `allowedLevelFields` carries four fixed entries, so the `+` -> `-` rewrite
+// ARITHMETIC_BASE emits there computes 3 — non-negative, and `make` accepts
+// it. (The three other operators land on 4, 4 and 0, all equally accepted;
+// gremlins writes none of them, and the escape argument above does not depend
+// on which one it writes.) It is an equivalent mutant, and the only honest
+// thing to do with it is leave it counted as a survivor.
 //
 // So "an ARITHMETIC_BASE mutant on a `make` capacity argument is equivalent"
 // is FALSE as a general claim: it holds for one of this function's two hints
