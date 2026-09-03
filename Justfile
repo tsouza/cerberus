@@ -789,6 +789,12 @@ coverage-chdb:
 # same tree, or after a CI job downloads each lane's profile artifact into
 # one directory (tsouza/cerberus#2634) — either way the merge is a fact about
 # the files, not about how they got there.
+#
+# The lane set computed below is passed to coverage-summary.mjs, which records
+# it beside the profile as cover-merged.out.lanes.json, keyed by the profile's
+# own SHA-256. That record is the ONLY thing `update-coverage-floor` will accept
+# as proof that a profile carries both lanes — this recipe is the one step that
+# legitimately knows, because it is the step that decided.
 coverage-merge:
     @test -s cover.out || { echo "error: cover.out not found — run 'just coverage-default' first" >&2; exit 1; }
     # Fold TestCardinalityRatchet's extra shard profiles (cover-chdb-ratchet-
@@ -853,8 +859,21 @@ coverage: coverage-default coverage-chdb coverage-merge
 # package could be deleted and the gate would stay green. Give the package a
 # test (the profile is built with `-coverpkg` over the whole module, so a test
 # in ANY package counts), or delete the code nothing reaches.
+#
+# And it never records floors from a profile it cannot prove carries BOTH
+# lanes. coverage-summary.mjs reads cover-merged.out.lanes.json — the record
+# `coverage-merge` stamps onto the profile, bound to its bytes — and refuses
+# anything narrower, unstamped, or stamped for some other profile. This recipe
+# used to test for libchdb.so instead, which proves the chdb lane COULD have
+# run on this machine and nothing at all about the profile on disk
+# (tsouza/cerberus#2988). The test below survives as an up-front HINT, not a
+# gate: a machine without libchdb.so cannot produce a profile this recipe will
+# accept, and saying so before the refusal is a better error than after it. It
+# is deliberately not fatal — enrolling from a CI `coverage-profile` artifact
+# (docs/toolchain.md) is a supported route, and that artifact is complete on a
+# machine that has never installed chDB.
 update-coverage-floor:
-    @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; floors recorded without the chdb lane would under-record every package that lane reaches" >&2; exit 1; }
+    @test -f "{{CHDB_INSTALL_PATH}}" || echo "note: {{CHDB_INSTALL_PATH}} not found — a 'just coverage' run on this machine produces a default-tag-only profile, which this recipe refuses (floors are measured with both lanes). Run 'just chdb-install' first, or enroll from a CI coverage-profile artifact; see docs/toolchain.md." >&2
     @test -s cover-merged.out || { echo "error: cover-merged.out not found — run 'just coverage' first; the floors are derived from the profile it writes" >&2; exit 1; }
     @COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs
     @echo

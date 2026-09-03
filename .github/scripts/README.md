@@ -1011,15 +1011,28 @@ what actually runs.
   UP only and refuses to lower an entry, so a coverage drop has to be a
   hand-edited, reviewable line in the diff. `coverage-summary.test.mjs` is the
   `node --test` guard.
+
+  The compare path writes a lane record beside the profile
+  (`<profile>.lanes.json`: the `COVERAGE_LANES` value, keyed by the SHA-256 of
+  the profile's bytes), and the update path refuses to record floors unless that
+  record exists, hashes to the profile in hand, and names `default+chdb`. Floors
+  measured without the chdb lane under-record every package it reaches, and the
+  ratchet never lowers one, so a floor written too low is never corrected. The
+  digest is what makes the record evidence about the profile rather than about
+  the directory — the failure of the `libchdb.so` test it replaces
+  (tsouza/cerberus#2988), which proved only that the lane could have run on this
+  machine.
   - Env: `COVERAGE_PROFILE` (default `cover-merged.out`), `COVERAGE_FLOORS`
     (default `test/coverage-floor`), `COVERAGE_LANES` (`default+chdb` or
-    `default`; the Justfile sets it from whether libchdb.so was found),
+    `default`; the Justfile sets it from whether libchdb.so was found, and the
+    compare path stamps it into the lane record),
     `COVERAGE_REQUIRE_LANES` (CI sets `default+chdb` so a soft-failing chdb
     install cannot silently downgrade the gate to a skip),
     `COVERAGE_UPDATE_FLOORS=1` (rewrite instead of compare),
     `GITHUB_STEP_SUMMARY`.
   - Exit: `0` when every package clears its floor (or the ledger was
-    rewritten), `1` on unreadable input, a lane mismatch, or a violation.
+    rewritten), `1` on unreadable input, a lane mismatch, a lane set the update
+    path cannot prove is `default+chdb`, or a violation.
 - **`coverage-package-floor.mjs`** — `coverage.yml`'s cheap structural gate on
   every PR, in its own `coverage-enrollment` job. Enumerates the default and `chdb,agpl_oracle,chdb_agpl_oracle`
   builds with `go list`, asks `go tool cover` whether each active source file

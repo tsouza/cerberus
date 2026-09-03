@@ -13,6 +13,10 @@
 
 # Code coverage profiles and other test artifacts
 *.out
+# The lane-provenance record coverage-summary.mjs stamps onto a merged profile
+# (cover-merged.out.lanes.json). It describes a generated profile and is as
+# untracked as the profile itself; `*.out` above does not cover it.
+*.out.lanes.json
 /coverage.*
 *.coverprofile
 profile.cov
