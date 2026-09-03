@@ -534,8 +534,8 @@ Notes:
   guards (`VectorJoin`'s own `ManyToManyMatchMessage`) and structural shape
   restrictions, neither of which bounds memory, so a big hash build could hit
   a destructive `MEMORY_LIMIT_EXCEEDED` (code 241) abort. The plan-shape gate
-  (`chplan.HasJoin`, the one join-carrier registry `internal/engine.spill.go`,
-  `internal/engine.plan_shape_id.go` and `internal/routememo.key.go` all
+  (`chplan.HasJoin`, the one join-carrier registry `internal/engine/spill.go`,
+  `internal/engine/plan_shape_id.go` and `internal/routememo/key.go` all
   consume) covers every join `chplan.WalkDeep` can observe pre-emission —
   `VectorJoin`, `HistogramVectorJoin`, `HistogramFloatVectorJoin`,
   `MixedVectorJoin`, `InfoJoin`, `StructuralJoin`, `CrossJoin`,
