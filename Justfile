@@ -671,6 +671,29 @@ bench:
 # lane keeps the measured set identical to the tested set, with no exclusion
 # list to maintain or forget.
 
+# The pgregory.net/rapid PRNG seed both coverage lanes measure with.
+#
+# rapid's own default is 0, which it documents as "use a random one", and a
+# ratchet cannot be fed a measurement that moves: test/coverage-floor/ only
+# raises a floor, so one enrolled from a lucky draw is never corrected by the
+# unlucky draw that follows it. Measured on tsouza/cerberus#3000,
+# test/property/oracle/traceql drew 242, 243, 244 and 245 of its 272 statements
+# across fifteen full-lane profiles of an unchanged tree — a 1.10-point spread
+# against a 1.0-point slack.
+#
+# Exported to the two `go test` sweeps below, and read by the per-binary init
+# each rapid-linked test package carries (see internal/chplan/rapid_seed_test.go
+# for the canonical copy and test/regression/rapid_seed_pin_test.go for the
+# scan that keeps the set complete). It is deliberately NOT set by `just
+# property`: that lane's job is to SEARCH for counterexamples, which needs a
+# fresh sample every run. This lane's job is to MEASURE, which needs the same
+# one.
+#
+# The value is arbitrary but permanent. Changing it re-rolls every rapid-driven
+# package's coverage in one step, against floors derived from the old draw, so
+# treat it as fixed unless a floor is being deliberately re-derived.
+COVERAGE_RAPID_SEED := "20260903"
+
 # Fold a raw -coverpkg profile in place. -coverpkg makes EVERY test binary
 # emit a row for every block it linked, so a raw lane profile is ~200 MB of
 # repeats where the useful content is ~2 MB. One row per block, keeping the
@@ -705,7 +728,7 @@ coverage-default:
     # everything on stderr pass through untouched. `fflush()` keeps the pipe
     # line-buffered — a block-buffered filter would show nothing at all until
     # a 4 KiB chunk fills, which on a lane this long reads as a hung job.
-    go test -timeout 40m -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'
+    CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} go test -timeout 40m -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'
     @test -s cover.out
     @just _coverage-fold cover.out
 
@@ -724,9 +747,9 @@ coverage-chdb:
     @if [ -e "{{CHDB_INSTALL_PATH}}" ]; then \
         echo "==> chdb-tagged coverage"; \
         COVERPKG="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)"; \
-        PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 60m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
+        CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 60m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
         if [ "${SKIP_RATCHET_FANOUT:-}" != "1" ]; then \
-            TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
+            CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
         else \
             echo "==> SKIP_RATCHET_FANOUT=1: shards 2..PERF_SHARD_COUNT run on their own coverage-chdb-ratchet CI matrix legs, not here"; \
         fi; \

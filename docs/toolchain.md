@@ -64,7 +64,43 @@ produces no record naming both lanes, so the recipe declines it rather than rely
 have checked.
 
 `just update-coverage-floor` only ratchets up. It refuses to lower a floor to match a coverage drop
-and never records a `0`, so both of those stay hand-edited, reviewable lines in a diff.
+and never records a `0`, so both of those stay hand-edited, reviewable lines in a diff. It also
+refuses to DELETE one. The recipe rewrites the whole ledger from the profile in hand, so a floored
+package the profile never measured would simply lose its entry — the deepest lowering available,
+since a ratchet has nothing that ever restores a floor that is gone. The two ways that happens look
+identical from inside the profile, so the recipe reads the tree instead: a package whose directory
+still holds non-test Go files should have been measured, and its absence is a refusal naming it,
+while a package whose directory is gone is one the module no longer has and its floor is dropped
+with a notice. Removing a package therefore stays a plain `just update-coverage-floor` away, and
+enrolling from an artifact older than a package in the tree fails loudly instead of quietly undoing
+that package's gate.
+
+The margin a floor grants — the slack between the measurement and the floor it justifies — is the
+wider of one percentage point and one statement. A point alone means whatever the package's size
+makes it mean: on a 70-statement package it is 0.70 statements, so the floor tolerates no jitter at
+all and a single statement flipping reds a required check, while on a 4600-statement package the
+same point is 46 statements. One statement is the quantum the measurement moves in, so it is the
+narrowest honest margin; the statement term binds only below 100 statements, which is exactly where
+a point is worth less than one. Widening a slack can only lower the floor a fresh measurement
+justifies, and the ratchet keeps the greater of that and the committed value, so this never moves an
+entry already in the ledger.
+
+Slack absorbs jitter; it cannot absorb a random variable, so the coverage lanes remove the largest
+source of one. Property tests draw through `pgregory.net/rapid`, whose `-rapid.seed` defaults to a
+random value, and which branches of a generator-driven test execute moves a package by whole
+statements between two runs of an identical tree: `test/property/oracle/traceql` drew 242, 243, 244
+and 245 of its 272 statements across fifteen full-lane profiles (tsouza/cerberus#3000). No slack
+narrow enough to catch a real regression is wide enough to cover that, and a ratchet fed a lucky
+draw never corrects itself. So both lanes export `CERBERUS_RAPID_SEED` from the Justfile's
+`COVERAGE_RAPID_SEED`, and every test binary that links rapid honours it in an `init` that pins the
+flag before `flag.Parse` — per binary, because rapid registers that flag from its own `init`, so a
+lane-wide `go test -rapid.seed=N ./...` would abort every package that does not link it.
+`test/regression/rapid_seed_pin_test.go` derives the set of packages owing a pin from the import
+graph, so a new rapid-driven package cannot rejoin the unpinned set. `just property` and
+`property.yml` deliberately leave the variable unset: that lane SEARCHES for counterexamples and
+needs a fresh sample every run, where the coverage lane MEASURES and needs the same one. The seed's
+value is arbitrary but permanent — changing it re-rolls every rapid-driven package's coverage
+against floors derived from the old draw.
 
 `actionlint` (`just lint-actions`) validates the workflow files. GitHub rejects an invalid workflow
 file server-side as a zero-job failure run, which prevents required `pull_request` checks from ever
