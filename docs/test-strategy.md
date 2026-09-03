@@ -1546,14 +1546,56 @@ permanent cost:
   a proven equivalent, and for the arithmetic it is worse, because neither
   can be converted into a kill by writing a test.
 
-So a leg's ceiling is arithmetic rather than judgement: a leg whose
-BACKSTOP `TIMED OUT` count plus its documented-equivalent count exceeds 5%
-of its own attempted total cannot reach the 95% floor however strong its
-assertions are. `RUN TIMED OUT` no longer enters that sum. The remedy for
-what remains is the same dilution lever the surviving-mutant policy names
-— re-partition the leg wider against `gremlins unleash --dry-run` —
-applied to the package's scanner-bearing files, and it works only while
-the combined permanent cost stays under the margin.
+Neither half is converted by writing a test. The allocating half is
+converted by changing the SCANNER, which is a third remedy the
+surviving-mutant policy does not name because it is not about tests at
+all. A loop whose cursor is advanced independently by every arm has no
+structural guarantee that any arm advances it, and the mutation that
+stops one arm advancing is what exposes the absence. Two shapes close it:
+
+- **Collapse the advance to one site.** `NormalizeDottedLabels` in
+  `internal/logql/lsyntax/dotted_labels.go` computes `next := i + 1` once
+  and lets each arm override it, so the walker has one advancing
+  expression rather than one per branch.
+- **Check the advance once per iteration.** Where the arms compute their
+  own end offsets from scanned runs and so cannot share one expression,
+  the loop records the offset it began the iteration at and refuses when
+  an arm hands it back unmoved: `lexer.run` raises a `ParseError`,
+  `scanSourceGroups` and `skipCharClass` decline the way they decline
+  every construct they cannot classify, and the two replacement-template
+  scans stop.
+
+Both are production robustness properties before they are anything else.
+Every one of these scanners reads a string that arrived over HTTP inside
+a user's query, so an arm that fails to advance is not a wrong answer but
+an unbounded allocation driven by untrusted text — and the process dies
+under the OOM killer with no query attached to it, which is the hardest
+failure of all to attribute afterwards. What the lane gets out of it is a
+consequence: a decremented cursor becomes an observable refusal instead
+of a runaway the memory guard reaps. That ordering is the discipline. A
+progress check added to move a score, and justified by the score, is the
+same mistake as accepting a permanently red leg, inverted; the test to
+apply is whether the check survives a reviewer who has never heard of
+gremlins.
+
+The check is not free to the lane either. Comparing POSITIONS gives a
+`CONDITIONALS_BOUNDARY` site whose `<` form is unobservable — no arm moves
+the cursor backwards, so nothing distinguishes "did not advance" from
+"went backwards" — and each check therefore trades one proven equivalent
+for every runaway it converts. Comparing a consumed COUNT against 1 has no
+such site, because real input straddles that boundary on every
+single-byte step; prefer it where the arms already return counts, and
+take the equivalent where they set the cursor directly.
+
+So a leg's ceiling is arithmetic rather than judgement ONCE its scanners
+enforce their own progress: a leg whose BACKSTOP `TIMED OUT` count plus
+its documented-equivalent count exceeds 5% of its own attempted total
+cannot reach the 95% floor however strong its assertions are.
+`RUN TIMED OUT` no longer enters that sum. Where the residue is not a
+scanner at all, the remedy is the dilution lever the surviving-mutant
+policy names — re-partition the leg wider against
+`gremlins unleash --dry-run` — and it works only while the combined
+permanent cost stays under the margin.
 
 Recognising the class matters because it is easy to misread as budget
 starvation and answer with a bigger `--timeout-max`. It is not: these

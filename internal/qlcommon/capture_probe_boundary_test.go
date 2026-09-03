@@ -735,22 +735,9 @@ func TestCarriersNeedingProbesIgnoresUnsharedNames(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// Seven surviving mutants in capture_probe.go. Each was re-applied and the
+// Four surviving mutants in capture_probe.go. Each was re-applied and the
 // whole package suite re-run to confirm it survives rather than merely
 // lacking a test.
-//
-// capture_probe.go:`fork = i` (INVERT_LOOPCTRL on the `break` immediately
-// after it, -> `continue`). The assignment is what the citation names because
-// the mutated statement is a bare `break`. The loop descends the spine, so `break` leaves `fork` at the
-// DEEPEST syntax.OpAlternate and `continue` leaves it at the SHALLOWEST. With
-// zero or one alternation on the spine the two agree outright. With k >= 2 at
-// depths i1 < … < ik, the original's fork is ik and `shape.spine[:ik]` still
-// contains i1; the mutant's fork is i1 and `shape.spine[i1+1:]` still
-// contains i2. skippable reports true for syntax.OpAlternate
-// (capture_participation.go:`case syntax.OpStar, syntax.OpQuest,
-// syntax.OpAlternate`), so whichever way round it lands, one of the
-// two spine scans below rejects the carrier and the function returns
-// (nil, false). Both loops are side-effect-free and run before anything else.
 //
 // capture_probe.go:`for parent >= 0 && len(groups[parent].alternations) == 0`
 // (CONDITIONALS_BOUNDARY, `parent >= 0` -> `parent > 0`). Index 0 is the virtual whole-pattern group, minted with
@@ -762,31 +749,9 @@ func TestCarriersNeedingProbesIgnoresUnsharedNames(t *testing.T) {
 // holding 0. It then reaches branchContaining(groups[0], …), which returns
 // (sourceSpan{}, false) for a group with no alternations; the ignored bool
 // leaves `branch` the zero span, captureShapes(src[0:0]) parses the empty
-// pattern into an empty map, `known` is false, and the next guard returns
-// (nil, false) — the answer the original returned one branch earlier.
-//
-// capture_probe.go:`if !known || !branchShape.unconditional` (INVERT_LOGICAL,
-// `||` -> `&&`). When `known` is false branchShape is
-// the zero captureShape, so `!branchShape.unconditional` is true and the
-// conjunction is true as well: the mutant declines exactly where the original
-// does. The only state that separates them is known && !unconditional, and it
-// is not reachable through this package's own producers. A conditional
-// ancestor of the carrier INSIDE the branch text is also an ancestor of the
-// carrier below the fork in the whole-pattern parse, and the spine scan four
-// branches above already returned (nil, false) for any skippable node in
-// `shape.spine[fork+1:]`. Go's parser can lift a common prefix out of the
-// branches, but two syntax.OpCapture nodes never compare equal (their Cap
-// differs), so the carrier is never inside the factored prefix, and removing
-// a prefix cannot introduce a skippable ancestor.
-//
-// capture_probe.go:`return siblings, len(siblings) > 0`
-// (CONDITIONALS_BOUNDARY, `> 0` -> `>= 0`). Reaching this line requires
-// groups[parent].alternations to be non-empty, so appending bodyEnd to it
-// yields at least two spans. They are consecutive disjoint ranges over the
-// parent's body, so at most one of them equals `branch` and is skipped, and
-// every other span either appends a sibling or returns (nil, false) at the
-// parse / matchesEmpty check above. len(siblings) is therefore never 0 here
-// and the two comparisons agree.
+// pattern into an empty map, indexing it yields the zero captureShape whose
+// unconditional field is false, and the next guard returns (nil, false) —
+// the answer the original returned one branch earlier.
 //
 // capture_probe.go:`return ordered[i].start < ordered[j].start`
 // (CONDITIONALS_BOUNDARY, the sort's `<` -> `<=`). The line is guarded by

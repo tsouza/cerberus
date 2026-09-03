@@ -200,6 +200,12 @@ const (
 	withCaptureProbes    captureProbeUse = true
 )
 
+// errTemplateStalled is raised by the replacement scanners' progress
+// invariant. It names a defect in the step functions rather than anything
+// about the template: no input reaches it, because every branch of
+// replacementStep and emptyCapturesStep consumes at least one byte.
+const errTemplateStalled = "replacement template scan made no progress"
+
 func resolveSegments(repl string, groups captureGroups) ([]chplan.LabelReplaceSegment, error) {
 	var segments []chplan.LabelReplaceSegment
 	var literal strings.Builder
@@ -222,6 +228,7 @@ func resolveSegments(repl string, groups captureGroups) ([]chplan.LabelReplaceSe
 	// #499 (the mutant-kill tests) and the follow-up PR that landed this
 	// refactor for the full diagnosis.
 	for i := 0; i < len(repl); {
+		prev := i
 		ref, step, err := replacementStep(&literal, repl, i, groups)
 		if err != nil {
 			return nil, err
@@ -236,6 +243,15 @@ func resolveSegments(repl string, groups captureGroups) ([]chplan.LabelReplaceSe
 			})
 		}
 		i += step
+		// Progress invariant. replacementStep's contract is at least one
+		// byte per call, and the comment above says the iterator clause is
+		// what makes that observable — but nothing enforced it. A template
+		// is user-supplied, so a step that consumes nothing is an unbounded
+		// `segments` append driven by untrusted text rather than a wrong
+		// answer, and the loop never returns to report it.
+		if i <= prev {
+			return nil, fmt.Errorf("replacement %q: %s", repl, errTemplateStalled)
+		}
 	}
 	flush()
 	return segments, nil
@@ -857,8 +873,16 @@ func EmptyCapturesReplacement(repl string) string {
 	// INVERT_LOOPCTRL operator has no `continue`/`break` to swap inside
 	// a dead-end switch case.
 	for i := 0; i < len(repl); {
-		step := emptyCapturesStep(&b, repl, i)
-		i += step
+		prev := i
+		i += emptyCapturesStep(&b, repl, i)
+		// Progress invariant — see resolveSegments. This function has no
+		// error channel, so a stalled step falls back to the rule it already
+		// applies to every `$` it cannot read as a reference: pass the rest
+		// of the template through verbatim.
+		if i <= prev {
+			b.WriteString(repl[prev:])
+			return b.String()
+		}
 	}
 	return b.String()
 }

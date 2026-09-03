@@ -3,6 +3,7 @@ package qlcommon
 import (
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -286,13 +287,15 @@ func negativeSiblingSpans(src string, groups []sourceGroup, at int) ([]sourceSpa
 	if !known {
 		return nil, false
 	}
-	fork := -1
-	for i := len(shape.spine) - 1; i >= 0; i-- {
-		if shape.spine[i].node.Op == syntax.OpAlternate {
-			fork = i
-			break
-		}
-	}
+	// Any alternation on the spine will do, because at most one survives:
+	// skippable reports true for OpAlternate, so a second one is caught by
+	// whichever of the two scans below covers it — above the fork by the
+	// first, below it by the second. Searching from either end therefore
+	// picks the same spine, and the lookup says that rather than implying,
+	// through a hand-rolled reverse walk, that innermost is what is wanted.
+	fork := slices.IndexFunc(shape.spine, func(step captureSpineStep) bool {
+		return step.node.Op == syntax.OpAlternate
+	})
 	if fork < 0 {
 		return nil, false
 	}
@@ -315,8 +318,12 @@ func negativeSiblingSpans(src string, groups []sourceGroup, at int) ([]sourceSpa
 	}
 	branch, _ := branchContaining(groups[parent], groups[at].open)
 	ordinal := captureOrdinalIn(groups, branch, groups[at].open)
-	branchShape, known := captureShapes(src[branch.start:branch.end])[ordinal]
-	if !known || !branchShape.unconditional {
+	// A missing entry yields the zero captureShape, which captureShapes
+	// documents as "nullable, conditional, and exclusive of nothing" — so
+	// unconditional is already false for it and a separate `known` test
+	// cannot decide anything this one does not.
+	branchShape := captureShapes(src[branch.start:branch.end])[ordinal]
+	if !branchShape.unconditional {
 		return nil, false
 	}
 	var siblings []sourceSpan
@@ -333,7 +340,11 @@ func negativeSiblingSpans(src string, groups []sourceGroup, at int) ([]sourceSpa
 		}
 		siblings = append(siblings, span)
 	}
-	return siblings, len(siblings) > 0
+	// At least one sibling: reaching here means groups[parent].alternations
+	// is non-empty, so the loop above ran over two or more disjoint spans,
+	// `branch` equals at most one of them, and every other span either
+	// appended or returned.
+	return siblings, true
 }
 
 // sourceSpan is a half-open byte range of a regex source.
@@ -437,8 +448,9 @@ func probeSpanFor(src string, groups []sourceGroup, at int) (sourceSpan, bool) {
 		if err != nil {
 			return sourceSpan{}, false
 		}
-		shape, known := captureShapes(body)[captureOrdinalIn(groups, span, carrierOpen)]
-		if !known || !shape.unconditional {
+		// See negativeSiblingSpans: the zero captureShape already rejects.
+		shape := captureShapes(body)[captureOrdinalIn(groups, span, carrierOpen)]
+		if !shape.unconditional {
 			return sourceSpan{}, false
 		}
 		if !matchesEmpty(parsed) {

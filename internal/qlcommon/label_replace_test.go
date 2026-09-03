@@ -358,6 +358,16 @@ func TestEmptyCapturesReplacement(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
+// label_replace.go:resolveSegments:`if i <= prev` and
+// label_replace.go:EmptyCapturesReplacement:`if i <= prev`, both
+// CONDITIONALS_BOUNDARY (`<=` -> `<`). Each is the progress invariant on a
+// step-based template scan, and it declines when a step hands the cursor
+// back unmoved; the mutant declines only when a step hands it back SMALLER.
+// replacementStep and emptyCapturesStep return a byte count, never a
+// position, and every branch of both returns 1, 2, or 1 + ref.width with
+// ref.width >= 1 — so the cursor never moves backwards and the two forms
+// differ only over a state no template produces.
+//
 // label_replace.go:`for end < len(rest)` (CONDITIONALS_BOUNDARY, extractRef's
 // loop condition, `<` -> `<=`). The extra iteration the mutant admits runs
 // at end == len(rest), where `rest[end:]` is the empty string — a legal
