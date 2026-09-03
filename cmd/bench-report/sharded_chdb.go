@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/prometheus/prometheus/promql/parser"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/solver"
 )
@@ -243,7 +242,7 @@ func measureSharded(s *session, iters int) (shardedResult, error) {
 // optimizer, returning the post-optimize plan the Planner classifies and
 // chsql.Emit serializes — the exact route-A pipeline the engine drives.
 func optimizedShardPlan(ctx context.Context, query string, start, end time.Time, step time.Duration) (chplan.Node, error) {
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	expr, err := p.ParseExpr(query)
 	if err != nil {
 		return nil, err

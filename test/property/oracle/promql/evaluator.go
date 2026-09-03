@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/test/property"
 )
 
@@ -41,7 +42,7 @@ type Options struct {
 // oracle error, including when the system also errors, so unsupported generated
 // shapes fail closed instead of consuming a hollow property iteration.
 func Evaluate(d property.Dataset, q property.Query, opts Options) property.Outcome {
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	expr, err := p.ParseExpr(q.String)
 	if err != nil {
 		return property.Outcome{Err: fmt.Errorf("oracle: parse %q: %w", q.String, err)}

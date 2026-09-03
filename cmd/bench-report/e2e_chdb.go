@@ -8,13 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prometheus/prometheus/promql/parser"
-
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	logqlsyntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
 	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
@@ -141,7 +140,7 @@ func measureE2E(s *session, iters int) (results []e2eResult, metricRows, logRows
 // --- emit helpers (real pipeline) ---------------------------------------
 
 func emitPromInstant(q string, now time.Time) (string, error) {
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	expr, err := p.ParseExpr(q)
 	if err != nil {
 		return "", err
@@ -159,7 +158,7 @@ func emitPromInstant(q string, now time.Time) (string, error) {
 }
 
 func emitPromRange(q string, start, end time.Time, step time.Duration) (string, error) {
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	expr, err := p.ParseExpr(q)
 	if err != nil {
 		return "", err

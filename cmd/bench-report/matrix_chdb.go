@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/prometheus/prometheus/promql/parser"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/solver"
 )
@@ -257,7 +256,7 @@ func measureSingleStatement(
 // all-fan-out default and the native-rate strategy the prom handler wires when
 // chopt resolves ts_grid_range).
 func lowerMatrixPlan(ctx context.Context, tsgrid bool) (chplan.Node, error) {
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	expr, err := p.ParseExpr(matrixQuery)
 	if err != nil {
 		return nil, err

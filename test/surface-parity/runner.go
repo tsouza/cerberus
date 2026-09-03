@@ -4,13 +4,12 @@ import (
 	"context"
 	"time"
 
-	promparser "github.com/prometheus/prometheus/promql/parser"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
 	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
@@ -29,12 +28,11 @@ var (
 // cerberusVerdictPromQL runs one PromQL probe through the real cerberus
 // path the /api/v1/query_range handler uses — parse → lower (fold
 // included) → optimize → emit — and returns ACCEPT with empty error, or
-// REJECT with the failure. EnableExperimentalFunctions mirrors the
-// parser options the prom Lang adapter uses so the parse stage never
-// gates experimental fns out before cerberus's own lowering can have an
-// opinion.
+// REJECT with the failure. It parses through [promparse.New], the same
+// constructor the prom Lang adapter uses, so the parse stage never gates
+// a function out before cerberus's own lowering can have an opinion.
 func cerberusVerdictPromQL(query string) (Verdict, string) {
-	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	expr, err := p.ParseExpr(query)
 	if err != nil {
 		// A probe that cerberus's own parser can't parse is a probe-

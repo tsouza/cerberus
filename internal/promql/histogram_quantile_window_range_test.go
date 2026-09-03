@@ -16,15 +16,19 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// windowRangeProbeParser mirrors the options every production cerberus parser
-// is built with — internal/api/prom/handler.go:`parser:    promparser.NewParser(`,
-// internal/api/prom/explain.go and internal/migrate/rulegraph.go:`var ruleGraphParser = promparser.NewParser(`.
-// None of them sets Options.ExperimentalDurationExpr, which is what
+// windowRangeProbeParser IS the parser every production cerberus entry point
+// parses with, not a copy of its options: [promparse.New] is the single
+// construction site, so this pin cannot stay green while a production site
+// diverges. It used to spell `parser.Options{EnableExperimentalFunctions: true}`
+// itself, which made it an eleventh copy asserting about the other ten.
+//
+// promparse.New leaves Options.ExperimentalDurationExpr unset, which is what
 // [TestPromQLGrammarRefusesNonPositiveMatrixRange] turns on its head.
-var windowRangeProbeParser = parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+var windowRangeProbeParser = promparse.New()
 
 // histogramQuantileShapeCorpus enumerates the histogram_quantile arguments
 // that can reach [matchHistogramAggIdiom]: both histogram families, every

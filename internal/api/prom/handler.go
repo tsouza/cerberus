@@ -30,6 +30,7 @@ import (
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -207,7 +208,7 @@ func New(client Querier, s schema.Metrics, logger *slog.Logger) *Handler {
 		Engine:    &engine.Engine{Optimizer: opt, Client: client},
 		Optimizer: opt,
 		Logger:    logger,
-		parser:    promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}),
+		parser:    promparse.New(),
 	}
 }
 

@@ -108,6 +108,7 @@ components:
   # Domain layers.
   chplan:    { in: chplan }
   promql:    { in: promql }
+  promparse: { in: promql/promparse }
   logql:     { in: logql }
   lsyntax:   { in: logql/lsyntax }
   logpattern: { in: logql/logpattern }
@@ -284,6 +285,14 @@ commonComponents:
   # consumes it. Like sealedscan it imports nothing but the standard
   # library and knows nothing about cerberus, so it is a true leaf.
   - dispatchscan
+  # promparse holds the one PromQL parser configuration cerberus parses with.
+  # Every entry point that turns a query string into an AST needs it — the
+  # PromQL handler, the offline explain langs, the migration rule graph, the
+  # bench harnesses — and those sit at three different layers, so enumerating
+  # them would be a dependency list that grows with every new entry point.
+  # It imports nothing but the upstream prometheus parser and knows nothing
+  # about cerberus, which keeps it a true leaf on the sealedscan criterion.
+  - promparse
 
 deps:
   # chplan is the foundation. No internal dependencies declared — entries
