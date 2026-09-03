@@ -48,10 +48,13 @@ import (
 //     historical window is left on the live path rather than silently
 //     answered from a narrower window than the caller asked for.
 //   - (tags only) the requested `?scope=` is one the catalog covers —
-//     "none" (both buckets), "resource", or "span". Every other scope
-//     value (event/link/instrumentation/intrinsic/trace) stays live
-//     unconditionally — see internal/schema/ddl's own SCOPE COVERAGE
-//     doc for why.
+//     "none" (every covered bucket), "resource", "span", "event", or
+//     "link" (cerberus issue #2850 widened the catalog to the latter
+//     two — see internal/schema/ddl's SCOPE COVERAGE doc for the
+//     measured cost that justified it). Every other scope value
+//     (instrumentation/intrinsic/trace) stays live unconditionally.
+//     "none" additionally requires scopeAttrsConfigured == false — see
+//     that parameter's doc below.
 //   - (tag values only) the resolved tag name is NOT an intrinsic —
 //     intrinsics read a dedicated column directly (cheap already, never
 //     an attribute-map explosion), so the catalog has nothing to offer
@@ -59,13 +62,29 @@ import (
 
 // tagsCatalogEligible reports whether a /search/tags (or
 // /api/v2/search/tags) request may be served from the catalog.
-func tagsCatalogEligible(scope string, filter chsql.Frag, windowless bool) bool {
+//
+// scopeAttrsConfigured is h.Schema.ScopeAttributesColumn != "": whether
+// this deployment's schema carries an instrumentation-scope attribute
+// map. The catalog never covers that bucket (see internal/schema/ddl's
+// SCOPE COVERAGE doc), so a `scope=none` catalog hit is a faithful
+// substitute for the live "none" answer (collectAttributeTagScopes /
+// attributeTagScopes) ONLY when the schema has no instrumentation bucket
+// for the live path to include either. On a custom schema that DOES
+// populate ScopeAttributesColumn, a catalog-served "none" would silently
+// omit that bucket, so "none" stays off the fast path there — every
+// default-schema deployment (scopeAttrsConfigured == false) is
+// unaffected. A scoped request ("resource"/"span"/"event"/"link") never
+// touches the instrumentation bucket in the first place, so this
+// parameter only gates "none".
+func tagsCatalogEligible(scope string, filter chsql.Frag, windowless, scopeAttrsConfigured bool) bool {
 	if filter != nil || !windowless {
 		return false
 	}
 	switch scope {
-	case tagScopeNone, tagScopeResource, tagScopeSpan:
+	case tagScopeResource, tagScopeSpan, tagScopeEvent, tagScopeLink:
 		return true
+	case tagScopeNone:
+		return !scopeAttrsConfigured
 	default:
 		return false
 	}
@@ -82,31 +101,45 @@ func tagValuesCatalogEligible(resolved resolvedTagName, filter chsql.Frag, windo
 }
 
 // catalogScopesFor maps the `?scope=` query parameter to the catalog
-// Scope value(s) a /search/tags catalog read should fetch: both buckets
-// for "none" (the default / unscoped request), one bucket for an
-// explicit "resource" or "span". Only called after tagsCatalogEligible
-// has already rejected every other scope value.
+// Scope value(s) a /search/tags catalog read should fetch: every covered
+// bucket for "none" (the default / unscoped request), one bucket for an
+// explicit "resource", "span", "event", or "link". Only called after
+// tagsCatalogEligible has already rejected every other scope value.
 func catalogScopesFor(scope string) []string {
 	switch scope {
 	case tagScopeResource:
 		return []string{schema.TagCatalogScopeResource}
 	case tagScopeSpan:
 		return []string{schema.TagCatalogScopeSpan}
+	case tagScopeEvent:
+		return []string{schema.TagCatalogScopeEvent}
+	case tagScopeLink:
+		return []string{schema.TagCatalogScopeLink}
 	default: // tagScopeNone
-		return []string{schema.TagCatalogScopeResource, schema.TagCatalogScopeSpan}
+		return []string{
+			schema.TagCatalogScopeResource, schema.TagCatalogScopeSpan,
+			schema.TagCatalogScopeEvent, schema.TagCatalogScopeLink,
+		}
 	}
 }
 
 // catalogScopeForMapScope maps a resolved tag-VALUES lookup's attrMapScope
 // to the single catalog Scope value to filter by, or ok=false for
-// attrMapScopeAny — the auto-scope form, which unions both maps and so
-// omits the Scope predicate entirely (see buildTagCatalogValuesSQL).
+// attrMapScopeAny — the auto-scope form, which unions the resource AND
+// span buckets ONLY (never event/link — those require an explicit
+// event./link. prefix, see resolveTagName) via the explicit
+// TagCatalogScopeResource/Span IN-list buildTagCatalogValuesSQL applies
+// when ok is false.
 func catalogScopeForMapScope(ms attrMapScope) (string, bool) {
 	switch ms {
 	case attrMapScopeResource:
 		return schema.TagCatalogScopeResource, true
 	case attrMapScopeSpan:
 		return schema.TagCatalogScopeSpan, true
+	case attrMapScopeEvent:
+		return schema.TagCatalogScopeEvent, true
+	case attrMapScopeLink:
+		return schema.TagCatalogScopeLink, true
 	default:
 		return "", false
 	}
@@ -185,12 +218,18 @@ func buildTagCatalogKeysSQL(scope string) (string, []any) {
 // one top-N array; arrayJoin unrolls that array into one row per value,
 // the shape chclient.QueryStrings (a single-string-column scan) expects.
 //
-// A single-scope mapScope (resource./span. forms) adds the Scope
-// predicate; the auto-scope "any" form (catalogScopeForMapScope's
-// ok=false) omits it, so topKMerge folds BOTH scope buckets' states into
-// one merged top-N array — the catalog's analogue of
+// A single-scope mapScope (resource./span./event./link. forms) adds an
+// exact Scope predicate; the auto-scope "any" form (catalogScopeForMapScope's
+// ok=false) adds an explicit `Scope IN ('resource', 'span')` predicate
+// instead of omitting the Scope filter — auto-scope has only ever meant
+// "resource or span" (see resolveTagName: event./link. require an
+// explicit prefix, so attr.Scope only resolves to attrMapScopeAny for a
+// bare or dotted identifier), and since cerberus issue #2850 the catalog
+// ALSO carries event/link rows, so an unfiltered read here would widen
+// auto-scope's merge to include them too — a genuine behaviour change
+// the explicit IN prevents. The result is the catalog's analogue of
 // attrValueArrayJoinFrag's live-path union of SpanAttributes and
-// ResourceAttributes, pre-aggregated instead of per-row.
+// ResourceAttributes ONLY, pre-aggregated instead of per-row.
 func buildTagCatalogValuesSQL(key string, mapScope attrMapScope) (string, []any) {
 	sb := chsql.NewQuery().
 		Select(chsql.As(chsql.Call("arrayJoin", tagCatalogTopValuesMergeFrag(chsql.Col(schema.TagCatalogTopValuesStateColumn))), "value")).
@@ -198,6 +237,11 @@ func buildTagCatalogValuesSQL(key string, mapScope attrMapScope) (string, []any)
 		Where(chsql.Eq(chsql.Col(schema.TagCatalogKeyColumn), chsql.Lit(key)))
 	if catScope, ok := catalogScopeForMapScope(mapScope); ok {
 		sb.Where(chsql.Eq(chsql.Col(schema.TagCatalogScopeColumn), chsql.Lit(catScope)))
+	} else {
+		sb.Where(chsql.In(
+			chsql.Col(schema.TagCatalogScopeColumn),
+			chsql.Lit(schema.TagCatalogScopeResource), chsql.Lit(schema.TagCatalogScopeSpan),
+		))
 	}
 	return sb.Build()
 }

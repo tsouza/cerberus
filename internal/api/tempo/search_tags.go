@@ -107,8 +107,8 @@ const (
 	// import — see that constant's doc comment.
 	tagScopeResource        = schema.TagCatalogScopeResource
 	tagScopeSpan            = schema.TagCatalogScopeSpan
-	tagScopeEvent           = "event"
-	tagScopeLink            = "link"
+	tagScopeEvent           = schema.TagCatalogScopeEvent
+	tagScopeLink            = schema.TagCatalogScopeLink
 	tagScopeInstrumentation = "instrumentation"
 	tagScopeIntrinsic       = "intrinsic"
 	tagScopeTrace           = "trace"
@@ -213,7 +213,7 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route Tags
 	// through to the SAME per-request live scan every other request
 	// already takes — that path is untouched below.
 	scopes, ok := ([]TagScope)(nil), false
-	if h.TagCatalogEnabled && tagsCatalogEligible(scope, filter, windowless) {
+	if h.TagCatalogEnabled && tagsCatalogEligible(scope, filter, windowless, h.Schema.ScopeAttributesColumn != "") {
 		scopes, ok = h.tagsFromCatalog(ctx, scope)
 	}
 	if !ok {
@@ -396,32 +396,57 @@ func distinctMapKeysFrag(col string) chsql.Frag {
 	return chsql.Distinct(chsql.Call("arrayJoin", chsql.Qual(col, "keys")))
 }
 
-// distinctNestedMapKeysFrag is the same idea one nesting level up:
-// `Events.Attributes` / `Links.Attributes` are Array(Map(...)) — one
-// map per event / link on the span row — so the keys of every element
-// are collected with arrayMap+mapKeys, flattened into a single key
-// array, and then unrolled by arrayJoin.
+// nestedMapParam names the lambda-bound element the nested Array(Map)
+// attribute-family helpers below range over — one event / link on a
+// span row's Events.Attributes / Links.Attributes array.
+const nestedMapParam = "m"
+
+// nestedMapKeysFlatFrag / nestedMapValuesFlatFrag emit
+// "arrayFlatten(arrayMap(m -> mapKeys(m), `<col>`.`Attributes`))" and its
+// mapValues sibling: the per-row flattened key / value arrays across
+// EVERY element of a Nested event/link attribute family. The sub-column
+// is addressed with the same qualified-identifier spelling every other
+// Nested reference in the emitter uses (see Builder.exprNestedArrayExists).
 //
-// Emits "DISTINCT arrayJoin(arrayFlatten(arrayMap(m -> mapKeys(m),
-// `<col>`.`Attributes`)))". `nestedMapParam` is the lambda's bound
-// element. The sub-column is addressed with the same qualified-identifier
-// spelling every other Nested reference in the emitter uses (see
-// Builder.exprNestedArrayExists).
-func distinctNestedMapKeysFrag(col string) chsql.Frag {
-	const nestedMapParam = "m"
-	return chsql.Distinct(
+// Positionally aligned: mapKeys(m)/mapValues(m) of the same map element
+// are always the same length and order, and arrayMap/arrayFlatten
+// preserve element order deterministically, so an ARRAY JOIN of both
+// together (as buildNestedAttributeValuesSQL does) zips them into
+// correct (key, value) pairs — the same contract flat-Map
+// mapKeys(col)/mapValues(col) already has one nesting level down (see
+// internal/schema/ddl's tempoTagCatalogScopeArm, which relies on the
+// identical zipping property for the flat-Map arms).
+func nestedMapKeysFlatFrag(col string) chsql.Frag {
+	return chsql.Call(
+		"arrayFlatten",
 		chsql.Call(
-			"arrayJoin",
-			chsql.Call(
-				"arrayFlatten",
-				chsql.Call(
-					"arrayMap",
-					chsql.Lambda1(nestedMapParam, chsql.Call("mapKeys", chsql.BareIdent(nestedMapParam))),
-					chsql.Qual(col, nestedAttributesSubfield),
-				),
-			),
+			"arrayMap",
+			chsql.Lambda1(nestedMapParam, chsql.Call("mapKeys", chsql.BareIdent(nestedMapParam))),
+			chsql.Qual(col, nestedAttributesSubfield),
 		),
 	)
+}
+
+func nestedMapValuesFlatFrag(col string) chsql.Frag {
+	return chsql.Call(
+		"arrayFlatten",
+		chsql.Call(
+			"arrayMap",
+			chsql.Lambda1(nestedMapParam, chsql.Call("mapValues", chsql.BareIdent(nestedMapParam))),
+			chsql.Qual(col, nestedAttributesSubfield),
+		),
+	)
+}
+
+// distinctNestedMapKeysFrag is distinctMapKeysFrag one nesting level up:
+// `Events.Attributes` / `Links.Attributes` are Array(Map(...)) — one map
+// per event / link on the span row — so the keys of every element are
+// collected via nestedMapKeysFlatFrag, then unrolled by arrayJoin.
+//
+// Emits "DISTINCT arrayJoin(arrayFlatten(arrayMap(m -> mapKeys(m),
+// `<col>`.`Attributes`)))".
+func distinctNestedMapKeysFrag(col string) chsql.Frag {
+	return chsql.Distinct(chsql.Call("arrayJoin", nestedMapKeysFlatFrag(col)))
 }
 
 // tempoTimeGteFrag emits "`<col>` >= toDateTime64('...', 9)" — the

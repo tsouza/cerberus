@@ -57,6 +57,8 @@ const (
 	AttrMapScopeAnyForTest      = attrMapScopeAny
 	AttrMapScopeResourceForTest = attrMapScopeResource
 	AttrMapScopeSpanForTest     = attrMapScopeSpan
+	AttrMapScopeEventForTest    = attrMapScopeEvent
+	AttrMapScopeLinkForTest     = attrMapScopeLink
 )
 
 // BuildAttributeValuesSQLForTest re-exports buildAttributeValuesSQL

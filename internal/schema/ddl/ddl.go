@@ -1777,28 +1777,57 @@ func renderLokiLabelCatalogView(cfg Config) string {
 // friends), not here — see that package's doc comment for why, mirroring
 // LabelCatalogTable's own rationale.
 //
-// SCOPE COVERAGE: only the two flat-Map attribute scopes — resource
-// (ResourceAttributes) and span (SpanAttributes) — feed the catalog.
-// Event/Link attributes (Events.Attributes / Links.Attributes) are
-// Array(Map(String, String)) — one map PER EVENT / PER LINK on a span
-// row, not one map per row — so exploding them costs an extra
-// arrayFlatten(arrayMap(...)) fan-out per row on top of the mapKeys/
-// mapValues explosion this view already pays twice (see
-// distinctNestedMapKeysFrag in internal/api/tempo/search_tags.go for the
-// live-path shape this would have to mirror). That is not "cheap" the
-// way issue #2771 asked the catalog to stay, and events/links are a
-// materially rarer autocomplete target than resource/span attributes, so
-// they are excluded — an honest scope-down, not a deferral: the live
-// scan remains their permanent, unconditional path, the same posture the
-// resource/span buckets keep for every OTHER Tempo request shape (see
-// tagsCatalogEligible's doc in internal/api/tempo/tag_catalog.go).
-// Instrumentation-scope attributes (ScopeAttributes) are excluded for a
-// different reason: the upstream traces_table.sql template carries no
-// such column at all (schema.Traces.ScopeAttributesColumn defaults to
-// "" — see that field's doc comment), so a stock deployment has nothing
-// to catalog there; a custom schema that populates it stays on the live
-// path, consistent with how attributeTagScopes() already treats an empty
-// ScopeAttributesColumn as "no bucket".
+// SCOPE COVERAGE: as of cerberus issue #2850, all FOUR dynamic attribute
+// scopes feed the catalog — the two flat-Map scopes, resource
+// (ResourceAttributes) and span (SpanAttributes), plus the two Nested
+// Array(Map(String, String)) scopes, event (Events.Attributes) and link
+// (Links.Attributes). Issue #2771 originally excluded event/link,
+// reasoning that the extra arrayFlatten(arrayMap(...)) fan-out the
+// Array(Map) shape needs (see nestedMapKeysFlatFrag /
+// nestedMapValuesFlatFrag in internal/api/tempo/search_tags.go for the
+// live-path shape the catalog arm below mirrors) was not "cheap" the way
+// #2771 asked the catalog to stay. #2850 measured it instead of guessing:
+// on a real ClickHouse (25.9, via testcontainers — not chDB) seeded with
+// 2,000,000 synthetic otel_traces rows in the trailing 1h window (the
+// SAME corpus and methodology as TestTempoTagCatalog_MeasuredCost, see
+// that test's doc comment) and a documented-representative event/link
+// population (10% of spans carry >=1 exception-shaped event, 3% carry a
+// messaging link — see TestTempoTagCatalog_EventsLinks_MeasuredCost /
+// eventsPerSpan / linksPerSpan for the exact assumptions and their
+// justification), adding the event+link arms cost only ~1.08x the
+// existing resource+span refresh's wall-clock time (923ms vs 857ms),
+// despite reading ~2x the rows — because both Nested columns are EMPTY
+// for the large majority of rows, so the extra arms decode far fewer
+// bytes (66MB + 36MB) than the flat-Map arms do (799MB) even though CH's
+// read_rows accounting counts a full base-table scan for each arm. A
+// stress-test rerun with an unrealistically dense corpus (every span
+// carries 1-3 events AND 1-2 links) still stayed at 2.01x baseline
+// (1.78s), a small fraction of the 5-minute refresh period
+// (tempoTagCatalogRefreshMinutes) either way. That clears the same bar
+// #2771's own doc comments use ("the refresh's own scan cost stays a
+// small fraction of the period even against a busy traces table" — see
+// tempoTagCatalogRefreshMinutes below) by a wide margin, so the "not
+// cheap enough" reasoning that excluded event/link no longer holds and
+// the honest scope-down from #2771 is superseded here rather than kept
+// out of inertia.
+//
+// Instrumentation-scope attributes (ScopeAttributes) remain excluded,
+// for the reason #2771 already gave and #2850 leaves unchanged: the
+// upstream traces_table.sql template carries no such column at all
+// (schema.Traces.ScopeAttributesColumn defaults to "" — see that field's
+// doc comment), so a stock deployment has nothing to catalog there; a
+// custom schema that populates it stays on the live path, consistent
+// with how attributeTagScopes() already treats an empty
+// ScopeAttributesColumn as "no bucket". Because that is the ONE bucket a
+// custom (non-default) schema might carry that this catalog still
+// cannot answer, internal/api/tempo's tagsCatalogEligible additionally
+// keeps `scope=none` OFF the catalog fast path whenever
+// ScopeAttributesColumn is configured — see that function's doc — so a
+// custom-schema deployment never gets a catalog-served "none" response
+// that silently omits the one bucket the catalog cannot cover; every
+// default-schema deployment (ScopeAttributesColumn == "", the only
+// shape this measurement covers) is unaffected and unconditionally
+// eligible.
 //
 // VALUE SHAPE: topKState/topKMerge (a bounded top-N sketch, N =
 // schema.TagCatalogTopValuesLimit) rather than uniqState (a cardinality-only
@@ -1829,6 +1858,27 @@ const (
 	// renderLokiLabelCatalogView and the spanNameColumn block's own doc
 	// comment already establish for this package.
 	tracesSpanAttributesColumn = "SpanAttributes"
+
+	// tracesEventsColumn / tracesLinksColumn name the traces spans
+	// table's two Nested attribute families — fixed by the upstream
+	// OTel-CH exporter template, like tracesSpanAttributesColumn above.
+	// tracesNestedAttributesSubfield is the sub-column each one carries
+	// the per-event / per-link attribute map under
+	// (Array(Map(String, String))) — mirrors internal/api/tempo's own
+	// nestedAttributesSubfield constant (search_tags.go), which this
+	// package cannot import (see the import-boundary note on
+	// TagCatalogScopeResource in internal/schema).
+	tracesEventsColumn             = "Events"
+	tracesLinksColumn              = "Links"
+	tracesNestedAttributesSubfield = "Attributes"
+
+	// nestedMapLambdaParam names the lambda-bound element
+	// tempoTagCatalogNestedScopeArm's arrayMap ranges over — one event /
+	// link on the row's Nested attribute array. Mirrors
+	// internal/api/tempo's own nestedMapParam constant (this package
+	// cannot import that one — see the import-boundary note on
+	// TagCatalogScopeResource in internal/schema).
+	nestedMapLambdaParam = "m"
 
 	// tempoTagCatalogRefreshMinutes is the REFRESH EVERY interval for the
 	// catalog view — the same 5-minute cadence lokiLabelCatalogRefreshMinutes
@@ -1941,24 +1991,70 @@ func tempoTagCatalogScopeArm(cfg Config, scope, mapCol string, windowStart chsql
 		Where(chsql.Neq(chsql.Col("v"), chsql.InlineLit("")))
 }
 
+// tempoTagCatalogNestedScopeArm is tempoTagCatalogScopeArm one nesting
+// level up (cerberus issue #2850 — see the SCOPE COVERAGE doc above for
+// the measured cost that justified adding it): nestedCol names a Nested
+// event/link attribute family (tracesEventsColumn / tracesLinksColumn),
+// Array(Map(String, String)) rather than mapCol's flat Map, so the
+// per-element key/value arrays are flattened across every event/link on
+// the row (nestedMapKeysFlatFrag / nestedMapValuesFlatFrag in
+// internal/api/tempo/search_tags.go build the identical live-path shape)
+// before ArrayJoin zips them into (key, value) pairs. Everything else —
+// the literal scope tag, the window bound, the non-empty-value filter —
+// mirrors tempoTagCatalogScopeArm exactly.
+func tempoTagCatalogNestedScopeArm(cfg Config, scope, nestedCol string, windowStart chsql.Frag) *chsql.QueryBuilder {
+	keysFrag := chsql.Call(
+		"arrayFlatten",
+		chsql.Call(
+			"arrayMap",
+			chsql.Lambda1(nestedMapLambdaParam, chsql.Call("mapKeys", chsql.BareIdent(nestedMapLambdaParam))),
+			chsql.Qual(nestedCol, tracesNestedAttributesSubfield),
+		),
+	)
+	valuesFrag := chsql.Call(
+		"arrayFlatten",
+		chsql.Call(
+			"arrayMap",
+			chsql.Lambda1(nestedMapLambdaParam, chsql.Call("mapValues", chsql.BareIdent(nestedMapLambdaParam))),
+			chsql.Qual(nestedCol, tracesNestedAttributesSubfield),
+		),
+	)
+	return chsql.NewQuery().
+		Select(
+			chsql.As(chsql.InlineLit(scope), schema.TagCatalogScopeColumn),
+			chsql.As(chsql.Col("k"), schema.TagCatalogKeyColumn),
+			chsql.As(chsql.Col("v"), tempoTagValueColumn),
+		).
+		From(chsql.Qual(cfg.Database, cfg.Tables.Traces)).
+		ArrayJoin(
+			chsql.As(keysFrag, "k"),
+			chsql.As(valuesFrag, "v"),
+		).
+		Where(chsql.Gte(chsql.Col(logsTimestampColumnName), windowStart)).
+		Where(chsql.Neq(chsql.Col("v"), chsql.InlineLit("")))
+}
+
 // renderTempoTagCatalogView renders the REFRESH-scheduled CREATE
 // MATERIALIZED VIEW feeding renderTempoTagCatalogTable from the traces
-// table: a UNION ALL of the resource-scope and span-scope arms (see
-// tempoTagCatalogScopeArm), re-aggregated into one topKState per (Scope,
-// TagKey). Like renderLokiLabelCatalogView this uses RefreshEveryMinutes
-// rather than an on-insert trigger, because the window bound must be
-// re-evaluated at EACH refresh to stay "the trailing N hours".
+// table: a UNION ALL of the resource-scope, span-scope (tempoTagCatalogScopeArm)
+// and event-scope, link-scope (tempoTagCatalogNestedScopeArm) arms,
+// re-aggregated into one topKState per (Scope, TagKey). Like
+// renderLokiLabelCatalogView this uses RefreshEveryMinutes rather than an
+// on-insert trigger, because the window bound must be re-evaluated at
+// EACH refresh to stay "the trailing N hours".
 func renderTempoTagCatalogView(cfg Config) string {
 	windowStart := chsql.Sub(chsql.Call("now"), chsql.Call("toIntervalHour", chsql.InlineLit(int64(tempoTagCatalogWindowHours))))
 	resourceArm := tempoTagCatalogScopeArm(cfg, schema.TagCatalogScopeResource, metricResourceAttributesColumn, windowStart)
 	spanArm := tempoTagCatalogScopeArm(cfg, schema.TagCatalogScopeSpan, tracesSpanAttributesColumn, windowStart)
+	eventArm := tempoTagCatalogNestedScopeArm(cfg, schema.TagCatalogScopeEvent, tracesEventsColumn, windowStart)
+	linkArm := tempoTagCatalogNestedScopeArm(cfg, schema.TagCatalogScopeLink, tracesLinksColumn, windowStart)
 	body := chsql.NewQuery().
 		Select(
 			chsql.Col(schema.TagCatalogScopeColumn),
 			chsql.Col(schema.TagCatalogKeyColumn),
 			chsql.As(tempoTagCatalogTopValuesStateFrag(chsql.Col(tempoTagValueColumn)), schema.TagCatalogTopValuesStateColumn),
 		).
-		From(chsql.Paren(chsql.UnionAll(resourceArm.Frag(), spanArm.Frag()))).
+		From(chsql.Paren(chsql.UnionAll(resourceArm.Frag(), spanArm.Frag(), eventArm.Frag(), linkArm.Frag()))).
 		GroupBy(chsql.Col(schema.TagCatalogScopeColumn), chsql.Col(schema.TagCatalogKeyColumn))
 	stmt := chsql.CreateMaterializedView(schema.TagCatalogTable+schema.TagCatalogViewSuffix).
 		Database(cfg.Database).

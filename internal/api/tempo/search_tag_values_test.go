@@ -363,6 +363,106 @@ func TestSearchTagValuesV2_SpanScope(t *testing.T) {
 	}
 }
 
+// TestSearchTagValuesV2_EventScope — `event.exception.message` (cerberus
+// issue #2850) narrows to the Nested Events.Attributes family, via an
+// ARRAY JOIN fan-out rather than a flat-Map subscript. Before this issue,
+// resolveTagName fell through to the auto-scope form for this input,
+// which never consults Events.Attributes at all and silently returned an
+// empty result regardless of what values existed.
+func TestSearchTagValuesV2_EventScope(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"card declined"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tag/event.exception.message/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if !strings.Contains(q.lastSQL, "`Events`.`Attributes`") {
+		t.Errorf("expected an Events.Attributes fan-out, got: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "`Links`.`Attributes`") {
+		t.Errorf("event scope should NOT touch Links.Attributes, got: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "`SpanAttributes`[") || strings.Contains(q.lastSQL, "`ResourceAttributes`[") {
+		t.Errorf("event scope should NOT touch the flat span/resource maps, got: %s", q.lastSQL)
+	}
+	if !strings.Contains(q.lastSQL, "ARRAY JOIN") {
+		t.Errorf("expected an ARRAY JOIN fan-out, got: %s", q.lastSQL)
+	}
+	hits := 0
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "exception.message" {
+			hits++
+		}
+	}
+	if hits < 1 {
+		t.Errorf("expected key %q bound, got args %v", "exception.message", q.lastArgs)
+	}
+}
+
+// TestSearchTagValuesV2_LinkScope is TestSearchTagValuesV2_EventScope's
+// sibling for `link.x` / Links.Attributes.
+func TestSearchTagValuesV2_LinkScope(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"child_of"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tag/link.opentracing.ref_type/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if !strings.Contains(q.lastSQL, "`Links`.`Attributes`") {
+		t.Errorf("expected a Links.Attributes fan-out, got: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "`Events`.`Attributes`") {
+		t.Errorf("link scope should NOT touch Events.Attributes, got: %s", q.lastSQL)
+	}
+	hits := 0
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "opentracing.ref_type" {
+			hits++
+		}
+	}
+	if hits < 1 {
+		t.Errorf("expected key %q bound, got args %v", "opentracing.ref_type", q.lastArgs)
+	}
+}
+
+// TestSearchTagValues_AutoScope_NeverTouchesEventLink pins that the bare
+// / leading-dot auto-scope form stays "resource or span only" even after
+// cerberus issue #2850 added event/link routing — auto-scope has never
+// included event/link (they require an explicit prefix), and this guards
+// against a future change accidentally widening it.
+func TestSearchTagValues_AutoScope_NeverTouchesEventLink(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"frontend"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/tag/service.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if strings.Contains(q.lastSQL, "`Events`.`Attributes`") || strings.Contains(q.lastSQL, "`Links`.`Attributes`") {
+		t.Errorf("auto-scope must never touch Events/Links.Attributes, got: %s", q.lastSQL)
+	}
+}
+
 // TestSearchTagValues_ScopedFormParityWithBare — the scoped
 // `.service.name` form (Tempo-acceptable) and the bare `service.name`
 // form (V1 backward-compat) MUST produce equivalent SQL: identical

@@ -1279,8 +1279,8 @@ const (
 	// ... REFRESH EVERY 5 MINUTE ... TO tempo_tag_catalog AS SELECT ...`
 	// DDL (cerberus issue #2771, the Tempo sibling of FeatureLokiCatalogMV
 	// above) that maintains a per-(scope, tag-key) top-values catalog over
-	// the traces table's SpanAttributes / ResourceAttributes maps,
-	// refreshed on a schedule instead of scanned per request.
+	// the traces table's resource / span / event / link attribute
+	// families, refreshed on a schedule instead of scanned per request.
 	// `/api/v2/search/tags` and `/api/search/tag/{name}/values`
 	// (internal/api/tempo/search_tags.go, search_tag_values.go) serve from
 	// the catalog when eligible — see internal/api/tempo/tag_catalog.go's
@@ -1288,15 +1288,17 @@ const (
 	// scan otherwise; the fallback path is untouched and permanent, exactly
 	// as FeatureLokiCatalogMV's own doc describes for its sibling.
 	//
-	// The catalog covers only the resource and span scopes — event, link,
-	// and instrumentation scopes stay on the live path unconditionally
-	// (Nested Array(Map) explosion is a materially different, costlier
-	// shape than a flat Map explosion; see the DDL render function's own
-	// doc for the honest scope-down). Filtered tag/tag-value lookups (the
-	// V2 `q=<TraceQL>` narrowing parameter) also stay on the live path
-	// unconditionally: the catalog has no way to answer "values on spans
-	// matching this predicate" without evaluating the predicate per row,
-	// which is exactly the scan this feature exists to avoid.
+	// The catalog covers resource, span, event, and link scopes — the
+	// event/link (Nested Array(Map)) arms were added by cerberus issue
+	// #2850 after measuring their refresh cost against the same traces
+	// table (see the DDL render function's own SCOPE COVERAGE doc for the
+	// numbers); only instrumentation scope stays on the live path
+	// unconditionally, because the upstream schema carries no such column
+	// by default. Filtered tag/tag-value lookups (the V2 `q=<TraceQL>`
+	// narrowing parameter) also stay on the live path unconditionally: the
+	// catalog has no way to answer "values on spans matching this
+	// predicate" without evaluating the predicate per row, which is
+	// exactly the scan this feature exists to avoid.
 	//
 	// VERSION FLOOR: 24.10 — same upstream PR #70550 floor
 	// FeatureLokiCatalogMV cites; see that constant's doc for the
