@@ -69,6 +69,8 @@ install-tools:
 # on staged files at commit time, and commitlint on the commit message.
 # Heavy validation (go test / golangci-lint / go build) is NOT in the hook —
 # CI owns that. See CLAUDE.md § "No local validation; lefthook + CI own it."
+
+# Install lefthook and activate the git hooks. Idempotent; run once after clone.
 hooks-install:
     go install github.com/evilmartians/lefthook@latest
     lefthook install
@@ -95,6 +97,8 @@ clean:
 # CI fails any PR whose generated block drifts (git diff --exit-code). The rich
 # hand-authored columns (experimental setting, effect prose) stay outside the
 # markers and are untouched. Same as `go generate ./internal/chopt/`.
+
+# Regenerate the structural feature table in docs/clickhouse-optimizations.md.
 gen-opt-docs:
     go run ./cmd/cerberus optdocs -doc docs/clickhouse-optimizations.md
 
@@ -104,6 +108,8 @@ gen-opt-docs:
 # other route would avoid. Pass flags through, e.g.:
 #   just route-rules --source jsonl --corpus-path /var/lib/cerberus/router-corpus
 #   just route-rules --validate-only
+
+# Run the router-rules catalog against a recorded corpus (offline analysis).
 route-rules *ARGS:
     go run ./cmd/cerberus route-rules {{ARGS}}
 
@@ -111,6 +117,8 @@ route-rules *ARGS:
 # from the current CERBERUS_* environment — offline, no database connection —
 # so you can review it before provisioning. Pipeable into clickhouse-client:
 #   just migrate schema | clickhouse-client -h ...
+
+# Render the ClickHouse schema cerberus expects, offline, for pre-cutover review.
 migrate *ARGS:
     go run ./cmd/cerberus migrate {{ARGS}}
 
@@ -137,18 +145,24 @@ migrate *ARGS:
 # This is the whole `check` gate in one command, which is what you want locally;
 # CI may schedule the constituent recipes independently, so keep this one a
 # pure composition rather than a copy of their commands.
+
+# Run the whole check gate: race-detected unit + spec, chaos assertions, tagged vet.
 test: test-unit test-chaos-sleep vet-tagged
 
 # The race-detected unit + spec suite. CI's `check-test` job runs exactly this
 # and nothing else: it is the long pole of the gate, and pairing it with the
 # quick type-check/build work would serialise two things that have no reason to
 # wait on each other.
+
+# Run the race-detected unit + spec suite.
 test-unit:
     go test -timeout 15m -race ./...
 
 # Run the deterministic chaos_sleep injection assertions. The live chaos lane
 # builds this tag into the binary, but only this focused recipe executes the six
 # tagged unit assertions that prove header propagation and SQL splicing.
+
+# Run the deterministic chaos_sleep injection assertions.
 test-chaos-sleep:
     go test -timeout 2m -race -tags=chaos_sleep -count=1 -run '^(TestApplyChaosSleep_|TestChaosSleep_)' ./internal/api/prom/... ./internal/chsql/...
 
@@ -162,6 +176,8 @@ test-chaos-sleep:
 # are named to avoid colliding with tier1_stack_test.go's only because both live
 # in package migration — a single combined vet call would silently start
 # requiring that to keep holding.
+
+# Type-check the build-tagged migration and AGPL-oracle lanes no other recipe compiles.
 vet-tagged:
     go vet -tags=migration_tier1 ./test/e2e/migration/...
     go vet -tags=migration_tier2 ./test/e2e/migration/...
@@ -171,6 +187,8 @@ vet-tagged:
 # agpl_oracle tag. The focused filters avoid re-running the entire untagged
 # internal and TXTAR suites after the required check gate already ran them.
 # Requires no CGO, Docker, or libchdb.
+
+# Run the tests whose evidence depends on the agpl_oracle tag. No CGO, Docker or chDB.
 test-agpl-oracle:
     go test -timeout 12m -race -tags agpl_oracle -count=1 -run '^(TestAGPLOracle_|TestJSONPathParse_MatchesLokiJSONExpr$|TestParseExprPermissive_MatchAllAccepted$|TestPattern_)' ./internal/logql/...
     go test -timeout 12m -race -tags agpl_oracle -count=1 ./test/agpl_oracle/... ./test/spec/parityoracle/logql/... ./test/spec/parityoracle/traceql/... ./test/property/oracle/logql/...
@@ -180,6 +198,8 @@ test-agpl-oracle:
 # ClickHouse containers (spun up via testcontainers-go). `-p=1` keeps the two
 # packages from competing for the same Docker substrate. Requires Docker and is
 # gated behind `integration`, so regular `just test` stays container-free.
+
+# Run the schema DDL and auto-create integration tests on real ClickHouse. Needs Docker.
 schema-ddl-test:
     @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TEST_IMAGE_PRIOR}}
     go test -timeout 20m -p=1 -race -tags=integration ./internal/schema/ddl/... ./cmd/cerberus/...
@@ -190,6 +210,8 @@ schema-ddl-test:
 # chdb-go driver. Only fixtures that declare both `seed:` and
 # `expected_rows:` are executed against chDB; everything else still
 # runs through the text-equality golden path.
+
+# Run the TXTAR spec suite with the chDB round-trip layer on. Needs libchdb.so.
 spec-chdb:
     go test -tags chdb -count=1 ./test/spec/...
 
@@ -218,6 +240,8 @@ spec-chdb:
 # on a developer's laptop sat on `main` unseen (#2074). The suite is the only
 # layer that executes emitted SQL against a real engine from inside the
 # emitter package, where the unexported emitter entry points are reachable.
+
+# Run the chdb-tagged handler, emitter, solver and corpus lanes. Needs libchdb.so.
 test-chdb:
     go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
@@ -225,6 +249,8 @@ test-chdb:
 # query heads. The synthetic composite tag activates the LogQL live runner.
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's
 # 100 iterations; the nightly `property` CI workflow overrides to 500.
+
+# Run the chdb-tagged property tests for all three heads. Needs libchdb.so.
 property:
     go test -tags chdb,agpl_oracle,chdb_agpl_oracle -count=1 ./test/property/...
 
@@ -268,6 +294,8 @@ property:
 # active, is a trustworthy timing signal for this recipe. That caveat applies
 # to the per-shard figures too: the local sweep that first timed the eight
 # slices ran against exactly such a competing process.
+
+# Run the chdb-tagged perf regression guards. Up to ~27 min; needs libchdb.so.
 perf-chdb:
     go test -timeout 27m -tags chdb -count=1 ./test/perf/...
 
@@ -289,12 +317,16 @@ perf-chdb:
 # produced before sharding existed (tsouza/cerberus#2375). NOT a per-PR gate:
 # corpus-wide breadth over ~950 fixtures is too heavy for every PR. Override
 # OUT / TOP to taste.
+
+# Profile the TXTAR corpus for compute fan-out into a JSON report. Needs libchdb.so.
 perf-profile OUT="perf-profile.json" TOP="40":
     go run -tags chdb ./cmd/perf-profile -spec test/spec -out {{OUT}} -top {{TOP}}
 
 # Run the chclient testcontainers integration tests against a real
 # ClickHouse container. Requires Docker. Gated behind the `integration`
 # build tag so regular `just test` doesn't pull in Docker.
+
+# Run the chclient integration tests against a real ClickHouse container. Needs Docker.
 chclient-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -race -tags=integration ./internal/chclient/...
@@ -307,6 +339,8 @@ chclient-integration:
 # clickhouse-go strict-scans and 502s). Requires Docker; gated behind the
 # `integration` build tag. See test/spec/strictscan_integration_test.go and
 # .github/workflows/strict-scan.yml.
+
+# Run the strict-scan differential over the golden SQL corpus on real CH. Needs Docker.
 strict-scan-test:
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
@@ -320,6 +354,8 @@ strict-scan-test:
 # integer columns into *float64 — exactly the #1064 strict-scan blind spot).
 # Requires Docker; gated behind the `integration` build tag. See
 # internal/routerrules/realch_integration_test.go and strict-scan.yml.
+
+# Run the router-corpus write and read paths against real ClickHouse. Needs Docker.
 router-corpus-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run 'RealClickHouse' ./internal/routerrules/... ./internal/optcorpus/...
@@ -333,6 +369,8 @@ router-corpus-integration:
 # compare matrix scan fails closed on an absent window. Requires Docker; gated
 # behind the `integration` build tag. See
 # test/spec/traces_scan_resource_bound_integration_test.go and strict-scan.yml.
+
+# Run the TraceQL spans-scan resource-bound guard on real ClickHouse. Needs Docker.
 traces-scan-bound-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
@@ -351,6 +389,8 @@ traces-scan-bound-integration:
 # invariant class. Requires Docker; gated behind the `integration` build tag.
 # See internal/api/tempo/traces_scan_window_integration_test.go and
 # strict-scan.yml.
+
+# Run the Tempo traces-scan request-window pruning guard. Needs Docker.
 traces-scan-window-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestTracesScanWindowRealCH ./internal/api/tempo/...
@@ -374,6 +414,8 @@ traces-scan-window-integration:
 # Requires Docker; gated behind the `integration` build tag. See
 # internal/api/tempo/structural_two_phase_external_table_integration_test.go
 # and strict-scan.yml.
+
+# Run the structural two-phase external trace-id table verification. Needs Docker.
 structural-two-phase-external-table-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run 'TestStructuralTwoPhase_ExternalTraceIDTable|TestExternalTraceIDs_ReusableAcrossDispatches' ./internal/api/tempo/...
@@ -390,6 +432,8 @@ structural-two-phase-external-table-integration:
 # system.query_log via optcorpus.CHQueryLogSource. Requires Docker; gated
 # behind the `integration` build tag. See
 # test/perf/smoke/realch_perfsmoke_integration_test.go and strict-scan.yml.
+
+# Run the perf-smoke real-ClickHouse memory sentinel differential. Needs Docker.
 perf-smoke-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     @# The join-spill tier (smoke.FloorJoinSpill) boots a SECOND container:
@@ -411,6 +455,8 @@ perf-smoke-integration:
 # `integration` build tag. See
 # test/perf/smoke/realch_native_lowerers_integration_test.go and
 # strict-scan.yml.
+
+# Run the native range-window lowerer activation lane on real ClickHouse. Needs Docker.
 native-lowerers-smoke-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestNativeRangeLowerers_RealCH_Integration ./test/perf/smoke/...
@@ -425,6 +471,8 @@ native-lowerers-smoke-integration:
 # Docker; gated behind the `integration` build tag. See
 # test/perf/nightly/realch_perfnightly_integration_test.go and
 # .github/workflows/perf-nightly.yml.
+
+# Run the nightly memory gate over the real trimmed sample. Needs Docker and git-lfs.
 perf-nightly-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -v -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
@@ -441,6 +489,8 @@ perf-nightly-integration:
 # `integration` build tag. See
 # test/perf/nightly/realch_ts_grid_instant_memory_integration_test.go and
 # .github/workflows/perf-nightly.yml.
+
+# Measure ts_grid_instant fan-out vs native peak memory on real data. Needs Docker, git-lfs.
 ts-grid-instant-memory-integration:
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
     go test -v -timeout 15m -tags=integration -count=1 -run TestTSGridInstantMemory_RealCH_Integration ./test/perf/nightly/...
@@ -456,6 +506,8 @@ ts-grid-instant-memory-integration:
 # resource bound); a silent loosen is exactly the regression this lane
 # exists to catch. The gating assertion is TestPerfNightlyRealCH, wired
 # into .github/workflows/perf-nightly.yml.
+
+# Regenerate the nightly per-sentinel memory ceilings. Needs Docker; review the diff.
 update-nightly-perf-baseline:
     @just _pull-retry {{CH_TEST_IMAGE}}
     UPDATE_NIGHTLY_PERF_BASELINE=1 go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
@@ -472,6 +524,8 @@ update-nightly-perf-baseline:
 # commits or pushes anything. Requires Docker and a clean working tree (it
 # refuses to mutate on top of unrelated uncommitted changes). Weekly, not
 # nightly — see .github/workflows/perf-nightly-selfcheck.yml.
+
+# Prove the nightly perf gate is still armed by breaking two bounds. Needs Docker, clean tree.
 perf-nightly-selfcheck:
     @just _pull-retry {{CH_TEST_IMAGE}}
     node --test .github/scripts/perf-nightly-selfcheck.test.mjs
@@ -486,6 +540,8 @@ perf-nightly-selfcheck:
 # memory-limit error; a generous one on the identical query must succeed.
 # Requires Docker; gated behind the `integration` build tag. See
 # internal/solver/executor_realch_integration_test.go and strict-scan.yml.
+
+# Prove the solver's per-shard memory cap is honored by real ClickHouse. Needs Docker.
 solver-memory-apportion-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestExecutor_PerShardMaxMemoryUsage_RealClickHouse ./internal/solver/...
@@ -502,6 +558,8 @@ solver-memory-apportion-integration:
 # per-shard-sliced SQL. Requires Docker; gated behind the `integration` build
 # tag. See internal/api/prom/handler_route_b_realch_integration_test.go and
 # strict-scan.yml.
+
+# Run the route-A vs route-B result differential on real ClickHouse. Needs Docker.
 route-b-differential-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestRouteB_MatchesRouteA_RealClickHouse ./internal/api/prom/...
@@ -521,6 +579,8 @@ route-b-differential-integration:
 # real case per endpoint. Requires Docker; gated behind the `integration`
 # build tag. See test/spec/metadata_endpoints_realch_integration_test.go
 # and strict-scan.yml.
+
+# Run the metadata / label-values endpoint differential on real ClickHouse. Needs Docker.
 metadata-endpoints-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestMetadataEndpoints_RealClickHouse ./test/spec/...
@@ -538,6 +598,8 @@ metadata-endpoints-integration:
 # histogram _bucket/_count/_sum discovery off the real schema. Requires
 # Docker; gated behind the `integration` build tag. See
 # internal/api/prom/handler_histogram_integration_test.go and strict-scan.yml.
+
+# Run the histogram real-exporter-schema differential against real ClickHouse. Needs Docker.
 histogram-realexporter-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestHistogram_RealExporterSchema_Integration ./internal/api/prom/...
@@ -552,6 +614,8 @@ histogram-realexporter-integration:
 # `integration` build tag. See
 # internal/api/prom/handler_native_lowerers_integration_test.go and
 # strict-scan.yml.
+
+# Run internal/api/prom's native range-window lowerer activation lane. Needs Docker.
 native-lowerers-prom-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestNativeRangeLowerers_RealCH_Integration ./internal/api/prom/...
@@ -571,6 +635,8 @@ native-lowerers-prom-integration:
 # build tag. See
 # internal/chsql/histogram_quantile_rankwalk_native_realch_integration_test.go
 # and strict-scan.yml.
+
+# Run the rank-walk vs native histogram-quantile differential. Needs Docker.
 quantile-prom-histogram-rankwalk-integration:
     @just _pull-retry {{CH_QUANTILE_PROM_HISTOGRAM_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestHistogramQuantile_RankWalkNative_DifferentialRealCH ./internal/chsql/...
@@ -588,6 +654,8 @@ quantile-prom-histogram-rankwalk-integration:
 # gated behind the `integration` build tag. See
 # internal/api/prom/handler_tag_groups_realch_integration_test.go and
 # strict-scan.yml.
+
+# Run the ts_tag_groups duplicate-labelset differential on real ClickHouse. Needs Docker.
 tag-groups-differential-integration:
     @just _pull-retry {{CH_TAG_GROUPS_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestTagGroups_MatchesMapGrouping_RealClickHouse ./internal/api/prom/...
@@ -605,6 +673,8 @@ tag-groups-differential-integration:
 # `integration` build tag. See
 # internal/chsql/range_window_last_over_time_realch_integration_test.go and
 # strict-scan.yml.
+
+# Run the ts_grid_last_over_time staleness-window regression pin. Needs Docker.
 ts-grid-last-over-time-integration:
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestLastOverTime_NativeResample_WindowNarrowerThanStep_RealCH ./internal/chsql/...
@@ -621,6 +691,8 @@ ts-grid-last-over-time-integration:
 # this pins CH_TEST_IMAGE directly rather than reusing CH_STRICT_SCAN_IMAGE's
 # higher 26.6 pin. Requires Docker; gated behind the `integration` build tag.
 # See internal/chsql/range_window_group_array_realch_integration_test.go.
+
+# Run the ts_grid_group_array precondition and rate() regression pins. Needs Docker.
 ts-grid-group-array-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run '^(TestTimeSeriesGroupArray_|TestRate_NativeGroupArray_)' ./internal/chsql/...
@@ -636,12 +708,16 @@ ts-grid-group-array-integration:
 # CH_STRICT_SCAN_IMAGE's higher 26.6 pin. Requires Docker; gated behind the
 # `integration` build tag. See
 # internal/chsql/range_window_grid_native_nan_duplicate_realch_integration_test.go.
+
+# Run the timeSeries*ToGrid duplicate-timestamp survivor pins. Needs Docker.
 ts-grid-nan-duplicate-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run '^(TestTSGridFamily_NaNDuplicate|TestFanoutDedup_NaNDuplicate|TestRate_NativeGrid_NaNDuplicate)' ./internal/chsql/...
 
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
+
+# Fuzz one parser head's FuzzParse target for a bounded duration.
 fuzz QL="promql" DURATION="60s":
     go test -run='^$' -fuzz=FuzzParse -fuzztime={{DURATION}} ./internal/{{QL}}/...
 
@@ -687,6 +763,8 @@ _coverage-fold FILE:
 # repeatedly hit its timeout as the package/fixture corpus grew. `coverage`
 # below still chains all three for a single local command with the same
 # behaviour the old monolithic recipe had.
+
+# Run the default-tag coverage lane into cover.out.
 coverage-default:
     @echo "==> default-tag coverage"
     # Both coverage lanes fail closed. The repository pins one supported Go
@@ -720,6 +798,8 @@ coverage-default:
 # execution only because of that unconditional tail check, the same
 # fail-closed contract `coverage-merge`'s COVERAGE_LANES join to
 # coverage-summary.mjs enforces for the merged profile.
+
+# Run the chdb-tagged coverage lane into cover-chdb.out. Skips itself without libchdb.so.
 coverage-chdb:
     @if [ -e "{{CHDB_INSTALL_PATH}}" ]; then \
         echo "==> chdb-tagged coverage"; \
@@ -804,6 +884,8 @@ coverage-chdb:
 # own SHA-256. That record is the ONLY thing `update-coverage-floor` will accept
 # as proof that a profile carries both lanes — this recipe is the one step that
 # legitimately knows, because it is the step that decided.
+
+# Merge the two lane profiles into cover-merged.out and run the floor gate.
 coverage-merge:
     @test -s cover.out || { echo "error: cover.out not found — run 'just coverage-default' first" >&2; exit 1; }
     # Fold TestCardinalityRatchet's extra shard profiles (cover-chdb-ratchet-
@@ -853,6 +935,8 @@ coverage-merge:
 # that depends on both (tsouza/cerberus#2634), so a local `just coverage`
 # and the CI pipeline share every line of test/merge logic without sharing a
 # process.
+
+# Profile coverage over both tag lanes and gate it on the floors. ~45 min; needs libchdb.so.
 coverage: coverage-default coverage-chdb coverage-merge
 
 # Raise test/coverage-floor/ to what the tree currently achieves. Reads the
@@ -885,6 +969,8 @@ coverage: coverage-default coverage-chdb coverage-merge
 # it. The early diagnostic lives where the long run is: `coverage-chdb` says
 # "libchdb.so not found, skipping chdb lane" as it skips, and the refusal here
 # names `just chdb-install` in its own remedy text.
+
+# Raise test/coverage-floor/ to what the current profile achieves. Run `coverage` first.
 update-coverage-floor:
     @test -s cover-merged.out || { echo "error: cover-merged.out not found — run 'just coverage' first; the floors are derived from the profile it writes" >&2; exit 1; }
     @COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs
@@ -895,6 +981,8 @@ update-coverage-floor:
 # Regenerate the exact per-head roster of TXTAR fixtures carrying a live
 # reference parity contract. The assertion mode never writes; this recipe is
 # the explicit, review-visible way to accept a deliberate roster change.
+
+# Regenerate the per-head roster of fixtures carrying a live parity contract.
 update-parity-enrolment-baseline:
     UPDATE_PARITY_ENROLMENT_BASELINE=1 go test -count=1 -run '^TestParityEnrolmentBaseline$' ./test/regression
     @git --no-pager diff --stat test/regression/parity-enrolment-baselines/ || true
@@ -986,6 +1074,8 @@ update-parity-enrolment-baseline:
 # leaving stale `-- expected_rows --` behind (the PR #758 failure mode).
 #
 # Review the closing diff-stat before committing.
+
+# Regenerate the fixture-derived artefacts named by SHARD. The shard argument is required.
 update-golden *shards:
     @GOLDEN_SHARDS="{{shards}}" CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" JUST_EXECUTABLE="{{just_executable()}}" node .github/scripts/golden-update.mjs
 
@@ -1023,6 +1113,8 @@ update-golden *shards:
 #
 #   CERBERUS_UPDATE_LOGQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestLogQLReferenceVerdictsAreCurrent ./test/surface-parity/
 #   CERBERUS_UPDATE_TRACEQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestTraceQLReferenceVerdictsAreCurrent ./test/surface-parity/
+
+# Regenerate the parser-surface and rejection parity ledgers.
 update-parity-ledgers: update-parity-enrolment-baseline
     CERBERUS_UPDATE_INVENTORY=1 go test -count=1 ./test/surface-parity/ ./test/rejection-parity/
     @echo
@@ -1048,6 +1140,8 @@ CARDINALITY_BASELINE_TIMEOUT := "60m"
 # cannot prune another leg's rows, and why the closing step is what turns "every
 # leg exited 0" into "the tree matches the corpus". The timeout below is per LEG,
 # and stays generous because it is a hang detector, not a budget.
+
+# Regenerate the cardinality / fan-factor ratchet baseline. Slow; needs libchdb.so.
 update-cardinality-baseline:
     @CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" CARDINALITY_BASELINE_TIMEOUT="{{CARDINALITY_BASELINE_TIMEOUT}}" node .github/scripts/cardinality-baseline-update.mjs
     @echo
@@ -1069,6 +1163,8 @@ update-cardinality-baseline:
 # MUST be justified in the PR with a real reason (a correctness fix that
 # disqualifies the query), never accepted as a silent relaxation. The gating
 # assertion is TestSolverDecisionRatchet in the already-required `check` job.
+
+# Regenerate the routing-decision ratchet baseline. Pure Go; review the diff.
 update-solver-decision-baseline:
     UPDATE_SOLVER_DECISION_BASELINE=1 go test -count=1 -run TestSolverDecisionRatchet ./test/perf/
     @echo
@@ -1089,6 +1185,8 @@ update-solver-decision-baseline:
 # move is genuinely intended (a real, justified compute-cost increase); a
 # silent loosen is exactly the regression the pin exists to catch. The gating
 # assertion is TestScaleWallPin in the already-required `perf-guards` job.
+
+# Regenerate the scale-wall amplification and wall-ratio bounds. Needs libchdb.so.
 update-scale-wall-baseline:
     @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; the scale-wall bounds are measured by an in-process chDB run" >&2; exit 1; }
     UPDATE_SCALE_WALL_BASELINE=1 go test -tags chdb -count=1 -run TestScaleWallPin ./test/perf/
@@ -1107,6 +1205,8 @@ update-scale-wall-baseline:
 # genuinely intended (a real, justified memory-cost increase); a silent
 # loosen is exactly the regression this lane exists to catch. The gating
 # assertion is TestPerfSmokeRealCH in the required `strict-scan` job.
+
+# Regenerate the perf-smoke per-sentinel memory ceilings. Needs Docker; review the diff.
 update-perf-smoke-baseline:
     @just _pull-retry {{CH_TEST_IMAGE}}
     @# Second tier — see the perf-smoke-integration recipe for why.
@@ -1130,6 +1230,8 @@ update-perf-smoke-baseline:
 # guards (PR #790, #799) both reached ClickHouse's 256KB max_query_size as a
 # hard 502, and a silent loosen spends the margin they bought. The gating
 # assertion is TestMetadataQuerySizeRatchet in the already-required `check` job.
+
+# Regenerate the metadata query-size budget. Pure Go; review the diff.
 update-metadata-query-size-baseline:
     UPDATE_METADATA_QUERY_SIZE_BASELINE=1 go test -count=1 -run TestMetadataQuerySizeRatchet ./test/perf/
     @echo
@@ -1151,6 +1253,8 @@ update-metadata-query-size-baseline:
 # speedup ratios + labelled indicative, so re-running yields a clean diff
 # on the deterministic parts. Re-run whenever perf improves; review the
 # diff before committing.
+
+# Regenerate docs/benchmarks.md from live measurements. Manual, not a gate; needs libchdb.so.
 bench-report:
     @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; the benchmark document is generated by an in-process chDB measurement pass" >&2; exit 1; }
     go run -tags chdb ./cmd/bench-report -out docs/benchmarks.md
@@ -1165,6 +1269,8 @@ bench-report:
 # internal/config/envdocs.go (or the preamble in cmd/cerberus/cmd_configdocs.go)
 # and rerun this. The config-docs CI gate runs `git diff --exit-code` on the
 # regenerated file, so a stale doc (or an undocumented new env var) fails CI.
+
+# Regenerate docs/configuration.md from the internal/config env metadata and defaults.
 gen-config-docs:
     go run ./cmd/cerberus config-docs -out docs/configuration.md
     @echo
@@ -1195,6 +1301,8 @@ mutate-pkg PATH:
 # Slow: hundreds of mutants, each spinning up an ephemeral chDB
 # session. Expect tens of minutes. Requires libchdb.so (see
 # `just chdb-install`). Not on the PR critical path — informational.
+
+# Run gremlins over the optimizer and emitter under the chdb tag. Slow; needs libchdb.so.
 mutate-chdb:
     gremlins unleash -t chdb -i ./internal/optimizer/... ./internal/chsql/...
 
@@ -1207,6 +1315,8 @@ mutate-chdb:
 # names an inert tag to clear that union, which is the `!chdb` / `!chaos_sleep`
 # stubs. Every `//go:build` line in the tree is a single term, so the two passes
 # together leave no file unanalysed.
+
+# Run Go linters over both build configurations.
 lint:
     golangci-lint run ./...
     golangci-lint run --build-tags {{LINT_UNTAGGED_BUILD}} ./...
@@ -1218,6 +1328,8 @@ lint:
 # prevent required pull_request checks from ever being scheduled —
 # the #749 secrets-in-step-if incident left the PR BLOCKED on four
 # required contexts that could never report.
+
+# Validate the GitHub Actions workflow files with actionlint.
 lint-actions:
     actionlint
 
@@ -1255,7 +1367,7 @@ ci: lint test build
 
 # === Dependencies ===
 
-# go mod tidy.
+# Tidy go.mod and go.sum.
 deps-tidy:
     go mod tidy
 
@@ -1282,6 +1394,8 @@ CHDB_INSTALL_PATH := "/usr/local/lib/libchdb.so"
 #
 # Idempotent: skips download if the install path already exists. Override
 # CHDB_VERSION at the recipe call (`just chdb-install CHDB_VERSION=v26.5.0`).
+
+# Install libchdb.so, the in-process ClickHouse engine every chdb-tagged lane needs.
 chdb-install:
     @if [ -f "{{CHDB_INSTALL_PATH}}" ]; then \
         echo "==> libchdb already present at {{CHDB_INSTALL_PATH}} (delete to reinstall)"; \
@@ -1434,12 +1548,6 @@ K3S_IMAGE := "rancher/k3s:v1.31.5-k3s1"
 #   K3D_EXTRA_ARGS="--k3s-arg '--kubelet-arg=eviction-hard=imagefs.available<1%,nodefs.available<1%@server:0'" just e2e-up
 K3D_EXTRA_ARGS := env_var_or_default("K3D_EXTRA_ARGS", "")
 
-# Boot the k3d cluster, build cerberus image, import it, apply manifests, wait for pods.
-# Host ports map via the k3d loadbalancer to NodePorts on the k3s nodes:
-#   host:8080 -> LB -> NodePort 30080 (cerberus svc)
-#   host:3000 -> LB -> NodePort 30030 (grafana svc)
-# The k3d loadbalancer publishes on 0.0.0.0, so both ports are reachable on
-# every host interface (LAN IP included), not just localhost.
 # Pull each image with retry + linear backoff. Docker Hub from CI runners
 # intermittently times out the pull ("context deadline exceeded"); retrying
 # clears the transient failure instead of failing k3d creation / image staging.
@@ -1485,6 +1593,13 @@ _compose-pull-retry +FILES:
 # `.github/scripts/build-with-registry-retry.mjs`, which retries the command on
 # registry/network faults only and fails immediately on a real build error.
 
+# Host ports map via the k3d loadbalancer to NodePorts on the k3s nodes:
+#   host:8080 -> LB -> NodePort 30080 (cerberus svc)
+#   host:3000 -> LB -> NodePort 30030 (grafana svc)
+# The k3d loadbalancer publishes on 0.0.0.0, so both ports are reachable on
+# every host interface (LAN IP included), not just localhost.
+
+# Boot the k3d cluster, build and import the cerberus image, apply manifests, wait for pods.
 e2e-up: e2e-down
     @echo "==> pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
@@ -1639,6 +1754,8 @@ e2e-up: e2e-down
 #     OTel data continuously for realistic Grafana smoke + dashboard tests.
 # Both share the same `otel.*` tables (schema cannot drift — both write
 # via the upstream sqltemplates).
+
+# Seed deterministic OTel fixture rows into the cluster's ClickHouse.
 e2e-seed:
     @echo "==> seeding OTel data via Go seeder"
     @kubectl -n cerberus port-forward svc/clickhouse 19000:9000 > /tmp/cerberus-e2e-seed-pf.log 2>&1 & \
@@ -1672,6 +1789,8 @@ e2e-seed:
 # forward down. Idempotent + re-runnable: the seeder's DDL is CREATE … IF NOT
 # EXISTS and the INSERTs re-anchor on now64(9), so running it against either an
 # empty or an already-populated CH is safe.
+
+# Re-anchor the seeded window through a one-shot, fresh port-forward. Idempotent.
 e2e-reseed:
     @echo "==> re-seeding OTel data (one-shot, fresh port-forward) after CH recreation"
     @kubectl -n cerberus port-forward svc/clickhouse 19001:9000 > /tmp/cerberus-e2e-reseed-pf.log 2>&1 & \
@@ -1718,6 +1837,8 @@ e2e-reseed:
 # step's one-shot `just e2e-reseed`: the one-shot re-anchors the window
 # immediately, the supervised rolling feed keeps data anchored at wall-clock now
 # for the time-windowed assertions of the scenarios that follow.
+
+# Seed, then keep re-anchoring the window every 30s in the background until e2e-seed-stop.
 e2e-seed-rolling:
     @echo "==> launching rolling seeder (30s tick) in background"
     @# 1) start the reconnecting port-forward supervisor in its own process
@@ -1767,6 +1888,8 @@ e2e-seed-rolling:
 # leader PID (== its PGID), so `kill -TERM -<pid>` signals the whole group —
 # the supervisor AND its current kubectl child — instead of orphaning the
 # kubectl child while the supervisor respawns it.
+
+# Stop the rolling seeder and its port-forward supervisor. Idempotent.
 e2e-seed-stop:
     @echo "==> stopping rolling seeder"
     @if [ -f /tmp/cerberus-e2e-seed-rolling.pid ]; then \
@@ -1792,6 +1915,8 @@ e2e-seed-stop:
 # `kubectl exec` against the ClickHouse pod so it does not need a
 # host-side port-forward. Spread is asserted on whichever metric table
 # (sum or gauge) carries non-zero rows first.
+
+# Block until the OTel collector has populated every signal table with >=60s of history.
 e2e-wait-otel:
     @echo "==> waiting for real OTel data (incl. clickhouse query_log stream) + ≥60s metric history in ClickHouse"
     @deadline=$(($(date +%s) + 180)); \
@@ -1847,6 +1972,8 @@ e2e-wait-otel:
 # re-seeder it tests) dials ClickHouse directly to drive its own seedAll
 # ticks; every other Go E2E test only talks to CERBERUS_URL and ignores
 # these.
+
+# Run the Go E2E HTTP tests against the deployed stack.
 e2e-run:
     @echo "==> running Go E2E tests"
     CH_ADDR=127.0.0.1:19000 \
@@ -1857,6 +1984,7 @@ e2e-run:
 
 # A godog suite driving `cerberus migrate` over committed fixtures — no
 # Docker, no backend, seconds.
+
 # Run the Tier-0 offline migration scenarios.
 migration-tier0:
     @echo "==> running the tier-0 migration scenarios"
@@ -1878,6 +2006,7 @@ migration-scenarios out="build/migration-scenarios.json":
 # `update-golden` chains this recipe, so a plan-shape change repairs the
 # explain reports in the same command that repairs the TXTAR goldens; run it
 # directly when the migration corpus is the only thing that moved.
+
 # Regenerate the Tier-0 migration goldens from the current tool behaviour.
 migration-golden:
     @echo "==> regenerating the tier-0 migration goldens"
@@ -1894,6 +2023,8 @@ migration-golden:
 #
 # Override with CH_ADDR / CH_DATABASE / CH_USERNAME / CH_PASSWORD env
 # vars; see test/e2e/startup_bench_test.go for the full list.
+
+# Measure process-start to first 200 on /healthz. Needs a reachable ClickHouse.
 startup-bench:
     @echo "==> startup-speed benchmark (target < 2 s to /healthz)"
     go test -tags=startup_bench -v -count=1 -run TestStartupSpeed ./test/e2e/...
@@ -1915,6 +2046,8 @@ e2e-playwright:
 # (one rollout), then waits for it to roll out so every cerberus pod
 # carries the overlay before fault injection. Idempotent — re-applying
 # the same env values is a no-op rollout.
+
+# Apply the chaos resilience knobs to the running cerberus Deployment.
 e2e-chaos-overlay:
     @echo "==> applying chaos overlay (resilience knobs) to deploy/cerberus"
     @env_args=""; \
@@ -1936,6 +2069,8 @@ e2e-chaos-overlay:
 # CHAOS_PHASE=phase-1 by default (ch-pod-kill, ch-slow/query-timeout,
 # cerberus-pod-kill); CHAOS_PHASE=all adds the phase-2 scenarios.
 # Mirrors the `e2e-run` / `e2e-playwright` shape — locally reproducible.
+
+# Fault-inject against the running k3d stack and assert the resilience contracts hold.
 e2e-chaos:
     @echo "==> running live-stack chaos lane (chaos-run.mjs)"
     CERBERUS_URL=http://localhost:8080 \
@@ -1945,6 +2080,8 @@ e2e-chaos:
 # Tear down the cluster. Also stops the rolling seeder + port-forward
 # if either was started by `e2e-seed-rolling` — idempotent and silent
 # when the PID files don't exist.
+
+# Tear the k3d cluster down, stopping the rolling seeder first. Idempotent.
 e2e-down:
     @if [ -f /tmp/cerberus-e2e-seed-rolling.pid ] || [ -f /tmp/cerberus-e2e-seed-pf.pid ]; then \
         just e2e-seed-stop; \
@@ -1960,6 +2097,8 @@ e2e-down:
 # slides with wall-clock now), then wait for the collector to populate
 # real OTel data, then run the test matrix. `e2e-down` stops the rolling
 # seeder on teardown.
+
+# Run the full e2e lifecycle: up, rolling seed, wait, Go tests, Playwright, down.
 e2e: e2e-up e2e-seed-rolling e2e-wait-otel e2e-run e2e-playwright e2e-down
 
 # === E2E BWC (bundled ClickHouse on object storage, MinIO-backed) ===
@@ -1982,6 +2121,8 @@ e2e: e2e-up e2e-seed-rolling e2e-wait-otel e2e-run e2e-playwright e2e-down
 #      race to create the otel tables UNSTAMPED on the local disk; it finds
 #      cerberus's stamped tables already present and its CREATE … IF NOT EXISTS
 #      is a no-op.
+
+# Boot the k3d stack with the chart's bundled ClickHouse on MinIO object storage.
 e2e-bwc-up: e2e-down
     @echo "==> [bwc] pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
@@ -2060,6 +2201,8 @@ e2e-bwc-up: e2e-down
 # `just e2e-seed-rolling`. Logic lives in the env-driven Node module (per the
 # CLAUDE.md "non-trivial step logic in .github/scripts/*.mjs" rule), invoked
 # with the pinned mc image so the in-cluster bucket-ls pod matches the lane.
+
+# Assert the bwc data tier really lives on object storage. Run after e2e-seed-rolling.
 e2e-bwc-verify:
     @echo "==> [bwc] verifying object-storage placement"
     MC_IMAGE="minio/mc:RELEASE.2025-08-13T08-35-41Z" \
@@ -2067,6 +2210,8 @@ e2e-bwc-verify:
 
 # Tear down the bwc lane. Same cluster name + rolling seeder as the standard
 # lane, so the standard teardown covers it exactly.
+
+# Tear the bundled-ClickHouse (bwc) lane down.
 e2e-bwc-down: e2e-down
 
 # Run the compose-stack Grafana catch-net spec locally. Assumes the
@@ -2075,6 +2220,8 @@ e2e-bwc-down: e2e-down
 # /api/ds/query + /api/dashboards/* response is 2xx with no tunneled
 # per-target error. Mirrors the Playwright step the compose-smoke CI
 # job runs.
+
+# Run the compose-stack Grafana catch-net spec. Assumes the compose stack is already up.
 compose-grafana-smoke:
     @echo "==> compose-grafana-smoke playwright catch-net"
     cd test/e2e/playwright && \
@@ -2090,6 +2237,8 @@ compose-grafana-smoke:
 # Run the PromQL compatibility suite end-to-end. Slow; expect minutes.
 # Sets up the Docker Compose stack (reference Prom + cerberus + CH + seeder),
 # runs the upstream tester, writes compatibility/prometheus/report.json.
+
+# Run the PromQL compatibility suite end-to-end. Slow; expect minutes.
 compat-promql:
     ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
 
@@ -2108,16 +2257,22 @@ compat-promql-down:
 # the vendored upstream/loki-bench corpus, runs TestRemoteStorageEquality
 # against both endpoints, writes compatibility/loki/reports/diff.json.
 # See compatibility/loki/README.md for the harness layout.
+
+# Run the LogQL compatibility harness end-to-end. Slow; expect minutes.
 compat-logql:
     ./compatibility/loki/scripts/run-loki-compatibility.sh
 
 # Run the smoke (compose + seed + /labels assertion) without the diff
 # driver. Useful when the seeder is the bisect target.
+
+# Run the LogQL compose + seed + /labels smoke without the diff driver.
 compat-logql-smoke:
     DRIVER_SKIP=1 ./compatibility/loki/scripts/run-loki-compatibility.sh
 
 # Keep the Loki compatibility stack running after the run finishes
 # (for debugging /loki/api/v1/* + ClickHouse manually).
+
+# Keep the Loki compatibility stack running after the run finishes (for debugging).
 compat-logql-keep:
     COMPOSE_KEEP=1 ./compatibility/loki/scripts/run-loki-compatibility.sh
 
@@ -2131,6 +2286,8 @@ compat-logql-down:
 # cerberus + CH + seeder driver), runs the seeder which pushes a
 # deterministic OTLP batch to Tempo and an equivalent INSERT into CH
 # for cerberus, then runs the differ over the TXTAR corpus.
+
+# Run the Tempo / TraceQL compatibility harness end-to-end. Slow; expect minutes.
 compat-traceql:
     ./compatibility/tempo/scripts/run-tempo-compatibility.sh
 
@@ -2152,6 +2309,8 @@ compat-traceql-down:
 # Slow — expect tens of minutes. Use the per-head recipes for iteration.
 # Exit semantics: fails fast on the first non-zero recipe; the report
 # files for each head land under compatibility/*/reports/ regardless.
+
+# Run all three compatibility harnesses in sequence. Slow — expect tens of minutes.
 compat-all: compat-promql compat-logql compat-traceql
 
 # === Migration lane — Tier-1 dual-backend substrate (Layer 14) ===
@@ -2189,6 +2348,8 @@ MIGRATION_LOCAL_IMAGE := "cerberus:migration-tier1${COMPOSE_PROJECT_SUFFIX:-}"
 # This exists because the compose up path deliberately cannot acquire the image
 # itself: `pull_policy: never` and no `--build` on the up recipes are what keep
 # a release run from recompiling the source tree over the released image.
+
+# Put the cerberus image the migration stacks run into the local Docker daemon.
 migration-cerberus-image:
     @local_tag="{{MIGRATION_LOCAL_IMAGE}}"; \
     img="${CERBERUS_IMAGE:-$local_tag}"; \
@@ -2213,6 +2374,8 @@ migration-cerberus-image:
 # this closes — a run aborted by a failing assertion never reaches teardown,
 # and a second seed into the same live window collides on every sample instant.
 # migration-cerberus-image is a sub-invocation for the same reason.
+
+# Bring the Tier-1 dual-backend stack up and wait for every healthcheck. Needs Docker.
 migration-tier1-up:
     @just migration-tier1-down
     @just migration-cerberus-image
@@ -2276,6 +2439,8 @@ MIGRATION_LOG_TAIL := "200"
 # canonical `just migration-tier1` composite (and the CI migration-tier1 job)
 # drives — the whole `@tier1` scenario set is green off one seed pass, not
 # just whichever archetype happened to be seeded last.
+
+# Seed the Tier-1 archetype fixtures into the running stack (all of them by default).
 migration-tier1-seed archetype="":
     @archetypes="{{archetype}}"; \
     [ -n "$archetypes" ] || archetypes="{{MIGRATION_TIER1_ARCHETYPES}}"; \
@@ -2303,6 +2468,8 @@ migration-tier1-seed archetype="":
 # packages in one invocation, so a single sweep makes the Gherkin corpus
 # replay's diverge-zero assertion order-dependent: it must read the seeded
 # stack before the negative control ever touches it, never after.
+
+# Assert the Tier-1 dual-backend substrate and parity contracts against the seeded stack.
 migration-tier1-run:
     @echo "==> migration tier-1 dual-backend Gherkin scenarios"
     go test -tags=migration_tier1 -count=1 ./test/e2e/migration/tiers/tier1-dual/...
@@ -2315,6 +2482,8 @@ migration-tier1-run:
 # containers this reads from, which is why that ordering matters. Every command
 # is `|| true`-guarded: a dump must never turn a lane red on its own, nor mask
 # the real failure with a container that has already exited.
+
+# Dump the Tier-1 stack's container state and per-service log tail. Never fails on its own.
 migration-tier1-logs:
     @echo "==> migration tier-1 compose state"; \
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml ps || true; \
@@ -2327,6 +2496,8 @@ migration-tier1-logs:
 # Tear the Tier-1 stack down. `-v` is mandatory, not cosmetic: the reference
 # images declare their own VOLUMEs, and a surviving volume would carry one
 # run's data into the next.
+
+# Tear the Tier-1 migration stack down, volumes included.
 migration-tier1-down:
     @echo "==> migration tier-1 stack down"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
@@ -2352,6 +2523,8 @@ migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run mig
 # migration-cerberus-image, never `--build`. The ruler tier adds services on top
 # of Tier-1's `cerberus`, it does not declare a second one, so this stack runs
 # exactly the image that recipe put in the daemon.
+
+# Bring the Tier-2 ruler stack up: Tier-1's compose file plus the ruler leg. Needs Docker.
 migration-tier2-up:
     @just migration-tier2-down
     @just migration-cerberus-image
@@ -2366,6 +2539,8 @@ migration-tier2-up:
 # Tier-2 runs against the same seeded window Tier-1 does — the ruler tier
 # adds Grafana-managed alerting on top of the SAME cerberus/ClickHouse pair,
 # not a second one — so this is the identical seed step, not a second corpus.
+
+# Seed the Tier-2 stack — the same window Tier-1 uses, not a second corpus.
 migration-tier2-seed:
     @echo "==> migration tier-2 seed"
     go run ./test/e2e/migration/cmd/seed \
@@ -2390,6 +2565,8 @@ migration-tier2-seed:
 # migration-tier1-run: the Gherkin corpus reads the receiver's captured stream
 # for MIG-18's fire/resolve edges, and the substrate self-check's synthetic
 # test notification is one more entry in that stream.
+
+# Assert the Tier-2 ruler substrate contract: rules provision, evaluate, and notify.
 migration-tier2-run:
     @echo "==> migration tier-2 ruler Gherkin scenarios"
     go test -tags=migration_tier2 -count=1 ./test/e2e/migration/tiers/tier2-ruler/...
@@ -2400,6 +2577,8 @@ migration-tier2-run:
 # leg included, since a Tier-2 failure is usually Grafana rejecting the rule
 # fixture or the write-back bridge dropping a sample. See
 # migration-tier1-logs' comment for the ordering-before-teardown rationale.
+
+# Dump the Tier-2 stack's container state and per-service log tail, ruler leg included.
 migration-tier2-logs:
     @echo "==> migration tier-2 compose state"; \
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
@@ -2414,6 +2593,8 @@ migration-tier2-logs:
 # Tear the Tier-2 stack down. `-v` is mandatory — see migration-tier1-down's
 # comment; the same reference-image VOLUME concern applies here since this
 # compose invocation includes the Tier-1 file too.
+
+# Tear the Tier-2 migration stack down, volumes included.
 migration-tier2-down:
     @echo "==> migration tier-2 stack down"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
@@ -2439,6 +2620,8 @@ migration-tier2: migration-tier2-up migration-tier2-seed migration-tier2-run mig
 # Stage a tip-of-main release and open its PR on the canonical branch.
 # Usage: just release-prep 1.4.0            (chart bump defaults to patch)
 #        just release-prep 1.5.0 minor
+
+# Stage a tip-of-main release and open its PR on the canonical branch.
 release-prep version chart_bump="patch":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -2463,6 +2646,8 @@ release-prep version chart_bump="patch":
 # latest matching tag, ready for cherry-picking fix: commits to backport.
 # Usage: just backport-line 1.3   then  git cherry-pick <sha>...  then
 #        just release-prep-backport 1.3.2
+
+# Create or switch to the release/X.Y.x maintenance line, ready for cherry-picks.
 backport-line minor:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -2477,6 +2662,8 @@ backport-line minor:
 # release.yml runs on `release/*.x` pushes, gates on the staged version bumps,
 # and creates the tag itself. No PR, and no manual tag.
 # Usage: just release-prep-backport 1.3.2
+
+# Stage a backport release on the current release/X.Y.x branch and push it. The push publishes.
 release-prep-backport version chart_bump="patch":
     #!/usr/bin/env bash
     set -euo pipefail
