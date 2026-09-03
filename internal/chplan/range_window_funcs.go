@@ -111,6 +111,36 @@ func IsPromQLRangeWindowFunc(name string) bool {
 	return rangeWindowFuncs[name].promQL
 }
 
+// counterRangeWindowFuncs is the vocabulary of [RangeWindow].Func values
+// that run through Prom's counter-reset-aware delta + clamp-to-zero
+// shortcut (`extrapolatedRate`'s `isCounter` branch) rather than a plain
+// gauge delta. This is the ONE definition of that classification.
+//
+// internal/chsql's emitter re-derives the identical fact per emit-time
+// call as `extrapolationKind.isCounter()`, keyed off the SAME three
+// names (rate → extrapolationKindRate, increase → extrapolationKindIncrease,
+// delta → extrapolationKindDelta) via extrapolatingKindForFunc — but that
+// type is unexported chsql machinery bound to per-call emitter state, not a
+// value chplan can read (and chsql already imports chplan, so the
+// dependency cannot run the other way). Rather than hand-duplicate the
+// classification as a second switch on these same three strings,
+// [IsCounterRangeWindowFunc] is the canonical, chsql-independent answer;
+// TestInstantCounterJoinAgreesWithHasJoin (internal/chsql) pins agreement
+// with the emitter's actual behaviour by asserting the SQL it renders for
+// each classification, rather than by comparing two switches in the
+// abstract.
+var counterRangeWindowFuncs = map[string]bool{
+	"rate":     true,
+	"increase": true,
+}
+
+// IsCounterRangeWindowFunc reports whether name is a [RangeWindow].Func
+// whose raw window value is Prom's counter-reset-aware delta (rate /
+// increase) rather than a plain gauge delta (delta and everything else).
+func IsCounterRangeWindowFunc(name string) bool {
+	return counterRangeWindowFuncs[name]
+}
+
 // RangeWindowFuncNames returns every [RangeWindow].Func in the
 // vocabulary, sorted. The SQL emitter's dispatch ratchet diffs its own
 // table against this, so a reducer added to one side and not the other
