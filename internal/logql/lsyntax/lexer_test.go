@@ -480,11 +480,62 @@ func TestLexScanIdentToEOF(t *testing.T) {
 	}
 }
 
+// TestLexComments pins run's `#` arm, which nothing else in the tree reaches:
+// no unit test, spec fixture or oracle corpus entry lexes a LogQL comment.
+// Both directions the arm's inner loop can end matter — at a newline and at
+// the end of input — because they are the two ways it can stop consuming.
+func TestLexComments(t *testing.T) {
+	want := []tokenKind{tkOpenBrace, tkIdentifier, tkEq, tkString, tkCloseBrace, tkEOF}
+	for _, tc := range []struct {
+		name string
+		in   string
+	}{
+		{"trailing, ends at EOF", `{job="api"} # what this query is for`},
+		{"leading, ends at newline", "# what this query is for\n" + `{job="api"}`},
+		{"between tokens", "{job=\n# why this label\n" + `"api"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			toks, err := lex(tc.in)
+			if err != nil {
+				t.Fatalf("lex(%q): %v", tc.in, err)
+			}
+			var got []tokenKind
+			for _, tok := range toks {
+				got = append(got, tok.kind)
+			}
+			if len(got) != len(want) {
+				t.Fatalf("lex(%q) produced %d tokens %v, want %d %v", tc.in, len(got), got, len(want), want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("lex(%q) token %d = %v, want %v (all: %v)", tc.in, i, got[i], want[i], got)
+				}
+			}
+		})
+	}
+}
+
 // NOT KILLABLE — documented, not defended by a test.
 //
-// Five surviving mutants in lexer.go for which no input distinguishes the
+// Six surviving mutants in lexer.go for which no input distinguishes the
 // mutated form from the original. Each was re-applied and the whole package
 // suite re-run to confirm it survives rather than merely lacking a test.
+//
+// lexer.go:`if l.pos <= start` (CONDITIONALS_BOUNDARY, run's progress
+// invariant, `<=` -> `<`). The invariant fails the scan when a dispatch arm
+// hands l.pos back unmoved; the mutant fails it only when an arm hands it
+// back SMALLER. Neither happens. Every arm either advances past the byte it
+// dispatched on — the `l.pos++` arms by construction, scanRange, scanString,
+// scanMinus, scanNumber and scanIdent by assigning an offset their own scan
+// established is past l.pos — or records a diagnostic without moving, in
+// which case both forms leave that diagnostic in place, the original because
+// fail is first-wins and the mutant because it never fires. So the two forms
+// differ only over a state no query produces. This mutant is the price of
+// the invariant: it is what a check on POSITIONS costs, where a check on a
+// consumed COUNT would have a boundary real input straddles. The lexer's
+// arms set l.pos rather than returning a count, and rewriting fourteen
+// scanners to return counts in order to move one mutant would be the score
+// driving the code.
 //
 // lexer.go:`b >= utf8.RuneSelf` (CONDITIONALS_BOUNDARY, `>=` -> `>`). The
 // two forms differ on exactly one byte value, b == 0x80, which is not a legal

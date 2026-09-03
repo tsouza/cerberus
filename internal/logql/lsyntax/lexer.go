@@ -257,53 +257,92 @@ var singleCharTokens = map[byte]tokenKind{
 	'^': tkPow,
 }
 
+// errLexerStalled is raised by run's progress invariant. It names a lexer
+// defect rather than anything about the query: no input can reach it, because
+// every arm of the dispatch below either consumes input or records why it
+// could not.
+const errLexerStalled = "lexer made no progress"
+
+// run scans src into l.toks, terminating on the first error.
+//
+// PROGRESS INVARIANT. Every iteration must leave l.pos strictly greater than
+// it found it. The dispatch below picks an arm by the current byte and each
+// arm is individually responsible for consuming what it matched; nothing
+// about that structure forces an arm to consume anything. An arm that returns
+// without advancing does not produce a wrong token — it produces no answer at
+// all: the loop re-reads the same byte and takes the same arm forever, and on
+// every arm that emits a token that spin is also an unbounded append to
+// l.toks.
+//
+// That failure mode is reachable from a public HTTP surface. LogQL text
+// arrives from Grafana as user input, so a stalled scan is an unbounded
+// allocation driven by an untrusted string — the worst shape a scanner bug
+// can take, and the one hardest to attribute after the fact, since the
+// process dies under the OOM killer with no query attached to it. The
+// invariant turns that into a ParseError carrying the offset, which the head
+// reports like any other malformed query.
+//
+// The same reasoning produced the single-advance walker in dotted_labels.go,
+// which collapses the advance to one site rather than checking it. The
+// lexer's arms compute their own end offsets from scanned runs and cannot
+// share one advance, so the advance is checked instead — and the dispatch
+// stays inlined here rather than extracted into a step method because the
+// extraction measured 1.8-4.0% of the scan's own CPU across the three shapes
+// BenchmarkLex covers, against 0.3-2.0% for the check on its own.
+//
+// The check does not test l.err. fail is first-wins, so an arm that recorded
+// its own diagnostic without consuming — scanString on an unterminated literal
+// — keeps that diagnostic and this call is a no-op.
 func (l *lexer) run() {
 	for l.pos < len(l.src) && l.err == nil {
+		start := l.pos
 		c := l.src[l.pos]
 		if k, ok := singleCharTokens[c]; ok {
 			l.toks = append(l.toks, token{kind: k, pos: l.pos})
 			l.pos++
-			continue
-		}
-		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
-			l.pos++
-		case c == '#':
-			for l.pos < len(l.src) && l.src[l.pos] != '\n' {
+		} else {
+			switch {
+			case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 				l.pos++
-			}
-		case c == '.' && !isDigit(l.peekByteAt(1)):
-			l.toks = append(l.toks, token{kind: tkDot, pos: l.pos})
-			l.pos++
-		case c == '[':
-			l.scanRange()
-		case c == '"' || c == '`':
-			l.scanString()
-		case c == '=':
-			l.scanFrom2('~', tkRe, '=', tkCmpEq, tkEq)
-		case c == '!':
-			l.scanBang()
-		case c == '|':
-			l.scanPipe()
-		case c == '>':
-			l.scanFrom1('=', tkGte, tkGt)
-		case c == '<':
-			l.scanFrom1('=', tkLte, tkLt)
-		case c == '-':
-			l.scanMinus()
-		case isDigit(c) || (c == '.' && isDigit(l.peekByteAt(1))):
-			l.scanNumber()
-		case isIdentStart(c):
-			l.scanIdent()
-		default:
-			// Non-ASCII identifier start (e.g. UTF-8 label names).
-			r, _ := utf8.DecodeRuneInString(l.src[l.pos:])
-			if unicode.IsLetter(r) {
+			case c == '#':
+				for l.pos < len(l.src) && l.src[l.pos] != '\n' {
+					l.pos++
+				}
+			case c == '.' && !isDigit(l.peekByteAt(1)):
+				l.toks = append(l.toks, token{kind: tkDot, pos: l.pos})
+				l.pos++
+			case c == '[':
+				l.scanRange()
+			case c == '"' || c == '`':
+				l.scanString()
+			case c == '=':
+				l.scanFrom2('~', tkRe, '=', tkCmpEq, tkEq)
+			case c == '!':
+				l.scanBang()
+			case c == '|':
+				l.scanPipe()
+			case c == '>':
+				l.scanFrom1('=', tkGte, tkGt)
+			case c == '<':
+				l.scanFrom1('=', tkLte, tkLt)
+			case c == '-':
+				l.scanMinus()
+			case isDigit(c) || (c == '.' && isDigit(l.peekByteAt(1))):
+				l.scanNumber()
+			case isIdentStart(c):
 				l.scanIdent()
-				continue
+			default:
+				// Non-ASCII identifier start (e.g. UTF-8 label names).
+				r, _ := utf8.DecodeRuneInString(l.src[l.pos:])
+				if unicode.IsLetter(r) {
+					l.scanIdent()
+				} else {
+					l.fail("syntax error: unexpected character " + string(rune(c)))
+				}
 			}
-			l.fail("syntax error: unexpected character " + string(rune(c)))
-			return
+		}
+		if l.pos <= start {
+			l.fail(errLexerStalled)
 		}
 	}
 	l.toks = append(l.toks, token{kind: tkEOF, pos: l.pos})

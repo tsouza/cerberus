@@ -188,28 +188,18 @@ func TestPlanCaptureProbesDeclines(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// Four surviving mutants in regex_source_scan.go, all of them in a `switch`
-// that is the ENTIRE body of its enclosing `for`.
+// Two surviving mutants in regex_source_scan.go, one per progress invariant.
+// Each was re-applied and the whole package suite re-run to confirm it
+// survives rather than merely lacking a test.
 //
-// The `continue` after regex_source_scan.go:`i = endOfQuotedRun(src, i)`
-// (INVERT_LOOPCTRL, scanSourceGroups' `\Q` arm) and the one after
-// regex_source_scan.go:`j += 2 + end + 2` (INVERT_LOOPCTRL, skipCharClass'
-// POSIX-name arm) are the same shape. Each citation names the statement above
-// the mutated `continue`, which is a bare keyword no construct can single
-// out. `break` inside a `switch` leaves the SWITCH, not the
-// loop. In both functions the switch is the whole loop body and the `for` has
-// an empty post statement, so the byte after the switch is the loop's closing
-// brace: `break` re-evaluates the loop condition exactly as `continue` does,
-// and it skips the `i += 2` / `j++` that follows in the same case arm for the
-// same reason. The two forms have identical control flow on every input.
-//
-// regex_source_scan.go:`if j+1 >= len(src)` carries two mutants —
-// CONDITIONALS_BOUNDARY (skipCharClass' `>=` -> `>`) and ARITHMETIC_BASE (the
-// same line's `j+1` -> `j-1`). The guard sits inside
-// `for j < len(src)`, so j+1 <= len(src) and j-1 <= len(src)-2: neither
-// `j+1 > len(src)` nor `j-1 >= len(src)` can hold, and both mutants delete
-// the guard rather than move it. The deleted case is a trailing `\` at
-// j == len(src)-1, where the original returns (0, false) directly. The
-// mutants instead run `j += 2`, which puts j past len(src), ends the loop,
-// and falls through to the function's own `return 0, false` — the identical
-// pair of values, with no character-class terminator found either way.
+// regex_source_scan.go:scanSourceGroups:`if i <= start` and
+// regex_source_scan.go:skipCharClass:`if j <= start`, both
+// CONDITIONALS_BOUNDARY (`<=` -> `<`). Each invariant declines when an arm
+// hands the cursor back unmoved; the mutant declines only when an arm hands
+// it back SMALLER. Neither happens: every arm of both switches computes an
+// end offset strictly past the byte it dispatched on, so the two forms differ
+// only over a state no pattern produces. Measured from the other side as
+// well — an exhaustive sweep of every string of up to five bytes over the
+// fifteen bytes either scanner branches on, 813,615 patterns, found no input
+// on which either invariant fires, and every one of them scanned to a result
+// identical to the pre-invariant form's.

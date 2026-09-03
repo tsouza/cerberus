@@ -59,6 +59,7 @@ func scanSourceGroups(src string) ([]sourceGroup, bool) {
 	captures := 0
 
 	for i := 0; i < len(src); {
+		start := i
 		switch src[i] {
 		case '\\':
 			// An escape covers the next byte whatever it is, so a `\(`
@@ -74,9 +75,9 @@ func scanSourceGroups(src string) ([]sourceGroup, bool) {
 				// later capture index and pointing the rewrite at literal
 				// text.
 				i = endOfQuotedRun(src, i)
-				continue
+			} else {
+				i += 2
 			}
-			i += 2
 		case '[':
 			end, ok := skipCharClass(src, i)
 			if !ok {
@@ -115,6 +116,17 @@ func scanSourceGroups(src string) ([]sourceGroup, bool) {
 		default:
 			i++
 		}
+		// Progress invariant. Every arm above computes its own end offset,
+		// so nothing structurally forces one to consume a byte; an arm that
+		// returns the cursor it was given spins on that byte forever,
+		// appending to `groups` or `alternations` on every lap. The pattern
+		// is a user's own regex arriving over HTTP, so that spin is an
+		// unbounded allocation driven by untrusted text. Declining is the
+		// answer this scanner already gives to everything it cannot
+		// classify, and a cursor that will not move is exactly that.
+		if i <= start {
+			return nil, false
+		}
 	}
 	if len(open) != 1 {
 		return nil, false
@@ -137,11 +149,14 @@ func skipCharClass(src string, i int) (int, bool) {
 		j++
 	}
 	for j < len(src) {
+		start := j
 		switch src[j] {
 		case '\\':
-			if j+1 >= len(src) {
-				return 0, false
-			}
+			// No bounds guard here, unlike the escape arm of
+			// scanSourceGroups: nothing reads src[j+1], and a trailing
+			// backslash puts j past the end, which ends the loop and falls
+			// through to the same `return 0, false` a guard would have
+			// taken.
 			j += 2
 		case '[':
 			// A POSIX name such as `[:alpha:]` nests inside the class and
@@ -152,13 +167,18 @@ func skipCharClass(src string, i int) (int, bool) {
 					return 0, false
 				}
 				j += 2 + end + 2
-				continue
+			} else {
+				j++
 			}
-			j++
 		case ']':
 			return j + 1, true
 		default:
 			j++
+		}
+		// Progress invariant — see scanSourceGroups. A class scan that
+		// stops advancing runs away on the same untrusted pattern.
+		if j <= start {
+			return 0, false
 		}
 	}
 	return 0, false
