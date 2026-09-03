@@ -192,3 +192,112 @@ func workflowStepContaining(t *testing.T, job, needle string) string {
 	}
 	return strings.Join(lines[start:end], "\n")
 }
+
+// The aggregator step that states, in the required `coverage` context's own
+// output, whether this run measured anything (tsouza/cerberus#2991), and the
+// expressions that make its verdict observation rather than assertion.
+const (
+	coverageMeasurementVerdictStep = "Report the coverage measurement verdict"
+	coverageMeasurementVerdictRun  = "node .github/scripts/coverage-verdict.mjs"
+	coverageMeasurementVerdictTest = "node --test .github/scripts/coverage-verdict.test.mjs"
+	coverageFloorGateOutcomeExpr   = "steps.floor-gate.outcome"
+	coverageRunHeavyOutputExpr     = "needs.coverage-plan.outputs.run_heavy"
+	// The concurrency setting whose `true` left 71 of the last 120 pushes to
+	// main cancelled — a median 27 minutes into a ~52-minute measurement —
+	// against 6 successes.
+	coverageCancelInProgressOff = "cancel-in-progress: false"
+)
+
+// TestCoverageContextStatesWhetherItMeasured pins tsouza/cerberus#2991.
+//
+// `coverage` is required, and on an ordinary pull request every job that
+// produces a profile is skipped. The aggregator still ran — deliberately, so
+// the required context could not go missing — and reported plain success, so a
+// green tick could not be told apart from a measured pass. For four days it was
+// the difference: dozens of pull requests merged green while main's own heavy
+// run was red.
+//
+// The remedy is a verdict step that says which of the two this is, derived from
+// the merged profile and its digest-bound lane record rather than from the
+// RUN_HEAVY claim. This test pins the wiring that makes it load-bearing: it
+// runs whatever else failed, it observes the floor gate's real outcome, it
+// cannot pass by continuing on error, and — like the enrollment verdict beside
+// it — it lands after the upload so a red verdict never costs an author the
+// artifact they need.
+func TestCoverageContextStatesWhetherItMeasured(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCILaneWorkflows(t)[".github/workflows/coverage.yml"]
+	aggregator, ok := workflow.Jobs[coverageAggregatorJobName]
+	if !ok {
+		t.Fatalf("%s has no %q job", coverageWorkflowPath, coverageAggregatorJobName)
+	}
+
+	verdictAt := coverageStepIndex(t, aggregator.Steps, coverageMeasurementVerdictStep)
+	uploadAt := coverageStepIndex(t, aggregator.Steps, coverageProfileUploadStep)
+	if verdictAt < uploadAt {
+		t.Errorf("%s job %q runs %q (step %d) before %q (step %d); a red measurement verdict must not "+
+			"cost the author the merged profile they need to act on it",
+			coverageWorkflowPath, coverageAggregatorJobName, coverageMeasurementVerdictStep, verdictAt+1,
+			coverageProfileUploadStep, uploadAt+1)
+	}
+	if condition := ciLaneScalarValue(aggregator.Steps[verdictAt].If); !strings.Contains(condition, "always()") {
+		t.Errorf("%s job %q step %q has condition %q; a verdict that skips when the floor gate fails reports "+
+			"nothing on exactly the run that needed it",
+			coverageWorkflowPath, coverageAggregatorJobName, coverageMeasurementVerdictStep, condition)
+	}
+	if run := aggregator.Steps[verdictAt].Run; !strings.Contains(run, coverageMeasurementVerdictRun) {
+		t.Errorf("%s job %q step %q does not run %q. Run:\n%s",
+			coverageWorkflowPath, coverageAggregatorJobName, coverageMeasurementVerdictStep,
+			coverageMeasurementVerdictRun, run)
+	}
+
+	body := workflowJobBody(t, readFileString(t, coverageWorkflowPath), coverageAggregatorJobName)
+	step := workflowStepContaining(t, body, coverageMeasurementVerdictRun)
+	if strings.Contains(step, continueOnError) {
+		t.Errorf("%s job %q lets %q continue on error, so a missed floor would report green on the required "+
+			"context. Step:\n%s", coverageWorkflowPath, coverageAggregatorJobName,
+			coverageMeasurementVerdictStep, step)
+	}
+	if !strings.Contains(step, coverageFloorGateOutcomeExpr) {
+		t.Errorf("%s job %q step %q never reads %s, so its verdict cannot be observing whether the floor "+
+			"comparison actually happened. Step:\n%s", coverageWorkflowPath, coverageAggregatorJobName,
+			coverageMeasurementVerdictStep, coverageFloorGateOutcomeExpr, step)
+	}
+	// RUN_HEAVY reaches the step from the job-level `env:` block rather than
+	// being restated per step, so the claim it is cross-checked against is
+	// pinned on the job.
+	if !strings.Contains(body, coverageRunHeavyOutputExpr) {
+		t.Errorf("%s job %q never binds RUN_HEAVY to %s, so the verdict has no claim to cross-check its "+
+			"evidence against", coverageWorkflowPath, coverageAggregatorJobName, coverageRunHeavyOutputExpr)
+	}
+
+	// The verdict's own unit suite runs on EVERY trigger, before any lane spends
+	// a runner: a gate whose first green is its first execution is vacuous.
+	planStep := workflowStepContaining(t, workflowJobBody(t, readFileString(t, coverageWorkflowPath), coveragePlanJobName),
+		coverageMeasurementVerdictTest)
+	if strings.Contains(planStep, coverageHeavyGuard) {
+		t.Errorf("%s job %q guards %q with RUN_HEAVY, so the verdict gate is never proven able to fail on an "+
+			"ordinary PR. Step:\n%s", coverageWorkflowPath, coveragePlanJobName, coverageMeasurementVerdictTest, planStep)
+	}
+}
+
+// TestCoverageMainMeasurementIsNotCancelledMidRun pins the other half of
+// tsouza/cerberus#2991: `main` went unmeasured not because the lane was slow but
+// because it was never allowed to finish. The concurrency group cancelled the
+// in-progress run on every new push, `coverage-chdb` alone runs 35-50 minutes,
+// and main's push cadence is shorter than the run 68% of the time — 71 of the
+// last 120 pushes were cancelled, a median 27 minutes in, against 6 successes.
+//
+// The group is kept (a burst still coalesces to one QUEUED run, superseded at
+// queue time for zero runner minutes); the cancellation is not.
+func TestCoverageMainMeasurementIsNotCancelledMidRun(t *testing.T) {
+	t.Parallel()
+
+	workflow := readFileString(t, coverageWorkflowPath)
+	if !strings.Contains(workflow, coverageCancelInProgressOff) {
+		t.Errorf("%s does not set %q; a push to main that cancels the in-flight run leaves the commit it "+
+			"killed — and every commit before it — unmeasured, which is how the lane reached 0 successes "+
+			"in 90 runs", coverageWorkflowPath, coverageCancelInProgressOff)
+	}
+}
