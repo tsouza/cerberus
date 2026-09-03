@@ -31,35 +31,42 @@ func nonNilFrag() chsql.Frag { return func(*chsql.Builder) {} }
 // --- Eligibility rule (pure function, no handler round-trip) ---
 
 // TestTagsCatalogEligible pins internal/api/tempo's tagsCatalogEligible
-// rule (cerberus issue #2771): eligible only for the catalog-covered
-// scopes (none/resource/span), a nil filter (no `q=` narrowing), and a
-// windowless request.
+// rule: eligible for the catalog-covered scopes
+// (none/resource/span/event/link — cerberus issue #2850 widened the
+// catalog to the latter two), a nil filter (no `q=` narrowing), and a
+// windowless request. "none" additionally requires the schema to carry
+// no instrumentation-scope column (scopeAttrsConfigured == false) — see
+// tagsCatalogEligible's doc comment for why.
 func TestTagsCatalogEligible(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name       string
-		scope      string
-		filter     chsql.Frag
-		windowless bool
-		want       bool
+		name                 string
+		scope                string
+		filter               chsql.Frag
+		windowless           bool
+		scopeAttrsConfigured bool
+		want                 bool
 	}{
-		{"none scope, no filter, windowless", "none", nil, true, true},
-		{"resource scope, no filter, windowless", "resource", nil, true, true},
-		{"span scope, no filter, windowless", "span", nil, true, true},
-		{"event scope stays live", "event", nil, true, false},
-		{"link scope stays live", "link", nil, true, false},
-		{"instrumentation scope stays live", "instrumentation", nil, true, false},
-		{"intrinsic scope stays live", "intrinsic", nil, true, false},
-		{"trace scope stays live", "trace", nil, true, false},
-		{"filtered request stays live", "none", nonNilFrag(), true, false},
-		{"explicit window stays live", "none", nil, false, false},
-		{"filtered AND windowed stays live", "resource", nonNilFrag(), false, false},
+		{"none scope, no filter, windowless", "none", nil, true, false, true},
+		{"resource scope, no filter, windowless", "resource", nil, true, false, true},
+		{"span scope, no filter, windowless", "span", nil, true, false, true},
+		{"event scope, no filter, windowless", "event", nil, true, false, true},
+		{"link scope, no filter, windowless", "link", nil, true, false, true},
+		{"instrumentation scope stays live", "instrumentation", nil, true, false, false},
+		{"intrinsic scope stays live", "intrinsic", nil, true, false, false},
+		{"trace scope stays live", "trace", nil, true, false, false},
+		{"filtered request stays live", "none", nonNilFrag(), true, false, false},
+		{"explicit window stays live", "none", nil, false, false, false},
+		{"filtered AND windowed stays live", "resource", nonNilFrag(), false, false, false},
+		{"none scope with instrumentation-scope column configured stays live", "none", nil, true, true, false},
+		{"scoped resource request unaffected by instrumentation-scope column", "resource", nil, true, true, true},
+		{"scoped event request unaffected by instrumentation-scope column", "event", nil, true, true, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := tempo.TagsCatalogEligibleForTest(tt.scope, tt.filter, tt.windowless); got != tt.want {
-				t.Errorf("tagsCatalogEligible(%q, filter=%v, windowless=%v) = %v, want %v",
-					tt.scope, tt.filter != nil, tt.windowless, got, tt.want)
+			if got := tempo.TagsCatalogEligibleForTest(tt.scope, tt.filter, tt.windowless, tt.scopeAttrsConfigured); got != tt.want {
+				t.Errorf("tagsCatalogEligible(%q, filter=%v, windowless=%v, scopeAttrsConfigured=%v) = %v, want %v",
+					tt.scope, tt.filter != nil, tt.windowless, tt.scopeAttrsConfigured, got, tt.want)
 			}
 		})
 	}
@@ -67,8 +74,9 @@ func TestTagsCatalogEligible(t *testing.T) {
 
 // TestTagValuesCatalogEligible pins tagValuesCatalogEligible: eligible
 // only for a non-intrinsic resolved name, a nil filter, and a windowless
-// request — MapScope (resource/span/any) never restricts eligibility, all
-// three are catalog-servable.
+// request — MapScope (resource/span/event/link/any) never restricts
+// eligibility, all five are catalog-servable (cerberus issue #2850 added
+// event/link).
 func TestTagValuesCatalogEligible(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -82,6 +90,8 @@ func TestTagValuesCatalogEligible(t *testing.T) {
 		{"dynamic attribute, any scope, no filter, windowless", false, tempo.AttrMapScopeAnyForTest, nil, true, true},
 		{"dynamic attribute, resource scope, no filter, windowless", false, tempo.AttrMapScopeResourceForTest, nil, true, true},
 		{"dynamic attribute, span scope, no filter, windowless", false, tempo.AttrMapScopeSpanForTest, nil, true, true},
+		{"dynamic attribute, event scope, no filter, windowless", false, tempo.AttrMapScopeEventForTest, nil, true, true},
+		{"dynamic attribute, link scope, no filter, windowless", false, tempo.AttrMapScopeLinkForTest, nil, true, true},
 		{"intrinsic stays live", true, tempo.AttrMapScopeAnyForTest, nil, true, false},
 		{"filtered request stays live", false, tempo.AttrMapScopeAnyForTest, nonNilFrag(), true, false},
 		{"explicit window stays live", false, tempo.AttrMapScopeAnyForTest, nil, false, false},
@@ -129,14 +139,44 @@ func TestBuildTagCatalogValuesSQL_SQLShape(t *testing.T) {
 		}
 	})
 
-	t.Run("any scope omits Scope predicate", func(t *testing.T) {
+	t.Run("any scope filters Scope IN (resource, span), not event/link", func(t *testing.T) {
 		t.Parallel()
+		// cerberus issue #2850: since the catalog now also carries
+		// event/link rows, auto-scope must filter explicitly rather than
+		// omit the Scope predicate — an unfiltered read would silently
+		// widen the merge to include event/link states too, which
+		// auto-scope has never meant (see resolveTagName).
 		sqlStr, args := tempo.BuildTagCatalogValuesSQLForTest("service.name", tempo.AttrMapScopeAnyForTest)
 		if strings.Contains(sqlStr, "`Scope` = ?") {
-			t.Errorf("auto-scope lookup must NOT filter by Scope (unions both), got: %s", sqlStr)
+			t.Errorf("auto-scope lookup must use an IN-list, not an equality predicate, got: %s", sqlStr)
 		}
-		if len(args) != 1 || args[0] != "service.name" {
-			t.Errorf("expected args=[key] only, got %v", args)
+		if !strings.Contains(sqlStr, "`Scope` IN (?, ?)") {
+			t.Errorf("expected an explicit Scope IN-list, got: %s", sqlStr)
+		}
+		if len(args) != 3 || args[0] != "service.name" || args[1] != "resource" || args[2] != "span" {
+			t.Errorf("expected args=[key, resource, span], got %v", args)
+		}
+	})
+
+	t.Run("event scope adds Scope predicate", func(t *testing.T) {
+		t.Parallel()
+		sqlStr, args := tempo.BuildTagCatalogValuesSQLForTest("exception.type", tempo.AttrMapScopeEventForTest)
+		if !strings.Contains(sqlStr, "`Scope` = ?") {
+			t.Errorf("expected a Scope predicate for a single-scope lookup, got: %s", sqlStr)
+		}
+		if len(args) != 2 || args[0] != "exception.type" || args[1] != "event" {
+			t.Errorf("expected args=[key, scope], got %v", args)
+		}
+	})
+
+	t.Run("link scope adds Scope predicate", func(t *testing.T) {
+		t.Parallel()
+		sqlStr, args := tempo.BuildTagCatalogValuesSQLForTest("opentracing.ref_type", tempo.AttrMapScopeLinkForTest)
+		if !strings.Contains(sqlStr, "`Scope` = ?") {
+			t.Errorf("expected a Scope predicate for a single-scope lookup, got: %s", sqlStr)
+		}
+		if len(args) != 2 || args[0] != "opentracing.ref_type" || args[1] != "link" {
+			t.Errorf("expected args=[key, scope], got %v", args)
 		}
 	})
 }

@@ -14,16 +14,19 @@ package schema
 // system.view_refreshes for the view) all need the SAME literal, and
 // internal/schema is the one leaf package all three already import.
 //
-// TagCatalogScopeResource / TagCatalogScopeSpan are the two values the
-// Scope column carries — the two attribute-map scopes the catalog
-// covers (see internal/schema/ddl's Tempo catalog doc comment for why
-// event/link/instrumentation stay off the catalog). They are exported
-// from here, not from internal/api/tempo's own scope-vocabulary
-// constants, because the DDL package (which renders these exact string
-// literals into the view body) cannot import internal/api/tempo without
-// an import cycle; internal/api/tempo's tagScopeResource / tagScopeSpan
-// alias these instead of duplicating the literal — see that package's
-// tag_catalog.go.
+// TagCatalogScopeResource / TagCatalogScopeSpan / TagCatalogScopeEvent /
+// TagCatalogScopeLink are the four values the Scope column carries — the
+// flat-Map (resource/span) and Nested-Array(Map) (event/link) attribute
+// scopes the catalog covers as of cerberus issue #2850 (see
+// internal/schema/ddl's Tempo catalog doc comment for the measured cost
+// that justified widening it, and for why instrumentation-scope stays
+// off the catalog). They are exported from here, not from
+// internal/api/tempo's own scope-vocabulary constants, because the DDL
+// package (which renders these exact string literals into the view
+// body) cannot import internal/api/tempo without an import cycle;
+// internal/api/tempo's tagScopeResource / tagScopeSpan / tagScopeEvent /
+// tagScopeLink alias these instead of duplicating the literal — see that
+// package's tag_catalog.go.
 const (
 	TagCatalogTable                = "tempo_tag_catalog"
 	TagCatalogScopeColumn          = "Scope"
@@ -31,6 +34,8 @@ const (
 	TagCatalogTopValuesStateColumn = "TopValuesState"
 	TagCatalogScopeResource        = "resource"
 	TagCatalogScopeSpan            = "span"
+	TagCatalogScopeEvent           = "event"
+	TagCatalogScopeLink            = "link"
 
 	// TagCatalogTopValuesLimit is the N in the catalog's
 	// `topKState(N)(...)` / `topKMerge(N)(...)` aggregate pair — the

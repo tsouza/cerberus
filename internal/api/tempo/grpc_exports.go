@@ -104,10 +104,11 @@ type ResolvedTagName struct {
 	IntrinsicName string
 	Key           string
 	// MapScope encodes which attribute map(s) a dynamic-attribute
-	// lookup should consult: 0 (any), 1 (resource), 2 (span). The
-	// constants live as package-private values inside the tempo
-	// package; the grpc handler treats them as opaque and just
-	// passes the struct back into BuildTagValuesSQL.
+	// lookup should consult: any, resource, span, event, or link
+	// (cerberus issue #2850 added the latter two). The constants live
+	// as package-private values inside the tempo package; the grpc
+	// handler treats them as opaque and just passes the struct back
+	// into BuildTagValuesSQL.
 	mapScope attrMapScope
 }
 

@@ -1814,13 +1814,14 @@ refresh-count column (verified live against a 25.9 server) — a failed
 refresh reads as a non-empty `exception` plus `lastRefreshTime` having
 advanced past `lastSuccessTime`, not a distinct status value.
 
-### Tempo tag catalog (cerberus issue #2771)
+### Tempo tag catalog (cerberus issues #2771, #2850)
 
 `GET /api/v2/search/tags` and `GET /api/search/tag/{name}/values` normally
-answer every request with a live scan of the traces table's
-`SpanAttributes`/`ResourceAttributes` attribute maps — a full
-`arrayJoin(mapKeys(...))` explosion per Grafana Explore keystroke, since
-Tempo's tag/tag-value autocomplete fires as the user types a TraceQL query.
+answer every request with a live scan of the traces table's attribute
+families — a full `arrayJoin(mapKeys(...))` explosion (or, for the two
+Nested event/link families, an `arrayFlatten(arrayMap(...))` fan-out on top
+of that) per Grafana Explore keystroke, since Tempo's tag/tag-value
+autocomplete fires as the user types a TraceQL query.
 
 Auto-create can install a **refreshable materialized view**, the Tempo
 sibling of the Loki label-cardinality catalog above, gated behind
@@ -1844,6 +1845,16 @@ FROM (
     SELECT 'span' AS Scope, k AS TagKey, v AS TagValue FROM <db>.otel_traces
     ARRAY JOIN mapKeys(SpanAttributes) AS k, mapValues(SpanAttributes) AS v
     WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
+    UNION ALL
+    SELECT 'event' AS Scope, k AS TagKey, v AS TagValue FROM <db>.otel_traces
+    ARRAY JOIN arrayFlatten(arrayMap(m -> mapKeys(m), Events.Attributes)) AS k,
+               arrayFlatten(arrayMap(m -> mapValues(m), Events.Attributes)) AS v
+    WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
+    UNION ALL
+    SELECT 'link' AS Scope, k AS TagKey, v AS TagValue FROM <db>.otel_traces
+    ARRAY JOIN arrayFlatten(arrayMap(m -> mapKeys(m), Links.Attributes)) AS k,
+               arrayFlatten(arrayMap(m -> mapValues(m), Links.Attributes)) AS v
+    WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
 )
 GROUP BY Scope, TagKey
 ```
@@ -1862,10 +1873,14 @@ selector-less-only rule because this catalog answers with an actual key/value
 LIST rather than a cardinality count, so a window mismatch would silently
 omit real entries rather than merely reporting an approximate count), with
 **no `q=<TraceQL>` narrowing filter**, and, for `/search/tags`, only for the
-`resource`/`span`/unscoped `?scope=` values. Every other shape — a real
-window, a `q=` filter, or `event`/`link`/`instrumentation`/`intrinsic`/`trace`
-scope — stays on the existing live scan unconditionally; that path is
-untouched and permanent, not a transitional shim.
+`resource`/`span`/`event`/`link`/unscoped `?scope=` values — `?scope=none`
+additionally requires the schema to carry no instrumentation-scope column
+(`schema.Traces.ScopeAttributesColumn == ""`, true of every default-schema
+deployment), since the catalog cannot answer that one bucket and a
+catalog-served "none" must not silently omit it. Every other shape — a real
+window, a `q=` filter, or `instrumentation`/`intrinsic`/`trace` scope —
+stays on the existing live scan unconditionally; that path is untouched and
+permanent, not a transitional shim.
 
 Each key's top values carry a bounded top-50 sample (`topKState`/
 `topKMerge`, a Space-Saving sketch) rather than the exhaustive value set the
@@ -1879,15 +1894,33 @@ non-nil filter when `q` is present AND lowers to a real span-row predicate,
 so a filtered tag-values lookup provably never reaches the catalog — see
 `TestSearchTagValues_WithQFilter_StaysOnLivePath`.
 
-**Event/link scopes are intentionally out of scope for this feature.**
-`Events.Attributes`/`Links.Attributes` are `Array(Map(String, String))` — one
-map PER EVENT/PER LINK on a span row, not one map per row — so cataloging
-them costs an extra `arrayFlatten(arrayMap(...))` fan-out on top of the
-explosion the resource/span arms already pay twice, a materially costlier
-shape the "if cheap" qualifier in the originating issue was not written to
-cover. See cerberus issue
-[#2850](https://github.com/tsouza/cerberus/issues/2850) for tracking a
-dedicated design pass on that, independent of this feature.
+**Event/link scopes (cerberus issue #2850).** Issue #2771 originally scoped
+these out: `Events.Attributes`/`Links.Attributes` are
+`Array(Map(String, String))` — one map PER EVENT/PER LINK on a span row,
+not one map per row — so cataloging them costs an extra
+`arrayFlatten(arrayMap(...))` fan-out on top of the explosion the
+resource/span arms already pay twice, and issue #2771 was not written to
+assume that stayed "cheap". Issue #2850 measured it instead of guessing
+(see below) and found the extra cost small enough to include: the honest
+scope-down from issue #2771 is superseded here, not kept out of inertia.
+Instrumentation scope (`ScopeAttributes`) remains excluded — the upstream
+schema carries no such column by default, so a stock deployment has
+nothing to catalog there; a custom schema that populates it stays on the
+live path for that bucket, and `?scope=none` steps off the catalog fast
+path entirely on such a schema (see above) rather than silently omit it.
+Service-name keying (a third `(Scope, ServiceName, TagKey)` catalog
+dimension) was considered and not pursued: neither `/search/tags` nor
+`/search/tag/{name}/values` accepts a service-scoped narrowing parameter
+in any request shape this codebase or upstream Tempo's own API defines
+today, so a service-keyed catalog would pay service-cardinality× more
+rows for zero present read-side consumer — a decision the request shape
+itself, not this repository's schedule, would prompt reopening. A
+separate, narrower bug this investigation found — `resolveTagName`
+silently routing an explicit `instrumentation.x` tag-values lookup to the
+auto-scope (resource/span) union instead of the configured
+`ScopeAttributesColumn`, on schemas that configure one — is tracked as
+cerberus issue #3010; it does not block this feature (the catalog never
+served that bucket either way).
 
 **Measured before/after cost** (2,000,000 synthetic `otel_traces` rows
 spread across a trailing 1h window, 5 resource-attribute keys + 10
@@ -1901,6 +1934,20 @@ TagKey`) reads 15 rows (515 bytes) in 4.6ms — roughly 132,800x fewer rows
 and ~65.6x less wall-clock time, verified via `system.query_log`
 (`read_rows`/`read_bytes`), not client-side row counting. See
 `internal/schema/ddl.TestTempoTagCatalog_MeasuredCost`.
+
+**Event/link refresh cost** (same corpus and methodology, extended with
+Events/Links populated on the SAME 2,000,000 rows — 10% of spans carry >=1
+exception-shaped event, 3% carry a messaging link; see
+`TestTempoTagCatalog_EventsLinks_MeasuredCost` for the exact assumptions):
+adding the event+link arms to the refreshable view's own body cost only
+~1.08x the existing resource+span refresh's wall-clock time (923ms vs
+857ms), despite reading ~2x the rows — both Nested columns are empty for
+the large majority of rows, so the extra arms decode far fewer bytes (66MB +
+36MB) than the flat-Map arms do (799MB) even though ClickHouse's
+`read_rows` accounting counts a full base-table scan for each arm. A
+stress-test rerun with an unrealistically dense corpus (every span carries
+1-3 events AND 1-2 links) still stayed at 2.01x baseline (1.78s) — a small
+fraction of the 5-minute refresh period either way.
 
 `system.view_refreshes`' live status for this view is surfaced on `GET
 /info` under `tempoTagCatalogViewRefresh`, the exact same shape and posture

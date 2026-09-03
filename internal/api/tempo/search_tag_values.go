@@ -273,7 +273,21 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, sta
 // back to the map subscript for the other side — see that function's doc
 // for the four routing cases. A key materialized in neither map keeps
 // today's single arrayJoin-over-both-maps shape, unchanged, below.
+//
+// attrMapScopeEvent / attrMapScopeLink (cerberus issue #2850) route
+// straight to buildNestedAttributeValuesSQL before any of the above: the
+// Nested Events.Attributes / Links.Attributes families are
+// Array(Map(String, String)), not a flat Map, so neither the materialized-
+// column short-circuit (#2776/#2870 only ever provision materialized
+// columns for SpanAttributes/ResourceAttributes keys) nor the scalar
+// mapAtFrag/mapContainsFrag shape below applies to them.
 func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time) (string, []any) {
+	switch scope {
+	case attrMapScopeEvent:
+		return buildNestedAttributeValuesSQL(s, s.EventsColumn, name, filter, start, end)
+	case attrMapScopeLink:
+		return buildNestedAttributeValuesSQL(s, s.LinksColumn, name, filter, start, end)
+	}
 	switch scope {
 	case attrMapScopeResource:
 		if col, ok := s.MaterializedResourceAttributeColumns[name]; ok {
@@ -314,6 +328,55 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 		Select(selFrag).
 		From(chsql.Col(s.SpansTable)).
 		Where(whereFrag)
+	if !start.IsZero() {
+		inner.Where(tempoTimeGteFrag(s.TimestampColumn, start))
+	}
+	if !end.IsZero() {
+		inner.Where(tempoTimeLteFrag(s.TimestampColumn, end))
+	}
+	if filter != nil {
+		inner.Where(filter)
+	}
+
+	outer := chsql.NewQuery().
+		Select(chsql.Distinct(chsql.Col("v"))).
+		From(inner.Frag()).
+		Where(nonEmptyFrag("v"))
+	return outer.Build()
+}
+
+// buildNestedAttributeValuesSQL is buildAttributeValuesSQL's single-scope
+// branch one nesting level up (cerberus issue #2850): nestedCol names a
+// Nested event/link attribute family (Events / Links), whose Attributes
+// sub-column is Array(Map(String, String)) rather than a flat Map, so the
+// per-event/per-link key and value arrays are flattened
+// (nestedMapKeysFlatFrag / nestedMapValuesFlatFrag — same helpers
+// distinctNestedMapKeysFrag in search_tags.go builds on) and ARRAY JOINed
+// together to zip them into (k, v) pairs, filtered to the requested key:
+//
+//	SELECT DISTINCT v FROM (
+//	    SELECT v FROM `otel_traces`
+//	    ARRAY JOIN
+//	      arrayFlatten(arrayMap(m -> mapKeys(m), `<nestedCol>`.`Attributes`)) AS k,
+//	      arrayFlatten(arrayMap(m -> mapValues(m), `<nestedCol>`.`Attributes`)) AS v
+//	    WHERE k = ? [AND time bounds] [AND filter]
+//	)
+//	WHERE v != ''
+//
+// No materialized-column short-circuit applies here (see
+// buildAttributeValuesSQL's doc) and there is no "both nested maps at once"
+// auto-scope form — an event./link. prefix is always a single-scope
+// request (see resolveTagName) — so unlike its flat-Map sibling this
+// builder has no attrMapScopeAny-shaped union branch to consider.
+func buildNestedAttributeValuesSQL(s schema.Traces, nestedCol, name string, filter chsql.Frag, start, end time.Time) (string, []any) {
+	inner := chsql.NewQuery().
+		Select(chsql.Col("v")).
+		From(chsql.Col(s.SpansTable)).
+		ArrayJoin(
+			chsql.As(nestedMapKeysFlatFrag(nestedCol), "k"),
+			chsql.As(nestedMapValuesFlatFrag(nestedCol), "v"),
+		).
+		Where(chsql.Eq(chsql.Col("k"), chsql.Lit(name)))
 	if !start.IsZero() {
 		inner.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
@@ -510,7 +573,9 @@ type attrMapScope int
 const (
 	// attrMapScopeAny unions both SpanAttributes and ResourceAttributes
 	// (Tempo's auto-scope form: bare `service.name`, leading-dot
-	// `.service.name`).
+	// `.service.name`). Never event/link — those require an explicit
+	// event./link. prefix, so a bare/dotted identifier can only ever mean
+	// "resource or span" (see resolveTagName).
 	attrMapScopeAny attrMapScope = iota
 	// attrMapScopeResource consults only ResourceAttributes
 	// (Tempo's `resource.x` scoped form).
@@ -518,6 +583,14 @@ const (
 	// attrMapScopeSpan consults only SpanAttributes
 	// (Tempo's `span.x` scoped form).
 	attrMapScopeSpan
+	// attrMapScopeEvent consults only the Nested Events.Attributes family
+	// (Tempo's `event.x` scoped form) — cerberus issue #2850. Routed
+	// through buildNestedAttributeValuesSQL rather than the flat-Map
+	// mapAtFrag/mapContainsFrag shape attrMapScopeResource/Span use.
+	attrMapScopeEvent
+	// attrMapScopeLink is attrMapScopeEvent's sibling for the Nested
+	// Links.Attributes family (Tempo's `link.x` scoped form).
+	attrMapScopeLink
 )
 
 func (s attrMapScope) String() string {
@@ -526,6 +599,10 @@ func (s attrMapScope) String() string {
 		return "resource"
 	case attrMapScopeSpan:
 		return "span"
+	case attrMapScopeEvent:
+		return "event"
+	case attrMapScopeLink:
+		return "link"
 	default:
 		return "any"
 	}
@@ -596,6 +673,15 @@ func resolveTagName(name string, s schema.Traces) (resolvedTagName, error) {
 		ms = attrMapScopeResource
 	case traceql.AttributeScopeSpan:
 		ms = attrMapScopeSpan
+	case traceql.AttributeScopeEvent:
+		// cerberus issue #2850: previously fell to attrMapScopeAny, which
+		// silently searched SpanAttributes/ResourceAttributes only — an
+		// explicit `event.x` tag-values request could never find a value
+		// that only ever lives in Events.Attributes, and returned an
+		// empty (not an error) result forever.
+		ms = attrMapScopeEvent
+	case traceql.AttributeScopeLink:
+		ms = attrMapScopeLink // same fix, for Links.Attributes.
 	default:
 		ms = attrMapScopeAny
 	}

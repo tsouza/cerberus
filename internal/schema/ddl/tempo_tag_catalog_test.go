@@ -29,10 +29,13 @@ func TestRenderTempoTagCatalogTable_ExactSQL(t *testing.T) {
 }
 
 // TestRenderTempoTagCatalogView_ExactSQL pins the refreshable MV's shape:
-// REFRESH EVERY 5 MINUTE, the TO target, a UNION ALL of the resource-scope
-// and span-scope ARRAY JOIN arms (each bounding the window to the trailing
-// hour via a re-evaluated `now() - toIntervalHour(1)`, excluding empty
-// values), and a topKState(50)(TagValue) aggregate GROUP BY (Scope, TagKey).
+// REFRESH EVERY 5 MINUTE, the TO target, a UNION ALL of the resource-scope,
+// span-scope, event-scope and link-scope ARRAY JOIN arms (cerberus issue
+// #2850 added the latter two — the SCOPE COVERAGE doc above
+// tempoTagCatalogNestedScopeArm has the measured cost that justified it)
+// — each bounding the window to the trailing hour via a re-evaluated
+// `now() - toIntervalHour(1)`, excluding empty values — and a
+// topKState(50)(TagValue) aggregate GROUP BY (Scope, TagKey).
 func TestRenderTempoTagCatalogView_ExactSQL(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	got := renderTempoTagCatalogView(cfg)
@@ -47,6 +50,18 @@ func TestRenderTempoTagCatalogView_ExactSQL(t *testing.T) {
 		"(SELECT 'span' AS `Scope`, `k` AS `TagKey`, `v` AS `TagValue` " +
 		"FROM `default`.`otel_traces` " +
 		"ARRAY JOIN mapKeys(`SpanAttributes`) AS `k`, mapValues(`SpanAttributes`) AS `v` " +
+		"WHERE `Timestamp` >= now() - toIntervalHour(1) AND `v` != '') " +
+		"UNION ALL " +
+		"(SELECT 'event' AS `Scope`, `k` AS `TagKey`, `v` AS `TagValue` " +
+		"FROM `default`.`otel_traces` " +
+		"ARRAY JOIN arrayFlatten(arrayMap(m -> mapKeys(m), `Events`.`Attributes`)) AS `k`, " +
+		"arrayFlatten(arrayMap(m -> mapValues(m), `Events`.`Attributes`)) AS `v` " +
+		"WHERE `Timestamp` >= now() - toIntervalHour(1) AND `v` != '') " +
+		"UNION ALL " +
+		"(SELECT 'link' AS `Scope`, `k` AS `TagKey`, `v` AS `TagValue` " +
+		"FROM `default`.`otel_traces` " +
+		"ARRAY JOIN arrayFlatten(arrayMap(m -> mapKeys(m), `Links`.`Attributes`)) AS `k`, " +
+		"arrayFlatten(arrayMap(m -> mapValues(m), `Links`.`Attributes`)) AS `v` " +
 		"WHERE `Timestamp` >= now() - toIntervalHour(1) AND `v` != '')) " +
 		"GROUP BY `Scope`, `TagKey`"
 	if got != want {
