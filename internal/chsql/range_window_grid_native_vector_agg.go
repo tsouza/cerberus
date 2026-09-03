@@ -48,9 +48,30 @@ const countForEachAbsentSentinel = 0
 // bare RangeWindowGridNative / RangeWindowGridNativeInstant / stale-resample
 // emitters), only this node's PartialCountAlias branch ever produces or
 // consumes them.
+//
+// nativeGridPartialSumArrayAlias is PartialCountAlias mode's own alias for
+// its sumForEach(grid) output — deliberately NOT nativeGridArrayAlias
+// ("grid"), even though the non-partial branches alias their single
+// combinator result right back onto that same name. Every OTHER branch
+// computes exactly one aggregate per vecAgg SELECT, so aliasing its result
+// back onto its own argument's column name is harmless — there is no second
+// expression in that SELECT for the alias to collide with. PartialCountAlias
+// mode computes TWO (sumForEach AND countForEach) in the SAME SELECT, both
+// reading the identical raw `grid` column: aliasing the first one's result
+// back onto "grid" let a real ClickHouse 26.5.1.1 substrate's alias
+// resolution substitute that definition into the SECOND aggregate's own
+// argument — countForEach(grid) became countForEach(sumForEach(grid)), code
+// 184 ILLEGAL_AGGREGATION ("aggregate function is found inside another
+// aggregate function"), caught only by the chDB round-trip lane (the static
+// chplan/SQL text goldens render identically either way — this is a runtime
+// ClickHouse rejection, not a shape difference). Giving the sum its own,
+// genuinely distinct output alias removes the same-name coincidence the
+// substitution keyed off, with no other change to either combinator's
+// computation.
 const (
-	nativeGridCountArrayAlias = "grid_count"
-	nativeGridCountValAlias   = "grid_count_val"
+	nativeGridCountArrayAlias      = "grid_count"
+	nativeGridCountValAlias        = "grid_count_val"
+	nativeGridPartialSumArrayAlias = "grid_sum"
 )
 
 // emitRangeWindowGridNativeVectorAgg renders a
@@ -218,8 +239,10 @@ func (e *emitter) emitRangeWindowGridNativeVectorAgg(r *chplan.RangeWindowGridNa
 		// combinators are independent aggregate functions over the
 		// identical per-group array, so computing both here costs one
 		// extra column, not a second pass or a second array-assembly
-		// level.
-		vecAgg.Select(As(Call(nativeGridVectorAggFn[chplan.FnSum], Col(nativeGridArrayAlias)), nativeGridArrayAlias))
+		// level. The sum's own output aliases to nativeGridPartialSumArrayAlias
+		// rather than nativeGridArrayAlias — see that const's own doc for
+		// the real ClickHouse ILLEGAL_AGGREGATION this avoids.
+		vecAgg.Select(As(Call(nativeGridVectorAggFn[chplan.FnSum], Col(nativeGridArrayAlias)), nativeGridPartialSumArrayAlias))
 		vecAgg.Select(As(Call(nativeGridVectorAggFn[chplan.FnCount], Col(nativeGridArrayAlias)), nativeGridCountArrayAlias))
 	} else {
 		vecAgg.Select(As(Call(foreachFn, Col(nativeGridArrayAlias)), nativeGridArrayAlias))
@@ -247,7 +270,7 @@ func (e *emitter) emitRangeWindowGridNativeVectorAgg(r *chplan.RangeWindowGridNa
 	arrayJoinTerms := make([]Frag, 0, 3)
 	switch {
 	case r.PartialCountAlias != "":
-		// Both partial columns explode off the SAME (grid, grid_count)
+		// Both partial columns explode off the SAME (grid_sum, grid_count)
 		// pair the vecAgg SELECT above computed from one shared array, so
 		// a single ARRAY JOIN of both zips them 1:1 by position — the
 		// same established pattern the (grid, grid_ts) pairing two lines
@@ -256,23 +279,27 @@ func (e *emitter) emitRangeWindowGridNativeVectorAgg(r *chplan.RangeWindowGridNa
 		// answers NULL on sumForEach and the literal
 		// countForEachAbsentSentinel on countForEach — the same
 		// underlying condition observed through two different sentinel
-		// encodings (see PartialCountAlias's own doc).
+		// encodings (see PartialCountAlias's own doc). The sum array
+		// reads from nativeGridPartialSumArrayAlias, not nativeGridArrayAlias
+		// — see that const's own doc for why.
 		outer.Select(As(nativeGridValueExprFor(nativeGrid.Func, nativeGrid.Range.Seconds()), nativeGrid.ValueColumn))
 		outer.Select(As(Call("toFloat64", Col(nativeGridCountValAlias)), r.PartialCountAlias))
 		filter = IsNotNull(Col(nativeGridValAlias))
-		arrayJoinTerms = append(arrayJoinTerms, As(Col(nativeGridCountArrayAlias), nativeGridCountValAlias))
+		arrayJoinTerms = append(
+			arrayJoinTerms,
+			As(Col(nativeGridPartialSumArrayAlias), nativeGridValAlias),
+			As(Col(nativeGridCountArrayAlias), nativeGridCountValAlias),
+		)
 	case r.Fn == chplan.FnCount:
 		outer.Select(As(Call("toFloat64", Col(nativeGridValAlias)), nativeGrid.ValueColumn))
 		filter = Neq(Col(nativeGridValAlias), InlineLit(int64(countForEachAbsentSentinel)))
+		arrayJoinTerms = append(arrayJoinTerms, As(Col(nativeGridArrayAlias), nativeGridValAlias))
 	default:
 		outer.Select(As(nativeGridValueExprFor(nativeGrid.Func, nativeGrid.Range.Seconds()), nativeGrid.ValueColumn))
 		filter = IsNotNull(Col(nativeGridValAlias))
+		arrayJoinTerms = append(arrayJoinTerms, As(Col(nativeGridArrayAlias), nativeGridValAlias))
 	}
-	arrayJoinTerms = append(
-		arrayJoinTerms,
-		As(Col(nativeGridArrayAlias), nativeGridValAlias),
-		As(Col(nativeGridTSAlias), RangeWindowAnchorAlias),
-	)
+	arrayJoinTerms = append(arrayJoinTerms, As(Col(nativeGridTSAlias), RangeWindowAnchorAlias))
 	outer.ArrayJoin(arrayJoinTerms...)
 	outer.Where(filter)
 
