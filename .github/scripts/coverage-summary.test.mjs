@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -17,6 +17,7 @@ import { test } from 'node:test';
 
 import {
   compare,
+  DEFAULT_PROFILE,
   floorFor,
   laneRecordPath,
   nextFloors,
@@ -31,6 +32,8 @@ import {
 import { loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./coverage-summary.mjs', import.meta.url));
+const WORKFLOW = fileURLToPath(new URL('../workflows/coverage.yml', import.meta.url));
+const UPLOAD_STEP = 'Upload merged coverage profile';
 
 // profile renders a cover profile from `[file, stmts, count]` triples.
 function profile(blocks) {
@@ -453,6 +456,58 @@ test('end to end: COVERAGE_LANES in the environment cannot talk the update path 
     assert.deepEqual(loadShardedMap(floorsDir), {});
     // Nor does the update path rewrite the record it just refused.
     assert.equal(JSON.parse(readFileSync(laneRecordPath(profilePath), 'utf8')).lanes, 'default');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the compare path leaves a good record alone when it is told no lane set', () => {
+  // The guard against a FALSE refusal. Overwriting a valid record with an empty
+  // lane set on any bare invocation would turn the next legitimate
+  // `just update-coverage-floor` into a refusal, which is the failure mode this
+  // change exists to avoid inflicting on people.
+  const { dir, profilePath, floorsDir } = fixture([['internal/a/one.go', 10, 1]], { 'internal/a': 50 });
+  try {
+    const before = readFileSync(laneRecordPath(profilePath), 'utf8');
+    assert.equal(run(profilePath, floorsDir, { COVERAGE_LANES: '' }).status, 0);
+    assert.equal(readFileSync(laneRecordPath(profilePath), 'utf8'), before, 'the record was rewritten');
+    assert.equal(run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' }).status, 0, 'and it still enrolls');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the coverage-profile artifact uploads the record the update path demands", () => {
+  // The record is only useful to the documented CI-artifact enrollment route if
+  // it TRAVELS with the profile. Nothing else ties this script's file-naming to
+  // that upload step's `path:` list, so renaming the record here would silently
+  // dead-end the route: the reader downloads the whole artifact and is told the
+  // record does not exist. Pinned the way perf-coverage-fanout.test.mjs pins
+  // RATCHET_FANOUT against the matrix that has to agree with it.
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const at = workflow.indexOf(UPLOAD_STEP);
+  assert.notEqual(at, -1, `${WORKFLOW} has no step named ${JSON.stringify(UPLOAD_STEP)}`);
+  // The step's own body: up to the next step, or the end of the file.
+  const rest = workflow.slice(at);
+  const end = rest.indexOf('\n      - ');
+  const step = end === -1 ? rest : rest.slice(0, end);
+  for (const wanted of [DEFAULT_PROFILE, laneRecordPath(DEFAULT_PROFILE)]) {
+    assert.ok(step.includes(wanted), `the ${JSON.stringify(UPLOAD_STEP)} step does not upload ${wanted}:\n${step}`);
+  }
+});
+
+test('a lane record that cannot be written fails the gate with an explanation, not a stack trace', () => {
+  // writeLaneRecord runs inside the required `coverage` context. A read-only or
+  // otherwise unwritable location has to arrive as this gate's own annotated
+  // failure; a raw stack trace reads in the check output exactly like a
+  // coverage regression, which is the wrong thing to go looking for.
+  const { dir, profilePath, floorsDir } = fixture([['internal/a/one.go', 10, 1]], { 'internal/a': 50 }, null);
+  try {
+    mkdirSync(laneRecordPath(profilePath)); // a directory where the record belongs
+    const { status, out } = run(profilePath, floorsDir);
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.match(out, /::error title=coverage floor::could not write/);
+    assert.doesNotMatch(out, /at file:\/\//, 'the failure escaped as a stack trace');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -56,24 +56,32 @@
 // The lane record (`<profile>.lanes.json`):
 //
 // Floors are only meaningful when they come from a profile carrying BOTH lanes,
-// and the update path cannot ask the environment for that — whoever runs it
-// supplies the environment. It cannot ask the filesystem either: an installed
+// and the update path cannot establish that from the filesystem: an installed
 // libchdb.so proves the chdb lane COULD have run, never that the profile in
 // hand contains it, and a CI `coverage-profile` artifact is routinely enrolled
 // from a machine that has no libchdb.so at all (docs/toolchain.md).
 //
-// So the compare path — the one invocation that legitimately knows, because
-// `just coverage-merge` computed the lane set from the profiles it merged —
-// records it beside the profile, keyed by the SHA-256 of the profile's own
-// bytes. The digest is what makes the record a statement about THIS profile
-// rather than about the directory it sits in: a record left behind by an
-// earlier run, or shipped alongside a different profile, no longer matches and
-// is refused. The update path reads the record and refuses anything it cannot
-// prove is `default+chdb`.
+// So the compare path records the lane set beside the profile, bound to the
+// SHA-256 of the profile's own bytes, and the update path reads that record and
+// refuses anything it cannot prove is `default+chdb`. The digest is what makes
+// the record a statement about THIS profile rather than about the directory it
+// sits in: a record left behind by an earlier run, or shipped alongside a
+// different profile, no longer matches and is refused.
+//
+// The property this buys is that every WIRED producer derives the lane set from
+// the files it merged (`coverage-merge` sets COVERAGE_LANES from whether a
+// non-empty cover-chdb.out was there to merge) and binds it to their bytes, so
+// no ordinary run of the recipes can enroll a package from a narrow profile.
+// It is not proof against a hand-written record or a hand-set COVERAGE_LANES —
+// nothing short of re-deriving coverage would be — and it does not need to be:
+// a forged floor still lands as a reviewable line in test/coverage-floor/,
+// which is where a deliberate act belongs. The failure this closes is the
+// accidental one, which left no line to review at all.
 //
 // Exit codes:
 //   0  every package clears its floor (or the ledger was rewritten).
-//   1  unreadable input, an unprovable or narrow lane set, or a floor violation.
+//   1  unreadable input, a COVERAGE_REQUIRE_LANES mismatch, a lane set the
+//      update path cannot prove is `default+chdb`, or a floor violation.
 
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -82,7 +90,7 @@ import { pathToFileURL } from 'node:url';
 import { appendStepSummary, error, log, notice } from './lib/gh.mjs';
 import { loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 
-const DEFAULT_PROFILE = 'cover-merged.out';
+export const DEFAULT_PROFILE = 'cover-merged.out';
 const DEFAULT_FLOORS = 'test/coverage-floor';
 
 // The lane set the floors are measured with. A chdb-tagged run reaches code the
@@ -342,7 +350,18 @@ export function profileDigest(profileText) {
 // consumer, and a path that wrote its own evidence would be asserting nothing.
 function writeLaneRecord(profilePath, profileText, lanes) {
   const record = { lanes, profileSha256: profileDigest(profileText) };
-  writeFileSync(laneRecordPath(profilePath), `${JSON.stringify(record, null, 2)}\n`);
+  const recordPath = laneRecordPath(profilePath);
+  try {
+    writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+  } catch (e) {
+    // This runs inside the required `coverage` context, so an unwritable
+    // directory must arrive as the gate's own annotated failure rather than as
+    // a bare stack trace indistinguishable from a coverage regression.
+    fail(
+      `could not write ${recordPath}: ${e.message}. Without it the profile carries no lane ` +
+        `provenance, so \`just update-coverage-floor\` would refuse to derive floors from it.`,
+    );
+  }
 }
 
 // resolveUpdateLanes decides whether a profile may be turned into floors.

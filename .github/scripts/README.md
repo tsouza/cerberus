@@ -1013,19 +1013,20 @@ what actually runs.
   `node --test` guard.
 
   The compare path writes a lane record beside the profile
-  (`<profile>.lanes.json`: the `COVERAGE_LANES` value, keyed by the SHA-256 of
+  (`<profile>.lanes.json`: the `COVERAGE_LANES` value, bound to the SHA-256 of
   the profile's bytes), and the update path refuses to record floors unless that
   record exists, hashes to the profile in hand, and names `default+chdb`. Floors
   measured without the chdb lane under-record every package it reaches, and the
   ratchet never lowers one, so a floor written too low is never corrected. The
   digest is what makes the record evidence about the profile rather than about
-  the directory — the failure of the `libchdb.so` test it replaces
-  (tsouza/cerberus#2988), which proved only that the lane could have run on this
-  machine.
+  the directory it sits in. That distinction is what the `libchdb.so` test this
+  replaces got wrong (tsouza/cerberus#2988): it proved only that the chdb lane
+  could have run on this machine.
   - Env: `COVERAGE_PROFILE` (default `cover-merged.out`), `COVERAGE_FLOORS`
     (default `test/coverage-floor`), `COVERAGE_LANES` (`default+chdb` or
-    `default`; the Justfile sets it from whether libchdb.so was found, and the
-    compare path stamps it into the lane record),
+    `default`; `just coverage-merge` sets it from whether a non-empty
+    `cover-chdb.out` was there to merge, and the compare path stamps it into the
+    lane record),
     `COVERAGE_REQUIRE_LANES` (CI sets `default+chdb` so a soft-failing chdb
     install cannot silently downgrade the gate to a skip),
     `COVERAGE_UPDATE_FLOORS=1` (rewrite instead of compare),

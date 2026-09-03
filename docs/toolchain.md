@@ -56,7 +56,7 @@ Either way, the floors come from a profile carrying BOTH lanes or they are not r
 floor measured without the chdb-tagged lane under-records every package that lane reaches, and
 because the ratchet only ever raises a floor, nothing corrects one written too low — it passes
 enrollment and passes the gate indefinitely. `just coverage-merge` therefore stamps the lane set it
-merged onto the profile as `cover-merged.out.lanes.json`, keyed by that profile's own SHA-256, and
+merged onto the profile as `cover-merged.out.lanes.json`, bound to that profile's own SHA-256, and
 `just update-coverage-floor` refuses a profile whose record is missing, narrower than
 `default+chdb`, or bound to different bytes. That record is part of the `coverage-profile` artifact,
 which is why the whole artifact is what gets downloaded; a run whose lane jobs did not all succeed
