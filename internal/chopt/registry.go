@@ -2217,7 +2217,8 @@ var registry = []Feature{
 		MinVersion: Version{Major: 25, Minor: 11},
 		Stability:  Experimental,
 		AutoSelect: true,
-		Doc:        "stamp query_plan_optimize_lazy_materialization=1 + query_plan_max_limit_for_lazy_materialization=<request LIMIT> on any Limit(OrderBy(...)) plan shape — Tempo's search paths and Loki's log-line limit pushdown (server >= 25.11, auto-enabled — result-equivalent, chDB-verified)",
+		Doc: "stamp query_plan_optimize_lazy_materialization=1 + query_plan_max_limit_for_lazy_materialization=<request LIMIT> on any Limit(OrderBy(...)) plan shape — Tempo's search " +
+			"paths and Loki's log-line limit pushdown (server >= 25.11, auto-enabled — result-equivalent, chDB-verified)",
 	},
 	{
 		ID:         FeatureExplainEstimate,

@@ -467,7 +467,7 @@ FROM numbers(600)`
 	// 15 s cadence across 3 services. The rolling re-seeder re-runs
 	// this INSERT every 30 s, so every Loki `/query` instant request
 	// (5 m staleness lookback, see
-	// internal/api/loki/handler.go:`h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts)`)
+	// internal/api/loki/handler.go:`h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts, limit, dir)`)
 	// finds ≥1 row inside the lookback regardless of suite drift.
 	//
 	// `service_name="api"` rows (number % 3 = 0, ~14 of the 40) are
