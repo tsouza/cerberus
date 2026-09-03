@@ -194,7 +194,16 @@ concurrency:
   # commit it started on, while the group still coalesces: GitHub keeps at most
   # ONE pending run per group, so a burst is superseded at QUEUE time (zero
   # runner minutes) instead of 27 minutes into a measurement that then produces
-  # nothing. That is strictly cheaper as well as strictly more truthful.
+  # nothing.
+  #
+  # READ THAT DIRECTION CAREFULLY BEFORE "OPTIMISING" THIS LINE BACK. `false`
+  # looks like the setting that wastes runners, and the measurement says the
+  # opposite: a superseded run is dropped while still PENDING, and a pending run
+  # holds no runner at all, so it costs nothing. What the old `true` bought was
+  # not a saving — it SPENT a median 27 minutes of four parallel jobs per
+  # cancelled run and threw the result away, 53% of this lane's total runner
+  # minutes. Turning cancellation back on does not reduce CI cost; it restores
+  # the largest single source of wasted CI cost this lane had.
   #
   # Coalescing still means some commits are measured only by their successor.
   # That gap is now REPORTED rather than silent: coverage-verdict.mjs states how

@@ -13,7 +13,22 @@
 // PR while `main`'s own heavy run was red.
 //
 // Skipping the lanes is legitimate. Reporting a measurement that did not happen
-// is not. So the aggregator now states its verdict explicitly, as the first
+// is not.
+//
+// Why the PR does not just measure something cheap instead
+// --------------------------------------------------------
+// The obvious alternative is to run the default-tag lane on pull requests and
+// compare THAT. It is not rejected on cost — `coverage-default` finishes in
+// about three minutes, against `coverage-chdb`'s 35-50 — it is rejected on
+// soundness. The floors in test/coverage-floor/ are measured from the MERGED
+// `default+chdb` profile, and a chdb-tagged run compiles and reaches code the
+// default-tag run cannot, so a default-only profile is not merely lower, it is
+// not comparable: every package whose coverage comes from chdb-tagged tests
+// would report a drop that is not real. coverage-summary.mjs already refuses
+// that comparison for exactly this reason (resolveLanes against FULL_LANES).
+// A sound PR-time measurement would need a SECOND, default-only ledger with its
+// own ratchet, doubling the floor surface — so the honest answer on a pull
+// request is to say plainly that nothing was measured. So the aggregator now states its verdict explicitly, as the first
 // thing in its step summary and as a log annotation on the check itself:
 //
 //   MEASURED     — the merged default+chdb profile was compared to the ledger
