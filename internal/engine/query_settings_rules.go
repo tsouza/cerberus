@@ -70,7 +70,7 @@ const settingQueryPlanOptimizeLazyMaterialization = "query_plan_optimize_lazy_ma
 // carry for settingQueryPlanOptimizeLazyMaterialization to still engage —
 // verified on a live chDB 26.5 probe (EXPLAIN PLAN) that a query whose LIMIT
 // exceeds this knob silently falls back to eager reads, so
-// eligibleForLazyMaterialization sizes it to the query's OWN LIMIT rather
+// EligibleForLazyMaterialization sizes it to the query's OWN LIMIT rather
 // than a fixed ceiling, guaranteeing it never under-shoots.
 //
 // perf-sentinel: neutral — an eligibility threshold for the lazy-materialisation
@@ -223,7 +223,7 @@ type SettingsRules struct {
 	// query_plan_optimize_lazy_materialization=1 +
 	// query_plan_max_limit_for_lazy_materialization=<the query's own LIMIT>
 	// on a plan carrying exactly one Limit(OrderBy(...)) shape (see
-	// eligibleForLazyMaterialization) — the head-agnostic check applies to
+	// EligibleForLazyMaterialization) — the head-agnostic check applies to
 	// whichever head's plan happens to carry the shape: the Tempo
 	// `ORDER BY Timestamp DESC LIMIT N` search shapes (/search/recent,
 	// boundNewestTraces, structural two-phase's phase-A ranking), and,
@@ -318,7 +318,7 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 		ctx = chclient.WithResultCacheSetting(ctx, int64(r.ResultCacheTTL.Seconds()))
 	}
 	if r.LazyMaterialization {
-		if limit, ok := eligibleForLazyMaterialization(plan); ok {
+		if limit, ok := EligibleForLazyMaterialization(plan); ok {
 			ctx = chclient.WithQuerySetting(ctx, settingQueryPlanOptimizeLazyMaterialization, 1)
 			ctx = chclient.WithQuerySetting(ctx, settingQueryPlanMaxLimitForLazyMaterialization, limit)
 			// Gated behind the analyzer, exactly like the condition cache above
@@ -509,7 +509,7 @@ func planHasNativeHistogramMerge(plan chplan.Node) bool {
 	return found
 }
 
-// eligibleForLazyMaterialization reports whether plan carries exactly one
+// EligibleForLazyMaterialization reports whether plan carries exactly one
 // Limit node whose Input is a bare *chplan.OrderBy — the top-N-by-sort shape
 // ClickHouse's lazy-materialization optimizer targets — with a positive
 // Count, returning that Count so the caller can size
@@ -532,7 +532,15 @@ func planHasNativeHistogramMerge(plan chplan.Node) bool {
 // knob to (a plan this rule does not attempt to reason about) — the setting
 // is result-equivalent regardless, so under-matching only costs a missed
 // win, never correctness.
-func eligibleForLazyMaterialization(plan chplan.Node) (limit int64, ok bool) {
+//
+// Exported (rather than the package-local rest of this file's unexported
+// eligibleFor* predicates) so a language head's own regression test can
+// confirm ITS lowering's plan shape actually qualifies, not merely a
+// synthetic analog: internal/engine cannot import internal/logql or
+// internal/api/tempo to build that plan itself (both import internal/engine,
+// so the reverse edge would cycle), so the check has to run from the
+// consuming package's test instead.
+func EligibleForLazyMaterialization(plan chplan.Node) (limit int64, ok bool) {
 	count := 0
 	var found int64
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {

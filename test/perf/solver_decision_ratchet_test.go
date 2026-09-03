@@ -266,7 +266,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// internal/engine/query_settings_rules.go's apply stamps
 			// query_plan_optimize_lazy_materialization=1 +
 			// query_plan_max_limit_for_lazy_materialization=<limit> based on
-			// eligibleForLazyMaterialization (a Limit(OrderBy(...)) plan shape
+			// EligibleForLazyMaterialization (a Limit(OrderBy(...)) plan shape
 			// that only Tempo's search paths ever build — no PromQL
 			// query_range lowering constructs it), so it has zero effect on
 			// RangeLowerers. FeatureTraceIDBitmapFilter (cerberus issue #2767)

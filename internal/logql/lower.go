@@ -226,7 +226,7 @@ func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lower
 // result set instead of cerberus decoding and discarding every row in the
 // window. This is what makes the shape eligible for
 // query_plan_optimize_lazy_materialization (internal/engine's
-// eligibleForLazyMaterialization walks for exactly this Limit(OrderBy(...))
+// EligibleForLazyMaterialization walks for exactly this Limit(OrderBy(...))
 // shape) — cerberus issue #2829.
 //
 // It is called exactly once per top-level [lowerWithCtx] call — never from
