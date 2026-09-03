@@ -7,7 +7,6 @@ GOLANGCI_LINT_VERSION := "v2.12.2"
 GOFUMPT_VERSION := "v0.7.0"
 GOIMPORTS_VERSION := "latest"
 GREMLINS_VERSION := "v0.6.0"
-MARKDOWNLINT_VERSION := "v0.18.1"
 ACTIONLINT_VERSION := "v1.7.12"
 MODULE := "github.com/tsouza/cerberus"
 
@@ -54,6 +53,16 @@ install-tools:
     go install golang.org/x/tools/cmd/goimports@{{GOIMPORTS_VERSION}}
     go install github.com/go-gremlins/gremlins/cmd/gremlins@{{GREMLINS_VERSION}}
     go install github.com/rhysd/actionlint/cmd/actionlint@{{ACTIONLINT_VERSION}}
+    # The `pre-commit` hook's Markdown fixer. The hook runs a $PATH binary
+    # rather than `npm exec` because npm's own startup is ~4s, five times the
+    # budget CLAUDE.md sets for that stage — but it accepts one ONLY at the
+    # pinned version, and falls back to the (slow) pinned `npm exec` otherwise.
+    # The version is read from the script so this stays a single declaration.
+    #
+    # Leading `-`: a global npm install needs a writable npm prefix, which not
+    # every environment has. The hook is correct without it — just slower — so
+    # a failure here must not block the rest of the toolchain.
+    -npm install -g markdownlint-cli2@"$(node .github/scripts/markdownlint-run.mjs --print-version)"
 
 # Install lefthook + activate git hooks. Idempotent; run once after clone.
 # Hooks defined in lefthook.yml run gofumpt / goimports / markdownlint-cli2 --fix
@@ -1212,13 +1221,27 @@ lint:
 lint-actions:
     actionlint
 
-# Lint all Markdown files (run via npm exec; no global Node deps).
-lint-md:
-    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md" "!compatibility/prometheus/upstream/**" "!**/node_modules/**"
+# The engine version and the glob set both live in
+# `.github/scripts/markdownlint-run.mjs`, which is also what ci.yml's `lint`
+# job and lefthook's `pre-commit` hook run. That is the point: this recipe used
+# to pin its own older markdownlint, so a rule `.markdownlint.yaml` configures
+# (MD060) was enforced in CI and invisible here, and `just lint-md` reported
+# success on a file CI then failed (tsouza/cerberus#2997).
+#
+# NOT everything `lint-md` reports is auto-fixable by `fmt-md`. MD060
+# (table-column-style) has no fixer in markdownlint at all — realign tables
+# with `python3 scripts/align-md-tables.py <file>...`, which lefthook runs as
+# its own `md-table-align` pre-commit hook. `fmt-md` says so when MD060
+# survives the fix pass, rather than leaving a clean-looking run that still
+# fails `lint-md`.
 
-# Auto-fix Markdown lint issues where possible.
+# Lint all Markdown files, with the same pinned engine CI runs.
+lint-md:
+    node .github/scripts/markdownlint-run.mjs
+
+# Auto-fix Markdown lint issues where possible (MD060 needs align-md-tables.py).
 fmt-md:
-    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} --fix "**/*.md" "!compatibility/prometheus/upstream/**" "!**/node_modules/**"
+    node .github/scripts/markdownlint-run.mjs --fix
 
 # Format Go code.
 fmt:

@@ -52,7 +52,25 @@ concurrency:
   # Main pushes and matching cron schedules replace only their own modes. PR,
   # queue, dispatch, and maintenance evidence stays unique and uncancelled.
   group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
+  # NEVER cancel a run that is already in progress (tsouza/cerberus#2994).
+  #
+  # The GROUP above still coalesces: GitHub holds at most ONE pending run per
+  # group, so a burst of pushes is superseded at QUEUE time, where a pending run
+  # holds no runner and costs nothing. Killing a run already EXECUTING is a
+  # separate act, and it only pays when the killed work was near-worthless.
+  # Before "optimising" this line back into an expression, read the decision
+  # rule and this lane's recorded answer in QUEUE_COALESCED_WORKFLOWS in
+  # .github/scripts/main-coalescing.mjs, whose audit fails this workflow if the
+  # two halves ever disagree. The figures below are run-minutes (wall clock per
+  # run, not billed runner minutes, which a fan-out multiplies).
+  #
+  # Measured here: 22% of its main-push runs CANCELLED, kills a median 6.8 min
+  # into a 13.6-min run (50%), and 13% of this lane's run-minutes (144 min in
+  # 74.5 h) discarded. Its 24 real-ClickHouse differentials are deterministic,
+  # but determinism is not the question: this lane posts a per-commit check-run
+  # that release.yml's preflight reads by name, so a killed run leaves the
+  # commit that is now permanently on the trunk with no verdict at all.
+  cancel-in-progress: false
 
 jobs:
   # Docs-only PRs short-circuit the Docker work. See ci.yml / chdb.yml for the

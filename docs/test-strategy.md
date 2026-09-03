@@ -118,6 +118,31 @@ outlasts the median push gap needs — `coverage.yml` takes ~52 minutes against 
 38-minute median cadence, and cancelling it left 71 of 120 pushes measured by
 nothing at all.
 
+Enrollment in that tier is a per-workflow decision, not a default. Each enrolled
+workflow answers one ordered pair of questions, and the recorded answer is what
+puts it in `QUEUE_COALESCED_WORKFLOWS` or in `CANCEL_COALESCED_WORKFLOWS`
+beside it. First: does the trunk permanently lose a record the successor will
+not restore? A main-push run measures a commit that is now permanently on
+`main`, and the successor measures its own commit rather than the killed one,
+so the default answer is yes; determinism alone is not a reason to answer no,
+because a deterministic verdict still posts a per-commit check-run that a
+release preflight and a bisect both read. A lane answers no only when it keeps
+no durable per-commit record to lose — `codeql` is the one such case, because
+code scanning surfaces only the latest analysis for a ref. Second: is the
+measured loss material? Cancellation that lands in the first quarter of a run
+and discards single-digit minutes per day is not worth trading latency for.
+Only a lane answering yes to both is queue-coalesced. The audit requires the
+two tiers to partition the enrollment exactly, so a new enrolled workflow
+cannot inherit mid-flight cancellation as an unexamined default.
+
+The trade is latency and nothing else: `false` costs no runner minutes, because
+a superseded run is still dropped while pending and a pending run holds no
+runner. What it can cost is time-to-verdict on `main`'s head, bounded by one
+run duration, since GitHub keeps at most one in-progress plus one pending run
+per group. The same flip suppresses the schedule branch, so a nightly queues
+behind a slow predecessor rather than replacing it — immaterial for every
+enrolled lane, which are daily crons against runs well under a day.
+
 One subtlety on the three `compatibility/<head>` checks: each gates in two
 layers. The harness is *scored* — it accumulates per-case results into
 `compat-score.json` plus a per-case roster in `compat-cases.json`, and exits

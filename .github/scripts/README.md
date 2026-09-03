@@ -284,7 +284,16 @@ what actually runs.
   left 71 of its last 120 push runs killed a median 27 minutes in, against 6
   successes; that is not coalescing, it is starvation. Opting out is a
   declared enrollment here, never something a workflow can do to itself by
-  editing one line.
+  editing one line. `CANCEL_COALESCED_WORKFLOWS` is its reasoned complement
+  (tsouza/cerberus#2994) — the enrolled workflows for which mid-flight
+  cancellation is still correct, each carrying the measurement behind that
+  answer. A lane is queue-coalesced when the trunk would permanently lose a
+  record the successor will not restore AND the measured loss is material;
+  determinism alone does not excuse a kill, since a deterministic verdict still
+  posts a per-commit check-run. The two tiers must partition the enrollment exactly, so a newly
+  enrolled workflow cannot inherit cancellation as an unexamined default, and
+  the pin is two-sided: a member of either tier that carries the other tier's
+  `cancel-in-progress` value fails the audit.
   - Env: `CI_LANE_REGISTRY` (optional; default `.github/ci-lanes.json`).
   - Exit: `0` only when enrollment, registry posture, exclusions, and workflow
     expressions agree; `1` on any drift. `main-coalescing.test.mjs` carries the
@@ -803,6 +812,50 @@ what actually runs.
     commit still fails the gate even beside a skipped empty one, and a
     non-empty commit whose subject merely reads "Initial plan" is still
     linted — proving the filter is diff-based, not text-based.
+- **`markdownlint-run.mjs`** — the ONLY markdownlint-cli2 invocation in the
+  repository, shared by three callers: `ci.yml`'s `lint` job, the `lint-md` /
+  `fmt-md` recipes, and lefthook's `markdownlint` pre-commit hook. It exists
+  because those three each resolved to a DIFFERENT engine — the Justfile pinned
+  markdownlint-cli2 0.18.1 (markdownlint 0.38.0), the CI action bundled 0.23.2
+  (markdownlint 0.41.1), and the hook ran whatever was on `$PATH`. markdownlint
+  ignores a config key naming a rule it does not implement, so
+  `.markdownlint.yaml`'s `MD060` — a rule that arrived in markdownlint 0.40 —
+  configured nothing under the local pin. `just lint-md` reported `0 error(s)`
+  on a table CI then failed on, which made CLAUDE.md invariant 5's "reproduce
+  the red check locally" unsatisfiable for every rule newer than that pin
+  (tsouza/cerberus#2997).
+  - Modes: no args lints the tree; `--fix` auto-fixes it; `--staged FILE...`
+    fixes the named files for the hook; `--print-version` feeds
+    `just install-tools`.
+  - Env: `GITHUB_ACTIONS` (when set, each finding is ALSO emitted as an
+    `::error file=,line=,col=,title=::` annotation — the one thing the action
+    added over running cli2 directly; the raw `file:line:col RULE …` line is
+    printed either way, because that text is what a developer reproduces);
+    `PATH` (searched for a binary in `--staged` mode).
+  - Exit: markdownlint-cli2's own — `0` clean, non-zero on any finding.
+  - **No drift gate, deliberately.** The usual shape here would be a checker
+    comparing the Justfile pin, the hook's pin and the workflow's pin. There is
+    nothing left for it to compare: `PINNED_CLI2_VERSION` is the only
+    markdownlint-cli2 version literal in the tree and `GLOBS` the only file
+    set, so agreement is structural rather than asserted, and a gate over one
+    declaration asserts a tautology. The one edge that is NOT structural is the
+    hook's `$PATH` binary, which cannot use `npm exec` — npm's startup alone is
+    ~4s, five times the budget CLAUDE.md sets for `pre-commit`. That edge is
+    closed in `chooseEngine`, which accepts a `$PATH` binary ONLY at exactly
+    the pinned version and otherwise falls back to the pinned `npm exec`, so
+    the hook is slow-but-correct in the worst case and never runs a different
+    engine. A reviewer checking this should look for a version literal
+    reappearing anywhere else — a hardcoded `markdownlint-cli2@x.y.z`, or a
+    workflow going back to the action — rather than for a red gate.
+  - Tests: `markdownlint-run.test.mjs` (run in `ci.yml` immediately before the
+    `markdownlint` step). Its load-bearing case is anti-vacuity: a version
+    comparison cannot see a rule that is *configured but not implemented*,
+    which is the whole defect, so the suite runs the pinned engine against a
+    deliberately misaligned table and requires MD060 to fire, then requires an
+    aligned one to pass. Lowering the pin below markdownlint 0.40 or dropping
+    the `MD060` key turns the suite red instead of turning `just lint-md`
+    quietly green — verified by re-pinning to the old 0.18.1 and watching both
+    that case and the `chooseEngine` refusal case fail.
 - **`doc-counts.mjs`** — `ci.yml`, the `forbid-skip` job step "Assert
   doc-stated counts match source". The assert-from-source gate that stops
   doc-stated integer counts from drifting away from the source structures

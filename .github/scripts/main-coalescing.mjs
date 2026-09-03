@@ -80,8 +80,111 @@ export const COALESCED_WORKFLOWS = Object.freeze([
 // carries a literal `cancel-in-progress: false`. Its registry `main_posture`
 // stays `coalesced`, which remains the truth: a superseded run is still
 // replaced, just at queue time rather than mid-flight.
+//
+// # The decision rule (tsouza/cerberus#2994)
+//
+// Cancellation is not uniformly wrong, so enrollment is not uniform. Every
+// enrolled workflow answers ONE ordered pair of questions, and its answer is
+// recorded beside its name.
+//
+//   1. Does the trunk permanently lose a record the successor will not
+//      restore? A main-push run measures a commit that is now permanently on
+//      `main`, and the successor measures its OWN commit, never the killed
+//      one — so an unfinished run is a gap in the trunk's record, and the
+//      default answer for a push-triggered lane is YES. A lane answers NO only
+//      when it keeps no durable per-commit record to lose. Determinism alone
+//      is NOT that reason: a deterministic verdict still posts a per-commit
+//      check-run that a release preflight and a bisect both read.
+//   2. If YES, is the measured loss material? Cancellation that lands in the
+//      first quarter of a run and discards single-digit minutes per day is not
+//      worth trading latency-to-HEAD for.
+//
+// Only a workflow answering YES to both is queue-coalesced. The rest stay in
+// CANCEL_COALESCED_WORKFLOWS below, and the audit requires the two tiers to
+// partition COALESCED_WORKFLOWS exactly, so a fourteenth enrollment cannot
+// land without an explicit tier and a reason.
+//
+// The trade this buys is latency, and nothing else. `false` costs no runner
+// minutes: a superseded run is still dropped while PENDING, and a pending run
+// holds no runner. What it can cost is time-to-verdict on HEAD, bounded by one
+// run duration, since GitHub keeps at most one in-progress plus one pending
+// run per group. Suppressing the schedule branch of the expression is part of
+// the same trade: a nightly now queues behind a slow predecessor rather than
+// replacing it, which is immaterial for every enrolled lane here (all are
+// daily crons against runs well under a day).
+//
+// Each member's measured figures live in its own workflow's concurrency
+// comment, at the point where someone would be tempted to flip the line back;
+// the one decisive figure is repeated here so this roster justifies itself.
+// Window: the last ~99 push-on-main runs per workflow over
+// 2026-08-31T06:35Z - 2026-09-03T09:05Z (74.5 h), median main-push gap
+// 38.5 min. A run duration is the median of that workflow's SUCCESSFUL runs,
+// so fast failures cannot flatter a lane.
 export const QUEUE_COALESCED_WORKFLOWS = Object.freeze([
+  // Q2 decisive: a 34.5-min run against the 38.5-min gap clears only 57% of
+  // gaps, and 48% of its main-push runs were cancelled.
+  '.github/workflows/chdb.yml',
+  // Q1 decisive: a main-push run is the only one that publishes the per-head
+  // parity SCORE and runs the parity ratchet, so a kill is a missing datum in
+  // the published record. 29% cancelled.
+  '.github/workflows/compatibility.yml',
+  // The founding member (tsouza/cerberus#2991): 66% cancelled against a single
+  // success, 50% of its run-minutes discarded.
   '.github/workflows/coverage.yml',
+  // Q1 decisive: the tier jobs upload the per-tier reports that are the
+  // evidence half of its coverage ratchet. 36% cancelled.
+  '.github/workflows/migration-e2e.yml',
+  // The worst of the set and the closest sibling of the coverage failure: its
+  // 38.6-min run is level with the 38.5-min median push gap, so only 50% of
+  // gaps are long enough to finish, and it managed 10 successes in 74.5 h
+  // against 60% cancelled.
+  '.github/workflows/mutation.yml',
+  // Q1 decisive: `profile` merges the shard profiles into ONE per-commit
+  // profile artifact. 40% cancelled, 13 of 40 kills past 90% of a full run.
+  '.github/workflows/perf-profile.yml',
+  // Q1 decisive and unusual: rapid runs with an unpinned seed, so each run
+  // explores a DIFFERENT region of the input space and a cancelled run's draws
+  // are never re-drawn. Enrolled on that, not on its 19% cancellation rate.
+  '.github/workflows/property.yml',
+  // Q2 decisive: the median kill lands at 85% of a completed run, the latest
+  // point of any enrolled workflow, so cancelling it saves almost nothing.
+  '.github/workflows/schema-integration.yml',
+  // Q1 is YES for the same reason as its real-ClickHouse siblings — its
+  // per-commit check-run is read by name by release.yml's preflight — and Q2
+  // follows at 22% cancelled, kills a median 50% into a 13.6-min run.
+  '.github/workflows/strict-scan.yml',
+]);
+
+// The reasoned complement of QUEUE_COALESCED_WORKFLOWS: enrolled workflows for
+// which mid-flight cancellation remains CORRECT. This is not an exemption list
+// — each entry answers the decision rule above with a NO, and the audit's
+// partition check makes the membership load-bearing in both directions: a
+// workflow here that carries `cancel-in-progress: false` is as much a failure
+// as a queue-coalesced one that regains the cancel expression.
+export const CANCEL_COALESCED_WORKFLOWS = Object.freeze([
+  // Q2 is NO: 12% cancelled, 8% of its run-minutes (47 min in 74.5 h), and the
+  // median kill lands 23% into a 4.7-min run — cancellation here is nearly
+  // free, which is the only condition under which it pays.
+  '.github/workflows/agpl-oracle.yml',
+  // The one genuine Q1 NO in the enrollment. Code scanning surfaces only the
+  // LATEST analysis for a ref, so this lane keeps no durable per-commit record
+  // for a kill to lose — the successor's analysis does not merely supersede
+  // the older result, it is the only one the ref ever retains. Its kills DO
+  // land late (64% of a 6.4-min run, 7 of 16 past 90%), which is why Q1 has to
+  // carry this entry: on Q2 alone it would enroll.
+  '.github/workflows/codeql.yml',
+  // No `push:` trigger, so the latest-main-push branch is unreachable and no
+  // push-on-main run exists to cancel; its registry main posture stays `never`
+  // (see MAIN_COALESCED_OWNER_WORKFLOWS below). The reachable branch is its
+  // weekly schedule, where a superseded run is a repeat of the same benchmark
+  // on a week-old tree and the cron cannot overlap its own short run.
+  '.github/workflows/perf-benchmark.yml',
+  // Q2 is NO: 11% cancelled, 5% of its run-minutes (23 min in 74.5 h), one
+  // kill past 90% in eleven, median kill 22% into a 5.3-min run. Q1 is weak
+  // too — it re-measures the same sentinel corpus against the same committed
+  // baseline every run, so a killed run's datum is substantially re-derived by
+  // its successor on a near-identical tree.
+  '.github/workflows/perf-nightly.yml',
 ]);
 
 // perf-benchmark has no push-to-main trigger. Its weekly schedule is still
@@ -343,8 +446,42 @@ function sameMembers(left, right) {
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
-export function auditMainCoalescing(root = process.cwd()) {
+// Every enrolled workflow must sit in exactly one cancellation tier. Without
+// this, a fourteenth enrollment would silently inherit mid-flight cancellation
+// as a default, which is the shape tsouza/cerberus#2991 and #2994 both took.
+export function tierPartitionProblems({
+  enrolled: enrolledWorkflows = COALESCED_WORKFLOWS,
+  queued: queuedWorkflows = QUEUE_COALESCED_WORKFLOWS,
+  cancelling: cancellingWorkflows = CANCEL_COALESCED_WORKFLOWS,
+} = {}) {
   const problems = [];
+  const queued = new Set(queuedWorkflows);
+  const cancelling = new Set(cancellingWorkflows);
+  for (const workflow of enrolledWorkflows) {
+    const inQueued = queued.has(workflow);
+    const inCancelling = cancelling.has(workflow);
+    if (inQueued && inCancelling) {
+      problems.push(
+        `${workflow}: enrolled in both cancellation tiers; a workflow either keeps mid-flight cancellation or refuses it`,
+      );
+    } else if (!inQueued && !inCancelling) {
+      problems.push(
+        `${workflow}: latest-main enrolled but in neither cancellation tier — add it to QUEUE_COALESCED_WORKFLOWS or CANCEL_COALESCED_WORKFLOWS with the reason its superseded runs do or do not carry information`,
+      );
+    }
+  }
+  for (const workflow of [...queued, ...cancelling]) {
+    if (!enrolledWorkflows.includes(workflow)) {
+      problems.push(
+        `${workflow}: carries a cancellation tier but is absent from the canonical enrollment`,
+      );
+    }
+  }
+  return problems;
+}
+
+export function auditMainCoalescing(root = process.cwd()) {
+  const problems = [...tierPartitionProblems()];
   const enrolled = new Set(COALESCED_WORKFLOWS);
 
   for (const workflow of COALESCED_WORKFLOWS) {
@@ -460,7 +597,9 @@ export function main(root = process.cwd()) {
     return 1;
   }
   notice(
-    `latest-main cancellation is confined to ${COALESCED_WORKFLOWS.length} deep-test workflow(s); distinct events remain unique`,
+    `latest-main grouping covers ${COALESCED_WORKFLOWS.length} deep-test workflow(s): ` +
+      `${QUEUE_COALESCED_WORKFLOWS.length} queue-coalesced (grouped, never killed mid-flight), ` +
+      `${CANCEL_COALESCED_WORKFLOWS.length} still cancelling; distinct events remain unique`,
     { title: 'main coalescing' },
   );
   return 0;

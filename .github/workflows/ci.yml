@@ -404,15 +404,24 @@ jobs:
           npm install --no-save @commitlint/cli@19 @commitlint/config-conventional@19
           node .github/scripts/commitlint-range.mjs
 
+      # Markdown lint. This ran DavidAnson/markdownlint-cli2-action, which
+      # bundles its own markdownlint-cli2 (v24.2.0 -> 0.23.2 -> markdownlint
+      # 0.41.1). Nothing local could reach that engine: `just lint-md` pinned
+      # 0.18.1 (markdownlint 0.38.0) and lefthook called a bare $PATH binary,
+      # so `.markdownlint.yaml`'s MD060 key — a rule that arrived in 0.40 —
+      # configured nothing locally while CI enforced it. `just lint-md`
+      # reported `0 error(s)` on a table CI then failed on, and invariant 5's
+      # "reproduce the red check locally" was unsatisfiable by construction
+      # (tsouza/cerberus#2997). The step now runs the same module the recipe
+      # and the hook do, so there is ONE version literal in the repo and no
+      # second declaration to drift from. The module re-emits each finding as
+      # an `::error file=,line=,col=::` annotation, which is the only thing
+      # the action added over running cli2 directly.
+      - name: markdownlint self-test (engine pin + finding parser)
+        run: node --test .github/scripts/markdownlint-run.test.mjs
+
       - name: markdownlint
-        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff  # v24.2.0
-        with:
-          globs: |
-            **/*.md
-            !compatibility/prometheus/upstream/**
-            !compatibility/tempo/upstream/**
-            !compatibility/loki/upstream/**
-            !**/node_modules/**
+        run: node .github/scripts/markdownlint-run.mjs
 
       # doc-to-code reference integrity. Greps docs/**/*.md for inline
       # `(internal|cmd|test|deploy)/<path>.go[:line]` (+ dir) citations and

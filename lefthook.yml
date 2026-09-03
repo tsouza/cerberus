@@ -52,10 +52,16 @@ pre-commit:
       run: |
         python3 scripts/align-md-tables.py {staged_files}
     markdownlint:
+      # Routed through the script rather than calling `markdownlint-cli2`
+      # straight off $PATH. A bare call ran whatever version happened to be
+      # installed — a THIRD engine, matching neither the Justfile pin nor CI,
+      # so the fixer could rewrite a file in ways CI then rejected
+      # (tsouza/cerberus#2997). `--staged` still prefers a $PATH binary for
+      # speed, but only when its version is exactly the pinned one.
       glob: "*.md"
       stage_fixed: true
       run: |
-        markdownlint-cli2 --fix {staged_files}
+        node .github/scripts/markdownlint-run.mjs --staged {staged_files}
 
 # pre-push runs once per `git push`. It carries the forbid-skip and
 # repo-hygiene gates — grep and Node scans that finish in about a second
