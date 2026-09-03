@@ -67,22 +67,7 @@ func TestTempoTagCatalog_EventsLinks_MeasuredCost(t *testing.T) {
 	// forces the server to materialise the aggregate state without ever
 	// shipping it over the wire, so the SCAN cost being measured is
 	// identical to the real view's; only the client-decode step differs.
-	baselineSQL := fmt.Sprintf(`
-SELECT count() FROM (
-SELECT Scope, TagKey, topKState(50)(TagValue)
-FROM (
-  SELECT 'resource' AS Scope, k AS TagKey, v AS TagValue
-  FROM %[1]s.otel_traces
-  ARRAY JOIN mapKeys(ResourceAttributes) AS k, mapValues(ResourceAttributes) AS v
-  WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
-  UNION ALL
-  SELECT 'span' AS Scope, k AS TagKey, v AS TagValue
-  FROM %[1]s.otel_traces
-  ARRAY JOIN mapKeys(SpanAttributes) AS k, mapValues(SpanAttributes) AS v
-  WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
-)
-GROUP BY Scope, TagKey
-)`, db)
+	baselineSQL := tempoTagCatalogBaselineCostSQL(db)
 
 	eventArmSQL := fmt.Sprintf(`
 SELECT count() FROM (
@@ -106,7 +91,62 @@ WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
 GROUP BY Scope, TagKey
 )`, db)
 
-	widenedSQL := fmt.Sprintf(`
+	widenedSQL := tempoTagCatalogWidenedCostSQL(db)
+
+	baseline := runMeasuredStats(ctx, t, conn, baselineSQL)
+	eventOnly := runMeasuredStats(ctx, t, conn, eventArmSQL)
+	linkOnly := runMeasuredStats(ctx, t, conn, linkArmSQL)
+	widened := runMeasuredStats(ctx, t, conn, widenedSQL)
+
+	t.Logf("MEASURED (cerberus issue #2850, %d synthetic otel_traces rows, trailing 1h window):", rowCount)
+	t.Logf("  shipped baseline (resource UNION span):        %8d rows read (%10d bytes), %v wall-clock", baseline.rows, baseline.bytes, baseline.wall)
+	t.Logf("  event arm alone (nested Array(Map) fan-out):   %8d rows read (%10d bytes), %v wall-clock", eventOnly.rows, eventOnly.bytes, eventOnly.wall)
+	t.Logf("  link arm alone (nested Array(Map) fan-out):    %8d rows read (%10d bytes), %v wall-clock", linkOnly.rows, linkOnly.bytes, linkOnly.wall)
+	t.Logf("  widened (resource+span+event+link, all 4 arms):%8d rows read (%10d bytes), %v wall-clock", widened.rows, widened.bytes, widened.wall)
+	if baseline.wall > 0 {
+		t.Logf("  widened / baseline wall-clock ratio: %.2fx", float64(widened.wall)/float64(baseline.wall))
+	}
+	if baseline.rows > 0 {
+		t.Logf("  widened / baseline rows-read ratio:  %.2fx", float64(widened.rows)/float64(baseline.rows))
+	}
+	if eventOnly.wall > 0 && baseline.wall > 0 {
+		t.Logf("  event-arm-alone / baseline wall-clock ratio: %.2fx", float64(eventOnly.wall)/float64(baseline.wall))
+	}
+	if linkOnly.wall > 0 && baseline.wall > 0 {
+		t.Logf("  link-arm-alone / baseline wall-clock ratio:  %.2fx", float64(linkOnly.wall)/float64(baseline.wall))
+	}
+}
+
+// tempoTagCatalogBaselineCostSQL and tempoTagCatalogWidenedCostSQL render the
+// shipped-baseline (resource UNION span) and candidate-widened
+// (resource+span+event+link) cost-measurement queries shared by
+// TestTempoTagCatalog_EventsLinks_MeasuredCost and its stress-corpus sibling
+// TestTempoTagCatalog_EventsLinks_StressCorpusMeasuredCost — the query SHAPE
+// under test does not depend on corpus density, only the seeded data does,
+// so both tests measure the identical SQL against differently-seeded
+// otel_traces tables. See baselineSQL's inline comment (on the first caller)
+// for why each body is wrapped in `SELECT count() FROM (...)`.
+func tempoTagCatalogBaselineCostSQL(db string) string {
+	return fmt.Sprintf(`
+SELECT count() FROM (
+SELECT Scope, TagKey, topKState(50)(TagValue)
+FROM (
+  SELECT 'resource' AS Scope, k AS TagKey, v AS TagValue
+  FROM %[1]s.otel_traces
+  ARRAY JOIN mapKeys(ResourceAttributes) AS k, mapValues(ResourceAttributes) AS v
+  WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
+  UNION ALL
+  SELECT 'span' AS Scope, k AS TagKey, v AS TagValue
+  FROM %[1]s.otel_traces
+  ARRAY JOIN mapKeys(SpanAttributes) AS k, mapValues(SpanAttributes) AS v
+  WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
+)
+GROUP BY Scope, TagKey
+)`, db)
+}
+
+func tempoTagCatalogWidenedCostSQL(db string) string {
+	return fmt.Sprintf(`
 SELECT count() FROM (
 SELECT Scope, TagKey, topKState(50)(TagValue)
 FROM (
@@ -136,28 +176,94 @@ FROM (
 )
 GROUP BY Scope, TagKey
 )`, db)
+}
 
-	baseline := runMeasuredStats(ctx, t, conn, baselineSQL)
-	eventOnly := runMeasuredStats(ctx, t, conn, eventArmSQL)
-	linkOnly := runMeasuredStats(ctx, t, conn, linkArmSQL)
-	widened := runMeasuredStats(ctx, t, conn, widenedSQL)
+// tempoTagCatalogRefreshPeriodSeconds mirrors ddl.tempoTagCatalogRefreshMinutes
+// (unexported — this file is package ddl_test, which cannot see it) — the
+// REFRESH EVERY cadence the widened catalog view runs on. Duplicated here,
+// not imported, because the two packages cannot share unexported names; a
+// change to that cadence needs the matching edit here too (both names are
+// distinctive enough to find by search).
+const tempoTagCatalogRefreshPeriodSeconds = 5 * 60
 
-	t.Logf("MEASURED (cerberus issue #2850, %d synthetic otel_traces rows, trailing 1h window):", rowCount)
-	t.Logf("  shipped baseline (resource UNION span):        %8d rows read (%10d bytes), %v wall-clock", baseline.rows, baseline.bytes, baseline.wall)
-	t.Logf("  event arm alone (nested Array(Map) fan-out):   %8d rows read (%10d bytes), %v wall-clock", eventOnly.rows, eventOnly.bytes, eventOnly.wall)
-	t.Logf("  link arm alone (nested Array(Map) fan-out):    %8d rows read (%10d bytes), %v wall-clock", linkOnly.rows, linkOnly.bytes, linkOnly.wall)
-	t.Logf("  widened (resource+span+event+link, all 4 arms):%8d rows read (%10d bytes), %v wall-clock", widened.rows, widened.bytes, widened.wall)
+// tempoTagCatalogStressWallClockCeilingFraction bounds how much of the
+// refresh period (tempoTagCatalogRefreshPeriodSeconds) the widened
+// (resource+span+event+link) arm may spend against the STRESS corpus in
+// TestTempoTagCatalog_EventsLinks_StressCorpusMeasuredCost below — the same
+// "stays a small fraction of the period" bar ddl.go's
+// tempoTagCatalogRefreshMinutes doc comment sets. It is deliberately a
+// GENEROUS backstop rather than a tight reproducibility claim: wall-clock
+// time on shared CI hardware is inherently noisy (this package's sibling
+// TestTempoTagCatalog_MeasuredCost doc comment explains why its own
+// measurement logs rather than asserts a speedup ratio for the same
+// reason), so this bound exists to catch a genuine multi-x cost regression
+// long before it would threaten the refresh cadence itself, not to pin the
+// exact figure.
+const tempoTagCatalogStressWallClockCeilingFraction = 0.10
+
+// eventsPerSpanStress / linksPerSpanStress model the "unrealistically dense
+// corpus" ddl.go's doc comment stress-tests the widened catalog against:
+// EVERY span carries 1-3 events AND 1-2 links, far above any real fleet's
+// event/link prevalence (contrast eventsPerSpan/linksPerSpan's 10%/3% of
+// spans carrying any at all) — deliberately pathological, to bound the
+// widened arms' cost even under a corpus no real deployment would produce.
+func eventsPerSpanStress(rng *rand.Rand) int {
+	const minStressEventsPerSpan = 1
+	const maxStressEventsPerSpan = 3
+	return minStressEventsPerSpan + rng.Intn(maxStressEventsPerSpan-minStressEventsPerSpan+1)
+}
+
+func linksPerSpanStress(rng *rand.Rand) int {
+	const minStressLinksPerSpan = 1
+	const maxStressLinksPerSpan = 2
+	return minStressLinksPerSpan + rng.Intn(maxStressLinksPerSpan-minStressLinksPerSpan+1)
+}
+
+// TestTempoTagCatalog_EventsLinks_StressCorpusMeasuredCost is the
+// reproducible, CI-pinned form of the stress-corpus claim in ddl.go's
+// event/link tag-catalog doc comment (cerberus issue #3018): with EVERY
+// span carrying 1-3 events AND 1-2 links (eventsPerSpanStress /
+// linksPerSpanStress — an unrealistically dense corpus no real fleet would
+// produce), the widened (resource+span+event+link) catalog refresh still
+// stays a small, bounded fraction of the 5-minute refresh period.
+//
+// Like TestTempoTagCatalog_MeasuredCost and
+// TestTempoTagCatalog_EventsLinks_MeasuredCost, this does NOT assert a
+// tight wall-clock ratio against the baseline — that would be exactly the
+// flaky, CI-runner-noise-sensitive assertion this package's established
+// posture avoids (see TestTempoTagCatalog_MeasuredCost's doc comment). It
+// DOES assert a real, generous absolute ceiling
+// (tempoTagCatalogStressWallClockCeilingFraction of the refresh period) —
+// a regression backstop, not a tight reproducibility pin.
+func TestTempoTagCatalog_EventsLinks_StressCorpusMeasuredCost(t *testing.T) {
+	conn, db := startClickHouse(t)
+	ctx := context.Background()
+
+	cfg := ddl.Config{Database: db, TempoTagCatalogEnabled: true}
+	if err := ddl.ApplyWithConfig(ctx, conn, cfg, []ddl.Signal{ddl.Traces}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	const rowCount = 2_000_000
+	seedSyntheticTracesWithEventsLinksDensity(ctx, t, conn, db, rowCount, eventsPerSpanStress, linksPerSpanStress, "stress")
+
+	baseline := runMeasuredStats(ctx, t, conn, tempoTagCatalogBaselineCostSQL(db))
+	widened := runMeasuredStats(ctx, t, conn, tempoTagCatalogWidenedCostSQL(db))
+
+	t.Logf("STRESS MEASURED (cerberus issue #3018, %d synthetic otel_traces rows, EVERY span 1-3 events AND 1-2 links, trailing 1h window):", rowCount)
+	t.Logf("  shipped baseline (resource UNION span):         %8d rows read (%10d bytes), %v wall-clock", baseline.rows, baseline.bytes, baseline.wall)
+	t.Logf("  widened (resource+span+event+link, all 4 arms): %8d rows read (%10d bytes), %v wall-clock", widened.rows, widened.bytes, widened.wall)
 	if baseline.wall > 0 {
 		t.Logf("  widened / baseline wall-clock ratio: %.2fx", float64(widened.wall)/float64(baseline.wall))
 	}
 	if baseline.rows > 0 {
 		t.Logf("  widened / baseline rows-read ratio:  %.2fx", float64(widened.rows)/float64(baseline.rows))
 	}
-	if eventOnly.wall > 0 && baseline.wall > 0 {
-		t.Logf("  event-arm-alone / baseline wall-clock ratio: %.2fx", float64(eventOnly.wall)/float64(baseline.wall))
-	}
-	if linkOnly.wall > 0 && baseline.wall > 0 {
-		t.Logf("  link-arm-alone / baseline wall-clock ratio:  %.2fx", float64(linkOnly.wall)/float64(baseline.wall))
+
+	ceiling := time.Duration(float64(tempoTagCatalogRefreshPeriodSeconds)*tempoTagCatalogStressWallClockCeilingFraction) * time.Second
+	if widened.wall > ceiling {
+		t.Errorf("widened stress-corpus wall-clock %v exceeds the %v ceiling (%.0f%% of the %ds refresh period) — investigate a cost regression in the event/link catalog arms",
+			widened.wall, ceiling, tempoTagCatalogStressWallClockCeilingFraction*100, tempoTagCatalogRefreshPeriodSeconds)
 	}
 }
 
@@ -217,8 +323,24 @@ func linksPerSpan(rng *rand.Rand) int {
 // (tempo_tag_catalog_perf_test.go) with populated Events/Links Nested
 // columns on the SAME rows, so the resource/span baseline and the
 // event/link candidate arms are measured against the SAME corpus rather
-// than two differently-shaped tables.
+// than two differently-shaped tables. Uses the realistic
+// eventsPerSpan/linksPerSpan prevalence (10%/3% of spans) — see
+// seedSyntheticTracesWithEventsLinksDensity for the stress-corpus sibling.
 func seedSyntheticTracesWithEventsLinks(ctx context.Context, t *testing.T, conn driver.Conn, db string, n int) {
+	t.Helper()
+	seedSyntheticTracesWithEventsLinksDensity(ctx, t, conn, db, n, eventsPerSpan, linksPerSpan, "realistic")
+}
+
+// seedSyntheticTracesWithEventsLinksDensity is the shared seeding loop
+// behind seedSyntheticTracesWithEventsLinks and its stress-corpus sibling
+// (TestTempoTagCatalog_EventsLinks_StressCorpusMeasuredCost) — identical in
+// every respect except which eventsPerSpan/linksPerSpan-shaped PREVALENCE
+// function decides how many events/links a given span carries, so the two
+// corpora stay apples-to-apples on everything but density.
+func seedSyntheticTracesWithEventsLinksDensity(
+	ctx context.Context, t *testing.T, conn driver.Conn, db string, n int,
+	eventsPerSpanFn, linksPerSpanFn func(*rand.Rand) int, densityLabel string,
+) {
 	t.Helper()
 	const seedBatchSize = 50_000
 	rng := rand.New(rand.NewSource(2850))
@@ -249,7 +371,7 @@ func seedSyntheticTracesWithEventsLinks(ctx context.Context, t *testing.T, conn 
 				spanAttrs[k.name] = fmt.Sprintf("%s-%d", k.name, rng.Intn(k.cardinality))
 			}
 
-			nEvents := eventsPerSpan(rng)
+			nEvents := eventsPerSpanFn(rng)
 			evTs := make([]time.Time, nEvents)
 			evNames := make([]string, nEvents)
 			evAttrs := make([]map[string]string, nEvents)
@@ -263,7 +385,7 @@ func seedSyntheticTracesWithEventsLinks(ctx context.Context, t *testing.T, conn 
 				evAttrs[e] = m
 			}
 
-			nLinks := linksPerSpan(rng)
+			nLinks := linksPerSpanFn(rng)
 			lnTraceID := make([]string, nLinks)
 			lnSpanID := make([]string, nLinks)
 			lnTraceState := make([]string, nLinks)
@@ -292,7 +414,7 @@ func seedSyntheticTracesWithEventsLinks(ctx context.Context, t *testing.T, conn 
 		}
 		inserted += batchN
 	}
-	t.Logf("seeded %d synthetic otel_traces rows (with Events/Links)", inserted)
+	t.Logf("seeded %d %s-density synthetic otel_traces rows (with Events/Links)", inserted, densityLabel)
 }
 
 // runMeasuredStats runs sqlStr tagged with a fresh query_id, drains the
