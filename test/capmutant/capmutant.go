@@ -32,15 +32,18 @@ import "testing"
 // than a set of alternatives on purpose: gremlins rewrites each arithmetic
 // token to exactly ONE other token, so a hint spelling P arithmetic operators
 // yields exactly P mutants and a completed run reports exactly P verdicts on
-// its line. The table mirrors `tokenMutations[mutator.ArithmeticBase]` in the
-// pinned `tsouza/gremlins` fork (`internal/engine/mappings.go`), which
-// `.github/workflows/mutation.yml` installs by version.
+// its line. It mirrors the `tokenMutations` entry this mutator carries in the
+// pinned `tsouza/gremlins` fork's engine — named rather than addressed by
+// path, because an upstream file cannot be cited from this repository
+// (docs/test-strategy.md, "How a note cites the mutant it adjudicates").
+// docs/upstream-forks.md describes the fork boundary, and
+// .github/workflows/mutation.yml installs the fork by version.
 //
 // Enumerating the four other operators per position instead would adjudicate
-// mutants no run emits — and the verdicts differ: `internal/promql/
-// schema_lookup.go`'s `len(pairs)*2` is unkillable under the `/` gremlins
-// actually writes and killable under a `+` it never writes. An
-// over-approximation there reports a kill the lane cannot collect.
+// mutants no run emits, and that is not a harmless over-approximation: it can
+// report a kill the lane will never collect. The verdicts genuinely differ —
+// `internal/promql/schema_lookup.go`'s `len(pairs)*2` is unkillable under the
+// `/` gremlins actually writes and killable under a `+` it never writes.
 var Substitution = map[string]string{
 	"+": "-",
 	"-": "+",

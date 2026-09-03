@@ -1418,14 +1418,24 @@ hold, and each has to be checked at the site:
   "How a note states a number" below.
 
 `ARITHMETIC_BASE` rewrites each arithmetic token to exactly **one**
-other token — `+`->`-`, `-`->`+`, `*`->`/`, `/`->`*`, `%`->`*`, the
-mapping the pinned `tsouza/gremlins` fork carries in
-`internal/engine/mappings.go` — so a hint spelling P operators carries P
-mutants and a completed run reports P verdicts on its line.
-Adjudicating against the four other operators instead answers about
-mutants no run emits, and the two answers differ: the `schema_lookup.go`
-hint above is unkillable under the `/` gremlins writes and killable
-under a `+` it never writes.
+other token — `+`->`-`, `-`->`+`, `*`->`/`, `/`->`*`, `%`->`*`. That is
+the `tokenMutations` table the pinned `tsouza/gremlins` fork declares for
+this mutator, in its engine's token-mapping source. The table is named
+rather than addressed by path because an upstream file cannot be cited
+from here — see "How a note cites the mutant it adjudicates" below;
+`docs/upstream-forks.md` is the pointer to the fork boundary, and
+`.github/workflows/mutation.yml` installs the fork by version. So a hint
+spelling P operators carries P mutants, and a completed run reports P
+verdicts on its line.
+
+Enumerating the four other operators per position instead adjudicates
+mutants no run emits, and that is not a harmless over-approximation: it
+can report a kill the lane will never collect. The two answers genuinely
+differ — the `schema_lookup.go` hint above is unkillable under the `/`
+gremlins writes and killable under a `+` it never writes, so an
+enumeration of the superset would have called it dead while its leg went
+on carrying it as a survivor. An adjudication is against the emitted
+mutant set, or it is against nothing.
 
 `test/capmutant` is the shared driver. `AssertKilled` takes the hint's
 operator positions, a replay of the builder's append sequence, and a
