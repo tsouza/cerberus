@@ -119,23 +119,43 @@ func TestColumnarCursor_BudgetLimitPrecedence(t *testing.T) {
 // one row past the cap on every request that reaches the columnar path.
 func TestColumnarCursor_ChargePrecedence(t *testing.T) {
 	t.Run("per-cursor max", func(t *testing.T) {
-		d := &columnarCursor{maxSamples: 2}
-		if !d.charge() || !d.charge() {
-			t.Fatalf("charge() refused within the limit of 2")
+		const limit = 2
+		d := &columnarCursor{maxSamples: limit}
+		// charge() is side-effecting, so "two rows fit" is a claim about two
+		// DISTINCT calls. Each is charged and asserted on its own, and the
+		// consumed count is checked afterwards, so the claim rests on
+		// something observable rather than on the evaluation order of a
+		// compound condition.
+		for i := int64(1); i <= limit; i++ {
+			if !d.charge() {
+				t.Fatalf("charge() #%d refused within a maxSamples of %d", i, limit)
+			}
+		}
+		if d.seen != limit {
+			t.Fatalf("after %d successful charges, seen = %d; want %d", limit, d.seen, limit)
 		}
 		if d.charge() {
-			t.Errorf("charge() past a maxSamples of 2 = true; want false")
+			t.Errorf("charge() #%d past a maxSamples of %d = true; want false", limit+1, limit)
 		}
 	})
 	t.Run("shared budget wins", func(t *testing.T) {
 		// A generous per-cursor max with a tight shared budget: only if the
-		// shared budget takes precedence does the third charge fail.
-		d := &columnarCursor{maxSamples: 1000, budget: NewSampleBudget(2)}
-		if !d.charge() || !d.charge() {
-			t.Fatalf("charge() refused within the shared budget of 2")
+		// shared budget takes precedence does the third charge fail. Same
+		// per-call shape as above, for the same reason.
+		const sharedLimit = 2
+		const generousPerCursorMax = 1000
+		d := &columnarCursor{maxSamples: generousPerCursorMax, budget: NewSampleBudget(sharedLimit)}
+		for i := int64(1); i <= sharedLimit; i++ {
+			if !d.charge() {
+				t.Fatalf("charge() #%d refused within a shared budget of %d", i, sharedLimit)
+			}
+		}
+		if d.seen != sharedLimit {
+			t.Fatalf("after %d successful charges, seen = %d; want %d", sharedLimit, d.seen, sharedLimit)
 		}
 		if d.charge() {
-			t.Errorf("charge() past a shared budget of 2 = true; want false despite maxSamples=1000")
+			t.Errorf("charge() #%d past a shared budget of %d = true; want false despite maxSamples=%d",
+				sharedLimit+1, sharedLimit, generousPerCursorMax)
 		}
 	})
 	t.Run("unbounded when neither is set", func(t *testing.T) {
