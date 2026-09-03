@@ -1527,13 +1527,29 @@ oversight, and none is an escape hatch:
   space after the keyword costs the single real instance — repointed by
   hand when this landed, leaving none — and buys immunity to the three.
 - **An unmarked `N:M` pair** (`at 223:11`, `- 76:23`) is the same
-  unverifiable address, and it is unmodelled because nothing lexical
-  separates it from data. Of the 108 unmarked pairs in note scope only
-  about a third are addresses; the rest are `1:1` correspondences, chDB
-  fixture clock times, slice bounds such as `src[0:0]`, and a
-  `host:9000`. `76:23` the address and `23:59` the timestamp are the
-  same token. Reviewer attention is the control here, exactly as it is
-  for the kill-claim residue above.
+  unverifiable address, and it stays unmodelled because nothing lexical
+  separates it from data. The 32 that existed were repointed by hand
+  (tsouza/cerberus#2981), so what a rule would face today is the data
+  alone. Counting the bare pair in note scope — a comment's own prose,
+  excluding tab-indented quoted blocks, plus `t.Errorf` / `t.Fatalf`
+  message text — it matches 383 times, and every one of those is a
+  `1:1` correspondence, a chDB fixture clock time, a slice bound such
+  as `src[0:0]`, or a `host:9000`. `76:23` the address and `23:59` the
+  timestamp are the same token.
+
+  Narrowing the match to a unit that ALSO carries mutation vocabulary
+  was measured rather than assumed, and it is the variant that comes
+  closest. On the pre-cleanup tree it flagged 36: 30 addresses and 6
+  ordinary prose — two fixture clock times, an anchor timestamp inside
+  a `t.Errorf`, and `src[0:0]`. It also missed two, both
+  `// --- file.go … ---` section headers, which is the shape most
+  likely to reappear. On the cleaned tree that same rule flags the 6
+  and nothing else: precision zero, six reds on correct prose, and no
+  tolerance file exists to hide them. Rescuing it takes three further
+  lexical exclusions each fitted to one of those six items, and it
+  still fails open on the header shape. Refused, on the same evidence
+  the kill-claim gate above was refused on. Reviewer attention is the
+  control here.
 
 #### The code block quoted under the citation
 

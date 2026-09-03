@@ -132,14 +132,17 @@ const OPENER = /\.go:/g;
 //
 // The marker is what makes the address identifiable, and its absence is why an
 // UNMARKED pair (`223:11`, `at 76:23`) is not modelled here. That is measured,
-// not overlooked: 108 unmarked `N:M` pairs sit in note scope and only about a
-// third are addresses — the rest are `1:1` correspondences, clock times in
-// chDB fixtures (`23:59:30`), slice bounds (`src[0:0]`) and a `host:9000`.
-// Nothing lexical separates `76:23` the address from `23:59` the timestamp,
-// and a gate that guessed would be the false-positive machine #2966 refused.
-// `docs/test-strategy.md` records that refusal, and it is not an escape
-// hatch: the unmarked pair is the SAME unverifiable address, left to the
-// reviewer rather than blessed.
+// not overlooked. The 32 that existed were repointed by hand (#2981); the 383
+// bare pairs left in note scope are all data — `1:1` correspondences, clock
+// times in chDB fixtures (`23:59:30`), slice bounds (`src[0:0]`) and a
+// `host:9000`. Nothing lexical separates `76:23` the address from `23:59` the
+// timestamp. The closest rule that works — the pair, scoped to a unit also
+// carrying mutation vocabulary — flagged 36 pre-cleanup (30 real, 6 prose)
+// while MISSING both `// --- file.go … ---` section headers, and on the tree
+// today it flags those 6 and nothing else: the false-positive machine #2966
+// refused. `docs/test-strategy.md` records the measurement, and it is not an
+// escape hatch: the unmarked pair is the SAME unverifiable address, left to
+// the reviewer rather than blessed.
 //
 // The HYPHENATED attributive form (`the line-116 condition`, `both line-277
 // mutants`) is out for the same reason and measured the same way: of the four
