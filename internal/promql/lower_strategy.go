@@ -544,16 +544,19 @@ type NativeRateLowerer struct {
 // For an INSTANT window (gridSingleAnchor) the matrix check above always
 // misses (nativeTSGridRateNode requires Step > 0), so — when n.Instant is set
 // — this additionally tries nativeTSGridInstantNode before falling to
-// Fallback. The temporality union split does NOT (yet) extend to the instant
-// arm: nativeTSGridInstantNode carries the same TemporalityColumn guard
-// nativeTSGridMatrixNode does, so a temporality-bearing instant window stays
-// on the fan-out unconditionally — a real, deliberate scope narrowing (not an
-// oversight), tracked as cerberus issue #2843: on the real default schema
-// (schema.DefaultOTelMetrics always sets AggregationTemporalityColumn), an
-// instant rate() query therefore does not yet reach the native path at all.
-// Every OTHER combination this feature covers (a schema without that column,
-// or any of changes/resets/deriv/predict_linear, none of which is ever
-// temporality-gated — see counterTemporalityRangeFn) is unaffected.
+// Fallback. The temporality union split extends to the instant arm too
+// (cerberus issue #2843): a temporality-bearing instant window reuses the
+// SAME `cumulative` (temporality-cleared, CUMULATIVE-filtered) copy the
+// matrix attempt above already built, feeds it to nativeTSGridInstantNode,
+// and — on eligibility — unions the result with a DELTA-filtered instant
+// fan-out arm, returned RAW (unlike the matrix arm's derivedRateArm wrapper —
+// see the UnionAll return below for why the instant shape needs no wrapping
+// Project). On the real default schema (schema.DefaultOTelMetrics always
+// sets AggregationTemporalityColumn), an instant rate() query therefore now
+// reaches the native path exactly like every other combination this feature
+// covers (a schema without that column, or any of
+// changes/resets/deriv/predict_linear, none of which is ever
+// temporality-gated — see counterTemporalityRangeFn).
 func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
 	if rw.TemporalityColumn != "" {
 		cumulative := *rw
@@ -567,6 +570,39 @@ func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) c
 				native,
 				&delta,
 			}}, s)
+		}
+		if n.Instant {
+			if native := nativeTSGridInstantNode(&cumulative, "rate", s); native != nil {
+				delta := *rw
+				delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
+				// No derivedRateArm-style wrapping Project here: unlike the
+				// matrix arm above, the two arms ALREADY publish byte-identical
+				// columns — nativeTSGridInstantNode's own SELECT and the
+				// fan-out instant RangeWindow's own outer SELECT
+				// (chsql's emitWindowedArrayExtrapolated, OuterRange == 0
+				// branch) both project exactly (<GroupBy>, ValueColumn), with
+				// no anchor_ts / TimeUnix / MetricName to restore — an instant
+				// query has no time axis to carry and rate() drops __name__
+				// either way. A wrapping Project here would therefore be pure
+				// output-shape overhead, AND would actively mis-classify:
+				// chplan.RowShapeOf's *Project case always
+				// answers SampleRowShape by default (it cannot see through to
+				// a schema-specific column list), so a forwarder placed
+				// directly over a WRAPPED union (e.g. `abs(rate(...))`) would
+				// wrongly take the four-column branch and reference a
+				// Timestamp column neither arm exposes — a live ClickHouse
+				// code 47. Returning the raw UnionAll instead lets
+				// chplan.RowShapeOf's own *UnionAll case (row_shape.go)
+				// recurse into the first arm and answer the correct
+				// ReducedWindowRowShape, exactly mirroring
+				// nativeTSGridInstantNode's own un-unioned answer — see that
+				// case's doc for the full reasoning, which chplan.IsDerivedShape
+				// mirrors for the HTTP layer's plan-root wrapping.
+				return &chplan.UnionAll{Inputs: []chplan.Node{
+					native,
+					&delta,
+				}}
+			}
 		}
 	}
 	if native := nativeTSGridRateNode(rw, s, n.Recollapse); native != nil {

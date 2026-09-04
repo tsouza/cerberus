@@ -106,6 +106,20 @@ func IsDerivedShape(n Node, cols SampleColumns) bool {
 			return false
 		}
 		return IsDerivedShape(v.Input, cols)
+	case *UnionAll:
+		// Mirrors RowShapeOf's identical *UnionAll case (row_shape.go): a
+		// UnionAll positionally combines its arms into one result set, so
+		// their derived-ness has to already agree for the union itself to
+		// be valid SQL -- every construction site pairs same-shaped arms.
+		// Reporting the first arm's own answer, rather than falling to the
+		// canonical default below, is what keeps a windowed union (for
+		// example NativeRateLowerer's instant temporality-union split,
+		// cerberus issue #2843) from having wrapWithSampleProjection
+		// reference a MetricName column neither arm publishes.
+		if len(v.Inputs) == 0 {
+			return false
+		}
+		return IsDerivedShape(v.Inputs[0], cols)
 	}
 	return false
 }
