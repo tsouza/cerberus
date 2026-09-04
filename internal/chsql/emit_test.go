@@ -188,6 +188,40 @@ var plans = map[string]chplan.Node{
 		TimestampColumn:  "TimeUnix",
 		ValueColumn:      "Value",
 	},
+	// vector_join_on_step_aligned: `on(...)` subset match in StepAligned
+	// (range) mode — CardOneToOne with a subset match key puts BOTH sides
+	// on roleOne's StepAligned arm (cerberus issue #2818). Pins that the
+	// per-side aggregation reads TimeUnix directly as its GROUP BY key
+	// rather than computing a redundant max(TimeUnix) over it.
+	"vector_join_on_step_aligned": &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_gauge"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpAdd,
+		Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+		StepAligned:      true,
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	},
+	// vector_join_group_left_step_aligned: `group_left(...)` in
+	// StepAligned (range) mode — left is roleMany, right is roleOne
+	// (cerberus issue #2818). Exercises roleMany's and roleOne's
+	// StepAligned arms side by side in the same emitted query: roleMany's
+	// plain-column TimeUnix read (pre-existing) and roleOne's identical
+	// read (this fix — previously a redundant max(TimeUnix) aggregate).
+	"vector_join_group_left_step_aligned": &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_gauge"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpAdd,
+		Card:             chplan.CardManyToOne,
+		Include:          []string{"job"},
+		StepAligned:      true,
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	},
 
 	// StructuralJoin — TraceQL `>` (parent_of).
 	"structural_join_child": &chplan.StructuralJoin{

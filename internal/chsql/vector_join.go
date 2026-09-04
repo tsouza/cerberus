@@ -225,18 +225,31 @@ func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol
 	// -> argAndMax(Value, TimeUnix) collapse (chopt.FeatureArgAndMaxFusion,
 	// cerberus issue #2764) onto exactly the non-derived, non-StepAligned
 	// "latest sample" shape: roleMany's default switch arm below and
-	// roleOne's non-derived else arm are the only two that pair the two
+	// roleOne's non-StepAligned else arm are the only two that pair the two
 	// aggregates over identical (Value, TimeUnix) arguments today.
 	//
-	// roleOne's else arm ALSO runs when j.StepAligned is true (its
-	// aggMaxAs/argMaxAs pairing is unconditional there — only `derived`
-	// branches away from it) and pairs the identical two aggregates, so it
-	// is technically fusable too; it is deliberately excluded here to keep
-	// this change scoped to the "instant-mode latest-sample" shape the
-	// issue names, matching roleMany's StepAligned arm (a separate switch
-	// case with no argMax/max pairing at all) rather than reading
-	// roleOne's broader StepAligned reach as in-scope. Tracked as a
-	// follow-up: https://github.com/tsouza/cerberus/issues/2818.
+	// roleOne's StepAligned arm is EXCLUDED here for a different reason than
+	// "out of scope": it has nothing to fuse in the first place. Cerberus
+	// issue #2818 originally proposed widening this gate to also fuse
+	// roleOne's StepAligned arm, on the premise that its max(TimeUnix) +
+	// argMax(Value, TimeUnix) pairing was a fusable duplicate of the
+	// instant-mode shape. Investigating that proposal found the opposite: `derived`
+	// is false whenever j.StepAligned is true (the `!j.StepAligned &&` guard
+	// above), and roleOne's StepAligned GROUP BY already includes
+	// TimestampColumn as a key (see groupFrags below) — so every row in a
+	// StepAligned roleOne group shares one identical TimeUnix by
+	// construction, and max(TimeUnix) over that group is just the group key
+	// restated. There is no second aggregate for argAndMax to fuse with; the
+	// honest fix is to delete the redundant max(TimeUnix) aggregate and
+	// project the GROUP BY key column directly (see the switch below), which
+	// this change does. argMaxAs(Value, TimeUnix) stays a real aggregate:
+	// it is still picking which Value goes with the (possibly tied)
+	// TimeUnix, and matchCheckGuardFrag's uniqueness HAVING guards only
+	// Attributes uniqueness — it throws AFTER aggregation and does not make
+	// a genuine TimeUnix tie within one (match-key, anchor) group
+	// well-defined beforehand, so argMax's own (CH-documented,
+	// non-deterministic-among-ties) tie-break still governs which Value
+	// survives a tie.
 	fuseValueTimestamp := j.ArgAndMaxFusion && !derived && !j.StepAligned
 	inner := NewQuery().From(sub)
 	if role == roleMany {
@@ -304,15 +317,30 @@ func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol
 		// Step-aligned joins extend the match key with TimeUnix so
 		// each (match-key, anchor) gets its own row and the throwIf
 		// uniqueness guard fires per-anchor rather than across the
-		// full per-step matrix. The selector keeps argMax /
-		// max(TimeUnix) for symmetry with instant mode — within a
-		// single (match-key, anchor) group all rows share the same
-		// TimeUnix by construction.
+		// full per-step matrix.
 		groupFrags := []Frag{matchKeyGroupExprFrag(j.Match, j.AttributesColumn)}
 		if j.StepAligned {
 			groupFrags = append(groupFrags, Col(j.TimestampColumn))
 		}
-		if derived {
+		switch {
+		case j.StepAligned:
+			// TimeUnix is already a GROUP BY key here (groupFrags above),
+			// so every row in a (match-key, anchor) group shares one
+			// identical TimeUnix by construction — max(TimeUnix) over
+			// that group would just restate the group key. Select it
+			// directly instead of aggregating, matching roleMany's
+			// identical StepAligned arm above. argMax(Value, TimeUnix)
+			// stays a real aggregate: it still picks which Value goes
+			// with that TimeUnix when two rows of the same series are
+			// tied on it (see
+			// TestVectorJoinRoleOneStepAligned_TiedTimestamp_ChDB).
+			inner.Select(
+				joinMetricNameFrag(j),
+				As(Call("argMax", canonicalMatchKeyFrag(Col(j.AttributesColumn)), Col(j.TimestampColumn)), joinAlias(j.AttributesColumn)),
+				As(Col(j.TimestampColumn), joinAlias(j.TimestampColumn)),
+				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
+			).GroupBy(groupFrags...).Having(matchCheckGuardFrag(j.AttributesColumn))
+		case derived:
 			// Range-vector operand: no TimeUnix to argMax by. The
 			// instant operand is already one row per series, so any()
 			// picks the representative Attributes/Value and the
@@ -323,13 +351,13 @@ func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol
 				joinTimestampFrag(j),
 				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(groupFrags...).Having(matchCheckGuardFrag(j.AttributesColumn))
-		} else if fuseValueTimestamp {
+		case fuseValueTimestamp:
 			inner.Select(
 				joinMetricNameFrag(j),
 				As(Call("argMax", canonicalMatchKeyFrag(Col(j.AttributesColumn)), Col(j.TimestampColumn)), joinAlias(j.AttributesColumn)),
 				argAndMaxAs(j.ValueColumn, j.TimestampColumn, joinArgAndMaxAlias),
 			).GroupBy(groupFrags...).Having(matchCheckGuardFrag(j.AttributesColumn))
-		} else {
+		default:
 			inner.Select(
 				joinMetricNameFrag(j),
 				As(Call("argMax", canonicalMatchKeyFrag(Col(j.AttributesColumn)), Col(j.TimestampColumn)), joinAlias(j.AttributesColumn)),
