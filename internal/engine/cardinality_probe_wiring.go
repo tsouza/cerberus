@@ -17,8 +17,8 @@ import (
 // explain_estimate_wiring.go's EXPLAIN ESTIMATE advisor (issue #2787, PR
 // #2836) with a SECOND, independent advisory input the marks-level estimate
 // cannot answer — real distinct-series fan-out — by running one bounded,
-// REAL aggregate (`count()`, `uniqUpTo(100)(...)`) over the plan's
-// already-pruned scan window.
+// REAL aggregate (`count()`, `uniqUpTo(100)(...)`, and — #2840 —
+// `uniqCombined64(...)`) over the plan's already-pruned scan window.
 //
 // Both advisors gate on the EXACT SAME boundary explain_estimate_wiring.go's
 // own doc names (ModeAuto candidates whose baseline classification reached
@@ -41,25 +41,39 @@ import (
 // SCOPE (deliberately narrow, matching this repository's culture of
 // evidence-first landings — see #2787's own "what was scoped down"):
 //
-//  1. Carrier kind: only the *chplan.RangeWindow "matrix" family — the
-//     carrier #2709's own incident and this issue's own dashboard-panel
-//     example both concern, and by far the most common ModeAuto shape.
-//     findCardinalityProbeCarrier fails open (no probe) for every other
-//     [chplan.GridCarrier] kind (RangeLWR, RangeBucketFanout,
-//     RangeBucketGridNative, RangeWindowGridNative); extending to them is
-//     tracked in issue #2840 (see this package's
-//     cardinality_probe_wiring_test.go for the corresponding fail-open
-//     coverage).
+//  1. Carrier kind: findCardinalityProbeCarrier recognises the FIVE
+//     GridCarrier kinds whose real-matrix emitters share the identical
+//     (Start - Offset - <span>, End - Offset] scan-bound formula:
+//     *chplan.RangeWindow (chsql's innerScanTsBoundsFrags — the carrier
+//     #2709's own incident and #2788's dashboard-panel example both
+//     concern, and by far the most common ModeAuto shape) plus, as of
+//     #2840, *chplan.RangeWindowGridNative, *chplan.RangeBucketFanout,
+//     *chplan.RangeBucketGridNative and *chplan.RangeLWR — all four via
+//     chsql's shared maybePushRangeScanTimeBound helper (internal/chsql/
+//     range_lwr.go). #2840 set out to find each carrier's "own real-matrix
+//     time-bound-pushdown formula to mirror" and instead found chsql had
+//     already collapsed all four onto that ONE shared helper — there was no
+//     per-carrier formula left to rediscover, which is why
+//     cardinalityProbeCarrier (below) can express every one of the five
+//     with a single (tsCol, start, end, offset, span) shape. Every other
+//     [chplan.GridCarrier] kind (StepGrid, RangeWindowStaleResample,
+//     AbsentOverTime) still fails open — none of them is a #2840-named
+//     carrier.
 //  2. Metric identity: the probe only fires when the carrier's scan is
 //     gated by exactly one literal `MetricName = '...'` equality anywhere
 //     in its nearest Filter's predicate (cardinalityProbeMetricName). A
 //     regex `__name__` matcher, a multi-metric selector, or no Filter at
 //     all skips the probe — there is no single "metric" to key the cache on.
-//  3. Payload: only `count()` and `uniqUpTo(100)(...)`. The issue's own SQL
-//     sketch brackets a third, OPTIONAL `avg(length(ExplicitBounds))` term
-//     (a classic-histogram bucket-width bias signal) — omitted here because
-//     neither of this file's two consumers (the K-clamp's Rows input, the
-//     per-rung seeding below) needs it; also tracked in issue #2840.
+//  3. Payload: `count()`, `uniqUpTo(100)(...)` and — #2840 —
+//     `uniqCombined64(...)`, the uncapped approximate sibling
+//     cardinalityProbeEffectiveDistinctSeries's own doc explains. The
+//     issue's own SQL sketch also brackets a FOURTH, OPTIONAL
+//     `avg(length(ExplicitBounds))` term (a classic-histogram bucket-width
+//     bias signal) — still omitted: unlike uniqCombined64, it has no
+//     consumer today (neither the K-clamp's Rows input nor
+//     maybeSeedPerRungPrior reads a bucket-width signal), and #2840's own
+//     text names it the lowest-priority of its three items, gated on a real
+//     consumer existing first.
 //
 // A probe failure — emission error, breaker-open, transport error, timeout —
 // is treated as "no signal" and never surfaces to the caller, exactly like
@@ -92,15 +106,17 @@ const (
 	cardinalityProbeTimeout = 2 * time.Second
 )
 
-// cardinalityProbeRowsAlias / cardinalityProbeDistinctSeriesAlias name the
-// probe's two output columns. chclient.Client.ProbeCardinality scans them
-// POSITIONALLY (rows, then distinct_series) — buildCardinalityProbePlan's
-// AggFuncs order is what that positional contract actually binds; these
-// aliases only make the emitted SQL self-describing, they are not
-// themselves load-bearing for the scan order.
+// cardinalityProbeRowsAlias / cardinalityProbeDistinctSeriesAlias /
+// cardinalityProbeDistinctSeriesApproxAlias name the probe's three output
+// columns. chclient.Client.ProbeCardinality scans them POSITIONALLY (rows,
+// then distinct_series, then distinct_series_approx) —
+// buildCardinalityProbePlan's AggFuncs order is what that positional
+// contract actually binds; these aliases only make the emitted SQL
+// self-describing, they are not themselves load-bearing for the scan order.
 const (
-	cardinalityProbeRowsAlias           = "rows"
-	cardinalityProbeDistinctSeriesAlias = "distinct_series"
+	cardinalityProbeRowsAlias                 = "rows"
+	cardinalityProbeDistinctSeriesAlias       = "distinct_series"
+	cardinalityProbeDistinctSeriesApproxAlias = "distinct_series_approx"
 )
 
 // cardinalityProbeMetricNameColumn / cardinalityProbeAttributeMapColumns
@@ -203,11 +219,11 @@ func (a *CardinalityProbeAdvisor) Advise(
 	if !reachedCostGrid(baseline.Reason) {
 		return current
 	}
-	rw, ok := findCardinalityProbeCarrier(plan)
+	carrier, ok := findCardinalityProbeCarrier(plan)
 	if !ok {
 		return current
 	}
-	metric, ok := cardinalityProbeMetricName(rw, cardinalityProbeMetricNameColumn)
+	metric, ok := cardinalityProbeMetricName(carrier, cardinalityProbeMetricNameColumn)
 	if !ok {
 		return current
 	}
@@ -225,7 +241,7 @@ func (a *CardinalityProbeAdvisor) Advise(
 		return mergeCardinalityEstimate(current, cached)
 	}
 
-	probePlan, ok := buildCardinalityProbePlan(rw)
+	probePlan, ok := buildCardinalityProbePlan(carrier)
 	if !ok {
 		return current
 	}
@@ -299,15 +315,49 @@ func (a *CardinalityProbeAdvisor) store(key cardinalityProbeKey, est chclient.Ca
 // perRungCheapRowsPerAnchor-per-anchor threshold Observe applies to real
 // composed output is therefore "answer the rows/anchor question directly"
 // (issue #2788's own phrase), not a new, independently-tuned threshold.
+//
+// It compares cardinalityProbeEffectiveDistinctSeries(est), not est.
+// DistinctSeries directly — see that function's own doc for why: #2840
+// found the raw uniqUpTo(100) reading saturates at 101 on EVERY dense real
+// window in test/perf/smoke/testdata/samples/, which made a bare
+// est.DistinctSeries comparison here a near-constant, falsely-cheap signal
+// for exactly the traffic this seeding targets whenever the threshold below
+// (routinely in the thousands) sat above the 101 saturation floor.
 func (a *CardinalityProbeAdvisor) maybeSeedPerRungPrior(key routememo.Key, est chclient.CardinalityEstimate, baseline *solver.Decision) {
 	if a.perRungAdmission == nil || baseline.NAnchors <= 0 {
 		return
 	}
 	// Real probe distinct-series / anchor counts never approach int64 overflow.
-	if int64(est.DistinctSeries) >= int64(baseline.NAnchors)*perRungCheapRowsPerAnchor { //nolint:gosec // G115
+	if int64(cardinalityProbeEffectiveDistinctSeries(est)) >= int64(baseline.NAnchors)*perRungCheapRowsPerAnchor { //nolint:gosec // G115
 		return
 	}
 	a.perRungAdmission.SeedPriorFromEstimate(key, true)
+}
+
+// cardinalityProbeEffectiveDistinctSeries resolves the distinct-series
+// reading maybeSeedPerRungPrior actually compares against its threshold.
+//
+// uniqUpTo(100) is EXACT below its cap and reports a fixed 101 once the
+// group holds more than 100 distinct values (chplan.FnUniqUpTo's own doc) —
+// #2840 verified against test/perf/smoke/testdata/samples/ that every dense
+// real window in that corpus crosses the cap, so est.DistinctSeries alone is
+// "101" on essentially all the traffic maybeSeedPerRungPrior's threshold
+// (routinely NAnchors * perRungCheapRowsPerAnchor, in the thousands) exists
+// to distinguish — a constant reading below a variable threshold always
+// reads as cheap, regardless of how much larger the TRUE count is. Once
+// est.DistinctSeries reports the saturation value, this instead trusts
+// est.DistinctSeriesApprox — uniqCombined64(...)'s uncapped, approximate
+// sibling — which keeps answering past 100 at the cost of being an estimate
+// rather than an exact count.
+//
+// Below the cap, est.DistinctSeries IS the exact count and is preferred
+// over the approximate sibling — there is nothing to gain by trading an
+// exact small count for a sketch estimate of the same value.
+func cardinalityProbeEffectiveDistinctSeries(est chclient.CardinalityEstimate) uint64 {
+	if est.DistinctSeries > cardinalityProbeUniqUpToCap {
+		return est.DistinctSeriesApprox
+	}
+	return est.DistinctSeries
 }
 
 // mergeCardinalityEstimate folds a cardinality-probe result into base
@@ -328,15 +378,58 @@ func mergeCardinalityEstimate(base *solver.ScanEstimate, est chclient.Cardinalit
 	return &merged
 }
 
+// cardinalityProbeCarrier is the carrier-agnostic view findCardinalityProbeCarrier
+// extracts from whichever of the five recognised [chplan.GridCarrier] kinds
+// (this file's own top-level doc, point 1) it locates. Every one of those
+// five kinds carries its OWN field names for the same underlying shape — a
+// scanned Input, a series-identity key, a timestamp column, and a scan
+// window expressed as (Start, End, Offset, <backward reach>) — so this
+// struct is the one normalised shape buildCardinalityProbePlan and
+// cardinalityProbeMetricName actually operate on, extracted once at the
+// findCardinalityProbeCarrier type switch rather than re-derived at every
+// call site.
+type cardinalityProbeCarrier struct {
+	// Input is the matchers-filtered scan (Scan, or Filter-over-Scan) the
+	// carrier reduces. Never nil for a value this struct's own construction
+	// returns ok=true for.
+	Input chplan.Node
+	// SeriesKey is the series-identity key(s) the probe's uniqUpTo /
+	// uniqCombined64 aggregates group by — the carrier's own GroupBy for the
+	// four kinds that carry one (RangeWindow, RangeWindowGridNative,
+	// RangeBucketFanout, RangeBucketGridNative), or a single bare reference
+	// to AttributesCol for RangeLWR, which carries no explicit GroupBy
+	// field because a bare selector's series identity IS its full
+	// Attributes column (see chplan.RangeLWR's own doc). Never empty for a
+	// value this struct's own construction returns ok=true for — an empty
+	// GroupBy on a GroupBy-bearing carrier means "no series-identity keys",
+	// the same "nothing to count distinct values of" case that keeps the
+	// probe out of scope.
+	SeriesKey []chplan.Expr
+	// TimestampCol names the per-sample timestamp column on Input.
+	TimestampCol string
+	// Start / End / Offset mirror the carrier's own eval-grid fields
+	// verbatim.
+	Start, End time.Time
+	Offset     time.Duration
+	// Span is the carrier's own backward reach from each anchor — Range for
+	// RangeWindow / RangeWindowGridNative / RangeBucketGridNative, Lookback
+	// for RangeBucketFanout / RangeLWR — the SAME spanNS
+	// maybePushRangeScanTimeBound's own doc names (internal/chsql/
+	// range_lwr.go): it widens the scan bound's lower edge so a sample that
+	// belongs to the earliest in-grid anchor's window survives the prune.
+	Span time.Duration
+}
+
 // findCardinalityProbeCarrier locates plan's OUTERMOST [chplan.GridCarrier]
 // — the exact same stop condition solver.GridOf itself uses (first carrier
 // whose EvalGrid reports a positive step) — and reports it only when that
-// carrier is a *chplan.RangeWindow carrying at least one GroupBy key and a
-// non-nil Input. Every other carrier kind (RangeLWR, RangeBucketFanout,
-// RangeBucketGridNative, RangeWindowGridNative) — and a RangeWindow with no
-// series-identity keys or Input at all — reports ok=false: this file's own
-// top-level doc names this the deliberate carrier-kind scope narrowing.
-func findCardinalityProbeCarrier(plan chplan.Node) (*chplan.RangeWindow, bool) {
+// carrier is one of the five kinds this file's own top-level doc names
+// (point 1), carrying at least one series-identity key and a non-nil Input.
+// Every other carrier kind (StepGrid, RangeWindowStaleResample,
+// AbsentOverTime) — and a recognised carrier with no series-identity keys
+// or Input at all — reports ok=false: this file's own top-level doc names
+// this the deliberate carrier-kind scope narrowing.
+func findCardinalityProbeCarrier(plan chplan.Node) (*cardinalityProbeCarrier, bool) {
 	var found chplan.Node
 	chplan.Walk(plan, func(n chplan.Node) bool {
 		if found != nil {
@@ -350,25 +443,64 @@ func findCardinalityProbeCarrier(plan chplan.Node) (*chplan.RangeWindow, bool) {
 		}
 		return true
 	})
-	rw, ok := found.(*chplan.RangeWindow)
-	if !ok || len(rw.GroupBy) == 0 || rw.Input == nil {
+	switch c := found.(type) {
+	case *chplan.RangeWindow:
+		return cardinalityProbeCarrierFromGroupBy(c.Input, c.GroupBy, c.TimestampColumn, c.Start, c.End, c.Offset, c.Range)
+	case *chplan.RangeWindowGridNative:
+		return cardinalityProbeCarrierFromGroupBy(c.Input, c.GroupBy, c.TimestampColumn, c.Start, c.End, c.Offset, c.Range)
+	case *chplan.RangeBucketFanout:
+		return cardinalityProbeCarrierFromGroupBy(c.Input, c.GroupBy, c.TimestampCol, c.Start, c.End, c.Offset, c.Lookback)
+	case *chplan.RangeBucketGridNative:
+		return cardinalityProbeCarrierFromGroupBy(c.Input, c.GroupBy, c.TimestampCol, c.Start, c.End, c.Offset, c.Range)
+	case *chplan.RangeLWR:
+		if c.Input == nil || c.AttributesCol == "" {
+			return nil, false
+		}
+		seriesKey := []chplan.Expr{&chplan.ColumnRef{Name: c.AttributesCol}}
+		return cardinalityProbeCarrierFromGroupBy(c.Input, seriesKey, c.TimestampCol, c.Start, c.End, c.Offset, c.Lookback)
+	default:
 		return nil, false
 	}
-	return rw, true
+}
+
+// cardinalityProbeCarrierFromGroupBy builds a *cardinalityProbeCarrier from
+// one of the five recognised carriers' own fields, reporting ok=false when
+// input is nil or groupBy carries no series-identity keys — the shared
+// gate every findCardinalityProbeCarrier case above applies, factored out
+// so the five-way type switch cannot drift on which fields it checks.
+func cardinalityProbeCarrierFromGroupBy(
+	input chplan.Node,
+	groupBy []chplan.Expr,
+	tsCol string,
+	start, end time.Time,
+	offset, span time.Duration,
+) (*cardinalityProbeCarrier, bool) {
+	if input == nil || len(groupBy) == 0 {
+		return nil, false
+	}
+	return &cardinalityProbeCarrier{
+		Input:        input,
+		SeriesKey:    groupBy,
+		TimestampCol: tsCol,
+		Start:        start,
+		End:          end,
+		Offset:       offset,
+		Span:         span,
+	}, true
 }
 
 // cardinalityProbeMetricName reports the single literal metric name gating
-// rw's scan — the equality operand of a `<metricNameColumn> = '<name>'`
+// carrier's scan — the equality operand of a `<metricNameColumn> = '<name>'`
 // (or reversed) Binary leaf anywhere in the nearest enclosing Filter's
-// predicate below rw.Input. Reports ok=false when rw.Input carries no
-// Filter, the Filter's predicate carries no such equality, or it carries
+// predicate below carrier.Input. Reports ok=false when carrier.Input carries
+// no Filter, the Filter's predicate carries no such equality, or it carries
 // more than one DIFFERENT literal for metricNameColumn (an ambiguous /
 // regex-backed multi-metric selector) — this file's own top-level doc names
 // this the deliberate metric-identity scope narrowing: the probe only ever
 // keys its cache on an unambiguous single metric.
-func cardinalityProbeMetricName(rw *chplan.RangeWindow, metricNameColumn string) (string, bool) {
+func cardinalityProbeMetricName(carrier *cardinalityProbeCarrier, metricNameColumn string) (string, bool) {
 	var pred chplan.Expr
-	chplan.Walk(rw.Input, func(n chplan.Node) bool {
+	chplan.Walk(carrier.Input, func(n chplan.Node) bool {
 		if pred != nil {
 			return false
 		}
@@ -433,24 +565,26 @@ func cardinalityProbeMetricLiteral(colSide, litSide chplan.Expr, metricNameColum
 }
 
 // buildCardinalityProbePlan builds the bounded aggregate this file's own doc
-// describes — `count()`, `uniqUpTo(100)(...)` over rw's already-pruned scan
-// window — as a chplan tree, rendered through the ordinary chsql.Emit
-// pipeline (invariant 10: no raw SQL). Reports ok=false when rw carries no
-// usable Start/End/TimestampColumn (defensive: every caller already gates
-// on a routed baseline, so this should not fire in practice — mirrors
-// chsql's own maybePushInnerScanTimeBounds "gated on BOTH Start and End
-// being set" posture).
+// describes — `count()`, `uniqUpTo(100)(...)` and `uniqCombined64(...)` over
+// carrier's already-pruned scan window — as a chplan tree, rendered through
+// the ordinary chsql.Emit pipeline (invariant 10: no raw SQL). Reports
+// ok=false when carrier carries no usable Start/End/TimestampCol (defensive:
+// every caller already gates on a routed baseline, so this should not fire
+// in practice — mirrors chsql's own maybePushRangeScanTimeBound "gated on
+// BOTH Start and End being set" posture).
 //
 // Shape:
 //
-//	SELECT rows, distinct_series
+//	SELECT rows, distinct_series, distinct_series_approx
 //	FROM (
-//	    SELECT toFloat64(count()) AS rows, uniqUpTo(?)(<series key>) AS distinct_series,
+//	    SELECT toFloat64(count()) AS rows,
+//	           uniqUpTo(?)(<series key>) AS distinct_series,
+//	           uniqCombined64(<series key>) AS distinct_series_approx,
 //	           count() AS _cerb_n
 //	    FROM (
-//	        SELECT * FROM (<rw.Input>)
-//	        WHERE <TimestampColumn> > (Start - Offset - Range)
-//	          AND <TimestampColumn> <= (End - Offset)
+//	        SELECT * FROM (<carrier.Input>)
+//	        WHERE <TimestampCol> > (Start - Offset - Span)
+//	          AND <TimestampCol> <= (End - Offset)
 //	    )
 //	) WHERE _cerb_n > 0
 //
@@ -460,30 +594,31 @@ func cardinalityProbeMetricLiteral(colSide, litSide chplan.Expr, metricNameColum
 // produces already carries — and `uniqUpTo`'s cap renders as a bound `?`
 // parameter (chplan.AggFunc.Params), the same parametric-aggregate shape
 // production's own quantile(phi)(...) lowering already uses
-// (internal/promql/lower.go). chclient.Client.ProbeCardinality's own doc
-// explains the resulting scan shape.
+// (internal/promql/lower.go). uniqCombined64 takes no parameter. chclient.
+// Client.ProbeCardinality's own doc explains the resulting scan shape.
 //
-// The (Start - Offset - Range, End - Offset] bound is the EXACT window
-// chsql's own maybePushInnerScanTimeBounds pushes down for this SAME
-// RangeWindow's real matrix emission (internal/chsql/range_window.go) — so
-// the probe scans PRECISELY the rows the real dispatch would scan, no more,
-// no less. The outer `_cerb_n > 0` guard (chplan.Aggregate's own
-// DropEmptyOnNoGroup path, emitAggregateNoGroup) is what makes an empty
-// window return ZERO rows rather than ClickHouse's default one-row-of-zeros
-// — chclient.Client.ProbeCardinality's own doc explains why that already IS
-// the correct "near empty" reading, with no special-casing needed here.
+// The (Start - Offset - Span, End - Offset] bound is the EXACT window
+// chsql's own maybePushInnerScanTimeBounds / maybePushRangeScanTimeBound
+// pushes down for this SAME carrier's real emission (internal/chsql/
+// range_window.go, range_lwr.go) — so the probe scans PRECISELY the rows
+// the real dispatch would scan, no more, no less. The outer `_cerb_n > 0`
+// guard (chplan.Aggregate's own DropEmptyOnNoGroup path,
+// emitAggregateNoGroup) is what makes an empty window return ZERO rows
+// rather than ClickHouse's default one-row-of-zeros — chclient.Client.
+// ProbeCardinality's own doc explains why that already IS the correct
+// "near empty" reading, with no special-casing needed here.
 //
-// The series-identity key is rw.GroupBy, canonicalised via
+// The series-identity key is carrier.SeriesKey, canonicalised via
 // chplan.CanonicalizeSeriesKeyExprs exactly like chsql/exemplars.go's own
 // call site — so a raw attribute-Map key's ClickHouse key-order variance
-// cannot inflate the uniqUpTo count — collapsed into one uniqUpTo argument
-// via chplan.FnTuple when rw carries more than one key.
-func buildCardinalityProbePlan(rw *chplan.RangeWindow) (chplan.Node, bool) {
-	if rw.Start.IsZero() || rw.End.IsZero() || rw.TimestampColumn == "" {
+// cannot inflate either distinct-series aggregate — collapsed into one
+// argument via chplan.FnTuple when carrier carries more than one key.
+func buildCardinalityProbePlan(carrier *cardinalityProbeCarrier) (chplan.Node, bool) {
+	if carrier.Start.IsZero() || carrier.End.IsZero() || carrier.TimestampCol == "" {
 		return nil, false
 	}
-	groupBy := chplan.CanonicalizeSeriesKeyExprs(rw.GroupBy, []chplan.Node{rw.Input}, cardinalityProbeAttributeMapColumns)
-	filtered := &chplan.Filter{Input: rw.Input, Predicate: cardinalityProbeTimeBound(rw)}
+	seriesKey := chplan.CanonicalizeSeriesKeyExprs(carrier.SeriesKey, []chplan.Node{carrier.Input}, cardinalityProbeAttributeMapColumns)
+	filtered := &chplan.Filter{Input: carrier.Input, Predicate: cardinalityProbeTimeBound(carrier)}
 	return &chplan.Aggregate{
 		Input:              filtered,
 		DropEmptyOnNoGroup: true,
@@ -492,8 +627,13 @@ func buildCardinalityProbePlan(rw *chplan.RangeWindow) (chplan.Node, bool) {
 			{
 				Fn:     chplan.FnUniqUpTo,
 				Params: []chplan.Expr{&chplan.LitInt{V: cardinalityProbeUniqUpToCap}},
-				Args:   []chplan.Expr{cardinalityProbeSeriesKeyExpr(groupBy)},
+				Args:   []chplan.Expr{cardinalityProbeSeriesKeyExpr(seriesKey)},
 				Alias:  cardinalityProbeDistinctSeriesAlias,
+			},
+			{
+				Fn:    chplan.FnUniqCombined64,
+				Args:  []chplan.Expr{cardinalityProbeSeriesKeyExpr(seriesKey)},
+				Alias: cardinalityProbeDistinctSeriesApproxAlias,
 			},
 		},
 	}, true
@@ -509,21 +649,21 @@ func cardinalityProbeSeriesKeyExpr(groupBy []chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnTuple, Args: groupBy}
 }
 
-// cardinalityProbeTimeBound builds rw's own (Start - Offset - Range, End -
-// Offset] scan bound as a chplan Filter predicate — see
+// cardinalityProbeTimeBound builds carrier's own (Start - Offset - Span,
+// End - Offset] scan bound as a chplan Filter predicate — see
 // buildCardinalityProbePlan's own doc for why this exact interval mirrors
 // chsql's real emitter, and cardinalityProbeTimeLit's doc for the literal
 // shape.
-func cardinalityProbeTimeBound(rw *chplan.RangeWindow) chplan.Expr {
-	lower := rw.Start.Add(-rw.Offset).Add(-rw.Range)
-	upper := rw.End.Add(-rw.Offset)
-	tsCol := &chplan.ColumnRef{Name: rw.TimestampColumn}
+func cardinalityProbeTimeBound(carrier *cardinalityProbeCarrier) chplan.Expr {
+	lower := carrier.Start.Add(-carrier.Offset).Add(-carrier.Span)
+	upper := carrier.End.Add(-carrier.Offset)
+	tsCol := &chplan.ColumnRef{Name: carrier.TimestampCol}
 	return &chplan.Binary{
 		Op:   chplan.OpAnd,
 		Left: &chplan.Binary{Op: chplan.OpGt, Left: tsCol, Right: cardinalityProbeTimeLit(lower)},
 		Right: &chplan.Binary{
 			Op:    chplan.OpLe,
-			Left:  &chplan.ColumnRef{Name: rw.TimestampColumn},
+			Left:  &chplan.ColumnRef{Name: carrier.TimestampCol},
 			Right: cardinalityProbeTimeLit(upper),
 		},
 	}

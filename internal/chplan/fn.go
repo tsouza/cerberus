@@ -637,6 +637,16 @@ const (
 	// documented saturation rather than an exact count past the cap.
 	FnUniqUpTo Fn = "uniqUpTo"
 
+	// uniqCombined64(x) aggregate — an APPROXIMATE, uncapped distinct-value
+	// count over x (ClickHouse's HyperLogLog-family sketch, 64-bit hashing).
+	// Unlike uniqUpTo(N) it never saturates: it keeps answering arbitrarily
+	// far past any fixed cap, at the cost of being an estimate rather than an
+	// exact count. cerberus's cardinality pre-probe (issue #2840) runs this
+	// ALONGSIDE uniqUpTo(100), never in place of it — uniqUpTo stays the exact
+	// answer below its cap, this is only consulted once that cap saturates and
+	// the caller needs to know how far past it the true count lies.
+	FnUniqCombined64 Fn = "uniqCombined64"
+
 	// varPop(x) aggregate — the population variance of x in the group.
 	FnVarPop Fn = "varPop"
 )

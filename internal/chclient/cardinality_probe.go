@@ -18,16 +18,18 @@ import (
 // request" cost constraint per_rung_admission.go itself documents.
 //
 // Unlike EXPLAIN ESTIMATE (internal/chclient/explain_estimate.go), this DOES
-// execute against real data — count() and uniqUpTo(100)(...) over the
-// caller-bounded scan window — so it answers a question EXPLAIN ESTIMATE's
-// granule-resolution upper bound cannot: how many DISTINCT series actually
-// back the window, not merely how many granules the index analysis could not
-// prune. See docs/solver.md's "Bounded cardinality pre-probe" section for the
+// execute against real data — count(), uniqUpTo(100)(...) and
+// uniqCombined64(...) over the caller-bounded scan window — so it answers a
+// question EXPLAIN ESTIMATE's granule-resolution upper bound cannot: how
+// many DISTINCT series actually back the window, not merely how many
+// granules the index analysis could not prune. See docs/solver.md's
+// "Bounded cardinality pre-probe" section for the
 // two mechanisms' full division of labour.
 
 // CardinalityEstimate is the parsed result of one bounded cardinality-probe
 // statement: a real row count plus a real (up to the uniqUpTo cap) distinct
-// series count over the plan's already-pruned scan window.
+// series count over the plan's already-pruned scan window, plus an uncapped
+// approximate distinct-series reading for when that cap saturates.
 type CardinalityEstimate struct {
 	// Rows is the exact count() of rows the probe's bounded window scanned —
 	// unlike chclient.ScanEstimate.Rows (EXPLAIN ESTIMATE's granule-resolution
@@ -37,12 +39,22 @@ type CardinalityEstimate struct {
 	// to 100 — see chplan.FnUniqUpTo's own doc for the saturation behaviour
 	// above that cap (reported as 101, never silently wrong).
 	DistinctSeries uint64
+	// DistinctSeriesApprox is uniqCombined64(...)'s APPROXIMATE, uncapped
+	// distinct-series count over the SAME window and series key — issue
+	// #2840's answer to uniqUpTo(100) saturating at 101 on every dense real
+	// window (test/perf/smoke/testdata/samples/): a consumer that needs to
+	// know how far past the cap the true count lies reads this field once
+	// DistinctSeries reports the saturation value, rather than treating 101
+	// as if it were the true count. Always populated alongside DistinctSeries
+	// — never a separate round trip — see chplan.FnUniqCombined64's own doc.
+	DistinctSeriesApprox uint64
 }
 
-// ProbeCardinality runs sql — a bounded count()/uniqUpTo(100)(...) aggregate
-// internal/engine's cardinality_probe_wiring.go builds via chsql.Emit over
-// the plan's already-pruned scan window — and returns the single summary row
-// it produces. sql MUST already be a chsql.Emit-rendered statement (checked
+// ProbeCardinality runs sql — a bounded
+// count()/uniqUpTo(100)(...)/uniqCombined64(...) aggregate internal/engine's
+// cardinality_probe_wiring.go builds via chsql.Emit over the plan's
+// already-pruned scan window — and returns the single summary row it
+// produces. sql MUST already be a chsql.Emit-rendered statement (checked
 // against chsql's own emit_size_bound ceiling), exactly like
 // [Client.ExplainEstimate]'s own contract.
 //
@@ -83,12 +95,15 @@ func (c *Client) ProbeCardinality(ctx context.Context, sql string, args ...any) 
 		// (internal/chsql/emit_node.go's intReturningAggregates) — the SAME
 		// UInt64→Float64 guard every other count()-family column this plan
 		// emitter produces already carries, so the `rows` column arrives as
-		// Float64 here too. uniqUpTo is NOT in that set (it is not the
-		// column-scan case the guard exists for), so `distinct_series`
-		// arrives as ClickHouse's native UInt64. A real row count never
-		// approaches float64's 2^53 exact-integer ceiling.
+		// Float64 here too. uniqUpTo / uniqCombined64 are NOT in that set
+		// (neither is the column-scan case the guard exists for), so
+		// `distinct_series` and `distinct_series_approx` both arrive as
+		// ClickHouse's native UInt64. A real row count never approaches
+		// float64's 2^53 exact-integer ceiling. Positional, in the SAME
+		// (rows, distinct_series, distinct_series_approx) order
+		// buildCardinalityProbePlan's AggFuncs list them.
 		var rowsFloat float64
-		if err := rows.Scan(&rowsFloat, &out.DistinctSeries); err != nil {
+		if err := rows.Scan(&rowsFloat, &out.DistinctSeries, &out.DistinctSeriesApprox); err != nil {
 			return CardinalityEstimate{}, fmt.Errorf("chclient: probe cardinality scan: %w", err)
 		}
 		out.Rows = uint64(rowsFloat)

@@ -1029,11 +1029,17 @@ const (
 	FeatureExplainEstimate = "explain_estimate"
 
 	// FeatureCardinalityProbe gates a SECOND, independent advisory pre-flight
-	// (cerberus issue #2788) that complements FeatureExplainEstimate: a
-	// bounded REAL aggregate — `count()`, `uniqUpTo(100)(...)` — over a
-	// ModeAuto RangeWindow candidate's already-pruned scan window, answering
-	// the distinct-series fan-out question EXPLAIN ESTIMATE's marks-level
-	// upper bound cannot. Gated identically to FeatureExplainEstimate: once
+	// (cerberus issue #2788, extended to more carrier kinds and an uncapped
+	// reading by issue #2840) that complements FeatureExplainEstimate: a
+	// bounded REAL aggregate — `count()`, `uniqUpTo(100)(...)`, and
+	// `uniqCombined64(...)` — over a ModeAuto candidate's already-pruned
+	// scan window, answering the distinct-series fan-out question EXPLAIN
+	// ESTIMATE's marks-level upper bound cannot. Recognises five
+	// [chplan.GridCarrier] kinds (RangeWindow, RangeWindowGridNative,
+	// RangeBucketFanout, RangeBucketGridNative, RangeLWR) — see
+	// internal/engine/cardinality_probe_wiring.go's own top-level doc for
+	// the full carrier-kind list and its scope-narrowing rationale. Gated
+	// identically to FeatureExplainEstimate: once
 	// per distinct (plan shape, metric) pair for a candidate whose baseline
 	// classification reached the cost-grid section, never on every request
 	// (internal/engine's cardinality_probe_wiring.go — same round-trip
@@ -2232,7 +2238,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "advisory bounded count()/uniqUpTo(100) cardinality pre-probe complementing explain_estimate's marks-level estimate with real distinct-series fan-out (no version floor; opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)",
+		Doc:        "advisory bounded count()/uniqUpTo(100)/uniqCombined64 cardinality pre-probe complementing explain_estimate's marks-level estimate with real distinct-series fan-out, across five GridCarrier kinds (no version floor; opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)",
 	},
 	{
 		ID:         FeatureFullTextIndex,

@@ -844,23 +844,33 @@ fail to prune" — a granule-resolution SCAN-side upper bound. It has no
 comparable answer for a different, equally real question: how many DISTINCT
 SERIES actually back a window. Issue #2788 closes that gap with a second,
 independent advisory input — a bounded, REAL aggregate (`count()`,
-`uniqUpTo(100)(...)`) run over the plan's already-pruned scan window, gated
-and cached by `internal/engine/cardinality_probe_wiring.go`'s
-`CardinalityProbeAdvisor`, exactly the way `ScanEstimateAdvisor` gates and
-caches `EXPLAIN ESTIMATE`.
+`uniqUpTo(100)(...)`, and — issue #2840 — `uniqCombined64(...)`) run over
+the plan's already-pruned scan window, gated and cached by
+`internal/engine/cardinality_probe_wiring.go`'s `CardinalityProbeAdvisor`,
+exactly the way `ScanEstimateAdvisor` gates and caches `EXPLAIN ESTIMATE`.
 
 **Real execution, not estimation — and that is the whole point.** Unlike
 `EXPLAIN ESTIMATE`, this probe DOES read data: `count()` is an exact row
-count, and `uniqUpTo(100)(...)` is an exact distinct-series count up to 100
+count, `uniqUpTo(100)(...)` is an exact distinct-series count up to 100
 (ClickHouse's own hard cap on `uniqUpTo`'s parameter — issue #2788 verified
 `uniqUpTo(K_max*16)` throws rather than saturating past it — see
-`chplan.FnUniqUpTo`'s own doc for the "reports 101" saturation contract).
-Both advisors are wired as two SEPARATE `*Engine` fields
-(`ScanEstimateAdvisor`, `CardinalityProbeAdvisor`) whose results merge into
-one `solver.ScanEstimate` at the `Engine.classify` call site: the
+`chplan.FnUniqUpTo`'s own doc for the "reports 101" saturation contract),
+and `uniqCombined64(...)` is an APPROXIMATE, uncapped distinct-series count
+over the identical window and series key — the sibling
+`cardinalityProbeEffectiveDistinctSeries` consults once `uniqUpTo` reports
+its saturation value, so a consumer's threshold check is never comparing
+against a reading that is silently pinned at 101 regardless of how much
+larger the true count is (see "Measurement" below for the evidence that
+motivated adding it). Both advisors are wired as two SEPARATE `*Engine`
+fields (`ScanEstimateAdvisor`, `CardinalityProbeAdvisor`) whose results
+merge into one `solver.ScanEstimate` at the `Engine.classify` call site: the
 cardinality probe's real `count()` overwrites `Rows` when it runs (strictly
 more precise than the granule upper bound for the SAME K-clamp arithmetic
 below), and its `DistinctSeries` is a field only this probe ever populates.
+`DistinctSeriesApprox` (`uniqCombined64`'s read-out) never reaches
+`solver.ScanEstimate` — it has exactly one consumer, `maybeSeedPerRungPrior`
+below, which reads it straight off the `chclient.CardinalityEstimate` this
+probe returns.
 
 ### What it feeds
 
@@ -895,16 +905,24 @@ per-rung admission already holds a verdict) — reusing that file's own
 re-deriving them. Two further narrowings are specific to this probe, both
 documented at length on `cardinality_probe_wiring.go`'s own top-level doc:
 
-- **Carrier kind:** only `*chplan.RangeWindow` (the "matrix" family — by far
-  the most common ModeAuto shape, and the one issue #2709's own incident and
-  this issue's own dashboard-panel example both concern). Every other
-  routable carrier kind (`RangeLWR`, `RangeBucketFanout`,
-  `RangeBucketGridNative`, `RangeWindowGridNative`) fails open — no probe,
-  exactly as if the feature did not exist for that shape. Extending the
-  probe to them, and adding the issue's own bracketed-optional third stat
+- **Carrier kind:** five recognised `chplan.GridCarrier` kinds — the
+  "matrix" family `*chplan.RangeWindow` (by far the most common ModeAuto
+  shape, and the one issue #2709's own incident and issue #2788's own
+  dashboard-panel example both concern) plus, as of issue #2840,
+  `*chplan.RangeWindowGridNative`, `*chplan.RangeBucketFanout`,
+  `*chplan.RangeBucketGridNative` and `*chplan.RangeLWR`. Issue #2840 set
+  out to mirror each of the latter four's "own real-matrix
+  time-bound-pushdown formula" and instead found `chsql` had already
+  collapsed all four onto ONE shared helper
+  (`maybePushRangeScanTimeBound`, `internal/chsql/range_lwr.go`) — see
+  `cardinality_probe_wiring.go`'s own top-level doc for the finding. Every
+  other `GridCarrier` kind (`StepGrid`, `RangeWindowStaleResample`,
+  `AbsentOverTime`) still fails open — no probe, exactly as if the feature
+  did not exist for that shape; none of them is one of the five recognised
+  kinds. The issue's own bracketed-optional third stat
   (`avg(length(ExplicitBounds))`, a classic-histogram bucket-width bias
-  signal neither consumer above needs), are tracked as separate follow-up
-  work (issue #2840) rather than folded into this narrower landing.
+  signal) stays out for the same reason it started out: no consumer reads
+  it, and #2840's own text names it the lowest-priority of its three items.
 - **Metric identity:** the probe's cache key is `(routememo.Key, metric)` —
   the ONE literal this signal cannot do without, because cardinality is
   fundamentally metric-specific in a way a literal-free structural shape
@@ -913,10 +931,13 @@ documented at length on `cardinality_probe_wiring.go`'s own top-level doc:
   `__name__` matcher or a multi-metric selector has no single metric to key
   on and is skipped.
 
-The bound (`Start - Offset - Range, End - Offset]`) the probe scans is the
-EXACT window `chsql`'s own `maybePushInnerScanTimeBounds` pushes down for
-this SAME `RangeWindow`'s real matrix emission — the probe reads precisely
-the rows the real dispatch would read, no more.
+The bound (`Start - Offset - Span, End - Offset]`) the probe scans is the
+EXACT window `chsql`'s own `maybePushInnerScanTimeBounds` /
+`maybePushRangeScanTimeBound` pushes down for this SAME carrier's real
+emission — the probe reads precisely the rows the real dispatch would read,
+no more. `Span` is `Range` for `RangeWindow` / `RangeWindowGridNative` /
+`RangeBucketGridNative`, `Lookback` for `RangeBucketFanout` / `RangeLWR` —
+each carrier's own backward reach from an anchor.
 
 A probe failure (breaker-open, transport error, emission error, or the
 probe's own strict `cardinalityProbeTimeout` firing) is treated as "no
@@ -941,19 +962,33 @@ to ~4,800 series in a single window per its own `README.md`):
 The 6h row count (895,858) lands EXACTLY on `EXPLAIN ESTIMATE`'s own
 measurement for the identical window (the "Calibration" table above) — the
 two probes independently scanning the same real data agree, cross-validating
-that this probe's `(Start - Offset - Range, End - Offset]` bound is the
+that this probe's `(Start - Offset - Span, End - Offset]` bound is the
 same window the granule-upper-bound probe already reasons about. Every dense
 real window this sample carries saturates `uniqUpTo(100)` at 101 — this
 sample's own real per-panel cardinality already exceeds the cap throughout
 its captured span, confirming issue #2788's own verified constraint (a K
 above 100 throws rather than silently under-counting) matters in practice,
-not only in theory: a deployment probing production traffic at this
-sample's own density needs `uniqCombined`/`uniqCombined64` (issue #2788's
-own named alternative) to see past 100 distinct series, not `uniqUpTo`
-alone — left for the same follow-up (issue #2840) that widens the carrier
-scope, since neither of this landing's two consumers (K-clamp `Rows`,
-per-rung `cheap` seeding) needs an exact count above the 100-series
-threshold either already answers.
+not only in theory.
+
+Issue #2788's own landing reasoned that neither of this file's two
+consumers (K-clamp `Rows`, per-rung `cheap` seeding) needed an exact count
+above the 100-series threshold `uniqUpTo` already answers, and left
+`uniqCombined`/`uniqCombined64` (its own named alternative) for a follow-up.
+Issue #2840 re-examined that assumption against `maybeSeedPerRungPrior`'s
+own threshold — `NAnchors * perRungCheapRowsPerAnchor`, routinely in the
+thousands — and found it did NOT hold: a saturated `uniqUpTo` reading is a
+CONSTANT 101 regardless of how far past the cap the true count lies, so on
+every dense real window this sample carries, the per-rung seeding
+comparison was reading "101 < a threshold in the thousands" and seeding
+`cheap=true` no matter how large the true series count actually was — a
+near-constant, falsely-cheap signal on exactly the traffic that threshold
+exists to gate. `uniqCombined64(...)` closes that gap: `internal/engine/
+cardinality_probe_wiring.go`'s `cardinalityProbeEffectiveDistinctSeries`
+now falls back to it whenever `uniqUpTo` reports the saturation value, so
+`maybeSeedPerRungPrior`'s threshold check compares against the approximate
+UNCAPPED reading instead of the pinned 101 on exactly the windows this
+table shows saturate. `K clamping (Rows)` is unaffected — it was always
+fed `count()`, never `DistinctSeries`.
 
 ### Configuration
 
