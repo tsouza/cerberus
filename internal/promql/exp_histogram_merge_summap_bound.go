@@ -231,13 +231,21 @@ func expHistogramMergeSumMapBudgetGuardExpr(maxCostUnits int64) chplan.Expr {
 // this file's own budget guard, the sumMap-path counterpart of
 // [wrapExpHistogramMergeBudgetGuard]. multiGroup selects between the
 // single-group guard above (byte-identical to before cerberus issue #2865,
-// no golden churn) and [expHistogramMergeSumMapMultiGroupBudgetGuardExpr]
-// below — see this file's "Multi-group calibration" section for why
-// multi-group needs a genuinely different guard, not just a wider single-
-// group one.
-func wrapExpHistogramMergeSumMapBudgetGuard(merged chplan.Node, maxCostUnits int64, multiGroup bool) chplan.Node {
+// no golden churn) and one of the two multi-group guards below;
+// rangeMode (only meaningful when multiGroup is true — range mode is
+// ALWAYS multi-group, see [expHistogramGroupMergeSumMap]'s own doc)
+// further selects between [expHistogramMergeSumMapMultiGroupBudgetGuardExpr]
+// (instant, cerberus issue #2865) and
+// [expHistogramMergeSumMapRangeBudgetGuardExpr] (range mode, cerberus
+// issue #3027) — see this file's "Multi-group calibration" and
+// "Range-mode calibration" sections for why each shape needs its OWN
+// real-measured ceiling rather than sharing one.
+func wrapExpHistogramMergeSumMapBudgetGuard(merged chplan.Node, maxCostUnits int64, multiGroup, rangeMode bool) chplan.Node {
 	predicate := expHistogramMergeSumMapBudgetGuardExpr(maxCostUnits)
-	if multiGroup {
+	switch {
+	case multiGroup && rangeMode:
+		predicate = expHistogramMergeSumMapRangeBudgetGuardExpr(maxCostUnits)
+	case multiGroup:
 		predicate = expHistogramMergeSumMapMultiGroupBudgetGuardExpr(maxCostUnits)
 	}
 	return &chplan.Filter{Input: merged, Predicate: predicate}
@@ -379,6 +387,167 @@ func expHistogramMergeSumMapMultiGroupBudgetGuardExpr(maxCostUnits int64) chplan
 			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
 				expHistogramMergeSumMapMultiGroupCostOverBudgetExpr(seriesCount, maxCostUnits),
+				&chplan.InlineString{V: chplan.HistogramMergeBudgetMessage},
+			},
+		},
+		Right: &chplan.LitInt{V: 0},
+	}
+}
+
+// # Range-mode calibration (cerberus issue #3027, real ClickHouse 26.6.4, a
+// # standalone `docker run clickhouse/clickhouse-server:26.6-alpine`
+// # container — not chDB — seeded with otel_metrics_exponential_histogram-
+// # shaped rows and measured via the ACTUAL emitted SQL for a query_range
+// # `sum(<selector>)` / `sum by(instance)(<selector>)` (chsql.Emit over
+// # promql.LowerAtRangeOpts's own output through
+// # [NativeExpHistogramMergeLowerer], run through `SYSTEM FLUSH LOGS` +
+// # system.query_log.memory_usage — the SAME discipline the single-group
+// # and instant multi-group tables above use, via a throwaway harness
+// # deleted before this fix merged, same precedent as those tables)
+//
+// Range mode is ALWAYS multi-group (every step anchor is its own output
+// group — see [expHistogramGroupMergeSumMap]'s own doc), so it always
+// goes through the SAME WindowExpr pre-pass the instant multi-group guard
+// above bounds. But range mode ALSO pays a cost the instant path never
+// does: [chplan.RangeBucketFanout] (histogram_quantile_range.go's
+// buildHistogramBucketFanout) resolves one row per series PER STEP
+// BEFORE this merge ever runs, via a per-row arrayJoin fan-out over every
+// candidate anchor in that row's own staleness lookback window. That
+// stage's cost is real and is NOT bounded by anything this file adds (it
+// has its own, pre-existing "series-times-anchors resource bound" —
+// histogram_quantile_range.go / internal/chsql/lwr_fanout_bound.go); this
+// guard only has to be honest that its own two ceilings sit on top of
+// that other, already-real cost, not that it can ignore it.
+//
+// A real measurement isolating the GROUP-COUNT axis (fixed width 160, no
+// by()/without() clause — one output group per step anchor, exactly one
+// series contributing to each — the range-mode counterpart of the
+// instant multi-group table's own "1,000 groups of 1 row each" sweep):
+//
+//	steps   total rows   peak memory
+//	   100         100      67.1 MiB
+//	   500         500     303.9 MiB
+//	   600         600     364.0 MiB
+//	   700         700     424.1 MiB
+//	  1000       1,000     604.4 MiB
+//
+// This axis is cleanly linear (~0.6 MiB/step + a small fixed overhead)
+// across every checkpoint above — MUCH steeper than the instant multi-
+// group guard's own ~0.0095-0.0138 MiB/group, confirming the issue's own
+// prediction that range mode's per-group cost is materially higher (the
+// extra RangeBucketFanout pass every group pays before this merge even
+// starts). The sweep was NOT extended past ~1,400 steps at this shape:
+// somewhere in that neighborhood the measurement stopped being
+// deterministic — repeated runs at an IDENTICAL step count (1,406 to
+// 1,409 tested) returned either the same ~0.6 MiB/step trend (~850 MiB)
+// or a markedly cheaper ~100 MiB reading, nondeterministically, and
+// settled back to a fully deterministic (repeat-tested), much cheaper
+// ~0.043 MiB/step trend for every larger step count tried (2,000 through
+// 40,000). That instability sits well outside the ceiling this file
+// picks below and does not change its safety — [maxHistogramMergeCostUnits]'s
+// own margin discipline already assumes worst-case, not best-case,
+// execution — but it is flagged here, not silently smoothed over, as a
+// real ClickHouse behavior (plausibly a plan-selection threshold — e.g.
+// aggregation-in-order eligibility — flipping near that row count) a
+// future session should understand before raising this ceiling.
+//
+// A second sweep isolates the ROWS-PER-GROUP axis: a fixed, low step
+// count (100, far inside the ceiling below) while the series contributing
+// to EACH step grows (the range-mode counterpart of the instant multi-
+// group guard's own rows-per-group sweep):
+//
+//	steps   rows/step   total rows   peak memory
+//	   100          10        1,000      68.8 MiB
+//	   100          50        5,000     325.9 MiB
+//	   100          60        6,000     389.6 MiB
+//	   100          80        8,000     521.4 MiB
+//	   100         100       10,000     534.2 MiB
+//
+// Both sweeps land at a REAL cost per unit far above the instant multi-
+// group guard's own two sweeps (0.6 MiB/step here versus ~0.01 MiB/group
+// there; ~0.065 MiB/row here versus well under 0.001 MiB/row there at
+// comparable total row counts) — this is the RangeBucketFanout overhead
+// above, not a WindowExpr/sumMap regression: the identical shape run
+// through [FanoutExpHistogramMergeLowerer] (the OLD fold) at a few
+// checkpoints in this same range was COSTLIER still (e.g. 940.5 MiB at
+// 2,000 steps / 1 row-per-step, where the sumMap path measured only
+// 137.9 MiB — sumMap keeps its OWN cost advantage over the fold in range
+// mode too, it just does not erase RangeBucketFanout's shared cost). This
+// is why range mode needs its OWN, separately-pinned ceilings rather than
+// reusing the instant multi-group guard's 40,000 / 200,000 — at THOSE
+// values this shape's real memory would be roughly 40,000 x 0.6 MiB
+// (tens of gigabytes) before even accounting for RangeBucketFanout's own
+// resource bound, wildly unsafe.
+//
+// [maxHistogramMergeSumMapRangeGroupCountGuard] is pinned at the exact,
+// measured 600-step checkpoint (364.0 MiB, ~35.5% of the 1024 MiB
+// CERBERUS_CH_QUERY_MAX_MEMORY default target — the same margin
+// discipline [maxHistogramMergeSumMapGroupCountGuard]'s own doc uses),
+// comfortably below the ~1,400-step instability neighborhood identified
+// above. [maxHistogramMergeSumMapRangeTotalRowCountGuard] is pinned at
+// the measured 6,000-row checkpoint (389.6 MiB, ~38.0% of the same
+// target) — both far tighter than the instant multi-group guard's own
+// ceilings, reflecting range mode's genuinely higher real per-unit cost
+// rather than an arbitrary choice.
+//
+// avg()'s own cost is not independently re-measured on this axis: this
+// guard's cost formula reads the SAME groupArray/window columns
+// regardless of whether the caller is sum() or avg() (identical to the
+// reasoning [maxHistogramMergeSumMapGroupCountGuard]'s own doc gives,
+// which cerberus issue #2866 confirmed empirically for the instant
+// shape) — avg()'s extra division happens entirely in the OUTPUT
+// projection, after this guard's Filter has already run.
+//
+// A future session with a wider real-ClickHouse budget should still
+// investigate the ~1,400-step nondeterminism directly (it is currently
+// only characterized, not root-caused) before considering either ceiling
+// for an increase.
+const (
+	// maxHistogramMergeSumMapRangeTotalRowCountGuard bounds the TOTAL row
+	// count entering the WindowExpr pre-pass across every (step, group)
+	// pair in a range-mode merge — see this file's "Range-mode
+	// calibration" section above for the measured 6,000-row / 389.6 MiB
+	// checkpoint this is pinned at.
+	maxHistogramMergeSumMapRangeTotalRowCountGuard = 6_000
+
+	// maxHistogramMergeSumMapRangeGroupCountGuard bounds the TOTAL number
+	// of DISTINCT (step anchor, label group) pairs a range-mode merge may
+	// produce — see this file's "Range-mode calibration" section above
+	// for the measured 600-step / 364.0 MiB checkpoint this is pinned at.
+	maxHistogramMergeSumMapRangeGroupCountGuard = 600
+)
+
+// expHistogramMergeSumMapRangeCostOverBudgetExpr is
+// [expHistogramMergeSumMapMultiGroupCostOverBudgetExpr]'s range-mode
+// counterpart: the SAME per-group cost term and the SAME max()-collected
+// whole-query totals, checked against range mode's OWN, separately
+// calibrated ceilings.
+func expHistogramMergeSumMapRangeCostOverBudgetExpr(rowCount chplan.Expr, maxCostUnits int64) chplan.Expr {
+	totalRowCount := &chplan.ColumnRef{Name: hqAggMultiGroupTotalRowCountAlias}
+	totalGroupCount := &chplan.ColumnRef{Name: hqAggMultiGroupTotalGroupCountAlias}
+	return orExpr(
+		expHistogramMergeSumMapCostOverBudgetExpr(rowCount, maxCostUnits),
+		orExpr(
+			gtLit(totalRowCount, maxHistogramMergeSumMapRangeTotalRowCountGuard),
+			gtLit(totalGroupCount, maxHistogramMergeSumMapRangeGroupCountGuard),
+		),
+	)
+}
+
+// expHistogramMergeSumMapRangeBudgetGuardExpr is
+// [expHistogramMergeSumMapMultiGroupBudgetGuardExpr]'s range-mode
+// counterpart: identical throwIf(...) = 0 shape, reading the SAME columns
+// through [expHistogramMergeSumMapRangeCostOverBudgetExpr] instead.
+func expHistogramMergeSumMapRangeBudgetGuardExpr(maxCostUnits int64) chplan.Expr {
+	scalesArr := &chplan.ColumnRef{Name: hqAggScalesArrayAlias}
+	seriesCount := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{scalesArr}}
+
+	return &chplan.Binary{
+		Op: chplan.OpEq,
+		Left: &chplan.FuncCall{
+			Fn: chplan.FnThrowIf,
+			Args: []chplan.Expr{
+				expHistogramMergeSumMapRangeCostOverBudgetExpr(seriesCount, maxCostUnits),
 				&chplan.InlineString{V: chplan.HistogramMergeBudgetMessage},
 			},
 		},

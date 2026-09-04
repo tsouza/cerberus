@@ -73,9 +73,7 @@ func expHistSumMapDiffLowerers(native bool) promql.RangeLowerers {
 		return promql.RangeLowerers{}
 	}
 	return promql.RangeLowerers{
-		ExpHistogramMerge: promql.NativeExpHistogramMergeLowerer{
-			Fallback: promql.FanoutExpHistogramMergeLowerer{},
-		},
+		ExpHistogramMerge: promql.NativeExpHistogramMergeLowerer{},
 	}
 }
 

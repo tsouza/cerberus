@@ -1313,18 +1313,14 @@ const (
 	FeatureTempoTagCatalogMV = "tempo_tag_catalog_mv"
 
 	// FeatureExpHistogramMergeSumMap opts the across-series exponential
-	// (native) histogram merge stage (histogram_native_sum.go's
-	// expHistogramGroupMergedInstant, the ONLY eligible call site) onto a
-	// two-pass sumMap-keyed reshape — see
-	// internal/promql/exp_histogram_merge_summap.go — for the INSTANT,
-	// SINGLE-GROUP (no by()/without()), SUM-fold shape only. avg(), any
-	// grouped shape, and range/query_range mode are NOT eligible and
-	// always keep the existing groupArray + arrayReduce/arraySlice picker
-	// fold (histogram_merge_bound.go's own audited `rows x width^2`
-	// finding) regardless of this feature's state — see
-	// promql.NativeExpHistogramMergeLowerer's own doc for exactly why
-	// those shapes need a per-group JOIN this change does not build
-	// (tracked by cerberus issue #2834).
+	// (native) histogram merge stage — both of its call sites,
+	// histogram_native_sum.go's expHistogramGroupMergedInstant (instant
+	// mode) and lowerExpHistogramSumOrAvgRange (range/query_range mode,
+	// cerberus issue #3027) — onto a two-pass sumMap-keyed reshape, see
+	// internal/promql/exp_histogram_merge_summap.go. Every shape is
+	// eligible: instant or range mode, any by()/without() grouping
+	// (cerberus issue #2865), SUM or AVG fold (cerberus issue #2866) —
+	// see promql.NativeExpHistogramMergeLowerer's own doc.
 	//
 	// sumMap is old, always-available ClickHouse functionality — no
 	// version floor to probe, matching FeatureClassicBucketMergeSumMap's
@@ -1339,13 +1335,13 @@ const (
 	// individual bucket layout (width 1,280 and up), because the new
 	// design's own reconstruction step is width^2 in the worst case,
 	// independent of row count (see exp_histogram_merge_summap.go's
-	// header for the full measured table). The
-	// existing histogram-merge budget guard is reused UNCHANGED (proven
-	// safe under the new cost model too, just conservative — see that
-	// same header) rather than newly calibrated, so this feature does not
-	// yet unlock the guard's full potential upside; recalibrating it is
-	// tracked by cerberus issue #2834. Until both land, this feature is reachable
-	// only by explicit CERBERUS_CH_OPTIMIZATIONS=exp_histogram_merge_summap
+	// header for the full measured table). Its own budget guard is now
+	// real-ClickHouse-calibrated per shape — single-group, multi-group
+	// instant, and multi-group range mode each have their OWN ceiling
+	// (exp_histogram_merge_summap_bound.go) — but the proven single-series-
+	// wide-layout regression above is a real, permanent property of this
+	// design, not a calibration gap, so this feature stays reachable only
+	// by explicit CERBERUS_CH_OPTIMIZATIONS=exp_histogram_merge_summap
 	// listing, mirroring FeatureClassicBucketMergeSumMap's own posture for
 	// a feature with a proven, real regression on a specific input shape.
 	FeatureExpHistogramMergeSumMap = "exp_histogram_merge_summap"

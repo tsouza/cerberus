@@ -17,16 +17,17 @@ import (
 //
 // # Scope
 //
-// Every INSTANT shape is eligible: `sum(<native-histogram selector>)` or
-// its `avg()` twin (cerberus issue #2866 widened the original SUM-only v1,
+// Every shape is eligible: `sum(<native-histogram selector>)` or its
+// `avg()` twin (cerberus issue #2866 widened the original SUM-only v1,
 // #2757, to include AVG), with or without a `by(...)`/`without(...)`
 // clause (cerberus issue #2865 widened v1's original single-group-only
-// restriction — see "Multi-group mergedScale" below). Range/query_range
-// mode still stays on the existing fold unconditionally; see
-// NativeExpHistogramMergeLowerer for why — the identical per-anchor
-// mergedScale problem multi-group solves for by()/without() applies to
-// range mode too, and cerberus issue #3027 tracks wiring it onto this
-// SAME mechanism.
+// restriction — see "Multi-group mergedScale" below), in both instant and
+// range/query_range mode (cerberus issue #3027 widened #2865's multi-group
+// mechanism to admit a non-nil step anchor — see "Range mode" below). The
+// anchor and a by()/without() grouping key solve the IDENTICAL problem —
+// mergedScale needs one value per OUTPUT GROUP, not one value for the
+// whole query — which is why #3027 needed no new mechanism, only a wider
+// PARTITION BY key.
 //
 // # The two-pass restructure (issue #2757's own "known hard part",
 // # verified here)
@@ -90,6 +91,44 @@ import (
 // single-group path onto it (see above): the two mechanisms already agree
 // on that shape, so there is nothing to gain from unifying them beyond
 // unnecessary golden churn.
+//
+// # Range mode (cerberus issue #3027)
+//
+// Range/query_range mode adds a THIRD partition axis on top of the two
+// above: [chplan.RangeBucketFanout] (histogram_quantile_range.go's
+// buildHistogramBucketFanout, called from lowerExpHistogramSumOrAvgRange)
+// already resolves one newest-in-window sample per series PER STEP
+// ANCHOR before this file's merge ever runs, and each step anchor's rows
+// must merge INDEPENDENTLY of every other step's — exactly the same
+// "mergedScale needs to differ per OUTPUT GROUP" problem multi-group
+// mode solves for by()/without(), just keyed by anchor_ts instead of (or
+// in addition to) the user's grouping labels.
+// [expHistogramMergeScaleWindowPartitionBy] already generalizes to this:
+// it was written accepting an anchor parameter from the day #2865 shipped
+// (this file's own comment on that function explains why), so range mode
+// needs no new mergedScale mechanism — only prepending anchor_ts to the
+// SAME PARTITION BY list multi-group mode builds, and threading anchor
+// through to the merge Aggregate's own GroupBy exactly the way the OLD
+// fold ([expHistogramGroupMergeFanout], histogram_native_sum.go) already
+// does.
+//
+// Because every anchor is its own output group, range mode ALWAYS uses
+// the WindowExpr multi-group mechanism, even with no by()/without()
+// clause: a bare `sum(<selector>)` in range mode still produces one row
+// per step, so mergedScale still needs the per-group (per-anchor)
+// answer, never the single global scalar
+// [expHistogramMergeScaleScalarSubquery] resolves for the truly
+// single-row instant case. See [expHistogramGroupMergeSumMap]'s own doc
+// for exactly which condition selects the WindowExpr path.
+//
+// Range mode's own budget guard is calibrated SEPARATELY from instant
+// mode's multi-group guard above (exp_histogram_merge_summap_bound.go's
+// "Range-mode calibration" section) precisely because its group count is
+// `(step count) x (distinct label groups)`: a wide time range with a
+// small step multiplies group count independently of anything the query
+// text itself suggests, so instant mode's own real-ClickHouse-calibrated
+// ceiling — tuned for one-group-per-label-set — is not safe to reuse
+// here without its own measurement.
 //
 // # Cost model, and the rows-independent budget guard (cerberus issue #2834)
 //
@@ -228,11 +267,9 @@ func expHistogramMergeScaleScalarSubquery(perSeries chplan.Node, s schema.Metric
 // expression list a [chplan.WindowExpr] mergedScale pre-pass needs for a
 // given grouping: the group-key expressions [histogramAggGroupBy] resolves
 // for by()/without(), optionally prefixed by a range-mode step anchor.
-// anchor is nil at every call site wired today (instant mode only — see
-// this file's header); range mode (cerberus issue #3027) reuses this SAME
-// function with its own anchor column, so the partition-key shape is
-// derived exactly once regardless of how many call sites eventually need
-// it.
+// anchor is nil in instant mode and the fan-out's anchor column in range
+// mode (cerberus issue #3027) — both callers share this ONE function so
+// the partition-key shape is derived exactly once regardless of mode.
 func expHistogramMergeScaleWindowPartitionBy(anchor *chplan.ColumnRef, groupBy []chplan.Expr) []chplan.Expr {
 	if anchor == nil {
 		return groupBy
@@ -276,7 +313,14 @@ type expHistogramMergeScaleWindowCols struct {
 // [expHistogramGroupMergeAggsSumMap]'s pass-2 aggregates read — so a
 // column added there without being added here would silently vanish
 // before pass 2 ever sees it.
-func expHistogramMergeScaleWindowProject(perSeries chplan.Node, partitionBy []chplan.Expr, s schema.Metrics) (chplan.Node, expHistogramMergeScaleWindowCols) {
+//
+// anchor is nil in instant mode and the range fan-out's step-anchor column
+// in range mode (cerberus issue #3027): when non-nil it is ALSO passed
+// through explicitly, for the identical reason every other column is —
+// pass 2's merge Aggregate groups by it (mirroring
+// [expHistogramGroupMergeFanout]'s own anchor-prepended GroupBy), so it
+// must survive this reshape too.
+func expHistogramMergeScaleWindowProject(perSeries chplan.Node, anchor *chplan.ColumnRef, partitionBy []chplan.Expr, s schema.Metrics) (chplan.Node, expHistogramMergeScaleWindowCols) {
 	passthrough := func(col string) chplan.Projection {
 		return chplan.Projection{Expr: &chplan.ColumnRef{Name: col}, Alias: col}
 	}
@@ -293,6 +337,9 @@ func expHistogramMergeScaleWindowProject(perSeries chplan.Node, partitionBy []ch
 	}
 	if s.ZeroThresholdColumn != "" {
 		projs = append(projs, passthrough(s.ZeroThresholdColumn))
+	}
+	if anchor != nil {
+		projs = append(projs, passthrough(stepGridAnchorColumn))
 	}
 	projs = append(
 		projs,
@@ -462,12 +509,13 @@ func expHistogramGroupMergeProjectionsSumMap(s schema.Metrics) []chplan.Projecti
 }
 
 // expHistogramGroupMergeSumMap builds the full two-pass merge node for
-// every eligible instant shape — SUM or AVG fold, with or without a
-// by()/without() clause (cerberus issue #2865 widened the original
-// single-group-only v1; see this file's header for both mergedScale
-// mechanisms): pass 1 resolves mergedScale (ScalarSubquery for the
-// single-group shape, the WindowExpr pre-pass for multi-group), pass 2 is
-// the Aggregate (wrapped in this design's OWN budget guard,
+// every eligible shape — instant or range mode (cerberus issue #3027),
+// SUM or AVG fold, with or without a by()/without() clause (cerberus
+// issue #2865 widened the original single-group-only v1; see this file's
+// header for all three mergedScale mechanisms): pass 1 resolves
+// mergedScale (ScalarSubquery for the single-group INSTANT shape, the
+// WindowExpr pre-pass for every other shape), pass 2 is the Aggregate
+// (wrapped in this design's OWN budget guard,
 // [wrapExpHistogramMergeSumMapBudgetGuard] — see this file's header and
 // exp_histogram_merge_summap_bound.go for the calibration behind it), and
 // the reshape Project. No [expHistogramMergeSortStage] call: that stage
@@ -475,6 +523,19 @@ func expHistogramGroupMergeProjectionsSumMap(s schema.Metrics) []chplan.Projecti
 // deterministic per-series summation order (cerberus issue #2254);
 // sumMap's own per-key grouping is order-invariant, so this path has
 // nothing to resort.
+//
+// anchor is nil in instant mode and the range fan-out's step-anchor
+// column in range mode — mirroring [expHistogramGroupMergeFanout]'s own
+// parameter exactly. rangeMode (anchor != nil) forces the WindowExpr
+// path even with an empty groupBy: every step anchor is its own output
+// group, so a bare `sum(<selector>)` in range mode still needs a
+// PER-GROUP mergedScale, never [expHistogramMergeScaleScalarSubquery]'s
+// single global scalar (which assumes the WHOLE input collapses to one
+// row — true only for the truly single-row instant shape). anchor is
+// also prepended to the merge Aggregate's own GroupBy/GroupByAliases and
+// to the output projection, exactly the way the OLD fold's anchor
+// handling works, so the two merge strategies agree on the range-mode
+// row shape byte-for-byte.
 //
 // Count / Sum stay on the existing groupArray + Kahan fold, byte-for-byte
 // — this file touches only the bucket-ladder scale/offset/counts fields,
@@ -496,21 +557,31 @@ func expHistogramGroupMergeProjectionsSumMap(s schema.Metrics) []chplan.Projecti
 // divides the five count-bearing fields of projs by it before capping the
 // Project. Both steps are conditional on expHistogramGroupIsAvg(agg)
 // exactly like the fold path's own, so sum() emits byte-identical SQL to
-// before this file learned about avg.
-func expHistogramGroupMergeSumMap(perSeries chplan.Node, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64) chplan.Node {
+// before this file learned about avg — and this holds identically in
+// range mode, verified by an explicit differential test (cerberus issue
+// #3027's own "confirm avg() generalizes for free" item) rather than
+// assumed from the instant-mode result.
+func expHistogramGroupMergeSumMap(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64) chplan.Node {
 	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s)
-	multiGroup := len(groupBy) > 0
+	rangeMode := anchor != nil
+	multiGroup := rangeMode || len(groupBy) > 0
 
 	mergeInput := perSeries
 	var mergedScale chplan.Expr
 	var totalRowCount, totalGroupCount chplan.Expr
 	if multiGroup {
-		partitionBy := expHistogramMergeScaleWindowPartitionBy(nil, groupBy)
+		partitionBy := expHistogramMergeScaleWindowPartitionBy(anchor, groupBy)
 		var winCols expHistogramMergeScaleWindowCols
-		mergeInput, winCols = expHistogramMergeScaleWindowProject(perSeries, partitionBy, s)
+		mergeInput, winCols = expHistogramMergeScaleWindowProject(perSeries, anchor, partitionBy, s)
 		mergedScale, totalRowCount, totalGroupCount = winCols.MergedScale, winCols.TotalRowCount, winCols.TotalGroupCount
 	} else {
 		mergedScale = expHistogramMergeScaleScalarSubquery(perSeries, s)
+	}
+
+	mergeGroupBy, mergeGroupByAliases := groupBy, groupByAliases
+	if rangeMode {
+		mergeGroupBy = append([]chplan.Expr{anchor}, groupBy...)
+		mergeGroupByAliases = append([]string{stepGridAnchorColumn}, groupByAliases...)
 	}
 
 	aggFuncs := append(
@@ -533,20 +604,23 @@ func expHistogramGroupMergeSumMap(perSeries chplan.Node, agg *parser.AggregateEx
 	}
 	merged := &chplan.Aggregate{
 		Input:              mergeInput,
-		GroupBy:            groupBy,
-		GroupByAliases:     groupByAliases,
+		GroupBy:            mergeGroupBy,
+		GroupByAliases:     mergeGroupByAliases,
 		AggFuncs:           aggFuncs,
 		DropEmptyOnNoGroup: true,
 	}
-	guarded := wrapExpHistogramMergeSumMapBudgetGuard(merged, maxCostUnits, multiGroup)
-	projs := append(
-		[]chplan.Projection{
-			{Expr: attrsRebuild, Alias: s.AttributesColumn},
-			{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeCountsArrayAlias}), Alias: s.CountColumn},
-			{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeSumsArrayAlias}), Alias: s.SumColumn},
-		},
-		expHistogramGroupMergeProjectionsSumMap(s)...,
+	guarded := wrapExpHistogramMergeSumMapBudgetGuard(merged, maxCostUnits, multiGroup, rangeMode)
+	var projs []chplan.Projection
+	if rangeMode {
+		projs = append(projs, chplan.Projection{Expr: anchor, Alias: stepGridAnchorColumn})
+	}
+	projs = append(
+		projs,
+		chplan.Projection{Expr: attrsRebuild, Alias: s.AttributesColumn},
+		chplan.Projection{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeCountsArrayAlias}), Alias: s.CountColumn},
+		chplan.Projection{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeSumsArrayAlias}), Alias: s.SumColumn},
 	)
+	projs = append(projs, expHistogramGroupMergeProjectionsSumMap(s)...)
 	if isAvg {
 		projs = expHistogramAvgScaleProjections(projs, s)
 	}
@@ -559,13 +633,12 @@ func expHistogramGroupMergeSumMap(perSeries chplan.Node, agg *parser.AggregateEx
 // lowerExpHistogramSumOrAvgRange) collects and merges every contributing
 // row's distribution: the existing groupArray + arrayReduce/arraySlice
 // picker fold (every shape), or this file's two-pass sumMap reshape
-// (instant mode, with or without by()/without(), SUM or AVG fold —
-// chopt.FeatureExpHistogramMergeSumMap). It never returns nil.
+// (instant AND range mode, with or without by()/without(), SUM or AVG
+// fold — chopt.FeatureExpHistogramMergeSumMap). It never returns nil.
 type ExpHistogramMergeLowerer interface {
 	// LowerExpHistogramMerge returns the merged chplan.Node. anchor is nil
-	// in instant mode (eligible for the sumMap path) and non-nil in range
-	// mode (never eligible yet — see this file's header, cerberus issue
-	// #3027).
+	// in instant mode and the step-anchor column in range mode (cerberus
+	// issue #3027) — both are eligible for the sumMap path.
 	LowerExpHistogramMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64) chplan.Node
 }
 
@@ -582,27 +655,28 @@ func (FanoutExpHistogramMergeLowerer) LowerExpHistogramMerge(
 }
 
 // NativeExpHistogramMergeLowerer is the boot-wired ExpHistogramMergeLowerer
-// that routes every eligible INSTANT shape (anchor == nil — any grouping,
-// including by()/without(), cerberus issue #2865; SUM or AVG fold,
-// cerberus issue #2866) onto expHistogramGroupMergeSumMap. cmd/cerberus
-// wires it ONLY when chopt resolved exp_histogram_merge_summap at boot.
-// Range mode (anchor != nil) delegates to the embedded Fallback
-// unconditionally — see this file's header for why, and issue #3027 for
-// wiring it onto the same mechanism.
-type NativeExpHistogramMergeLowerer struct {
-	// Fallback is the concrete lowerer for every ineligible shape. Boot
-	// wires it to FanoutExpHistogramMergeLowerer{}.
-	Fallback ExpHistogramMergeLowerer
-}
+// that routes EVERY shape reaching this interface — instant or range mode
+// (anchor nil or not, cerberus issue #3027), any grouping including
+// by()/without() (cerberus issue #2865), SUM or AVG fold (cerberus issue
+// #2866) — onto expHistogramGroupMergeSumMap. cmd/cerberus wires it ONLY
+// when chopt resolved exp_histogram_merge_summap at boot.
+//
+// Unlike most other Native*Lowerer types in this package (e.g.
+// NativeRateLowerer), this one embeds no Fallback: every shape the two
+// call sites above can produce is a real by()/without()/anchor
+// combination [histogramAggGroupBy] and [expHistogramMergeScaleWindowPartitionBy]
+// already handle uniformly (see this file's header, "Range mode"), so
+// there is no remaining ineligible shape for a fallback to catch — the
+// same posture [NativeQuantileRankWalkLowerer] takes for the identical
+// reason. A budget-guard rejection is a RUNTIME throw against the row/
+// width shape, not a lowering-time ineligibility, so it does not need one
+// either.
+type NativeExpHistogramMergeLowerer struct{}
 
 // LowerExpHistogramMerge returns expHistogramGroupMergeSumMap(...) for
-// every instant shape (anchor == nil), or delegates to n.Fallback for
-// range mode.
-func (n NativeExpHistogramMergeLowerer) LowerExpHistogramMerge(
+// every shape (instant or range mode).
+func (NativeExpHistogramMergeLowerer) LowerExpHistogramMerge(
 	perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64,
 ) chplan.Node {
-	if anchor == nil {
-		return expHistogramGroupMergeSumMap(perSeries, agg, s, maxCostUnits)
-	}
-	return n.Fallback.LowerExpHistogramMerge(perSeries, anchor, agg, s, maxCostUnits)
+	return expHistogramGroupMergeSumMap(perSeries, anchor, agg, s, maxCostUnits)
 }

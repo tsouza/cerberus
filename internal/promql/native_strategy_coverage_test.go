@@ -205,9 +205,7 @@ var nativeStrategies = []nativeStrategy{
 		field:   "ExpHistogramMerge",
 		section: "experimental_exp_histogram_merge_summap",
 		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
-			l.ExpHistogramMerge = promql.NativeExpHistogramMergeLowerer{
-				Fallback: promql.FanoutExpHistogramMergeLowerer{},
-			}
+			l.ExpHistogramMerge = promql.NativeExpHistogramMergeLowerer{}
 		},
 	},
 	{
