@@ -169,13 +169,13 @@ type state struct {
 //     plus a background flush goroutine, exactly like optcorpus.Sink's own
 //     writers), never a synchronous write on that path.
 //
-// This is a deliberate scope boundary, not an oversight: if Config.EntryTTL
-// is later raised well past today's 30m default, or the feature graduates
-// out of dark-by-default and operators report losing alerting state across
-// routine deploys as a real operational pain point, that is the trigger to
-// revisit — build a Tracker-specific sink mirroring optcorpus.Sink's
-// buffered-channel-plus-background-flush shape, not to retrofit a
-// synchronous write into RecordActual.
+// This is a deliberate scope boundary, not an oversight: were Config.EntryTTL
+// ever raised well past today's 30m default, or the feature to graduate out
+// of dark-by-default with operators reporting real pain from losing
+// alerting state across routine deploys, a Tracker-specific sink mirroring
+// optcorpus.Sink's buffered-channel-plus-background-flush shape would earn
+// its cost at that point — never a synchronous write retrofitted into
+// RecordActual.
 type Tracker struct {
 	cfg Config
 
