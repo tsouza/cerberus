@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/chopt"
 )
 
 // Metric names the seed builders write and the sentinel queries read. Kept
@@ -14,6 +16,10 @@ const (
 	NativeHistogramMetric = "cerberus_smoke_latency_exp_hist"
 	// WideCounterMetric is Sentinel 2's high-cardinality counter metric.
 	WideCounterMetric = "cerberus_smoke_wide_requests_total"
+	// SortedSlabOverTimeGaugeMetric is the sorted-slab memory-bound
+	// sentinel's gauge metric (cerberus issue #3050, closing #3046's
+	// PERF-SENTINEL-WAIVER).
+	SortedSlabOverTimeGaugeMetric = "cerberus_smoke_sorted_slab_gauge"
 )
 
 // sentinelWindow / sentinelStep size every sentinel's query_range grid: 1h at
@@ -31,6 +37,30 @@ const (
 // doc comment names as the methodology that measured the #2355/#2358
 // regression: "500 distinct series under a one-label GROUP BY".
 const NativeHistogramSeriesCount = 500
+
+// SortedSlabOverTimeSeriesCount / sortedSlabOverTimeAnchorCount reproduce
+// cerberus#3046's own OOM scale exactly: "500 series / 2h span / 15s step
+// (480 anchors) / 5m window" is the row #3046's own measurement table
+// singles out as "the closest to this repo's own #2429 resource-bound
+// calibration corpus... squarely inside what a production dashboard panel
+// runs" — the array-fold fan-out finished comfortably at 535 MiB there while
+// the UNFIXED sorted-slab shape OOMed a 6 GiB container outright.
+//
+// The sentinel below reaches the same 500-series/480-anchor shape WITHOUT
+// widening the shared outer query window every other FloorBase sentinel
+// runs against (sentinelWindow, 1h): anchor count is what
+// applySortedSlabOverTimeMemoryBound's per-anchor block-width fix actually
+// bounds (internal/chsql/range_window_sorted_slab.go's own doc — the
+// per-anchor arrayFilter intermediate is what a wide vectorized block
+// retains), not the wall-clock span a fixed anchor count is spread across,
+// so sentinelWindow/sortedSlabOverTimeAnchorCount reaches the identical
+// 480-anchor grid at a smaller step instead.
+const (
+	SortedSlabOverTimeSeriesCount   = 500
+	sortedSlabOverTimeAnchorCount   = 480
+	sortedSlabOverTimeSentinelStep  = sentinelWindow / sortedSlabOverTimeAnchorCount
+	sortedSlabOverTimeRangeSelector = "5m"
+)
 
 // ServerFloor names the ClickHouse capability tier a sentinel needs. The
 // corpus is not single-tier: chopt gates several SettingsRules mechanisms
@@ -82,6 +112,31 @@ const settingMaxBytesBeforeExternalJoin = "max_bytes_before_external_join"
 // of silently changing what production stamps.
 const joinSpillCapDenominator int64 = 2
 
+// OptInSortedSlabOverTime is the explicit CERBERUS_CH_OPTIMIZATIONS listing
+// the sorted-slab memory-bound sentinel must resolve chopt.EnabledSet
+// against. chopt.FeatureSortedSlabOverTime is AutoSelect: false and carries
+// NO chopt version floor (see its own registry doc) — the explicit opt-in
+// string is the ONLY thing standing between the harness's ordinary "auto"
+// resolution and this feature activating, never a newer server. This is a
+// SEPARATE axis from ServerFloor, which tiers by SERVER CAPABILITY: the
+// sorted-slab sentinel runs on FloorBase's own repo-wide pinned image, just
+// resolved against a different chopt.Config.Optimizations string
+// (startSentinelLane builds one additional lane per distinct
+// Sentinel.Optimizations value a floor's own sentinels declare).
+const OptInSortedSlabOverTime = "auto," + chopt.FeatureSortedSlabOverTime
+
+// settingMaxBlockSize mirrors internal/engine's own settingMaxBlockSize
+// (query_settings_rules.go), and wantSortedSlabOverTimeMaxBlockSize mirrors
+// its sortedSlabOverTimeMaxBlockSize — both re-derived here (never
+// imported: both are unexported) as a cross-check the same way
+// joinSpillCapDenominator re-derives spillCapDenominator above: if the
+// engine's own setting name or value moves, this sentinel's stamp assertion
+// goes red rather than silently asserting nothing.
+const (
+	settingMaxBlockSize                = "max_block_size"
+	wantSortedSlabOverTimeMaxBlockSize = "1"
+)
+
 // Sentinel describes one real-ClickHouse memory-bounding differential
 // target: an HTTP request against the mounted production handlers, built to
 // reach a specific plan shape and memory-bounding mechanism the #2364
@@ -108,6 +163,32 @@ type Sentinel struct {
 	// The zero value (FloorBase) is the repo-wide pinned image every
 	// pre-existing sentinel is calibrated against.
 	Floor ServerFloor
+	// Optimizations, when non-empty, is an explicit
+	// CERBERUS_CH_OPTIMIZATIONS listing this sentinel resolves its
+	// chopt.EnabledSet against, INSTEAD of the harness's own default
+	// "auto" resolution. It is a SEPARATE axis from Floor: Floor tiers by
+	// SERVER CAPABILITY (a version/allow_experimental_* floor a real
+	// deployment cannot opt around), while Optimizations exists for a
+	// feature like chopt.FeatureSortedSlabOverTime that carries no version
+	// floor at all and is AutoSelect: false purely as an unresolved perf
+	// tradeoff — "auto" alone never activates it, regardless of server
+	// version, only the explicit opt-in string does. The harness
+	// (startSentinelLane) builds one extra lane — its own SettingsRules
+	// AND promql.RangeLowerers, both resolved from THIS string — per
+	// distinct non-empty value among a floor's own sentinels, so every
+	// OTHER sentinel's calibrated baseline stays measured against the
+	// unmodified "auto" lane.
+	Optimizations string
+	// RequiredFeature, when non-empty, is the chopt feature id that must
+	// have resolved enabled in the EnabledSet Optimizations produced --
+	// checked once per opt-in lane at lane-build time, the same
+	// "activation, not just a 200" guard
+	// TestNativeRangeLowerers_RealCH_Integration already applies via its
+	// own enabled.Has(family.Feature) check. Without it a server that
+	// silently failed to resolve Optimizations (a typo, a version
+	// regression) would make this sentinel pass vacuously against the SAME
+	// fan-out path the mechanism exists to replace.
+	RequiredFeature string
 	// RequiredQuerySettings, when non-nil, returns the per-query ClickHouse
 	// settings the harness must find in system.query_log's Settings map for
 	// EVERY repeat of this sentinel, keyed by setting name and valued by the
@@ -218,6 +299,50 @@ var Sentinels = []Sentinel{
 			return map[string]string{
 				settingMaxBytesBeforeExternalJoin: strconv.FormatInt(memoryCapBytes/joinSpillCapDenominator, 10),
 			}
+		},
+	},
+	{
+		// Sorted-slab memory bound, opt-in-only: applySortedSlabOverTimeMemoryBound
+		// (query_settings_rules.go) stamps max_block_size=1 on any plan
+		// carrying a chplan.RangeWindow.SortedSlabOverTime node, but that
+		// node only exists once chopt.FeatureSortedSlabOverTime resolves
+		// enabled — "auto" alone never does (AutoSelect: false, see the
+		// feature's own registry doc), so this sentinel runs on its own
+		// OptInSortedSlabOverTime lane rather than the floor's default one.
+		//
+		// Reproduces cerberus#3046's own OOM scale exactly: 500 series,
+		// sum_over_time() over a 5m window at a 480-anchor grid — the row
+		// #3046's own measurement table names as "squarely inside what a
+		// production dashboard panel runs", where the UNFIXED sorted-slab
+		// shape OOMed a 6 GiB container while the array-fold it replaces
+		// finished at 535 MiB. See sortedSlabOverTimeAnchorCount's own doc
+		// for why the anchor count (not sentinelWindow's own 1h span) is
+		// what this sentinel reproduces exactly.
+		//
+		// RequiredQuerySettings is the load-bearing assertion, exactly
+		// like join_spill_vector_join above: max_block_size=1 is a
+		// RESULT-EQUIVALENT stamp (rows-per-block execution batching
+		// only), so a query that fits comfortably under the memory cap
+		// either way cannot distinguish "the bound fired" from "the rule
+		// was deleted" without reading system.query_log's Settings map
+		// back.
+		Name:            "sorted_slab_over_time_memory_bound",
+		Mechanism:       "applySortedSlabOverTimeMemoryBound (internal/engine/query_settings_rules.go) via chopt.FeatureSortedSlabOverTime",
+		Path:            "/api/v1/query_range",
+		Optimizations:   OptInSortedSlabOverTime,
+		RequiredFeature: chopt.FeatureSortedSlabOverTime,
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{
+				"query": {
+					"sum by (job, instance) (sum_over_time(" +
+						SortedSlabOverTimeGaugeMetric + "[" + sortedSlabOverTimeRangeSelector + "]))",
+				},
+			}
+		},
+		Window: sentinelWindow,
+		Step:   sortedSlabOverTimeSentinelStep,
+		RequiredQuerySettings: func(memoryCapBytes int64) map[string]string {
+			return map[string]string{settingMaxBlockSize: wantSortedSlabOverTimeMaxBlockSize}
 		},
 	},
 }
