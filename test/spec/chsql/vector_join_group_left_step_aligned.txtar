@@ -1,0 +1,11 @@
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = ""
+[3] string = ""
+-- chplan --
+VectorJoin op=+ match=default card=many-to-one include=[job] stepAligned
+  Scan(otel_metrics_gauge)
+  Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapConcat(L.`Attributes`, mapFilter((k, v) -> k IN (?), R.`Attributes`)) AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, (L.`Value` + R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT ? AS `_join_MetricName`, mapSort(`Attributes`) AS `_join_Attributes`, `TimeUnix` AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY mapSort(`Attributes`), `TimeUnix`)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT ? AS `_join_MetricName`, argMax(mapSort(`Attributes`), `TimeUnix`) AS `_join_Attributes`, `TimeUnix` AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT * FROM `otel_metrics_sum`) GROUP BY mapSort(`Attributes`), `TimeUnix` HAVING throwIf(uniqExact(mapSort(`Attributes`)) > 1, 'many-to-many matching not allowed: matching labels must be unique on one side') = 0)) AS R ON mapSort(L.`Attributes`) = mapSort(R.`Attributes`) AND L.`TimeUnix` = R.`TimeUnix`
