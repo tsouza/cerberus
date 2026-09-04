@@ -463,6 +463,7 @@ native_idelta_range_step.txtar
 native_increase_range_step.txtar
 native_increase_vector_agg_temporality_union.txtar
 native_irate_range_step.txtar
+native_irate_temporality_union.txtar
 native_last_over_time_range_step.txtar
 native_predict_linear_negative_horizon_fanout.txtar
 native_predict_linear_range_step.txtar

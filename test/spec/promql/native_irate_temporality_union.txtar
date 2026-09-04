@@ -70,4 +70,70 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value, Aggregati
   ('http_requests_total', map('host', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 27.0, 1),
   ('http_requests_total', map('host', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 30.0, 1);
 -- expected_rows --
-[]
+[
+  ["", {"host": "a"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 3.3333333333333335],
+  ["", {"host": "a"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 3.3333333333333335],
+  ["", {"host": "a"}, "2026-01-01T00:01:30Z", "2026-01-01T00:01:30Z", 5],
+  ["", {"host": "a"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 8.333333333333334],
+  ["", {"host": "a"}, "2026-01-01T00:02:30Z", "2026-01-01T00:02:30Z", 8.333333333333334],
+  ["", {"host": "a"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 8.333333333333334],
+  ["", {"host": "a"}, "2026-01-01T00:03:30Z", "2026-01-01T00:03:30Z", 8.333333333333334],
+  ["", {"host": "a"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 8.333333333333334],
+  ["", {"host": "a"}, "2026-01-01T00:04:30Z", "2026-01-01T00:04:30Z", 8.333333333333334],
+  ["", {"host": "a"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 8.333333333333334],
+  ["", {"host": "b"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 0.1],
+  ["", {"host": "b"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.2],
+  ["", {"host": "b"}, "2026-01-01T00:01:30Z", "2026-01-01T00:01:30Z", 0.3],
+  ["", {"host": "b"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 0.4],
+  ["", {"host": "b"}, "2026-01-01T00:02:30Z", "2026-01-01T00:02:30Z", 0.5],
+  ["", {"host": "b"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 0.6],
+  ["", {"host": "b"}, "2026-01-01T00:03:30Z", "2026-01-01T00:03:30Z", 0.7],
+  ["", {"host": "b"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 0.8],
+  ["", {"host": "b"}, "2026-01-01T00:04:30Z", "2026-01-01T00:04:30Z", 0.9],
+  ["", {"host": "b"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 1]
+]
+-- args --
+[0] string = ""
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = ""
+[7] string = "service_name"
+[8] string = "http_requests_total"
+[9] string = "http.requests.total"
+[10] string = "http.requests/total"
+[11] string = "http.requests_total"
+[12] string = "http/requests/total"
+[13] string = "http/requests_total"
+[14] string = "http_requests.total"
+[15] int64 = 1
+[16] string = "service_name"
+[17] string = "service.name"
+[18] string = "service_name"
+[19] string = "service.name"
+[20] string = "service_name"
+[21] string = ""
+[22] string = "service_name"
+[23] string = "http_requests_total"
+[24] string = "http.requests.total"
+[25] string = "http.requests/total"
+[26] string = "http.requests_total"
+[27] string = "http/requests/total"
+[28] string = "http/requests_total"
+[29] string = "http_requests.total"
+[30] int64 = 1
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+  UnionAll arms=2
+    RangeWindowGridNative func=irate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=((MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total")) AND (AggregationTemporality != 1))
+          Scan(otel_metrics_sum)
+    RangeWindow func=irate range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value temporality=AggregationTemporality groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value, AggregationTemporality AS AggregationTemporality]
+        Filter predicate=((MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total")) AND (AggregationTemporality = 1))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM ((SELECT `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `Attributes`, timeSeriesInstantRateToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) UNION ALL (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_pairs) > 1 AND dateDiff('nanosecond', tupleElement(window_pairs[length(window_pairs) - 1], 1), tupleElement(window_pairs[length(window_pairs)], 1)) > 0, (if(temporality = 1, tupleElement(window_pairs[length(window_pairs)], 2), if(tupleElement(window_pairs[length(window_pairs)], 2) < tupleElement(window_pairs[length(window_pairs) - 1], 2), tupleElement(window_pairs[length(window_pairs)], 2), tupleElement(window_pairs[length(window_pairs)], 2) - tupleElement(window_pairs[length(window_pairs) - 1], 2)))) / ((dateDiff('nanosecond', tupleElement(window_pairs[length(window_pairs) - 1], 1), tupleElement(window_pairs[length(window_pairs)], 1))) / 1e9), nan) AS Value FROM (SELECT `Attributes`, `anchor_ts`, any(`AggregationTemporality`) AS `temporality`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS window_pairs FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `AggregationTemporality`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`) WHERE length(`window_pairs`) >= 2))
