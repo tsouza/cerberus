@@ -405,6 +405,110 @@ func planHasMetricsCompare(plan chplan.Node) bool {
 	return found
 }
 
+// settingMaxBlockSize names the ClickHouse setting that caps the number of
+// rows a source/expression stage may batch into one execution block.
+// internal/chclient's own settingMaxBlockSize (timeout.go) names the
+// identical ClickHouse setting for an unrelated reason (the chaos_sleep
+// build's dedicated WithMaxBlockSize carrier); this file declares its OWN
+// copy — rather than importing that one — because the required
+// perf-sentinel-obligation CI gate (.github/scripts/perf-sentinel-
+// obligation.mjs) derives this file's memory-bounding surface from
+// `setting<Name>` consts declared LOCALLY in query_settings_rules.go /
+// spill.go, and a cross-package reference would be invisible to that scan.
+//
+// perf-sentinel: memory-bounding — see sortedSlabOverTimeMaxBlockSize's own
+// doc for what this setting bounds and how that was measured.
+const settingMaxBlockSize = "max_block_size"
+
+// sortedSlabOverTimeMaxBlockSize is the per-request max_block_size cerberus
+// stamps on a query carrying a chplan.RangeWindow.SortedSlabOverTime shape
+// (cerberus issue #2761's sum_over_time()/avg_over_time() decomposition,
+// internal/chsql/range_window_sorted_slab.go). Forcing single-row blocks
+// closes cerberus issue #3046: real ClickHouse 26.6.4.55 profiling (EXPLAIN
+// PIPELINE plus a block-size sweep against the issue's own 500-series/
+// 480-anchor reproduction) found the sorted-slab emitter's per-series
+// `arrayMap(a -> ..., anchors)` — each anchor's lambda re-running
+// `arrayFilter` over that row's full samples slab — gets vectorized ACROSS
+// every series row ClickHouse happens to batch into one block, not just
+// across the anchors within a single row: the exception stack trace on the
+// OOM (`FUNCTION arrayFilter(...): while executing 'FUNCTION arrayMap(a ->
+// ...)'`) names exactly that expression, and a controlled max_block_size
+// sweep at that reproduction (1 / 10 / 50 / 100 / 250 / default≈65505 rows)
+// measured peak memory scaling ~linearly with block width — 98 MiB / 436
+// MiB / 1.74 GiB / 3.43 GiB / 4.86 GiB / OOM — confirming the block width,
+// not the anchor or sample count alone, is what the design's "freed as it
+// goes" claim failed to bound. At max_block_size=1 each series row is its
+// own block, so ClickHouse frees one row's per-anchor intermediates before
+// starting the next — restoring the O(samples-in-range)-per-series bound
+// the doc on range_window_sorted_slab.go claims. Re-measured at all four of
+// the issue's own data points (real ClickHouse 26.6.4.55): every case now
+// uses LESS memory than the array-fold fan-out it replaces (previously
+// 1.4-9x MORE, up to a 6 GiB-container OOM), while keeping most or all of
+// the sorted-slab shape's wall-clock advantage — see the issue for the full
+// before/after table. The value mirrors the chaos_sleep build's OWN
+// single-row-block precedent (internal/api/prom/chaos_sleep.go's
+// chaosSleepMaxBlockSize), applied here for a correctness/memory reason
+// rather than a chaos-determinism one.
+const sortedSlabOverTimeMaxBlockSize = 1
+
+// applySortedSlabOverTimeMemoryBound stamps max_block_size=
+// sortedSlabOverTimeMaxBlockSize on any plan carrying a
+// chplan.RangeWindow.SortedSlabOverTime node, so the sorted-slab family's
+// real per-anchor memory retention (see the const's own doc) never rides an
+// unbounded block width. It is unconditional — like
+// applyCompareMemoryBound and applyNativeHistogramAnalyzerFix above, NOT
+// gated behind a SettingsRules opt-in flag — because it is a mandatory
+// companion to an EXISTING opt-in shape (chopt.FeatureSortedSlabOverTime),
+// not a new optimization of its own: whenever the sorted-slab shape is
+// chosen at all (currently only via an explicit
+// CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time listing), it must carry
+// this bound. The setting is RESULT-EQUIVALENT (rows-per-block execution
+// batching only), so stamping it never changes the query's answer.
+//
+// Known scope tradeoff, deliberately accepted rather than left
+// undocumented: max_block_size is a per-QUERY ClickHouse setting, not
+// scoped to a subquery, and planHasSortedSlabOverTime's WalkDeep matches a
+// sorted-slab RangeWindow ANYWHERE in the plan — so a query that combines a
+// sorted-slab branch with an unrelated, otherwise-cheap-to-stream sibling
+// (e.g. a binary op between a sorted-slab sum_over_time() and a large
+// fan-out/native rate() on the other side) pays single-row blocks for the
+// WHOLE statement, not just the sorted-slab subtree. There is no
+// ClickHouse setting that scopes max_block_size to one subquery. This
+// mirrors the tradeoff applySpillSettings and applyCompareMemoryBound
+// already accept in this same file (a memory-safety stamp that costs
+// throughput on the query as a whole rather than only the shape that needs
+// it) — an OOM (total query failure) is strictly worse than a slower
+// success, so unconditional is still the right default. The blast radius
+// is bounded today by chopt.FeatureSortedSlabOverTime's own AutoSelect:
+// false posture (opt-in only), so no production traffic mixes this
+// pattern yet; whoever revisits AutoSelect (see the feature's own doc)
+// should re-examine this tradeoff against real mixed-shape query traffic
+// first.
+func applySortedSlabOverTimeMemoryBound(ctx context.Context, plan chplan.Node) context.Context {
+	if !planHasSortedSlabOverTime(plan) {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingMaxBlockSize, sortedSlabOverTimeMaxBlockSize)
+}
+
+// planHasSortedSlabOverTime reports whether plan contains a
+// *chplan.RangeWindow node with SortedSlabOverTime set anywhere in its
+// tree. The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
+// planHasNativeHistogramMerge, so a sorted-slab RangeWindow nested inside a
+// scalar-binding subtree (an Expr slot Walk does not follow) is still
+// found.
+func planHasSortedSlabOverTime(plan chplan.Node) bool {
+	found := false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		if rw, ok := n.(*chplan.RangeWindow); ok && rw.SortedSlabOverTime {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // applyNativeHistogramAnalyzerFix stamps enable_analyzer=0 on a query whose
 // plan reaches the native (exponential) histogram merge/window-fold machinery
 // — histogram_quantile.go's promHistogramKahanSum and the deeply-nested

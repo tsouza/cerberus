@@ -862,7 +862,13 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	if blockSize > 0 {
 		// Per-request override (WithMaxBlockSize) — only ever set by the
 		// chaos_sleep build so its injected sleepEachRow source is read as
-		// small blocks and max_execution_time can abort it mid-scan.
+		// small blocks and max_execution_time can abort it mid-scan. Applied
+		// AFTER perQuery so it would win a same-key collision, but in
+		// practice nothing else stamps this same "max_block_size" key
+		// through the generic perQuery map — the sorted-slab memory bound
+		// (internal/engine.applySortedSlabOverTimeMemoryBound) stamps it
+		// through its OWN local const (see settingMaxBlockSize's own doc),
+		// which is the identical string but a different Go declaration.
 		s[settingMaxBlockSize] = blockSize
 	}
 	return s

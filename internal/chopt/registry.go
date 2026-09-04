@@ -685,7 +685,18 @@ const (
 	// array is an UNGUARDED fan-out axis — unlike rate/increase/delta
 	// (#2429) it carries no size guard at all — so peak memory scales with
 	// samples * anchors; the sorted-slab shape bounds it to samples per
-	// series, independent of anchor count.
+	// series, independent of anchor count, PROVIDED the mandatory
+	// max_block_size=1 companion setting rides every dispatch of this shape
+	// (internal/engine.applySortedSlabOverTimeMemoryBound) — real
+	// ClickHouse 26.6.4.55 profiling (cerberus issue #3046) found the SQL
+	// shape alone does not bound memory this way; ClickHouse's vectorized
+	// block execution retained the per-anchor intermediates across an
+	// entire block of series rows rather than one row at a time, an
+	// O(block-width x samples) footprint that OOMed a 6 GiB container at
+	// 500 series / 480 anchors. The engine rule stamps the fix
+	// unconditionally whenever this feature's shape is chosen; see
+	// range_window_sorted_slab.go's own doc for the full profiling
+	// evidence and the block-size-vs-memory sweep that pinned the cause.
 	//
 	// Scoped to sum_over_time / avg_over_time only, deliberately narrower
 	// than the issue's own full *_over_time proposal (which also names
@@ -709,7 +720,20 @@ const (
 	// AutoSelect is false, mirroring fixed_accumulator_extrapolated: pending
 	// an optcorpus A/B pass before promoting to auto-selected. Reachable
 	// only via an explicit CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time
-	// listing.
+	// listing. Issue #3046's memory fix (the max_block_size companion
+	// setting above) closes the specific concern that A/B pass would have
+	// tripped over — every re-measured data point now beats the array-fold
+	// fan-out on BOTH memory and, in most cases, wall-clock — so
+	// AutoSelect COULD be revisited now, but doing so needs its own fresh
+	// optcorpus A/B run (cerberus issue #2894, already closed with a
+	// negative result under the unfixed shape) rather than being flipped
+	// as a side effect of the #3046 fix — and that A/B run should include
+	// mixed-shape queries (a sorted-slab branch combined with an unrelated,
+	// otherwise-cheap sibling via a binary op), since
+	// applySortedSlabOverTimeMemoryBound's own doc records that its
+	// max_block_size=1 stamp applies to the WHOLE dispatched query, not
+	// just the sorted-slab subtree — currently low-blast-radius only
+	// because this feature is opt-in-only.
 	FeatureSortedSlabOverTime = "sorted_slab_over_time"
 
 	// FeatureTSGridGroupArray swaps the fan-out window-assembly idiom's
@@ -2108,7 +2132,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
+		Doc:        "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup, with a mandatory max_block_size=1 companion setting closing #3046's memory defect (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending a fresh optcorpus A/B, #2894)",
 	},
 	{
 		ID:                         FeatureTSGridGroupArray,

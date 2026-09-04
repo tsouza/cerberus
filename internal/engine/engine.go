@@ -262,8 +262,9 @@ func strategyFor(meta Meta) string {
 // (QueryPlanCursor) execute sites so the native path is gated the same
 // way regardless of which one runs.
 //
-// On top of the always-on ts-grid gate, spill bound, compare() memory bound
-// and native-histogram analyzer fix, execContext applies the join spill bound
+// On top of the always-on ts-grid gate, spill bound, compare() memory bound,
+// native-histogram analyzer fix and sorted-slab memory bound, execContext
+// applies the join spill bound
 // — gated on BOTH the join_spill chopt feature (server >= 26.4, resolved once
 // at boot into e.settings().JoinSpill) AND the plan containing a join-bearing
 // node, so it is absent on every server too old to carry
@@ -297,6 +298,13 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// to the older analyzer (cerberus issue #2355). Always-on and
 	// result-equivalent, like the compare() bound above.
 	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
+	// Sorted-slab sum_over_time()/avg_over_time()-only: cap max_block_size at
+	// 1 so the per-anchor arrayFilter/arrayMap intermediates the emitter
+	// builds per series row are freed row-by-row instead of retained across
+	// an entire vectorized block (cerberus issue #3046). Always-on and
+	// result-equivalent, like the two bounds above; fires only when the plan
+	// carries the opt-in sorted-slab RangeWindow shape.
+	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
 	ctx = e.settings().apply(ctx, plan)
 	// Issue #2789: tag this route-A dispatch for actuals capture — see
 	// applyActualsCapture's own doc. No-op (ctx unchanged) whenever Actuals

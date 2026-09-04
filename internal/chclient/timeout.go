@@ -120,6 +120,15 @@ var queryTimeoutKey = queryTimeoutKeyType{}
 // chaos_sleep build so a sleepEachRow over a numbers() source is read as
 // single-row blocks (per-block sleep stays under max_sleep_in_seconds)
 // and max_execution_time aborts it part-way through with code 159.
+//
+// internal/engine's applySortedSlabOverTimeMemoryBound (cerberus issue
+// #3046) stamps the SAME ClickHouse setting for an unrelated reason (the
+// sorted-slab shape's own memory bound) through ITS OWN local
+// settingMaxBlockSize const in query_settings_rules.go, not this one — the
+// perf-sentinel-obligation CI gate requires a memory-bounding setting name
+// to be a local `setting<Name>` const inside the file that stamps it, so
+// the two consts intentionally do not share a declaration despite sharing
+// a literal string.
 const settingMaxBlockSize = "max_block_size"
 
 type maxBlockSizeKeyType struct{}
