@@ -2163,7 +2163,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto a sumMap over per-row cumulative counts, retiring the groupArray + per-rung fold (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — real-CH remeasurement (#2923) found the post-#2817 construction's real cost within ~1% of the fold's, not a win, so auto stays off)",
+		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto a sumMap over per-row cumulative counts (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — real-CH remeasurement found it within ~1% of the fold's cost, not a win, auto stays off, #2923)",
 	},
 	{
 		ID:         FeatureExpHistogramMergeSumMap,
