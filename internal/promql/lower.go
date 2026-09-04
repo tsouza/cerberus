@@ -3660,12 +3660,16 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 //     identical guard: the native aggregate has no DELTA-temporality runtime
 //     branch (issue #1628), so a temporality-bearing window stays on the
 //     fan-out unconditionally rather than risk the CUMULATIVE-only answer.
-//     Unlike the matrix arm's NativeRateLowerer, this clause is NOT (yet)
-//     narrowed by a CUMULATIVE/DELTA union split for rate() — tracked as
-//     cerberus issue #2843; changes/resets/deriv/predict_linear are never
-//     temporality-gated at all (counterTemporalityRangeFn), so only an
-//     instant rate() on a schema with AggregationTemporalityColumn set is
-//     affected.
+//     This is a pure shape-classifier guard, same as nativeTSGridMatrixNode's:
+//     it is the CALLER (NativeRateLowerer.LowerRate) that narrows a
+//     temporality-bearing instant rate() window with a CUMULATIVE/DELTA union
+//     split (cerberus issue #2843), by calling this function with a
+//     temporality-cleared copy — exactly how it already narrows the matrix
+//     case via nativeTSGridRateNode. changes/resets/deriv/predict_linear are
+//     never temporality-gated at all (counterTemporalityRangeFn), so this
+//     guard only ever fires for rate() on a schema with
+//     AggregationTemporalityColumn set, and only when called directly with
+//     the original (uncleared) rw.
 func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.Metrics) *chplan.RangeWindowGridNativeInstant {
 	if rw.Func != wantFunc {
 		return nil

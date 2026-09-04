@@ -146,6 +146,41 @@ func TestRowShapeOf_RangeWindowSplitsOnOuterRange(t *testing.T) {
 	}
 }
 
+// TestRowShapeOf_UnionAllReportsFirstArmShape pins cerberus issue #2843's
+// fix: a UnionAll answers its first arm's own RowShapeOf, not the
+// SampleRowShape default the generic (Scan, Scan) stub in allNodeKinds()
+// happens to also produce. NativeRateLowerer's instant temporality-union
+// split (cerberus issue #2843) returns a raw two-arm UnionAll of
+// ReducedWindowRowShape nodes with NO wrapping Project — unlike the matrix
+// arm's derivedRateArm — specifically so a forwarder placed directly over it
+// (e.g. `abs(rate(...))`) reads the correct answer here rather than
+// defaulting to SampleRowShape and referencing a Timestamp column neither
+// arm publishes (a live ClickHouse code 47).
+func TestRowShapeOf_UnionAllReportsFirstArmShape(t *testing.T) {
+	t.Parallel()
+
+	reducedArm := &chplan.RangeWindow{
+		Input: &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:  "rate", Range: 5 * time.Minute,
+		Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
+	}
+	union := &chplan.UnionAll{Inputs: []chplan.Node{
+		&chplan.RangeWindowGridNativeInstant{
+			Input: &chplan.Scan{Table: "otel_metrics_sum"}, Func: "rate",
+			Range: 5 * time.Minute, Anchor: time.Unix(4600, 0).UTC(),
+			TimestampColumn: "TimeUnix", ValueColumn: "Value",
+		},
+		reducedArm,
+	}}
+	if got := chplan.RowShapeOf(union); got != chplan.ReducedWindowRowShape {
+		t.Errorf("RowShapeOf(reduced-shape UnionAll) = %s, want %s", got, chplan.ReducedWindowRowShape)
+	}
+
+	if got := chplan.RowShapeOf(&chplan.UnionAll{}); got != chplan.SampleRowShape {
+		t.Errorf("RowShapeOf(empty UnionAll) = %s, want %s", got, chplan.SampleRowShape)
+	}
+}
+
 // TestRowShapeOf_VectorSetOpFlags pins the two boolean flags
 // chplan.RowShapeOf reads off a *VectorSetOp directly, since
 // allNodeKinds() only exercises the zero-value instance (both flags

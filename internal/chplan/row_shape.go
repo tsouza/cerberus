@@ -335,6 +335,24 @@ func RowShapeOf(n Node) RowShape {
 		// columns). Forwarding is recursive so a further OrderBy over an
 		// OrderBy (never built today) still resolves correctly.
 		return RowShapeOf(v.Input)
+	case *UnionAll:
+		// A UnionAll positionally combines its arms into ONE result set, so
+		// their row shape has to already agree for the SQL itself to be
+		// valid -- every construction site pairs same-shaped arms (the
+		// PromQL histogram companion-suffix routing's two Sample-shaped
+		// Scans; NativeRateLowerer's instant temporality-union split,
+		// cerberus issue #2843, whose native and fan-out arms both answer
+		// ReducedWindowRowShape). Reporting the first arm's own shape is
+		// therefore both correct and recursive, mirroring *OrderBy's
+		// passthrough above -- rather than silently defaulting to
+		// SampleRowShape (the wrong answer for a windowed union: a
+		// forwarder placed directly over one would then reference a
+		// MetricName / Timestamp column neither arm publishes, a live
+		// ClickHouse code 47).
+		if len(v.Inputs) == 0 {
+			return SampleRowShape
+		}
+		return RowShapeOf(v.Inputs[0])
 	}
 	return SampleRowShape
 }

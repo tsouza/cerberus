@@ -1,0 +1,36 @@
+# Instant sibling of native_rate_temporality_mixed.txtar (cerberus issue
+# #2843): NativeRateLowerer.LowerRate's INSTANT arm now splits a
+# temporality-bearing window into the SAME complementary CUMULATIVE-native /
+# DELTA-fan-out union the matrix arm already had, instead of declining
+# unconditionally and falling all the way back to the plain fan-out. The
+# seed carries one CUMULATIVE-temporality series and one DELTA-temporality
+# series so BOTH union arms fire and both survive into the result — proving
+# the split neither drops nor double-counts either series at the single
+# instant eval anchor.
+#
+# Positive activation pin (M3 exit criterion #4): the `-- chplan --` golden
+# below must show `RangeWindowGridNativeInstant` actually present as one arm
+# of the union, not a fallback to the plain instant `RangeWindow`.
+-- query.promql --
+rate(cerberus_queries_total[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_instant --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    AggregationTemporality Int32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('temporality', 'cumulative'), toDateTime64('2025-12-31 23:56:00', 9), 0.0, 2),
+    ('cerberus_queries_total', map('temporality', 'cumulative'), toDateTime64('2026-01-01 00:00:00', 9), 24.0, 2),
+    ('cerberus_queries_total', map('temporality', 'delta'), toDateTime64('2025-12-31 23:56:00', 9), 0.0, 1),
+    ('cerberus_queries_total', map('temporality', 'delta'), toDateTime64('2026-01-01 00:00:00', 9), 6.0, 1);
+-- expected_rows --
+[]

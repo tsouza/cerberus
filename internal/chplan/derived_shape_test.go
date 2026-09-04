@@ -241,6 +241,38 @@ func TestIsDerivedShape_Transparency(t *testing.T) {
 	}
 }
 
+// TestIsDerivedShape_UnionAllReportsFirstArmShape mirrors
+// TestRowShapeOf_UnionAllReportsFirstArmShape (row_shape_test.go) for the
+// sibling classifier: cerberus issue #2843's raw two-arm instant
+// temporality-union split has no wrapping Project, so the HTTP layer's
+// wrapWithSampleProjection (internal/api/prom/handler.go) must see it as
+// derived via THIS classifier too, or it would reference a MetricName
+// column neither arm publishes.
+func TestIsDerivedShape_UnionAllReportsFirstArmShape(t *testing.T) {
+	t.Parallel()
+
+	derivedArm := &chplan.RangeWindow{
+		Input: &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:  "rate", Range: 5 * time.Minute,
+		Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
+	}
+	derivedUnion := &chplan.UnionAll{Inputs: []chplan.Node{derivedArm, derivedArm}}
+	if got := chplan.IsDerivedShape(derivedUnion, testSampleColumns); !got {
+		t.Errorf("IsDerivedShape(derived-arm UnionAll) = %v, want true", got)
+	}
+
+	canonicalUnion := &chplan.UnionAll{Inputs: []chplan.Node{
+		&chplan.Scan{Table: "otel_metrics_sum"}, &chplan.Scan{Table: "otel_metrics_sum"},
+	}}
+	if got := chplan.IsDerivedShape(canonicalUnion, testSampleColumns); got {
+		t.Errorf("IsDerivedShape(canonical-arm UnionAll) = %v, want false", got)
+	}
+
+	if got := chplan.IsDerivedShape(&chplan.UnionAll{}, testSampleColumns); got {
+		t.Errorf("IsDerivedShape(empty UnionAll) = %v, want false", got)
+	}
+}
+
 // TestProjectExposesCanonical_RespectsConfiguredNames pins that the
 // classifier reads the column names it is HANDED rather than the OTel-CH
 // defaults: the schema override config can rename all four, and a
