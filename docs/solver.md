@@ -476,7 +476,7 @@ normalized `query_log` text.
   the normal route-A path; the outcome is still `Observe`d so corroboration
   bookkeeping progresses.
 - **`PreferB`** — route A has failed on this Key at least
-  `minCorroboratingFailures` (2) consecutive times with no intervening
+  `MinCorroboratingFailures` (2) consecutive times with no intervening
   success, and a route-B probe subsequently succeeded. The caller MAY memo-hit
   route B directly, subject to every other gate re-checked at dispatch time
   (eligibility, freshness, breaker, admission). A `PreferB` past its
@@ -487,7 +487,7 @@ normalized `query_log` text.
   resource failure. The caller stays on route A; no further probing is
   attempted until the entry ages out at the memo's TTL.
 
-Requiring `minCorroboratingFailures = 2` consecutive failures (not one) exists
+Requiring `MinCorroboratingFailures = 2` consecutive failures (not one) exists
 so a single transient rejection never mints a verdict on its own: probing
 route B is itself a real dispatch, and the memo's premise only holds if
 repeated failure is treated as real signal rather than noise from one bad
@@ -498,7 +498,7 @@ request.
 A `pressureTracker` (`internal/routememo/pressure.go`) records every resource
 failure's Key and timestamp, independent of which route produced it.
 `Memo.UnderPressure()` reports true once more than `pressureFailureThreshold`
-(`minCorroboratingFailures + 1` = 3) DISTINCT keys have shown a resource
+(`MinCorroboratingFailures + 1` = 3) DISTINCT keys have shown a resource
 failure within a pressure window. While under pressure, the memo admits no
 probe and no memo-hit dispatch — both fall back to route A — and `Observe`
 writes no verdict state at all; only the pressure tracker itself keeps
@@ -509,7 +509,7 @@ without the damper, one shared external cause would look like independent
 evidence against every one of those keys and stampede all of them into
 probing route B at once — exactly the wrong response to a cause that has
 nothing to do with any individual key's cost shape. `pressureFailureThreshold`
-is defined relative to `minCorroboratingFailures` specifically so a single hot
+is defined relative to `MinCorroboratingFailures` specifically so a single hot
 key's own corroboration count can never trip the damper by itself — tripping
 it takes failures spread across more than one key.
 
@@ -778,7 +778,7 @@ by construction.
 
 The issue's proposal names both the route memo and per-rung admission as
 seeding targets. Only per-rung admission is seeded. The route memo's
-`minCorroboratingFailures = 2` and its cluster-wide pressure damper (both
+`MinCorroboratingFailures = 2` and its cluster-wide pressure damper (both
 documented above) exist specifically to reject exactly the kind of single-
 shot, non-corroborated evidence a granule-resolution upper bound is: seeding
 `PreferB` from an estimate would let one advisory signal — not selectivity-
@@ -884,7 +884,7 @@ below), and its `DistinctSeries` is a field only this probe ever populates.
    reason `EXPLAIN ESTIMATE` is not: see "Why the failure-driven route memo
    is NOT seeded" above. A real bounded aggregate is still one non-drain
    observation, not the repeated real-traffic corroboration
-   `minCorroboratingFailures` + the pressure damper exist to require.
+   `MinCorroboratingFailures` + the pressure damper exist to require.
 
 ### Cost bound and scope (deliberately narrow)
 
@@ -1055,17 +1055,31 @@ whether or not the operator separately opted into it.
    safety argument as that mechanism's own doc: it can only ever DOWNGRADE
    an already-`PerRungPredictive` route, never promote or block one.
 4. **Route-memo priors with real magnitudes** (`internal/routememo/magnitude.go`,
-   `RecordActualMagnitude` / `MagnitudeFor`): a deliberately THIN hook —
-   see "Why the failure-driven route memo is NOT seeded" above for why the
-   memo's routing VERDICT is never touched by an advisory or actuals
-   signal. This hook adds a second, purely OBSERVATIONAL axis on top of an
-   ALREADY-LIVE verdict (it never creates, deletes, or changes
-   `LookupState`, eviction order, or TTL) — wired from
-   `per_rung_admission.go`'s existing `perRungObservingCursor.Close()`,
-   which already computes the identical `routememo.Key` for a per-rung
-   predictive route-B dispatch's own clean drain. Architecture the memo
-   supports for a future routing use; this landing makes no routing
-   decision from it.
+   `RecordActualMagnitude` / `MagnitudeFor`): a second, OBSERVATIONAL axis on
+   top of an already-live verdict — it never creates, deletes, or changes
+   `LookupState`, eviction order, or TTL by itself. This is NOT the same
+   thing "Why the failure-driven route memo is NOT seeded" above forbids:
+   that section is about seeding the VERDICT from a single-shot, external
+   ADVISORY signal (`EXPLAIN ESTIMATE`, the cardinality probe, a calibration
+   factor) with no real-dispatch corroboration behind it. The magnitude axis
+   is built entirely from the memo's OWN repeated, real route-B drains —
+   `RecordActualMagnitude` is fed from every clean drain across all three
+   route-B call sites (`internal/engine/route_memo_wiring.go`'s memo-hit,
+   first probe, and stale-`PreferB` re-validation, plus
+   `per_rung_admission.go`'s separate per-rung predictive cursor), so a
+   consumer that requires `MinCorroboratingFailures` independent readings
+   before trusting it is reading the SAME class of repeated real-traffic
+   evidence the verdict itself requires, just on a different axis.
+   `route_memo_wiring.go`'s `retryOnRouteAResourceFailure` is that consumer:
+   a stale-`PreferB` re-validation whose tracked magnitude is
+   well-corroborated AND trivially small (under
+   `routeMemoTrivialMagnitudeRowsPerAnchor` rows per anchor) declines the
+   automatic rescue-probe admission — the scarce dispatch-token budget goes
+   unspent rather than re-confirming a route whose own corroborated history
+   says it barely moves any data. It never touches a brand-new `Unknown`
+   key's first-ever probe (no magnitude reading can exist yet for a Key that
+   has never completed a route-B dispatch) and never demotes or evicts the
+   verdict itself — only whether THIS ONE rescue dispatch is attempted.
 
 ### Verified against a live server, not assumed
 

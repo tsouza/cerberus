@@ -27,6 +27,59 @@ import (
 // memo-hit alike — regardless of what the memo has recorded for its Key.
 const liveEdgeFreshnessMarginSteps = 1
 
+// routeMemoTrivialMagnitudeRowsPerAnchor bounds "trivially small" for a
+// stale-PreferB re-validation's tracked magnitude (routememo.Memo.
+// MagnitudeFor), RELATIVE to the dispatch's own anchor count — mirroring
+// per_rung_admission.go's perRungCheapRowsPerAnchor per-anchor cheapness
+// reasoning (a composed route-B result averaging fewer than this many
+// output rows per anchor has too little data behind it, at any grid width,
+// to justify K-way contention). This is a SECOND, independent constant
+// rather than a shared one: per_rung_admission.go's own doc is explicit
+// that the per-rung learner and the failure-driven route memo are
+// deliberately independent mechanisms answering different questions (one
+// downgrades an already-eligible per-rung bypass; this one decides whether
+// a SCARCE rescue-dispatch token is worth spending re-confirming a route
+// memo verdict) — coupling their thresholds would make a future change to
+// either one silently retune the other.
+const routeMemoTrivialMagnitudeRowsPerAnchor = 20
+
+// recordRouteMemoMagnitude feeds cur's inspected-row count into memo's
+// magnitude EMA for key, on a CLEAN route-B drain only (callers gate on
+// drainErr == nil / a nil dispatch error before calling this) — see
+// routememo/magnitude.go's own doc. Guards the int64->uint64 conversion the
+// same way per_rung_admission.go's perRungObservingCursor already does:
+// Inspected() is documented non-negative on a clean drain, so the guard is
+// defensive, not expected to ever trip. A nil cur or nil memo is a no-op —
+// the former can't happen at either of this function's call sites but
+// costs nothing to guard against, the latter mirrors every other memo
+// method's own "unwired mechanism" contract.
+func recordRouteMemoMagnitude(memo *routememo.Memo, key routememo.Key, cur chclient.Cursor) {
+	if memo == nil || cur == nil {
+		return
+	}
+	if n := cur.Inspected(); n >= 0 {
+		memo.RecordActualMagnitude(key, uint64(n)) //nolint:gosec // G115 -- guarded by the >= 0 check above
+	}
+}
+
+// routeMemoHitObserveDrainOutcome builds a memo-hit CursorResult's
+// ObserveDrainOutcome hook (QueryPlanCursor's own call site) — a named,
+// directly testable function rather than an inline closure, since the
+// memo-hit's OTHER hook (Retry) already warranted one. The handler calls
+// this UNCONDITIONALLY with the real drain error (nil on the ordinary
+// clean finish), so a clean memo-hit drain — the SINGLE MOST common route-B
+// dispatch shape once a Key is established — is what closes issue #3035's
+// sampling-bias gap the widest: no verdict-state write happens (a clean
+// memo-hit needs no re-confirmation, unchanged from before this hook
+// existed), only the observational magnitude axis is fed.
+func routeMemoHitObserveDrainOutcome(memo *routememo.Memo, key routememo.Key, cur chclient.Cursor) func(drainErr error) {
+	return func(drainErr error) {
+		if drainErr == nil {
+			recordRouteMemoMagnitude(memo, key, cur)
+		}
+	}
+}
+
 // routeMemoActive reports whether the failure-driven route memo is wired
 // and has something to consult. A nil RouteMemo or a nil Solver both mean
 // the mechanism is off, matching e.classify's own "Solver nil -> no
@@ -285,6 +338,26 @@ func (e *Engine) retryOnRouteAResourceFailure(
 		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineBreakerOpen)
 		return nil, nil, nil, nil, false
 	}
+	// Snapshot whether THIS failure is heading into the stale-PreferB
+	// re-validation rescue (as opposed to a brand-new Unknown key's
+	// first-ever probe) BEFORE the atomic call below mutates state — purely
+	// to inform the magnitude-trivial decline right after it, never as a
+	// substitute for that call's own internal atomic staleness check (see
+	// its doc for why record-and-decide must stay one critical section).
+	// Reading it here cannot reintroduce that race: this is an ADDITIONAL,
+	// non-mutating read for a second, independent, dispatch-token-budget
+	// decision, not a second attempt at the state-transition decision
+	// itself — at worst a concurrent request makes this snapshot stale by
+	// the time the atomic call runs, which costs only dispatch-token
+	// efficiency, never a wrong answer (routememo never decides HOW route B
+	// computes its answer, only whether to try it).
+	preState, preStale := e.RouteMemo.Lookup(d.key)
+	magRows, magObservations, magOK := e.RouteMemo.MagnitudeFor(d.key)
+	trivialRevalidation := preState == routememo.PreferB && preStale &&
+		magOK && magObservations >= routememo.MinCorroboratingFailures &&
+		d.decision.NAnchors > 0 &&
+		magRows < float64(d.decision.NAnchors)*routeMemoTrivialMagnitudeRowsPerAnchor
+
 	// Record the failure AND decide probe admission atomically — see
 	// ObserveRouteAFailureAndMaybeBeginProbe's doc for why this must not be
 	// two separate calls (a stale PreferB entry's re-validation rescue
@@ -299,6 +372,21 @@ func (e *Engine) retryOnRouteAResourceFailure(
 		} else {
 			telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineProbeNotAdmitted)
 		}
+		return nil, nil, nil, nil, false
+	}
+	if trivialRevalidation {
+		// The admission above already recorded the failure (corroboration
+		// / re-validation-clock bookkeeping progresses exactly as if this
+		// rescue had run) — only the DISPATCH itself is declined, giving
+		// the token straight back unspent rather than spending one of
+		// maxConcurrentRoutedDispatches re-confirming a route whose own
+		// well-corroborated history says it barely moves any data. A
+		// brand-new Unknown key's first-ever probe is never affected:
+		// MagnitudeFor has no reading for a key that has never once
+		// completed a route-B dispatch, so trivialRevalidation is always
+		// false there.
+		release()
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineTrivialMagnitude)
 		return nil, nil, nil, nil, false
 	}
 	dispatchDone := telemetry.ObserveRoutedDispatchInflight(ctx)
@@ -328,6 +416,16 @@ func (e *Engine) retryOnRouteAResourceFailure(
 			e.RouteMemo.Observe(key, routememo.RouteB, drainOutcome)
 			if drainOutcome == routememo.OutcomeSuccess {
 				telemetry.RecordRouteABSuccess(ctx, telemetry.RouteChoiceB)
+				// Observe above already landed (or refreshed) the PreferB
+				// verdict for key, so this magnitude reading lands on that
+				// SAME entry, never a doomed-to-be-replaced Unknown one —
+				// see recordRouteMemoMagnitude's own doc. This is the probe
+				// / stale-rescue half of the sampling-bias fix issue #3035
+				// describes: magnitude no longer comes ONLY from the
+				// per-rung predictive cursor (per_rung_admission.go), it
+				// also comes from every clean first-probe and re-validation
+				// drain the failure-driven route memo itself dispatches.
+				recordRouteMemoMagnitude(e.RouteMemo, key, cur)
 			}
 			release()
 			dispatchDone()

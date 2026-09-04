@@ -41,7 +41,7 @@ const (
 	// Observed so corroboration bookkeeping progresses.
 	Unknown LookupState = iota
 	// PreferB: route A has failed on this Key at least
-	// minCorroboratingFailures times with no intervening Success, and a
+	// MinCorroboratingFailures times with no intervening Success, and a
 	// route-B probe subsequently succeeded. The caller MAY memo-hit route B
 	// — subject to re-checking every structural/freshness/admission gate
 	// itself; Lookup makes no promise about any of those.
@@ -83,19 +83,26 @@ const (
 	// exactly today's (pre-memo) behavior.
 	maxConcurrentRoutedDispatches = 4
 
-	// minCorroboratingFailures is how many consecutive route-A
+	// MinCorroboratingFailures is how many consecutive route-A
 	// ResourceFailure observations (with no intervening Success) a Key
 	// needs before it becomes probe-eligible. A single transient resource
-	// rejection cannot, by itself, teach the memo anything.
-	minCorroboratingFailures = 2
+	// rejection cannot, by itself, teach the memo anything. Exported (unlike
+	// every other constant in this block) so a consumer outside this
+	// package can apply the SAME corroboration discipline to a DIFFERENT
+	// axis of evidence about the same Key — see
+	// internal/engine/route_memo_wiring.go's magnitude-trivial
+	// re-validation gate, which requires this many magnitude readings
+	// before trusting them, for exactly the same "one anomalous reading
+	// teaches nothing" reason.
+	MinCorroboratingFailures = 2
 
 	// pressureFailureThreshold is how many DISTINCT keys must show a fresh
 	// ResourceFailure within the pressure window before the environment is
-	// flagged under pressure. Defined relative to minCorroboratingFailures
+	// flagged under pressure. Defined relative to MinCorroboratingFailures
 	// so a single hot key's own corroboration count can never trip it
 	// alone — it takes failures spread across more keys than any one key
 	// could contribute.
-	pressureFailureThreshold = minCorroboratingFailures + 1
+	pressureFailureThreshold = MinCorroboratingFailures + 1
 )
 
 // Verdict is the memo's per-Key state. Unexported: callers only ever see it
@@ -252,7 +259,7 @@ func (m *Memo) BeginProbe(k Key) (release func(), ok bool) {
 		return noopRelease, false
 	}
 	v, live := m.getLiveLocked(k, now)
-	if !live || v.state != Unknown || v.corroboration < minCorroboratingFailures {
+	if !live || v.state != Unknown || v.corroboration < MinCorroboratingFailures {
 		return noopRelease, false
 	}
 	select {
@@ -332,7 +339,7 @@ func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok
 	// The original first-probe path: admit only a fresh Unknown entry that
 	// has now reached the corroboration floor.
 	v, live = m.getLiveLocked(k, now)
-	if !live || v.state != Unknown || v.corroboration < minCorroboratingFailures {
+	if !live || v.state != Unknown || v.corroboration < MinCorroboratingFailures {
 		return noopRelease, false, false
 	}
 	select {
@@ -400,7 +407,7 @@ func (m *Memo) observeRouteALocked(k Key, now time.Time, outcome Outcome) {
 // observeRouteAResourceFailureLocked applies the route-A resource-failure
 // state transition: create a fresh Unknown entry with corroboration=1 if
 // none exists; on an existing Unknown entry, bump corroboration (capped at
-// minCorroboratingFailures); on a live PreferB entry (necessarily the
+// MinCorroboratingFailures); on a live PreferB entry (necessarily the
 // stale-re-validation path — Lookup would not have let the caller route
 // through A otherwise), refresh createdAt without re-probing, since the
 // failing premise was just re-confirmed directly; a BothFail entry has no
@@ -424,7 +431,7 @@ func (m *Memo) observeRouteAResourceFailureLocked(k Key, now time.Time) {
 		m.touchLRULocked(k)
 	case BothFail:
 	case Unknown:
-		if v.corroboration < minCorroboratingFailures {
+		if v.corroboration < MinCorroboratingFailures {
 			v.corroboration++
 		}
 		m.touchLRULocked(k)
@@ -450,11 +457,11 @@ func (m *Memo) observeRouteBLocked(k Key, now time.Time, outcome Outcome) {
 		// dispatch re-derives eligibility and may probe again; the second
 		// consecutive one locks out. A success anywhere resets by replacing
 		// the entry outright.
-		if v, ok := m.entries[k]; ok && v.state != BothFail && v.corroboration+1 < minCorroboratingFailures {
+		if v, ok := m.entries[k]; ok && v.state != BothFail && v.corroboration+1 < MinCorroboratingFailures {
 			m.entries[k] = &Verdict{state: Unknown, createdAt: now, corroboration: v.corroboration + 1}
 			break
 		}
-		if _, ok := m.entries[k]; !ok && minCorroboratingFailures > 1 {
+		if _, ok := m.entries[k]; !ok && MinCorroboratingFailures > 1 {
 			m.entries[k] = &Verdict{state: Unknown, createdAt: now, corroboration: 1}
 			break
 		}

@@ -107,6 +107,15 @@ const (
 	// met, or the shared dispatch-token semaphore full) — the wiring
 	// layer sees only the bool, so both collapse into one reason here.
 	RouteMemoDeclineProbeNotAdmitted = "probe-not-admitted"
+	// RouteMemoDeclineTrivialMagnitude is retryOnRouteAResourceFailure
+	// declining an admitted stale-PreferB re-validation rescue because
+	// Memo.MagnitudeFor reports a well-corroborated, trivially small
+	// tracked magnitude for the Key — the scarce rescue-dispatch token is
+	// released back unspent rather than spent re-confirming a route whose
+	// own history says it barely moves any data. Never fires for a Key's
+	// first-ever probe (MagnitudeFor has no reading yet for an Unknown
+	// key), only for a re-validation of an already-established verdict.
+	RouteMemoDeclineTrivialMagnitude = "trivial-magnitude"
 )
 
 // RouteChoice label values for AttrRouteChoice on RouteABSuccessTotal.

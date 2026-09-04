@@ -35,11 +35,11 @@ func TestAmplificationBound_ConcurrentSameKeyFailuresCapAtDispatchBudget(t *test
 	k := testKey("hot-same-key")
 
 	// Sequentially drive the key to exactly the corroboration floor: after
-	// minCorroboratingFailures consecutive route-A resource failures with no
+	// MinCorroboratingFailures consecutive route-A resource failures with no
 	// intervening success, the key is admit-eligible (Unknown state,
-	// corroboration == minCorroboratingFailures) but no dispatch has been
+	// corroboration == MinCorroboratingFailures) but no dispatch has been
 	// admitted yet — plain Observe only records, it never admits.
-	for i := 0; i < minCorroboratingFailures; i++ {
+	for i := 0; i < MinCorroboratingFailures; i++ {
 		m.Observe(k, RouteA, OutcomeResourceFailure)
 	}
 
