@@ -1,0 +1,50 @@
+# Sorted-slab decomposition (cerberus issue #2761, widened to stdvar_over_time
+# by issue #2804) for stdvar_over_time() in RANGE mode — chsql's
+# emitRangeWindowSortedSlabOverTime. Sibling of
+# sorted_slab_stddev_over_time_range_step.txtar, pinning stdvar_over_time's
+# two-pass population-variance reducer (varPopTwoPassFrag,
+# `μ = arrayAvg(vals); Σ(x-μ)² / N`, no sqrt) over the same sliced window.
+#
+# job 'api' carries a duplicate-timestamp pair (00:02:00 appears twice, with
+# DIFFERENT values 2.0 and 3.0) to pin the no-dedup contract (every sample
+# counts individually, including in both passes of the two-pass moment
+# computation); job 'web' is a plain monotonic series.
+#
+# That duplicate is why this fixture is parity-EXEMPT rather than enrolled
+# (cerberus issue #2905): Prometheus's TSDB appender keeps one sample per
+# (series, timestamp) and drops 3.0 at commit, so a reference comparison here
+# would assert that cerberus agrees with a survivor chosen by ingestion order.
+# The no-dedup contract is pinned instead, over this very seed, by
+# internal/promql/duplicate_timestamp_seed_chdb_test.go, which holds the
+# sorted-slab answer against the fan-out array-fold answer it must equal.
+-- query.promql --
+sum by(job) (stdvar_over_time(http_requests_total[5m]))
+-- parity_exempt --
+reason: duplicate-timestamp-seed
+detail: job 'api' seeds 00:02:00 twice with 2.0 and 3.0 to pin that stdvar_over_time's sorted-slab reducer counts both samples in the two-pass mean and variance; the reference engine's appender keeps only the first-ingested one, so it has no answer to compare against.
+-- range_step --
+30s
+-- experimental_sorted_slab_over_time --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 3.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 6.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:02:00', 9), 30.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:03:00', 9), 40.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 60.0);
+-- expected_rows --
+[]

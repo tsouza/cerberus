@@ -709,19 +709,29 @@ const (
 	// range_window_sorted_slab.go's own doc for the full profiling
 	// evidence and the block-size-vs-memory sweep that pinned the cause.
 	//
-	// Scoped to sum_over_time / avg_over_time only, deliberately narrower
-	// than the issue's own full *_over_time proposal (which also names
-	// first/last/stddev/stdvar/mad_over_time): these two are the ones whose
-	// byte-identical contract with the array-fold is the SIMPLEST to state
-	// and verify (arraySum / arrayAvg over the sliced window fold in the
-	// same left-to-right float order the array-fold's identical reducers
-	// already use — see chplan.RangeWindow.SortedSlabOverTime's own doc),
-	// so this cut ships the mandatory arraySlice-preserving-order form the
-	// issue calls out first. min/max/count/present_over_time already skip
+	// Originally scoped to sum_over_time / avg_over_time only (#2761 shipped
+	// only these two: the ones whose byte-identical contract with the
+	// array-fold was the SIMPLEST to state and verify — arraySum / arrayAvg
+	// over the sliced window fold in the same left-to-right float order the
+	// array-fold's identical reducers already use, see
+	// chplan.RangeWindow.SortedSlabOverTime's own doc). Widened by cerberus
+	// issue #2804 to the REST of the array-path family
+	// overTimeArrayValueFrag's switch already dispatched:
+	// first_over_time (a POSITION pick — vals[1] — rather than a reduction;
+	// order preservation is the correctness argument itself, not just a
+	// precision nicety) and stddev_over_time / stdvar_over_time /
+	// mad_over_time (two-pass moment computations over the sliced array;
+	// see range_window_sorted_slab.go's own doc for the per-function
+	// order/precision argument). min/max/count/present_over_time still skip
 	// the array-fold entirely (overTimeDirectAggFrag's direct CH group
-	// aggregate); first/last/stddev/stdvar/mad_over_time extending to the
-	// same slab shape is tracked at
-	// https://github.com/tsouza/cerberus/issues/2804.
+	// aggregate) and never reach this shape either way. last_over_time is
+	// deliberately EXCLUDED even though overTimeArrayValueFrag's switch also
+	// dispatches it — see FeatureTSGridLastOverTime's own doc and
+	// promql.SortedSlabOverTimeLowerer's doc for why its own native
+	// staleness-resample arm already answers the identical question with
+	// more precise semantics than a second, competing sorted-slab arm
+	// would. quantile_over_time is also excluded: it has no sorted-slab
+	// reducer in overTimeArrayValueFrag's switch at all.
 	//
 	// Like fixed_accumulator_extrapolated this is a pure SQL-SHAPE
 	// optimization — groupArray/arraySort/arrayFilter/arraySum/arrayAvg are
@@ -985,9 +995,13 @@ const (
 	// auto promotion. Shares the family's RequiresExperimentalTSGrid gate
 	// (allow_experimental_time_series_aggregate_functions).
 	//
-	// first_over_time has no native sibling: the aggregate carries the
-	// LATEST in-window sample forward, never the earliest, so it stays on
-	// the fan-out unconditionally.
+	// first_over_time has no NATIVE (ts_grid) sibling of this feature: the
+	// timeSeriesResampleToGridWithStaleness aggregate carries the LATEST
+	// in-window sample forward, never the earliest, so first_over_time
+	// never reaches this feature's shape. It does have a different
+	// non-fan-out arm since cerberus issue #2804 — FeatureSortedSlabOverTime's
+	// sorted-slab decomposition, a generic array-slice reducer rather than a
+	// native staleness-resample aggregate (see that feature's own doc).
 	FeatureTSGridLastOverTime = "ts_grid_last_over_time"
 
 	// FeatureDownsampleTier opts eligible LONG-RANGE / low-resolution

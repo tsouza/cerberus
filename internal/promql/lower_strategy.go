@@ -184,12 +184,30 @@ type IdeltaLowerer interface {
 // Unlike every other RangeLowerers member, the two functions
 // [rangeFnPreservesName] names (last_over_time, first_over_time) keep
 // `__name__` on their output — so LowerLastOverTime's caller
-// (lowerRangeVectorCall) treats a returned node that differs from the input
-// rw as ALREADY the canonical named shape (see nativeLastOverTimeNode's own
-// doc) rather than routing it through the fan-out's name-synthesis wrap.
-// first_over_time has no native sibling — the aggregate carries the LATEST
-// in-window sample forward, never the earliest — so it stays on the fan-out
-// unconditionally and never reaches this interface at all.
+// (lowerRangeVectorCall) treats a returned node that is ALREADY the
+// canonical (MetricName, Attributes, Timestamp, Value) shape
+// (`!chplan.IsDerivedShape(node, ...)` — see nativeLastOverTimeNode's own
+// doc for the native case) as needing no further wrap, rather than routing
+// it through the fan-out's name-synthesis wrap. That check is shape-based
+// rather than pointer-based precisely because a plain *chplan.RangeWindow
+// copy carrying a different bool flag (SortedSlabOverTime, DownsampleTier)
+// is a DIFFERENT pointer from rw while still being the SAME derived shape —
+// see lowerRangeVectorCall's own doc for the case that makes the
+// distinction observable.
+//
+// first_over_time has no NATIVE sibling of its own — no ts_grid aggregate
+// carries the EARLIEST in-window sample forward the way
+// timeSeriesResampleToGridWithStaleness carries the latest — so it never
+// reaches THIS interface at all. It does, since cerberus issue #2804, reach
+// a different dedicated strategy for the identical "avoid the array-fold
+// fan-out" question: OverTimeLowerer's sorted-slab decomposition (see
+// SortedSlabOverTimeLowerer's own doc and the
+// `case "sum_over_time", ... "first_over_time", ...` arm in
+// lowerRangeVectorCallFanout). last_over_time is the mirror case: it stays
+// OUT of OverTimeLowerer/SortedSlabOverTimeLowerer precisely because THIS
+// interface's native arm already answers the same question for it with
+// staleness-window semantics a generic array-slice reducer cannot
+// replicate.
 type LastOverTimeLowerer interface {
 	// LowerLastOverTime returns the chplan node for rw — the native
 	// RangeWindowStaleResample for a shape the impl handles, or the fan-out
@@ -885,9 +903,27 @@ func (FanoutOverTimeLowerer) LowerOverTime(rw *chplan.RangeWindow, _ schema.Metr
 }
 
 // SortedSlabOverTimeLowerer is the boot-wired OverTimeLowerer that emits
-// RangeWindow{SortedSlabOverTime: true} for a shape-eligible sum_over_time /
-// avg_over_time range-window (cerberus issue #2761). cmd/cerberus wires it
-// ONLY when chopt resolved sorted_slab_over_time at boot.
+// RangeWindow{SortedSlabOverTime: true} for a shape-eligible range-window
+// (cerberus issue #2761, sum_over_time / avg_over_time only; widened by
+// issue #2804 to first_over_time / stddev_over_time / stdvar_over_time /
+// mad_over_time — the full set overTimeArrayValueFrag's switch dispatches).
+// cmd/cerberus wires it ONLY when chopt resolved sorted_slab_over_time at
+// boot.
+//
+// last_over_time is DELIBERATELY not among the functions that reach this
+// lowerer at all — lowerRangeVectorCallFanout dispatches it to its own
+// LastOverTimeLowerer chain instead (see that interface's own doc). This
+// lowerer's own eligibility check, sortedSlabOverTimeEligible below, is pure
+// query SHAPE (Identity / grid / Variants) and carries no function-name
+// clause — the exclusion is enforced entirely by the CALLER never handing
+// last_over_time's RangeWindow to this lowerer in the first place, because
+// last_over_time already has a more specialised, purpose-built native
+// mechanism (chopt.FeatureTSGridLastOverTime's
+// timeSeriesResampleToGridWithStaleness) answering the identical
+// "avoid the array-fold fan-out" question with staleness-window semantics a
+// generic array-slice reducer cannot replicate. Extending this shape to
+// last_over_time too would create two competing, overlapping mechanisms for
+// one function with no precedence rule between them.
 type SortedSlabOverTimeLowerer struct {
 	// Fallback is the concrete lowerer for shapes the sorted-slab path
 	// cannot handle. Boot wires it to FanoutOverTimeLowerer{}.

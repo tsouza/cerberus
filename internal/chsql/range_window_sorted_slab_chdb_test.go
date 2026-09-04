@@ -1,7 +1,9 @@
 //go:build chdb
 
 // chDB-backed dual-emit parity pin for the sorted-slab decomposition
-// (chplan.RangeWindow.SortedSlabOverTime, cerberus issue #2761).
+// (chplan.RangeWindow.SortedSlabOverTime, cerberus issue #2761, widened to
+// first_over_time / stddev_over_time / stdvar_over_time / mad_over_time by
+// issue #2804).
 //
 // Like laginframe_adjacency / fixed_accumulator_extrapolated, the sorted-slab
 // shape needs no server-version floor or experimental setting —
@@ -15,13 +17,16 @@
 // values.
 //
 // Unlike rate/increase's fixed-accumulator counter-reset term (which sums
-// floats in ClickHouse's own non-deterministic sumIf order), sum_over_time /
-// avg_over_time's reducers here are arraySum/arrayAvg applied to a slice that
-// preserves the array-fold's own element order (arrayFilter over samples,
-// samples arraySort-ascending — see range_window_sorted_slab.go's own doc).
-// Both arms therefore fold the SAME elements in the SAME order, so this
-// assertion is BIT-IDENTICAL (math.Float64bits equality), not merely
-// ULP-bounded.
+// floats in ClickHouse's own non-deterministic sumIf order), every reducer
+// in this family — overTimeArrayValueFrag(r.Func, vals), whichever of the
+// six functions selects it — is applied to a slice that preserves the
+// array-fold's own element order (arrayFilter over samples, samples
+// arraySort-ascending — see range_window_sorted_slab.go's own doc for the
+// per-function order/precision argument, including mad_over_time's
+// order-independent-but-set-dependent quantile pair). Both arms therefore
+// fold/pick from the SAME elements in the SAME order, so this assertion is
+// BIT-IDENTICAL (math.Float64bits equality), not merely ULP-bounded, for
+// every function in the loop below.
 package chsql_test
 
 import (
@@ -41,7 +46,9 @@ import (
 	"github.com/tsouza/cerberus/internal/testsql"
 )
 
-// sortedSlabOverTimeSeed covers sum_over_time() / avg_over_time()'s edge
+// sortedSlabOverTimeSeed covers the whole sorted-slab function family's
+// (sum_over_time / avg_over_time / first_over_time / stddev_over_time /
+// stdvar_over_time / mad_over_time, cerberus issues #2761 and #2804) edge
 // cases over a Gauge table:
 //   - 'walk': a normal up/down gauge walk (6 samples across the window).
 //   - 'boundary': exactly 2 samples, one sitting right at the window's
@@ -90,7 +97,10 @@ func TestSortedSlabOverTime_DualEmitParity(t *testing.T) {
 		}
 	}
 
-	for _, fn := range []string{"sum_over_time", "avg_over_time"} {
+	for _, fn := range []string{
+		"sum_over_time", "avg_over_time",
+		"first_over_time", "stddev_over_time", "stdvar_over_time", "mad_over_time",
+	} {
 		t.Run(fn, func(t *testing.T) {
 			query := "sum by(job) (" + fn + "(cpu_temp_celsius[5m]))"
 			var fanoutLowerers, slabLowerers promql.RangeLowerers
