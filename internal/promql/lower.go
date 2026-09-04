@@ -141,6 +141,19 @@ type LowerOpts struct {
 	// struct — every caller but the deployed prom handler (which threads
 	// chopt.EnabledSet's verdict from cmd/cerberus) leaves it unset.
 	TagGroups bool
+
+	// ThrowDuplicateSeriesIf threads chopt.FeatureTSThrowDuplicateSeriesIf's
+	// resolved verdict (cerberus issue #3038) into the duplicate-labelset
+	// guard's shared HAVING builder, duplicateLabelsetGuardExpr: when true,
+	// it emits timeSeriesThrowDuplicateSeriesIf (which names the actual
+	// colliding tags) instead of throwIf(uniqExact(MetricName) > 1, <static
+	// message>). The zero value (false) keeps the pre-#3038 throwIf SQL
+	// byte-identical, mirroring TagGroups's own posture — every caller but
+	// the deployed prom handler (which threads chopt.EnabledSet's verdict
+	// from cmd/cerberus) leaves it unset. Independent of TagGroups: see
+	// chopt.FeatureTSThrowDuplicateSeriesIf's own doc for why the two gates
+	// are deliberately separate.
+	ThrowDuplicateSeriesIf bool
 }
 
 // LowerAtRangeOpts is the options-carrying variant of [LowerAtRange].
@@ -152,13 +165,14 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
 	plan, err := lowerRoot(expr, s, lowerCtx{
-		start:          start,
-		end:            end,
-		step:           step,
-		lowerers:       opts.Lowerers.withDefaults(),
-		guards:         opts.Guards,
-		resourceBounds: opts.ResourceBounds.withDefaults(),
-		tagGroups:      opts.TagGroups,
+		start:                  start,
+		end:                    end,
+		step:                   step,
+		lowerers:               opts.Lowerers.withDefaults(),
+		guards:                 opts.Guards,
+		resourceBounds:         opts.ResourceBounds.withDefaults(),
+		tagGroups:              opts.TagGroups,
+		throwDuplicateSeriesIf: opts.ThrowDuplicateSeriesIf,
 	})
 	if err != nil {
 		span.RecordError(err)
@@ -3249,7 +3263,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 			// The broadcast relation is matrix-shaped whatever rw is: the
 			// CrossJoin fans the single pinned value across the step grid and
 			// projects `anchor_ts` from the grid side, already unshifted.
-			return wrapDropNameCollisionGuard(broadcast, s,
+			return wrapDropNameCollisionGuard(broadcast, s, ctx,
 				&chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
 				&chplan.ColumnRef{Name: s.ValueColumn}), nil
 		}
@@ -3311,7 +3325,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return wrapRangeWindowPreserveName(rw, s, preservedNameExpr(rw, vs.LabelMatchers, s)), nil
 	}
 	if guardNameCollision {
-		return wrapDropNameCollisionGuard(node, s, dropNameGuardAnchor(node, rw),
+		return wrapDropNameCollisionGuard(node, s, ctx, dropNameGuardAnchor(node, rw),
 			&chplan.ColumnRef{Name: s.ValueColumn}), nil
 	}
 	return node, nil
@@ -4263,29 +4277,91 @@ func rangeFnCollidesOnNameDrop(fn string, ms []*labels.Matcher, inner chplan.Nod
 }
 
 // duplicateLabelsetGuardExpr is the HAVING gate that aborts the query when
-// one output group was fed by more than one metric name.
+// one output group was fed by more than one metric name. It is the single
+// builder shared by every instant AND range-vector name-drop guard site:
+// guardNameDropCollision and guardNameDropCollisionByTagGroup
+// (duplicate_labelset_guard.go) and wrapDropNameCollisionGuard (this file).
 //
 // It rides as a real `chplan.Aggregate.Having` rather than an extra
 // SELECT-list column for the reason spelled out on that field: ClickHouse's
-// analyzer prunes a SELECT expression nothing downstream reads, `throwIf`
-// side effect included, so a column-shaped guard silently never fires.
-// `throwIf` returns 0 on success, so `= 0` is the gate — the same idiom
+// analyzer prunes a SELECT expression nothing downstream reads, a `throwIf`
+// / `timeSeriesThrowDuplicateSeriesIf` side effect included, so a
+// column-shaped guard silently never fires. Both idioms return 0 on
+// success, so `= 0` is the gate either way — the same idiom
 // collapseInfoSeriesBySignature uses for the info() tie guard.
-func duplicateLabelsetGuardExpr(s schema.Metrics) chplan.Expr {
+//
+// `groupID` is the UInt64 tag-group-id expression
+// timeSeriesThrowDuplicateSeriesIf's own second argument requires
+// (chplan.FnTimeSeriesThrowDuplicateSeriesIf's doc has the verified
+// signature); it is read only when ctx.throwDuplicateSeriesIf is set, and
+// callers on the throwIf path may pass nil. Every caller derives it from
+// whatever already names each group's tag set at its own site: a fresh
+// timeSeriesTagsToGroup(Attributes) call where the group key IS the raw
+// Attributes Map (every call site but one), or a reference to the existing
+// tag-group id column where the group key already IS that id
+// (guardNameDropCollisionByTagGroup, ctx.tagGroups). Verified directly
+// against a real ClickHouse server (chopt.FeatureTSThrowDuplicateSeriesIf's
+// own doc has the query shapes and the server version) that neither shape
+// hits the alias-scoping/ILLEGAL_AGGREGATION rejection
+// chopt.FeatureTSGridTagGroups's own doc records for the grouping-key
+// swap: that rejection fires only when the SAME expression used for GROUP
+// BY is re-derived a second time inside an AGGREGATE function's own
+// SELECT-list argument, and a HAVING predicate is neither — it runs after
+// grouping, against the query's already-computed columns.
+func duplicateLabelsetGuardExpr(s schema.Metrics, ctx lowerCtx, groupID chplan.Expr) chplan.Expr {
+	if !ctx.throwDuplicateSeriesIf {
+		return &chplan.Binary{
+			Op: chplan.OpEq,
+			Left: &chplan.FuncCall{
+				Fn: chplan.FnThrowIf,
+				Args: []chplan.Expr{
+					&chplan.Binary{
+						Op:    chplan.OpGt,
+						Left:  &chplan.FuncCall{Fn: chplan.FnUniqExact, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}}},
+						Right: &chplan.LitInt{V: 1},
+					},
+					&chplan.InlineString{V: chplan.DuplicateLabelsetMessage},
+				},
+			},
+			Right: &chplan.LitInt{V: 0},
+		}
+	}
 	return &chplan.Binary{
 		Op: chplan.OpEq,
 		Left: &chplan.FuncCall{
-			Fn: chplan.FnThrowIf,
+			Fn: chplan.FnTimeSeriesThrowDuplicateSeriesIf,
 			Args: []chplan.Expr{
+				// count() > 1 is equivalent to uniqExact(MetricName) > 1 at
+				// every one of this guard's call sites: `groupID`'s own
+				// Input already emits at most one row per distinct name
+				// within a group (the selector/window seam beneath every
+				// caller groups by (name, label set[, step]) first — see
+				// each call site's own "any is exact, not a pick" comment),
+				// so a surviving row count and a surviving distinct-name
+				// count are the same number. count() is also
+				// timeSeriesThrowDuplicateSeriesIf's own documented idiom.
 				&chplan.Binary{
 					Op:    chplan.OpGt,
-					Left:  &chplan.FuncCall{Fn: chplan.FnUniqExact, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}}},
+					Left:  &chplan.FuncCall{Fn: chplan.FnCount},
 					Right: &chplan.LitInt{V: 1},
 				},
-				&chplan.InlineString{V: chplan.DuplicateLabelsetMessage},
+				groupID,
 			},
 		},
 		Right: &chplan.LitInt{V: 0},
+	}
+}
+
+// timeSeriesTagsToGroupExpr renders `timeSeriesTagsToGroup(Attributes)` —
+// [duplicateLabelsetGuardExpr]'s groupID for every name-drop guard call site
+// whose Aggregate groups on the raw Attributes Map rather than an
+// already-computed tag-group id (guardNameDropCollisionByTagGroup is the
+// one exception: its group key already IS that id, so it passes the
+// existing column reference instead of calling this).
+func timeSeriesTagsToGroupExpr(s schema.Metrics) chplan.Expr {
+	return &chplan.FuncCall{
+		Fn:   chplan.FnTimeSeriesTagsToGroup,
+		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 }
 
@@ -4324,7 +4400,7 @@ func duplicateLabelsetGuardExpr(s schema.Metrics) chplan.Expr {
 // would take its non-RangeWindow branch and drop the `anchor_ts`
 // passthrough — the same reason wrapRangeWindowAtBroadcast takes a `value`.
 func wrapDropNameCollisionGuard(
-	node chplan.Node, s schema.Metrics, anchorTS, value chplan.Expr,
+	node chplan.Node, s schema.Metrics, ctx lowerCtx, anchorTS, value chplan.Expr,
 ) chplan.Node {
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	aliases := []string{s.AttributesColumn}
@@ -4357,7 +4433,7 @@ func wrapDropNameCollisionGuard(
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 			Alias: s.ValueColumn,
 		}},
-		Having: duplicateLabelsetGuardExpr(s),
+		Having: duplicateLabelsetGuardExpr(s, ctx, timeSeriesTagsToGroupExpr(s)),
 	}
 	return &chplan.Project{
 		Input: agg,

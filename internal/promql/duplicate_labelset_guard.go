@@ -197,7 +197,7 @@ func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	}
 
 	if ctx.tagGroups {
-		return guardNameDropCollisionByTagGroup(inner, s, carry...)
+		return guardNameDropCollisionByTagGroup(inner, s, ctx, carry...)
 	}
 
 	// The surviving label set is Attributes alone — the name is what is
@@ -252,7 +252,7 @@ func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics
 		GroupBy:        groupBy,
 		GroupByAliases: aliases,
 		AggFuncs:       aggs,
-		Having:         duplicateLabelsetGuardExpr(s),
+		Having:         duplicateLabelsetGuardExpr(s, ctx, timeSeriesTagsToGroupExpr(s)),
 	}
 }
 
@@ -312,16 +312,25 @@ func rehydrateTagsExpr(groupID chplan.Expr) chplan.Expr {
 // timeSeriesGroupToTags on it — a plain column reference, not a same-level
 // alias, which resolves cleanly.
 //
-// duplicateLabelsetGuardExpr is UNCHANGED: it reads MetricName as a raw
-// aggregate-function argument off the Input subquery, independent of which
-// expression the group key is. Swapping the throw itself onto
+// duplicateLabelsetGuardExpr's throwIf(uniqExact(MetricName) > 1, ...) branch
+// reads MetricName as a raw aggregate-function argument off the Input
+// subquery, independent of which expression the group key is — that shape
+// is UNCHANGED here. Swapping the throw itself onto
 // timeSeriesThrowDuplicateSeriesIf (its collector-backed message, verified
-// present only on ClickHouse >= 26.2 — see chopt.FeatureTSGridTagGroups's own
-// doc) is deliberately deferred to follow-up work tracked at
-// https://github.com/tsouza/cerberus/issues/2880: it is an independent,
+// present only on ClickHouse >= 26.2) is chopt.FeatureTSThrowDuplicateSeriesIf
+// (cerberus issue #3038, split from #2880 item 3): an independent,
 // separately-verifiable change to the throw's error-message rendering, not a
-// correctness requirement of this grouping-key swap.
-func guardNameDropCollisionByTagGroup(inner chplan.Node, s schema.Metrics, carry ...string) chplan.Node {
+// correctness requirement of this grouping-key swap, so it is gated on its
+// own feature rather than folded into ctx.tagGroups — see that feature's own
+// doc for why. When it fires here, the HAVING passes the group id THIS
+// Aggregate already computed (groupIDCol, its own GroupByAliases[0]) as
+// timeSeriesThrowDuplicateSeriesIf's second argument: a plain HAVING column
+// reference, not a same-level alias inside another aggregate's SELECT-list
+// argument, so it does not hit either alias-scoping rejection this
+// function's own doc records above (verified directly against a real
+// ClickHouse server — chopt.FeatureTSThrowDuplicateSeriesIf's own doc has
+// the query shape).
+func guardNameDropCollisionByTagGroup(inner chplan.Node, s schema.Metrics, ctx lowerCtx, carry ...string) chplan.Node {
 	groupIDCol := &chplan.ColumnRef{Name: tsTagGroupIDAlias}
 
 	groupBy := []chplan.Expr{
@@ -356,7 +365,7 @@ func guardNameDropCollisionByTagGroup(inner chplan.Node, s schema.Metrics, carry
 		GroupBy:        groupBy,
 		GroupByAliases: aliases,
 		AggFuncs:       aggs,
-		Having:         duplicateLabelsetGuardExpr(s),
+		Having:         duplicateLabelsetGuardExpr(s, ctx, groupIDCol),
 	}
 
 	// Either branch above leaves a column literally named s.TimestampColumn

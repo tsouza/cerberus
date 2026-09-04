@@ -833,6 +833,10 @@ func newPromHandler(
 	// Unlike Lowerers (range-only), TagGroups (cerberus issue #2750) is
 	// consulted on the instant path too — see Handler.TagGroups's own doc.
 	h.TagGroups = optSet.Has(chopt.FeatureTSGridTagGroups)
+	// ThrowDuplicateSeriesIf (cerberus issue #3038) is consulted on BOTH the
+	// instant and the range-streaming paths — see
+	// Handler.ThrowDuplicateSeriesIf's own doc.
+	h.ThrowDuplicateSeriesIf = optSet.Has(chopt.FeatureTSThrowDuplicateSeriesIf)
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	// CERBERUS_PROM_METADATA_LOOKBACK is the ONLY input to the windowless
 	// metadata-discovery horizon; zero leaves the handler on its own

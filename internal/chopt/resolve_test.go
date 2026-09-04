@@ -663,6 +663,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureDownsampleTier:               {ID: FeatureDownsampleTier, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
 		FeatureTraceIDExternalTable:         {ID: FeatureTraceIDExternalTable, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTSGridTagGroups:              {ID: FeatureTSGridTagGroups, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSThrowDuplicateSeriesIf:     {ID: FeatureTSThrowDuplicateSeriesIf, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))

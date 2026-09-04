@@ -126,6 +126,18 @@ type Handler struct {
 	// directly) is unaffected.
 	TagGroups bool
 
+	// ThrowDuplicateSeriesIf carries chopt.FeatureTSThrowDuplicateSeriesIf's
+	// resolved verdict (cerberus issue #3038), wired at boot in
+	// cmd/cerberus from the resolved chopt.EnabledSet. Unlike TagGroups,
+	// its consumer (the shared duplicate-labelset guard HAVING builder) is
+	// reached from BOTH the instant AND the range-streaming query paths —
+	// the range-vector name-drop guard fires from query_range too. The
+	// zero value (false) keeps the pre-#3038
+	// throwIf(uniqExact(MetricName) > 1, ...) shape, so a Handler that
+	// never wires this (every test that builds one directly) is
+	// unaffected.
+	ThrowDuplicateSeriesIf bool
+
 	// QueryTimeout is the configured default per-query wall-clock cap
 	// (CERBERUS_QUERY_TIMEOUT). It is the ceiling the standard Prometheus
 	// `?timeout=<duration>` query param min's against per request
@@ -885,14 +897,15 @@ func (h *Handler) executeRangeStreaming(
 	step time.Duration,
 ) (engine.CursorResult, error) {
 	l := &lang{
-		Parser:         h.parser,
-		Schema:         h.Schema,
-		Start:          start,
-		End:            end,
-		Step:           step,
-		Lowerers:       h.lowerers(),
-		ResourceBounds: h.ResourceBounds,
-		TagGroups:      h.TagGroups,
+		Parser:                 h.parser,
+		Schema:                 h.Schema,
+		Start:                  start,
+		End:                    end,
+		Step:                   step,
+		Lowerers:               h.lowerers(),
+		ResourceBounds:         h.ResourceBounds,
+		TagGroups:              h.TagGroups,
+		ThrowDuplicateSeriesIf: h.ThrowDuplicateSeriesIf,
 	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
@@ -929,9 +942,22 @@ func (h *Handler) executeRangeStreaming(
 // reason and is, in fact, the FIRST feature whose only consumer lives on the
 // instant path exclusively (the duplicate-labelset guard's name-drop half) —
 // omitting it here would make ts_tag_groups entirely unreachable, not merely
-// untested.
+// untested. ThrowDuplicateSeriesIf (cerberus issue #3038) is threaded here
+// too, but its consumer (the same guard's shared HAVING builder) is NOT
+// instant-exclusive — the range-vector name-drop guard reaches it from
+// query_range as well, so both this literal and executeRangeStreaming's own
+// carry it.
 func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, map[string]string, error) {
-	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end, Lowerers: h.lowerers(), ResourceBounds: h.ResourceBounds, TagGroups: h.TagGroups}
+	l := &lang{
+		Parser:                 h.parser,
+		Schema:                 h.Schema,
+		Start:                  start,
+		End:                    end,
+		Lowerers:               h.lowerers(),
+		ResourceBounds:         h.ResourceBounds,
+		TagGroups:              h.TagGroups,
+		ThrowDuplicateSeriesIf: h.ThrowDuplicateSeriesIf,
+	}
 	res, err := h.Engine.Query(h.withSampleDrainBudget(ctx), l, query)
 	if err != nil {
 		return nil, nil, classifyEngineError(err)
@@ -1176,6 +1202,64 @@ func throwIfMessageMatches(err error, msg string) bool {
 	return strings.Contains(err.Error(), msg)
 }
 
+// duplicateSeriesTagsMessage extracts the clean, client-facing sentence
+// from a timeSeriesThrowDuplicateSeriesIf rejection (chopt.
+// FeatureTSThrowDuplicateSeriesIf, cerberus issue #3038) — the duplicate-
+// labelset guard's collector-backed variant, which names the ACTUAL
+// colliding tags rather than raising the static
+// chplan.DuplicateLabelsetMessage every guard call site still raises when
+// the feature is off. It is the one classifyThrowIfGuardError case that
+// cannot MATCH-and-restate a compile-time literal the way every other case
+// (throwIfMessageMatches) does — ClickHouse itself renders the real
+// per-query <tags> text via its own tag-group collector — so this returns
+// the extracted sentence instead of a bool, and the caller forwards it
+// verbatim.
+//
+// Detection mirrors throwIfMessageMatches's own two tiers (see that
+// function's doc for why both exist): chclient.ThrowIfMessage's typed path
+// for production traffic (and chdb-go's own typed exceptions), falling
+// back to a raw err.Error() scan for chdb-go's untyped
+// database/sql/driver error shape, which carries no structured exception
+// at all.
+func duplicateSeriesTagsMessage(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if msg, ok := chclient.ThrowIfMessage(err); ok {
+		if clean, ok := extractDuplicateSeriesTagsMessage(msg); ok {
+			return clean, true
+		}
+	}
+	return extractDuplicateSeriesTagsMessage(err.Error())
+}
+
+// duplicateSeriesTagsTrailerMarker is where ClickHouse's own "while
+// executing 'FUNCTION ...'" trailer begins on any function-raised
+// exception — the same trailer shape throwIfMessageMatches's callers
+// tolerate via strings.HasPrefix, but here it has to be stripped rather
+// than merely ignored: the text ahead of it is exactly what gets forwarded
+// to the client, and the trailer leaks the emitted SQL's internal
+// table/column aliases (e.g. "__table1.attrs").
+const duplicateSeriesTagsTrailerMarker = ": while executing '"
+
+// extractDuplicateSeriesTagsMessage finds
+// chplan.DuplicateSeriesTagsMessagePrefix inside raw — which may carry a
+// "Code: NNN. DB::Exception: " envelope ahead of it (chdb-go's CLI-style
+// err.Error() rendering) or nothing at all (the native driver's
+// already-decoded Message field) — and returns just the clean sentence
+// with ClickHouse's own trailer stripped.
+func extractDuplicateSeriesTagsMessage(raw string) (string, bool) {
+	idx := strings.Index(raw, chplan.DuplicateSeriesTagsMessagePrefix)
+	if idx < 0 {
+		return "", false
+	}
+	msg := raw[idx:]
+	if trailer := strings.Index(msg, duplicateSeriesTagsTrailerMarker); trailer >= 0 {
+		msg = msg[:trailer]
+	}
+	return msg, true
+}
+
 // classifyThrowIfGuardError checks err against every deliberate,
 // emitter-planted `throwIf` resource/shape guard cerberus's own SQL can
 // raise, returning the shared 422 errorType=execution apiError shape for
@@ -1186,6 +1270,22 @@ func throwIfMessageMatches(err error, msg string) bool {
 // for the drift #2429 found before this was factored out. See
 // throwIfMessageMatches for how each case is actually detected.
 func classifyThrowIfGuardError(err error) *apiError {
+	// The duplicate-labelset guard's collector-backed variant (chopt.
+	// FeatureTSThrowDuplicateSeriesIf, cerberus issue #3038) is checked
+	// OUTSIDE the switch below because it is the one guard whose message
+	// cannot be matched-and-restated: ClickHouse renders the real
+	// colliding <tags> itself, so the case has to carry that extracted
+	// text rather than a plain bool. Every other guard in this function
+	// raises a cerberus-supplied compile-time literal (see the
+	// DuplicateLabelsetMessage case just below, which still fires
+	// whenever this feature is off) and restates its own known constant.
+	if msg, ok := duplicateSeriesTagsMessage(err); ok {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(msg),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
 	switch {
 	// info()'s conflicting-label abort is the reference engine's own
 	// execution error, so it lands where upstream puts it — 422

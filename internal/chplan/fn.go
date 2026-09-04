@@ -341,6 +341,26 @@ const (
 	// and order-independent).
 	FnTimeSeriesGroupToTags Fn = "timeSeriesGroupToTags"
 
+	// timeSeriesThrowDuplicateSeriesIf(condition, group) — throwIf's
+	// collector-backed sibling for the duplicate-labelset guard (cerberus
+	// issue #3038): when condition (a UInt8, typically `count() > 1`) is
+	// true it aborts the query with `Multiple series have the same tags
+	// <tags>, duplicate series in the same result set are not allowed`,
+	// naming the ACTUAL colliding tags rather than a static message; it
+	// evaluates to 0 otherwise, so it composes as an expression exactly like
+	// [FnThrowIf]. `group` must be a UInt64 [FnTimeSeriesTagsToGroup] id
+	// (verified directly against a real ClickHouse 26.2+ server — passing
+	// anything else, including the raw Attributes Map, is rejected with
+	// ILLEGAL_TYPE_OF_ARGUMENT); the id is resolved back to its source tags
+	// via the same per-query ContextTimeSeriesTagsCollector
+	// [FnTimeSeriesGroupToTags] reads (chopt.FeatureTSGridTagGroups's own
+	// doc), so the group id need not have been produced by a GROUP BY key —
+	// a fresh timeSeriesTagsToGroup(Attributes) call reads the same
+	// collector. Present only on ClickHouse >= 26.2 (chopt.
+	// FeatureTSThrowDuplicateSeriesIf's own doc has the version-floor
+	// verification).
+	FnTimeSeriesThrowDuplicateSeriesIf Fn = "timeSeriesThrowDuplicateSeriesIf"
+
 	// Type-cast and numeric-conversion functions.
 	// assumeNotNull(x) — x's Nullable wrapper dropped without a runtime check; a
 	// NULL operand renders as the underlying type's default, not an error.

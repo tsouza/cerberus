@@ -249,7 +249,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// Composed below: it narrows Changes/Resets/Irate/Idelta's
 			// Fallback — see cmd/cerberus/main.go's nativeRangeLowerers.
 			lagAdjacency = true
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -276,7 +276,17 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// eligibleForTraceIDBitmapFilter (a TraceId-keyed predicate or a
 			// chplan.StructuralJoin — the Tempo/TraceQL heads, which do not lower
 			// through promql.RangeLowerers at all), so it too has zero effect on
-			// this table.
+			// this table. FeatureTSThrowDuplicateSeriesIf (cerberus issue #3038)
+			// is a different SHAPE of "no effect" but the same conclusion: it is
+			// not a CH SETTING at all, it is a boolean threaded straight through
+			// lowerCtx.throwDuplicateSeriesIf (LowerOpts.ThrowDuplicateSeriesIf)
+			// to duplicateLabelsetGuardExpr, which only changes WHAT SQL the
+			// duplicate-labelset guard's HAVING emits (throwIf(...) vs
+			// timeSeriesThrowDuplicateSeriesIf(...)) — a wrapper applied on TOP
+			// of whichever RangeLowerers strategy (Native or Fanout) a range
+			// function's own dispatch already picked, at every one of that
+			// wrapper's call sites regardless of which strategy ran. It never
+			// reads, and has no field on, promql.RangeLowerers itself.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know how to wire it "+
 				"into promql.RangeLowerers — update this helper (see issue #2120)", f.ID)
