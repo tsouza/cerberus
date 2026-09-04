@@ -327,22 +327,35 @@ type RangeWindow struct {
 	FixedAccumulatorExtrapolated bool
 
 	// SortedSlabOverTime asks the matrix-shape (OuterRange > 0) emitter to
-	// render sum_over_time() / avg_over_time() via a single per-series
-	// groupArray (the "slab") sliced once per anchor with arrayFilter,
-	// instead of the sample-side arrayJoin fan-out +
-	// GROUP BY (series, anchor) regroup (cerberus issue #2761). Peak memory
-	// tracks one sorted array per series rather than one per (series,
-	// anchor) group. Set only by the boot-wired
-	// promql.SortedSlabOverTimeLowerer strategy — never read as a per-query
-	// feature flag.
+	// render sum_over_time() / avg_over_time() / first_over_time() /
+	// stddev_over_time() / stdvar_over_time() / mad_over_time() via a single
+	// per-series groupArray (the "slab") sliced once per anchor with
+	// arrayFilter, instead of the sample-side arrayJoin fan-out +
+	// GROUP BY (series, anchor) regroup (cerberus issue #2761, widened to
+	// this full set by issue #2804). Peak memory tracks one sorted array per
+	// series rather than one per (series, anchor) group. Set only by the
+	// boot-wired promql.SortedSlabOverTimeLowerer strategy — never read as a
+	// per-query feature flag.
 	//
-	// Scoped to sum_over_time / avg_over_time only: their reducers
-	// (arraySum / arrayAvg) fold left-to-right over the sliced window, the
-	// SAME float-addition order the array-fold's arraySum/arrayAvg over
-	// window_vals uses, so the two paths are byte-identical. See
-	// chsql/range_window_sorted_slab.go for the emit side and
-	// internal/chplan/sliceinvariant.go's RangeWindow entry for why this
-	// remains slice-invariant.
+	// Scoped to exactly the six functions above: each one's per-window
+	// reducer, evaluated via overTimeArrayValueFrag (chsql/range_window.go),
+	// is a pure function of the sliced window's ELEMENT ORDER over an
+	// identically-ordered slice — sum_over_time/avg_over_time's arraySum/
+	// arrayAvg fold left-to-right (the SAME float-addition order the
+	// array-fold's identical reducers over window_vals use);
+	// first_over_time picks a fixed POSITION (vals[1]); stddev_over_time/
+	// stdvar_over_time run the two-pass moment computation
+	// (varPopTwoPassFrag) twice over that same order; mad_over_time's
+	// nested medians are order-independent (CH's quantileExactInclusive
+	// sorts internally) but still need the SAME element SET, which the
+	// order-preserving slice guarantees. See chsql/range_window_sorted_slab.go
+	// for the full per-function order/precision argument and the emit side,
+	// and internal/chplan/sliceinvariant.go's RangeWindow entry for why this
+	// remains slice-invariant regardless of which of the six is chosen.
+	// last_over_time is deliberately NOT in this set — see
+	// promql.SortedSlabOverTimeLowerer's own doc for why its existing native
+	// FeatureTSGridLastOverTime staleness-resample arm already answers the
+	// same question with more precise semantics.
 	//
 	// false (the default) keeps the unchanged array-fold emission — the
 	// permanent, always-available fallback the FeatureSortedSlabOverTime

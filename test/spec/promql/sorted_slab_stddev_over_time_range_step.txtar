@@ -1,0 +1,103 @@
+# Sorted-slab decomposition (cerberus issue #2761, widened to stddev_over_time
+# by issue #2804) for stddev_over_time() in RANGE mode — chsql's
+# emitRangeWindowSortedSlabOverTime. Sibling of
+# sorted_slab_sum_over_time_range_step.txtar, pinning stddev_over_time's
+# two-pass population-variance-under-a-sqrt reducer (varPopTwoPassFrag,
+# `μ = arrayAvg(vals); sqrt(Σ(x-μ)² / N)`) over the same sliced window — TWO
+# left-to-right folds over the identically-ordered slice (one for μ, one for
+# the centred sum), so the sorted-slab's order-preserving arrayFilter cut
+# matters twice over.
+#
+# job 'api' carries a duplicate-timestamp pair (00:02:00 appears twice, with
+# DIFFERENT values 2.0 and 3.0) to pin the no-dedup contract (every sample
+# counts individually, including in both passes of the two-pass moment
+# computation); job 'web' is a plain monotonic series.
+#
+# That duplicate is why this fixture is parity-EXEMPT rather than enrolled
+# (cerberus issue #2905): Prometheus's TSDB appender keeps one sample per
+# (series, timestamp) and drops 3.0 at commit, so a reference comparison here
+# would assert that cerberus agrees with a survivor chosen by ingestion order.
+# The no-dedup contract is pinned instead, over this very seed, by
+# internal/promql/duplicate_timestamp_seed_chdb_test.go, which holds the
+# sorted-slab answer against the fan-out array-fold answer it must equal.
+-- query.promql --
+sum by(job) (stddev_over_time(http_requests_total[5m]))
+-- parity_exempt --
+reason: duplicate-timestamp-seed
+detail: job 'api' seeds 00:02:00 twice with 2.0 and 3.0 to pin that stddev_over_time's sorted-slab reducer counts both samples in the two-pass mean and variance; the reference engine's appender keeps only the first-ingested one, so it has no answer to compare against.
+-- range_step --
+30s
+-- experimental_sorted_slab_over_time --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 3.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 6.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:02:00', 9), 30.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:03:00', 9), 40.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 60.0);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:00Z", 0],
+  ["", {"job": "api"}, "2026-01-01T00:00:30Z", 0],
+  ["", {"job": "api"}, "2026-01-01T00:01:00Z", 2],
+  ["", {"job": "api"}, "2026-01-01T00:01:30Z", 2],
+  ["", {"job": "api"}, "2026-01-01T00:02:00Z", 1.479019945774904],
+  ["", {"job": "api"}, "2026-01-01T00:02:30Z", 1.479019945774904],
+  ["", {"job": "api"}, "2026-01-01T00:03:00Z", 2.4819347291981715],
+  ["", {"job": "api"}, "2026-01-01T00:03:30Z", 2.4819347291981715],
+  ["", {"job": "api"}, "2026-01-01T00:04:00Z", 2.494438257849294],
+  ["", {"job": "api"}, "2026-01-01T00:04:30Z", 2.494438257849294],
+  ["", {"job": "api"}, "2026-01-01T00:05:00Z", 2.4094720491334933],
+  ["", {"job": "web"}, "2026-01-01T00:00:00Z", 0],
+  ["", {"job": "web"}, "2026-01-01T00:00:30Z", 0],
+  ["", {"job": "web"}, "2026-01-01T00:01:00Z", 5],
+  ["", {"job": "web"}, "2026-01-01T00:01:30Z", 5],
+  ["", {"job": "web"}, "2026-01-01T00:02:00Z", 8.16496580927726],
+  ["", {"job": "web"}, "2026-01-01T00:02:30Z", 8.16496580927726],
+  ["", {"job": "web"}, "2026-01-01T00:03:00Z", 11.180339887498949],
+  ["", {"job": "web"}, "2026-01-01T00:03:30Z", 11.180339887498949],
+  ["", {"job": "web"}, "2026-01-01T00:04:00Z", 14.142135623730951],
+  ["", {"job": "web"}, "2026-01-01T00:04:30Z", 14.142135623730951],
+  ["", {"job": "web"}, "2026-01-01T00:05:00Z", 14.142135623730951]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "job"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "http_requests_total"
+[11] string = "http.requests.total"
+[12] string = "http.requests/total"
+[13] string = "http.requests_total"
+[14] string = "http/requests/total"
+[15] string = "http/requests_total"
+[16] string = "http_requests.total"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(FnMap("job", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["job"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value]
+    RangeWindow func=stddev_over_time range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, tupleElement(anchor_row, 1) AS `anchor_ts`, anchor_ts AS `TimeUnix`, tupleElement(anchor_row, 3) AS `Value` FROM (SELECT `Attributes`, arrayJoin(arrayFilter(p -> tupleElement(p, 2), anchor_grid)) AS `anchor_row` FROM (SELECT `Attributes`, arrayMap(a -> arrayMap(vals -> (a, length(vals) >= 1, if(length(vals) > 0, sqrt(arraySum(arrayMap((x, m) -> (x - m) * (x - m), vals, arrayWithConstant(length(vals), arrayAvg(vals)))) / length(vals)), nan)), [arrayMap(p -> tupleElement(p, 2), arrayFilter(p -> tupleElement(p, 1) > a - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= a, samples))])[1], arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(11))) AS `anchor_grid` FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS `samples` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`)))) GROUP BY `gkey_0`, `bucket_ts`)

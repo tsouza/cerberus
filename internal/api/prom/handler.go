@@ -1683,7 +1683,22 @@ func matrixWindowOffset(plan chplan.Node, cols chplan.SampleColumns) (offset tim
 func isMatrixRangeWindow(plan chplan.Node, cols chplan.SampleColumns) bool {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:
-		return v.OuterRange > 0
+		// v.DownsampleTier is ORed in separately from v.OuterRange > 0
+		// (cerberus issue #2804 investigation): emitRangeWindowDownsampleTier
+		// (internal/chsql/range_window_downsample_tier.go) ALWAYS projects a
+		// real per-row anchor_ts column whenever DownsampleTier is set —
+		// downsampleTierEligible requires Step > 0 and Start/End pinned but
+		// deliberately never reads OuterRange, so a query_range request with
+		// Start == End (a legitimate single-point grid: OuterRange =
+		// End.Sub(Start) = 0) still resolves to exactly one real anchor and
+		// still emits anchor_ts. `OuterRange > 0` alone matches the plain
+		// fan-out family's own invariant (chsql's emitWindowedArray gates its
+		// identical matrix-vs-instant choice on that same field) but
+		// under-fires for this decoupled tier shape, mis-synthesising `now()`
+		// over an otherwise-correct row. See wrapRangeWindowPreserveName's
+		// own doc (internal/promql/lower.go) for the sibling fix and the
+		// executed regression this shape tripped.
+		return v.OuterRange > 0 || v.DownsampleTier
 	case *chplan.RangeWindowGridNative:
 		// The native timeSeriesRateToGrid path is always matrix-shape: it
 		// explodes the grid into one row per anchor and surfaces the

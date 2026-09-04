@@ -3305,24 +3305,54 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// per series, so `preservedNameExpr` threads MetricName through the
 	// window's grouping key instead.
 	//
-	// That synthesis is only needed for the plain fan-out RangeWindow (node
-	// == rw): NativeLastOverTimeLowerer's RangeWindowStaleResample is
-	// ALREADY the canonical 4-column shape — its GROUP BY reads the real
-	// per-row MetricName column, so `__name__` rides through natively for
-	// both a pinned literal and a multi-name regex selector alike (see
-	// nativeLastOverTimeNode's own doc). Wrapping it again would double a
-	// Project that is a no-op at best and, for the regex case, would
-	// silently re-collapse the very per-name split the native GROUP BY
-	// already performed. `node != rw` is exactly "the boot-wired strategy
-	// swapped in something other than the fan-out RangeWindow it was
-	// handed" — true only for this one case among rangeFnPreservesName's
-	// two members (first_over_time has no native strategy and always keeps
-	// node == rw).
+	// That synthesis is only needed when the returned node is STILL a
+	// derived shape lacking a real MetricName column (chplan.IsDerivedShape
+	// — the SAME classifier the HTTP layer's wrapWithSampleProjection uses,
+	// see that function's own doc): NativeLastOverTimeLowerer's
+	// RangeWindowStaleResample is ALREADY the canonical 4-column shape — its
+	// GROUP BY reads the real per-row MetricName column, so `__name__`
+	// rides through natively for both a pinned literal and a multi-name
+	// regex selector alike (see nativeLastOverTimeNode's own doc). Wrapping
+	// it again would double a Project that is a no-op at best and, for the
+	// regex case, would silently re-collapse the very per-name split the
+	// native GROUP BY already performed.
+	//
+	// This is deliberately a SHAPE check (`chplan.IsDerivedShape`), not the
+	// `node != chplan.Node(rw)` pointer check an earlier version of this
+	// function used. Pointer inequality was a correct proxy only as long as
+	// every *chplan.RangeWindow-typed strategy left `node` aliasing `rw`
+	// unchanged and only a genuinely different node TYPE (RangeWindowStaleResample)
+	// signalled "already canonical". SortedSlabOverTimeLowerer breaks that
+	// assumption for first_over_time (cerberus issue #2804): its eligible
+	// branch returns `&out`, a shallow COPY of rw with SortedSlabOverTime
+	// set — a different pointer, but still a plain *chplan.RangeWindow with
+	// the exact same derived (Attributes, [anchor_ts,] Value) output schema
+	// rw itself has, still missing MetricName. Under the old pointer check
+	// that copy would have wrongly skipped this wrap and silently dropped
+	// `__name__` from every sorted-slab first_over_time result — the shape
+	// check gets both cases right from the one classifier both this
+	// function and the HTTP layer already share.
 	if rangeFnPreservesName(c.Func.Name) {
-		if node != chplan.Node(rw) {
+		if !chplan.IsDerivedShape(node, canonicalSampleColumns(s)) {
 			return node, nil
 		}
-		return wrapRangeWindowPreserveName(rw, s, preservedNameExpr(rw, vs.LabelMatchers, s)), nil
+		// Wrap whichever *chplan.RangeWindow the strategy actually returned
+		// — NOT the original rw unconditionally. node and rw are the SAME
+		// pointer for the plain fan-out fallback, but a strategy that
+		// returns a shallow copy carrying its own flag (SortedSlabOverTime,
+		// DownsampleTier, ...) is a DIFFERENT *chplan.RangeWindow value;
+		// wrapping the stale original rw here would silently discard that
+		// flag and re-emit the un-optimised fan-out SQL despite the
+		// strategy having chosen the faster shape. The type assertion can
+		// only fail for a derived-shape node this range-vector call path
+		// never produces (every branch above returns rw itself or a
+		// *chplan.RangeWindow copy of it), so rw is a safe, unreachable-in-
+		// practice fallback rather than a silent behavioural difference.
+		target := rw
+		if asWindow, ok := node.(*chplan.RangeWindow); ok {
+			target = asWindow
+		}
+		return wrapRangeWindowPreserveName(target, s, preservedNameExpr(target, vs.LabelMatchers, s)), nil
 	}
 	if guardNameCollision {
 		return wrapDropNameCollisionGuard(node, s, ctx, dropNameGuardAnchor(node, rw),
@@ -3356,9 +3386,11 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // (rate/increase/changes/resets/deriv/delta/irate/idelta: timeSeries*ToGrid
 // for a shape-eligible window; last_over_time: the SAME
 // timeSeriesResampleToGridWithStaleness aggregate ts_grid_resample rides,
-// with [range] as the staleness parameter; sum_over_time/avg_over_time: the
+// with [range] as the staleness parameter; sum_over_time/avg_over_time/
+// first_over_time/stddev_over_time/stdvar_over_time/mad_over_time: the
 // sorted-slab decomposition, chplan.RangeWindow.SortedSlabOverTime (cerberus
-// issue #2761), which has no native ts_grid competitor at all;
+// issue #2761, widened to this full set by #2804), which has no native
+// ts_grid competitor at all;
 // changes/resets/irate/idelta additionally fall back to
 // chplan.RangeWindow.LagAdjacency for a shape-eligible window when their own
 // native path is off or ineligible) and delegates to its embedded fan-out
@@ -3376,27 +3408,39 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // — because it is already the canonical 4-column output, not a windowed
 // array feeding an outer reducer; see nativeLastOverTimeNode's own doc.
 //
-// For a window with no dedicated strategy (first_over_time and the other
-// *_over_time siblings besides sum_over_time/avg_over_time/last_over_time)
-// the Rate strategy's fan-out fallback returns rw unchanged, so the caller's
-// node stays rw and the last/first_over_time name-preservation wrap applies
-// exactly as before. For rate / increase / delta / sum_over_time /
-// avg_over_time the returned node IS the lowering (native, fixed-accumulator,
-// sorted-slab, or fan-out RangeWindow); all five drop `__name__`, so they
-// never match the name-preservation wrap and flow through as-is.
-// last_over_time's returned node also IS the lowering when its native
-// strategy fires — but unlike those five it DOES match the name-preservation
-// wrap (it is one of the two functions that keeps `__name__`), so the caller
-// compares the returned node against rw to skip the now-redundant synthesis
-// wrap (see the `node != chplan.Node(rw)` check above).
+// For a window with no dedicated strategy at all — quantile_over_time (no
+// sorted-slab reducer in overTimeArrayValueFrag's switch) and
+// min/max/count/present_over_time (already skip the array-fold entirely via
+// overTimeDirectAggFrag, so they never need one) — the Rate strategy's
+// fan-out fallback returns rw unchanged, so the caller's node stays rw. For
+// rate / increase / delta / sum_over_time / avg_over_time / stddev_over_time
+// / stdvar_over_time / mad_over_time the returned node IS the lowering
+// (native, fixed-accumulator, sorted-slab, or fan-out RangeWindow); all
+// eight drop `__name__`, so they never match the name-preservation wrap and
+// flow through as-is. last_over_time / first_over_time's returned node also
+// IS the lowering when a dedicated strategy fires for them — but unlike
+// those eight they DO match the name-preservation wrap (they are the two
+// functions that keep `__name__`), so the caller checks whether the
+// returned node ALREADY exposes the canonical (MetricName, Attributes,
+// Timestamp, Value) shape (`!chplan.IsDerivedShape(node, ...)` below) to
+// decide whether the synthesis wrap is now redundant. That check is
+// SHAPE-based, not pointer-based, because first_over_time's sorted-slab arm
+// returns a plain `*chplan.RangeWindow` copy (a different pointer than rw,
+// but the SAME derived shape rw has, still missing MetricName) while
+// last_over_time's native arm returns a `*chplan.RangeWindowStaleResample`
+// (a different pointer AND a different, already-canonical shape) — a bare
+// pointer inequality cannot tell those two apart, and first_over_time is the
+// case that makes the difference observable: skipping the wrap for it would
+// silently drop `__name__` from every sorted-slab first_over_time result.
 //
 // The function family is selected by c.Func.Name — pure AST/func dispatch,
 // NOT a feature/version branch (that decision is baked into WHICH concrete
 // strategy boot wired into each field). Each strategy is always non-nil
 // (withDefaults) and keeps its own intrinsic shape-eligibility inside the
 // impl. rate / increase / delta / changes / resets / deriv / irate / idelta /
-// last_over_time / sum_over_time / avg_over_time each route to their own
-// boot-wired strategy
+// last_over_time / sum_over_time / avg_over_time / first_over_time /
+// stddev_over_time / stdvar_over_time / mad_over_time each route to their
+// own boot-wired strategy
 // (changes/resets/irate/idelta may ADDITIONALLY resolve to the lagInFrame
 // annotation shape, chplan.RangeWindow.LagAdjacency, layered BENEATH each
 // function's own native ts_grid strategy — irate/idelta gained their own
@@ -3411,15 +3455,20 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // its own native ts_grid_delta competitor (cerberus issue #2745), so all
 // three of rate / increase / delta share the same three-tier
 // Native{Fallback: FixedAccumulator{Fallback: Fanout{}}} shape;
-// sum_over_time/avg_over_time have no native ts_grid competitor at all —
+// sum_over_time/avg_over_time/first_over_time/stddev_over_time/
+// stdvar_over_time/mad_over_time have no native ts_grid competitor at all —
 // their only non-fan-out arm is the sorted-slab decomposition,
-// chplan.RangeWindow.SortedSlabOverTime, cerberus issue #2761; last_over_time
-// has no such narrowed-fallback sibling of its own — its
-// NativeLastOverTimeLowerer embeds the bare fan-out directly); every OTHER
-// range fn (first_over_time and the rest of the *_over_time family) keeps
-// the fan-out rw via the rate strategy's pass-through (those funcs have no
-// native timeSeries*ToGrid aggregate, lagInFrame annotation,
-// fixed-accumulator, or sorted-slab decomposition proven equivalent yet).
+// chplan.RangeWindow.SortedSlabOverTime, cerberus issue #2761 (widened to
+// this full set by #2804 — see the `case "sum_over_time", ...` arm above for
+// why last_over_time stays OUT of this set despite sharing the
+// rangeFnPreservesName / __name__-preserving behaviour); last_over_time has
+// no such narrowed-fallback sibling of its own — its NativeLastOverTimeLowerer
+// embeds the bare fan-out directly); every OTHER range fn (quantile_over_time
+// and the direct-aggregate *_over_time family) keeps the fan-out rw via the
+// rate strategy's pass-through (those funcs have no native timeSeries*ToGrid
+// aggregate, lagInFrame annotation, fixed-accumulator, or sorted-slab
+// decomposition proven equivalent, or — for min/max/count/present_over_time —
+// need none at all).
 func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
 	applyStepGridFanout(rw, ctx)
 	// rate/increase/delta are the only functions whose array-fold fallback
@@ -3445,7 +3494,32 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 		return ctx.lowerers.Idelta.LowerIdelta(rw, s)
 	case "last_over_time":
 		return ctx.lowerers.LastOverTime.LowerLastOverTime(rw, s)
-	case "sum_over_time", "avg_over_time":
+	// sum_over_time / avg_over_time / first_over_time / stddev_over_time /
+	// stdvar_over_time / mad_over_time (cerberus issue #2761, widened by
+	// #2804) all ride the SAME OverTimeLowerer — overTimeArrayValueFrag's
+	// switch (internal/chsql/range_window.go) already renders every one of
+	// their per-window reducers over an arbitrary sliced values array, so
+	// the sorted-slab decomposition's `vals` slice (sortedSlabWindowValsFrag)
+	// feeds all six identically; only the byte-identical-contract PROOF
+	// differs per function (see range_window_sorted_slab_chdb_test.go and
+	// duplicate_timestamp_seed_chdb_test.go's dupTSSortedSlabEligible).
+	// last_over_time is DELIBERATELY excluded from this list — see the
+	// `case "last_over_time"` arm just above and chopt.FeatureSortedSlabOverTime's
+	// own doc for why last_over_time's existing native
+	// FeatureTSGridLastOverTime arm (a staleness-window resample, not a
+	// generic array reduction) already answers the "avoid the array-fold
+	// fan-out" question for last_over_time with more precise semantics than
+	// a second, competing sorted-slab arm would — extending sorted-slab to
+	// it would create two overlapping mechanisms for one function with no
+	// precedence rule between them. quantile_over_time / min_over_time /
+	// max_over_time / count_over_time / present_over_time stay OUT of this
+	// list too: quantile_over_time has no sorted-slab reducer wired in
+	// overTimeArrayValueFrag's switch, and min/max/count/present_over_time
+	// already skip the array-fold entirely via overTimeDirectAggFrag's
+	// direct CH group aggregate (chsql/range_window.go), so they never reach
+	// an OverTimeLowerer at all.
+	case "sum_over_time", "avg_over_time",
+		"first_over_time", "stddev_over_time", "stdvar_over_time", "mad_over_time":
 		return ctx.lowerers.OverTime.LowerOverTime(rw, s)
 	default:
 		return ctx.lowerers.Rate.LowerRate(rw, s)
@@ -4216,7 +4290,7 @@ func appendNameGroupKey(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Column
 // `s.TimestampColumn` alias verbatim either way.
 func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name chplan.Expr) chplan.Node {
 	var tsExpr chplan.Expr
-	if rw.OuterRange > 0 {
+	if rw.OuterRange > 0 || rw.DownsampleTier {
 		// The matrix RangeWindow keeps anchor_ts offset-SHIFTED for the
 		// window/reduce math; PromQL reports a reducing window's result on the
 		// UNSHIFTED grid, so add Offset back (matching the emitter's
@@ -4225,6 +4299,30 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 		// offset needs no relabel. Without this, last_over_time / first_over_time
 		// (the only *_over_time fns that keep __name__ and so route through this
 		// preserve-name wrapper) re-shifted their output past this Project.
+		//
+		// rw.DownsampleTier is ORed in separately from rw.OuterRange > 0
+		// (cerberus issue #2804 investigation): emitRangeWindowDownsampleTier
+		// (internal/chsql/range_window_downsample_tier.go) ALWAYS projects a
+		// real per-row anchor_ts column whenever DownsampleTier is set —
+		// downsampleTierEligible requires Step > 0 and Start/End pinned but
+		// deliberately never reads OuterRange (see that function's own doc),
+		// so its numAnchors math is a pure Start/End/Step computation,
+		// independent of OuterRange. That decouples the invariant the plain
+		// fan-out family upholds — OuterRange > 0 exactly when the emitter
+		// takes chsql's own matrix (anchor_ts-bearing) path,
+		// emitWindowedArray's own `if r.OuterRange > 0` gate — so `OuterRange
+		// > 0` alone under-fires for a DEGENERATE but legitimate tier-routed
+		// shape: a query_range request with Start == End (a single-point
+		// grid) computes OuterRange = End.Sub(Start) = 0 while Step still
+		// carries a real value, and downsampleTierEligible's own numAnchors
+		// formula (`End.Sub(Start)/stepNS + 1`) still resolves to exactly one
+		// anchor and still emits anchor_ts. Without this clause the wrap fell
+		// to the synthesized-`now()` branch below for that shape, stamping
+		// the WRONG timestamp on an otherwise-correct row rather than
+		// reading the real anchor_ts the emitter actually produced —
+		// TestDownsampleTier_ChdbCorruptedBucketPostMergeFilter's
+		// last_over_time@anchor lookup silently missed its row over exactly
+		// this shape (start == end == anchor) before this clause was added.
 		tsExpr = &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
 		if rw.Offset != 0 && !rw.Identity {
 			tsExpr = chplan.OffsetReanchoredAnchorExpr(rw.Offset)

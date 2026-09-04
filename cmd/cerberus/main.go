@@ -1327,13 +1327,19 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.Idelta = promql.DownsampleTierIdeltaLowerer{Fallback: l.Idelta}
 		l.LastOverTime = promql.DownsampleTierLastOverTimeLowerer{Fallback: l.LastOverTime}
 	}
-	// sorted_slab_over_time (issue #2761) has no native timeSeries*ToGrid
-	// competitor: sum_over_time/avg_over_time's only non-fan-out arm is the
-	// sorted-slab decomposition itself, so it is wired directly with no
-	// embedded native layer above it (mirroring quantile_prom_histogram's
-	// posture just above, though this strategy DOES still embed its own
-	// Fallback — the plain fan-out — the way fixed_accumulator_extrapolated
-	// does for rate/increase/delta).
+	// sorted_slab_over_time (issue #2761, widened to first_over_time /
+	// stddev_over_time / stdvar_over_time / mad_over_time by issue #2804)
+	// has no native timeSeries*ToGrid competitor: this whole function set's
+	// only non-fan-out arm is the sorted-slab decomposition itself, so it is
+	// wired directly with no embedded native layer above it (mirroring
+	// quantile_prom_histogram's posture just above, though this strategy
+	// DOES still embed its own Fallback — the plain fan-out — the way
+	// fixed_accumulator_extrapolated does for rate/increase/delta). One
+	// lowerer wiring covers the whole set: which PromQL function names
+	// reach it at all is decided upstream, purely by AST dispatch, in
+	// internal/promql/lower.go's `lowerRangeVectorCallFanout` switch — see
+	// that switch's own doc for why last_over_time deliberately never
+	// reaches this lowerer despite sharing its shape-eligibility check.
 	if optSet.Has(chopt.FeatureSortedSlabOverTime) {
 		l.OverTime = promql.SortedSlabOverTimeLowerer{Fallback: promql.FanoutOverTimeLowerer{}}
 	} else {

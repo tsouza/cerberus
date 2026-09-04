@@ -1,0 +1,11 @@
+{
+  "query": "sorted_slab_first_over_time_range_step/fanout",
+  "lowering": "fanout",
+  "routed": true,
+  "k": 8,
+  "reason": "routed",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}

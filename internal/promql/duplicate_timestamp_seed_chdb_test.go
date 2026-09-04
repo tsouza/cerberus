@@ -7,10 +7,15 @@
 //
 // # Why this is the right oracle, and a reference engine is not
 //
-// Three TXTAR fixtures seed such a duplicate on purpose, to pin how their
+// Seven TXTAR fixtures seed such a duplicate on purpose, to pin how their
 // strategy treats the pair: sorted_slab_sum_over_time_range_step.txtar,
-// sorted_slab_avg_over_time_range_step.txtar and
-// lag_adjacency_idelta_duplicate_ts.txtar. All three used to also enrol for
+// sorted_slab_avg_over_time_range_step.txtar,
+// sorted_slab_first_over_time_range_step.txtar,
+// sorted_slab_stddev_over_time_range_step.txtar,
+// sorted_slab_stdvar_over_time_range_step.txtar,
+// sorted_slab_mad_over_time_range_step.txtar (cerberus issue #2804 widened
+// the sorted-slab family from the first two to all six) and
+// lag_adjacency_idelta_duplicate_ts.txtar. All seven used to also enrol for
 // parity against the upstream Prometheus engine, and that enrolment was
 // self-contradictory: Prometheus's TSDB appender stores at most one sample per
 // (series, timestamp) — parityoracle/promql/oracle.go feeds a real teststorage
@@ -481,6 +486,10 @@ func dupTSMax(vals []float64) float64 {
 // timestamp order, so that is the final element.
 func dupTSLast(vals []float64) float64 { return vals[len(vals)-1] }
 
+// dupTSFirst reads the time-EARLIEST sample: the slices are in ascending
+// timestamp order, so that is the first element — dupTSLast's mirror.
+func dupTSFirst(vals []float64) float64 { return vals[0] }
+
 // dupTSPresent is present_over_time's reducer: 1 for any non-empty window.
 func dupTSPresent([]float64) float64 { return 1 }
 
@@ -552,6 +561,7 @@ var dupTSOverTimeFamily = []dupTSOverTimeCase{
 	{call: "min_over_time(%s[5m])", reduce: dupTSMin, immune: true},
 	{call: "max_over_time(%s[5m])", reduce: dupTSMax, immune: true},
 	{call: "last_over_time(%s[5m])", reduce: dupTSLast, immune: true},
+	{call: "first_over_time(%s[5m])", reduce: dupTSFirst, immune: true},
 	{call: "present_over_time(%s[5m])", reduce: dupTSPresent, immune: true},
 }
 
@@ -612,14 +622,25 @@ func TestIdenticalDuplicateTimestamp_OverTimeFamilyCountsItOnce(t *testing.T) {
 }
 
 // dupTSSortedSlabEligible is the set of *_over_time functions
-// promql.SortedSlabOverTimeLowerer actually decomposes — its scope is
-// sum_over_time / avg_over_time (internal/chsql/range_window_sorted_slab.go).
-// The cross-strategy test asserts the emitted SQL differs for EXACTLY these
-// and for no others, so an eligibility change cannot quietly turn a
+// promql.SortedSlabOverTimeLowerer actually decomposes — sum_over_time /
+// avg_over_time (cerberus issue #2761) widened to first_over_time /
+// stddev_over_time / stdvar_over_time / mad_over_time (cerberus issue #2804)
+// — internal/chsql/range_window_sorted_slab.go. last_over_time is
+// deliberately absent despite dupTSOverTimeFamily covering it: it routes
+// through the family's own LastOverTimeLowerer chain, never
+// promql.SortedSlabOverTimeLowerer (see that lowerer's own doc for the
+// precedence argument). quantile_over_time is absent because
+// overTimeArrayValueFrag has no sorted-slab reducer for it at all. The
+// cross-strategy test asserts the emitted SQL differs for EXACTLY these and
+// for no others, so an eligibility change cannot quietly turn a
 // cross-strategy comparison into a comparison of an answer with itself.
 var dupTSSortedSlabEligible = map[string]bool{
-	"sum_over_time": true,
-	"avg_over_time": true,
+	"sum_over_time":    true,
+	"avg_over_time":    true,
+	"first_over_time":  true,
+	"stddev_over_time": true,
+	"stdvar_over_time": true,
+	"mad_over_time":    true,
 }
 
 // TestIdenticalDuplicateTimestamp_EveryLoweringAgrees runs the same family

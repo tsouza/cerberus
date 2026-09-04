@@ -47,16 +47,35 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //
 // Order/precision: the per-anchor window slice feeds overTimeArrayValueFrag
 // UNCHANGED — the exact function the array-fold's own outer SELECT calls —
-// so sum_over_time's arraySum and avg_over_time's arrayAvg fold their
-// slice in the SAME left-to-right order the array-fold's arraySum/arrayAvg
-// over window_vals uses (arrayFilter preserves the samples array's
-// arraySort-ascending relative order, element for element). This is the
-// "arraySlice[-shaped] form ... MANDATORY ... under the byte-identical
-// contract" the issue calls for: reusing the identical reducer over an
-// identically-ordered slice, rather than introducing arrayReduceInRanges
-// (whose segment-tree partial-state merging would reorder the float
-// summation and break byte-identity with the array-fold — see
-// chplan.RangeWindow.SortedSlabOverTime's own doc).
+// so every reducer this shape covers folds the slice in the SAME
+// left-to-right order the array-fold's identical reducer over window_vals
+// uses (arrayFilter preserves the samples array's arraySort-ascending
+// relative order, element for element). This is the "arraySlice[-shaped]
+// form ... MANDATORY ... under the byte-identical contract" the issue calls
+// for: reusing the identical reducer over an identically-ordered slice,
+// rather than introducing arrayReduceInRanges (whose segment-tree
+// partial-state merging would reorder the float summation and break
+// byte-identity with the array-fold — see
+// chplan.RangeWindow.SortedSlabOverTime's own doc). Per function:
+//
+//   - sum_over_time / avg_over_time: arraySum / arrayAvg — a single
+//     left-to-right fold, unaffected by anything but element order.
+//   - first_over_time: `vals[1]` — a POSITION pick, not a reduction; order
+//     preservation is not merely a precision nicety here but the entire
+//     correctness argument (a shuffled slice picks the wrong element).
+//   - stddev_over_time / stdvar_over_time: the two-pass
+//     `μ = arrayAvg(vals); Σ(x-μ)² / N` (varPopTwoPassFrag) — TWO
+//     left-to-right folds over the identically-ordered slice (one for μ, one
+//     for the centred sum), so the same order argument applies twice.
+//   - mad_over_time: two nested applications of the SAME
+//     quantileExactInclusive(0.5) median (medianOverArrayFrag) — CH's
+//     quantile implementation sorts its input internally, so it is already
+//     order-INDEPENDENT of the slice's incoming order; byte-identity here
+//     therefore rests on set-membership equality (same elements survive the
+//     slice, whichever order they arrive in), not fold order.
+//
+// See range_window_sorted_slab_chdb_test.go's per-function subtests for the
+// executed byte-identical-contract proof of each.
 //
 // Duplicate rows: the slab is assembled through the SAME windowSamplePairsFrag
 // gate the array-fold path uses (range_window.go), so it answers under the
@@ -69,22 +88,61 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // here, exactly as the array-fold's own window_vals does (cerberus issue
 // #2905).
 //
-// Deliberately arrayFilter, not arraySlice-via-binary-search: `samples` is
-// NOT anchor-grid-aligned (raw sample timestamps), so cutting an anchor's
-// window out of it needs a real index lookup (e.g. a binary-search-style
-// function) rather than the arithmetic grid-index math
-// range_window_fused.go's coveredValuesFrag uses for two co-aligned anchor
-// grids. Locating (lo, hi) via such a lookup was not verified against this
-// codebase's pinned chDB substrate in this change, so it stays a documented
-// follow-up (issue #2804) rather than shipping unverified; arrayFilter is
-// the proven-safe idiom (byte-for-byte range_window_fused.go's own sliceOf)
-// that already delivers this issue's actual goal — O(samples-in-range) peak
-// memory per series, independent of anchor count — without it.
+// Deliberately arrayFilter, not arraySlice-via-binary-search — CLOSED with a
+// negative result (cerberus issue #2804), not an open follow-up:
 //
-// Scope: sum_over_time / avg_over_time only — chopt.FeatureSortedSlabOverTime
-// documents why the remaining array-path *_over_time members
-// (first/last/stddev/stdvar/mad_over_time) are tracked as a follow-up
-// (issue #2804) rather than included here.
+// `samples` is NOT anchor-grid-aligned (raw sample timestamps), so cutting
+// an anchor's window out of it needs a real index LOOKUP (find the (lo, hi)
+// position bounding the `(a-range, a]` interval) rather than the arithmetic
+// grid-index math range_window_fused.go's coveredValuesFrag uses for two
+// co-aligned anchor grids. #2761 punted this for lack of a verified
+// function name/version floor; #2804 went and verified it, against this
+// codebase's pinned chDB substrate (ClickHouse 26.5.1.1, `SELECT version()`)
+// and the upstream ClickHouse array-functions reference:
+//
+//   - `system.functions` on that substrate carries no arrayBinarySearch,
+//     lower-bound, upper-bound, or bisect-shaped array function of any
+//     name — confirmed by direct query, not by absence-of-recall.
+//   - The one function that DOES run a genuine binary-search algorithm over
+//     a sorted array, `indexOfAssumeSorted(arr, x)` (added ClickHouse 2024),
+//     has the wrong CONTRACT for this site: it is an EXACT-match search —
+//     verified live, it returns 0 for a probe value that falls strictly
+//     between two elements, below the array's minimum, or above its
+//     maximum, exactly like plain `indexOf`, just faster on a large sorted
+//     array. It answers "is x present, and where", never "how many
+//     elements are <= x" (the insertion-point / lower-bound question an
+//     anchor boundary — an arbitrary timestamp essentially never equal to a
+//     stored sample — actually needs). No combination of `indexOfAssumeSorted`
+//     calls recovers a lower-bound answer without first locating a
+//     guaranteed-present probe value, which the boundary itself is not.
+//   - The upstream ClickHouse docs' own array-functions reference lists no
+//     binary-search, sorted-array index-lookup, lower-bound, upper-bound,
+//     insertion-point, or bisect function either.
+//
+// With no verified function at any available version floor, arraySlice-via-
+// binary-search has no implementation to measure — the negative result IS
+// the answer, mirroring this codebase's other closed-without-a-function
+// investigations (#2768, #2750, #2923, #2894). arrayFilter stays the
+// mechanism: it is the proven-safe idiom (byte-for-byte
+// range_window_fused.go's own sliceOf) that already delivers this issue's
+// actual goal — O(samples-in-range) peak memory per series, independent of
+// anchor count (cerberus issue #2761, memory-bound-corrected by #3046/#3051)
+// — without needing an index lookup at all. Re-open only if a future
+// ClickHouse version ships a real lower-bound/upper-bound array primitive;
+// until then this file's own arrayFilter cost (an O(samples) re-scan per
+// anchor) is a CPU refinement with no verified path forward, not a
+// correctness or memory gap.
+//
+// Scope: sum_over_time / avg_over_time / first_over_time / stddev_over_time /
+// stdvar_over_time / mad_over_time — chopt.FeatureSortedSlabOverTime
+// documents the #2761 → #2804 widening history. last_over_time is
+// deliberately EXCLUDED (its own native FeatureTSGridLastOverTime staleness
+// resample already answers the same question — see
+// promql.SortedSlabOverTimeLowerer's own doc for the precedence
+// argument); quantile_over_time and the min/max/count/present_over_time
+// direct-aggregate family never reach this emitter at all (see
+// overTimeArrayValueFrag's own doc and emitRangeWindowOverTime's
+// overTimeDirectAggFrag fast path).
 
 // emitRangeWindowSortedSlabOverTime renders the sorted-slab SQL skeleton for
 // a shape-eligible matrix sum_over_time / avg_over_time RangeWindow:
