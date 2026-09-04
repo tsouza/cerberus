@@ -614,7 +614,7 @@ func lowerSubqueryOverCall(
 	// the same reason.
 	if rangeFnCollidesOnNameDrop(call.Func.Name, vs.LabelMatchers, inner, s) {
 		appendNameGroupKey(rw, s)
-		return wrapDropNameCollisionGuard(rw, s, dropNameGuardAnchor(rw, rw), value), nil
+		return wrapDropNameCollisionGuard(rw, s, ctx, dropNameGuardAnchor(rw, rw), value), nil
 	}
 	if replaceValue {
 		// quantile_over_time's out-of-range literal phi: the inner

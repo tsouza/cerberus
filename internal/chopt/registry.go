@@ -1856,16 +1856,19 @@ const (
 	// (UNKNOWN_FUNCTION) and DOES exist on 26.2 — confirming the issue's "floor
 	// 26.1 core; 26.2 specifically for timeSeriesThrowDuplicateSeriesIf" claim
 	// exactly. This feature's own MinVersion is pinned to the HIGHER 26.2,
-	// not 26.1, even though this PR does not yet wire
-	// timeSeriesThrowDuplicateSeriesIf into the guard's HAVING (that stays the
-	// existing throwIf(uniqExact(MetricName) > 1, ...) — the issue's own point
-	// that "the Aggregate is also the collapse fix" and the throw-message
-	// mechanism is a SEPARATE, independently-verifiable change from the
-	// grouping-key swap this feature makes) — one feature id must not
-	// silently widen its own effective floor when a follow-up change adopts
-	// the throw, without a version bump an operator can see, so the id is
-	// pinned to what the FAMILY needs once the throw is adopted, not merely
-	// what this change's own diff touches.
+	// not 26.1, even though the PR that introduced this feature did not yet
+	// wire timeSeriesThrowDuplicateSeriesIf into the guard's HAVING (it kept
+	// the existing throwIf(uniqExact(MetricName) > 1, ...) — the issue's own
+	// point that "the Aggregate is also the collapse fix" and the
+	// throw-message mechanism is a SEPARATE, independently-verifiable change
+	// from the grouping-key swap this feature makes) — one feature id must
+	// not silently widen its own effective floor when a follow-up change
+	// adopts the throw, without a version bump an operator can see, so the
+	// id is pinned to what the FAMILY needs once the throw is adopted, not
+	// merely what this change's own diff touches. That follow-up has since
+	// shipped as its OWN feature, FeatureTSThrowDuplicateSeriesIf (cerberus
+	// issue #3038) — see its own doc for why it is a separate id rather than
+	// folded into this one.
 	//
 	// NO EXPERIMENTAL GATE — RequiresExperimentalTSGrid is deliberately false.
 	// The issue flagged the docs show no experimental gate for this family
@@ -1936,6 +1939,66 @@ const (
 	// only via an explicit CERBERUS_CH_OPTIMIZATIONS=ts_tag_groups listing
 	// (or "auto,ts_tag_groups").
 	FeatureTSGridTagGroups = "ts_tag_groups"
+
+	// FeatureTSThrowDuplicateSeriesIf opts the duplicate-labelset guard's
+	// HAVING (internal/promql/duplicate_labelset_guard.go's
+	// guardNameDropCollision / guardNameDropCollisionByTagGroup, and
+	// lower.go's wrapDropNameCollisionGuard — the instant name-drop, the
+	// ts_tag_groups name-drop variant, and the range-vector name-drop guard,
+	// which all share [duplicateLabelsetGuardExpr]) onto
+	// timeSeriesThrowDuplicateSeriesIf instead of the hand-rolled
+	// throwIf(uniqExact(MetricName) > 1, <static message>) (cerberus issue
+	// #3038, split from #2880 item 3). The collector-backed function names
+	// the ACTUAL colliding tags in its error message; the static message
+	// this feature replaces names none.
+	//
+	// DELIBERATELY SEPARATE from FeatureTSGridTagGroups: this feature does
+	// NOT require — and, when disabled, does not use — the UInt64 tag-group-
+	// id grouping key that feature swaps in. Every HAVING site above already
+	// exposes (or can freshly derive, via its own Attributes column) a
+	// timeSeriesTagsToGroup(Attributes) id purely as this call's second
+	// argument, independent of what the surrounding Aggregate groups BY. So
+	// unlike FeatureTSGridTagGroups this feature carries none of that
+	// feature's measured-negative performance story — it changes an error
+	// MESSAGE, not a GROUP BY shape — and piggybacking on the
+	// ts_tag_groups id would incorrectly gate a strict diagnostics
+	// improvement behind an unrelated, proven-slower-at-this-site,
+	// opt-in-only mechanism.
+	//
+	// SHAPE — verified directly against a real ClickHouse server (chDB
+	// 26.5.1.1, comfortably above this feature's own 26.2 floor): calling
+	// timeSeriesThrowDuplicateSeriesIf(count() > 1, timeSeriesTagsToGroup(
+	// Attributes)) from HAVING over a plain `GROUP BY Attributes` (the
+	// default, non-ts_tag_groups shape) raises the collector-backed message
+	// with NO two-level Aggregate+Project rewrite and NO alias-scoping
+	// rejection — re-deriving timeSeriesTagsToGroup(Attributes) inside
+	// HAVING is not the same failure FeatureTSGridTagGroups's own doc
+	// records (ILLEGAL_AGGREGATION fires only when the SAME expression used
+	// for GROUP BY is re-derived a second time inside an AGGREGATE
+	// function's own SELECT-list argument; a plain HAVING predicate is
+	// neither). Passing the ts_tag_groups shape's own tag-group-id column as
+	// the second argument (instead of a fresh timeSeriesTagsToGroup call)
+	// verified equally cleanly. Both shapes correctly abort with the
+	// real colliding tags named, and correctly pass through distinct label
+	// sets unaborted.
+	//
+	// VERSION FLOOR: 26.2, the same floor
+	// FeatureTSGridTagGroups pins for this exact function — re-verified
+	// today, not merely inherited: UNKNOWN_FUNCTION on a 26.1 chDB build,
+	// present and working on 26.5.1.1. No allow_experimental_* setting is
+	// needed on either build.
+	//
+	// AutoSelect is true — unlike FeatureTSGridTagGroups, this feature has
+	// no measured downside to weigh: it is a pure error-message substitution
+	// on an already-guaranteed-to-abort query, with the identical HAVING
+	// shape (same aggregate condition, same `= 0` idiom) either way, so a
+	// server past the version floor gets the better diagnostics without an
+	// operator opt-in. Stability stays Experimental rather than Stable
+	// because, like FeatureJoinSpill / FeatureTraceIDBitmapFilter /
+	// FeatureArgAndMaxFusion, the function itself is fresh (26.2) and has no
+	// fielded production history yet — only a version-floor and shape
+	// verification, the same bar those siblings shipped AutoSelect: true on.
+	FeatureTSThrowDuplicateSeriesIf = "ts_throw_duplicate_series_if"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -2348,6 +2411,13 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "group the instant-mode duplicate-labelset guard's name-drop collapse on a UInt64 tag-group id (timeSeriesTagsToGroup), not the raw Attributes Map, rehydrating via timeSeriesGroupToTags in the projection (server >= 26.2, no experimental gate, opt-in -- #2750)",
 	},
+	{
+		ID:         FeatureTSThrowDuplicateSeriesIf,
+		MinVersion: Version{Major: 26, Minor: 2},
+		Stability:  Experimental,
+		AutoSelect: true,
+		Doc:        "swap the duplicate-labelset guard's HAVING from throwIf(uniqExact(MetricName) > 1, <static message>) to timeSeriesThrowDuplicateSeriesIf, which names the actual colliding tags (server >= 26.2, no experimental gate, no measured downside -- #3038)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -2362,7 +2432,7 @@ var registry = []Feature{
 // trace_id_bitmap_filter, arg_and_max_fusion, result_cache,
 // lazy_materialization, explain_estimate, cardinality_probe,
 // full_text_index, text_index_line_filter, trace_id_external_table,
-// ts_tag_groups). The copy
+// ts_tag_groups, ts_throw_duplicate_series_if). The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the
 // table.

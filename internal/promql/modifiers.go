@@ -228,6 +228,23 @@ type lowerCtx struct {
 	// handler, which threads chopt.EnabledSet's verdict from cmd/cerberus)
 	// keeps the established SQL.
 	tagGroups bool
+
+	// throwDuplicateSeriesIf is the boot-wired on/off switch for
+	// chopt.FeatureTSThrowDuplicateSeriesIf (cerberus issue #3038), resolved
+	// ONCE from [LowerOpts.ThrowDuplicateSeriesIf] at the same lowering-entry
+	// seam resourceBounds and tagGroups are. Read only by
+	// [duplicateLabelsetGuardExpr] (lower.go), the single HAVING builder
+	// shared by every duplicate-labelset name-drop guard site
+	// (guardNameDropCollision and guardNameDropCollisionByTagGroup in
+	// duplicate_labelset_guard.go, plus wrapDropNameCollisionGuard here in
+	// lower.go): when true, the guard's HAVING calls
+	// timeSeriesThrowDuplicateSeriesIf, which names the actual colliding
+	// tags, instead of throwIf(uniqExact(MetricName) > 1, <static message>).
+	// Independent of tagGroups — see chopt.FeatureTSThrowDuplicateSeriesIf's
+	// own doc for why the two are deliberately separate gates. The zero
+	// value (false) reproduces the pre-#3038 throwIf shape byte-for-byte, so
+	// every caller that does not opt in keeps the established SQL.
+	throwDuplicateSeriesIf bool
 }
 
 // withSampleTimestamp returns a copy of c that asks the range-mode selector

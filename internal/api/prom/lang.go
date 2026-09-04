@@ -76,6 +76,20 @@ type lang struct {
 	// the instant path, so the instant lang MUST carry it. The zero value
 	// keeps the pre-#2750 Map-grouped guard shape.
 	TagGroups bool
+
+	// ThrowDuplicateSeriesIf threads chopt.FeatureTSThrowDuplicateSeriesIf's
+	// resolved verdict (cerberus issue #3038) from
+	// Handler.ThrowDuplicateSeriesIf (built once at boot in cmd/cerberus
+	// from the resolved chopt.EnabledSet) into
+	// promql.LowerOpts.ThrowDuplicateSeriesIf. Unlike TagGroups, this
+	// feature's consumer (duplicateLabelsetGuardExpr) is reached from BOTH
+	// the instant-mode name-drop guard AND the range-vector name-drop guard
+	// (wrapDropNameCollisionGuard, reached from query_range), so both
+	// executeInstant and executeRangeStreaming need it set — same as
+	// TagGroups needs it for its own narrower instant-only reach. The zero
+	// value keeps the pre-#3038 throwIf(uniqExact(MetricName) > 1, ...)
+	// shape.
+	ThrowDuplicateSeriesIf bool
 }
 
 // Compile-time check that *lang satisfies engine.Lang.
@@ -137,7 +151,13 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	// promql.Lower leave the sink nil.
 	var guards []promql.ScalarGuard
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step,
-		promql.LowerOpts{Lowerers: l.Lowerers, Guards: &guards, ResourceBounds: l.ResourceBounds, TagGroups: l.TagGroups})
+		promql.LowerOpts{
+			Lowerers:               l.Lowerers,
+			Guards:                 &guards,
+			ResourceBounds:         l.ResourceBounds,
+			TagGroups:              l.TagGroups,
+			ThrowDuplicateSeriesIf: l.ThrowDuplicateSeriesIf,
+		})
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &parseStageError{stage: "lower", err: err}
