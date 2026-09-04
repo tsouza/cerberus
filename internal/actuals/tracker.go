@@ -120,6 +120,62 @@ type state struct {
 // Tracker is the bounded, in-process predicted-vs-actual drift tracker (this
 // package's own doc). Safe for concurrent use. The zero value is not usable;
 // construct with NewTracker.
+//
+// # Durability is intentionally NOT provided (issue #3036)
+//
+// Tracker's state is a plain in-memory map (states below): every shape's
+// calibration history — including any shape currently drift-alerting — is
+// lost on every process restart or deploy. Unlike internal/optcorpus, which
+// persists its query-outcome corpus to a JSONL file or a ClickHouse table
+// (optcorpus.Sink) precisely because that corpus is expensive to
+// re-accumulate (it joins system.query_log rows against dispatch-time
+// records over a long observation window), Tracker deliberately has no
+// durable-sink counterpart. This was evaluated against that same design —
+// the pattern issue #3036 names as the one to mirror — and rejected for
+// this type specifically, for three compounding reasons:
+//
+//  1. The tracked state is CHEAP to rebuild. Config.MinObservations
+//     defaults to 2 and Config.EMAAlpha defaults to 0.2: a shape regains a
+//     trusted verdict (CalibrationFactor ok, DriftReport.Alerting
+//     meaningful) after just two fresh RecordActual calls post-restart, and
+//     its EMA re-converges to within a few percent of its pre-restart value
+//     within roughly 5-10 observations (2-3 alpha=0.2 half-lives) — a matter
+//     of minutes of ordinary traffic for any shape common enough for its
+//     calibration to matter. A shape too rare to see two observations in a
+//     reasonable window was never going to accumulate meaningful evidence
+//     between deploys either way.
+//  2. Config.EntryTTL (default 30m) ALREADY caps how long any state is
+//     trusted, restart or not. A shape not queried again within EntryTTL is
+//     treated as expired and re-seeded from scratch by getOrCreateLocked
+//     regardless of whether the process restarted in between. Persisting
+//     across a restart would only ever help the narrow intersection "a
+//     restart happens" AND "within 30 minutes of that shape's last query" —
+//     a strictly smaller win than the TTL already discards on its own
+//     timescale, for a feature this package's own anti-autotune stance
+//     (see the package doc) already treats as advisory rather than
+//     authoritative.
+//  3. The feature ships DARK by default (Config.Enabled defaults to false —
+//     see Config's own doc). No production deployment depends today on
+//     drift continuity surviving a rollout, so paying a durable sink's
+//     ongoing cost now — a background flush goroutine, a buffered channel
+//     sized against burst writes, a JSONL or CH-table schema, boot wiring in
+//     cmd/cerberus, and restart-recovery test coverage, all mirroring
+//     optcorpus's own nontrivial machinery built for a fundamentally
+//     heavier join-and-batch problem — would buy correctness insurance for a
+//     value nobody is yet relying on. RecordActual is additionally called
+//     synchronously from the query-response hot path
+//     (internal/chclient/progress.go's flush()); any sink added later MUST
+//     preserve that non-blocking discipline (an internal buffered channel
+//     plus a background flush goroutine, exactly like optcorpus.Sink's own
+//     writers), never a synchronous write on that path.
+//
+// This is a deliberate scope boundary, not an oversight: if Config.EntryTTL
+// is later raised well past today's 30m default, or the feature graduates
+// out of dark-by-default and operators report losing alerting state across
+// routine deploys as a real operational pain point, that is the trigger to
+// revisit — build a Tracker-specific sink mirroring optcorpus.Sink's
+// buffered-channel-plus-background-flush shape, not to retrofit a
+// synchronous write into RecordActual.
 type Tracker struct {
 	cfg Config
 
