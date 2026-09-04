@@ -38,7 +38,7 @@ import (
 // for every ineligible shape — the same table
 // exp_histogram_merge_summap_chdb_test.go's differential proof uses.
 var expHistSumMapBoundNativeLowerers = promql.RangeLowerers{
-	ExpHistogramMerge: promql.NativeExpHistogramMergeLowerer{Fallback: promql.FanoutExpHistogramMergeLowerer{}},
+	ExpHistogramMerge: promql.NativeExpHistogramMergeLowerer{},
 }
 
 // runExpHistSumMapBoundQuery lowers + emits `sum(<metric>)` through the

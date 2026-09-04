@@ -1,0 +1,52 @@
+-- query.promql --
+sum by(route) (http_server_duration_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_exp_histogram_merge_summap --
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- cerberus issue #3027's range-mode counterpart of
+-- exp_histogram_merge_summap_multigroup.txtar's INSTANT sibling: the SAME
+-- `sum by(route)` shape (chopt exp_histogram_merge_summap opted in via the
+-- `experimental_exp_histogram_merge_summap` marker section) but evaluated
+-- as a query_range request — the shape [NativeExpHistogramMergeLowerer]
+-- fell back to the classic groupArray + picker fold for, regardless of
+-- the marker, before this issue widened its gate to admit a non-nil step
+-- anchor.
+--
+-- route=api carries two series at DIFFERENT Scales (0 and 1), the SAME
+-- downscale-collapse merge the instant sibling pins, now resolved
+-- independently at EVERY step anchor by the anchor-prefixed WindowExpr
+-- `min(Scale) OVER (PARTITION BY <anchor>, <group-key>)` pre-pass. Series
+-- `coarse` gets a SECOND, later sample at 00:02:00 with a DIFFERENT
+-- layout (Scale 2) — so the early anchors (00:00:00 through 00:01:30)
+-- merge route api's ORIGINAL pair, while the later anchors (00:02:00
+-- onward) merge the UPDATED pair, proving each anchor resolves its own
+-- mergedScale independently rather than reusing one value across the
+-- whole grid. route=web carries exactly ONE series across the whole
+-- window — the singleton-partition control: its output must stay
+-- IDENTICAL at every anchor, proving route=api's per-anchor changes
+-- don't leak across groups.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('route', 'api', 'series', 'fine'),   toDateTime64('2026-01-01 00:00:00', 9), 10, 1.0, 1, 0, 0, [1, 2, 3, 4], 0, []),
+    ('http_server_duration_exp_hist', map('route', 'api', 'series', 'coarse'), toDateTime64('2026-01-01 00:00:00', 9), 15, 2.0, 0, 0, 0, [5, 10],      0, []),
+    ('http_server_duration_exp_hist', map('route', 'api', 'series', 'coarse'), toDateTime64('2026-01-01 00:02:00', 9), 20, 3.0, 2, 0, 0, [7, 11, 13],  0, []),
+    ('http_server_duration_exp_hist', map('route', 'web', 'series', 'solo'),   toDateTime64('2026-01-01 00:00:00', 9), 6,  3.0, 2, 0, -1, [1, 2, 3],   0, []);
+-- expected_rows --
+[]
