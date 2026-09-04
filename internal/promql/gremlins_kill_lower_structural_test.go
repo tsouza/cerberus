@@ -23,9 +23,15 @@ import (
 // test — only its Go type is.
 func unionArmWindow() *chplan.RangeWindow { return &chplan.RangeWindow{Func: "rate"} }
 
-// unionArmNative is the CUMULATIVE native-grid arm's stand-in, for the same
-// reason.
-func unionArmNative() *chplan.RangeWindowGridNative { return &chplan.RangeWindowGridNative{} }
+// unionArmNative is the CUMULATIVE native-grid arm's stand-in. Func is
+// pinned to "rate" — one of the two functions
+// [rateIncreaseTemporalityUnionArms] actually recognizes (cerberus issue
+// #2803's Func guard, added once irate() started building a structurally
+// identical union of its own) — rather than left at its zero value; every
+// other field is irrelevant to the structural recogniser under test.
+func unionArmNative() *chplan.RangeWindowGridNative {
+	return &chplan.RangeWindowGridNative{Func: "rate"}
+}
 
 // temporalityUnion wraps arms in the Project-over-UnionAll shape
 // [rateIncreaseTemporalityUnionArms] recognises.
@@ -36,14 +42,19 @@ func temporalityUnion(arms ...chplan.Node) chplan.Node {
 // TestRateIncreaseTemporalityUnionArms_RecognisesOnlyTheExactTwoArmShape pins
 // every structural clause of the recogniser independently.
 //
-// The recogniser's whole contract is that it identifies ONE construction
-// site's output. Its caller folds an outer sum/min/max into the native arm and
-// leaves the delta arm alone, so a false positive rewrites a plan the fold was
-// never proven against: a third arm would be silently dropped, and a
-// mis-typed arm would be folded as if it were the native grid. Both are
-// answered here by the arm count and the two type assertions, and both
-// survived because the corpus only ever hands this function the exact shape
-// [derivedRateArm] builds.
+// The recogniser's whole contract is that it identifies rate()/increase()'s
+// OWN construction site's output, not merely A shape that happens to match
+// positionally. Its caller folds an outer sum/min/max into the native arm
+// and leaves the delta arm alone, so a false positive rewrites a plan the
+// fold was never proven against: a third arm would be silently dropped, a
+// mis-typed arm would be folded as if it were the native grid, and (since
+// cerberus issue #2803) a native arm from a DIFFERENT function that merely
+// builds the same node layout — irate(), via derivedIrateArm — would be
+// folded as if its per-cell values composed the same way rate/increase's
+// do, which was never verified. All three are answered here: the arm count
+// and the two type assertions for the first two, the native arm's own Func
+// field for the third. Every clause survived because the corpus only ever
+// hands this function the exact shape [derivedRateArm] builds.
 func TestRateIncreaseTemporalityUnionArms_RecognisesOnlyTheExactTwoArmShape(t *testing.T) {
 	t.Parallel()
 
@@ -87,6 +98,14 @@ func TestRateIncreaseTemporalityUnionArms_RecognisesOnlyTheExactTwoArmShape(t *t
 			name:  "second arm is not a fan-out window",
 			input: temporalityUnion(unionArmNative(), unionArmNative()),
 			why:   "the delta arm is the raw fan-out; a second native arm is not the shape derivedRateArm builds",
+		},
+		{
+			name:  "native arm Func is irate, not rate/increase",
+			input: temporalityUnion(&chplan.RangeWindowGridNative{Func: "irate"}, unionArmWindow()),
+			why: "derivedIrateArm (cerberus issue #2803) builds a positionally identical " +
+				"Project{UnionAll{RangeWindowGridNative, RangeWindow}} shape for irate(), whose " +
+				"trailing-pair counter-reset correction was never verified to compose the same way " +
+				"under the ts_grid_vector_agg fold — admitting it here would silently widen that fold",
 		},
 	}
 	for _, tc := range cases {

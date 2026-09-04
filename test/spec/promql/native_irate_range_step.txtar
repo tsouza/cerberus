@@ -14,16 +14,19 @@
 # its selector as a COUNTER, and rangeVectorCounterTemporalityColumn sets
 # RangeWindow.TemporalityColumn whenever the selector routes to EXACTLY ONE
 # table (Sum or Histogram) — the case for any unambiguous `_total`-suffixed
-# name. nativeTSGridMatrixNode's TemporalityColumn guard then sends the whole
-# window to the fan-out/lagInFrame fallback unconditionally (no union split —
-# see NativeIrateLowerer's own doc). An UNSUFFIXED name routes ambiguously to
-# (Gauge, Sum) instead, so TemporalityColumn stays empty and the native path
-# fires. That means this fixture — like every realistic `_total` counter
-# query under the default schema — currently stays on the fan-out; tracked as
-# cerberus issue #2803 (add the CUMULATIVE-native/DELTA-fan-out union split
-# NativeRateLowerer already has for rate()/increase()). This fixture uses an
-# unsuffixed name SPECIFICALLY to reach and pin the native SQL shape ahead of
-# that follow-up landing.
+# name. An UNSUFFIXED name routes ambiguously to (Gauge, Sum) instead, so
+# TemporalityColumn stays empty and nativeTSGridMatrixNode's TemporalityColumn
+# guard never fires at all — this fixture pins that BARE (no union split)
+# native SQL shape deliberately, still the simplest and most direct coverage
+# of the plain timeSeriesInstantRateToGrid emit. cerberus issue #2803 closed
+# the companion gap this note used to track: a `_total`-suffixed counter (the
+# realistic case almost every production irate() query targets) now ALSO
+# reaches the native tier, via a CUMULATIVE-native/DELTA-fan-out union split —
+# see NativeIrateLowerer.LowerIrate's own doc — pinned separately by
+# native_irate_temporality_union.txtar, whose UnionAll{RangeWindowGridNative,
+# RangeWindow} shape (wrapped by derivedIrateArm) differs from this fixture's
+# bare RangeWindowGridNative, so the two fixtures deliberately stay distinct
+# rather than merged into one.
 #
 # COUNTER-RESET EVIDENCE. The seed's 300 -> 150 dip at 00:01:00 -> 00:01:30 is
 # deliberate: irate's trailing pair at anchor 00:01:30 is exactly that
