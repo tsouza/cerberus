@@ -654,13 +654,24 @@ const (
 	// family needs — so it carries NO version gate (AlwaysAvailable) and no
 	// allow_experimental_* setting.
 	//
-	// AutoSelect is false, unlike laginframe_adjacency: the issue's own
-	// proposal calls for an optcorpus A/B pass before promoting this to
-	// auto-selected (the reset-correction term's summation runs in
-	// ClickHouse's own non-deterministic aggregation order, unlike the
-	// array-fold's strict time-ordered fold — proven algebraically
-	// equivalent and verified bit-identical on the dual-emit parity corpus,
-	// but not yet fielded). Reachable only via an explicit
+	// AutoSelect is false, unlike laginframe_adjacency — NOT pending
+	// measurement (cerberus#2894 ran the optcorpus A/B and closed that gap):
+	// the reset-correction term's summation runs in ClickHouse's own
+	// non-deterministic aggregation order, unlike the array-fold's strict
+	// time-ordered fold — proven algebraically equivalent and verified
+	// bit-identical on the dual-emit parity corpus. But a real ClickHouse
+	// 26.6.4.55 optcorpus A/B (query_range rate()/increase(), 2,200 series,
+	// 1h span / 60 anchors / 5m window — matching #2429's own
+	// resource-bound calibration scale) measured this shape reading HALF
+	// the source rows and ~20% fewer bytes at roughly neutral wall-clock
+	// (within ~10%), but at ~1.8-2x the incumbent array-fold's PEAK MEMORY
+	// (six concurrent per-group accumulators — count/min/max/argMin/
+	// argMax/sumIf — against the array-fold's single groupArrayIf pass).
+	// Trading a real memory increase for no consistent wall-clock win is
+	// not worth the OOM-risk uplift on every default rate/increase/delta
+	// query_range request, so this stays opt-in — a measured "no", not an
+	// unfinished "pending" (see #2768 and #2750 for this repo's other
+	// negative-result precedent). Reachable only via an explicit
 	// CERBERUS_CH_OPTIMIZATIONS=fixed_accumulator_extrapolated listing.
 	//
 	// Scope: eligible for a temporality-bearing counter window too — the
@@ -706,10 +717,27 @@ const (
 	// all long-standing ClickHouse primitives — so it carries NO version gate
 	// (AlwaysAvailable) and no allow_experimental_* setting.
 	//
-	// AutoSelect is false, mirroring fixed_accumulator_extrapolated: pending
-	// an optcorpus A/B pass before promoting to auto-selected. Reachable
-	// only via an explicit CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time
-	// listing.
+	// AutoSelect is false — NOT pending measurement (cerberus#2894 ran the
+	// optcorpus A/B and closed that gap), and more decisively so than
+	// fixed_accumulator_extrapolated's sibling finding: a real ClickHouse
+	// 26.6.4.55 A/B found this shape's own "peak memory is O(samples-in-
+	// range) per series, independent of anchor count" design claim (see
+	// this file's own doc above) does NOT hold in practice. At typical
+	// anchor density (60-240 anchors) it used 6-9x the incumbent array-
+	// fold's peak memory for no wall-clock win; at 500 series / 480
+	// anchors / 5m window — inside #2429's own resource-bound calibration
+	// scale (3,740 real series) — it OOMed a 6 GiB cap outright while the
+	// array-fold it exists to replace finished comfortably at 535 MiB.
+	// Only at extreme anchor density (1,440+ anchors, well past any
+	// query_range panel step this codebase's own perf corpus samples) does
+	// it become faster, and even there at 2.6x the array-fold's own
+	// (already elevated) memory. A shape whose OWN motivating case can OOM
+	// where the incumbent does not must not reach the default path — a
+	// measured "no", not an unfinished "pending" (see #2768 and #2750 for
+	// this repo's other negative-result precedent). The apparent gap
+	// between the design's O(samples) claim and the measured behavior is
+	// tracked as a follow-up investigation at #3046. Reachable only via an
+	// explicit CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time listing.
 	FeatureSortedSlabOverTime = "sorted_slab_over_time"
 
 	// FeatureTSGridGroupArray swaps the fan-out window-assembly idiom's
@@ -2101,14 +2129,18 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt eligible query_range rate/increase/delta shapes onto per-(series, anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
+		Doc: "opt eligible query_range rate/increase/delta shapes onto per-(series, anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out " +
+			"(no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B measured half the source rows/~20% fewer bytes at roughly neutral " +
+			"wall-clock but ~1.8-2x the incumbent array-fold's peak memory, so auto never picks it; see #2894)",
 	},
 	{
 		ID:         FeatureSortedSlabOverTime,
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
+		Doc: "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup " +
+			"(no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B found its claimed O(samples)-per-series memory bound does not hold in practice: " +
+			"6-9x the incumbent's memory at typical anchor density, and it OOMed a 6GiB cap at 500 series/480 anchors where the array-fold held at 535MiB, so auto never picks it; see #2894, follow-up #3046)",
 	},
 	{
 		ID:                         FeatureTSGridGroupArray,
