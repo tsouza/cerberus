@@ -140,6 +140,16 @@ import (
 // newest-row/argMax bare-selector shaping (classicBucketShaping{fold: nil})
 // is never wrapped: its accumulator is fixed-size (one row per group), with
 // no groupArray merge to bound.
+//
+// Both call sites apply this SAME guard/formula regardless of WHICH
+// merge shaping built the Aggregate — the groupArray-fold shaping
+// (classicBucketMergeShaping) or classic_bucket_merge_summap.go's sumMap
+// shaping (classicBucketMergeShapingSumMap, chopt.FeatureClassicBucketMergeSumMap).
+// That is intentional, not merely untested: classic_bucket_merge_summap.go's
+// own "Cost re-measurement" section (cerberus issue #2923) found the
+// sumMap construction's real cost tracks this formula within ~1% at every
+// controlled point, so this single ceiling already protects an operator
+// who opts into that feature — no second, sumMap-specific formula exists.
 const (
 	// maxClassicBucketMergeCostUnits bounds `totalBucketVolume x
 	// widestRowBucketWidth` — see this file's header doc for the real
