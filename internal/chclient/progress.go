@@ -2,6 +2,7 @@ package chclient
 
 import (
 	"context"
+	"sync"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 
@@ -209,20 +210,156 @@ func (r *progressRecorder) onProfileEvents(events []clickhouse.ProfileEvent) {
 // observation (plus the latched peak memory) into it as the SourcePacket
 // fast path (issue #2789). Safe to call with a nil-progress recorder
 // (no-op).
+//
+// Issue #3033: when this recorder's ctx also carries a *ShardActualsFold
+// (route B, K > 1 shards — see WithShardActualsFold's own doc), flush does
+// NOT call tracker.RecordActual itself; it folds this shard's observation
+// into the shared accumulator instead, which performs the SINGLE
+// per-request RecordActual call once every shard has folded in. Route A,
+// and a route-B dispatch with no fold wired (k < 2, or actuals capture
+// off), are byte-unchanged: they still call tracker.RecordActual here,
+// directly, exactly as before this issue.
 func (r *progressRecorder) flush() {
 	if r == nil {
 		return
 	}
 	telemetry.RecordClickHouseProgress(r.ctx, r.ql, r.rows, r.bytes)
-	if r.shapeID != "" {
-		report, ok := r.tracker.RecordActual(r.shapeID, actuals.Actual{
-			ReadRows:   r.rows,
-			ReadBytes:  r.bytes,
-			PeakMemory: r.peakMemory,
-		}, actuals.SourcePacket)
-		if ok && report.HasPredicted {
-			telemetry.RecordEstimateDrift(r.ctx, report.Ratio, report.Alerting, actuals.SourcePacket.String())
-		}
+	if r.shapeID == "" {
+		return
+	}
+	actual := actuals.Actual{
+		ReadRows:   r.rows,
+		ReadBytes:  r.bytes,
+		PeakMemory: r.peakMemory,
+	}
+	if fold, ok := shardActualsFoldFromContext(r.ctx); ok {
+		fold.add(actual)
+		return
+	}
+	report, ok := r.tracker.RecordActual(r.shapeID, actual, actuals.SourcePacket)
+	if ok && report.HasPredicted {
+		telemetry.RecordEstimateDrift(r.ctx, report.Ratio, report.Alerting, actuals.SourcePacket.String())
+	}
+}
+
+// ShardActualsFold folds a route-B K-shard dispatch's per-shard actuals
+// captures into ONE per-request Actual observation before it reaches the
+// tracker (issue #3033). Without it, each of route-B's K shards' own
+// progressRecorder.flush() would call tracker.RecordActual independently —
+// K calls against the ONE un-sharded RecordPredicted prediction the whole
+// request made — corrupting the tracked EMA by roughly a factor of K.
+//
+// Folding rule:
+//   - ReadRows / ReadBytes: SUM across shards — each shard scanned a
+//     disjoint slice of the request's total.
+//   - PeakMemory: MAX across shards, never summed. onProfileEvents already
+//     latches the max PACKET within one shard's own dispatch; this is the
+//     same idea applied ACROSS shards — ClickHouse's own per-query
+//     MemoryTrackerPeakUsage is a single-process high-water mark, not
+//     additive across K independent queries.
+//
+// Construct with WithShardActualsFold, which wires the SAME
+// *ShardActualsFold pointer onto every shard's derived ctx via a context
+// value — mirroring actualsIntent's own "survives being shadowed by a
+// fresh recorder" shape (see WithProgressFor's doc) — so every shard's
+// flush() feeds the SAME accumulator regardless of which goroutine it runs
+// on. The driver invokes progress/ProfileEvents callbacks off-goroutine
+// (WithProgressFor's own doc), and the K shards' cursors can each complete
+// on a different goroutine, so every mutation below is guarded by mu.
+//
+// The shard whose add() call observes completed == k — necessarily the
+// LAST one, since completed only increases — performs the single
+// RecordActual (+ RecordEstimateDrift) call, inline, still holding mu. So
+// "exactly one call per request" is enforced by construction: no separate
+// finalize step exists for a caller to forget. A dispatch that never gets
+// all k shards to flush (e.g. a shard failed to even open its cursor, so
+// its own defer'd CloseCursor / progressRecorder.flush never runs) simply
+// never fires — recording a (k-1)-of-k partial sum would reintroduce the
+// very undercount class this fix exists to close, just at a smaller K.
+type ShardActualsFold struct {
+	// ctx is the per-request ctx WithShardActualsFold was called with — NOT
+	// any one shard's own derived ctx — so the single RecordEstimateDrift
+	// call this fold makes is request-scoped, like RecordPredicted's own
+	// call was, rather than tied to whichever shard happened to finish last.
+	ctx     context.Context
+	tracker *actuals.Tracker
+	shapeID string
+	k       int
+
+	mu         sync.Mutex
+	completed  int
+	rows       uint64
+	bytes      uint64
+	peakMemory uint64
+}
+
+type shardActualsFoldKeyType struct{}
+
+var shardActualsFoldKey = shardActualsFoldKeyType{}
+
+// WithShardActualsFold wires a fresh *ShardActualsFold onto ctx for a
+// route-B dispatch of k shards, so every shard's progressRecorder.flush()
+// (see that method's own "if fold, ok :=" branch) feeds the SAME
+// accumulator instead of calling tracker.RecordActual directly.
+//
+// Returns ctx UNCHANGED — no fold wired — when actuals capture is not
+// active for this dispatch (no actualsIntent on ctx yet; mirrors
+// WithActualsCapture's own fail-open posture) or k < 2 (route A, or a
+// degenerate single-shard route-B decision: exactly the shape that already
+// records correctly today, so folding would be pure overhead for zero
+// benefit). Callers MUST treat "no *ShardActualsFold on the returned ctx"
+// as "nothing to finalize" — there is no separate off-path to remember.
+//
+// Call this ONCE per dispatch, on the SAME ctx that gets threaded into
+// every shard's own derived context (solver.Executor.Execute's ctx
+// parameter, BEFORE any per-shard ctx is derived from it) — a fold wired
+// onto anything narrower than that would not reach every shard.
+func WithShardActualsFold(ctx context.Context, k int) context.Context {
+	intent, ok := actualsIntentFromContext(ctx)
+	if !ok || k < 2 {
+		return ctx
+	}
+	fold := &ShardActualsFold{ctx: ctx, tracker: intent.tracker, shapeID: intent.shapeID, k: k}
+	return context.WithValue(ctx, shardActualsFoldKey, fold)
+}
+
+// ShardActualsFoldFromContext returns the *ShardActualsFold WithShardActualsFold
+// wired onto ctx, if any. Exported for internal/solver's own tests, which
+// verify the Executor wires the SAME fold onto every shard's ctx (and wires
+// none at all for k < 2) without internal/solver importing internal/actuals
+// itself (its own dependency allowlist in .go-arch-lint.yml deliberately
+// omits it — the fold's tracker/Actual plumbing must stay inside chclient).
+func ShardActualsFoldFromContext(ctx context.Context) (*ShardActualsFold, bool) {
+	return shardActualsFoldFromContext(ctx)
+}
+
+func shardActualsFoldFromContext(ctx context.Context) (*ShardActualsFold, bool) {
+	f, ok := ctx.Value(shardActualsFoldKey).(*ShardActualsFold)
+	return f, ok
+}
+
+// add folds one shard's (rows, bytes, peakMemory) into the running totals —
+// see the type doc for the SUM/MAX split and the exactly-once completion
+// contract. Safe for concurrent use.
+func (f *ShardActualsFold) add(a actuals.Actual) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rows += a.ReadRows
+	f.bytes += a.ReadBytes
+	if a.PeakMemory > f.peakMemory {
+		f.peakMemory = a.PeakMemory
+	}
+	f.completed++
+	if f.completed != f.k {
+		return
+	}
+	report, ok := f.tracker.RecordActual(f.shapeID, actuals.Actual{
+		ReadRows:   f.rows,
+		ReadBytes:  f.bytes,
+		PeakMemory: f.peakMemory,
+	}, actuals.SourcePacket)
+	if ok && report.HasPredicted {
+		telemetry.RecordEstimateDrift(f.ctx, report.Ratio, report.Alerting, actuals.SourcePacket.String())
 	}
 }
 

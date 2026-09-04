@@ -86,6 +86,90 @@ type Executor struct {
 	Admit admitTopUp
 }
 
+// admitAndGate performs the Executor's two-stage weighted admission (step 2)
+// and the atomic global-connection-gate acquisition (step 3) as ONE unit:
+// the gate's own effective shard count (kEff) depends on the admission
+// result (pEff), and a gate-acquire failure must release the admission
+// top-up it already holds — the two steps share state in exactly the way
+// that makes splitting their RELEASE handles across two independent call
+// sites error-prone. Returns the admitted (kEff, pEff) pair, the two
+// idempotent release closures Execute must hand off to the shardCursor (or
+// call itself on an early return), and a non-nil err only when the gate
+// denied the request — already breaker-neutral (no CH connection was ever
+// opened) and with the admit top-up already released before returning.
+func (x *Executor) admitAndGate(ctx context.Context, k int) (kEff, pEff int, releaseGate, releaseAdmit func(), err error) {
+	// 2. TWO-STAGE WEIGHTED ADMISSION (degrade-don't-reject). The handler
+	// already charged weight 1; ask for (P-1) extra units. On a partial /
+	// zero grant we clamp effective P to 1+granted — down to sequential —
+	// and run. We NEVER 503 and NEVER proceed at full P.
+	pCfg := x.Cfg.Parallel
+	if pCfg < 1 {
+		pCfg = 1
+	}
+	pEff = pCfg
+	var admitRelease func()
+	if x.Admit != nil && pCfg > 1 {
+		granted, release := x.Admit.TryAcquireTopUp(ctx, pCfg-1)
+		admitRelease = release
+		pEff = 1 + granted
+		if pEff < pCfg {
+			recordParallelismClamped(ctx)
+		}
+	}
+	// admitRelease must run exactly once. If anything below fails before we
+	// hand ownership to the shardCursor, release here.
+	releaseAdmit = func() {
+		if admitRelease != nil {
+			admitRelease()
+			admitRelease = nil
+		}
+	}
+
+	// 3. ATOMIC GATE ACQUISITION — no hold-and-wait. K_eff = min(K, P_eff,
+	// gate/2). The gate/2 cap guarantees >=2 routed requests can always make
+	// progress. Acquire ALL K_eff slots in one call before opening any
+	// cursor; release them all at Close.
+	kEff = k
+	if pEff < kEff {
+		kEff = pEff
+	}
+	if x.Gate != nil && x.GateCap > 0 {
+		half := int(x.GateCap / 2)
+		if half < 1 {
+			half = 1
+		}
+		if half < kEff {
+			kEff = half
+		}
+	}
+	if kEff < 1 {
+		kEff = 1
+	}
+
+	var gateReleased atomic.Bool
+	releaseGate = func() {
+		if x.Gate != nil && gateReleased.CompareAndSwap(false, true) {
+			x.Gate.Release(int64(kEff))
+		}
+	}
+	if x.Gate != nil {
+		if aerr := x.Gate.Acquire(ctx, int64(kEff)); aerr != nil {
+			// Gate acquire honoured the request ctx (timeout / client
+			// cancel). No cursors opened; release the admit top-up and
+			// surface the ctx error. This is breaker-neutral: the Executor
+			// never opened a CH connection.
+			releaseAdmit()
+			return kEff, pEff, releaseGate, releaseAdmit, fmt.Errorf("solver: gate acquire: %w", aerr)
+		}
+	}
+
+	// effective concurrency cannot exceed the slots we hold.
+	if pEff > kEff {
+		pEff = kEff
+	}
+	return kEff, pEff, releaseGate, releaseAdmit, nil
+}
+
 // Execute emits, admits, gates, and dispatches a routed Decision, returning
 // a Cursor that concatenates the K shard streams oldest-first. The returned
 // Cursor owns the gate + admit releases and frees them on Close; callers
@@ -114,6 +198,18 @@ func (x *Executor) Execute(
 		return nil, nil, fmt.Errorf("%w: decision has no slices", ErrSolverEmit)
 	}
 	k := len(d.Slices)
+
+	// Issue #3033: fold route-B's K shard actuals into ONE per-request
+	// RecordActual call. WithShardActualsFold reads whatever actualsIntent
+	// routeBExecCtx (internal/engine) already stamped on ctx before calling
+	// Execute (chclient.WithActualsCapture's own doc) and wires a fresh
+	// *chclient.ShardActualsFold onto ctx keyed to THIS dispatch's k — every
+	// shard's own derived ctx below inherits it by ordinary context nesting,
+	// so runShard's per-shard chclient.WithProgressFor call needs no changes
+	// at all. It is a no-op (ctx returned unchanged) when actuals capture is
+	// off or k < 2, so route A — and any k==1 caller of this function — is
+	// completely unaffected.
+	ctx = chclient.WithShardActualsFold(ctx, k)
 
 	// 6. HALF-OPEN PRE-FLIGHT — peek before emitting. A non-CLOSED breaker
 	// fails fast WITHOUT consuming the half-open probe (PeekBreakerState is
@@ -158,74 +254,12 @@ func (x *Executor) Execute(
 		info.ShardQueryIDs[i] = chclient.MintQueryID(ctx)
 	}
 
-	// 2. TWO-STAGE WEIGHTED ADMISSION (degrade-don't-reject). The handler
-	// already charged weight 1; ask for (P-1) extra units. On a partial /
-	// zero grant we clamp effective P to 1+granted — down to sequential —
-	// and run. We NEVER 503 and NEVER proceed at full P.
-	pCfg := x.Cfg.Parallel
-	if pCfg < 1 {
-		pCfg = 1
-	}
-	pEff := pCfg
-	var admitRelease func()
-	if x.Admit != nil && pCfg > 1 {
-		granted, release := x.Admit.TryAcquireTopUp(ctx, pCfg-1)
-		admitRelease = release
-		pEff = 1 + granted
-		if pEff < pCfg {
-			recordParallelismClamped(ctx)
-		}
-	}
-	// admitRelease must run exactly once. If anything below fails before we
-	// hand ownership to the shardCursor, release here.
-	releaseAdmit := func() {
-		if admitRelease != nil {
-			admitRelease()
-			admitRelease = nil
-		}
-	}
-
-	// 3. ATOMIC GATE ACQUISITION — no hold-and-wait. K_eff = min(K, P_eff,
-	// gate/2). The gate/2 cap guarantees >=2 routed requests can always make
-	// progress. Acquire ALL K_eff slots in one call before opening any
-	// cursor; release them all at Close.
-	kEff := k
-	if pEff < kEff {
-		kEff = pEff
-	}
-	if x.Gate != nil && x.GateCap > 0 {
-		half := int(x.GateCap / 2)
-		if half < 1 {
-			half = 1
-		}
-		if half < kEff {
-			kEff = half
-		}
-	}
-	if kEff < 1 {
-		kEff = 1
-	}
-
-	var gateReleased atomic.Bool
-	releaseGate := func() {
-		if x.Gate != nil && gateReleased.CompareAndSwap(false, true) {
-			x.Gate.Release(int64(kEff))
-		}
-	}
-	if x.Gate != nil {
-		if err := x.Gate.Acquire(ctx, int64(kEff)); err != nil {
-			// Gate acquire honoured the request ctx (timeout / client
-			// cancel). No cursors opened; release the admit top-up and
-			// surface the ctx error. This is breaker-neutral: the Executor
-			// never opened a CH connection.
-			releaseAdmit()
-			return nil, nil, fmt.Errorf("solver: gate acquire: %w", err)
-		}
-	}
-
-	// effective concurrency cannot exceed the slots we hold.
-	if pEff > kEff {
-		pEff = kEff
+	// 2. TWO-STAGE WEIGHTED ADMISSION and 3. ATOMIC GATE ACQUISITION —
+	// extracted to admitAndGate (its own doc explains why the two steps
+	// share one helper rather than living inline here).
+	kEff, pEff, releaseGate, releaseAdmit, err := x.admitAndGate(ctx, k)
+	if err != nil {
+		return nil, nil, err
 	}
 	info.Parallelism = pEff
 
