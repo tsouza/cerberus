@@ -1163,15 +1163,25 @@ const (
 	// and partially-overlapping layouts, and by a Prometheus-parity-enrolled
 	// spec fixture on a heterogeneous seed.
 	//
-	// What keeps AutoSelect false is now a MEASUREMENT question, tracked by
+	// What kept AutoSelect false was a MEASUREMENT question, settled by
 	// https://github.com/tsouza/cerberus/issues/2923: this feature's own
-	// ~50x figure is an estimate taken against the superseded construction,
-	// and [maxClassicBucketMergeCostUnits]'s guard — calibrated against the
-	// fold's per-rung rescan — over-rejects a path whose cost is linear in
-	// total bucket volume. Auto-selecting before both are settled would move
-	// the default path onto an unmeasured cost model and a ceiling that does
-	// not describe it. Until then the feature is reachable by explicit
-	// CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing.
+	// ~50x figure was an estimate taken against the superseded
+	// construction. A real-ClickHouse re-measurement against the SHIPPED
+	// (post-#2817) construction — internal/promql/classic_bucket_merge_summap.go's
+	// header has the full table — found its real cost within ~1% of the
+	// fold's at every controlled point, converging to statistical parity
+	// as volume grows rather than the estimated 50x win: the per-row
+	// arraySort/arrayCumSum #2817 added to fix correctness erased the
+	// speedup this feature existed for. AutoSelect STAYS false — this
+	// repo's own established pattern for a feature whose real-world
+	// recalibration turns up no measurable win (#2768, #2750) — and
+	// [maxClassicBucketMergeCostUnits]'s existing guard needs no
+	// recalibration either: the re-measurement confirms (not merely
+	// assumes) it protects this path within the same ~1% margin, so no
+	// second, sumMap-specific ceiling is needed. The feature remains
+	// reachable, byte-identical-correct (per #2817), by explicit
+	// CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing for an
+	// operator who wants it without expecting a resource win.
 	//
 	// The NaN asymmetry #2756 documented as a second, accepted risk is gone
 	// with the same change: arrayCumSum now runs over ONE ROW's own buckets,
@@ -2153,7 +2163,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto a sumMap over per-row cumulative counts, retiring the groupArray + per-rung fold (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — auto pending a recalibrated cost model, #2923)",
+		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto a sumMap over per-row cumulative counts, retiring the groupArray + per-rung fold (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — real-CH remeasurement (#2923) found the post-#2817 construction's real cost within ~1% of the fold's, not a win, so auto stays off)",
 	},
 	{
 		ID:         FeatureExpHistogramMergeSumMap,
