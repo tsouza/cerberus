@@ -115,6 +115,18 @@ func (x *Executor) Execute(
 	}
 	k := len(d.Slices)
 
+	// Issue #3033: fold route-B's K shard actuals into ONE per-request
+	// RecordActual call. WithShardActualsFold reads whatever actualsIntent
+	// routeBExecCtx (internal/engine) already stamped on ctx before calling
+	// Execute (chclient.WithActualsCapture's own doc) and wires a fresh
+	// *chclient.ShardActualsFold onto ctx keyed to THIS dispatch's k — every
+	// shard's own derived ctx below inherits it by ordinary context nesting,
+	// so runShard's per-shard chclient.WithProgressFor call needs no changes
+	// at all. It is a no-op (ctx returned unchanged) when actuals capture is
+	// off or k < 2, so route A — and any k==1 caller of this function — is
+	// completely unaffected.
+	ctx = chclient.WithShardActualsFold(ctx, k)
+
 	// 6. HALF-OPEN PRE-FLIGHT — peek before emitting. A non-CLOSED breaker
 	// fails fast WITHOUT consuming the half-open probe (PeekBreakerState is
 	// read-only): a K-shard fan-out must never burn the single recovery
