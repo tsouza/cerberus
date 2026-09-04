@@ -2238,7 +2238,10 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "advisory bounded count()/uniqUpTo(100)/uniqCombined64 cardinality pre-probe complementing explain_estimate's marks-level estimate with real distinct-series fan-out, across five GridCarrier kinds (no version floor; opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)",
+		Doc: "advisory bounded count()/uniqUpTo(100)/uniqCombined64 cardinality pre-probe complementing " +
+			"explain_estimate's marks-level estimate with real distinct-series fan-out, across five " +
+			"GridCarrier kinds (no version floor; opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it " +
+			"pending real-world calibration)",
 	},
 	{
 		ID:         FeatureFullTextIndex,
