@@ -4276,7 +4276,7 @@ func appendNameGroupKey(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Column
 // `s.TimestampColumn` alias verbatim either way.
 func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name chplan.Expr) chplan.Node {
 	var tsExpr chplan.Expr
-	if rw.OuterRange > 0 {
+	if rw.OuterRange > 0 || rw.DownsampleTier {
 		// The matrix RangeWindow keeps anchor_ts offset-SHIFTED for the
 		// window/reduce math; PromQL reports a reducing window's result on the
 		// UNSHIFTED grid, so add Offset back (matching the emitter's
@@ -4285,6 +4285,30 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 		// offset needs no relabel. Without this, last_over_time / first_over_time
 		// (the only *_over_time fns that keep __name__ and so route through this
 		// preserve-name wrapper) re-shifted their output past this Project.
+		//
+		// rw.DownsampleTier is ORed in separately from rw.OuterRange > 0
+		// (cerberus issue #2804 investigation): emitRangeWindowDownsampleTier
+		// (internal/chsql/range_window_downsample_tier.go) ALWAYS projects a
+		// real per-row anchor_ts column whenever DownsampleTier is set —
+		// downsampleTierEligible requires Step > 0 and Start/End pinned but
+		// deliberately never reads OuterRange (see that function's own doc),
+		// so its numAnchors math is a pure Start/End/Step computation,
+		// independent of OuterRange. That decouples the invariant the plain
+		// fan-out family upholds — OuterRange > 0 exactly when the emitter
+		// takes chsql's own matrix (anchor_ts-bearing) path,
+		// emitWindowedArray's own `if r.OuterRange > 0` gate — so `OuterRange
+		// > 0` alone under-fires for a DEGENERATE but legitimate tier-routed
+		// shape: a query_range request with Start == End (a single-point
+		// grid) computes OuterRange = End.Sub(Start) = 0 while Step still
+		// carries a real value, and downsampleTierEligible's own numAnchors
+		// formula (`End.Sub(Start)/stepNS + 1`) still resolves to exactly one
+		// anchor and still emits anchor_ts. Without this clause the wrap fell
+		// to the synthesized-`now()` branch below for that shape, stamping
+		// the WRONG timestamp on an otherwise-correct row rather than
+		// reading the real anchor_ts the emitter actually produced —
+		// TestDownsampleTier_ChdbCorruptedBucketPostMergeFilter's
+		// last_over_time@anchor lookup silently missed its row over exactly
+		// this shape (start == end == anchor) before this clause was added.
 		tsExpr = &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
 		if rw.Offset != 0 && !rw.Identity {
 			tsExpr = chplan.OffsetReanchoredAnchorExpr(rw.Offset)
