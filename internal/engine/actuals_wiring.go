@@ -130,8 +130,32 @@ func (e *Engine) calibrateEstimate(shapeID string, est *solver.ScanEstimate) *so
 // Observe/ShouldDeclineBypass already require) — a single anomalous
 // actuals reading must never seed a prior any more than a single real
 // drain would.
+//
+// Issue #3034: also a no-op when e.PerRungAdmission already holds a FRESH
+// entry for this shape (hasFreshEntry — the SAME "already holds a verdict"
+// gate explain_estimate_wiring.go's hasExistingVerdict uses before spending
+// its own advisory round trip). This hook re-runs on effectively every
+// request of a shape whose route-A actuals EMA still looks cheap, so
+// without this guard it would call SeedPriorFromEstimate — and therefore
+// record's unconditional st.lastObserved = time.Now() — forever, on a
+// decline that a genuinely one-directional signal (this hook only ever
+// seeds cheap=true) can never itself reverse. That indefinitely renews
+// ShouldDeclineBypass's own perRungEvidenceTTL and makes a decline
+// permanent: the TTL can never lapse, the solver's next fresh
+// PerRungPredictive=true prediction never reaches an un-declined dispatch,
+// and wrapPerRungObserver — the only path that calls a REAL Observe — never
+// fires again for this shape. Skipping the reseed once fresh evidence
+// already exists (of EITHER polarity — a real decline is exactly as valid
+// a reason to skip as a real non-decline) lets the TTL expire naturally,
+// which is what actually lets a stale decline relax: see
+// PerRungAdmissionLearner.ShouldDeclineBypass's own doc for what an expired
+// entry means to the next admission check.
 func (e *Engine) maybeSeedPerRungAdmissionFromActuals(plan chplan.Node, shapeID string, baseline *solver.Decision) {
 	if e.PerRungAdmission == nil || e.Actuals == nil || shapeID == "" || baseline == nil || baseline.NAnchors <= 0 {
+		return
+	}
+	key := shapeKey(plan, baseline)
+	if e.PerRungAdmission.hasFreshEntry(key) {
 		return
 	}
 	report, ok := e.Actuals.Snapshot(shapeID)
@@ -142,7 +166,7 @@ func (e *Engine) maybeSeedPerRungAdmissionFromActuals(plan chplan.Node, shapeID 
 	if int64(report.ActualEMARows) >= int64(baseline.NAnchors)*perRungCheapRowsPerAnchor { //nolint:gosec // G115
 		return
 	}
-	e.PerRungAdmission.SeedPriorFromEstimate(shapeKey(plan, baseline), true)
+	e.PerRungAdmission.SeedPriorFromEstimate(key, true)
 }
 
 // recordEstimateDriftFromQueryLog forwards one query_log-sourced

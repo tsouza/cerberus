@@ -272,6 +272,80 @@ func TestWrapPerRungObserver_RecordsOnlyOnACleanDrain(t *testing.T) {
 	}
 }
 
+// --- issue #3034: declined shapes gain a reachable relax path --------------
+
+// TestPerRungAdmission_DeclinedShapeRelaxesOnceEvidenceGoesStale is the
+// end-to-end regression test for issue #3034: a shape that declines the
+// per-rung bypass must gain a REAL, evidence-driven path back to
+// eligibility — not merely a TTL entry that some other mechanism keeps
+// renewing forever. This declines a shape with two real, clean Observe()
+// calls (exactly what wrapPerRungObserver feeds from a real per-rung
+// dispatch), confirms refinePerRungAdmission downgrades it, ages the
+// evidence past perRungEvidenceTTL with NO further calls in between
+// (mirroring perRungEvidenceTTL passing with no seed traffic), and confirms
+// the SAME Decision — a fresh PerRungPredictive=true prediction, exactly
+// what the solver recomputes on every request independent of the learner's
+// own state — now reaches dispatch un-declined, which is what lets
+// wrapPerRungObserver wrap a real cursor and call a real Observe() again.
+func TestPerRungAdmission_DeclinedShapeRelaxesOnceEvidenceGoesStale(t *testing.T) {
+	t.Parallel()
+	l := NewPerRungAdmissionLearner()
+	plan := perRungTestPlan()
+	key := perRungTestKey()
+
+	l.Observe(key, 1, perRungTestNAnchors)
+	l.Observe(key, 1, perRungTestNAnchors)
+	if !l.ShouldDeclineBypass(key) {
+		t.Fatal("fixture setup: expected decline-worthy evidence")
+	}
+
+	e := &Engine{PerRungAdmission: l}
+	decision := perRungTestDecision()
+	if refined, routed := e.refinePerRungAdmission(plan, decision, true); routed || refined.PerRungPredictive {
+		t.Fatal("fixture setup: expected the declined shape to route A before aging the evidence")
+	}
+
+	// Age the evidence past perRungEvidenceTTL with NO seed/Observe calls in
+	// between — same-package direct field access, exactly like this file's
+	// own TestPerRungAdmissionLearner_StaleEvidenceIsIgnored.
+	l.mu.Lock()
+	l.states[key].lastObserved = time.Now().Add(-perRungEvidenceTTL - time.Minute)
+	l.mu.Unlock()
+
+	if l.ShouldDeclineBypass(key) {
+		t.Fatal("evidence past perRungEvidenceTTL must relax the decline")
+	}
+
+	// The solver computes PerRungPredictive fresh on every request
+	// (refinePerRungAdmission's own doc), so the next request for this
+	// shape presents the SAME un-declined Decision again — confirm it now
+	// passes through un-declined, reaching wrapPerRungObserver for a real
+	// Observe() on the next dispatch.
+	refined, routed := e.refinePerRungAdmission(plan, perRungTestDecision(), true)
+	if !routed || !refined.PerRungPredictive {
+		t.Fatal("a relaxed decline must let the solver's fresh PerRungPredictive prediction through un-declined")
+	}
+
+	// Confirm the relaxed decision genuinely reaches a real Observe() again:
+	// wrapPerRungObserver must wrap (not pass through) this cursor, and a
+	// clean drain through it must be able to move the streak off zero,
+	// closing the self-confirming loop issue #3034 describes.
+	clean := &perRungFakeCursor{inspected: 1}
+	wrapped := wrapPerRungObserver(clean, l, nil, plan, refined)
+	if wrapped == chclient.Cursor(clean) {
+		t.Fatal("wrapPerRungObserver must wrap a relaxed, un-declined PerRungPredictive decision, not pass it through")
+	}
+	if err := wrapped.Close(); err != nil {
+		t.Fatalf("Close returned an unexpected error: %v", err)
+	}
+	l.mu.Lock()
+	streak := l.states[key].consecutiveCheap
+	l.mu.Unlock()
+	if streak == 0 {
+		t.Fatal("a real clean drain through the relaxed decision did not reach Observe()")
+	}
+}
+
 func TestWrapPerRungObserver_DoubleCloseRecordsOnce(t *testing.T) {
 	t.Parallel()
 	l := NewPerRungAdmissionLearner()
