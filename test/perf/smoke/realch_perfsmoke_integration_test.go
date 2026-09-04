@@ -33,15 +33,26 @@
 // for FloorJoinSpill, whose mechanism chopt gates behind a 26.4 server. Each
 // constant's own comment carries the why.
 //
-// # Two boot-resolved axes, one of them wired
+// # Two boot-resolved axes, and two kinds of lane
 //
 // Both handlers carry the per-query engine.SettingsRules a real deployment
 // resolves at boot (chopttest.BuildSettingsRules, cerberus issue #2820) —
 // without it Engine.Settings stays at its zero value, which applies NOTHING,
 // and no sentinel here could measure a settings-rule mechanism at all. The
 // OTHER boot-resolved axis, the native ts_grid_* RangeLowerers table, stays at
-// prom.New's fan-out-only zero value; wiring it into this lane is issue
-// #2487's own scope.
+// prom.New's fan-out-only zero value on every floor's BASE ("auto") lane;
+// wiring it there is issue #2487's own scope.
+//
+// A sentinel whose mechanism is opt-in-only — AutoSelect: false and, unlike
+// join_spill, carrying NO chopt version floor at all — cannot be reached by
+// "auto" on any server, so cerberus issue #3050 adds a SECOND kind of lane,
+// distinct from smoke.ServerFloor's server-CAPABILITY tiering: one extra
+// prom.Handler / tempo.Handler pair per distinct explicit
+// CERBERUS_CH_OPTIMIZATIONS listing a floor's own sentinels declare
+// (Sentinel.Optimizations), with BOTH boot-resolved axes wired from that
+// listing's own resolved chopt.EnabledSet. See startSentinelLane's own doc
+// for the construction and sentinelLane.muxFor for how a sentinel picks
+// its lane.
 //
 // Gated behind the `integration` build tag (Docker required); wired into the
 // already-required strict-scan CI lane via `just perf-smoke-integration`.
@@ -174,12 +185,35 @@ const joinSpillSeriesCount = 4_000
 var sentinelWindowEnd = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
 // sentinelLane is one floor's fully-wired substrate: the connection its
-// query_log is read through, the mux its sentinels are issued against, and
-// the query_log reader their memory is measured with.
+// query_log is read through, the mux(es) its sentinels are issued against,
+// and the query_log reader their memory is measured with.
+//
+// muxes is keyed by Sentinel.Optimizations: "" is the base "auto"-resolved
+// lane every pre-existing sentinel runs against, and any other key is an
+// opt-in-only lane startSentinelLane builds specifically for a sentinel
+// whose mechanism needs an explicit CERBERUS_CH_OPTIMIZATIONS listing
+// "auto" itself never turns on (cerberus issue #3050) — see
+// muxFor's own doc.
 type sentinelLane struct {
 	conn      driver.Conn
-	mux       *http.ServeMux
+	muxes     map[string]*http.ServeMux
 	logSource *optcorpus.CHQueryLogSource
+}
+
+// muxFor returns the ServeMux sentinel must be driven against: its own
+// opt-in lane if Sentinel.Optimizations names one, otherwise the floor's
+// base "auto" lane. Fatals loudly rather than silently falling back — a
+// missing lane means startSentinelLane and this corpus have drifted, and a
+// silent fallback to the base lane would make an opt-in-only sentinel pass
+// vacuously against the fan-out path it exists to move past.
+func (l sentinelLane) muxFor(t *testing.T, sentinel Sentinel) *http.ServeMux {
+	t.Helper()
+	mux, ok := l.muxes[sentinel.Optimizations]
+	if !ok {
+		t.Fatalf("%s: no lane wired for optimizations %q — startSentinelLane must build one for every "+
+			"distinct Sentinel.Optimizations value a floor's sentinels declare", sentinel.Name, sentinel.Optimizations)
+	}
+	return mux
 }
 
 func TestPerfSmokeRealCH(t *testing.T) {
@@ -220,10 +254,12 @@ func runSentinelFloor(
 	start, end time.Time, baseline perfSmokeBaseline, update bool, updated map[string]sentinelBound,
 ) {
 	t.Helper()
-	conn, mux, logSource := lane.conn, lane.mux, lane.logSource
+	conn, logSource := lane.conn, lane.logSource
 
 	for _, sentinel := range sentinels {
 		t.Run(sentinel.Name, func(t *testing.T) {
+			mux := lane.muxFor(t, sentinel)
+
 			// One untimed, unmeasured warm-up: startSentinelLane's
 			// OPTIMIZE ... FINAL pass leaves this sentinel's table's
 			// marks/data cold, and the FIRST query
@@ -368,22 +404,38 @@ func optimizeTableFinal(ctx context.Context, t *testing.T, client *chclient.Clie
 // handlers with the SAME two boot-resolved axes cmd/cerberus wires from a
 // chopt.EnabledSet.
 //
-// Only ONE of those two axes is wired here — the SettingsRules one
-// (chopttest.BuildSettingsRules). The RangeLowerers axis stays at prom.New's
-// zero value, which promql.RangeLowerers.withDefaults normalises to the
-// concrete fan-out impls, exactly as this lane has always run: wiring the
-// native ts_grid_* families into the OTHER real-CH lanes is issue #2487's own
-// scope, and flipping them here would silently re-calibrate every existing
-// sentinel's committed baseline as a side effect of a settings-rules change.
+// The base ("auto") lane wires only ONE of those two axes — the SettingsRules
+// one (chopttest.BuildSettingsRules). Its RangeLowerers axis stays at
+// prom.New's zero value, which promql.RangeLowerers.withDefaults normalises
+// to the concrete fan-out impls, exactly as this lane has always run: wiring
+// the native ts_grid_* families into the OTHER real-CH lanes is issue #2487's
+// own scope, and flipping them here would silently re-calibrate every
+// existing sentinel's committed baseline as a side effect of a
+// settings-rules change.
 //
 // Wiring SettingsRules is what closes issue #2820: prom.New / tempo.New leave
 // Engine.Settings at its zero value, which applies NOTHING, so before this
 // every SettingsRules mechanism — aggregation_in_order and condition_cache as
 // much as join_spill — was unreachable in this corpus regardless of the
 // server it ran against.
+//
+// Beyond the base lane, this function builds one ADDITIONAL lane per
+// distinct non-empty Sentinel.Optimizations value among floor's own
+// sentinels (cerberus issue #3050): a feature like
+// chopt.FeatureSortedSlabOverTime is AutoSelect: false and carries no chopt
+// version floor at all, so "auto" alone never activates it on ANY server —
+// the only way a sentinel reaches it is an explicit
+// CERBERUS_CH_OPTIMIZATIONS listing, resolved into its OWN chopt.EnabledSet,
+// its OWN chopttest.BuildSettingsRules, and — unlike the base lane — its OWN
+// chopttest.BuildRangeLowerers. Wiring RangeLowerers here does not touch the
+// base lane's own fan-out-only posture or re-calibrate any existing
+// sentinel's baseline: the opt-in lane is a SEPARATE prom.Handler /
+// tempo.Handler pair mounted on its own ServeMux, sharing only the
+// underlying ClickHouse connection.
 func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, start, end time.Time) sentinelLane {
 	t.Helper()
 
+	sentinels := SentinelsForFloor(floor)
 	image := perfSmokeCHImage
 	signals := []ddl.Signal{ddl.Metrics, ddl.Traces}
 	if floor == FloorJoinSpill {
@@ -422,7 +474,13 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		}
 		t.Logf("seeded wide-attribute traces: %d rows, %d traces", traceRows, wideTraceCount)
 
-		tables = []string{"otel_metrics_exponential_histogram", "otel_metrics_sum", "otel_traces"}
+		gaugeRows, err := SeedSortedSlabOverTimeGauge(ctx, conn, SortedSlabOverTimeGaugeMetric, SortedSlabOverTimeSeriesCount, start, end)
+		if err != nil {
+			t.Fatalf("seed sorted-slab gauge: %v", err)
+		}
+		t.Logf("seeded sorted-slab gauge: %d rows, %d series", gaugeRows, SortedSlabOverTimeSeriesCount)
+
+		tables = []string{"otel_metrics_exponential_histogram", "otel_metrics_sum", "otel_traces", "otel_metrics_gauge"}
 	case FloorJoinSpill:
 		counterRows, err := SeedHighCardinalityCounter(ctx, conn, WideCounterMetric, joinSpillSeriesCount, start, end)
 		if err != nil {
@@ -468,11 +526,77 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 	tracesHandler.Engine.SetSettings(rules)
 	t.Logf("%s (%s): settings rules wired: %+v", floor, image, rules)
 
+	muxes := map[string]*http.ServeMux{"": mux}
+	for _, opt := range optInLaneKeys(sentinels) {
+		muxes[opt] = buildOptInLane(ctx, t, client, floor, image, opt, sentinels, metricsSchema, tracesSchema)
+	}
+
 	return sentinelLane{
 		conn:      conn,
-		mux:       mux,
+		muxes:     muxes,
 		logSource: optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour),
 	}
+}
+
+// optInLaneKeys collects the distinct non-empty Sentinel.Optimizations
+// values among sentinels, in first-seen order — the set of additional lanes
+// startSentinelLane must build beyond the base "auto" one.
+func optInLaneKeys(sentinels []Sentinel) []string {
+	seen := make(map[string]bool, len(sentinels))
+	var keys []string
+	for _, s := range sentinels {
+		if s.Optimizations == "" || seen[s.Optimizations] {
+			continue
+		}
+		seen[s.Optimizations] = true
+		keys = append(keys, s.Optimizations)
+	}
+	return keys
+}
+
+// buildOptInLane resolves opt against client's real connected server,
+// asserts every sentinel that declares a RequiredFeature under this exact
+// Optimizations string actually resolved it enabled (the same
+// "activation, not just a 200" guard
+// TestNativeRangeLowerers_RealCH_Integration applies via its own
+// enabled.Has(family.Feature) check), then mounts a SEPARATE prom.Handler /
+// tempo.Handler pair — its own SettingsRules AND its own
+// chopttest.BuildRangeLowerers, both resolved from opt — on a fresh
+// ServeMux. Sharing client rather than opening a second connection: opt-in
+// features like chopt.FeatureSortedSlabOverTime carry no version floor, so
+// they need no server capability the base lane's own connection lacks.
+func buildOptInLane(
+	ctx context.Context, t *testing.T, client *chclient.Client, floor ServerFloor, image, opt string,
+	sentinels []Sentinel, metricsSchema schema.Metrics, tracesSchema schema.Traces,
+) *http.ServeMux {
+	t.Helper()
+
+	set := chopttest.ResolveEnabledSet(ctx, t, client, opt)
+	for _, s := range sentinels {
+		if s.Optimizations != opt || s.RequiredFeature == "" {
+			continue
+		}
+		if !set.Has(s.RequiredFeature) {
+			t.Fatalf("%s: chopt feature %q did NOT resolve enabled against optimizations %q on %s (%s) — "+
+				"this sentinel's own activation would be vacuous against a server or listing that cannot "+
+				"reach the mechanism at all", s.Name, s.RequiredFeature, opt, floor, image)
+		}
+	}
+
+	rules := chopttest.BuildSettingsRules(set, metricsSchema, tracesSchema, schema.DefaultOTelLogs())
+	lowerers := chopttest.BuildRangeLowerers(set)
+
+	metricsHandler := prom.New(client, metricsSchema, nil)
+	metricsHandler.Lowerers = lowerers
+	tracesHandler := tempo.New(client, tracesSchema, "v-perf-smoke", nil)
+	mux := http.NewServeMux()
+	metricsHandler.Mount(mux)
+	tracesHandler.Mount(mux)
+	metricsHandler.Engine.SetSettings(rules)
+	tracesHandler.Engine.SetSettings(rules)
+	t.Logf("%s (%s): opt-in lane %q wired: enabled=%v settings=%+v", floor, image, opt, set.IDs(), rules)
+
+	return mux
 }
 
 func startPerfSmokeCH(ctx context.Context, t *testing.T, image string) *chclient.Client {

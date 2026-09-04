@@ -88,6 +88,22 @@ func TestSeedHighCardinalityCounter_RejectsNonPositiveSampleWindow(t *testing.T)
 	}
 }
 
+func TestSeedSortedSlabOverTimeGauge_RejectsNonPositiveSeriesCount(t *testing.T) {
+	start := time.Unix(0, 0)
+	end := start.Add(time.Hour)
+	if _, err := SeedSortedSlabOverTimeGauge(context.Background(), nil, SortedSlabOverTimeGaugeMetric, 0, start, end); err == nil {
+		t.Fatal("expected an error for a non-positive seriesCount")
+	}
+}
+
+func TestSeedSortedSlabOverTimeGauge_RejectsNonPositiveSampleWindow(t *testing.T) {
+	start := time.Unix(0, 3600)
+	end := start.Add(-2 * time.Hour)
+	if _, err := SeedSortedSlabOverTimeGauge(context.Background(), nil, SortedSlabOverTimeGaugeMetric, 1, start, end); err == nil {
+		t.Fatal("expected an error for a non-positive sample window")
+	}
+}
+
 func TestSeedWideAttributeTraces_RejectsNonPositiveTraceCount(t *testing.T) {
 	start := time.Unix(0, 0)
 	end := start.Add(time.Hour)

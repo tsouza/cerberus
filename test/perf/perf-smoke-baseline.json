@@ -2,23 +2,28 @@
   "sentinels": [
     {
       "name": "native_histogram_quantile",
-      "max_of_n_bytes": 206521201,
-      "ceiling_bytes": 309781801
+      "max_of_n_bytes": 206521793,
+      "ceiling_bytes": 309782689
     },
     {
       "name": "spill_high_cardinality_groupby",
-      "max_of_n_bytes": 667298209,
+      "max_of_n_bytes": 661798373,
       "ceiling_bytes": 805306368
     },
     {
       "name": "compare_memory_bound",
-      "max_of_n_bytes": 682442721,
+      "max_of_n_bytes": 682295113,
       "ceiling_bytes": 805306368
     },
     {
       "name": "join_spill_vector_join",
-      "max_of_n_bytes": 449714870,
-      "ceiling_bytes": 674572305
+      "max_of_n_bytes": 449714078,
+      "ceiling_bytes": 674571117
+    },
+    {
+      "name": "sorted_slab_over_time_memory_bound",
+      "max_of_n_bytes": 89771133,
+      "ceiling_bytes": 134656699
     }
   ]
 }

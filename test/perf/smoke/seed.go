@@ -204,6 +204,86 @@ FROM numbers(%d)`,
 	return int64(totalSamples), nil
 }
 
+// --- Sorted-slab sentinel seed: sum_over_time() gauge at #3046's scale ----
+
+// sortedSlabGaugeScrapeInterval / sortedSlabGaugeRange size the seeded
+// sample density for the sorted-slab memory-bound sentinel
+// (sentinels.go's sorted_slab_over_time_memory_bound): a 60s cadence keeps
+// several genuine samples inside every anchor's 5m sum_over_time() window
+// (sortedSlabOverTimeRangeSelector), mirroring seedNativeLowererGauge's own
+// 30s-cadence choice for the identical reason — a degenerate 0-or-1-sample
+// window would not exercise the sorted-slab decomposition's real per-series
+// array-fold/arrayFilter work at all. sortedSlabGaugeRange matches the
+// sentinel's own [5m] selector so the seed extends far enough before the
+// query window's start for every anchor's window to have real preceding
+// samples.
+const (
+	sortedSlabGaugeScrapeInterval = 60 * time.Second
+	sortedSlabGaugeRange          = 5 * time.Minute
+)
+
+// sortedSlabGaugeValueModulus / sortedSlabGaugeValueBase shape the seeded
+// gauge waveform as a plausible bounded reading (e.g. a temperature-like
+// value in [20, 35)) rather than a flat series, mirroring
+// seedNativeLowererGauge's own oscillating-value rationale — sum_over_time()
+// /avg_over_time() over a flat series would still exercise the sorted-slab
+// shape mechanically, but a genuinely varying one makes the array-fold vs.
+// sorted-slab byte-identical-result claim (chopt.FeatureSortedSlabOverTime's
+// own doc) a real check rather than a degenerate one.
+const (
+	sortedSlabGaugeValueModulus = 15
+	sortedSlabGaugeValueBase    = 20
+)
+
+// SeedSortedSlabOverTimeGauge seeds the sorted-slab memory-bound sentinel's
+// fixture directly into the real otel_metrics_gauge table (created by
+// ddl.Apply against ddl.Metrics). It lays down seriesCount distinct
+// `instance` series of metric (sharing one constant `job` label, matching
+// the sentinel's own `sum by (job, instance)` grouping), each an
+// oscillating gauge sampled every sortedSlabGaugeScrapeInterval from
+// (start - sortedSlabGaugeRange) through end.
+//
+// seriesCount is NOT calibrated by a sweep against this fixture — it is the
+// EXACT cardinality cerberus#3046's own real-ClickHouse measurement
+// reproduced the sorted-slab shape's OOM at (sentinels.go's
+// SortedSlabOverTimeSeriesCount), re-seeded here rather than re-derived so
+// the sentinel's own claim to reproduce that exact incident is verifiable
+// by inspection.
+//
+// Returns the row count seeded.
+func SeedSortedSlabOverTimeGauge(ctx context.Context, conn driver.Conn, metric string, seriesCount int, start, end time.Time) (rows int64, err error) {
+	if seriesCount <= 0 {
+		return 0, fmt.Errorf("seed sorted-slab gauge: seriesCount must be positive, got %d", seriesCount)
+	}
+	seedStart := start.Add(-sortedSlabGaugeRange)
+	samplesPerSeries := int(end.Sub(seedStart)/sortedSlabGaugeScrapeInterval) + 1
+	if samplesPerSeries <= 0 {
+		return 0, fmt.Errorf("seed sorted-slab gauge: non-positive samplesPerSeries (start=%v end=%v)", start, end)
+	}
+	totalSamples := samplesPerSeries * seriesCount
+
+	insert := fmt.Sprintf(
+		`
+INSERT INTO otel_metrics_gauge
+    (MetricName, Attributes, ServiceName, TimeUnix, Value)
+SELECT
+    '%s' AS MetricName,
+    map('job', 'cerberus-smoke-sorted-slab', 'instance', concat('instance-', toString(number %% %d))) AS Attributes,
+    'cerberus-smoke' AS ServiceName,
+    toDateTime64(%d, 9) + toIntervalSecond(intDiv(number, %d) * %d) AS TimeUnix,
+    toFloat64(%d + (number %% %d)) AS Value
+FROM numbers(%d)`,
+		metric, seriesCount,
+		seedStart.Unix(), seriesCount, int(sortedSlabGaugeScrapeInterval/time.Second),
+		sortedSlabGaugeValueBase, sortedSlabGaugeValueModulus,
+		totalSamples,
+	)
+	if err := conn.Exec(ctx, insert); err != nil {
+		return 0, fmt.Errorf("seed sorted-slab gauge: %w\n%s", err, insert)
+	}
+	return int64(totalSamples), nil
+}
+
 // --- Sentinel 3 seed: wide-attribute traces -------------------------------
 
 // wideTraceAttrKeysPerMap is the number of distinct attribute keys seeded

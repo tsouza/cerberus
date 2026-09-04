@@ -88,19 +88,31 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 	// cmd/cerberus/main.go's nativeRangeLowerers exactly.
 	tsGridInstant := set.Has(chopt.FeatureTSGridInstant)
 
+	// fixed_accumulator_extrapolated layers BENEATH rate/increase/delta's own
+	// native ts_grid strategy, exactly like laginframe_adjacency layers
+	// inside irate/idelta below — mirrors cmd/cerberus/main.go's
+	// nativeRangeLowerers exactly (cerberus issue #2760).
+	var rateFallback promql.RateLowerer = promql.FanoutRateLowerer{}
+	var increaseFallback promql.IncreaseLowerer = promql.FanoutIncreaseLowerer{}
+	var deltaFallback promql.DeltaLowerer = promql.FanoutDeltaLowerer{}
+	if set.Has(chopt.FeatureFixedAccumulatorExtrapolated) {
+		rateFallback = promql.FixedAccumulatorRateLowerer{Fallback: rateFallback}
+		increaseFallback = promql.FixedAccumulatorIncreaseLowerer{Fallback: increaseFallback}
+		deltaFallback = promql.FixedAccumulatorDeltaLowerer{Fallback: deltaFallback}
+	}
 	if set.Has(chopt.FeatureTSGridRange) {
 		l.Rate = promql.NativeRateLowerer{
-			Fallback:   promql.FanoutRateLowerer{},
+			Fallback:   rateFallback,
 			Recollapse: set.Has(chopt.FeatureTSGridRecollapse),
 			Instant:    tsGridInstant,
 		}
 	} else {
-		l.Rate = promql.FanoutRateLowerer{}
+		l.Rate = rateFallback
 	}
 	if set.Has(chopt.FeatureTSGridIncrease) {
-		l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
+		l.Increase = promql.NativeIncreaseLowerer{Fallback: increaseFallback}
 	} else {
-		l.Increase = promql.FanoutIncreaseLowerer{}
+		l.Increase = increaseFallback
 	}
 	if set.Has(chopt.FeatureTSGridResample) {
 		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
@@ -128,9 +140,9 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
 	}
 	if set.Has(chopt.FeatureTSGridDelta) {
-		l.Delta = promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+		l.Delta = promql.NativeDeltaLowerer{Fallback: deltaFallback}
 	} else {
-		l.Delta = promql.FanoutDeltaLowerer{}
+		l.Delta = deltaFallback
 	}
 
 	// irate/idelta: laginframe_adjacency layers BENEATH their own native
@@ -185,6 +197,16 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.LastOverTime = promql.NativeLastOverTimeLowerer{Fallback: promql.FanoutLastOverTimeLowerer{}}
 	} else {
 		l.LastOverTime = promql.FanoutLastOverTimeLowerer{}
+	}
+
+	// sorted_slab_over_time (issue #2761, widened by issue #2804) has no
+	// native timeSeries*ToGrid competitor of its own — it is wired directly
+	// with its plain fan-out as its own embedded Fallback, mirroring
+	// cmd/cerberus/main.go's nativeRangeLowerers exactly.
+	if set.Has(chopt.FeatureSortedSlabOverTime) {
+		l.OverTime = promql.SortedSlabOverTimeLowerer{Fallback: promql.FanoutOverTimeLowerer{}}
+	} else {
+		l.OverTime = promql.FanoutOverTimeLowerer{}
 	}
 
 	return l

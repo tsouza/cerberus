@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/chopt"
 )
 
 // TestSentinels_Roster asserts every sentinel in the single source of truth
@@ -11,7 +13,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 4
+	const wantCount = 5
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
@@ -92,6 +94,64 @@ func TestSentinels_JoinSpillStampIsAsserted(t *testing.T) {
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("join_spill sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestSentinels_SortedSlabOverTimeStampIsAsserted pins the one thing that
+// makes the sorted-slab sentinel falsifiable — it must require the
+// max_block_size=1 stamp applySortedSlabOverTimeMemoryBound (cerberus#3046)
+// stamps — plus the opt-in wiring that makes the sentinel actually REACH
+// that plan shape at all: chopt.FeatureSortedSlabOverTime is AutoSelect:
+// false, so without an explicit Optimizations listing and a RequiredFeature
+// activation guard, this sentinel would run against the harness's ordinary
+// "auto" lane and never build a chplan.RangeWindow.SortedSlabOverTime node
+// in the first place — a vacuous pass indistinguishable from the mechanism
+// never existing.
+func TestSentinels_SortedSlabOverTimeStampIsAsserted(t *testing.T) {
+	base := SentinelsForFloor(FloorBase)
+	var s *Sentinel
+	for i := range base {
+		if base[i].Name == "sorted_slab_over_time_memory_bound" {
+			s = &base[i]
+			break
+		}
+	}
+	if s == nil {
+		t.Fatalf("SentinelsForFloor(FloorBase) has no sorted_slab_over_time_memory_bound sentinel")
+	}
+
+	if s.Optimizations != OptInSortedSlabOverTime {
+		t.Errorf("sorted-slab sentinel Optimizations = %q, want %q — without the explicit opt-in "+
+			"listing the sentinel resolves against the harness's default \"auto\" lane, where "+
+			"AutoSelect:false keeps chopt.FeatureSortedSlabOverTime permanently off", s.Optimizations, OptInSortedSlabOverTime)
+	}
+	if s.RequiredFeature != chopt.FeatureSortedSlabOverTime {
+		t.Errorf("sorted-slab sentinel RequiredFeature = %q, want %q", s.RequiredFeature, chopt.FeatureSortedSlabOverTime)
+	}
+
+	query := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("query")
+	if !strings.Contains(query, "sum_over_time(") {
+		t.Errorf("sorted-slab sentinel query %q does not call sum_over_time(...)", query)
+	}
+	if !strings.Contains(query, SortedSlabOverTimeGaugeMetric) {
+		t.Errorf("sorted-slab sentinel query %q does not reference %s", query, SortedSlabOverTimeGaugeMetric)
+	}
+
+	if anchors := int(s.Window / s.Step); anchors != sortedSlabOverTimeAnchorCount {
+		t.Errorf("sorted-slab sentinel Window/Step = %v/%v -> %d anchors, want %d (cerberus#3046's own "+
+			"OOM reproduction scale)", s.Window, s.Step, anchors, sortedSlabOverTimeAnchorCount)
+	}
+
+	const cap1GiB int64 = 1 << 30
+	got := s.RequiredSettings(cap1GiB)
+	want := map[string]string{settingMaxBlockSize: wantSortedSlabOverTimeMaxBlockSize}
+	if len(got) != len(want) {
+		t.Fatalf("sorted-slab sentinel RequiredSettings = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("sorted-slab sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
 		}
 	}
 }
