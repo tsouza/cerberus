@@ -1926,18 +1926,79 @@ const (
 	// win the issue's "single biggest CPU/memory lever" framing predicted —
 	// this PR's own site was chosen for being the most self-contained
 	// worked example the issue names (see this feature's SITE CHOICE note),
-	// not for being the highest-cardinality one; a wider, hotter GROUP BY
-	// elsewhere in the pipeline remains the open question for realizing the
-	// win the issue actually promises, tracked at
-	// https://github.com/tsouza/cerberus/issues/2880 — cerberus issue #2750
-	// itself stays open, not closed, for exactly this reason. Until a site is
-	// found where the measured numbers turn around,
-	// AutoSelect must stay false regardless of how many fielded runs pass —
-	// the mechanism (grouping-key correctness, round-trip fidelity, version
-	// floor) is proven; the performance case for THIS site is not, and the
-	// measurement above is why, not merely absence of evidence. Reachable
-	// only via an explicit CERBERUS_CH_OPTIMIZATIONS=ts_tag_groups listing
-	// (or "auto,ts_tag_groups").
+	// not for being the highest-cardinality one.
+	//
+	// PAYING-SITE SEARCH CLOSED, PERMANENT NEGATIVE (cerberus issue #2880):
+	// the parent issue's own "single biggest CPU/memory lever for
+	// high-cardinality PromQL" framing predicted that a WIDE, HOT,
+	// MULTI-STAGE GROUP BY/JOIN site — one where the group id is computed
+	// ONCE and consumed by a downstream operator without re-reading the raw
+	// Map, unlike guardNameDropCollision's single self-contained Aggregate —
+	// was where the win should materialize. #2880 re-ran the identical real
+	// ClickHouse 26.2 A/B methodology (2M rows per side, FORMAT Null, same
+	// low/high cardinality points) against the strongest such candidate this
+	// codebase has: internal/chsql/vector_join.go's CardOneToOne
+	// default-matching vector-vector JOIN shape (the emitted SQL
+	// test/spec/promql/mapkey_order_binop_default_instant.txtar pins) —
+	// BOTH sides already aggregate to one row per matching key
+	// (`GROUP BY mapSort(Attributes)`) and the JOIN's own ON clause compares
+	// that key again (`ON mapSort(L.Attributes) = mapSort(R.Attributes)`),
+	// exactly the "computed once [per side], consumed by a downstream JOIN
+	// operator" shape the issue names. The hypothetical ts_tag_groups
+	// conversion — both sides `GROUP BY timeSeriesTagsToGroup(Attributes)`,
+	// `ON L.gid = R.gid` (a UInt64 equality instead of a Map compare),
+	// rehydrating only the surviving side via timeSeriesGroupToTags in the
+	// outer Project, mirroring guardNameDropCollisionByTagGroup's own
+	// two-level Aggregate+Project shape — was measured LOSING BY A WIDER
+	// MARGIN than the already-negative guardNameDropCollision site, not a
+	// narrower one: at low cardinality (100 distinct label sets) the
+	// UInt64-group-id join ran 470-515ms / 109-116MB peak versus the Map
+	// join's 216-227ms / 28.5-37.5MB — ~2.2x slower and ~3-4x MORE memory
+	// (worse than guardNameDropCollision's own ~1.8x memory ratio at this
+	// cardinality); at high cardinality (200,000 distinct label sets) the
+	// UInt64 path ran 748-834ms / 247-256MB versus the Map path's
+	// 391-425ms / 193-198MB — ~1.9x slower and ~25-30% MORE memory, losing
+	// even the partial memory win (~10-20% LOWER) guardNameDropCollision's
+	// own high-cardinality measurement found. Result equivalence between the
+	// two shapes was verified directly (identical row count, Value checksum,
+	// and rehydrated-label checksum at high cardinality) — the finding is
+	// purely a performance regression, not a correctness gap.
+	//
+	// WHY IT LOSES BY MORE, NOT LESS: the per-query
+	// ContextTimeSeriesTagsCollector's bookkeeping cost is paid during the
+	// ROW-LEVEL reducing scan — once per input row, on EACH side of the
+	// join independently, before either side's GROUP BY has reduced
+	// anything — while the mechanism's only possible saving (a cheaper
+	// UInt64 equality instead of a Map compare) applies solely to the
+	// JOIN's already-reduced, per-side-cardinality comparison. The cost
+	// scales with input ROWS (2M on each side); the benefit scales with
+	// GROUP cardinality (a small fraction of that). Using the mechanism on
+	// two aggregating sides of a join pays that fixed per-row registration
+	// cost TWICE rather than amortizing it over more downstream reuse, which
+	// is exactly why memory got WORSE relative to guardNameDropCollision's
+	// single-Aggregate site rather than better. This also answers the
+	// "multiple downstream stages" framing directly: adding a further join
+	// arm keyed on the same mechanism would add a further independent
+	// per-row registration cost, not remove one, so a three-way (or wider)
+	// fan-out cannot flip this result — the row-level registration cost is
+	// paid once per SIDE, not once per QUERY, so no amount of downstream
+	// reuse of an already-computed id amortizes it.
+	//
+	// This closes the search #2750 and #2880 opened: no grouping site in
+	// this codebase — neither the single self-contained Aggregate #2750
+	// converted nor the wider multi-stage JOIN #2880's own framing predicted
+	// would win — beats the Map GROUP BY it would replace. AutoSelect stays
+	// false PERMANENTLY, not pending further investigation: the mechanism
+	// (grouping-key correctness, round-trip fidelity, version floor) is
+	// proven; the performance case is proven negative at both the
+	// single-stage and multi-stage shapes this family of issues named as
+	// candidates. guardLabelRewriteCollision (cerberus issue #2880 item 2)
+	// is deliberately NOT converted for exactly this reason — converting it
+	// would extend a mechanism now measured negative at every site tried,
+	// not merely unvalidated at one. Reachable only via an explicit
+	// CERBERUS_CH_OPTIMIZATIONS=ts_tag_groups listing (or
+	// "auto,ts_tag_groups") for whatever narrow, already-fielded shape an
+	// operator has independently measured to win on their own data.
 	FeatureTSGridTagGroups = "ts_tag_groups"
 
 	// FeatureTSThrowDuplicateSeriesIf opts the duplicate-labelset guard's
