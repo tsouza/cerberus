@@ -290,6 +290,77 @@ func TestApplyCompareMemoryBound_NonCompareStampsNeither(t *testing.T) {
 	}
 }
 
+// TestApplySortedSlabOverTimeMemoryBound_SortedSlabStampsMaxBlockSize — a
+// plan carrying a chplan.RangeWindow with SortedSlabOverTime set gets
+// max_block_size=1 stamped (cerberus issue #3046: real ClickHouse profiling
+// found the sorted-slab shape's per-anchor intermediates are retained
+// across an entire vectorized block of series rows, not freed row-by-row,
+// unless the block width is forced to 1).
+func TestApplySortedSlabOverTimeMemoryBound_SortedSlabStampsMaxBlockSize(t *testing.T) {
+	// wantSortedSlabMaxBlockSize is the LITERAL single-row block width the
+	// #3046 measurement validated (see sortedSlabOverTimeMaxBlockSize's own
+	// doc), not a reference to the const under test: computing the
+	// expectation from sortedSlabOverTimeMaxBlockSize itself would pass
+	// under any value that const happened to hold, including one the
+	// measurement never validated.
+	const wantSortedSlabMaxBlockSize = 1
+
+	plan := &chplan.RangeWindow{
+		Input:              &chplan.Scan{Table: "otel_metrics_sum"},
+		SortedSlabOverTime: true,
+	}
+
+	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), plan)
+
+	if got, want := settingValue(ctx, settingMaxBlockSize), wantSortedSlabMaxBlockSize; got != want {
+		t.Errorf("max_block_size = %v; want %v", got, want)
+	}
+}
+
+// TestApplySortedSlabOverTimeMemoryBound_NonSortedSlabStampsNothing — a
+// RangeWindow that does NOT carry SortedSlabOverTime (the default
+// array-fold fan-out shape) never gets max_block_size narrowed: that shape
+// does not carry #3046's per-anchor memory retention, and narrowing its
+// block width would only cost throughput for no benefit.
+func TestApplySortedSlabOverTimeMemoryBound_NonSortedSlabStampsNothing(t *testing.T) {
+	plan := &chplan.RangeWindow{Input: &chplan.Scan{Table: "otel_metrics_sum"}}
+
+	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), plan)
+
+	if got := settingValue(ctx, settingMaxBlockSize); got != nil {
+		t.Errorf("non-sorted-slab plan: max_block_size = %v; want absent", got)
+	}
+}
+
+// TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize — a
+// sorted-slab RangeWindow nested inside a scalar-binding subtree (an Expr
+// slot chplan.Walk does not follow) is still found, mirroring
+// TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled — the sweep is
+// chplan.WalkDeep.
+func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.T) {
+	// Literal, not sortedSlabOverTimeMaxBlockSize — see the sibling
+	// wantSortedSlabMaxBlockSize's own doc for why.
+	const wantSortedSlabMaxBlockSize = 1
+
+	inner := &chplan.RangeWindow{
+		Input:              &chplan.Scan{Table: "otel_metrics_sum"},
+		SortedSlabOverTime: true,
+	}
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Projections: []chplan.Projection{{
+			Expr:  &chplan.ScalarSubquery{Input: inner},
+			Alias: "Value",
+		}},
+	}
+
+	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), plan)
+
+	if got, want := settingValue(ctx, settingMaxBlockSize), wantSortedSlabMaxBlockSize; got != want {
+		t.Errorf("max_block_size = %v; want %v", got, want)
+	}
+}
+
 // TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled — a plan whose
 // root is chplan.HistogramQuantileNative (histogram_quantile() over a native
 // histogram, e.g. cerberus issue #2355's

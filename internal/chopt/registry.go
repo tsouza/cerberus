@@ -696,7 +696,18 @@ const (
 	// array is an UNGUARDED fan-out axis — unlike rate/increase/delta
 	// (#2429) it carries no size guard at all — so peak memory scales with
 	// samples * anchors; the sorted-slab shape bounds it to samples per
-	// series, independent of anchor count.
+	// series, independent of anchor count, PROVIDED the mandatory
+	// max_block_size=1 companion setting rides every dispatch of this shape
+	// (internal/engine.applySortedSlabOverTimeMemoryBound) — real
+	// ClickHouse 26.6.4.55 profiling (cerberus issue #3046) found the SQL
+	// shape alone does not bound memory this way; ClickHouse's vectorized
+	// block execution retained the per-anchor intermediates across an
+	// entire block of series rows rather than one row at a time, an
+	// O(block-width x samples) footprint that OOMed a 6 GiB container at
+	// 500 series / 480 anchors. The engine rule stamps the fix
+	// unconditionally whenever this feature's shape is chosen; see
+	// range_window_sorted_slab.go's own doc for the full profiling
+	// evidence and the block-size-vs-memory sweep that pinned the cause.
 	//
 	// Scoped to sum_over_time / avg_over_time only, deliberately narrower
 	// than the issue's own full *_over_time proposal (which also names
@@ -722,22 +733,44 @@ const (
 	// fixed_accumulator_extrapolated's sibling finding: a real ClickHouse
 	// 26.6.4.55 A/B found this shape's own "peak memory is O(samples-in-
 	// range) per series, independent of anchor count" design claim (see
-	// this file's own doc above) does NOT hold in practice. At typical
-	// anchor density (60-240 anchors) it used 6-9x the incumbent array-
-	// fold's peak memory for no wall-clock win; at 500 series / 480
+	// this file's own doc above) did NOT hold AS SHIPPED AT THE TIME. At
+	// typical anchor density (60-240 anchors) it used 6-9x the incumbent
+	// array-fold's peak memory for no wall-clock win; at 500 series / 480
 	// anchors / 5m window — inside #2429's own resource-bound calibration
 	// scale (3,740 real series) — it OOMed a 6 GiB cap outright while the
 	// array-fold it exists to replace finished comfortably at 535 MiB.
 	// Only at extreme anchor density (1,440+ anchors, well past any
-	// query_range panel step this codebase's own perf corpus samples) does
+	// query_range panel step this codebase's own perf corpus samples) did
 	// it become faster, and even there at 2.6x the array-fold's own
 	// (already elevated) memory. A shape whose OWN motivating case can OOM
 	// where the incumbent does not must not reach the default path — a
 	// measured "no", not an unfinished "pending" (see #2768 and #2750 for
-	// this repo's other negative-result precedent). The apparent gap
-	// between the design's O(samples) claim and the measured behavior is
-	// tracked as a follow-up investigation at #3046. Reachable only via an
-	// explicit CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time listing.
+	// this repo's other negative-result precedent).
+	//
+	// cerberus#3046 — the follow-up investigation this same #2894 PR filed
+	// — found and fixed the root cause: ClickHouse's vectorized block
+	// execution was retaining the per-anchor arrayFilter/arrayMap
+	// intermediates across an entire block of series rows rather than
+	// freeing them row-by-row, an O(block-width x samples) footprint the
+	// design never accounted for.
+	// internal/engine.applySortedSlabOverTimeMemoryBound now stamps
+	// max_block_size=1 on every dispatch of this shape, and re-measured at
+	// the SAME data points every case now beats the array-fold on memory —
+	// including the 500-series/480-anchor case that previously OOMed.
+	//
+	// AutoSelect stays false regardless: #3046 closed the SPECIFIC memory
+	// defect this A/B tripped over, but the negative measurement above was
+	// taken under the UNFIXED shape, so it is now stale evidence rather
+	// than a verdict on the fixed one — promoting to auto-selected needs
+	// its own FRESH optcorpus A/B against the fixed shape, not a flip as a
+	// side effect of the #3046 fix. That fresh A/B should also include
+	// mixed-shape queries (a sorted-slab branch combined with an
+	// unrelated, otherwise-cheap sibling via a binary op), since
+	// applySortedSlabOverTimeMemoryBound's own doc records that its
+	// max_block_size=1 stamp applies to the WHOLE dispatched query, not
+	// just the sorted-slab subtree — currently low-blast-radius only
+	// because this feature is opt-in-only. Reachable only via an explicit
+	// CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time listing.
 	FeatureSortedSlabOverTime = "sorted_slab_over_time"
 
 	// FeatureTSGridGroupArray swaps the fan-out window-assembly idiom's
@@ -2155,8 +2188,10 @@ var registry = []Feature{
 		Stability:  Experimental,
 		AutoSelect: false,
 		Doc: "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup " +
-			"(no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B found its claimed O(samples)-per-series memory bound does not hold in practice: " +
-			"6-9x the incumbent's memory at typical anchor density, and it OOMed a 6GiB cap at 500 series/480 anchors where the array-fold held at 535MiB, so auto never picks it; see #2894, follow-up #3046)",
+			"(no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B found its claimed O(samples)-per-series memory bound did not hold as shipped: " +
+			"6-9x the incumbent's memory at typical anchor density, OOMing a 6GiB cap at 500 series/480 anchors where the array-fold held at 535MiB (#2894); follow-up #3046 fixed the root " +
+			"cause with a mandatory max_block_size=1 companion setting, and every re-measured case now beats the array-fold on memory — but AutoSelect stays false pending a FRESH " +
+			"optcorpus A/B against the fixed shape)",
 	},
 	{
 		ID:                         FeatureTSGridGroupArray,

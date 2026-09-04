@@ -24,7 +24,26 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // the matrix's own step-anchor grid over the RAW per-series samples rather
 // than to an inner subquery's anchor grid over an already-reduced value
 // array. Peak memory is O(samples-in-range) per series, independent of
-// anchor count.
+// anchor count — but ONLY when the per-query max_block_size cap below is
+// also in effect. Real ClickHouse 26.6.4.55 profiling (cerberus issue
+// #3046) found the naive SQL shape alone does NOT bound memory this way:
+// ClickHouse's vectorized block execution evaluates the anchor-arrayMap
+// lambda across every series row batched into ONE block simultaneously, so
+// the per-anchor arrayFilter intermediates this comment describes as
+// "sliced anchor by anchor, freed as it goes" were in practice retained for
+// the WHOLE block's worth of series before being freed — an
+// O(block-width x samples-in-range) footprint, not O(samples-in-range). A
+// max_block_size=1 sweep against #3046's own 500-series/480-anchor
+// reproduction proved the block width (not the anchor or sample count in
+// isolation) drives this: peak memory scaled ~linearly with block width
+// (98 MiB at block=1 up to a 6 GiB-container OOM at the default ~65505-row
+// block), and forcing block=1 restores the intended per-row bound because
+// each series row then finishes (and frees its own anchor-grid
+// intermediates) before the next one starts. See
+// internal/engine.applySortedSlabOverTimeMemoryBound, the mandatory
+// per-query companion setting that makes this file's own O(samples-in-range)
+// claim actually hold — this emitter's SQL shape is necessary but not
+// sufficient for it on its own.
 //
 // Order/precision: the per-anchor window slice feeds overTimeArrayValueFrag
 // UNCHANGED — the exact function the array-fold's own outer SELECT calls —
