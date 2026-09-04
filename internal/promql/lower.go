@@ -4549,11 +4549,22 @@ var nativeGridVectorAggUnionFns = map[chplan.Fn]struct{}{
 // [derivedRateArm] builds for a temporality-bearing rate()/increase() range
 // window (cerberus issue #2843's union split: NativeRateLowerer.LowerRate /
 // NativeIncreaseLowerer.LowerIncrease). Returns the native CUMULATIVE arm and
-// the raw DELTA-temporality fan-out arm when input matches that exact shape,
-// or ok=false otherwise — a plain structural check (arm kinds, arm count),
-// since derivedRateArm(UnionAll{...}) is the ONLY construction site pairing a
-// *RangeWindowGridNative with a *RangeWindow inside a UnionAll anywhere in
-// this package.
+// the raw DELTA-temporality fan-out arm when input matches that shape AND
+// the native arm's own Func is "rate" or "increase"; ok=false otherwise.
+//
+// derivedRateArm(UnionAll{...}) is no longer the ONLY construction site
+// pairing a *RangeWindowGridNative with a *RangeWindow inside a UnionAll:
+// irate()'s own temporality union (derivedIrateArm, internal/promql/
+// lower_strategy.go, cerberus issue #2803) builds a POSITIONALLY IDENTICAL
+// shape. The Func check below is what keeps the two apart — deliberately,
+// not by oversight: irate's trailing-pair counter-reset correction makes
+// its per-cell value semantically different from rate/increase's plain
+// division, and nativeGridVectorAggUnionFns' sum/min/max/avg/count
+// composition proofs were verified only against rate/increase's shape (no
+// fixture has ever combined ts_grid_vector_agg with irate, bare or
+// unioned). Widening this match to admit "irate" too is a real, separate
+// engineering decision for a future issue to make and verify, not a side
+// effect of the two arms happening to share a node layout.
 //
 // delta() is deliberately never recognized here: it never threads
 // TemporalityColumn (counterTemporalityRangeFn excludes it — delta() applies
@@ -4573,6 +4584,9 @@ func rateIncreaseTemporalityUnionArms(input chplan.Node) (native *chplan.RangeWi
 	native, isNative := union.Inputs[0].(*chplan.RangeWindowGridNative)
 	delta, isDelta := union.Inputs[1].(*chplan.RangeWindow)
 	if !isNative || !isDelta {
+		return nil, nil, false
+	}
+	if native.Func != "rate" && native.Func != "increase" {
 		return nil, nil, false
 	}
 	return native, delta, true

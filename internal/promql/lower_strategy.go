@@ -1425,19 +1425,86 @@ type NativeIrateLowerer struct {
 // LowerIrate returns a RangeWindowGridNative for an eligible range-mode
 // irate shape, or delegates to the embedded Fallback otherwise. Same
 // intrinsic SHAPE check as delta (irate func, materialised grid, plain
-// Scan/Filter input). irate needs no dedicated DELTA/CUMULATIVE union split
-// of its own — nativeTSGridMatrixNode's existing TemporalityColumn guard
-// already sends any DELTA-temporality counter to the Fallback
-// unconditionally, exactly like every other native ts_grid member, so the
-// counter-reset correction the trailing-pair aggregate applies is only ever
-// reached for a CUMULATIVE (or temporality-less) counter. irate takes no
-// scalar and carries no -State/-Merge combinator pair, so
-// nativeTSGridMatrixNode is always called with noRecollapse.
+// Scan/Filter input). irate takes no scalar and carries no -State/-Merge
+// combinator pair, so nativeTSGridMatrixNode is always called with
+// noRecollapse.
+//
+// A temporality-bearing window splits into complementary CUMULATIVE-native
+// and DELTA-fan-out arms (cerberus issue #2803) — mirrors
+// [NativeRateLowerer.LowerRate] exactly, because the native aggregate's
+// counter-reset correction (the trailing-pair repair a differential sweep
+// against a real server proved, see this file's own irate/idelta section
+// doc above) has no DELTA semantics, while the fan-out emitter's
+// CounterOrDeltaPairDelta already threads the DELTA branch correctly. This
+// closes the gap #2746 deliberately left open: rangeVectorCounterTemporalityColumn
+// sets TemporalityColumn whenever a selector routes to exactly one Sum-typed
+// table — precisely the shape of any `_total`-suffixed counter, the
+// realistic case almost every production irate() query targets — so before
+// this split, nativeTSGridMatrixNode's unconditional TemporalityColumn guard
+// sent that realistic shape to the Fallback unconditionally and the native
+// tier stayed dormant for it.
+//
+// UNLIKE NativeRateLowerer's temporality union, the resulting
+// Project{UnionAll{RangeWindowGridNative, RangeWindow}} is wrapped by
+// [derivedIrateArm], a function DISTINCT from [derivedRateArm]: see its own
+// doc for why irate's union deliberately does NOT fold into ts_grid_vector_agg
+// the way rate()/increase()'s does (rateIncreaseTemporalityUnionArms,
+// internal/promql/lower.go, guards on the native arm's own Func specifically
+// to keep the two apart).
 func (n NativeIrateLowerer) LowerIrate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if rw.TemporalityColumn != "" {
+		cumulative := *rw
+		cumulative.Input = nativeTemporalityFilter(rw.Input, rw.TemporalityColumn)
+		// The native aggregate is safe only after DELTA rows are excluded.
+		cumulative.TemporalityColumn = ""
+		if native := nativeTSGridMatrixNode(&cumulative, "irate", s, noRecollapse); native != nil {
+			delta := *rw
+			delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
+			return derivedIrateArm(&chplan.UnionAll{Inputs: []chplan.Node{
+				native,
+				&delta,
+			}}, s)
+		}
+	}
 	if native := nativeTSGridMatrixNode(rw, "irate", s, noRecollapse); native != nil {
 		return native
 	}
 	return n.Fallback.LowerIrate(rw, s)
+}
+
+// derivedIrateArm restores the derived metric name the complementary
+// CUMULATIVE-native/DELTA-fan-out irate arms expose to downstream PromQL
+// nodes — the irate()-specific twin of [derivedRateArm], built as a
+// DISTINCT function rather than shared with it (cerberus issue #2803's own
+// scope note). The two build POSITIONALLY IDENTICAL
+// Project{UnionAll{RangeWindowGridNative, RangeWindow}} shapes, but
+// rateIncreaseTemporalityUnionArms (internal/promql/lower.go) tells them
+// apart by the native arm's own Func field ("rate"/"increase" vs "irate")
+// and folds ONLY the former into ts_grid_vector_agg
+// (RangeWindowGridNativeVectorAgg, cerberus issue #2852): irate's
+// counter-reset correction on the trailing pair makes its per-cell value
+// semantically different from rate/increase's plain division, and no
+// existing fixture had ever combined ts_grid_vector_agg with irate — bare
+// or unioned — to verify sum/min/max/avg/count still compose correctly over
+// it. Keeping a second, distinctly named construction site is what lets
+// that structural guard hold without inspecting Func at every call site.
+//
+// irate drops the source __name__ exactly like rate/increase — dropName is
+// true for every range function except last_over_time/first_over_time (see
+// promql/engine.go's own dropName rule, mirrored at this package's
+// dropNameGuardAnchor) — so the restored value is likewise the empty
+// literal.
+func derivedIrateArm(input chplan.Node, s schema.Metrics) *chplan.Project {
+	return &chplan.Project{
+		Input: input,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: chplan.RangeWindowAnchorColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // NativeIdeltaLowerer mirrors [NativeIrateLowerer] for idelta, emitting
