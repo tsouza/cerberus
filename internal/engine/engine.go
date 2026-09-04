@@ -2065,6 +2065,12 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	budget := chclient.SampleBudgetFromContext(ctx)
 	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(ctx, lang.Name(), meta.ResponseShape, plan, decision, budget); ok {
 		result := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "memo-hit")
+		// See routeMemoHitObserveDrainOutcome's own doc: issue #3035's
+		// sampling-bias fix, unlike Retry below (which only ever fires on a
+		// drain FAILURE) this hook is called UNCONDITIONALLY, so a memo-hit's
+		// clean drain is what feeds the magnitude EMA the most of any single
+		// route-B call site.
+		result.ObserveDrainOutcome = routeMemoHitObserveDrainOutcome(e.RouteMemo, key, cur)
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
 			// The verdict already existed before this dispatch (that is
 			// what made it a memo-hit); a clean drain needed no

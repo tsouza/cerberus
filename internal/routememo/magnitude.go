@@ -8,16 +8,25 @@ import "time"
 // Verdict.corroboration) answers "should route B be tried for this Key" —
 // a pure outcome bit — and says nothing about HOW MUCH data a successful
 // route-B dispatch for that Key actually moved. RecordActualMagnitude adds
-// that second, purely OBSERVATIONAL axis without touching the outcome
-// axis at all: it never creates, deletes, or changes a Key's LookupState,
-// eviction order, or TTL, and no existing method's behavior changes by one
-// bit. Deliberately a THIN hook (this file's own doc names it as such,
-// mirroring issue #2789's own "the others can be thinner initial hooks"
-// allowance for its three non-primary consumers): the magnitude is recorded
-// for observability today (Stats-style callers, an operator dashboard,
-// internal/engine's actuals wiring), and is architecture the memo already
-// supports for a future routing use — but this file itself makes no routing
-// decision based on it.
+// that second axis without touching the outcome axis at all: it never
+// creates, deletes, or changes a Key's LookupState, eviction order, or TTL,
+// and no existing state-transition method's behavior changes by one bit —
+// this file writes only the magnitudeEMA*/magnitudeObservations fields.
+//
+// Originally a purely OBSERVATIONAL hook (issue #2789's own "the others can
+// be thinner initial hooks" allowance for its non-primary consumers): the
+// magnitude was recorded for observability only, with the memo's own doc
+// noting it "makes no routing decision based on it". Issue #3035 (split
+// from #2853) closed that gap on both ends: RecordActualMagnitude gained
+// production callers beyond per_rung_admission.go's narrow, single-route
+// perRungObservingCursor — internal/engine/route_memo_wiring.go now feeds it
+// from every clean route-B drain (memo-hit, first probe, and stale-PreferB
+// re-validation alike), and MagnitudeFor gained a real routing consumer
+// there too: a stale-PreferB re-validation whose tracked magnitude is
+// well-corroborated (MinCorroboratingFailures readings) AND trivially small
+// declines the automatic rescue-probe admission, corroboration-gated the
+// same way every other verdict transition in this package is. See that
+// file's own doc for the gate's exact shape and reasoning.
 //
 // Only a LIVE (unexpired) entry is updated — RecordActualMagnitude never
 // CREATES an entry, unlike every state-transition method in memo.go. A
@@ -57,10 +66,10 @@ func (m *Memo) RecordActualMagnitude(k Key, outputRows uint64) {
 }
 
 // MagnitudeFor returns k's tracked actual-magnitude EMA, or ok=false when
-// k has no live entry or no magnitude has ever been recorded for it (the
-// overwhelmingly common case today: RecordActualMagnitude has exactly one
-// caller, per_rung_admission.go's perRungObservingCursor, so most Keys
-// carry no magnitude reading at all).
+// k has no live entry or no magnitude has ever been recorded for it — still
+// the common case for a Key that has never once completed a clean route-B
+// drain (every fresh Unknown key, every BothFail key, and any PreferB key
+// whose only route-B dispatches so far were mid-drain failures).
 func (m *Memo) MagnitudeFor(k Key) (rows float64, observations int, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

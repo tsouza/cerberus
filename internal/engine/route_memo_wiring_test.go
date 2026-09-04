@@ -900,6 +900,188 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 	}
 }
 
+// TestRetryOnRouteAResourceFailure_ObserveFnRecordsMagnitudeOnCleanProbe
+// pins the probe half of issue #3035's sampling-bias fix: a first-time
+// probe's CLEAN drain must feed the composed cursor's real Inspected()
+// count into the route memo's magnitude EMA for the SAME Key
+// observeFn(nil) just flipped to PreferB — not just the per-rung
+// predictive cursor's narrower dispatch path (per_rung_admission.go),
+// which is the ONLY thing that fed MagnitudeFor before this fix.
+func TestRetryOnRouteAResourceFailure_ObserveFnRecordsMagnitudeOnCleanProbe(t *testing.T) {
+	t.Parallel()
+	const rowsPerShard = 5
+	cq := &fakeSolverCursorClient{rows: rowsPerShard}
+	eng, memo := newMemoWiringEngine(t, cq)
+	plan := memoWiringEligiblePlan()
+	seed := memoWiringNotRoutedDecision(t)
+	ctx := context.Background()
+
+	// Two consecutive route-A resource failures earn the first probe (see
+	// TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration).
+	eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
+	cur, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
+	if !retried {
+		t.Fatal("did not retry on the 2nd consecutive route-A resource failure")
+	}
+	for cur.Next() {
+	}
+	if err := cur.Err(); err != nil {
+		t.Fatalf("fixture cursor drain error: %v", err)
+	}
+	observeFn(nil) // the caller's actual drain succeeded cleanly
+
+	d := eng.deriveRouteMemoDispatch(plan, seed, time.Now())
+	rows, obs, ok := memo.MagnitudeFor(d.key)
+	if !ok {
+		t.Fatal("expected a magnitude reading recorded from the probe's own clean drain")
+	}
+	if obs != 1 {
+		t.Errorf("magnitude observations = %d, want 1", obs)
+	}
+	if rows <= 0 {
+		t.Errorf("magnitude rows = %v, want a positive count reflecting the composed cursor's real drain", rows)
+	}
+}
+
+// TestRouteMemoHitObserveDrainOutcome_RecordsMagnitudeOnCleanDrainOnly pins
+// the memo-hit half of issue #3035's sampling-bias fix: unlike Retry (which
+// only ever fires on a drain FAILURE), this hook is called on EVERY memo-hit
+// drain, and must feed the magnitude EMA on a clean one while recording
+// nothing on a failed one (Retry, not this hook, owns that path, and a
+// partial/cancelled drain's Inspected() count is not trustworthy evidence —
+// mirrors perRungObservingCursor.Close's own "only a CLEAN drain is trusted
+// evidence" reasoning).
+func TestRouteMemoHitObserveDrainOutcome_RecordsMagnitudeOnCleanDrainOnly(t *testing.T) {
+	t.Parallel()
+	memo := routememo.New(time.Minute)
+	k := routememo.Key{RootKind: "*fixture.MemoHit"}
+	memo.Observe(k, routememo.RouteB, routememo.OutcomeSuccess)
+
+	cur := &perRungFakeCursor{inspected: 42}
+	hook := routeMemoHitObserveDrainOutcome(memo, k, cur)
+
+	hook(errors.New("boom"))
+	if _, _, ok := memo.MagnitudeFor(k); ok {
+		t.Fatal("recorded a magnitude reading from a FAILED drain")
+	}
+
+	hook(nil)
+	rows, obs, ok := memo.MagnitudeFor(k)
+	if !ok {
+		t.Fatal("expected a magnitude reading after a clean drain")
+	}
+	if obs != 1 || rows != 42 {
+		t.Errorf("MagnitudeFor = (%v, %d), want (42, 1)", rows, obs)
+	}
+}
+
+// TestRetryOnRouteAResourceFailure_TrivialMagnitudeDeclinesRevalidation pins
+// the routing-consumer half of issue #3035: a stale-PreferB re-validation
+// whose tracked magnitude is well-corroborated (MinCorroboratingFailures
+// readings) AND trivially small (well under
+// routeMemoTrivialMagnitudeRowsPerAnchor per anchor) must decline the
+// automatic rescue dispatch — giving the admitted token straight back
+// rather than spending it re-confirming a route whose own history says it
+// barely moves any data. Bookkeeping (the re-validation clock) still
+// progresses, exactly as an actually-dispatched rescue would have left it.
+func TestRetryOnRouteAResourceFailure_TrivialMagnitudeDeclinesRevalidation(t *testing.T) {
+	reader := installMemoWiringTelemetryReader(t)
+	cq := &fakeSolverCursorClient{rows: 2}
+	eng, memo := newMemoWiringEngine(t, cq)
+	plan := memoWiringEligiblePlan()
+	seed := memoWiringNotRoutedDecision(t)
+
+	fixedNow := memoWiringGridEnd.Add(2 * memoWiringGridStep)
+	memo.SetNowForTest(func() time.Time { return fixedNow })
+	d := eng.deriveRouteMemoDispatch(plan, seed, fixedNow)
+	if !d.eligible {
+		t.Fatalf("fixture plan must be structurally eligible")
+	}
+	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
+
+	// Corroborate a trivially small tracked magnitude — MinCorroboratingFailures
+	// readings, well below the per-anchor floor.
+	for i := 0; i < routememo.MinCorroboratingFailures; i++ {
+		memo.RecordActualMagnitude(d.key, 1)
+	}
+
+	// Cross the re-validation midpoint without crossing the TTL — this is
+	// now a stale-PreferB re-validation candidate.
+	memo.SetNowForTest(func() time.Time { return fixedNow.Add(20 * time.Minute) })
+
+	before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineTrivialMagnitude]
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
+	if retried {
+		t.Fatal("retried a stale-PreferB re-validation despite a well-corroborated trivially small tracked magnitude")
+	}
+	after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineTrivialMagnitude]
+	if after != before+1 {
+		t.Errorf("trivial-magnitude skip count = %d, want %d", after, before+1)
+	}
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens = %d, want 0 — the rescue dispatch must be declined, not merely under-observed", cq.opens.Load())
+	}
+	state, stale := memo.Lookup(d.key)
+	if state != routememo.PreferB || stale {
+		t.Errorf("verdict after a declined re-validation = (%v, stale=%v), want (PreferB, stale=false) — bookkeeping must still progress", state, stale)
+	}
+}
+
+// TestRetryOnRouteAResourceFailure_LargeMagnitudeStillRevalidates is the
+// trivial-magnitude gate's negative control: a LARGE, well-corroborated
+// tracked magnitude must not trip the gate — the re-validation rescue
+// dispatches exactly as it did before issue #3035.
+func TestRetryOnRouteAResourceFailure_LargeMagnitudeStillRevalidates(t *testing.T) {
+	t.Parallel()
+	cq := &fakeSolverCursorClient{rows: 2}
+	eng, memo := newMemoWiringEngine(t, cq)
+	plan := memoWiringEligiblePlan()
+	seed := memoWiringNotRoutedDecision(t)
+
+	fixedNow := memoWiringGridEnd.Add(2 * memoWiringGridStep)
+	memo.SetNowForTest(func() time.Time { return fixedNow })
+	d := eng.deriveRouteMemoDispatch(plan, seed, fixedNow)
+	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
+
+	for i := 0; i < routememo.MinCorroboratingFailures; i++ {
+		memo.RecordActualMagnitude(d.key, 5_000_000)
+	}
+	memo.SetNowForTest(func() time.Time { return fixedNow.Add(20 * time.Minute) })
+
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
+	if !retried {
+		t.Fatal("declined a stale-PreferB re-validation despite a LARGE tracked magnitude — the trivial-magnitude gate must not over-trigger")
+	}
+	awaitDispatch(t, cq, "the re-validation rescue dispatch must still happen for a non-trivial magnitude")
+}
+
+// TestRetryOnRouteAResourceFailure_UnderCorroboratedMagnitudeStillRevalidates
+// is the trivial-magnitude gate's corroboration-floor control: a SINGLE
+// trivial-magnitude reading (below MinCorroboratingFailures) must not trip
+// the gate either — a single anomalous reading cannot, by itself, teach the
+// memo anything, the same discipline every other verdict transition in
+// this package already enforces.
+func TestRetryOnRouteAResourceFailure_UnderCorroboratedMagnitudeStillRevalidates(t *testing.T) {
+	t.Parallel()
+	cq := &fakeSolverCursorClient{rows: 2}
+	eng, memo := newMemoWiringEngine(t, cq)
+	plan := memoWiringEligiblePlan()
+	seed := memoWiringNotRoutedDecision(t)
+
+	fixedNow := memoWiringGridEnd.Add(2 * memoWiringGridStep)
+	memo.SetNowForTest(func() time.Time { return fixedNow })
+	d := eng.deriveRouteMemoDispatch(plan, seed, fixedNow)
+	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
+
+	memo.RecordActualMagnitude(d.key, 1)
+	memo.SetNowForTest(func() time.Time { return fixedNow.Add(20 * time.Minute) })
+
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
+	if !retried {
+		t.Fatal("declined a stale-PreferB re-validation on a single, under-corroborated trivial-magnitude reading")
+	}
+}
+
 // TestRetryOnRouteAResourceFailure_NonResourceErrorNeverRetried pins
 // Major-6: a route-A failure classified as anything OTHER than a resource
 // failure (a timeout, a broken connection, a cancellation) must never

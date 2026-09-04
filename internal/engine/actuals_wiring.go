@@ -24,8 +24,11 @@ import (
 //     (engine.go's classify) — "calibrate the solver's carrier-geometry
 //     cost model" without solver itself needing to import actuals at all.
 //  2. Route-memo priors with real magnitudes: routememo.Memo.
-//     RecordActualMagnitude (internal/routememo/magnitude.go), wired from
-//     per_rung_admission.go's existing perRungObservingCursor — see that
+//     RecordActualMagnitude (internal/routememo/magnitude.go), originally
+//     wired ONLY from per_rung_admission.go's perRungObservingCursor. Issue
+//     #3035 widened this to route_memo_wiring.go's own memo-hit / probe /
+//     re-validation drains too (fixing the single-source sampling bias)
+//     and gave MagnitudeFor a real routing consumer there — see that
 //     file's own doc.
 //  3. Per-rung admission tightening: reuses PerRungAdmissionLearner.
 //     SeedPriorFromEstimate (per_rung_admission.go, issue #2787's own
