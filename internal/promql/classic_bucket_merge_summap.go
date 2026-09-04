@@ -142,6 +142,111 @@ import (
 // (arrayMax ignores NaN — confirmed: arrayMax([1, nan, 2]) = 2). The
 // asymmetric NaN reach #2756 documented as an accepted risk belonged to the
 // union-wide arrayCumSum this file no longer performs.
+//
+// # Cost re-measurement against the SHIPPED (post-#2817) construction
+// # (cerberus issue #2923, real ClickHouse 26.6.4-alpine via a standalone
+// # `docker run clickhouse/clickhouse-server:26.6-alpine` container — not
+// # chDB — max_memory_usage pinned to the 1 GiB
+// # CERBERUS_CH_QUERY_MAX_MEMORY default, real peak read from
+// # system.query_log.memory_usage after `SYSTEM FLUSH LOGS`, matching
+// # classic_bucket_merge_bound.go's own calibration methodology exactly)
+//
+// #2756's original "~50x faster" figure was an ESTIMATE against the
+// pre-#2817 construction (arrayCumSum along the union AFTER a plain
+// per-bucket sumMap — the shape #2817 replaced for correctness). The
+// shipped construction this file now builds pays a per-row arraySort
+// (classicBucketSumMapRowOrderedIndicesExpr) plus a per-row arrayCumSum
+// (classicBucketSumMapRowCumulativeExpr) BEFORE the sumMap aggregate ever
+// runs, and both ladders — this one and classicBucketMergedLadderExpr's —
+// now pay the SAME monotonic-repair layer. A throwaway harness (deleted
+// before this fix merged, same precedent classic_bucket_merge_bound.go's
+// own calibration cites) lowered + emitted the REAL
+// `histogram_quantile(0.5, sum by(le)(sum_over_time(<bucket>[5m])))` SQL
+// for both [FanoutClassicBucketMergeLowerer] (the fold) and
+// [NativeClassicBucketMergeLowerer] (this file), ran each against the SAME
+// seeded table, and compared real peak memory:
+//
+//	series  width  T=GxW    fold peak    sumMap peak   sumMap vs fold
+//	  1000     20    20,000    26.2 MiB      26.5 MiB   +1.16%
+//	  2000     20    40,000    51.0 MiB      51.5 MiB   +0.84%
+//	  3741     12    44,892    41.0 MiB      41.3 MiB   +0.74%
+//	  2000     50   100,000   307.9 MiB     308.2 MiB   +0.10%
+//	  4000     50   200,000   614.4 MiB     614.7 MiB   +0.05%
+//	  6000     50   300,000   827.0 MiB     827.3 MiB   +0.04%
+//	  8000     50   400,000   REJECTED (946.8 MiB attained)   REJECTED (947.1 MiB attained)   +0.03%
+//	  3000    100   300,000   REJECTED (976.5 MiB attained)   REJECTED (976.8 MiB attained)   +0.03%
+//
+// Every row above seeds DISJOINT ExplicitBounds layouts (series i's bounds
+// are `[i*W+1 .. i*W+W]`) — classic_bucket_merge_bound.go's own worst-case
+// calibration seed — and the REJECTED rows are genuine real-server
+// `MEMORY_LIMIT_EXCEEDED` aborts at the SAME (series, width) points that
+// file's own header table records for the fold, confirming this harness
+// reproduces that published calibration (absolute numbers run ~10-18%
+// lower here, attributable to the newer 26.6.4 server vs that table's
+// 25.9-alpine, not to a methodology difference) before trusting its
+// fold-vs-sumMap DELTA.
+//
+// Two things fall out of this table:
+//
+//  1. sumMap is NOT cheaper at any point measured — it is marginally MORE
+//     expensive everywhere, by a near-constant ~319-452 KiB absolute
+//     overhead (consistent with a small, T-independent per-query
+//     construction cost: the extra arraySort/arrayCumSum lambda setup this
+//     file's header already names, not a term that scales with volume).
+//  2. That overhead SHRINKS in relative terms as T grows (1.16% at
+//     T=20,000 down to 0.03% at T=400,000) because the dominant cost term
+//     is the SAME for both constructions (confirmed by the REJECTED rows
+//     aborting within 0.3 MiB of each other) — the two constructions have
+//     CONVERGED to statistically the same real cost post-#2817, not
+//     diverged in sumMap's favour.
+//
+// A separate, uncontrolled sweep at HOMOGENEOUS layouts (every row sharing
+// one ExplicitBounds — the shape #2756's original estimate assumed) and
+// much larger series counts (50,000-400,000) surfaced a real but
+// CONFOUNDING ClickHouse behaviour: peak memory for BOTH constructions
+// dropped sharply and non-monotonically above roughly 20,000-50,000
+// distinct `Attributes` groups (20,000 series: both OOM near 983 MiB;
+// 50,000 series: both succeed at 134-165 MiB — an order of magnitude
+// LESS, despite 2.5x more data), tracking each other closely at every
+// point (fold/sumMap within ~20% of each other, never a clean multiple).
+// This is almost certainly the classic_bucket_merge_summap.go-external
+// per-series `GROUP BY Attributes` stage (histogram_quantile.go's own
+// per-series collection, upstream of anything this file or
+// classic_bucket_merge_bound.go's guard covers) crossing ClickHouse's
+// two-level hash-aggregation threshold, not a merge-stage effect either
+// construction controls — the same class of real-server planner
+// sensitivity exp_histogram_merge_summap_bound.go's own "Range-mode
+// calibration" section flags (its ~1,400-step nondeterminism) without
+// resolving it. It is recorded here, not smoothed over, but it is NOT
+// treated as evidence either way for this file's own cost comparison: the
+// controlled, DISJOINT, REPRODUCIBLE sweep above — which isolates the
+// merge stage alone and cleanly reproduces the existing published fold
+// baseline — is what this decision rests on.
+//
+// # Verdict: AutoSelect stays false
+//
+// The measured real-world speedup is gone: post-#2817's per-row
+// arraySort/arrayCumSum cost erased #2756's original ~50x estimate down to
+// a near-zero, occasionally NEGATIVE real delta at every controlled point
+// tested — this repo's own established pattern for a feature that looked
+// like an obvious win before recalibration (#2768's codec measurement,
+// #2750's ts_tag_groups measurement). [chopt.FeatureClassicBucketMergeSumMap]
+// keeps `AutoSelect: false`; the feature stays reachable only via explicit
+// `CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap` listing for an
+// operator who wants BYTE-IDENTICAL correctness (pinned since #2817) with
+// no expectation of a resource win.
+//
+// The re-measurement DOES settle classic_bucket_merge_bound.go's own open
+// question for this path: since sumMap's real cost tracks the fold's own
+// `totalBucketVolume x widestRowBucketWidth` model within ~1% at every
+// controlled point (including both REJECTED points, which abort within
+// 0.3 MiB of each other), [maxClassicBucketMergeCostUnits] — UNCHANGED —
+// already correctly protects an operator who opts into this feature via
+// the env override; no second, sumMap-specific guard formula is needed
+// (contrast [expHistogramMergeSumMapCostOverBudgetExpr]
+// (exp_histogram_merge_summap_bound.go), whose design DOES need one,
+// because that merge's own cost model is genuinely rows-independent in a
+// way this one's real measurement shows it is not).
 const (
 	// hqAggSumMapAlias holds the group's sumMap(bounds, counts) result — a
 	// Tuple(Array(Float64) keys sorted ascending, Array(Float64) values),

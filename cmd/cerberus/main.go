@@ -1336,9 +1336,13 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.OverTime = promql.FanoutOverTimeLowerer{}
 	}
 	// classic_bucket_merge_summap (issue #2756) has no version floor to
-	// probe, but ships AutoSelect: false pending #2817's investigation of
-	// the heterogeneous-bucket-layout divergence — see
-	// promql.NativeClassicBucketMergeLowerer's own doc.
+	// probe. #2817 closed its original correctness blocker; issue #2923's
+	// real-ClickHouse re-measurement against the resulting (post-#2817)
+	// construction then found its real cost within ~1% of the fold's, not
+	// the estimated ~50x win — so AutoSelect stays false, a measured
+	// negative result rather than an open question. See
+	// promql.NativeClassicBucketMergeLowerer's own doc and
+	// classic_bucket_merge_summap.go's header.
 	if optSet.Has(chopt.FeatureClassicBucketMergeSumMap) {
 		l.ClassicBucketMerge = promql.NativeClassicBucketMergeLowerer{
 			Fallback: promql.FanoutClassicBucketMergeLowerer{},

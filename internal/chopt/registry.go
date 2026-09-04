@@ -654,13 +654,24 @@ const (
 	// family needs — so it carries NO version gate (AlwaysAvailable) and no
 	// allow_experimental_* setting.
 	//
-	// AutoSelect is false, unlike laginframe_adjacency: the issue's own
-	// proposal calls for an optcorpus A/B pass before promoting this to
-	// auto-selected (the reset-correction term's summation runs in
-	// ClickHouse's own non-deterministic aggregation order, unlike the
-	// array-fold's strict time-ordered fold — proven algebraically
-	// equivalent and verified bit-identical on the dual-emit parity corpus,
-	// but not yet fielded). Reachable only via an explicit
+	// AutoSelect is false, unlike laginframe_adjacency — NOT pending
+	// measurement (cerberus#2894 ran the optcorpus A/B and closed that gap):
+	// the reset-correction term's summation runs in ClickHouse's own
+	// non-deterministic aggregation order, unlike the array-fold's strict
+	// time-ordered fold — proven algebraically equivalent and verified
+	// bit-identical on the dual-emit parity corpus. But a real ClickHouse
+	// 26.6.4.55 optcorpus A/B (query_range rate()/increase(), 2,200 series,
+	// 1h span / 60 anchors / 5m window — matching #2429's own
+	// resource-bound calibration scale) measured this shape reading HALF
+	// the source rows and ~20% fewer bytes at roughly neutral wall-clock
+	// (within ~10%), but at ~1.8-2x the incumbent array-fold's PEAK MEMORY
+	// (six concurrent per-group accumulators — count/min/max/argMin/
+	// argMax/sumIf — against the array-fold's single groupArrayIf pass).
+	// Trading a real memory increase for no consistent wall-clock win is
+	// not worth the OOM-risk uplift on every default rate/increase/delta
+	// query_range request, so this stays opt-in — a measured "no", not an
+	// unfinished "pending" (see #2768 and #2750 for this repo's other
+	// negative-result precedent). Reachable only via an explicit
 	// CERBERUS_CH_OPTIMIZATIONS=fixed_accumulator_extrapolated listing.
 	//
 	// Scope: eligible for a temporality-bearing counter window too — the
@@ -717,23 +728,49 @@ const (
 	// all long-standing ClickHouse primitives — so it carries NO version gate
 	// (AlwaysAvailable) and no allow_experimental_* setting.
 	//
-	// AutoSelect is false, mirroring fixed_accumulator_extrapolated: pending
-	// an optcorpus A/B pass before promoting to auto-selected. Reachable
-	// only via an explicit CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time
-	// listing. Issue #3046's memory fix (the max_block_size companion
-	// setting above) closes the specific concern that A/B pass would have
-	// tripped over — every re-measured data point now beats the array-fold
-	// fan-out on BOTH memory and, in most cases, wall-clock — so
-	// AutoSelect COULD be revisited now, but doing so needs its own fresh
-	// optcorpus A/B run (cerberus issue #2894, already closed with a
-	// negative result under the unfixed shape) rather than being flipped
-	// as a side effect of the #3046 fix — and that A/B run should include
-	// mixed-shape queries (a sorted-slab branch combined with an unrelated,
-	// otherwise-cheap sibling via a binary op), since
+	// AutoSelect is false — NOT pending measurement (cerberus#2894 ran the
+	// optcorpus A/B and closed that gap), and more decisively so than
+	// fixed_accumulator_extrapolated's sibling finding: a real ClickHouse
+	// 26.6.4.55 A/B found this shape's own "peak memory is O(samples-in-
+	// range) per series, independent of anchor count" design claim (see
+	// this file's own doc above) did NOT hold AS SHIPPED AT THE TIME. At
+	// typical anchor density (60-240 anchors) it used 6-9x the incumbent
+	// array-fold's peak memory for no wall-clock win; at 500 series / 480
+	// anchors / 5m window — inside #2429's own resource-bound calibration
+	// scale (3,740 real series) — it OOMed a 6 GiB cap outright while the
+	// array-fold it exists to replace finished comfortably at 535 MiB.
+	// Only at extreme anchor density (1,440+ anchors, well past any
+	// query_range panel step this codebase's own perf corpus samples) did
+	// it become faster, and even there at 2.6x the array-fold's own
+	// (already elevated) memory. A shape whose OWN motivating case can OOM
+	// where the incumbent does not must not reach the default path — a
+	// measured "no", not an unfinished "pending" (see #2768 and #2750 for
+	// this repo's other negative-result precedent).
+	//
+	// cerberus#3046 — the follow-up investigation this same #2894 PR filed
+	// — found and fixed the root cause: ClickHouse's vectorized block
+	// execution was retaining the per-anchor arrayFilter/arrayMap
+	// intermediates across an entire block of series rows rather than
+	// freeing them row-by-row, an O(block-width x samples) footprint the
+	// design never accounted for.
+	// internal/engine.applySortedSlabOverTimeMemoryBound now stamps
+	// max_block_size=1 on every dispatch of this shape, and re-measured at
+	// the SAME data points every case now beats the array-fold on memory —
+	// including the 500-series/480-anchor case that previously OOMed.
+	//
+	// AutoSelect stays false regardless: #3046 closed the SPECIFIC memory
+	// defect this A/B tripped over, but the negative measurement above was
+	// taken under the UNFIXED shape, so it is now stale evidence rather
+	// than a verdict on the fixed one — promoting to auto-selected needs
+	// its own FRESH optcorpus A/B against the fixed shape, not a flip as a
+	// side effect of the #3046 fix. That fresh A/B should also include
+	// mixed-shape queries (a sorted-slab branch combined with an
+	// unrelated, otherwise-cheap sibling via a binary op), since
 	// applySortedSlabOverTimeMemoryBound's own doc records that its
 	// max_block_size=1 stamp applies to the WHOLE dispatched query, not
 	// just the sorted-slab subtree — currently low-blast-radius only
-	// because this feature is opt-in-only.
+	// because this feature is opt-in-only. Reachable only via an explicit
+	// CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time listing.
 	FeatureSortedSlabOverTime = "sorted_slab_over_time"
 
 	// FeatureTSGridGroupArray swaps the fan-out window-assembly idiom's
@@ -1187,15 +1224,25 @@ const (
 	// and partially-overlapping layouts, and by a Prometheus-parity-enrolled
 	// spec fixture on a heterogeneous seed.
 	//
-	// What keeps AutoSelect false is now a MEASUREMENT question, tracked by
+	// What kept AutoSelect false was a MEASUREMENT question, settled by
 	// https://github.com/tsouza/cerberus/issues/2923: this feature's own
-	// ~50x figure is an estimate taken against the superseded construction,
-	// and [maxClassicBucketMergeCostUnits]'s guard — calibrated against the
-	// fold's per-rung rescan — over-rejects a path whose cost is linear in
-	// total bucket volume. Auto-selecting before both are settled would move
-	// the default path onto an unmeasured cost model and a ceiling that does
-	// not describe it. Until then the feature is reachable by explicit
-	// CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing.
+	// ~50x figure was an estimate taken against the superseded
+	// construction. A real-ClickHouse re-measurement against the SHIPPED
+	// (post-#2817) construction — internal/promql/classic_bucket_merge_summap.go's
+	// header has the full table — found its real cost within ~1% of the
+	// fold's at every controlled point, converging to statistical parity
+	// as volume grows rather than the estimated 50x win: the per-row
+	// arraySort/arrayCumSum #2817 added to fix correctness erased the
+	// speedup this feature existed for. AutoSelect STAYS false — this
+	// repo's own established pattern for a feature whose real-world
+	// recalibration turns up no measurable win (#2768, #2750) — and
+	// [maxClassicBucketMergeCostUnits]'s existing guard needs no
+	// recalibration either: the re-measurement confirms (not merely
+	// assumes) it protects this path within the same ~1% margin, so no
+	// second, sumMap-specific ceiling is needed. The feature remains
+	// reachable, byte-identical-correct (per #2817), by explicit
+	// CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing for an
+	// operator who wants it without expecting a resource win.
 	//
 	// The NaN asymmetry #2756 documented as a second, accepted risk is gone
 	// with the same change: arrayCumSum now runs over ONE ROW's own buckets,
@@ -2125,14 +2172,20 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt eligible query_range rate/increase/delta shapes onto per-(series, anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
+		Doc: "opt eligible query_range rate/increase/delta shapes onto per-(series, anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out " +
+			"(no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B measured half the source rows/~20% fewer bytes at roughly neutral " +
+			"wall-clock but ~1.8-2x the incumbent array-fold's peak memory, so auto never picks it; see #2894)",
 	},
 	{
 		ID:         FeatureSortedSlabOverTime,
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup, with a mandatory max_block_size=1 companion setting closing #3046's memory defect (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending a fresh optcorpus A/B, #2894)",
+		Doc: "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup " +
+			"(no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B found its claimed O(samples)-per-series memory bound did not hold as shipped: " +
+			"6-9x the incumbent's memory at typical anchor density, OOMing a 6GiB cap at 500 series/480 anchors where the array-fold held at 535MiB (#2894); follow-up #3046 fixed the root " +
+			"cause with a mandatory max_block_size=1 companion setting, and every re-measured case now beats the array-fold on memory — but AutoSelect stays false pending a FRESH " +
+			"optcorpus A/B against the fixed shape)",
 	},
 	{
 		ID:                         FeatureTSGridGroupArray,
@@ -2177,7 +2230,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto a sumMap over per-row cumulative counts, retiring the groupArray + per-rung fold (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — auto pending a recalibrated cost model, #2923)",
+		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto a sumMap over per-row cumulative counts (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — real-CH remeasurement found it within ~1% of the fold's cost, not a win, auto stays off, #2923)",
 	},
 	{
 		ID:         FeatureExpHistogramMergeSumMap,
