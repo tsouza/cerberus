@@ -1007,6 +1007,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnSum:                             "FnSum",
 	chplan.FnSumForEach:                      "FnSumForEach",
 	chplan.FnSumMap:                          "FnSumMap",
+	chplan.FnUniqCombined64:                  "FnUniqCombined64",
 	chplan.FnUniqExact:                       "FnUniqExact",
 	chplan.FnUniqUpTo:                        "FnUniqUpTo",
 	chplan.FnVarPop:                          "FnVarPop",
