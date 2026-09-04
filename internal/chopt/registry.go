@@ -2061,7 +2061,7 @@ var registry = []Feature{
 		MinVersion: Version{Major: 25, Minor: 10},
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate (server >= 25.10, opt-in only via CERBERUS_CH_OPTIMIZATIONS pending fielded validation of the new floor)",
+		Doc:        "opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate (server >= 25.10, opt-in only via CERBERUS_CH_OPTIMIZATIONS — real-CH measurement found memory crosses above the classic walk's around 18k-22k series, so operators should keep a single histogram_quantile() call under ~15,000 series when opting in; see #2790)",
 	},
 	{
 		ID:                         FeatureTSGridDelta,
