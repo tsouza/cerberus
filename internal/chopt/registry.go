@@ -428,13 +428,27 @@ const (
 	// at high series cardinality (73,540 series, ~880k post-unnest rows, a
 	// 20x synthetic fan-out of the same real seed) wall time stayed roughly
 	// even but memory grew ~3.3x (219 MiB vs 66 MiB, reproduced across
-	// repeated runs via system.query_log.memory_usage). See
+	// repeated runs via system.query_log.memory_usage). Issue #2790's PR 1
+	// narrowed that crossover to real-CH-measured ~18,000-22,000 series and
+	// documented an operator-facing ~15,000-series ceiling; PR 2 (see
+	// internal/chsql/histogram_quantile_rankwalk_native.go's own header
+	// doc) then closed most of the gap itself: the emission was rewritten
+	// to ARRAY JOIN a BOUNDED window (at most 3 rungs per row, not the
+	// whole ladder), which a real-CH remeasurement found cuts the native
+	// path's OWN peak memory by roughly 1.5x-2x at every cardinality point
+	// tested (3,677 through 73,540 series) relative to the pre-#2790-PR-2
+	// unbounded ARRAY JOIN, moving the crossover to roughly double the
+	// originally-measured point. The tradeoff is therefore smaller, not
+	// eliminated — a per-row rank search plus a second small ARRAY JOIN
+	// still costs more than the classic walk's pure array-expression form
+	// at very high cardinality — so this stays opt-in with an
+	// operator-facing ceiling rather than flipping to AutoSelect: true; see
 	// https://github.com/tsouza/cerberus/issues/2790 for the full numbers
-	// and the mitigation options that issue leaves for future investigation.
-	// Combined with the 25.10 floor being very new (no fielded deployment
-	// history yet) and this repo's own testcontainers substrate for real-CH
-	// tests being pinned to 25.9-alpine elsewhere in the suite — below this
-	// feature's own floor — the feature is reachable only by explicit
+	// from both PRs. Combined with the 25.10 floor being very new (no
+	// fielded deployment history yet) and this repo's own testcontainers
+	// substrate for real-CH tests being pinned to 25.9-alpine elsewhere in
+	// the suite — below this feature's own floor — the feature is
+	// reachable only by explicit
 	// CERBERUS_CH_OPTIMIZATIONS=quantile_prom_histogram listing, mirroring
 	// FeatureColumnarResultDecode's same conservative posture for a
 	// different reason (there a client-side tradeoff, here a genuine
@@ -2276,9 +2290,11 @@ var registry = []Feature{
 		MinVersion: Version{Major: 25, Minor: 10},
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc: "opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate (server >= 25.10, opt-in " +
-			"only via CERBERUS_CH_OPTIMIZATIONS — real-CH measurement found memory crosses above the classic walk's around 18k-22k series, so operators " +
-			"should keep a single histogram_quantile() call under ~15,000 series when opting in; see #2790)",
+		Doc: "opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate over a BOUNDED ARRAY JOIN " +
+			"window (server >= 25.10, opt-in only via CERBERUS_CH_OPTIMIZATIONS — issue #2790's PR 2 rewrote the emission to ARRAY JOIN at most 3 rungs " +
+			"per row instead of the whole bucket ladder, a real-CH-measured ~1.5x-2x memory cut versus the original emission at every cardinality point " +
+			"tested; operators should still keep a single histogram_quantile() call under ~30,000 series when opting in, roughly double PR 1's original " +
+			"~15,000-series ceiling — see #2790)",
 	},
 	{
 		ID:                         FeatureTSGridDelta,
