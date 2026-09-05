@@ -217,6 +217,15 @@ func IsSliceInvariant(n Node) bool {
 //     emission and TestSolver_AvsB_ChDB_Differential_NativeQuantileHistogram
 //     covers the opt-in native emission (cerberus issue #2791), so the
 //     locality argument above is empirically proven end-to-end under BOTH.
+//     Issue #2790's PR 2 later bounded the native emission's own ARRAY JOIN
+//     to a small window (at most 3 rungs per row, not the whole bucket
+//     ladder — internal/chsql/histogram_quantile_rankwalk_native.go's own
+//     header doc) purely to cut memory at high series cardinality; every
+//     new stage it added still derives from that SAME single input row's
+//     own columns (Star() propagation, no cross-row read), so the locality
+//     argument is unaffected and TestSolver_AvsB_ChDB_Differential_
+//     NativeQuantileHistogram re-proves it against the bounded shape with
+//     zero diffs — no new differential fixture was needed.
 //     HistogramQuantileNative / HistogramProjection (the
 //     native/exponential-histogram siblings) remain DELIBERATELY ABSENT —
 //     same shape family, but no production traffic exists yet to validate

@@ -213,20 +213,19 @@ func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantil
 		Select(Star(), As(cumTerm, hqRankWalkCumTermColumn)).
 		From(Subquery(counted))
 
-	// Stage 5 — the bounded rank walk's own stop index: the SAME
-	// arrayFirstIndex search histogramQuantileValueFrag's w.idx() performs
-	// for the legacy fan-out emitter (including its computed-phi 24.8
-	// predicate-normalisation workaround — see that function's own doc),
-	// run here against the terminal-appended ladder Stage 4 just
-	// materialized instead of the bare one, so the found index directly
-	// slices hqRankWalkCumTermColumn. See hqRankWalkIdxColumn's own doc.
-	target := finalW.target()
-	idxCmp := Gte(BareIdent("c"), target)
-	idxPred := idxCmp
-	if h.PhiExpr != nil {
-		idxPred = Paren(Eq(If(idxCmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
-	}
-	idxExpr := Call("arrayFirstIndex", Lambda1("c", idxPred), Col(hqRankWalkCumTermColumn))
+	// Stage 5 — the bounded rank walk's own stop index: hqClassicWriters'
+	// OWN w.idx() (histogramQuantileValueFrag's identical closure, 24.8
+	// predicate-normalisation workaround included), reused verbatim rather
+	// than re-hand-rolled — overriding helpers.cum below is the SAME
+	// override mechanism helpers.bounds/observations/etc. already use to
+	// redirect w.cum() at a materialized column instead of re-deriving it,
+	// so this Stage runs the search against the terminal-appended ladder
+	// Stage 4 just materialized instead of the bare one. See
+	// hqRankWalkIdxColumn's own doc for why the found index directly
+	// slices hqRankWalkCumTermColumn.
+	indexHelpers := final
+	indexHelpers.cum = hqRankWalkCumTermColumn
+	idxExpr := newHQClassicWriters(h, indexHelpers).idx()
 	indexed := NewQuery().
 		Select(Star(), As(idxExpr, hqRankWalkIdxColumn)).
 		From(Subquery(termed))
