@@ -1158,6 +1158,78 @@ func (a *AddIndexBuilder) SQL() string {
 	return RenderDDL(a.frag())
 }
 
+// --- ALTER TABLE ... DROP INDEX surface ---
+//
+// DropIndexBuilder renders
+// `ALTER TABLE [<db>.]<table> [ON CLUSTER x] DROP INDEX IF EXISTS <name>`,
+// the statement that retires a ClickHouse data-skipping index a table
+// carries — the inverse of AddIndexBuilder above. Unlike ADD INDEX, this is
+// deliberately NOT part of any boot-time DDL apply path: dropping an index a
+// running deployment's queries might still be planning against is a real
+// production-cluster decision an operator makes deliberately (cerberus
+// issue #2839's `cerberus schema retire-idx-lower-body` verb is the current
+// caller), never something rendered on every server start the way
+// AddIndexBuilder's callers are. DROP INDEX is metadata-only — ClickHouse
+// discards the index's on-disk data for every part in the background; no
+// separate MATERIALIZE step applies to a drop the way one does to an add.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// DropIndexBuilder builds an ALTER TABLE DROP INDEX statement.
+type DropIndexBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	name     string
+	cluster  string // "" => no ON CLUSTER clause
+}
+
+// AlterTableDropIndex starts a DROP INDEX builder retiring the data-skipping
+// index named <name> from [<database>.]<table>. An empty database emits no
+// qualifier, so a table the connection's own database owns is referenced
+// bare. The rendered statement always carries IF EXISTS, mirroring
+// AddIndexBuilder's own IF NOT EXISTS — an operator re-running the verb
+// against a table that has already had the index dropped gets a clean
+// no-op, not a client-visible "unknown index" error.
+func AlterTableDropIndex(database, table, name string) *DropIndexBuilder {
+	return &DropIndexBuilder{database: database, table: table, name: name}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *DropIndexBuilder) OnCluster(name string) *DropIndexBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table/index identifiers via BareIdent, and the
+// optional ON CLUSTER clause via the typed constructor — no raw token is
+// written here.
+func (a *DropIndexBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		if a.database != "" {
+			BareIdent(a.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" DROP INDEX IF EXISTS ")(b)
+		BareIdent(a.name)(b)
+	}
+}
+
+// SQL renders the ALTER TABLE DROP INDEX statement to ClickHouse text via
+// RenderDDL (which asserts the no-positional-bindings DDL invariant).
+func (a *DropIndexBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}
+
 // --- ALTER TABLE ... ADD STATISTICS surface ---
 //
 // AddStatisticsBuilder renders

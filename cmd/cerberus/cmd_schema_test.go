@@ -53,7 +53,7 @@ func TestSchema_HelpExitsCleanToStdout(t *testing.T) {
 // every schema subcommand's -h exits 0 with usage on stdout and nothing on
 // stderr.
 func TestSchema_SubcommandHelpExitsClean(t *testing.T) {
-	for _, sc := range []string{"delta-prefix-backfill", "delta-prefix-verify"} {
+	for _, sc := range []string{"delta-prefix-backfill", "delta-prefix-verify", "retire-idx-lower-body"} {
 		var out, errOut bytes.Buffer
 		if err := runSchema([]string{sc, "-h"}, &out, &errOut); err != nil {
 			t.Errorf("run %s -h should exit cleanly, got: %v", sc, err)
@@ -75,7 +75,7 @@ func TestSchema_RootUsageListsSubcommands(t *testing.T) {
 		t.Fatalf("run -h: %v", err)
 	}
 	usage := out.String()
-	for _, name := range []string{"delta-prefix-backfill", "delta-prefix-verify"} {
+	for _, name := range []string{"delta-prefix-backfill", "delta-prefix-verify", "retire-idx-lower-body"} {
 		if !strings.Contains(usage, name) {
 			t.Errorf("root usage should list subcommand %q, got:\n%s", name, usage)
 		}
@@ -181,6 +181,43 @@ func TestDeltaPrefixBackfill_NotOptedInIsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "DeltaPrefixTable") {
 		t.Errorf("error should name the missing DeltaPrefixTable, got: %v", err)
+	}
+}
+
+// TestRetireIdxLowerBody_DryRunPrintsSQLWithoutConnecting confirms --dry-run
+// prints the rendered ALTER TABLE DROP INDEX statement to stdout and returns
+// no error WITHOUT ever needing a live ClickHouse connection — mirrors
+// TestDeltaPrefixBackfill_DryRunPrintsSQLWithoutConnecting.
+func TestRetireIdxLowerBody_DryRunPrintsSQLWithoutConnecting(t *testing.T) {
+	var out, errOut bytes.Buffer
+	err := runSchema([]string{"retire-idx-lower-body", "--dry-run"}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("dry-run should not error: %v (stderr: %s)", err, errOut.String())
+	}
+	got := strings.TrimSpace(out.String())
+	want := "ALTER TABLE default.otel_logs DROP INDEX IF EXISTS idx_lower_body"
+	if got != want {
+		t.Errorf("dry-run output = %q; want %q", got, want)
+	}
+}
+
+// TestRetireIdxLowerBody_DryRunHonorsTableOverride confirms the verb reads
+// the SAME CERBERUS_SCHEMA_LOGS_TABLE override every query-answering path
+// reads, rather than hard-coding "otel_logs" — a mismatch here would drop
+// the index on the wrong table (or silently no-op via IF EXISTS on a table
+// that was never the operator's real logs table).
+func TestRetireIdxLowerBody_DryRunHonorsTableOverride(t *testing.T) {
+	t.Setenv("CERBERUS_SCHEMA_LOGS_TABLE", "logs_v2")
+	t.Setenv("CERBERUS_CH_DATABASE", "otel")
+	var out, errOut bytes.Buffer
+	err := runSchema([]string{"retire-idx-lower-body", "--dry-run"}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("dry-run should not error: %v (stderr: %s)", err, errOut.String())
+	}
+	got := strings.TrimSpace(out.String())
+	want := "ALTER TABLE otel.logs_v2 DROP INDEX IF EXISTS idx_lower_body"
+	if got != want {
+		t.Errorf("dry-run output = %q; want %q", got, want)
 	}
 }
 

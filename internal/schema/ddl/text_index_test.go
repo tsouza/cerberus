@@ -73,6 +73,45 @@ func TestRenderAddBodyTextIndex_ExactSQL(t *testing.T) {
 	}
 }
 
+// TestDropLegacyBodyTokenBFIndexSQL_ExactSQL pins the ALTER TABLE DROP INDEX
+// statement cerberus issue #2839's `cerberus schema retire-idx-lower-body`
+// verb renders/executes to retire the legacy idx_lower_body tokenbf_v1
+// index on an upgraded existing table — see that function's doc comment for
+// the live ClickHouse 26.6 measurement establishing the index provides zero
+// query-time benefit for the exact predicate shape it was built to
+// accelerate.
+func TestDropLegacyBodyTokenBFIndexSQL_ExactSQL(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			"default",
+			Config{}.withDefaults(),
+			"ALTER TABLE default.otel_logs DROP INDEX IF EXISTS idx_lower_body",
+		},
+		{
+			"on_cluster",
+			Config{Cluster: "prod"}.withDefaults(),
+			"ALTER TABLE default.otel_logs ON CLUSTER `prod` DROP INDEX IF EXISTS idx_lower_body",
+		},
+		{
+			"custom_database_and_table",
+			Config{Database: "otel", Tables: Tables{Logs: "logs_v2"}}.withDefaults(),
+			"ALTER TABLE otel.logs_v2 DROP INDEX IF EXISTS idx_lower_body",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DropLegacyBodyTokenBFIndexSQL(tt.cfg)
+			if got != tt.want {
+				t.Errorf("DropLegacyBodyTokenBFIndexSQL() =\n  %s\nwant:\n  %s", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestRenderSignal_TextIndexEnabled pins the version-gate contract at the
 // render layer, mirroring TestRenderSignal_TraceIDProjectionEnabled:
 // TextIndexEnabled=false renders NO idx_body_text statement at all — not a

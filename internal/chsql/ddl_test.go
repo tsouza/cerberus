@@ -607,6 +607,41 @@ func TestAlterTableAddIndex_RejectsNonPositiveGranularity(t *testing.T) {
 	}
 }
 
+// TestAlterTableDropIndex pins the DROP INDEX statement: the fully-qualified
+// (or bare) <db>.<table>, the idempotent IF EXISTS guard, the index name,
+// and the optional ON CLUSTER clause. The statement carries no positional
+// args.
+func TestAlterTableDropIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt *DropIndexBuilder
+		want string
+	}{
+		{
+			"unqualified_table",
+			AlterTableDropIndex("", "otel_logs", "idx_lower_body"),
+			"ALTER TABLE otel_logs DROP INDEX IF EXISTS idx_lower_body",
+		},
+		{
+			"qualified_table",
+			AlterTableDropIndex("otel", "otel_logs", "idx_lower_body"),
+			"ALTER TABLE otel.otel_logs DROP INDEX IF EXISTS idx_lower_body",
+		},
+		{
+			"on_cluster",
+			AlterTableDropIndex("otel", "otel_logs", "idx_lower_body").OnCluster("prod"),
+			"ALTER TABLE otel.otel_logs ON CLUSTER `prod` DROP INDEX IF EXISTS idx_lower_body",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAlterTableAddStatistics pins the ADD STATISTICS statement: the
 // fully-qualified (or bare) <db>.<table>, the idempotent IF NOT EXISTS
 // guard, the bare (no-parens) comma-separated column and TYPE lists, and the

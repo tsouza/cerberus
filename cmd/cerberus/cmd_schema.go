@@ -17,6 +17,7 @@ import (
 	"github.com/tsouza/cerberus/internal/deltaprefix"
 	"github.com/tsouza/cerberus/internal/downsampletier"
 	"github.com/tsouza/cerberus/internal/migrateverify"
+	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 )
 
@@ -65,6 +66,7 @@ func newSchemaCmd() *cobra.Command {
 		newSchemaDownsampleTierBackfillCmd(),
 		newSchemaDownsampleTierRebuildCmd(),
 		newSchemaDownsampleTierVerifyCmd(),
+		newSchemaRetireIdxLowerBodyCmd(),
 	)
 	return cmd
 }
@@ -727,4 +729,96 @@ func unionDownsampleTierMetricNames(rep downsampletier.Report) map[string]struct
 		out[name] = struct{}{}
 	}
 	return out
+}
+
+// retireIdxLowerBodyInputs carries newSchemaRetireIdxLowerBodyCmd's resolved
+// flags to runRetireIdxLowerBody.
+type retireIdxLowerBodyInputs struct {
+	dryRun bool
+}
+
+// newSchemaRetireIdxLowerBodyCmd builds `cerberus schema
+// retire-idx-lower-body` — the one-time, operator-run ALTER TABLE DROP INDEX
+// that retires the legacy idx_lower_body tokenbf_v1 skip index on a logs
+// table already upgraded to carry idx_body_text (cerberus issue #2773's
+// additive text-index feature), the follow-up cerberus issue #2839 asked
+// for.
+//
+// Live-measured against ClickHouse 26.6 before this verb was written (see
+// internal/schema/ddl.DropLegacyBodyTokenBFIndexSQL's doc comment for the
+// full numbers): idx_lower_body prunes ZERO parts/granules for the exact
+// `lower(Body) LIKE '%tok%'` conjunct shape cerberus's LogQL line-filter
+// prefilter emits (chopt text_index_line_filter) — identical to a table
+// with no index at all — while idx_body_text alone already provides the
+// real pruning (a ~244x rows-read reduction in the measured case). Retiring
+// idx_lower_body removes pure write-path bloom-filter-maintenance overhead
+// for zero read-path loss on an upgraded table.
+//
+// Deliberately its OWN verb, not folded into the server's boot-time
+// auto-create DDL apply: dropping an index a running deployment's queries
+// might still be planning against is a real production-cluster decision an
+// operator makes deliberately, once idx_body_text has been live and
+// MATERIALIZE'd for a confidence period — see docs/operations.md's runbook
+// step. Mirrors delta-prefix-backfill / downsample-tier-rebuild's own
+// "operator runs this once, deliberately, with --dry-run to preview first"
+// shape.
+func newSchemaRetireIdxLowerBodyCmd() *cobra.Command {
+	var in retireIdxLowerBodyInputs
+	cmd := &cobra.Command{
+		Use:   "retire-idx-lower-body",
+		Short: "Drop the legacy idx_lower_body tokenbf_v1 index on an upgraded logs table",
+		Long: "Retires the legacy idx_lower_body tokenbf_v1(32768, 3, 0) skip index\n" +
+			"(the pre-#2773 index) on a logs table that has already been upgraded to\n" +
+			"carry idx_body_text (CERBERUS_CH_OPTIMIZATIONS=full_text_index, cerberus\n" +
+			"issue #2773). Live-measured against ClickHouse 26.6: idx_lower_body\n" +
+			"prunes ZERO parts/granules for the `lower(Body) LIKE '%tok%'` conjunct\n" +
+			"shape cerberus's LogQL line-filter prefilter emits (chopt\n" +
+			"text_index_line_filter) — identical to a table with no index at all —\n" +
+			"while idx_body_text alone already provides the real pruning. Run this\n" +
+			"only once idx_body_text has been live and MATERIALIZE'd for a\n" +
+			"confidence period on this deployment — see docs/operations.md's runbook\n" +
+			"step. DESTRUCTIVE-ish: dropping and re-adding the index later requires a\n" +
+			"full re-backfill via `ALTER TABLE ... MATERIALIZE INDEX`, since ADD INDEX\n" +
+			"is metadata-only for new parts.",
+		Example:       "  cerberus schema retire-idx-lower-body --dry-run",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runRetireIdxLowerBody(cmd, in)
+		},
+	}
+	f := cmd.Flags()
+	f.BoolVar(&in.dryRun, "dry-run", false, "print the ALTER TABLE DROP INDEX statement without executing it")
+	return cmd
+}
+
+func runRetireIdxLowerBody(cmd *cobra.Command, in retireIdxLowerBodyInputs) error {
+	cfg, err := config.FromEnv()
+	if err != nil {
+		return fmt.Errorf("load config from environment: %w", err)
+	}
+	ddlCfg, err := schemaboot.DDLConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("resolve schema DDL config: %w", err)
+	}
+	stmt := ddl.DropLegacyBodyTokenBFIndexSQL(ddlCfg)
+
+	if in.dryRun {
+		fmt.Fprintln(cmd.OutOrStdout(), stmt)
+		return nil
+	}
+
+	client, err := chclient.New(cfg.ClickHouse)
+	if err != nil {
+		return fmt.Errorf("connect ClickHouse: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if err := client.Conn().Exec(context.Background(), stmt); err != nil {
+		return fmt.Errorf("drop idx_lower_body: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "dropped idx_lower_body on %s.%s (idempotent: IF EXISTS)\n",
+		ddlCfg.Database, ddlCfg.Tables.Logs)
+	return nil
 }
