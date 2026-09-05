@@ -173,18 +173,23 @@ type nativeTSGridAgg struct {
 // baseline's own timing (median ~840ms), ruling out "one more subquery
 // level" as the cause and isolating the cost to the window function.
 //
-// Net: the gate adds roughly +130% wall-clock latency (2.1-2.4x) to the
-// flagship native rate() path, on EVERY query down that path, with no
-// memory benefit, even under the most favourable ORDER BY alignment a
-// deployment could have — to correctly resolve an edge case (two samples at
-// one series' exact timestamp with one of them NaN) real telemetry rarely
-// produces. This is this repo's own established pattern for a change that
-// looks like an obvious win before it is actually measured (see
-// classic_bucket_merge_summap.go's own "Verdict" section for the same
-// shape of finding) — the number kills it. No chopt feature is added for
-// this gate, opt-in or otherwise: a mandatory ~2x tax on the flagship native
-// path is not something worth carrying, gated or not, for a rarity this
-// narrow.
+// Net: the gate adds ~2.3x wall-clock latency (roughly +128% to +137% across
+// the two ways of comparing the cited numbers: median 1660/700 and query_log
+// 1769/775) to the flagship native rate() path, on EVERY query down that
+// path, even under the most favourable ORDER BY alignment a deployment could
+// have. Memory is a weaker data point: a single-sample check per condition
+// (453MiB baseline vs 447MiB gated) showed no meaningful difference either
+// way — it was not repeated across multiple trials the way the latency
+// measurement was, so treat it as a rough check, not a settled finding; the
+// latency cost alone is decisive regardless — to correctly resolve an edge
+// case (two samples at one series' exact timestamp with one of them NaN)
+// real telemetry rarely produces. This is this repo's own established
+// pattern for a change that looks like an obvious win before it is actually
+// measured (see classic_bucket_merge_summap.go's own "Verdict" section for
+// the same shape of finding) — the number kills it. No chopt feature is
+// added for this gate, opt-in or otherwise: a mandatory ~2x tax on the
+// flagship native path is not something worth carrying, gated or not, for a
+// rarity this narrow.
 //
 // The only remaining path is cerberus issue #2924's Option 1: the family's
 // own documentation states a NaN-loses rule it does not deliver, which is a

@@ -5508,8 +5508,16 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 	out := make([]Frag, 0, len(group))
 	for _, g := range group {
-		// Render to a separate buffer so we can reuse the string.
-		sub := &Builder{}
+		// Render to a separate buffer so we can reuse the string. Threaded
+		// with e.attrStrategies (not a bare &Builder{}) so a JSON-typed
+		// MapAccess/FieldAccess would render correctly here too: every
+		// current lowering path pre-computes JSON-strategy-dependent
+		// expressions into a preceding chplan.Project before they reach
+		// RangeWindow.GroupBy, so this only ever sees bare ColumnRefs
+		// today, but a future lowering that feeds a raw attribute access
+		// straight into GroupBy must not silently mis-render against a
+		// JSON-typed column.
+		sub := NewBuilderWithAttrStrategies(e.attrStrategies)
 		if err := sub.Expr(g); err != nil {
 			return nil, err
 		}

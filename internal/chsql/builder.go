@@ -1029,14 +1029,7 @@ func (b *Builder) exprWindow(w *chplan.WindowExpr) error {
 //     (attr_strategy_json_chdb_test.go).
 func (b *Builder) exprMapAccess(m *chplan.MapAccess) error {
 	if col, key, ok := jsonAttrKeyAccess(b, m); ok {
-		b.sb.WriteString("coalesce(")
-		if err := b.Expr(col); err != nil {
-			return err
-		}
-		b.sb.WriteByte('.')
-		b.Ident(key)
-		b.sb.WriteString(".:String, '')")
-		return nil
+		return b.jsonAttrCoalesce(col, key)
 	}
 	if err := b.Expr(m.Map); err != nil {
 		return err
@@ -1046,6 +1039,27 @@ func (b *Builder) exprMapAccess(m *chplan.MapAccess) error {
 		return err
 	}
 	b.sb.WriteByte(']')
+	return nil
+}
+
+// jsonAttrCoalesce renders the shared JSON dynamic-subcolumn read shape
+//
+//	coalesce(<col>.<path>.:String, '')
+//
+// that exprMapAccess's and exprFieldAccess's JSON branches both reproduce to
+// preserve the Map contract's "absent key reads as the empty string"
+// behavior (see exprMapAccess's doc for why). path is always a compile-time
+// Go string in both callers (a literal map key via jsonAttrKeyAccess, or a
+// FieldAccess.Path), never a chplan.Expr, so it is rendered via b.Ident
+// rather than b.Expr/b.Arg.
+func (b *Builder) jsonAttrCoalesce(col *chplan.ColumnRef, path string) error {
+	b.sb.WriteString("coalesce(")
+	if err := b.Expr(col); err != nil {
+		return err
+	}
+	b.sb.WriteByte('.')
+	b.Ident(path)
+	b.sb.WriteString(".:String, '')")
 	return nil
 }
 
@@ -1728,14 +1742,7 @@ func (b *Builder) exprFieldAccess(f *chplan.FieldAccess) error {
 		return nil
 	}
 	if col, ok := jsonAttrColumn(b, f.Source); ok {
-		b.sb.WriteString("coalesce(")
-		if err := b.Expr(col); err != nil {
-			return err
-		}
-		b.sb.WriteByte('.')
-		b.Ident(f.Path)
-		b.sb.WriteString(".:String, '')")
-		return nil
+		return b.jsonAttrCoalesce(col, f.Path)
 	}
 	if err := b.Expr(f.Source); err != nil {
 		return err
@@ -2969,8 +2976,16 @@ type QueryBuilder struct {
 }
 
 // WithAttrStrategies sets the AttrStrategies this QueryBuilder's Build /
-// Frag renders attribute-map accesses against. See AttrStrategies's doc
-// for why this is scoped per signal rather than a single global map.
+// subquerySQL renders attribute-map accesses against — both construct a
+// fresh Builder via NewBuilderWithAttrStrategies(s.attrStrategies). Frag
+// does NOT consult it: Frag writes directly into the CALLER's own *Builder
+// (s.writeInto(b)), so any attribute-map access rendered through Frag is
+// governed by that outer Builder's own attrStrategies, not this
+// QueryBuilder's. A caller chaining .WithAttrStrategies(...).Frag() gets no
+// effect from the call — repo-wide, WithAttrStrategies is currently only
+// ever followed by Build, never Frag, but a future Frag caller should be
+// aware this is a real footgun. See AttrStrategies's doc for why this is
+// scoped per signal rather than a single global map.
 func (s *QueryBuilder) WithAttrStrategies(strategies AttrStrategies) *QueryBuilder {
 	s.attrStrategies = strategies
 	return s
