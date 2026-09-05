@@ -3,6 +3,7 @@ package promql_test
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,5 +233,42 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareOnIgnoring(t *testin
 				t.Fatalf("lower(%q): Attributes projection = %#v, want a mapFilter FuncCall (on()/ignoring() reduction)", tc.query, attrsProj.Expr)
 			}
 		})
+	}
+}
+
+// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompare_ManyToMany pins
+// that [comparisonVectorVectorOverMixedExpHistogramSetOp]'s own
+// `CardManyToMany` `default:` branch — documented as "unreachable here in
+// practice, rejected defensively" the same way this file's three sibling
+// recognizers' branches are — is genuinely reachable and answers the
+// correct error. The parser never emits CardManyToMany for a comparison
+// operator on its own (it reserves that Card for `and`/`or`/`unless`), so
+// this hand-sets VectorMatching.Card the same way
+// [TestLower_VectorMatch_ManyToMany] (vector_match_test.go) already does
+// for the arithmetic sibling
+// ([vectorVectorArithmeticOverMixedExpHistogramSetOp]'s equivalent
+// branch): the Card switch runs before this function's own mixed-`or`
+// operand check, so a bare `up == up` reaches it without either operand
+// needing to be histogram-shaped at all.
+func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompare_ManyToMany(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	expr, err := p.ParseExpr(`up == up`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	bin, ok := expr.(*parser.BinaryExpr)
+	if !ok {
+		t.Fatalf("expected *parser.BinaryExpr, got %T", expr)
+	}
+	bin.VectorMatching = &parser.VectorMatching{Card: parser.CardManyToMany}
+
+	if _, err := promql.Lower(context.Background(), expr, s); err == nil {
+		t.Fatal("expected many-to-many error, got nil")
+	} else if !strings.Contains(err.Error(), "many-to-many matching not allowed") {
+		t.Errorf("error %q does not contain 'many-to-many matching not allowed'", err.Error())
 	}
 }

@@ -2408,11 +2408,12 @@ text index:
   multi-stage AND predicate matching cerberus's own emitted
   `text_index_line_filter` shape (`lower(Body) LIKE '%tok%' AND
   position(Body, ?) > 0`, ANDed across 2-3 stages) run repeatedly against
-  the identical predicate — the cache's best case. Across repeated
-  `clickhouse-benchmark` trials on ClickHouse 26.8 it was consistently at or
-  slightly below the `0` (off) baseline (e.g. 27.1 vs 26.3 QPS on a 3-stage
-  chain, 12.7 vs 12.4 QPS on a 2-stage chain) — no realized throughput or
-  latency win to justify stamping it.
+  the identical predicate — the cache's best case. The difference between
+  cache-on and cache-off was small and within run-to-run noise across
+  repeated `clickhouse-benchmark` trials on ClickHouse 26.8 (e.g. ~26-27 QPS
+  on a 3-stage chain, ~12.4-12.7 QPS on a 2-stage chain, in both directions
+  across trials) — no realized throughput or latency win large enough to
+  justify stamping it either way.
 
 Neither is relied on by `text_index_line_filter`, and neither warrants a new
 `chopt` feature: #2838 closed both findings negative with this evidence.
