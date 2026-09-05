@@ -4265,3 +4265,54 @@ func TestPlainGroupColumnNames_NonColumnRefNoPanic(t *testing.T) {
 		t.Errorf("expected ErrUnsupported for a non-ColumnRef group key, got %v", err)
 	}
 }
+
+// TestCollectGroupByFrags_ThreadsAttrStrategies proves collectGroupByFrags's
+// per-expr Builder actually inherits e.attrStrategies, not just that the
+// field is present on the struct literal. No current lowering path feeds a
+// non-bare-ColumnRef GroupBy entry (every JSON-strategy-dependent expression
+// is pre-computed into a preceding chplan.Project first), so this
+// constructs the shape directly — a *chplan.MapAccess against a
+// JSON-strategy column — the way a future lowering that skipped that
+// pre-computation step would. Compares the rendered SQL against
+// exprMapAccess's own direct output for the identical MapAccess, so a
+// regression that silently drops the inherited strategy (reverting to the
+// bare Map-subscript render) fails this test rather than shipping unnoticed.
+func TestCollectGroupByFrags_ThreadsAttrStrategies(t *testing.T) {
+	t.Parallel()
+	strategies := chplan.AttrStrategies{"ResourceAttributes": chplan.AttrStrategyJSON}
+	access := &chplan.MapAccess{
+		Map: &chplan.ColumnRef{Name: "ResourceAttributes"},
+		Key: &chplan.LitString{V: "service.name"},
+	}
+
+	e := &emitter{attrStrategies: strategies}
+	frags, err := e.collectGroupByFrags([]chplan.Expr{access})
+	if err != nil {
+		t.Fatalf("collectGroupByFrags: %v", err)
+	}
+	if len(frags) != 1 {
+		t.Fatalf("expected 1 frag, got %d", len(frags))
+	}
+	gotBuilder := &Builder{}
+	frags[0](gotBuilder)
+	got, _, err := gotBuilder.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	want := &Builder{attrStrategies: strategies}
+	if err := want.exprMapAccess(access); err != nil {
+		t.Fatalf("exprMapAccess: %v", err)
+	}
+	wantSQL, _, err := want.Build()
+	if err != nil {
+		t.Fatalf("build (want): %v", err)
+	}
+
+	if got != wantSQL {
+		t.Errorf("collectGroupByFrags did not inherit attrStrategies:\ngot:  %s\nwant: %s (exprMapAccess's own JSON-coalesce render)", got, wantSQL)
+	}
+	if !strings.Contains(got, "coalesce(") {
+		t.Errorf("expected the JSON coalesce render shape, got a bare Map subscript: %s", got)
+	}
+}
