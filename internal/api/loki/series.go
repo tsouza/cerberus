@@ -55,7 +55,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		selectorGroups = append(selectorGroups, matchers)
 	}
 
-	sqlStr, args, err := buildSeriesSQL(h.Schema, selectorGroups, start, end)
+	sqlStr, args, err := buildSeriesSQL(h.Schema, h.AttrStrategies, selectorGroups, start, end)
 	if err != nil {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -99,10 +99,11 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 // /series response that legitimately fits over CERBERUS_QUERY_MAX_SAMPLES
 // and turn a valid query into a rejection. The Go-side dedupe stays as
 // the defence-in-depth backstop; this closes the split at the source.
-func buildSeriesSQL(s schema.Logs, selectorGroups [][]*labels.Matcher, start, end time.Time) (string, []any, error) {
+func buildSeriesSQL(s schema.Logs, strategies chsql.AttrStrategies, selectorGroups [][]*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(chsql.As(canonicalLabelsFrag(chsql.Col(s.ResourceAttributesColumn)), "labels")).
-		From(chsql.Col(s.LogsTable))
+		Select(chsql.As(canonicalLabelsFrag(attrMapFrag(strategies, s.ResourceAttributesColumn)), "labels")).
+		From(chsql.Col(s.LogsTable)).
+		WithAttrStrategies(strategies)
 
 	if len(selectorGroups) > 0 {
 		fragments := make([]chsql.Frag, 0, len(selectorGroups))

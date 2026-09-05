@@ -511,13 +511,13 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 	// renders as the bare `SELECT *` — no length guard needed.
 	for _, pr := range p.Projections {
 		expr := pr.Expr
-		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias)
+		sb.SelectAs(func(b *Builder) { _ = b.Expr(projectedExpr(b, expr)) }, pr.Alias)
 	}
 	if len(p.Projections) == 0 && len(p.Replacements) > 0 {
 		reps := make([]Frag, 0, len(p.Replacements))
 		for _, pr := range p.Replacements {
 			expr := pr.Expr
-			reps = append(reps, As(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias))
+			reps = append(reps, As(func(b *Builder) { _ = b.Expr(projectedExpr(b, expr)) }, pr.Alias))
 		}
 		sb.Select(StarReplace(reps))
 	}
