@@ -226,7 +226,7 @@ clickhouse:
   # still a startup failure an unprepared operator does not expect. Pin
   # `hotVolume.enabled: false` before upgrading past this chart version if you
   # are relying on single-volume object-storage-only behavior. See the
-  # "Upgrading into this default" section of docs/helm-clickhouse.md.
+  # "Upgrading into the hot/cold default" section of docs/helm-clickhouse.md.
   #
   # Secrets (the ClickHouse user password + static object-store credentials)
   # NEVER land in a ConfigMap — they ride a Secret injected as env and are
@@ -363,8 +363,11 @@ clickhouse:
     # `objectStorage.enabled: true` (also default) renders a two-volume
     # hot/cold policy (`bwc_hot_cold`) — the chart's sensible default: new
     # inserts land on `hot` (this local disk), then move to `cold` (the
-    # object-store disk/cache chain) after `schema.tierAfter` via
-    # `moveFactor`. `true` + `objectStorage.enabled: false` instead renders a
+    # object-store disk/cache chain) once they age past `schema.tierAfter`
+    # (a `TTL ... TO VOLUME` clause — see `schema.tierVolume`/`tierAfter*`
+    # below). `moveFactor` is a SEPARATE, free-space-triggered backstop move,
+    # independent of that age-based one — see its own comment below.
+    # `true` + `objectStorage.enabled: false` instead renders a
     # hot-only single-volume policy (`bwc_hot_only`) on local disk alone, and
     # REQUIRES `schema.ttl` to be set (the chart fails the render otherwise —
     # an unbounded local disk with no cold tier and no retention fills
