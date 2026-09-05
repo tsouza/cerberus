@@ -82,6 +82,11 @@ func TestMountAPIHeads_EveryBuiltEngineCarriesMaxQuerySamples(t *testing.T) {
 			config.HeadLoki:  {},
 			config.HeadTempo: {},
 		},
+		// buildSolver (reached via the prom head above) validates
+		// solver.Config.DataShardCount >= 1; a bare Config{} literal (unlike
+		// config.FromEnv) leaves ClusterTopology at its Go zero value, so it
+		// must be set explicitly here (cerberus issue #3081).
+		ClusterTopology: chopt.DefaultClusterTopology(),
 	}
 	logger := quietLogger()
 	limiters := newAdmitLimiters(cfg, logger)

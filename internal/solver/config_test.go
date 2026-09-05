@@ -21,6 +21,20 @@ func TestDefaultConfig_Valid(t *testing.T) {
 	if c.Timeout != 60*time.Second {
 		t.Fatalf("default Timeout = %s, want 60s", c.Timeout)
 	}
+	// cerberus issue #3081: DataShardCount defaults to 1 (a single logical
+	// dataset), the value that makes DataShardFanoutGate/DataShardFanoutCap
+	// a structural no-op. DataShardFanoutCapOverride stays nil and
+	// DisableSplitOnMultiDataShard stays false — neither has a default
+	// worth setting explicitly.
+	if c.DataShardCount != 1 {
+		t.Fatalf("default DataShardCount = %d, want 1", c.DataShardCount)
+	}
+	if c.DataShardFanoutCapOverride != nil {
+		t.Fatalf("default DataShardFanoutCapOverride = %v, want nil", c.DataShardFanoutCapOverride)
+	}
+	if c.DisableSplitOnMultiDataShard {
+		t.Fatalf("default DisableSplitOnMultiDataShard = true, want false")
+	}
 }
 
 func TestConfigValidate_FailFast(t *testing.T) {
@@ -36,6 +50,11 @@ func TestConfigValidate_FailFast(t *testing.T) {
 		{"MinFanout < 1", func(c *Config) { c.MinFanout = 0 }},
 		{"MaxOutputRows <= 0", func(c *Config) { c.MaxOutputRows = 0 }},
 		{"Timeout <= 0", func(c *Config) { c.Timeout = 0 }},
+		{"DataShardCount < 1", func(c *Config) { c.DataShardCount = 0 }},
+		{"DataShardFanoutCapOverride <= 0", func(c *Config) {
+			zero := int64(0)
+			c.DataShardFanoutCapOverride = &zero
+		}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -47,5 +66,19 @@ func TestConfigValidate_FailFast(t *testing.T) {
 				t.Fatalf("%s: expected Validate to fail", tc.name)
 			}
 		})
+	}
+}
+
+// TestConfigValidate_DataShardFieldsAcceptLegalValues (cerberus issue #3081)
+// pins the positive side of the two new checks above: a multi-data-shard
+// count and a positive fanout-cap override both validate cleanly.
+func TestConfigValidate_DataShardFieldsAcceptLegalValues(t *testing.T) {
+	t.Parallel()
+	c := DefaultConfig()
+	c.DataShardCount = 4
+	override := int64(64)
+	c.DataShardFanoutCapOverride = &override
+	if err := c.Validate(); err != nil {
+		t.Fatalf("DataShardCount=4, DataShardFanoutCapOverride=64 must validate, got %v", err)
 	}
 }

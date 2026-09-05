@@ -38,6 +38,15 @@ const (
 	EnvEstimateNearEmptyRowFloor         = "CERBERUS_SHARD_ESTIMATE_NEAR_EMPTY_ROW_FLOOR"
 	EnvMaxKWithEstimate                  = "CERBERUS_SHARD_MAX_K_WITH_ESTIMATE"
 	EnvEstimateMinRowsPerAdditionalShard = "CERBERUS_SHARD_ESTIMATE_MIN_ROWS_PER_ADDITIONAL_SHARD"
+
+	// EnvDataShardFanoutCapOverride and EnvDisableSplitOnMultiDataShard map
+	// onto Config.DataShardFanoutCapOverride / Config.DisableSplitOnMultiDataShard
+	// (cerberus issue #3081, epic #3074) — see each field's own doc.
+	// DataShardCount itself has NO env var here by design: it is sourced
+	// from internal/chopt.ClusterTopology (see Config.DataShardCount's doc),
+	// not this package's own env surface.
+	EnvDataShardFanoutCapOverride   = "CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP"
+	EnvDisableSplitOnMultiDataShard = "CERBERUS_SOLVER_DISABLE_SPLIT_ON_MULTI_DATA_SHARD"
 )
 
 // DeprecatedEnvWarnings returns a one-line notice for every soft-deprecated
@@ -134,6 +143,15 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.EstimateMinRowsPerAdditionalShard, err = envInt64(EnvEstimateMinRowsPerAdditionalShard, cfg.EstimateMinRowsPerAdditionalShard); err != nil {
 		return Config{}, err
 	}
+	// DataShardCount is deliberately NOT read here — see its own doc: it is
+	// sourced from internal/chopt.ClusterTopology by cmd/cerberus, stamped
+	// onto cfg AFTER ConfigFromEnv returns.
+	if cfg.DisableSplitOnMultiDataShard, err = envBool(EnvDisableSplitOnMultiDataShard, cfg.DisableSplitOnMultiDataShard); err != nil {
+		return Config{}, err
+	}
+	if cfg.DataShardFanoutCapOverride, err = envOptionalInt64(EnvDataShardFanoutCapOverride, cfg.DataShardFanoutCapOverride); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -162,6 +180,25 @@ func envInt64(key string, def int64) (int64, error) {
 		return 0, fmt.Errorf("solver: %s: invalid integer %q: %w", key, v, err)
 	}
 	return n, nil
+}
+
+// envOptionalInt64 parses an OPTIONAL 64-bit int env var: unset returns def
+// (the incoming Config field, itself nil unless a prior call already set it)
+// unchanged, so ConfigFromEnv's zero value stays nil rather than a duplicated
+// magic default; set parses and returns a pointer to the value. Unlike
+// envInt64, a malformed non-empty value is the only failure mode — there is
+// no "missing means the default" ambiguity to resolve, because the default
+// itself IS "unset" (nil).
+func envOptionalInt64(key string, def *int64) (*int64, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("solver: %s: invalid integer %q: %w", key, v, err)
+	}
+	return &n, nil
 }
 
 // envBool parses a boolean env var (strconv.ParseBool vocabulary).

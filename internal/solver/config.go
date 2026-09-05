@@ -51,7 +51,9 @@ const (
 // Config tunes the solver. Every field maps to a CERBERUS_* env var parsed by
 // ConfigFromEnv (config_env.go) — kept in this package rather than
 // internal/config to avoid an import cycle; this package owns the defaults and
-// the invariants. The defaults are deliberately conservative against the
+// the invariants. The ONE exception is DataShardCount, which cmd/cerberus
+// copies in from internal/chopt.ClusterTopology after ConfigFromEnv returns
+// (see that field's own doc for why). The defaults are deliberately conservative against the
 // over-routing attack (docs/solver.md §"Eligibility signals"): Grafana's
 // auto-step makes the dominant production shape rate[5m] @ 15s hit F=20,
 // N>=241, which must NOT route at these thresholds unless the total expansion
@@ -180,6 +182,57 @@ type Config struct {
 	// real scan volume is never minted just because the grid geometry alone
 	// would have asked for it. See docs/solver.md's calibration numbers.
 	EstimateMinRowsPerAdditionalShard int64
+
+	// DataShardCount is the number of ClickHouse DATA shards behind this
+	// deployment's `Distributed` tables — copied ONCE at construction from
+	// internal/chopt.ClusterTopology.DataShardCount, the single source of
+	// truth (cerberus issue #3081, epic #3074). cmd/cerberus is the one
+	// place that reads the live topology and stamps it onto this field
+	// before calling solver.New, keeping this package's own import surface
+	// at chplan + chclient + the standard library (this file's own package
+	// doc) rather than adding chopt as a dependency purely to read one int;
+	// ConfigFromEnv deliberately does NOT parse a CERBERUS_* var for it (see
+	// that function's own doc) — this is this Config's one field that is
+	// NOT sourced from this package's own env surface.
+	//
+	// Default 1 (DefaultConfig, and this field's Go zero-adjacent floor —
+	// see Validate) means a single logical dataset: unreplicated, or
+	// replicated N ways onto identical copies, exactly like every
+	// deployment before this field existed. At 1, every mechanism this
+	// field feeds is a structural no-op: Executor.DataShardFanoutGate stays
+	// nil (see NewDataShardFanoutGate) and Execute's perShardMemoryBytes
+	// apportionment is bit-identical to the pre-#3081 formula.
+	//
+	// DISAMBIGUATION — this package already uses bare `Shard`-prefixed
+	// identifiers above (EstimateMinRowsPerAdditionalShard, and elsewhere
+	// runShard, perShardMemoryBytes, minAnchorsForPerRungShard) for a
+	// COMPLETELY UNRELATED concept: this solver's own query-time-range /
+	// anchor-grid splitting. A "data shard" is a ClickHouse cluster's own
+	// physical data partition (a `Distributed` table's own shard) and has
+	// nothing to do with that mechanism — see chopt.ClusterTopology's own
+	// doc for the full three-way disambiguation. Every NEW identifier this
+	// issue introduces therefore uses the DataShard-prefixed compound form.
+	DataShardCount int
+
+	// DataShardFanoutCapOverride, when non-nil, replaces GateCap as
+	// Executor.DataShardFanoutCap's sizing cap
+	// (CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP). Nil (the default) means "the
+	// same size as the pre-existing connection Gate" — reusing GateCap as
+	// the natural, symmetric default rather than inventing a new bare
+	// constant (invariant 13).
+	DataShardFanoutCapOverride *int64
+
+	// DisableSplitOnMultiDataShard
+	// (CERBERUS_SOLVER_DISABLE_SPLIT_ON_MULTI_DATA_SHARD) is an
+	// operator-facing escape hatch, false by default. It is a config
+	// surface only: nothing in this package's admission-control path
+	// branches on it today. The always-on, unconditional behavior is that
+	// DataShardFanoutGate (executor.go) already bounds the combined
+	// ClickHouse-side cost of this solver's own K-way query-time-range
+	// split running against a multi-data-shard cluster's own fan-out on the
+	// SAME request, which is why composing the two needs no separate
+	// serialization mode to stay safe.
+	DisableSplitOnMultiDataShard bool
 }
 
 // Default tuning constants (docs/solver.md).
@@ -259,6 +312,18 @@ const (
 	// exactly that incident's shape while still refusing to mint a shard for
 	// a window whose estimate cannot back even one more.
 	defaultEstimateMinRowsPerAdditionalShard = 50_000
+
+	// defaultDataShardCount is DataShardCount's zero-risk default: a single
+	// logical dataset, matching internal/chopt.ClusterTopology's own default
+	// (chopt.DefaultClusterTopology) and every deployment that predates
+	// this field. Declared independently rather than imported — this
+	// package keeps its import surface at chplan + chclient + the standard
+	// library rather than adding chopt purely to read one constant — but
+	// the two values are the SAME "1", not a coincidence: cmd/cerberus's
+	// buildSolver is the one place both packages meet, and DataShardCount's
+	// own doc records that this field is copied from chopt's resolved
+	// topology.
+	defaultDataShardCount = 1
 )
 
 // DefaultConfig returns the conservative library defaults. Mode defaults to
@@ -279,6 +344,8 @@ func DefaultConfig() Config {
 		EstimateNearEmptyRowFloor:         defaultEstimateNearEmptyRowFloor,
 		MaxKWithEstimate:                  defaultMaxKWithEstimate,
 		EstimateMinRowsPerAdditionalShard: defaultEstimateMinRowsPerAdditionalShard,
+
+		DataShardCount: defaultDataShardCount,
 	}
 }
 
@@ -325,6 +392,12 @@ func (c Config) Validate() error {
 	}
 	if c.EstimateMinRowsPerAdditionalShard < 1 {
 		return fmt.Errorf("solver: EstimateMinRowsPerAdditionalShard must be >= 1, got %d", c.EstimateMinRowsPerAdditionalShard)
+	}
+	if c.DataShardCount < 1 {
+		return fmt.Errorf("solver: DataShardCount must be >= 1, got %d", c.DataShardCount)
+	}
+	if c.DataShardFanoutCapOverride != nil && *c.DataShardFanoutCapOverride <= 0 {
+		return fmt.Errorf("solver: DataShardFanoutCapOverride must be > 0 when set, got %d", *c.DataShardFanoutCapOverride)
 	}
 	return nil
 }
