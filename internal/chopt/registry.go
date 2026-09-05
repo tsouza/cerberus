@@ -42,6 +42,17 @@ const (
 	// on the 25.8 chDB substrate. A 25.6 floor would auto-enable a path that
 	// systematically diverges from Prometheus on 25.6-25.8; 25.9 is the first
 	// release whose window is Prometheus-equivalent.
+	//
+	// KNOWN DIVERGENCE, NOT REPAIRABLE HERE — a duplicate (series, timestamp)
+	// pair where one sample is NaN collapses inside ClickHouse's own builtin in
+	// an order-DEPENDENT way (cerberus issue #2798), unlike cerberus's own
+	// array-fold fan-out. An order-independent scan-side gate exists and is
+	// sound, but was measured (cerberus issue #2924) at a ~2.1-2.4x wall-clock
+	// tax on this exact path even under the best-case ORDER BY alignment, for
+	// no memory benefit — see chsql.nativeTSGridFn's own "Verdict on the
+	// scan-order gate" section for the full measurement. Not shipped, gated or
+	// not; the only remaining path is an upstream report, which needs
+	// authorization this repo has not given.
 	FeatureTSGridRange = "ts_grid_range"
 
 	// FeatureTSGridResample opts the eligible range-mode instant-vector

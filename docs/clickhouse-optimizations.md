@@ -217,7 +217,18 @@ Notes:
   alias (below). Its native aggregate requires the experimental setting to be
   co-stamped on exactly the queries that emit the native node — and the engine
   co-stamps off the post-optimize plan, so the setting fires whether the
-  feature was reached via `auto` or explicit listing.
+  feature was reached via `auto` or explicit listing. It carries one KNOWN,
+  UNFIXED divergence: a duplicate `(series, timestamp)` pair where one sample
+  is NaN collapses inside the ClickHouse builtin in an order-DEPENDENT way,
+  unlike cerberus's own deterministic fan-out fold — tracked at
+  [#2798](https://github.com/tsouza/cerberus/issues/2798). An order-independent
+  scan-side gate exists and is sound, but
+  [#2924](https://github.com/tsouza/cerberus/issues/2924) measured it at a
+  ~2.1-2.4x wall-clock tax on this exact path even under the best-case ORDER BY
+  alignment, for no memory benefit, and closed without shipping it (see
+  `chsql.nativeTSGridFn`'s own "Verdict on the scan-order gate" doc for the
+  full measurement). The only remaining path is an upstream ClickHouse report,
+  which needs authorization this repo has not given.
 - **`ts_grid_resample`** is `experimental` in maturity but **auto-enabled** on
   a capable server (no legacy alias). It shares
   the `timeSeries*ToGrid` family floor (25.9) and the same experimental setting
