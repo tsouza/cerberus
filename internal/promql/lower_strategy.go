@@ -1019,10 +1019,10 @@ type NativeStalenessLowerer struct {
 }
 
 // LowerStaleness returns a RangeWindowStaleResample for the range-mode staleness
-// input, or delegates to the embedded Fallback for the one shape the native
+// input, or delegates to the embedded Fallback for a shape the native
 // aggregate cannot express.
 //
-// That carve-out is `in.sampleTimestamp`.
+// The first carve-out is `in.sampleTimestamp`.
 // timeSeriesResampleToGridWithStaleness returns ONLY the resampled VALUE per
 // grid point (an Array(Nullable(Float64))); the timestamp of the sample each
 // grid point carried forward is not among its outputs, and no member of the
@@ -1032,8 +1032,21 @@ type NativeStalenessLowerer struct {
 // carve-out delegates rather than emitting an answer the native shape would
 // have to fake from the anchor. Both paths therefore agree on
 // `timestamp(<selector>)`; they simply reach the agreement on the fan-out.
+//
+// The second carve-out is a sub-second step/lookback/offset (checked with the
+// same wholeSeconds helper nativeClassicHistogramEligible uses). The whole
+// timeSeries*ToGrid family takes step_s/window_s as whole-second integers and
+// start/end as whole-second DateTime literals (see nativeGridTimeBoundFrag),
+// so a sub-second value has no faithful native representation — passing a
+// Float64 step_s is rejected outright (ILLEGAL_TYPE_OF_ARGUMENT), and
+// chsql.emitRangeWindowStaleResample instead truncates it via
+// int64(d.Seconds()), which silently collapses e.g. a 500ms step to 0 and
+// ClickHouse then rejects with "Step should be greater than zero" (issue
+// #3068 — both failure modes verified against chDB). The fan-out RangeLWR
+// fans out at nanosecond precision (toIntervalNanosecond), so it answers a
+// sub-second shape correctly instead of merely avoiding the crash.
 func (n NativeStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node {
-	if in.sampleTimestamp {
+	if in.sampleTimestamp || !wholeSeconds(in.step) || !wholeSeconds(in.lookback) || !wholeSeconds(in.offset) {
 		return n.Fallback.LowerStaleness(in)
 	}
 	return &chplan.RangeWindowStaleResample{

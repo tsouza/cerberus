@@ -3666,6 +3666,16 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
 		return nil
 	}
+	// timeSeries*ToGrid (here timeSeriesRateToGrid / timeSeriesPredictLinearToGrid
+	// per wantFunc) takes grid_step and window as whole-second integers and its
+	// start/end as whole-second DateTime bounds (nativeGridTimeBoundFrag), so a
+	// sub-second Step, matrix [range] (rw.Range), or Offset has no faithful
+	// native representation — see NativeStalenessLowerer.LowerStaleness for the
+	// verified failure mode (issue #3068). Falling back to nil routes to the
+	// fan-out RangeWindow, which fans out at nanosecond precision instead.
+	if !wholeSeconds(rw.Step) || !wholeSeconds(rw.Range) || !wholeSeconds(rw.Offset) {
+		return nil
+	}
 	if !isNativeRateInput(rw.Input, s) {
 		return nil
 	}
@@ -3847,6 +3857,17 @@ func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Ra
 		return nil
 	}
 	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
+		return nil
+	}
+	// The timeSeries*ToGrid family (this node renders through
+	// timeSeriesResampleToGridWithStaleness) takes step_s/window_s as
+	// whole-second integers, so a sub-second Step or Range (last_over_time's
+	// matrix [range] literal, which becomes this node's Lookback) has no
+	// faithful native representation — see NativeStalenessLowerer.LowerStaleness
+	// for the verified failure mode (issue #3068). The fan-out RangeWindow this
+	// function's caller (NativeLastOverTimeLowerer.LowerLastOverTime) falls back
+	// to on nil fans out at nanosecond precision instead.
+	if !wholeSeconds(rw.Step) || !wholeSeconds(rw.Range) || !wholeSeconds(rw.Offset) {
 		return nil
 	}
 	if !isNativeRateInput(rw.Input, s) {
