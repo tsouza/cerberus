@@ -1280,7 +1280,7 @@ func renderAddBodyTextIndex(cfg Config) string {
 // name an EXISTING, already-upgraded table's index still carries alongside
 // the separately-named idx_body_text. DropLegacyBodyTokenBFIndexSQL below is
 // the only caller.
-const legacyBodyTokenBFIndexName = "idx_lower_body"
+const legacyBodyTokenBFIndexName = "idx_lower_body" //nolint:gosec // G101: an index NAME (tokenbf_v1 skip index), not a credential.
 
 // DropLegacyBodyTokenBFIndexSQL renders the ALTER TABLE DROP INDEX statement
 // retiring the legacy idx_lower_body tokenbf_v1 skip index on an EXISTING
