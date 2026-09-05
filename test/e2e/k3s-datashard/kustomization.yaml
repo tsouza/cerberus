@@ -1,0 +1,44 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cerberus
+
+# Multi-data-shard e2e fixtures (cerberus issue #3079, epic #3074). Same
+# shape as test/e2e/k3s-bwc's own kustomization: the standalone-ClickHouse
+# kustomization (test/e2e/k3s) MINUS clickhouse.yaml, PLUS a `clickhouse`
+# Service alias onto the chart-managed bundled CH StatefulSet(s) — reused
+# UNCHANGED from k3s-bwc, since its selector
+# (cerberus.clickhouse.selectorLabels: name + instance + component, with NO
+# per-data-shard discriminator) matches pods across every data shard, not
+# just shard 0 — round-robining the seeder's connection across shards is
+# fine: the `Distributed` wrapper table exists identically on every shard's
+# node.
+#
+# ClickHouse itself is NOT a resource here: in this lane it is rendered by
+# the Helm chart with `clickhouse.bundled.enabled: true` and
+# `clickhouse.bundled.dataShards.count > 1`, deployed by
+# `just e2e-datashard-up` — no MinIO/object-store substrate needed (hot-only
+# mode, see cerberus-values-datashard.yaml's own doc), which is the one
+# difference from k3s-bwc's kustomization.
+#
+# The grafana / collector / sample-app fixtures are REUSED verbatim from
+# test/e2e/k3s via relative-path resources, exactly as k3s-bwc does.
+# kustomize's default LoadRestrictionsRootOnly rejects out-of-root file
+# refs, so `just e2e-datashard-up` builds this with
+# `kubectl kustomize --load-restrictor=LoadRestrictionsNone`.
+resources:
+  - ../k3s/namespace.yaml
+  - ../k3s/grafana.yaml
+  - ../k3s/grafana-dashboards.yaml
+  - ../k3s/otel-collector.yaml
+  - ../k3s/sample-app.yaml
+  - ../k3s-bwc/clickhouse-alias.yaml
+
+# `labels` (not `commonLabels`) with includeSelectors:false: tag every object
+# with part-of WITHOUT touching immutable Service/Deployment selectors —
+# same rationale as k3s-bwc's own kustomization (applied AFTER `helm
+# install`, so a selector-mutating label would collide with the
+# already-created objects' immutable selectors).
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: cerberus
