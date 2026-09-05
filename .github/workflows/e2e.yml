@@ -1682,8 +1682,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # bwc-minio — bundled-ClickHouse storage-tiering lane (cerberus issue #3075).
-  # A 3-leg matrix over `scenario` shares this ONE lane's MinIO/k3d setup
-  # rather than three parallel lanes:
+  # A 4-leg matrix over `scenario` shares this ONE lane's MinIO/k3d setup
+  # rather than four parallel lanes:
   #   object-storage — today's mode: bucket-create Job + the Helm chart with
   #     `clickhouse.bundled.enabled=true` pointed at in-cluster MinIO.
   #   hot-only — `hotVolume.enabled=true` + `objectStorage.enabled=false` + an
@@ -1692,12 +1692,28 @@ jobs:
   #   hot-cold — `hotVolume.enabled=true`, objectStorage stays on. Additionally
   #     ages seeded rows past a short `schema.tierAfter` and forces a merge to
   #     prove the `TTL ... TO VOLUME` move actually relocates parts.
-  # Each leg seeds the deterministic OTel rows and PROVES the data tier lives
-  # where the scenario claims: storage_policy stamped on every table, active
-  # parts on the expected disk(s) (never the local `default` disk), and (for
-  # object-storage / hot-cold) the bucket non-empty after the seed. Then runs
-  # the Go e2e suite to confirm cerberus serves the seeded data from the
-  # bundled ClickHouse.
+  #   mode-toggle — cerberus issue #3082. Installs and seeds the object-storage
+  #     scenario exactly like that leg, then `helm upgrade`s the SAME
+  #     ALREADY-POPULATED cluster into hot-cold mode WITHOUT pinning
+  #     `hotVolume.enabled: false` (docs/helm-clickhouse.md's "Upgrading into
+  #     the hot/cold default" hazard) and asserts ClickHouse's own startup
+  #     validation refuses the incompatible storage-policy change LOUDLY
+  #     (error code 478, UNKNOWN_POLICY) — never a silent success, a generic
+  #     non-ready pod, or a plain timeout. This is the runtime proof for the
+  #     object-store -> hot-cold direction of that safety mechanism, the
+  #     direction the hot/cold-by-default upgrade hazard actually exercises.
+  #     That the three modes' policy names stay distinct in the first place
+  #     (so no pairwise toggle can ever collide) is a separate, render-level
+  #     claim already covered by chart-render-assert.mjs's per-mode `<bwc_*>`
+  #     literal checks, which run in the chart-validate job.
+  # The first three legs seed the deterministic OTel rows and PROVE the data
+  # tier lives where the scenario claims: storage_policy stamped on every
+  # table, active parts on the expected disk(s) (never the local `default`
+  # disk), and (for object-storage / hot-cold) the bucket non-empty after the
+  # seed — then run the Go e2e suite to confirm cerberus serves the seeded
+  # data from the bundled ClickHouse. mode-toggle deliberately never reaches
+  # that last step: the whole point is that the SECOND install must never
+  # come up healthy.
   #
   # INFORMATIONAL, never a PR gate. SAME trigger posture as `dashboard` /
   # `chaos`: push-to-main + nightly + manual dispatch ONLY (never on
@@ -1711,13 +1727,16 @@ jobs:
     timeout-minutes: 40
     strategy:
       fail-fast: false
-      # Three storage-tiering scenarios (cerberus issue #3075), sharing this
-      # SAME lane's MinIO/k3d setup rather than three parallel lanes — see the
-      # job header comment. hot-only never touches MinIO/the object store at
-      # all; hot-cold additionally ages rows past schema.tierAfter and forces
-      # a merge to prove the TTL ... TO VOLUME move actually fires.
+      # Four scenarios (cerberus issues #3075 and #3082), sharing this SAME
+      # lane's MinIO/k3d setup rather than four parallel lanes — see the job
+      # header comment. hot-only never touches MinIO/the object store at all;
+      # hot-cold additionally ages rows past schema.tierAfter and forces a
+      # merge to prove the TTL ... TO VOLUME move actually fires; mode-toggle
+      # installs as object-storage (see the `up`/`verify` step `run:` lines
+      # below, which map it onto that same scenario for the shared
+      # up/seed/placement steps) and then upgrades in place.
       matrix:
-        scenario: [object-storage, hot-only, hot-cold]
+        scenario: [object-storage, hot-only, hot-cold, mode-toggle]
     concurrency:
       # Unique per run AND per scenario — each matrix leg gets its own runner
       # VM (so there's no cross-leg port/cluster collision to avoid), but the
@@ -1766,8 +1785,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
+      # mode-toggle (issue #3082) installs IDENTICALLY to object-storage — the
+      # initial, already-populated cluster the toggle step below upgrades
+      # away from — so it maps onto that same scenario here rather than
+      # teaching e2e-bwc-up a fourth (byte-identical) case.
       - name: Bring up k3d + MinIO + bundled-ClickHouse stack
-        run: just e2e-bwc-up ${{ matrix.scenario }}
+        run: just e2e-bwc-up ${{ matrix.scenario == 'mode-toggle' && 'object-storage' || matrix.scenario }}
 
       # Chart-only, doesn't depend on the scenario's own data — but DOES need
       # a reachable k8s API (`helm install`/`upgrade --dry-run`), which `helm
@@ -1783,10 +1806,27 @@ jobs:
       - name: Seed OTel data (deterministic synthetic rows; rolling)
         run: just e2e-seed-rolling
 
+      # Same object-storage mapping as the `up` step above: this confirms the
+      # mode-toggle leg's cluster really did start out genuinely populated in
+      # bwc_object_store mode before the toggle step below upgrades it away.
       - name: Assert storage placement (storage_policy + parts + bucket/aging)
-        run: just e2e-bwc-verify ${{ matrix.scenario }}
+        run: just e2e-bwc-verify ${{ matrix.scenario == 'mode-toggle' && 'object-storage' || matrix.scenario }}
 
+      # ---- mode-toggle (issue #3082) ONLY, from here to the Go E2E step ----
+      - name: Helm-upgrade into an incompatible mode (must fail loudly, not silently)
+        if: matrix.scenario == 'mode-toggle'
+        run: just e2e-bwc-toggle-mode
+
+      - name: Assert ClickHouse rejects the toggle with its own UNKNOWN_POLICY error
+        if: matrix.scenario == 'mode-toggle'
+        run: just e2e-bwc-verify-mode-toggle
+
+      # Every OTHER leg confirms cerberus serves the seeded data from the
+      # bundled ClickHouse. mode-toggle skips this deliberately: its whole
+      # point is that the post-upgrade ClickHouse never comes up healthy, so
+      # there is nothing for the Go e2e suite to serve from.
       - name: Run Go E2E tests (cerberus serves seeded data from the bundled ClickHouse)
+        if: matrix.scenario != 'mode-toggle'
         run: just e2e-run
 
       - name: Dump cluster state on failure

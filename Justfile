@@ -2253,6 +2253,50 @@ e2e-bwc-verify scenario="object-storage":
     MC_IMAGE="minio/mc:RELEASE.2025-08-13T08-35-41Z" \
         node .github/scripts/e2e-bwc-verify-placement.mjs
 
+# Mode-toggle migration-safety leg (cerberus issue #3082): helm-upgrade an
+# ALREADY-POPULATED bwc cluster — brought up as the plain object-storage
+# scenario (`just e2e-bwc-up object-storage` + `just e2e-seed-rolling`), so
+# every table's metadata already says `storage_policy='bwc_object_store'` —
+# into hot-cold mode WITHOUT pinning `hotVolume.enabled: false`. This
+# reproduces docs/helm-clickhouse.md's "Upgrading into the hot/cold default"
+# hazard exactly: the new storage XML only defines `bwc_hot_cold`, a policy
+# name the already-populated ClickHouse has never seen, so its own startup
+# validation must refuse to start — the object-store -> hot-cold direction of
+# cerberus issue #3075/#3076's per-mode storage-policy names — rather than
+# silently reusing or renaming the policy.
+#
+# Deliberately NO --wait: the upgrade is EXPECTED to leave the ClickHouse pod
+# permanently crash-looping, so blocking on rollout would just burn the whole
+# --timeout doing nothing `e2e-bwc-verify-mode-toggle` doesn't already do far
+# more precisely with its own targeted log-content poll. Leading `-`: a
+# non-zero/timeout exit here is the EXPECTED shape, not something this recipe
+# itself needs to interpret — the verify recipe is what proves WHICH failure
+# this actually was.
+
+# Helm-upgrade the already-populated bwc cluster into an incompatible mode.
+e2e-bwc-toggle-mode:
+    @echo "==> [bwc] mode-toggle: helm upgrade into hot-cold mode against the ALREADY-POPULATED bwc_object_store cluster (must fail loudly, never silently)"
+    -helm upgrade --install cerberus deploy/helm/cerberus \
+        --namespace cerberus \
+        --values test/e2e/k3s/cerberus-values.yaml \
+        --values test/e2e/k3s/cerberus-values-bwc.yaml \
+        --values test/e2e/k3s/cerberus-values-bwc-hot-cold.yaml \
+        --values test/e2e/k3s/cerberus-values-bwc-mode-toggle.yaml \
+        --timeout 120s
+    @echo "==> [bwc] mode-toggle upgrade command returned — see 'just e2e-bwc-verify-mode-toggle' for the actual pass/fail verdict"
+
+# Assert the mode-toggling upgrade above failed the SPECIFIC way cerberus
+# issue #3075/#3076 promises: ClickHouse's own UNKNOWN_POLICY startup
+# exception, never merely a generic non-ready pod, a plain non-zero helm
+# exit, a timeout, or (the one failure mode this whole mechanism exists to
+# prevent) a silent success. Logic lives in the env-driven Node module per
+# the CLAUDE.md "non-trivial step logic in .github/scripts/*.mjs" rule.
+
+# Assert the mode-toggle upgrade failed loudly with ClickHouse's UNKNOWN_POLICY error.
+e2e-bwc-verify-mode-toggle:
+    @echo "==> [bwc] verifying the mode-toggle upgrade failed loudly (UNKNOWN_POLICY)"
+    node .github/scripts/e2e-bwc-verify-mode-toggle.mjs
+
 # Tear down the bwc lane. Same cluster name + rolling seeder as the standard
 # lane, so the standard teardown covers it exactly.
 

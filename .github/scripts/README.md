@@ -25,6 +25,13 @@ files. `setOutput` and `exportEnv` differ by consumer, not by mechanism: a step
 output has to be named by whoever reads it, while `$GITHUB_ENV` carries a
 decision that changes how the REST of the job behaves and has no single reader.
 
+`lib/bwc-k8s.mjs` holds the two k8s lookups `e2e-bwc-verify-placement.mjs`
+and `e2e-bwc-verify-mode-toggle.mjs` both need — a namespaced `kubectl`
+runner (`makeKubectl`) and the bundled-ClickHouse pod lookup
+(`clickhousePodName`), by the chart's immutable
+`app.kubernetes.io/component=clickhouse` selector label. One source of
+truth so a third `bwc` verify script never has to re-copy them.
+
 `lib/shard-coverage.mjs` holds the Playwright spec-partition rules the two
 e2e shard-matrix modules share — `discoverSpecs()` (the tracked spec
 universe, from `PLAYWRIGHT_DIR`) and `collectShardCoverageViolations()`
@@ -1852,6 +1859,24 @@ what actually runs.
   - Exit: `0` no scenario in drought (or too few sampled runs to judge any
     of them), `1` a scenario was not-applicable in every sampled run it
     executed in.
+- **`e2e-bwc-verify-mode-toggle.mjs`** — `e2e.yml`, the `bwc-minio` job's
+  `mode-toggle` scenario (cerberus issue #3082), invoked via
+  `just e2e-bwc-verify-mode-toggle` after `just e2e-bwc-toggle-mode` has
+  helm-upgraded an already-populated `bwc_object_store` cluster into hot-cold
+  mode without pinning `hotVolume.enabled: false`. Proves ClickHouse's own
+  startup validation refuses the incompatible storage-policy change with the
+  SPECIFIC "Unknown storage policy ... (UNKNOWN_POLICY)" exception (error code
+  478) — never merely a non-ready/crash-looping pod, a plain non-zero `helm`
+  exit, a timeout, or a silent success — by polling `kubectl logs` (both the
+  current and `--previous` container instance) for that exact signature.
+  Requires `clickhouse.bundled.configOverrides` to have turned on
+  `<logger><console>1</console></logger>`
+  (`cerberus-values-bwc-mode-toggle.yaml`), the only reason the exception
+  reaches `kubectl logs` at all. INFORMATIONAL — never a PR gate.
+  - Env: `NAMESPACE` (default `cerberus`), `POLL_SECONDS` (default `180`),
+    `EXPECTED_POLICY` (default `bwc_object_store`).
+  - Exit: `0` the exact UNKNOWN_POLICY failure was observed and the pod never
+    became Ready; `1` on anything else.
 - **`e2e-bwc-verify-placement.mjs`** — `e2e.yml`, the `bwc-minio` job
   (bundled-ClickHouse-on-object-storage lane), invoked via
   `just e2e-bwc-verify`. Asserts the bundled CH data tier physically lives on
