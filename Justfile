@@ -2411,20 +2411,26 @@ e2e-datashard-up count="2": e2e-down
 #     cerberus-values-datashard.yaml) — DataShardFanoutGate's real,
 #     unconditional ceiling, not merely the trivially-safe N=2 case;
 #   - no MEMORY_LIMIT_EXCEEDED / OOM anywhere in the cluster during the
-#     burst, confirming perShardMemoryBytes' prediction holds under real
-#     concurrent load;
-#   - the ClickHouse#29332 subquery-shaped test plan
-#     (docs/operations.md's "predicate pushdown through subqueries against
-#     Distributed" section) returns results consistent across the two
-#     analyzer paths it names.
-# Run AFTER `just e2e-seed-rolling` (+ `just e2e-run` for the deterministic
-# correctness check against the single-shard-pinned expected values). Logic
-# lives in the env-driven Node module per the CLAUDE.md "non-trivial step
-# logic in .github/scripts/*.mjs" rule.
+#     burst, and every observed per-shard max_memory_usage setting matches
+#     perShardMemoryBytes = cap/(kEff*DataShardCount) for ITS OWN kEff.
+# This recipe does NOT check the ClickHouse#29332 subquery-shaped test plan
+# (docs/operations.md's "predicate pushdown through subqueries against
+# Distributed" section) — that is `test/e2e/e2e_datashard_subquery_test.go`'s
+# job, run via the normal `just e2e-run` (Go e2e suite), not this script.
+# Run AFTER `just e2e-seed-rolling` (+ `just e2e-run` for both the
+# deterministic correctness check against single-shard-pinned expected
+# values AND the #29332 subquery plan). Logic lives in the env-driven Node
+# module per the CLAUDE.md "non-trivial step logic in .github/scripts/*.mjs"
+# rule.
 
-# Assert the real cluster's admission-control + memory + subquery-correctness behavior.
+# Assert the real cluster's admission-control + memory-bound behavior (see e2e_datashard_subquery_test.go for #29332).
 e2e-datashard-verify count="2":
-    @echo "==> [datashard] verifying admission control + memory bound + #29332 subquery plan (count={{count}})"
+    @echo "==> [datashard] verifying admission control + memory bound (count={{count}})"
+    # "8" here must stay equal to CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP in
+    # test/e2e/k3s/cerberus-values-datashard.yaml (see that file's own
+    # comment for why it's pinned rather than derived) -- there is no
+    # runtime endpoint to read it back from, so the two literals are kept
+    # in sync by hand; a future edit to one MUST update the other.
     DATA_SHARD_COUNT="{{count}}" \
     DATA_SHARD_FANOUT_CAP="8" \
         node .github/scripts/e2e-datashard-verify.mjs

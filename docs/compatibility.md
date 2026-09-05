@@ -140,6 +140,19 @@ provenance and breadth*: PromQL inherits an externally-curated standard;
 TraceQL's coverage is only as wide as the author wrote it. Raising
 TraceQL's confidence is the top improvement item.
 
+## Scope: single ClickHouse data shard
+
+All three harnesses target a single-node/single-data-shard ClickHouse — a
+permanent, stated scope boundary (cerberus issue #3079), not an open-ended
+deferral. Multi-data-shard `Distributed`-table correctness is a ClickHouse
+distributed-query-execution concern, not a query-LANGUAGE-fidelity one (none
+of Prometheus, Loki, or Tempo has any concept of a ClickHouse data shard to
+diff against), so it is validated directly — with real `system.query_log`
+evidence these reference-diff harnesses have no way to produce — by the
+dedicated `datashard` e2e leg instead. See
+[`operations.md`](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard-cerberus-issue-3079)
+for the full reasoning.
+
 ## Local run
 
 ```sh

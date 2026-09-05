@@ -36,6 +36,17 @@ works from your **real queries** rather than from `prometheus.yml` — a config
 file cannot tell you whether a query translates cleanly or falls over on
 cardinality.
 
+**Scope: this tool makes no assumption about your ClickHouse's own data-shard
+topology.** Step 10's verify pass replays your real queries through cerberus's
+query engine and diffs the answers against Prometheus — the same engine
+[`operations.md`'s multi-data-shard e2e leg](operations.md#multi-data-shard-e2e-hardening-leg-cerberus-issue-3079)
+validates directly against a real `Distributed` target, so `cerberus
+migrate` inherits that correctness rather than needing a topology-aware
+verify path of its own. Whether the ClickHouse you are migrating onto is
+single-shard or a `dataShards.count > 1` deployment is your own operational
+choice, not something this tool checks or cares about — a permanent,
+stated scope boundary (cerberus issue #3079), not an open-ended deferral.
+
 ## Step 0: Prepare the ground
 
 Two things have to be true before the first command is worth running: someone
