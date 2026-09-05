@@ -212,11 +212,11 @@ clickhouse:
   # exist. Secrets (the ClickHouse user password + static object-store
   # credentials) NEVER land in a ConfigMap — they ride a Secret injected as env
   # and are referenced from the ClickHouse XML via `from_env`. NOT every backend
-  # is equally proven: only S3/MinIO single-node is runtime-proven (k3d e2e);
-  # GCS, Azure, cloud workload-identity and multi-replica+Keeper are
-  # render/kubeconform-validated only and need a real-cloud validation pass
-  # before production. See the support/validation matrix in docs/operations.md
-  # ("Helm: bundled ClickHouse on object storage").
+  # is equally proven: only S3/MinIO single-node (in every storage mode below)
+  # is runtime-proven (k3d e2e); GCS, Azure, cloud workload-identity and
+  # multi-replica+Keeper are render/kubeconform-validated only and need a
+  # real-cloud validation pass before production. See the support/validation
+  # matrix in docs/helm-clickhouse.md.
   bundled:
     # -- Render the bundled ClickHouse data tier and default cerberus at it.
     enabled: false
@@ -272,6 +272,13 @@ clickhouse:
         storageClass: ""
     # -- Object-store backend the ClickHouse disk targets.
     objectStorage:
+      # -- Render the object-store disk/cache/policy. `true` (default) preserves
+      # today's behavior byte-for-byte. Set `false` alongside `hotVolume.enabled:
+      # true` for a pure local-disk ("hot-only") bundled ClickHouse with no
+      # object-store dependency; `false` with `hotVolume.enabled: false` fails
+      # the render (see `hotVolume.enabled` below) — the chart never silently
+      # renders a ClickHouse with no storage tier at all.
+      enabled: true
       # -- Backend: one of `s3`, `gcs`, `azure`.
       backend: s3
       # -- Bucket / container name. MUST be pre-created — the object disk does
@@ -332,6 +339,48 @@ clickhouse:
         accountName: ""
         # -- Inline Azure storage account key.
         accountKey: ""
+    # -- A genuine local-disk "hot" tier new parts land on. `false` (default)
+    # preserves today's behavior byte-for-byte — no local volume, no policy
+    # change. `true` + `objectStorage.enabled: false` renders a hot-only
+    # single-volume policy (`bwc_hot_only`) on local disk alone, and REQUIRES
+    # `schema.ttl` to be set (the chart fails the render otherwise — an
+    # unbounded local disk with no cold tier and no retention fills forever).
+    # `true` + `objectStorage.enabled: true` (the default) renders a two-volume
+    # hot/cold policy (`bwc_hot_cold`): new inserts land on `hot` (this local
+    # disk), then move to `cold` (the unchanged object-store disk/cache chain)
+    # after `schema.tierAfter` via `moveFactor`. See docs/helm-clickhouse.md.
+    # Distinct policy names per mode mean toggling this (or `objectStorage.
+    # enabled`) on an ALREADY-POPULATED cluster fails ClickHouse's own startup
+    # validation loudly (it permits only additive storage-policy changes) —
+    # supported at initial install only; migrate a populated cluster
+    # out-of-band (e.g. blue-green via `remote()`/`INSERT SELECT`).
+    hotVolume:
+      # -- Render the local-disk hot volume/policy.
+      enabled: false
+      # -- `move_factor` on the hot/cold policy (ignored in hot-only mode,
+      # where there is nothing to move to). ClickHouse begins moving parts off
+      # `hot` once its free space drops below this fraction, independent of
+      # `schema.tierAfter`'s age-based move.
+      moveFactor: 0.2
+      persistence:
+        # -- Dedicated PVC for the hot volume instead of a subpath of the
+        # `metadata` PVC (the zero-new-PVC default). RECOMMENDED for any
+        # non-toy deployment — ideally on a faster StorageClass — since the
+        # default shares `metadata`'s storage class and I/O budget with CH's
+        # own system metadata and the object-store cache disk; its real
+        # benefit is skipping the object-store round trip on writes, not
+        # delivering materially faster storage. See the capacity warning in
+        # `helm install --dry-run` NOTES and docs/helm-clickhouse.md: the
+        # default hot volume is a third, effectively unbounded consumer of
+        # `persistence.size`, multiplied by `bundled.replicas` under a
+        # multi-replica cluster (a local disk is not zero-copy replicated the
+        # way the object-store disk is).
+        enabled: false
+        # -- Dedicated hot-volume PVC size (only when `enabled: true`).
+        size: 20Gi
+        # -- StorageClass for the dedicated hot-volume PVC (empty = cluster
+        # default).
+        storageClass: ""
     podDisruptionBudget:
       # -- Create a PodDisruptionBudget for the ClickHouse StatefulSet.
       enabled: false
@@ -345,6 +394,21 @@ clickhouse:
     # -- Extra MergeTree server settings rendered into `<merge_tree>` (map of
     # setting -> value), e.g. `{ max_suspicious_broken_parts: 100 }`.
     settings: {}
+    # -- The bundled ClickHouse ClusterIP Service.
+    service:
+      # -- `ClientIP` (default) pins every new connection a given cerberus pod
+      # opens to the SAME ClickHouse replica for the affinity window, closing
+      # cross-replica divergence within one multi-statement request — INCLUDING
+      # every sharded-pushdown fan-out — under `bundled.replicas > 1`. This does
+      # NOT eliminate temporal read-skew from concurrent ingestion during a
+      # request (ClickHouse has no cross-statement consistent-snapshot
+      # mechanism); that residual risk is pre-existing to the sharded-pushdown
+      # solver against any target, replicated or not. Set `"None"` to disable
+      # (plain round-robin-by-kube-proxy Service routing).
+      sessionAffinity: ClientIP
+      # -- `ClientIP` affinity window, in seconds. Ignored when `sessionAffinity`
+      # is `"None"`.
+      sessionAffinityTimeoutSeconds: 10800
 
 # ---------------------------------------------------------------------------
 # Structured knobs.

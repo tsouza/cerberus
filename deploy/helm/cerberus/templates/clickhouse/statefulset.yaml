@@ -5,6 +5,7 @@
 {{- $passwordSecret := "" }}
 {{- if eq (include "cerberus.createSecret" .) "true" }}{{- $passwordSecret = include "cerberus.secretName" . }}{{- else }}{{- $passwordSecret = $ch.existingSecret }}{{- end }}
 {{- $osEnv := include "cerberus.clickhouse.objectStoreEnv" . | trim }}
+{{- $hotDedicated := $b.hotVolume.persistence.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -110,6 +111,10 @@ spec:
           volumeMounts:
             - name: metadata
               mountPath: /var/lib/clickhouse
+            {{- if $hotDedicated }}
+            - name: hot
+              mountPath: /var/lib/clickhouse-hot
+            {{- end }}
             - name: config
               mountPath: /etc/clickhouse-server/config.d
               readOnly: true
@@ -137,4 +142,19 @@ spec:
         resources:
           requests:
             storage: {{ $b.persistence.size | quote }}
+    {{- if $hotDedicated }}
+    - metadata:
+        name: hot
+        labels:
+          {{- include "cerberus.clickhouse.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with $b.hotVolume.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $b.hotVolume.persistence.size | quote }}
+    {{- end }}
 {{- end }}

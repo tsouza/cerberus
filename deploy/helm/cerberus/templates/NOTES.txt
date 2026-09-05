@@ -67,6 +67,24 @@ cerberus endpoint below — it speaks all three wire formats on one port.
    for production prefer `clickhouse.existingSecret` so the password never
    lives in your values file or Helm release history.
 {{- end }}
+{{- if and .Values.clickhouse.bundled.enabled .Values.clickhouse.bundled.hotVolume.enabled (not .Values.clickhouse.bundled.hotVolume.persistence.enabled) }}
+
+   WARNING: clickhouse.bundled.hotVolume.enabled is true with no dedicated
+   clickhouse.bundled.hotVolume.persistence — the local hot volume is a
+   subpath of the `metadata` PVC (clickhouse.bundled.persistence.size:
+   {{ .Values.clickhouse.bundled.persistence.size }}), a THIRD, effectively
+   unbounded consumer alongside CH's own system metadata and the object-store
+   cache disk.
+{{- if gt (int .Values.clickhouse.bundled.replicas) 1 }}
+   Because a local disk is NOT zero-copy replicated the way the object-store
+   disk is, this consumption MULTIPLIES by clickhouse.bundled.replicas
+   ({{ .Values.clickhouse.bundled.replicas }}) — each replica fills its own
+   `metadata` PVC independently.
+{{- end }}
+   For any non-toy deployment, set clickhouse.bundled.hotVolume.persistence.
+   enabled=true (a dedicated PVC, ideally on a faster StorageClass). See
+   docs/helm-clickhouse.md.
+{{- end }}
 
 5. Memory sizing note:
    cerberus's Go heap does not see the cgroup limit on its own, so the chart

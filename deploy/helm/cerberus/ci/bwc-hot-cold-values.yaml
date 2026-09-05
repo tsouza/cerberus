@@ -1,0 +1,25 @@
+# ct / helm-template fixture: bundled ClickHouse, HOT/COLD mode
+# (hotVolume.enabled: true + objectStorage.enabled: true, the default) — a
+# two-volume policy: new inserts land on the local `hot` disk, then move to
+# the `cold` object-store disk/cache chain after schema.tierAfter (defaulted
+# by cerberus.bundled.apply). S3/MinIO backend with THROWAWAY render-only
+# credentials, plus a dedicated hot-volume PVC to exercise that path too.
+clickhouse:
+  bundled:
+    enabled: true
+    hotVolume:
+      enabled: true
+      moveFactor: 0.1
+      persistence:
+        enabled: true
+        size: 30Gi
+    objectStorage:
+      backend: s3
+      bucket: cerberus-bwc
+      path: data
+      s3:
+        endpoint: http://minio:9000
+        region: us-east-1
+        forcePathStyle: true
+        accessKeyId: minioadmin
+        secretAccessKey: minioadmin

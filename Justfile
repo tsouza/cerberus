@@ -2145,8 +2145,18 @@ e2e: e2e-up e2e-seed-rolling e2e-wait-otel e2e-run e2e-playwright e2e-down
 #      cerberus's stamped tables already present and its CREATE … IF NOT EXISTS
 #      is a no-op.
 
-# Boot the k3d stack with the chart's bundled ClickHouse on MinIO object storage.
-e2e-bwc-up: e2e-down
+# Boot the k3d stack with the chart's bundled ClickHouse on MinIO object
+# storage. `scenario` selects the storage-tiering overlay layered on top of
+# the base `cerberus-values-bwc.yaml` (cerberus issue #3075):
+#   object-storage (default) — today's mode, unchanged.
+#   hot-only  — clickhouse.bundled.hotVolume.enabled=true +
+#               objectStorage.enabled=false + an explicit schema.ttl.
+#   hot-cold  — clickhouse.bundled.hotVolume.enabled=true, objectStorage
+#               stays on (the sensible-defaults hot/cold path).
+# MinIO + the bucket-create Job still come up in every scenario (shared setup,
+# per the issue's "extend the SAME lane" design) even though hot-only never
+# touches them.
+e2e-bwc-up scenario="object-storage": e2e-down
     @echo "==> [bwc] pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
     @echo "==> [bwc] creating k3d cluster {{K3D_CLUSTER}}"
@@ -2203,11 +2213,18 @@ e2e-bwc-up: e2e-down
     kubectl -n cerberus rollout status deployment/minio --timeout=120s
     @echo "==> [bwc] waiting for the bucket-create Job to complete"
     kubectl -n cerberus wait --for=condition=complete job/minio-create-bucket --timeout=120s
-    @echo "==> [bwc] phase 2: installing cerberus + bundled ClickHouse via Helm (object storage)"
+    @echo "==> [bwc] phase 2: installing cerberus + bundled ClickHouse via Helm (scenario: {{scenario}})"
+    @case "{{scenario}}" in \
+        object-storage) overlay="" ;; \
+        hot-only) overlay="--values test/e2e/k3s/cerberus-values-bwc-hot-only.yaml" ;; \
+        hot-cold) overlay="--values test/e2e/k3s/cerberus-values-bwc-hot-cold.yaml" ;; \
+        *) echo "ERROR: unknown scenario '{{scenario}}' (expected object-storage|hot-only|hot-cold)" >&2; exit 1 ;; \
+    esac; \
     helm upgrade --install cerberus deploy/helm/cerberus \
         --namespace cerberus \
         --values test/e2e/k3s/cerberus-values.yaml \
         --values test/e2e/k3s/cerberus-values-bwc.yaml \
+        $overlay \
         --wait --timeout 360s
     @echo "==> [bwc] waiting for bundled ClickHouse StatefulSet + cerberus"
     kubectl -n cerberus rollout status statefulset/cerberus-clickhouse --timeout=300s
@@ -2225,9 +2242,12 @@ e2e-bwc-up: e2e-down
 # CLAUDE.md "non-trivial step logic in .github/scripts/*.mjs" rule), invoked
 # with the pinned mc image so the in-cluster bucket-ls pod matches the lane.
 
-# Assert the bwc data tier really lives on object storage. Run after e2e-seed-rolling.
-e2e-bwc-verify:
-    @echo "==> [bwc] verifying object-storage placement"
+# Assert the bwc data tier really lives on the storage tier the scenario
+# claims. `scenario` MUST match the one passed to `e2e-bwc-up`. Run after
+# e2e-seed-rolling.
+e2e-bwc-verify scenario="object-storage":
+    @echo "==> [bwc] verifying {{scenario}} placement"
+    SCENARIO="{{scenario}}" \
     MC_IMAGE="minio/mc:RELEASE.2025-08-13T08-35-41Z" \
         node .github/scripts/e2e-bwc-verify-placement.mjs
 

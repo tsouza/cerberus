@@ -1681,14 +1681,23 @@ jobs:
         run: just e2e-down
 
   # ---------------------------------------------------------------------------
-  # bwc-minio — bundled-ClickHouse-on-object-storage lane. Brings up k3d +
-  # MinIO + a bucket-create Job + the Helm chart with
-  # `clickhouse.bundled.enabled=true` pointed at MinIO, seeds the deterministic
-  # OTel rows, and PROVES the data tier lives on object storage: storage_policy
-  # stamped on every table, active parts on the object/cache disk (not the local
-  # `default` disk), and the bucket non-empty after the seed. Then runs the Go
-  # e2e suite to confirm cerberus serves the seeded data from the MinIO-backed
-  # ClickHouse.
+  # bwc-minio — bundled-ClickHouse storage-tiering lane (cerberus issue #3075).
+  # A 3-leg matrix over `scenario` shares this ONE lane's MinIO/k3d setup
+  # rather than three parallel lanes:
+  #   object-storage — today's mode: bucket-create Job + the Helm chart with
+  #     `clickhouse.bundled.enabled=true` pointed at in-cluster MinIO.
+  #   hot-only — `hotVolume.enabled=true` + `objectStorage.enabled=false` + an
+  #     explicit `schema.ttl`. MinIO still comes up (shared setup) but this
+  #     scenario never touches it.
+  #   hot-cold — `hotVolume.enabled=true`, objectStorage stays on. Additionally
+  #     ages seeded rows past a short `schema.tierAfter` and forces a merge to
+  #     prove the `TTL ... TO VOLUME` move actually relocates parts.
+  # Each leg seeds the deterministic OTel rows and PROVES the data tier lives
+  # where the scenario claims: storage_policy stamped on every table, active
+  # parts on the expected disk(s) (never the local `default` disk), and (for
+  # object-storage / hot-cold) the bucket non-empty after the seed. Then runs
+  # the Go e2e suite to confirm cerberus serves the seeded data from the
+  # bundled ClickHouse.
   #
   # INFORMATIONAL, never a PR gate. SAME trigger posture as `dashboard` /
   # `chaos`: push-to-main + nightly + manual dispatch ONLY (never on
@@ -1696,14 +1705,27 @@ jobs:
   # deliberately NOT added to the dashboard/compose disjoint-cover shard
   # matrices — it is a separate single-cluster lane, not a Playwright shard.
   bwc-minio:
-    name: bwc-minio
+    name: bwc-minio (${{ matrix.scenario }})
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      # Three storage-tiering scenarios (cerberus issue #3075), sharing this
+      # SAME lane's MinIO/k3d setup rather than three parallel lanes — see the
+      # job header comment. hot-only never touches MinIO/the object store at
+      # all; hot-cold additionally ages rows past schema.tierAfter and forces
+      # a merge to prove the TTL ... TO VOLUME move actually fires.
+      matrix:
+        scenario: [object-storage, hot-only, hot-cold]
     concurrency:
-      # Unique per run; main, nightly, and dispatch qualification remain
-      # independently observable and uncancellable.
-      group: e2e-bwc-minio-${{ github.run_id }}
+      # Unique per run AND per scenario — each matrix leg gets its own runner
+      # VM (so there's no cross-leg port/cluster collision to avoid), but the
+      # group still needs to be scenario-scoped so re-running a single failed
+      # leg doesn't collide with a concurrency group the other legs still hold.
+      # main, nightly, and dispatch qualification remain independently
+      # observable and uncancellable.
+      group: e2e-bwc-minio-${{ github.run_id }}-${{ matrix.scenario }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
@@ -1745,15 +1767,23 @@ jobs:
           docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: Bring up k3d + MinIO + bundled-ClickHouse stack
-        run: just e2e-bwc-up
+        run: just e2e-bwc-up ${{ matrix.scenario }}
+
+      # Chart-only, doesn't depend on the scenario's own data — but DOES need
+      # a reachable k8s API (`helm install --dry-run`), which `helm template`
+      # cannot fake, so it runs here rather than in the cluster-less
+      # chart-validate job. Runs once per matrix leg (cheap: a handful of
+      # dry-run installs against a name no scenario uses, nothing persists).
+      - name: Assert NOTES.txt hot-volume capacity warning
+        run: node .github/scripts/chart-notes-assert.mjs
 
       - name: Seed OTel data (deterministic synthetic rows; rolling)
         run: just e2e-seed-rolling
 
-      - name: Assert object-storage placement (storage_policy + parts + bucket)
-        run: just e2e-bwc-verify
+      - name: Assert storage placement (storage_policy + parts + bucket/aging)
+        run: just e2e-bwc-verify ${{ matrix.scenario }}
 
-      - name: Run Go E2E tests (cerberus serves seeded data from MinIO-backed CH)
+      - name: Run Go E2E tests (cerberus serves seeded data from the bundled ClickHouse)
         run: just e2e-run
 
       - name: Dump cluster state on failure
