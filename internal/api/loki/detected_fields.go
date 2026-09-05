@@ -221,7 +221,7 @@ func (h *Handler) detectedFieldsPeek(w http.ResponseWriter, r *http.Request, rou
 		return nil, 0, false
 	}
 
-	sqlStr, args, err := buildDetectedFieldsSQL(h.Schema, matchers, start, end, lineLimit)
+	sqlStr, args, err := buildDetectedFieldsSQL(h.Schema, h.AttrStrategies, matchers, start, end, lineLimit)
 	if err != nil {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return nil, 0, false
@@ -345,12 +345,12 @@ func humanizeByteValue(v string) string {
 //
 // The peek window is small (1000 rows by default) — CH executes this as
 // a top-N scan on the primary key, comparable to /index/stats.
-func buildDetectedFieldsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time, lineLimit int) (string, []any, error) {
+func buildDetectedFieldsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers []*labels.Matcher, start, end time.Time, lineLimit int) (string, []any, error) {
 	sb := chsql.NewQuery().
 		Select(
 			chsql.As(chsql.Col(s.BodyColumn), "line"),
-			chsql.As(chsql.Col(s.AttributesColumn), "log_attributes"),
-			chsql.As(chsql.Col(s.ResourceAttributesColumn), "stream_labels"),
+			chsql.As(attrMapFrag(strategies, s.AttributesColumn), "log_attributes"),
+			chsql.As(attrMapFrag(strategies, s.ResourceAttributesColumn), "stream_labels"),
 			// The two parser-stage extractions, rendered from the SAME
 			// chplan expressions the LogQL lowering emits for `| logfmt`
 			// and `| json` — so the advertised body-parsed field set is
@@ -362,7 +362,8 @@ func buildDetectedFieldsSQL(s schema.Logs, matchers []*labels.Matcher, start, en
 			chsql.As(func(b *chsql.Builder) { _ = b.Expr(logql.LogfmtParsedLabels(s)) }, "logfmt_fields"),
 			chsql.As(func(b *chsql.Builder) { _ = b.Expr(logql.JSONParsedLabels(s)) }, "json_fields"),
 		).
-		From(chsql.Col(s.LogsTable))
+		From(chsql.Col(s.LogsTable)).
+		WithAttrStrategies(strategies)
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err

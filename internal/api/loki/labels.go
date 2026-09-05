@@ -24,7 +24,10 @@ import (
 //   - start / end (optional): time range, defaults to last hour / now.
 //
 // The SQL groups distinct map keys via arrayJoin(<col>.keys) on the
-// resource-attributes column's virtual keys subcolumn.
+// resource-attributes column's virtual keys subcolumn — or, for a
+// JSON-strategy column (cerberus issue #3063 point 2), arrayJoin over
+// JSONAllPaths(<col>) instead, via distinctAttrKeysFrag
+// (attr_strategy.go).
 func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	start, end, err := parseStartEnd(r)
 	if err != nil {
@@ -41,7 +44,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sqlStr, args, err := buildLabelsSQL(h.Schema, matchers, start, end)
+	sqlStr, args, err := buildLabelsSQL(h.Schema, h.AttrStrategies, matchers, start, end)
 	if err != nil {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -77,10 +80,11 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 //
 // All identifiers + time-range bounds flow through QueryBuilder slots —
 // no fmt.Sprintf-on-SQL.
-func buildLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
+func buildLabelsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(chsql.As(distinctMapKeysFrag(s.ResourceAttributesColumn), "k")).
-		From(chsql.Col(s.LogsTable))
+		Select(chsql.As(distinctAttrKeysFrag(strategies, s.ResourceAttributesColumn), "k")).
+		From(chsql.Col(s.LogsTable)).
+		WithAttrStrategies(strategies)
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err
@@ -89,23 +93,6 @@ func buildLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.T
 
 	sqlStr, args := sb.Build()
 	return sqlStr, args, nil
-}
-
-// distinctMapKeysFrag emits
-//
-//	DISTINCT arrayJoin(`<col>`.`keys`)
-//
-// — the CH idiom for flattening a Map column's key array into the row
-// stream and de-duping, spelled against the column's virtual `.keys`
-// subcolumn rather than mapKeys(<col>) so the key-only decode is explicit
-// rather than depending on the server-side optimize_functions_to_subcolumns
-// rewrite (cerberus issue #2775). Used by /labels (the per-row key set)
-// and is the shape Grafana's label autocomplete expects. Safe
-// unconditionally, with no version gate: DISTINCT/arrayJoin key
-// enumeration never consults a skip index, so there is no index-matching
-// risk to weigh the way there is for a keyed-existence WHERE predicate.
-func distinctMapKeysFrag(col string) chsql.Frag {
-	return chsql.Distinct(chsql.Call("arrayJoin", chsql.Qual(col, "keys")))
 }
 
 // dedupeAndSort drops empty strings, removes duplicates, and sorts the

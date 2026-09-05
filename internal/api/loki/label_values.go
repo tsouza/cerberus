@@ -47,7 +47,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sqlStr, args, err := buildLabelValuesSQL(h.Schema, name, matchers, start, end)
+	sqlStr, args, err := buildLabelValuesSQL(h.Schema, h.AttrStrategies, name, matchers, start, end)
 	if err != nil {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -100,14 +100,15 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 // through that map key. The matcher lowering in
 // `internal/logql/lower.go::matcherToExpr` mirrors the same fallback so
 // the two endpoints agree on what counts as a row carrying the label.
-func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
+func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name string, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	keys := labelValueLookupKeys(name)
 	topCol := labelValueTopLevelColumn(s, name)
 	if topCol == "" && len(keys) == 1 {
 		// Fast path: single map-key lookup, no top-level fallback.
 		sb := chsql.NewQuery().
 			Select(chsql.As(distinctMapAtFrag(s.ResourceAttributesColumn, keys[0]), "v")).
-			From(chsql.Col(s.LogsTable))
+			From(chsql.Col(s.LogsTable)).
+			WithAttrStrategies(strategies)
 		if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 			return "", nil, err
 		}
@@ -123,7 +124,8 @@ func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher,
 	if topCol != "" {
 		arm := chsql.NewQuery().
 			Select(chsql.As(chsql.Col(topCol), "v")).
-			From(chsql.Col(s.LogsTable))
+			From(chsql.Col(s.LogsTable)).
+			WithAttrStrategies(strategies)
 		if err := applySelectorAndWindow(arm, s, matchers, start, end); err != nil {
 			return "", nil, err
 		}
@@ -133,7 +135,8 @@ func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher,
 	for _, k := range keys {
 		arm := chsql.NewQuery().
 			Select(chsql.As(mapAtFrag(s.ResourceAttributesColumn, k), "v")).
-			From(chsql.Col(s.LogsTable))
+			From(chsql.Col(s.LogsTable)).
+			WithAttrStrategies(strategies)
 		if err := applySelectorAndWindow(arm, s, matchers, start, end); err != nil {
 			return "", nil, err
 		}

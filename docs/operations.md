@@ -2872,13 +2872,42 @@ precise boot-time finding:
     - **Logs**: per-key attribute lookups now work against a JSON-typed
       column — stream-selector label matchers (`{app="foo"}`),
       `detected_level`, and any other bare `MapAccess`/`mapContains` read.
-      The warning names what remains unsupported: LogQL operations that need
-      the *whole* attribute map at once (`| line_format`, `| label_format`,
-      `| unpack`, wildcard `keep`/`drop`), the `/labels` / `/series` /
-      `/detected_fields` metadata endpoints (their queries bypass the
-      per-key lowering entirely), and a table whose ingestion ever used
-      `json_type_escape_dots_in_keys=1` or mixes dotted-key encodings —
-      tracked as [#3063](https://github.com/tsouza/cerberus/issues/3063).
+      [#3063](https://github.com/tsouza/cerberus/issues/3063) closed the
+      remaining LogQL-side gaps this warning used to name:
+      - **Full-map operations** — `withDetectedLevelAndColumns`'s
+        `mapConcat`/`mapFilter` identity synthesis (runs on essentially
+        every log-stream query), `structuredMetadataExpr`'s `mapFilter`
+        over `LogAttributes`, every parser-stage label merge
+        (`PipelineLabelsExpr`'s `mapConcat`/`mapApply` chain), and a bare
+        attribute-map projection with no wrapping stage at all — all now
+        render correctly against a JSON-typed column via a bounded-depth
+        reconstruction into a genuine `Map(String,String)`
+        (`internal/chsql/attr_strategy_fullmap.go`). ClickHouse's JSON type
+        has no per-row dynamic-path value extraction (verified empirically:
+        `JSONExtractString`/`JSONExtract`/`getSubcolumn` against a JSON
+        operand all reject a non-constant path), so the reconstruction
+        round-trips through `toJSONString` + the fully-dynamic
+        `JSONExtractKeysAndValuesRaw`, re-applied up to
+        `maxJSONAttrFlattenDepth` (3) additional levels beyond the first —
+        enough to fully flatten any OTel key of up to 4 dot segments (e.g.
+        `k8s.container.status.last_terminated_reason`). A key nested
+        deeper than that keeps its remaining structure as an **unparsed
+        raw JSON substring** under its partial dotted key in the
+        reconstructed map — present and non-empty, never silently dropped
+        — rather than fully flattening; this bound has not been observed
+        to bind on any real OTel semantic-convention key.
+      - **Metadata/discovery endpoints** — `/labels`, `/series`,
+        `/label/<name>/values`, `/detected_labels` and `/detected_fields`
+        build their SQL directly against `chsql.NewQuery()` rather than
+        through `chplan`, so they never reached `AttrStrategies` threading
+        at all; each now resolves the Handler's `AttrStrategies` itself
+        (`internal/api/loki/attr_strategy.go`) and renders `JSONAllPaths`
+        for key discovery / the same bounded reconstruction for whole-map
+        reads. `/patterns` needed no change — it never reads an
+        attribute-map column.
+      - **`json_type_escape_dots_in_keys` / mixed-history hazard** — see
+        the dedicated callout below this list, shared verbatim with
+        traces.
     - **Traces**: per-key attribute lookups and comparisons now work against
       a JSON-typed column too — span/resource/scope attribute matchers
       (`{ span.foo = "bar" }`), numeric/duration comparisons
@@ -2899,6 +2928,44 @@ precise boot-time finding:
       regardless of filter shape until #3065 lands the full-map JSON
       bridge, if `ResourceAttributes` (not `SpanAttributes` /
       `ScopeAttributes`) is the JSON-typed column.
+    - **`json_type_escape_dots_in_keys` / mixed-history hazard — the
+      decision, shared by logs and traces (cerberus issues #3063 and
+      #3065's identical point 3).** Every JSON rendering above (per-key
+      and full-map alike) targets ClickHouse's **default** dot-nesting
+      behaviour only: `{"http.status_code":"200"}` nests to a two-level
+      path, addressed via the backtick-quoted compile-time token
+      `` col.`http.status_code`.:String ``. A table whose ingestion path
+      ever set `json_type_escape_dots_in_keys=1` (CH 25.8+,
+      percent-encoded FLAT keys — `http.status_code` stored as the
+      literal, unnested key `http%2Estatus_code`) reads back **NULL /
+      missing** against every rendering this document describes, and a
+      table that ingested under BOTH settings at different times (a
+      config change, or a mixed exporter fleet) has the same logical key
+      live under two different physical paths simultaneously — no
+      boot-time `system.columns`-style schema check can rule this out; it
+      would need a bounded content sample of `distinctJSONPaths(<col>)`,
+      not just a type check. Cerberus's decision, made explicitly rather
+      than left implicit: **ship this as a documented, loud limitation
+      rather than add a boot-time refuse gate.** A refuse gate would need
+      either a `system.settings` probe (which cannot see a *past*
+      ingestion-time setting, only the server's *current* one — the
+      mixed-history case specifically defeats it) or a new
+      operator-facing acknowledgement config knob, and either way could
+      only rule out the single-setting case, not the mixed-history one —
+      so it would trade a straightforward, honest limitation for a
+      partial, false sense of safety plus a new boot-time failure mode
+      operators would have to learn. The startup warning this section
+      documents already names the exception loudly at boot; that,
+      together with this document, is the loud signal. An operator who
+      knows their ingestion path ever set `json_type_escape_dots_in_keys=1`
+      should not enable JSON-typed attribute columns without first
+      re-verifying current ClickHouse behaviour empirically (a version
+      bump may change what is and is not supported) and confirming their
+      table's own ingestion history — cerberus cannot discover that
+      history on their behalf. Any future work that actually detects or
+      bridges the escape-dots encoding should update both this section
+      and its logs/traces counterparts together, since the hazard and the
+      underlying ClickHouse setting are identical for both signals.
     - Metrics attribute-map columns are **not** covered by this exception
       and stay `Map(String, String)`-only — they carry the metric's series
       identity, out of scope per the issue itself.

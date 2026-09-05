@@ -170,7 +170,35 @@ func writeInlineNonFinite(b *Builder, v float64) bool {
 // qualified or otherwise composite container, use the typed Frag form
 // Subscript(container, key) instead — e.g.
 // Subscript(Qual("L", "Attributes"), Lit(key)) for `L`.`Attributes`[?].
+//
+// cerberus issue #3063 point 2: this is the ad-hoc-query-builder
+// equivalent of chplan.MapAccess (exprMapAccess) — internal/api/loki's
+// /loki/api/v1/label/<name>/values (label_values.go's mapAtFrag) and
+// internal/api/prom's metadata endpoints build their per-key lookup
+// through THIS method directly rather than through a chplan tree, so
+// wiring exprMapAccess's JSON branch alone left them reading a
+// JSON-strategy column with plain bracket-subscript syntax — the exact
+// "bypasses chplan entirely" class of gap #3063 names. When col resolves
+// to AttrStrategyJSON, this renders the same
+// `coalesce(<col>.<key>.:String, the empty string)` shape exprMapAccess's doc explains
+// in full (dot-nesting, and the missing-vs-empty normalisation) — with
+// key inlined as a backtick-quoted identifier (b.Ident, not b.Arg)
+// because ClickHouse's JSON dynamic-subcolumn path is a compile-time
+// syntax token, not a bound parameter; safe here because key is always a
+// caller-supplied Go string already fixed at SQL-build time (a URL path
+// segment / metric label name), never row data. PromQL's metadata.go
+// calls into this too, but preflight never resolves AttrStrategyJSON for
+// a metrics attribute column (chplan.AttrStrategy's own doc), so this
+// branch is a no-op there.
 func (b *Builder) MapAt(col, key string) {
+	if b.attrStrategies.Lookup(col) == AttrStrategyJSON {
+		b.sb.WriteString("coalesce(")
+		b.Ident(col)
+		b.sb.WriteByte('.')
+		b.Ident(key)
+		b.sb.WriteString(".:String, '')")
+		return
+	}
 	b.Ident(col)
 	b.sb.WriteByte('[')
 	b.Arg(key)
@@ -896,6 +924,9 @@ func (b *Builder) emitGoModulo(left, right chplan.Expr) error {
 func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	if f.Fn == chplan.FnMapContainsKey {
 		return b.exprMapContainsKey(f.Args)
+	}
+	if jsonFullMapFns[f.Fn] {
+		f = b.substituteJSONFullMapArgs(f)
 	}
 	name, render, err := resolveFn(f.Fn)
 	if err != nil {
@@ -3200,10 +3231,33 @@ func (s *QueryBuilder) LimitBy(exprs ...Frag) *QueryBuilder {
 // parentheses. Used to plug a QueryBuilder into another's From
 // without flattening to a string: args bound inside the nested
 // SELECT stay tied to their position in the outer args slice.
+//
+// cerberus issue #3063 point 2: writeInto renders directly into the
+// PARENT Frag's Builder (that is the whole point — positional args stay
+// one shared slice), which means it inherits the parent's
+// b.attrStrategies by default. A caller that resolved and set its OWN
+// AttrStrategies on s via WithAttrStrategies (label_values.go's
+// UNION-ALL arms, each built as an independent QueryBuilder before being
+// spliced together via Frag) would otherwise have that assignment
+// silently discarded — the ad-hoc-query-builder equivalent of the
+// "bypasses chplan entirely" class of bug this issue names, except here
+// the bypass is inside chsql's own Frag composition primitive rather
+// than in a caller. s.attrStrategies is nil (the zero value) for every
+// pre-#3063 QueryBuilder that never called WithAttrStrategies, so this
+// swap is a genuine no-op for every one of chsql's ~50+ other Frag()
+// call sites: they keep inheriting the parent's strategies exactly as
+// before.
 func (s *QueryBuilder) Frag() Frag {
 	return func(b *Builder) {
 		b.sb.WriteByte('(')
-		s.writeInto(b)
+		if s.attrStrategies != nil {
+			prev := b.attrStrategies
+			b.attrStrategies = s.attrStrategies
+			s.writeInto(b)
+			b.attrStrategies = prev
+		} else {
+			s.writeInto(b)
+		}
 		b.sb.WriteByte(')')
 	}
 }
