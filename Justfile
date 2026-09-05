@@ -2358,7 +2358,7 @@ e2e-datashard-up count="2": e2e-down
         just _pull-retry "$img"; \
     done
     @# Import each image individually + VERIFY it landed (same robust loop as
-    @# e2e-up / e2e-bwc-up — see e2e-up's own comment for why).
+    @# e2e-up / e2e-bwc-up — see the comment on e2e-up for why).
     @for img in {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_DATASHARD_IMAGES}}; do \
         case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
         ref="$img"; \
