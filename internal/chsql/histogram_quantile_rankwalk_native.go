@@ -17,8 +17,9 @@ const (
 
 	// hqRankWalkCumTermColumn is the terminal-appended cumulative ladder
 	// (the FULL-length cum array the pre-#2790 emission ARRAY JOINed
-	// directly) — read twice below (the bounded index search and the
-	// window's own length / terminal-membership test), so it is
+	// directly) — read THREE times below (the bounded index search's
+	// override of w.cum(), the arraySlice building the bracketing window,
+	// and needsTerminal's own length() terminal-membership test), so it is
 	// materialised once rather than re-derived at each read site.
 	hqRankWalkCumTermColumn = "_cerb_hqn_cumterm"
 
@@ -41,6 +42,16 @@ const (
 	// arraySlice itself is materialised rather than re-evaluated per arm.
 	hqRankWalkSliceLeColumn  = "_cerb_hqn_slice_le"
 	hqRankWalkSliceCumColumn = "_cerb_hqn_slice_cum"
+
+	// hqRankWalkNeedsTerminalColumn is the boolean "does the window still
+	// need the terminal (+Inf, total) pair appended" verdict — read TWICE
+	// below (both arms of the conditional terminal append, windowLe and
+	// windowCum), so — matching this file's own materialize-every-
+	// multi-use-quantity discipline (cumTerm, idx, and the slice columns
+	// above each get their own stage for the identical reason) — it is
+	// materialised once rather than re-embedded as the same Go-level Frag
+	// at each read site.
+	hqRankWalkNeedsTerminalColumn = "_cerb_hqn_needsterm"
 )
 
 // emitHistogramQuantileRankWalkNative renders a chplan.HistogramQuantile
@@ -205,10 +216,11 @@ func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantil
 		Call("arrayPushBack", Col(hqClassicCumColumn), Col(hqClassicObservationsColumn)),
 	)
 
-	// Stage 4 — the terminal-appended cumulative ladder: read twice below
-	// (the bounded index search and the window's own length /
-	// terminal-membership test), so it is materialized once rather than
-	// re-derived at each read site — see hqRankWalkCumTermColumn's own doc.
+	// Stage 4 — the terminal-appended cumulative ladder: read THREE times
+	// below (the bounded index search, the arraySlice building the window,
+	// and needsTerminal's own length() check), so it is materialized once
+	// rather than re-derived at each read site — see
+	// hqRankWalkCumTermColumn's own doc.
 	termed := NewQuery().
 		Select(Star(), As(cumTerm, hqRankWalkCumTermColumn)).
 		From(Subquery(counted))
@@ -246,24 +258,30 @@ func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantil
 		).
 		From(Subquery(indexed))
 
-	// needsTerminal is false exactly when the found index ALREADY IS the
-	// terminal rung — the slice above already carries (+Inf, total) in
-	// that case, and appending it again would DUPLICATE it, which a probe
-	// against a real server confirmed corrupts interior-phi answers (see
-	// this function's own doc). Only when the found rung sits strictly
-	// before the terminal is it appended, closing #2790's ARRAY JOIN
-	// blow-up: the window ARRAY JOINs at most three rungs regardless of
-	// the ladder's own length.
-	needsTerminal := Neq(Col(hqRankWalkIdxColumn), Call("length", Col(hqRankWalkCumTermColumn)))
-	windowLe := If(needsTerminal,
+	// Stage 7 — needsTerminal: false exactly when the found index ALREADY
+	// IS the terminal rung — the slice above already carries (+Inf, total)
+	// in that case, and appending it again would DUPLICATE it, which a
+	// probe against a real server confirmed corrupts interior-phi answers
+	// (see this function's own doc). Only when the found rung sits
+	// strictly before the terminal is it appended, closing #2790's ARRAY
+	// JOIN blow-up: the window ARRAY JOINs at most three rungs regardless
+	// of the ladder's own length. Read twice below (both arms of the
+	// conditional terminal append), so it is materialized here rather than
+	// re-embedded per arm — see hqRankWalkNeedsTerminalColumn's own doc.
+	needsTerminalExpr := Neq(Col(hqRankWalkIdxColumn), Call("length", Col(hqRankWalkCumTermColumn)))
+	termFlagged := NewQuery().
+		Select(Star(), As(needsTerminalExpr, hqRankWalkNeedsTerminalColumn)).
+		From(Subquery(sliced))
+
+	windowLe := If(Col(hqRankWalkNeedsTerminalColumn),
 		Call("arrayPushBack", Col(hqRankWalkSliceLeColumn), verbatim("inf")),
 		Col(hqRankWalkSliceLeColumn))
-	windowCum := If(needsTerminal,
+	windowCum := If(Col(hqRankWalkNeedsTerminalColumn),
 		Call("arrayPushBack", Col(hqRankWalkSliceCumColumn), Col(hqClassicObservationsColumn)),
 		Col(hqRankWalkSliceCumColumn))
 
 	sb := NewQuery().
-		From(Subquery(sliced)).
+		From(Subquery(termFlagged)).
 		ArrayJoin(As(windowLe, hqRankWalkLeColumn), As(windowCum, hqRankWalkCumColumn))
 
 	groupByFrags := make([]Frag, 0, len(h.GroupBy))

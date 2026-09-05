@@ -181,15 +181,23 @@ import (
 // calibration seed — and the REJECTED rows are genuine real-server
 // `MEMORY_LIMIT_EXCEEDED` aborts at the SAME (series, width) points that
 // file's own header table records for the fold, confirming this harness
-// reproduces that published calibration (absolute numbers run ~10-18%
-// lower here, attributable to the newer 26.6.4 server vs that table's
-// 25.9-alpine, not to a methodology difference) before trusting its
-// fold-vs-sumMap DELTA.
+// reproduces that published calibration before trusting its fold-vs-sumMap
+// DELTA. Of the 8 rows above, 6 have an attained-byte figure in BOTH
+// tables (the 2 REJECTED rows only report a bare "REJECTED" in
+// classic_bucket_merge_bound.go's table, with no comparable number).
+// Converting this file's fold-peak MiB figures to MB (x1.048576, the same
+// convention classic_bucket_merge_bound.go's table already uses) and
+// comparing against that table's peak-memory column at the identical
+// (series, width) points: this file's absolute numbers run ~3-14% lower
+// (2.8% at 6000x50, 4.5-4.6% at the two 20-width points, ~13-14% at the
+// 3741x12 and both 50-width points at 100,000/200,000 T) — attributable to
+// the newer 26.6.4 server vs that table's 25.9-alpine, not to a
+// methodology difference.
 //
 // Two things fall out of this table:
 //
 //  1. sumMap is NOT cheaper at any point measured — it is marginally MORE
-//     expensive everywhere, by a near-constant ~319-452 KiB absolute
+//     expensive everywhere, by a near-constant ~307-512 KiB absolute
 //     overhead (consistent with a small, T-independent per-query
 //     construction cost: the extra arraySort/arrayCumSum lambda setup this
 //     file's header already names, not a term that scales with volume).
@@ -227,10 +235,12 @@ import (
 //
 // The measured real-world speedup is gone: post-#2817's per-row
 // arraySort/arrayCumSum cost erased #2756's original ~50x estimate down to
-// a near-zero, occasionally NEGATIVE real delta at every controlled point
-// tested — this repo's own established pattern for a feature that looked
-// like an obvious win before recalibration (#2768's codec measurement,
-// #2750's ts_tag_groups measurement). [chopt.FeatureClassicBucketMergeSumMap]
+// a near-zero real delta at every controlled point tested — sumMap is
+// consistently, marginally MORE expensive than the fold (never negative,
+// never cheaper), converging toward parity in relative terms as T grows
+// (see the table above) — this repo's own established pattern for a
+// feature that looked like an obvious win before recalibration (#2768's
+// codec measurement, #2750's ts_tag_groups measurement). [chopt.FeatureClassicBucketMergeSumMap]
 // keeps `AutoSelect: false`; the feature stays reachable only via explicit
 // `CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap` listing for an
 // operator who wants BYTE-IDENTICAL correctness (pinned since #2817) with

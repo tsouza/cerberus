@@ -905,21 +905,25 @@ per-rung admission already holds a verdict) — reusing that file's own
 re-deriving them. Two further narrowings are specific to this probe, both
 documented at length on `cardinality_probe_wiring.go`'s own top-level doc:
 
-- **Carrier kind:** five recognised `chplan.GridCarrier` kinds — the
+- **Carrier kind:** six recognised `chplan.GridCarrier` kinds — the
   "matrix" family `*chplan.RangeWindow` (by far the most common ModeAuto
   shape, and the one issue #2709's own incident and issue #2788's own
   dashboard-panel example both concern) plus, as of issue #2840,
   `*chplan.RangeWindowGridNative`, `*chplan.RangeBucketFanout`,
-  `*chplan.RangeBucketGridNative` and `*chplan.RangeLWR`. Issue #2840 set
-  out to mirror each of the latter four's "own real-matrix
-  time-bound-pushdown formula" and instead found `chsql` had already
-  collapsed all four onto ONE shared helper
+  `*chplan.RangeBucketGridNative` and `*chplan.RangeLWR`, and —
+  added in a later ACPR pass on the same honest basis — `*chplan.
+  RangeWindowStaleResample`. Issue #2840 set out to mirror each of its four
+  additions' "own real-matrix time-bound-pushdown formula" and instead
+  found `chsql` had already collapsed all of them onto ONE shared helper
   (`maybePushRangeScanTimeBound`, `internal/chsql/range_lwr.go`) — see
-  `cardinality_probe_wiring.go`'s own top-level doc for the finding. Every
-  other `GridCarrier` kind (`StepGrid`, `RangeWindowStaleResample`,
-  `AbsentOverTime`) still fails open — no probe, exactly as if the feature
-  did not exist for that shape; none of them is one of the five recognised
-  kinds. The issue's own bracketed-optional third stat
+  `cardinality_probe_wiring.go`'s own top-level doc for the finding.
+  `RangeWindowStaleResample` shares that identical formula too (same
+  helper, same field shape as `RangeLWR`) but was excluded from #2840's
+  original count purely for not being one of that PR's four additions, a
+  circular basis corrected once noticed. Every other `GridCarrier` kind
+  (`StepGrid`, `AbsentOverTime`) still fails open — no probe, exactly as if
+  the feature did not exist for that shape; neither shares the formula.
+  The issue's own bracketed-optional third stat
   (`avg(length(ExplicitBounds))`, a classic-histogram bucket-width bias
   signal) stays out for the same reason it started out: no consumer reads
   it, and #2840's own text names it the lowest-priority of its three items.

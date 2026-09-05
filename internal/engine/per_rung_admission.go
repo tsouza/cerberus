@@ -143,6 +143,20 @@ func (l *PerRungAdmissionLearner) record(key routememo.Key, cheap bool) {
 		}
 		st = &perRungAdmissionState{}
 		l.states[key] = st
+	} else if time.Since(st.lastObserved) > perRungEvidenceTTL {
+		// The entry exists but has aged past perRungEvidenceTTL — treat it
+		// as expired evidence, exactly like ShouldDeclineBypass and
+		// hasFreshEntry already do for READS of this state. Without this
+		// reset, a single post-staleness observation would combine with a
+		// stale consecutiveCheap count left over from before expiry and
+		// could immediately re-trip ShouldDeclineBypass off one fresh
+		// observation — the self-confirming-decline bug #3044 closed at
+		// the seed call site (its hasFreshEntry guard) but not here, in
+		// record() itself. Mirrors routememo.Memo.getLiveLocked
+		// (internal/routememo/memo.go) and internal/actuals/tracker.go's
+		// getOrCreateLocked, which both reset accumulated state on expiry
+		// rather than reusing a stale entry as-is.
+		st.consecutiveCheap = 0
 	}
 	if cheap {
 		st.consecutiveCheap++
@@ -206,12 +220,18 @@ func (l *PerRungAdmissionLearner) ShouldDeclineBypass(key routememo.Key) bool {
 
 // hasFreshEntry reports whether key has ANY unexpired entry at all —
 // unlike ShouldDeclineBypass, which also answers false for a fresh entry
-// that has not yet accumulated perRungEvidenceMinObservations. Used only by
-// explain_estimate_wiring.go's ScanEstimateAdvisor to decide whether this
-// learner already holds SOME verdict for key (of either polarity) before
-// spending an advisory EXPLAIN ESTIMATE round trip on it — issue #2787's own
-// "skip when the memo or admission system already holds a verdict"
-// constraint, applied to this learner specifically.
+// that has not yet accumulated perRungEvidenceMinObservations. Two call
+// sites use it, for two distinct purposes:
+//
+//   - explain_estimate_wiring.go's ScanEstimateAdvisor, to decide whether
+//     this learner already holds SOME verdict for key (of either polarity)
+//     before spending an advisory EXPLAIN ESTIMATE round trip on it —
+//     issue #2787's own "skip when the memo or admission system already
+//     holds a verdict" constraint, applied to this learner specifically.
+//   - actuals_wiring.go's maybeSeedPerRungAdmissionFromActuals (added by
+//     #3044, issue #2789), to skip RESEEDING a shape that already carries
+//     a fresh entry — a fresh real Observe (or an earlier seed) must not
+//     be clobbered by a second, independently-derived advisory prior.
 func (l *PerRungAdmissionLearner) hasFreshEntry(key routememo.Key) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

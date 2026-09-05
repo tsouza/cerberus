@@ -220,21 +220,21 @@ func TestCardinalityProbeAdvisor_SkipsUnrecognizedCarrierKind(t *testing.T) {
 	a := NewCardinalityProbeAdvisor(probe, nil)
 	baseline := cardinalityProbeTestBaseline(solver.ReasonRouted)
 
-	// A RangeWindowStaleResample carrier — outside this file's deliberate
-	// carrier-kind scope narrowing (this file's own top-level doc, point 1):
-	// not one of the five #2840-recognised kinds.
-	plan := &chplan.RangeWindowStaleResample{
-		Input:         cardinalityProbeTestFilter(cardinalityProbeTestMetric),
-		Start:         cardinalityProbeTestStart,
-		End:           cardinalityProbeTestEnd,
-		Step:          15 * time.Second,
-		TimestampCol:  "TimeUnix",
-		AttributesCol: "Attributes",
+	// A StepGrid carrier — outside this file's deliberate carrier-kind
+	// scope narrowing (this file's own top-level doc, point 1): it is a
+	// real [chplan.GridCarrier] (so findCardinalityProbeCarrier's Walk
+	// stops on it), but it shares none of the six recognised kinds' scan-
+	// bound formula — it carries no Input, no series-identity key, and no
+	// scan to bound at all.
+	plan := &chplan.StepGrid{
+		Start: cardinalityProbeTestStart,
+		End:   cardinalityProbeTestEnd,
+		Step:  15 * time.Second,
 	}
 
 	got := a.Advise(context.Background(), nil, plan, baseline, nil)
 	if got != nil {
-		t.Fatalf("got %+v, want nil (RangeWindowStaleResample carrier is out of this feature's scope)", got)
+		t.Fatalf("got %+v, want nil (StepGrid carrier is out of this feature's scope)", got)
 	}
 	if probe.calls != 0 {
 		t.Fatalf("issued %d round trips for an out-of-scope carrier kind, want 0", probe.calls)
@@ -242,11 +242,16 @@ func TestCardinalityProbeAdvisor_SkipsUnrecognizedCarrierKind(t *testing.T) {
 }
 
 // cardinalityProbeNewCarrierFixtures builds one minimal, well-formed plan
-// per #2840-added carrier kind (RangeWindowGridNative, RangeBucketFanout,
-// RangeBucketGridNative, RangeLWR) over the SAME single-metric Filter(Scan)
+// per non-RangeWindow recognised carrier kind — the four #2840 added
+// (RangeWindowGridNative, RangeBucketFanout, RangeBucketGridNative,
+// RangeLWR) plus RangeWindowStaleResample (added in the same ACPR pass
+// that corrected this file's carrier-count doc: it shares the identical
+// maybePushRangeScanTimeBound-backed scan-bound formula but was excluded
+// from the original #2840 count on the circular basis of not being one of
+// that PR's four additions) — over the SAME single-metric Filter(Scan)
 // cardinalityProbeTestPlan uses, so every table-driven test below exercises
 // findCardinalityProbeCarrier / buildCardinalityProbePlan / Advise against
-// all five recognised carrier kinds with one shared fixture set.
+// all six recognised carrier kinds with one shared fixture set.
 func cardinalityProbeNewCarrierFixtures() map[string]chplan.Node {
 	seriesKey := []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}
 	return map[string]chplan.Node{
@@ -294,12 +299,24 @@ func cardinalityProbeNewCarrierFixtures() map[string]chplan.Node {
 			TimestampCol:  "TimeUnix",
 			ValueCol:      "Value",
 		},
+		"RangeWindowStaleResample": &chplan.RangeWindowStaleResample{
+			Input:         cardinalityProbeTestFilter(cardinalityProbeTestMetric),
+			Start:         cardinalityProbeTestStart,
+			End:           cardinalityProbeTestEnd,
+			Step:          15 * time.Second,
+			Lookback:      5 * time.Minute,
+			MetricNameCol: cardinalityProbeMetricNameColumn,
+			AttributesCol: "Attributes",
+			TimestampCol:  "TimeUnix",
+			ValueCol:      "Value",
+		},
 	}
 }
 
-// TestFindCardinalityProbeCarrier_NewCarrierKinds pins that all four
-// carrier kinds #2840 added are now recognised — the inverse of
-// TestCardinalityProbeAdvisor_SkipsUnrecognizedCarrierKind above.
+// TestFindCardinalityProbeCarrier_NewCarrierKinds pins that every
+// non-RangeWindow recognised carrier kind (cardinalityProbeNewCarrierFixtures'
+// own doc: #2840's four plus RangeWindowStaleResample) is recognised — the
+// inverse of TestCardinalityProbeAdvisor_SkipsUnrecognizedCarrierKind above.
 func TestFindCardinalityProbeCarrier_NewCarrierKinds(t *testing.T) {
 	t.Parallel()
 	for name, plan := range cardinalityProbeNewCarrierFixtures() {
@@ -497,12 +514,11 @@ func TestFindCardinalityProbeCarrier(t *testing.T) {
 		t.Fatalf("expected the fixture's own RangeWindow carrier to be found, got ok=%v", ok)
 	}
 
-	unrecognized := &chplan.RangeWindowStaleResample{
-		Input: cardinalityProbeTestFilter("x"), Start: cardinalityProbeTestStart, End: cardinalityProbeTestEnd, Step: time.Minute,
-		TimestampCol: "TimeUnix", AttributesCol: "Attributes",
+	unrecognized := &chplan.StepGrid{
+		Start: cardinalityProbeTestStart, End: cardinalityProbeTestEnd, Step: time.Minute,
 	}
 	if _, ok := findCardinalityProbeCarrier(unrecognized); ok {
-		t.Fatal("expected ok=false for a carrier kind outside the five #2840 recognises")
+		t.Fatal("expected ok=false for a carrier kind outside the six this file recognises")
 	}
 
 	noGroupBy := &chplan.RangeWindow{
@@ -519,6 +535,14 @@ func TestFindCardinalityProbeCarrier(t *testing.T) {
 	}
 	if _, ok := findCardinalityProbeCarrier(lwrNoAttributes); ok {
 		t.Fatal("expected ok=false for a RangeLWR with no AttributesCol series-identity key")
+	}
+
+	staleResampleNoAttributes := &chplan.RangeWindowStaleResample{
+		Input: cardinalityProbeTestFilter("x"), Start: cardinalityProbeTestStart, End: cardinalityProbeTestEnd, Step: time.Minute,
+		TimestampCol: "TimeUnix",
+	}
+	if _, ok := findCardinalityProbeCarrier(staleResampleNoAttributes); ok {
+		t.Fatal("expected ok=false for a RangeWindowStaleResample with no AttributesCol series-identity key")
 	}
 }
 

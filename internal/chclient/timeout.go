@@ -181,13 +181,16 @@ func QueryTimeoutFromContext(ctx context.Context) (time.Duration, bool) {
 
 // classifyDriverErr maps a raw clickhouse-go driver error onto the typed
 // per-query resource rejections chclient surfaces — *MemoryLimitError
-// (code 241), *ThrowIfError (code 395), and *QueryTimeoutError (code 159)
-// — so the API heads can map each onto its head-idiomatic wire shape. Any
-// other error (or nil) passes through untouched. The three codes are
-// mutually exclusive, so the order of the checks does not matter; the
-// timeout wrapper is given the effective per-query cap (ctx override
-// min'd with the configured default) so its message names the real
-// budget the query ran under.
+// (code 241), *ThrowIfError (code 395 or 768), and *QueryTimeoutError
+// (code 159) — so the API heads can map each onto its head-idiomatic wire
+// shape. Any other error (or nil) passes through untouched. The three
+// ERROR TYPES are mutually exclusive, so the order of the checks does not
+// matter, even though ThrowIfError itself now spans two distinct
+// ClickHouse codes (395 for throwIf, 768 for
+// timeSeriesThrowDuplicateSeriesIf — see throwif.go); the timeout wrapper
+// is given the effective per-query cap (ctx override min'd with the
+// configured default) so its message names the real budget the query ran
+// under.
 //
 // It is the single wrap site every data-plane query method routes its
 // open-time and drain-time errors through, replacing the bare

@@ -2293,8 +2293,9 @@ var registry = []Feature{
 		Doc: "opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate over a BOUNDED ARRAY JOIN " +
 			"window (server >= 25.10, opt-in only via CERBERUS_CH_OPTIMIZATIONS — issue #2790's PR 2 rewrote the emission to ARRAY JOIN at most 3 rungs " +
 			"per row instead of the whole bucket ladder, a real-CH-measured ~1.5x-2x memory cut versus the original emission at every cardinality point " +
-			"tested; operators should still keep a single histogram_quantile() call under ~30,000 series when opting in, roughly double PR 1's original " +
-			"~15,000-series ceiling — see #2790)",
+			"tested; the conservative (1.5x) end of that range governs the safe recommendation — operators should keep a single histogram_quantile() " +
+			"call under ~22,500 series when opting in (1.5x PR 1's original ~15,000-series ceiling), with up to ~30,000 achievable in the best-measured " +
+			"case at the range's optimistic (2x) end — see #2790)",
 	},
 	{
 		ID:                         FeatureTSGridDelta,
@@ -2341,7 +2342,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc: "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup " +
+		Doc: "opt eligible query_range sum/avg/first/stddev/stdvar/mad_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup " +
 			"(no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B found its claimed O(samples)-per-series memory bound did not hold as shipped: " +
 			"6-9x the incumbent's memory at typical anchor density, OOMing a 6GiB cap at 500 series/480 anchors where the array-fold held at 535MiB (#2894); follow-up #3046 fixed the root " +
 			"cause with a mandatory max_block_size=1 companion setting, and every re-measured case now beats the array-fold on memory — but AutoSelect stays false pending a FRESH " +

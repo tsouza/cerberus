@@ -41,24 +41,29 @@ import (
 // SCOPE (deliberately narrow, matching this repository's culture of
 // evidence-first landings — see #2787's own "what was scoped down"):
 //
-//  1. Carrier kind: findCardinalityProbeCarrier recognises the FIVE
+//  1. Carrier kind: findCardinalityProbeCarrier recognises the SIX
 //     GridCarrier kinds whose real-matrix emitters share the identical
 //     (Start - Offset - <span>, End - Offset] scan-bound formula:
 //     *chplan.RangeWindow (chsql's innerScanTsBoundsFrags — the carrier
 //     #2709's own incident and #2788's dashboard-panel example both
 //     concern, and by far the most common ModeAuto shape) plus, as of
 //     #2840, *chplan.RangeWindowGridNative, *chplan.RangeBucketFanout,
-//     *chplan.RangeBucketGridNative and *chplan.RangeLWR — all four via
-//     chsql's shared maybePushRangeScanTimeBound helper (internal/chsql/
-//     range_lwr.go). #2840 set out to find each carrier's "own real-matrix
+//     *chplan.RangeBucketGridNative and *chplan.RangeLWR, and — added in
+//     the same ACPR pass that corrected this doc — *chplan.
+//     RangeWindowStaleResample: all five via chsql's shared
+//     maybePushRangeScanTimeBound helper (internal/chsql/range_lwr.go).
+//     #2840 set out to find each carrier's "own real-matrix
 //     time-bound-pushdown formula to mirror" and instead found chsql had
-//     already collapsed all four onto that ONE shared helper — there was no
-//     per-carrier formula left to rediscover, which is why
-//     cardinalityProbeCarrier (below) can express every one of the five
-//     with a single (tsCol, start, end, offset, span) shape. Every other
-//     [chplan.GridCarrier] kind (StepGrid, RangeWindowStaleResample,
-//     AbsentOverTime) still fails open — none of them is a #2840-named
-//     carrier.
+//     already collapsed all of them onto that ONE shared helper — there
+//     was no per-carrier formula left to rediscover, which is why
+//     cardinalityProbeCarrier (below) can express every one of the six
+//     with a single (tsCol, start, end, offset, span) shape.
+//     RangeWindowStaleResample was excluded from the original #2840 count
+//     purely because it wasn't one of the four kinds that PR happened to
+//     add — not because its formula differs — so once noticed the honest
+//     fix is to add it, not to leave it out on that circular basis. Every
+//     other [chplan.GridCarrier] kind (StepGrid, AbsentOverTime) still
+//     fails open — neither shares the formula.
 //  2. Metric identity: the probe only fires when the carrier's scan is
 //     gated by exactly one literal `MetricName = '...'` equality anywhere
 //     in its nearest Filter's predicate (cardinalityProbeMetricName). A
@@ -379,9 +384,9 @@ func mergeCardinalityEstimate(base *solver.ScanEstimate, est chclient.Cardinalit
 }
 
 // cardinalityProbeCarrier is the carrier-agnostic view findCardinalityProbeCarrier
-// extracts from whichever of the five recognised [chplan.GridCarrier] kinds
+// extracts from whichever of the six recognised [chplan.GridCarrier] kinds
 // (this file's own top-level doc, point 1) it locates. Every one of those
-// five kinds carries its OWN field names for the same underlying shape — a
+// six kinds carries its OWN field names for the same underlying shape — a
 // scanned Input, a series-identity key, a timestamp column, and a scan
 // window expressed as (Start, End, Offset, <backward reach>) — so this
 // struct is the one normalised shape buildCardinalityProbePlan and
@@ -423,7 +428,7 @@ type cardinalityProbeCarrier struct {
 // findCardinalityProbeCarrier locates plan's OUTERMOST [chplan.GridCarrier]
 // — the exact same stop condition solver.GridOf itself uses (first carrier
 // whose EvalGrid reports a positive step) — and reports it only when that
-// carrier is one of the five kinds this file's own top-level doc names
+// carrier is one of the six kinds this file's own top-level doc names
 // (point 1), carrying at least one series-identity key and a non-nil Input.
 // Every other carrier kind (StepGrid, RangeWindowStaleResample,
 // AbsentOverTime) — and a recognised carrier with no series-identity keys
@@ -458,16 +463,30 @@ func findCardinalityProbeCarrier(plan chplan.Node) (*cardinalityProbeCarrier, bo
 		}
 		seriesKey := []chplan.Expr{&chplan.ColumnRef{Name: c.AttributesCol}}
 		return cardinalityProbeCarrierFromGroupBy(c.Input, seriesKey, c.TimestampCol, c.Start, c.End, c.Offset, c.Lookback)
+	case *chplan.RangeWindowStaleResample:
+		// Shares RangeLWR's exact field shape (Input, a series-key column,
+		// TimestampCol, Start, End, Offset, Lookback) and its emitter
+		// (chsql/range_window_stale_resample.go) calls the SAME
+		// maybePushRangeScanTimeBound helper with the identical (tsCol,
+		// start, end, offset, span) argument shape — see this file's own
+		// top-level doc, point 1: the stated selection criterion is
+		// sharing that one formula, which this sixth carrier honestly
+		// meets too, so it is no longer excluded.
+		if c.Input == nil || c.AttributesCol == "" {
+			return nil, false
+		}
+		seriesKey := []chplan.Expr{&chplan.ColumnRef{Name: c.AttributesCol}}
+		return cardinalityProbeCarrierFromGroupBy(c.Input, seriesKey, c.TimestampCol, c.Start, c.End, c.Offset, c.Lookback)
 	default:
 		return nil, false
 	}
 }
 
 // cardinalityProbeCarrierFromGroupBy builds a *cardinalityProbeCarrier from
-// one of the five recognised carriers' own fields, reporting ok=false when
+// one of the six recognised carriers' own fields, reporting ok=false when
 // input is nil or groupBy carries no series-identity keys — the shared
 // gate every findCardinalityProbeCarrier case above applies, factored out
-// so the five-way type switch cannot drift on which fields it checks.
+// so the six-way type switch cannot drift on which fields it checks.
 func cardinalityProbeCarrierFromGroupBy(
 	input chplan.Node,
 	groupBy []chplan.Expr,

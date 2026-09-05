@@ -72,11 +72,25 @@ func ResolveEnabledSet(ctx context.Context, t testing.TB, client *chclient.Clien
 func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
 
+	// arg_and_max_fusion is a plain emission-detail bit, not a swappable
+	// strategy (RangeLowerers.ArgAndMaxFusion's own doc) — mirrors
+	// cmd/cerberus/main.go's nativeRangeLowerers exactly. It feeds both the
+	// VectorJoin site (read directly off this table) and the RangeLWR site
+	// via FanoutStalenessLowerer below.
+	argAndMaxFusion := set.Has(chopt.FeatureArgAndMaxFusion)
+	l.ArgAndMaxFusion = argAndMaxFusion
+
 	// ts_grid_vector_agg lives on RangeLowerers itself (never nested inside
 	// a `set.Has(chopt.FeatureTSGridRange)` branch) — mirrors
 	// cmd/cerberus/main.go's nativeRangeLowerers exactly; see
 	// promql.RangeLowerers.VectorAgg's own doc for why.
 	l.VectorAgg = set.Has(chopt.FeatureTSGridVectorAgg)
+
+	// ts_grid_group_array is, like VectorAgg immediately above, a plain
+	// narrowing bit rather than a per-function Lowerer swap — mirrors
+	// cmd/cerberus/main.go's nativeRangeLowerers exactly (cerberus issue
+	// #2749).
+	l.NativeGroupArray = set.Has(chopt.FeatureTSGridGroupArray)
 
 	// ts_grid_instant is NOT part of AllNativeOptimizations (new 26.5 floor,
 	// AutoSelect=false — see chopt.FeatureTSGridInstant's own doc), the same
@@ -115,19 +129,30 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.Increase = increaseFallback
 	}
 	if set.Has(chopt.FeatureTSGridResample) {
-		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
+		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion}}
 	} else {
-		l.Staleness = promql.FanoutStalenessLowerer{}
+		l.Staleness = promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion}
+	}
+
+	// changes/resets: laginframe_adjacency layers BENEATH their own native
+	// ts_grid strategy, exactly like it does for irate/idelta below —
+	// mirrors cmd/cerberus/main.go's nativeRangeLowerers exactly (cerberus
+	// issue #2759).
+	var changesFallback promql.ChangesLowerer = promql.FanoutChangesLowerer{}
+	var resetsFallback promql.ResetsLowerer = promql.FanoutResetsLowerer{}
+	if set.Has(chopt.FeatureLagInFrameAdjacency) {
+		changesFallback = promql.LagAdjacencyChangesLowerer{Fallback: changesFallback}
+		resetsFallback = promql.LagAdjacencyResetsLowerer{Fallback: resetsFallback}
 	}
 	if set.Has(chopt.FeatureTSGridChanges) {
-		l.Changes = promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}, Instant: tsGridInstant}
+		l.Changes = promql.NativeChangesLowerer{Fallback: changesFallback, Instant: tsGridInstant}
 	} else {
-		l.Changes = promql.FanoutChangesLowerer{}
+		l.Changes = changesFallback
 	}
 	if set.Has(chopt.FeatureTSGridResets) {
-		l.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}, Instant: tsGridInstant}
+		l.Resets = promql.NativeResetsLowerer{Fallback: resetsFallback, Instant: tsGridInstant}
 	} else {
-		l.Resets = promql.FanoutResetsLowerer{}
+		l.Resets = resetsFallback
 	}
 	if set.Has(chopt.FeatureTSGridDeriv) {
 		l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}, Instant: tsGridInstant}
@@ -199,6 +224,16 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.LastOverTime = promql.FanoutLastOverTimeLowerer{}
 	}
 
+	// downsample_tier WRAPS whichever irate/idelta/last_over_time strategy
+	// was just resolved above — mirrors cmd/cerberus/main.go's
+	// nativeRangeLowerers exactly (cerberus issue #2751). rate()/increase()/
+	// delta() have no such wrapping (chopt.FeatureDownsampleTier's own doc).
+	if set.Has(chopt.FeatureDownsampleTier) {
+		l.Irate = promql.DownsampleTierIrateLowerer{Fallback: l.Irate}
+		l.Idelta = promql.DownsampleTierIdeltaLowerer{Fallback: l.Idelta}
+		l.LastOverTime = promql.DownsampleTierLastOverTimeLowerer{Fallback: l.LastOverTime}
+	}
+
 	// sorted_slab_over_time (issue #2761, widened by issue #2804) has no
 	// native timeSeries*ToGrid competitor of its own — it is wired directly
 	// with its plain fan-out as its own embedded Fallback, mirroring
@@ -207,6 +242,30 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.OverTime = promql.SortedSlabOverTimeLowerer{Fallback: promql.FanoutOverTimeLowerer{}}
 	} else {
 		l.OverTime = promql.FanoutOverTimeLowerer{}
+	}
+
+	// classic_bucket_merge_summap has no version floor to probe — mirrors
+	// cmd/cerberus/main.go's nativeRangeLowerers exactly (cerberus issue
+	// #2756; AutoSelect stays false per #2923's measured negative result,
+	// see classic_bucket_merge_summap.go's header). Concrete fan-out impl
+	// when the feature is off; this field is never nil on the lowering
+	// path (promql.RangeLowerers.ClassicBucketMerge's own doc), so leaving
+	// it unset here would panic any test exercising a classic-bucket-merge
+	// shape rather than merely leaving the feature inert.
+	if set.Has(chopt.FeatureClassicBucketMergeSumMap) {
+		l.ClassicBucketMerge = promql.NativeClassicBucketMergeLowerer{Fallback: promql.FanoutClassicBucketMergeLowerer{}}
+	} else {
+		l.ClassicBucketMerge = promql.FanoutClassicBucketMergeLowerer{}
+	}
+
+	// exp_histogram_merge_summap has no version floor to probe either —
+	// mirrors cmd/cerberus/main.go's nativeRangeLowerers exactly (cerberus
+	// issue #2757). Same never-nil contract as ClassicBucketMerge above
+	// (promql.RangeLowerers.ExpHistogramMerge's own doc).
+	if set.Has(chopt.FeatureExpHistogramMergeSumMap) {
+		l.ExpHistogramMerge = promql.NativeExpHistogramMergeLowerer{}
+	} else {
+		l.ExpHistogramMerge = promql.FanoutExpHistogramMergeLowerer{}
 	}
 
 	return l
