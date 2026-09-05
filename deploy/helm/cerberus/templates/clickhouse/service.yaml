@@ -1,5 +1,12 @@
 {{- if .Values.clickhouse.bundled.enabled }}
 {{- $svc := .Values.clickhouse.bundled.service }}
+{{- /* dataShardCount: the number of independent ClickHouse DATA shards
+       (cerberus issue #3077) — see cerberus.clickhouse.dataShardCount's own
+       disambiguation. <= 1 renders the ORIGINAL, untouched Service pair
+       below — no range, no rename, nothing new evaluated, so that render
+       stays byte-identical to this chart's pre-#3077 shape. */}}
+{{- $dataShardCount := int (include "cerberus.clickhouse.dataShardCount" .) }}
+{{- if le $dataShardCount 1 }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -59,4 +66,82 @@ spec:
       protocol: TCP
   selector:
     {{- include "cerberus.clickhouse.selectorLabels" . | nindent 4 }}
+{{- else }}
+{{- /* dataShardCount > 1 (cerberus issue #3077): one ClusterIP + headless
+       Service PAIR per DATA shard, INCLUDING index 0 — never a silent
+       partial rename. Every field mirrors the count<=1 body above exactly,
+       selecting via selectorLabelsForDataShard so each pair reaches ONLY its
+       own shard's pods (see statefulset.yaml's own comment on why a bare,
+       shared selector across shards is unsafe). #3075's sessionAffinity
+       block is wrapped UNCHANGED — same key, same conditional shape — in
+       every per-shard ClusterIP Service. */}}
+{{- range $shard := until $dataShardCount }}
+{{- if gt $shard 0 }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cerberus.clickhouse.fullnameForDataShard" (dict "ctx" $ "shard" $shard) }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 4 }}
+spec:
+  type: ClusterIP
+  {{- /* ClientIP (default): pins every new connection a given cerberus pod
+         opens to the SAME ClickHouse replica for the affinity window,
+         closing cross-replica divergence within one multi-statement request
+         (including every sharded-pushdown fan-out) under replicas > 1. "None"
+         opts back out to plain kube-proxy per-connection Service routing.
+         This affinity is scoped to THIS shard's own replicas only — see
+         docs/helm-clickhouse.md for whether that guarantee still holds once
+         a Distributed-engine fan-out picks a replica PER SHARD inside
+         ClickHouse itself, independent of any single k8s Service. */}}
+  sessionAffinity: {{ $svc.sessionAffinity }}
+  {{- if ne $svc.sessionAffinity "None" }}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ $svc.sessionAffinityTimeoutSeconds }}
+  {{- end }}
+  ports:
+    - name: native
+      port: 9000
+      targetPort: native
+      protocol: TCP
+    - name: http
+      port: 8123
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cerberus.clickhouse.headlessNameForDataShard" (dict "ctx" $ "shard" $shard) }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # Pods get stable DNS before they are Ready (needed for replica discovery).
+  publishNotReadyAddresses: true
+  ports:
+    - name: native
+      port: 9000
+      targetPort: native
+      protocol: TCP
+    - name: http
+      port: 8123
+      targetPort: http
+      protocol: TCP
+    - name: interserver
+      port: 9009
+      targetPort: interserver
+      protocol: TCP
+  selector:
+    {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 4 }}
+{{- end }}
+{{- end }}
 {{- end }}

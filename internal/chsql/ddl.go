@@ -413,7 +413,10 @@ type CreateTableBuilder struct {
 	database    string // "" => unqualified table reference
 	name        string
 	ifNotExists bool
+	cluster     string // "" => no ON CLUSTER clause
 	columns     []ColumnDef
+	asDatabase  string // only meaningful when asTable != ""
+	asTable     string // "" => render the (columns) list; see As
 	engine      Frag
 	orderBy     []string
 	ttl         Frag
@@ -432,6 +435,33 @@ func CreateTable(name string) *CreateTableBuilder {
 // around it.
 func (c *CreateTableBuilder) Database(name string) *CreateTableBuilder {
 	c.database = name
+	return c
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause — the same distributed-DDL
+// clause CreateDatabaseBuilder.OnCluster renders (see OnCluster), so a
+// cerberus-owned table can be created across every node of a ClickHouse
+// cluster with one statement. Cerberus issue #3077 (epic #3074's
+// multi-DATA-shard topology) is the first caller: a per-shard local table and
+// its Distributed wrapper are both created ON CLUSTER. An empty name (the
+// default) leaves the clause off, matching every pre-existing caller.
+func (c *CreateTableBuilder) OnCluster(name string) *CreateTableBuilder {
+	c.cluster = name
+	return c
+}
+
+// As sets the table this CREATE TABLE clones its shape from — the
+// `CREATE TABLE <name> AS <database>.<table>` form ClickHouse uses for a
+// view-like wrapper (cerberus issue #3077's Distributed-engine wrapper
+// table: it carries no columns of its own, inheriting the referenced local
+// table's schema instead). Setting As SUPPRESSES the `(columns)` clause
+// entirely — `CREATE TABLE x AS y (col ...)` is not valid ClickHouse syntax,
+// so a builder that calls both As and Columns renders the AS form and
+// silently drops the column list. database "" renders an unqualified
+// reference, matching CreateTableBuilder.Database's own convention.
+func (c *CreateTableBuilder) As(database, table string) *CreateTableBuilder {
+	c.asDatabase = database
+	c.asTable = table
 	return c
 }
 
@@ -488,6 +518,26 @@ func EngineReplicatedAggregatingMergeTree() Frag {
 	return BareIdent("ReplicatedAggregatingMergeTree")
 }
 
+// EngineDistributed returns `Distributed(cluster, database, table,
+// shardingKey)` — the ClickHouse Distributed-engine wrapper cerberus issue
+// #3077 layers over a cluster's per-DATA-shard local tables (epic #3074's
+// THIRD, unrelated sense of "shard" — see internal/chopt/topology.go's
+// disambiguation comment: this is neither internal/solver's own
+// query-time-range "shard" nor the Keeper {shard}/{replica}
+// replication-coordinate macro EngineReplicatedMergeTree's Replicated
+// database already consumes). cluster/database/table are rendered as
+// single-quoted CH string literals via InlineLit, mirroring
+// DatabaseEngineReplicated's own convention for constant-string engine
+// arguments; table names the LOCAL table (conventionally `<name>_local`) the
+// wrapper fans reads/writes across, never the wrapper's own name.
+// shardingKey is an arbitrary expression Frag — e.g. Call("rand") for
+// unweighted distribution, or a column hash — ClickHouse requires SOME
+// sharding-key expression whenever the referenced cluster has more than one
+// shard. Additive: no existing Engine* constructor's signature changes.
+func EngineDistributed(cluster, database, table string, shardingKey Frag) Frag {
+	return Call("Distributed", InlineLit(cluster), InlineLit(database), InlineLit(table), shardingKey)
+}
+
 // frag assembles the whole CREATE TABLE statement from typed pieces.
 func (c *CreateTableBuilder) frag() Frag {
 	return func(b *Builder) {
@@ -500,14 +550,27 @@ func (c *CreateTableBuilder) frag() Frag {
 			ddlToken(".")(b)
 		}
 		BareIdent(c.name)(b)
-		ddlToken(" (")(b)
-		for i, col := range c.columns {
-			if i > 0 {
-				ddlToken(", ")(b)
-			}
-			col.frag()(b)
+		if c.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(c.cluster)(b)
 		}
-		ddlToken(")")(b)
+		if c.asTable != "" {
+			ddlToken(" AS ")(b)
+			if c.asDatabase != "" {
+				BareIdent(c.asDatabase)(b)
+				ddlToken(".")(b)
+			}
+			BareIdent(c.asTable)(b)
+		} else {
+			ddlToken(" (")(b)
+			for i, col := range c.columns {
+				if i > 0 {
+					ddlToken(", ")(b)
+				}
+				col.frag()(b)
+			}
+			ddlToken(")")(b)
+		}
 		if c.engine != nil {
 			ddlToken(" ENGINE = ")(b)
 			c.engine(b)

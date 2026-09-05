@@ -350,4 +350,127 @@ function count(haystack, needle) {
   check(!optOut.includes('sessionAffinityConfig'), 'sessionAffinity: "None" omits sessionAffinityConfig entirely')
 }
 
+// --- 15. dataShards.count (cerberus issue #3077): count==1 is byte-identical
+// to today's chart (no range, no rename — pinned by a real diff against
+// origin/main's pre-#3077 chart tree, not merely asserted here); count>1
+// renders every shard including index 0, wraps #3075's sessionAffinity
+// Service block unchanged, and wires CERBERUS_CH_DATA_SHARDS +
+// CERBERUS_SCHEMA_CLUSTER for the running binary. Also covers the
+// PodDisruptionBudget per-shard split and the keeper.enabled=false +
+// dataShards.count>1 `fail` guard (both ACPR findings against the initial
+// implementation).
+{
+  const bareDefault = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false'])
+  const explicitOne = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=1'])
+  check(bareDefault === explicitOne, 'dataShards.count=1 renders BYTE-IDENTICAL to the bare default (no dataShards set at all)')
+  check(!bareDefault.includes('-datashard-'), 'dataShards.count=1: no -datashard- suffix anywhere in the render')
+  check(!bareDefault.includes('macros-datashard-'), 'dataShards.count=1: no macros-datashard-<i>.xml ConfigMap key')
+  check(!bareDefault.includes('CERBERUS_CH_DATA_SHARDS'), 'dataShards.count=1: no CERBERUS_CH_DATA_SHARDS env emitted')
+
+  // replicas=2 so cluster.xml (and its literal <shard>01</shard>) actually
+  // renders (Keeper/cluster.xml only exist once keeperEnabled is true).
+  const bareDefaultReplicated = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.replicas=2'])
+  const explicitOneReplicated = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.replicas=2', '--set', 'clickhouse.bundled.dataShards.count=1'])
+  check(bareDefaultReplicated === explicitOneReplicated, 'dataShards.count=1 + replicas=2: still BYTE-IDENTICAL to the bare default')
+  check(bareDefaultReplicated.includes('<shard>01</shard>'), 'dataShards.count=1: cluster.xml keeps the literal <shard>01</shard>')
+
+  const n2 = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2'])
+  check(count(n2, 'kind: StatefulSet') === 3, 'dataShards.count=2 at replicas=1: Keeper + 2 per-shard ClickHouse StatefulSets')
+  for (const i of [0, 1]) {
+    check(n2.includes(`name: rn-cerberus-clickhouse-datashard-${i}\n`), `dataShards.count=2: StatefulSet name for shard ${i} carries -datashard-${i} (INCLUDING index 0)`)
+    check(n2.includes(`name: rn-cerberus-clickhouse-headless-datashard-${i}\n`), `dataShards.count=2: headless Service name for shard ${i}`)
+    check(n2.includes(`macros-datashard-${i}.xml:`), `dataShards.count=2: macros-datashard-${i}.xml ConfigMap key present`)
+  }
+  check(count(n2, '-datashard-') >= 8, 'dataShards.count=2: -datashard- suffix appears on every per-shard object (StatefulSets, Services, ConfigMap keys)')
+  check(n2.includes('CERBERUS_CH_DATA_SHARDS: "2"'), 'dataShards.count=2: CERBERUS_CH_DATA_SHARDS wired to the solver')
+  check(n2.includes('CERBERUS_SCHEMA_CLUSTER: "bwc_cluster"'), 'dataShards.count=2: CERBERUS_SCHEMA_CLUSTER defaulted for the Distributed/ON CLUSTER DDL')
+  // #3075's sessionAffinity Service block wrapped unchanged in every per-shard Service.
+  check(count(n2, 'sessionAffinity: ClientIP') === 2, 'dataShards.count=2: sessionAffinity rendered on BOTH per-shard ClusterIP Services')
+  check(count(n2, 'timeoutSeconds: 10800') === 2, 'dataShards.count=2: sessionAffinityTimeoutSeconds default on BOTH per-shard Services')
+  // Keeper auto-enables from dataShardCount>1 alone, even at bundled.replicas==1.
+  check(n2.includes('kind: StatefulSet') && n2.includes('rn-cerberus-keeper'), 'dataShards.count=2 at replicas=1: Keeper ensemble still auto-enabled')
+
+  // Each per-shard StatefulSet/Service pair carries a DISTINCT selector (no
+  // cross-shard pod-ownership collision between StatefulSet controllers).
+  check(count(n2, 'cerberus.io/data-shard: "0"') >= 3, 'dataShards.count=2: shard-0 discriminator label present on StatefulSet + both Services')
+  check(count(n2, 'cerberus.io/data-shard: "1"') >= 3, 'dataShards.count=2: shard-1 discriminator label present on StatefulSet + both Services')
+
+  // bundled.replicas>1 (multi-replica PER SHARD) TOGETHER with
+  // dataShards.count>1 — the shared {shard}/{replica} macro combination
+  // (cerberus issue #3077's own acceptance criterion). docs/operations.md's
+  // "Auto-create schema" guidance calls a Replicated-database engine and an
+  // ON CLUSTER cluster "mutually exclusive — pick one", so this combination
+  // does NOT reuse the plain replicas>1 Replicated-database default —
+  // instead it defaults the CLASSIC explicit ReplicatedMergeTree engine
+  // string, still sharing the same {shard}/{replica} macro slot.
+  const replicatedPlusShards = tpl([
+    '-f', `${CHART_DIR}/ci/bwc-replicated-values.yaml`,
+    '--set', 'clickhouse.bundled.dataShards.count=2',
+  ])
+  check(!replicatedPlusShards.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED'), 'replicated+dataShards: the plain Replicated-DATABASE env is NOT wired (mutually exclusive with ON CLUSTER)')
+  check(replicatedPlusShards.includes("CERBERUS_SCHEMA_TABLE_ENGINE: \"ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')\""), 'replicated+dataShards: classic explicit ReplicatedMergeTree engine defaulted instead')
+  check(replicatedPlusShards.includes('CERBERUS_SCHEMA_CLUSTER: "bwc_cluster"'), 'replicated+dataShards: CERBERUS_SCHEMA_CLUSTER wired')
+  check(replicatedPlusShards.includes('CERBERUS_CH_DATA_SHARDS: "2"'), 'replicated+dataShards: CERBERUS_CH_DATA_SHARDS still wired')
+  check(count(replicatedPlusShards, 'kind: StatefulSet') === 3, 'replicated+dataShards: Keeper + 2 per-shard ClickHouse StatefulSets (replicas=2 each)')
+
+  // An operator who explicitly sets schema.replicated.enabled=true
+  // ALONGSIDE dataShards.count>1 (their own deliberate choice, exercising
+  // the combination internal/schema/ddl's TestDataShardCount_ReplicatedCombination
+  // proves renders correctly) is respected, not silently overridden.
+  const operatorChoosesReplicatedDB = tpl([
+    '--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false',
+    '--set', 'clickhouse.bundled.replicas=2', '--set', 'clickhouse.bundled.dataShards.count=2',
+    '--set', 'schema.replicated.enabled=true', '--set', 'schema.replicated.zookeeperPath=/clickhouse/databases/otel',
+  ])
+  check(operatorChoosesReplicatedDB.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED: "true"'), 'operator-forced schema.replicated.enabled=true wins even under dataShards.count>1')
+  check(!operatorChoosesReplicatedDB.includes('CERBERUS_SCHEMA_TABLE_ENGINE'), 'operator-forced schema.replicated.enabled=true suppresses the classic-engine auto-default')
+
+  // CERBERUS_CH_ADDR must NOT default to the unsuffixed "<fullname>:9000" —
+  // that Service does not exist once dataShardCount>1 (only the per-shard
+  // ones do). It defaults to shard 0's own ClusterIP Service instead: a
+  // single connection to ANY shard's replica already reaches the
+  // Distributed wrapper table (created ON CLUSTER, so it exists identically
+  // on every node) and fans a query out across the WHOLE cluster
+  // internally.
+  check(n2.includes('CERBERUS_CH_ADDR: "rn-cerberus-clickhouse-datashard-0:9000"'), 'dataShards.count=2: CERBERUS_CH_ADDR defaults to shard 0\'s own Service, not the (nonexistent) unsuffixed name')
+
+  // dataShards.count is bundled-only: it must not appear/activate when
+  // bundled is disabled (an external, operator-managed ClickHouse cluster
+  // sets CERBERUS_CH_DATA_SHARDS itself via the generic `config:` passthrough).
+  const nonBundled = tpl(['--set', 'clickhouse.bundled.enabled=false'])
+  check(!nonBundled.includes('CERBERUS_CH_DATA_SHARDS'), 'bundled disabled: CERBERUS_CH_DATA_SHARDS never auto-wired')
+
+  // An explicit keeper.enabled=false TOGETHER WITH dataShards.count>1 must
+  // fail loudly, not silently render per-shard StatefulSets whose "config"
+  // ConfigMap volume unconditionally requires cluster.xml/macros-datashard-
+  // <i>.xml keys that configmap-config.yaml only emits when Keeper is
+  // enabled (ACPR finding: this combination previously left pods stuck in
+  // ContainerCreating with no render-time signal at all).
+  const keeperOffWithShards = tplFail([
+    '--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false',
+    '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.keeper.enabled=false',
+  ])
+  check(keeperOffWithShards !== null, 'keeper.enabled=false + dataShards.count=2: render FAILS')
+  check(keeperOffWithShards && /keeper\.enabled/.test(keeperOffWithShards) && /dataShards\.count/.test(keeperOffWithShards), 'the keeper-off-with-shards failure names BOTH keeper.enabled and dataShards.count')
+
+  // The SAME override at dataShards.count<=1 is unaffected (pre-existing,
+  // soft-degrade behavior is untouched by this guard).
+  const keeperOffNoShards = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.keeper.enabled=false'])
+  check(!keeperOffNoShards.includes('kind: StatefulSet\nmetadata:\n  name: rn-cerberus-keeper'), 'keeper.enabled=false + dataShards.count<=1: still renders (no Keeper StatefulSet), unaffected by the new guard')
+
+  // Every per-shard PodDisruptionBudget scopes minAvailable to ITS OWN
+  // shard's pods, not a single bare-selector PDB spanning every shard (a
+  // single shared-selector PDB would let minAvailable be satisfied by ANY
+  // shard's surviving pods, so an eviction could legally drain an entire
+  // OTHER shard at once).
+  const n2Pdb = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
+  check(count(n2Pdb, 'kind: PodDisruptionBudget') === 2, 'dataShards.count=2 + podDisruptionBudget.enabled: ONE PodDisruptionBudget PER shard, not a single shared one')
+  for (const i of [0, 1]) {
+    check(n2Pdb.includes(`name: rn-cerberus-clickhouse-datashard-${i}\n`), `dataShards.count=2: PodDisruptionBudget name for shard ${i} carries -datashard-${i}`)
+  }
+  const pdbBareDefault = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
+  const pdbExplicitOne = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true', '--set', 'clickhouse.bundled.dataShards.count=1'])
+  check(pdbBareDefault === pdbExplicitOne, 'PodDisruptionBudget: dataShards.count=1 renders BYTE-IDENTICAL to the bare default')
+}
+
 process.exit(ok ? 0 : 1)

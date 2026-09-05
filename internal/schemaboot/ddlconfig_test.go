@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
@@ -135,6 +136,47 @@ func TestDDLConfig_ReplicatedThreaded(t *testing.T) {
 		got.DatabaseEngine.ReplicatedShard != "shard0" ||
 		got.DatabaseEngine.ReplicatedReplica != "replica0" {
 		t.Errorf("replicated engine not threaded: %+v", got.DatabaseEngine)
+	}
+}
+
+// TestDDLConfig_DataShardCountThreaded pins cerberus issue #3077's wiring:
+// DDLConfig threads cfg.ClusterTopology.DataShardCount straight into
+// ddl.Config.DataShardCount — the SAME resolved value
+// internal/solver's admission control (cerberus issue #3081/#3084) already
+// consumes, so "how many data shards" has exactly one source of truth.
+func TestDDLConfig_DataShardCountThreaded(t *testing.T) {
+	// The default (DataShardCount 0, matching chopt.DefaultClusterTopology's
+	// zero-risk 1 — this test constructs the zero value directly rather than
+	// via config resolution) must thread through as <= 1, so RenderAll's
+	// non-sharded path stays the default.
+	zero, err := schemaboot.DDLConfig(config.Config{})
+	if err != nil {
+		t.Fatalf("DDLConfig (zero value): %v", err)
+	}
+	if zero.DataShardCount > 1 {
+		t.Errorf("zero-value ClusterTopology must not activate sharded rendering, got DataShardCount=%d", zero.DataShardCount)
+	}
+
+	cfg := config.Config{
+		ClusterTopology: chopt.ClusterTopology{DataShardCount: 3},
+		SchemaProvisioning: config.SchemaProvisioning{
+			Cluster: "bwc_cluster",
+		},
+	}
+	got, err := schemaboot.DDLConfig(cfg)
+	if err != nil {
+		t.Fatalf("DDLConfig: %v", err)
+	}
+	if got.DataShardCount != 3 {
+		t.Errorf("DataShardCount not threaded: got %d, want 3", got.DataShardCount)
+	}
+
+	// Validate rejects DataShardCount>1 with no Cluster — DDLConfig runs
+	// Validate itself, so this must surface as an error rather than a
+	// silently-accepted misconfiguration.
+	_, err = schemaboot.DDLConfig(config.Config{ClusterTopology: chopt.ClusterTopology{DataShardCount: 2}})
+	if err == nil {
+		t.Fatal("expected DDLConfig to reject DataShardCount>1 with no Cluster, got nil error")
 	}
 }
 

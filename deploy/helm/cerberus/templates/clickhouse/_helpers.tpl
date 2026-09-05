@@ -22,6 +22,70 @@ StatefulSet pods stable per-replica DNS.
 {{- end }}
 
 {{/*
+cerberus.clickhouse.dataShardCount — the number of independent ClickHouse
+DATA shards this chart renders (cerberus issue #3077, epic #3074's THIRD,
+unrelated sense of "shard" — DISAMBIGUATION: not internal/solver's own
+query-time-range "shard", nor this chart's pre-existing `{shard}`/`{replica}`
+Keeper-coordination macros consumed by schema.replicated.* — see
+internal/chopt/topology.go's terminology table). `1` (the default, and
+whenever bundled is disabled) keeps every per-shard `range` below inert, so a
+count==1 render stays byte-identical to the chart's pre-#3077 shape — no
+range, no rename, nothing new evaluated. Input is the root context.
+*/}}
+{{- define "cerberus.clickhouse.dataShardCount" -}}
+{{- if .Values.clickhouse.bundled.enabled -}}
+{{- .Values.clickhouse.bundled.dataShards.count | default 1 -}}
+{{- else -}}
+1
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.fullnameForDataShard — the per-DATA-shard StatefulSet name
+(cerberus issue #3077 — see cerberus.clickhouse.dataShardCount's own
+disambiguation). Takes (dict "ctx" $ "shard" $i), $i a 0-based shard index.
+dataShardCount <= 1 returns the EXACT unsuffixed cerberus.clickhouse.fullname
+— today's identity, byte-identical; > 1 suffixes EVERY shard, INCLUDING
+index 0, with `-datashard-<i>`, so there is no silent partial-rename case.
+*/}}
+{{- define "cerberus.clickhouse.fullnameForDataShard" -}}
+{{- $ctx := .ctx -}}
+{{- $base := include "cerberus.clickhouse.fullname" $ctx -}}
+{{- if le (int (include "cerberus.clickhouse.dataShardCount" $ctx)) 1 -}}
+{{- $base -}}
+{{- else -}}
+{{- printf "%s-datashard-%d" $base (int .shard) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.headlessNameForDataShard — the per-DATA-shard headless
+Service name, same shape as cerberus.clickhouse.fullnameForDataShard but based
+on cerberus.clickhouse.headlessName. Takes (dict "ctx" $ "shard" $i).
+*/}}
+{{- define "cerberus.clickhouse.headlessNameForDataShard" -}}
+{{- $ctx := .ctx -}}
+{{- $base := include "cerberus.clickhouse.headlessName" $ctx -}}
+{{- if le (int (include "cerberus.clickhouse.dataShardCount" $ctx)) 1 -}}
+{{- $base -}}
+{{- else -}}
+{{- printf "%s-datashard-%d" $base (int .shard) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.macrosKeyForDataShard — the ConfigMap key holding shard $i's
+`<macros>` XML (cerberus issue #3077): `macros-datashard-<i>.xml`. This is a
+cerberus-CHOSEN ConfigMap key name, not part of ClickHouse's own fixed
+schema, so — like every other NEW identifier for this epic's DATA-shard
+sense of "shard" — it uses the disambiguating `datashard` compound form
+rather than a bare `shard`. Takes a 0-based shard index.
+*/}}
+{{- define "cerberus.clickhouse.macrosKeyForDataShard" -}}
+{{- printf "macros-datashard-%d.xml" (int .) -}}
+{{- end }}
+
+{{/*
 cerberus.keeper.fullname / cerberus.keeper.headlessName — the Keeper ensemble
 StatefulSet + its headless Service (only rendered when keeper is enabled).
 */}}
@@ -66,6 +130,40 @@ app.kubernetes.io/part-of: cerberus
 {{- end }}
 
 {{/*
+cerberus.clickhouse.selectorLabelsForDataShard / cerberus.clickhouse.labelsForDataShard
+— cerberus.clickhouse.selectorLabels/labels PLUS a per-DATA-shard
+discriminator label, `cerberus.io/data-shard: "<i>"` (cerberus issue #3077 —
+see cerberus.clickhouse.dataShardCount's own disambiguation; a LABEL KEY, so
+it uses the same datashard-compound-form discipline as every other NEW
+identifier for this sense of "shard"). Every per-shard StatefulSet +
+Service pair must select ONLY that shard's own pods — sharing
+cerberus.clickhouse.selectorLabels bare across every shard would give every
+per-shard StatefulSet an IDENTICAL, overlapping pod selector, and multiple
+StatefulSet controllers reconciling the SAME selector fight over pod
+ownership. ONLY called from the dataShardCount>1 branch of each template —
+the dataShardCount<=1 branch keeps using the bare selectorLabels/labels
+unchanged, so that branch's selector/label shape never gains this label,
+preserving byte-identical output. Takes (dict "ctx" $ "shard" $i), $i a
+0-based shard index.
+*/}}
+{{- define "cerberus.clickhouse.selectorLabelsForDataShard" -}}
+{{ include "cerberus.clickhouse.selectorLabels" .ctx }}
+cerberus.io/data-shard: {{ .shard | quote }}
+{{- end }}
+{{- define "cerberus.clickhouse.labelsForDataShard" -}}
+helm.sh/chart: {{ include "cerberus.chart" .ctx }}
+{{ include "cerberus.clickhouse.selectorLabelsForDataShard" . }}
+{{- if .ctx.Chart.AppVersion }}
+app.kubernetes.io/version: {{ .ctx.Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
+app.kubernetes.io/part-of: cerberus
+{{- with .ctx.Values.commonLabels }}
+{{ tpl (toYaml .) $.ctx }}
+{{- end }}
+{{- end }}
+
+{{/*
 cerberus.keeper.selectorLabels / cerberus.keeper.labels — same shape, with the
 clickhouse-keeper component.
 */}}
@@ -100,15 +198,28 @@ default
 
 {{/*
 cerberus.clickhouse.keeperEnabled — "true" when the Keeper ensemble should be
-rendered: the explicit keeper.enabled override wins; otherwise Keeper turns on
-automatically once replicas > 1 (ReplicatedMergeTree needs coordination).
+rendered: the explicit keeper.enabled override wins; otherwise Keeper turns
+on automatically once replicas > 1 (ReplicatedMergeTree needs coordination)
+OR once dataShardCount > 1 (cerberus issue #3077) — ClickHouse's own ON
+CLUSTER DDL coordination, which every per-shard `CREATE ... ON CLUSTER`
+statement relies on regardless of per-shard replica count, itself needs
+Keeper. An explicit `keeper.enabled: false` together with dataShardCount > 1
+fails loudly (mirrors cerberus.clickhouse.mode's own invalid-combination
+guards) instead of silently rendering a per-shard StatefulSet whose "config"
+ConfigMap volume unconditionally requires the cluster.xml /
+macros-datashard-<i>.xml keys that configmap-config.yaml only emits when
+Keeper is enabled — an unguarded combination previously left pods stuck in
+ContainerCreating (a real k3d run surfaced this, not a theoretical concern).
 */}}
 {{- define "cerberus.clickhouse.keeperEnabled" -}}
 {{- $b := .Values.clickhouse.bundled -}}
 {{- $k := $b.keeper -}}
 {{- if not (kindIs "invalid" $k.enabled) -}}
+{{- if and (not $k.enabled) (gt (int (include "cerberus.clickhouse.dataShardCount" .)) 1) -}}
+{{- fail "clickhouse.bundled: keeper.enabled is explicitly false but dataShards.count > 1 — every per-shard StatefulSet requires cluster.xml/macros-datashard-<i>.xml, which are only rendered when Keeper is enabled. Leave keeper.enabled unset (it turns on automatically) or set it to true." -}}
+{{- end -}}
 {{- if $k.enabled }}true{{ end -}}
-{{- else if gt (int $b.replicas) 1 -}}
+{{- else if or (gt (int $b.replicas) 1) (gt (int (include "cerberus.clickhouse.dataShardCount" .)) 1) -}}
 true
 {{- end -}}
 {{- end }}
@@ -395,9 +506,21 @@ is disabled, so non-bundled renders are byte-identical.
 {{- define "cerberus.bundled.apply" -}}
 {{- $b := default (dict) .Values.clickhouse.bundled -}}
 {{- if $b.enabled -}}
-{{- /* addr -> bundled CH Service, unless the operator changed it from default */ -}}
+{{- /* addr -> bundled CH Service, unless the operator changed it from default.
+       dataShardCount > 1 (cerberus issue #3077) has NO unsuffixed
+       "<fullname>:9000" Service at all — point at shard 0's own per-shard
+       ClusterIP Service instead. That single entrypoint is sufficient and
+       correct: the Distributed wrapper table (internal/schema/ddl's
+       Config.DataShardCount) exists identically on every node of every
+       shard (created ON CLUSTER), so a connection landing on any one
+       shard's replica already fans a query out across the WHOLE cluster
+       internally — cerberus itself only ever needs to reach ONE node. */ -}}
 {{- if eq (toJson .Values.clickhouse.addr) (toJson (list "clickhouse:9000")) -}}
+{{- if gt (int (include "cerberus.clickhouse.dataShardCount" .)) 1 -}}
+{{- $_ := set .Values.clickhouse "addr" (list (printf "%s:9000" (include "cerberus.clickhouse.fullnameForDataShard" (dict "ctx" . "shard" 0)))) -}}
+{{- else -}}
 {{- $_ := set .Values.clickhouse "addr" (list (printf "%s:9000" (include "cerberus.clickhouse.fullname" .))) -}}
+{{- end -}}
 {{- end -}}
 {{- /* storage_policy -> the mode-derived bwc policy name, unless the operator
        set one. Also validates/derives the mode as a side effect — this is the
@@ -433,14 +556,63 @@ is disabled, so non-bundled renders are byte-identical.
        keeper.enabled:null tri-state above. */ -}}
 {{- if kindIs "invalid" .Values.autoCreate.schema -}}{{- $_ := set .Values.autoCreate "schema" true -}}{{- end -}}
 {{- if kindIs "invalid" .Values.autoCreate.database -}}{{- $_ := set .Values.autoCreate "database" true -}}{{- end -}}
+{{- $dataShardCount := int (include "cerberus.clickhouse.dataShardCount" .) -}}
 {{- /* replicas > 1 -> Replicated schema, REUSING cerberus's existing
-       schema.replicated env wiring. */ -}}
-{{- if gt (int $b.replicas) 1 -}}
+       schema.replicated env wiring. ONLY when dataShardCount <= 1:
+       docs/operations.md's own "Auto-create schema" guidance is explicit
+       that a Replicated DATABASE engine and an ON CLUSTER cluster are
+       "mutually exclusive — pick one" (a Replicated database replicates its
+       OWN DDL; layering ON CLUSTER on top of it is unverified against a
+       real cluster and not a combination this chart assumes). dataShardCount
+       > 1 (cerberus issue #3077) always needs Cluster set (below), so a
+       multi-replica-PER-SHARD deployment gets the classic ON-CLUSTER +
+       explicit-engine defaulting instead — see the dataShardCount block
+       below. */ -}}
+{{- if and (gt (int $b.replicas) 1) (le $dataShardCount 1) -}}
 {{- if not .Values.schema.replicated.enabled -}}
 {{- $_ := set .Values.schema.replicated "enabled" true -}}
 {{- end -}}
 {{- if not .Values.schema.replicated.zookeeperPath -}}
 {{- $_ := set .Values.schema.replicated "zookeeperPath" (printf "/clickhouse/databases/%s/{shard}/{replica}" .Values.clickhouse.database) -}}
+{{- end -}}
+{{- end -}}
+{{- /* dataShards.count > 1 (cerberus issue #3077): a Distributed-engine
+       wrapper table and its local table's ON CLUSTER DDL both need a named
+       cluster — default schema.CLUSTER to this chart's own cluster.xml
+       <cluster> name (bwc_cluster) unless the operator set one, so
+       internal/schema/ddl's Config.Cluster is never empty under
+       DataShardCount>1 (it would otherwise fail Config.Validate at boot).
+       Also set CERBERUS_CH_DATA_SHARDS via the generic config.<KEY>
+       passthrough — dataShards.count is a BUNDLED-chart-only knob with no
+       typed schema/clickhouse env of its own, so this is the one place that
+       surfaces it to the running binary — so the sharded-pushdown solver's
+       admission control (internal/chopt.ClusterTopology.DataShardCount)
+       knows the real ClickHouse-side fan-out width; leaving the chart's own
+       topology count unreported to cerberus would silently defeat that
+       admission-control ceiling.
+
+       replicas > 1 TOGETHER with dataShardCount > 1 (multi-replica PER
+       shard) does NOT reuse the Replicated-database mechanism above — see
+       that block's own comment on why the two are kept apart. Instead it
+       defaults schema.TABLE_ENGINE to the CLASSIC explicit
+       `ReplicatedMergeTree(path, '{replica}')` form (unless the operator
+       set schema.replicated.enabled OR schema.TABLE_ENGINE themselves),
+       using ClickHouse's OWN built-in {database}/{table} macros (no
+       cerberus templating needed) alongside the {shard}/{replica} macros
+       macros-datashard-<i>.xml gives a DISTINCT <shard> value per data
+       shard — the "intentional convergence" cerberus issue #3077's
+       acceptance criteria calls out: the SAME macro slot serves both this
+       classic form and the single-data-shard Replicated-database form
+       above, whichever mechanism a given deployment picks. */ -}}
+{{- if gt $dataShardCount 1 -}}
+{{- if not .Values.schema.CLUSTER -}}
+{{- $_ := set .Values.schema "CLUSTER" "bwc_cluster" -}}
+{{- end -}}
+{{- if not (hasKey .Values.config "CERBERUS_CH_DATA_SHARDS") -}}
+{{- $_ := set .Values.config "CERBERUS_CH_DATA_SHARDS" (toString $dataShardCount) -}}
+{{- end -}}
+{{- if and (gt (int $b.replicas) 1) (not .Values.schema.replicated.enabled) (not .Values.schema.TABLE_ENGINE) -}}
+{{- $_ := set .Values.schema "TABLE_ENGINE" "ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

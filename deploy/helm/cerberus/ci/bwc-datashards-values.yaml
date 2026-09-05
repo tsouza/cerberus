@@ -1,0 +1,36 @@
+# ct / helm-template fixture: bundled ClickHouse, dataShards.count > 1
+# (cerberus issue #3077) — exercises the per-shard StatefulSet/Service/PDB
+# `range`, the per-shard macros-datashard-<i>.xml ConfigMap keys, and (via
+# replicas: 2) the shared {shard}/{replica} macro combination together with
+# schema.replicated.enabled=true (internal/schema/ddl's
+# TestDataShardCount_ReplicatedCombination proves this renders correctly).
+# This fixture is what gives dataShards.count > 1 permanent k8s-schema
+# validation coverage in the required chart-kubeconform CI check — before
+# this fixture existed, only chart-render-assert.mjs's string/content
+# assertions covered the per-shard manifests, with no k8s-schema-validity
+# gate. S3/MinIO backend with THROWAWAY render-only credentials.
+# hotVolume.enabled: false isolates this to the sharding axis this fixture
+# exists to exercise, independent of storage-tiering mode.
+clickhouse:
+  bundled:
+    enabled: true
+    replicas: 2
+    hotVolume:
+      enabled: false
+    dataShards:
+      count: 2
+    objectStorage:
+      backend: s3
+      bucket: cerberus-bwc
+      path: data
+      s3:
+        endpoint: http://minio:9000
+        forcePathStyle: true
+        accessKeyId: minioadmin
+        secretAccessKey: minioadmin
+    podDisruptionBudget:
+      enabled: true
+schema:
+  replicated:
+    enabled: true
+    zookeeperPath: /clickhouse/databases/otel

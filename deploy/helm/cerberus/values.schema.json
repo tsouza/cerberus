@@ -82,6 +82,13 @@
             "enabled": { "type": "boolean" },
             "image": { "type": "string" },
             "replicas": { "type": "integer", "minimum": 1 },
+            "dataShards": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "count": { "type": "integer", "minimum": 1 }
+              }
+            },
             "storagePolicyName": { "type": "string" },
             "resources": { "type": "object" },
             "persistence": {

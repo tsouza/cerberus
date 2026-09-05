@@ -299,6 +299,51 @@ type Config struct {
 	// renders no statements regardless of TraceMaterializedAttributesEnabled.
 	MaterializedSpanAttributeColumns     map[string]string
 	MaterializedResourceAttributeColumns map[string]string
+
+	// DataShardCount is the number of independent ClickHouse DATA shards this
+	// deployment's Distributed-engine tables fan a query out across (cerberus
+	// issue #3077, epic #3074's THIRD, unrelated sense of "shard" —
+	// see internal/chopt/topology.go's disambiguation comment. This is NEVER
+	// internal/solver's own query-time-range "shard", nor the Keeper
+	// {shard}/{replica} replication-coordinate macro DatabaseEngine.Replicated
+	// already consumes — those coexist unchanged regardless of this field,
+	// by ClickHouse's own design).
+	//
+	// <= 1 (the zero value, matching every zero-means-off field on this
+	// struct) renders every BASE table exactly as before this field
+	// existed — no local/Distributed split, byte-identical DDL. > 1
+	// additively renders, per BASE physical table (the five metrics tables,
+	// Logs, and the Traces spans table + its trace_id_ts lookup — the exact
+	// set internal/schema's Metrics/Logs/Traces structs name for the read
+	// path), a `<table>_local` table PLUS a `Distributed` wrapper table
+	// under the table's ORIGINAL configured name (see dataShardLocalConfig /
+	// renderDistributedWrapper) — every curated ALTER/projection/index/
+	// codec statement in this package continues to target the LOCAL table
+	// transparently, which is architecturally correct (they tune the
+	// physical storage each shard actually holds; ClickHouse does not
+	// propagate them through a Distributed wrapper).
+	//
+	// Requires Cluster to be set (Validate rejects otherwise — a Distributed
+	// engine and ON CLUSTER DDL both need a named cluster). Mutually
+	// exclusive with every *CatalogEnabled / DeltaPrefixEnabled /
+	// DownsampleTierEnabled opt-in feature below (Validate rejects the
+	// combination): those introduce a SEPARATELY-named table the read path
+	// also scans by name, and wiring the same local+Distributed split
+	// through their own MV pairs is explicitly out of THIS issue's scope —
+	// see cerberus issue #3077's "declaring multi-shard supported" carve-out
+	// (epic #3074's later settings-verification and e2e-hardening
+	// sub-issues, #3078/#3079, own that follow-up).
+	DataShardCount int
+
+	// DataShardingKey is the Distributed-engine sharding-key expression for
+	// the wrapper tables DataShardCount > 1 renders. nil (the default) uses
+	// rand() — an unweighted, correctness-neutral default. This expression
+	// governs only an INSERT that goes directly through the Distributed
+	// wrapper; cerberus recommends collector-side direct-to-LOCAL-table
+	// writes instead (see docs/operations.md's write-path section), and
+	// every SELECT against the wrapper table fans out to and merges ALL
+	// shards regardless of this key, so it never affects read correctness.
+	DataShardingKey chsql.Frag
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -486,6 +531,23 @@ const (
 	defaultMetricsDeltaPrefixTable = "otel_metrics_sum_delta_prefix"
 	defaultDeltaPrefixBucketColumn = "BucketStart"
 	defaultDeltaPrefixSumColumn    = "PartialSum"
+
+	// dataShardLocalSuffix names the per-DATA-shard LOCAL table DataShardCount
+	// > 1 renders underneath a Distributed wrapper (cerberus issue #3077 —
+	// see Config.DataShardCount's own doc for the terminology
+	// disambiguation). Matches the upstream traces_id_ts_lookup_table.sql
+	// template's own hard-coded "_trace_id_ts" suffix convention: a fixed
+	// string suffix on the caller-supplied base table name, never a
+	// separately-configurable field.
+	dataShardLocalSuffix = "_local"
+
+	// traceIDTsTableSuffix mirrors the upstream
+	// traces_id_ts_lookup_table.sql / traces_id_ts_lookup_mv.sql templates'
+	// own hard-coded suffix, letting dataShardBaseTables derive the
+	// trace_id_ts lookup table's name from cfg.Tables.Traces the same way
+	// those templates do (see renderTracesCreateTsTable), instead of
+	// duplicating the literal in a second place.
+	traceIDTsTableSuffix = "_trace_id_ts"
 )
 
 // withDefaults returns a copy of cfg with empty string fields filled in
@@ -660,6 +722,42 @@ func Apply(ctx context.Context, conn driver.Conn, signals []Signal) error {
 func (c Config) Validate() error {
 	if !c.SkipDatabaseCreate && c.DatabaseEngine.Replicated && c.DatabaseEngine.ReplicatedZooPath == "" {
 		return fmt.Errorf("ddl: replicated database engine requires a ZooKeeper/Keeper path (DatabaseEngine.ReplicatedZooPath)")
+	}
+	if c.DataShardCount > 1 {
+		if c.Cluster == "" {
+			return fmt.Errorf(
+				"ddl: DataShardCount %d requires Cluster to be set — a Distributed-engine wrapper table and its "+
+					"local table's ON CLUSTER DDL both need a named cluster (cerberus issue #3077)",
+				c.DataShardCount,
+			)
+		}
+		// These four opt-in features each introduce a SEPARATELY-named
+		// table (plus its own materialized view) that internal/schema's
+		// read path also scans by name — the same read-path contract the
+		// five metrics tables / Logs / Traces carry, which DataShardCount
+		// DOES wire the local+Distributed split for. Wiring the split
+		// through their own MV pairs too is explicitly out of scope for
+		// issue #3077 (see epic #3074's #3078/#3079 follow-ups); rejecting
+		// the combination here keeps a multi-shard deployment from silently
+		// missing one of these tables instead of failing loud at boot.
+		for _, f := range []struct {
+			name    string
+			enabled bool
+		}{
+			{"DeltaPrefixEnabled", c.DeltaPrefixEnabled},
+			{"DownsampleTierEnabled", c.DownsampleTierEnabled},
+			{"LokiLabelCatalogEnabled", c.LokiLabelCatalogEnabled},
+			{"TempoTagCatalogEnabled", c.TempoTagCatalogEnabled},
+		} {
+			if f.enabled {
+				return fmt.Errorf(
+					"ddl: DataShardCount %d is not yet supported together with %s — that feature's own "+
+						"table + materialized view are not wired for the local/Distributed split (cerberus "+
+						"issue #3077's explicit scope carve-out); disable it or keep DataShardCount <= 1",
+					c.DataShardCount, f.name,
+				)
+			}
+		}
 	}
 	if c.Tiering.Volume == "" && c.Tiering.configured() {
 		return fmt.Errorf(
@@ -851,10 +949,124 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 	return nil
 }
 
+// dataShardTablePair names one BASE physical table's ORIGINAL (Distributed
+// wrapper) name and its per-shard LOCAL name — see Config.DataShardCount.
+type dataShardTablePair struct {
+	original string
+	local    string
+}
+
+// dataShardLocalConfig returns a copy of c with signal s's BASE table
+// name(s) suffixed dataShardLocalSuffix (and DataShardCount cleared, so a
+// recursive renderSignal call against the returned config takes the normal,
+// non-sharded switch below instead of recursing into renderDataShardedSignal
+// again), plus the (original, local) name pairs renderDataShardedSignal wraps in
+// a Distributed table after rendering against the returned config.
+//
+// Only the table(s) internal/schema's read path scans by name for signal s
+// are touched — every other field (engine, TTL, tiering, cluster, every
+// curated *Enabled flag) passes through unchanged, so the LOCAL table
+// renders with exactly the same shape a non-sharded deployment would give
+// the original table. Traces additionally wraps the trace_id_ts lookup
+// table: its name is DERIVED from Tables.Traces by the upstream
+// traces_id_ts_lookup_table.sql template itself (see
+// renderTracesCreateTsTable), so suffixing Tables.Traces here already
+// produces the correctly-suffixed lookup-table name with no separate field
+// to touch — traceIDTsTableSuffix only lets this method compute the
+// ORIGINAL (unsuffixed) name to wrap.
+func (c Config) dataShardLocalConfig(s Signal) (Config, []dataShardTablePair) {
+	local := func(name string) string { return name + dataShardLocalSuffix }
+	var pairs []dataShardTablePair
+	switch s {
+	case Metrics:
+		pairs = []dataShardTablePair{
+			{c.Tables.MetricsGauge, local(c.Tables.MetricsGauge)},
+			{c.Tables.MetricsSum, local(c.Tables.MetricsSum)},
+			{c.Tables.MetricsHistogram, local(c.Tables.MetricsHistogram)},
+			{c.Tables.MetricsExpHistogram, local(c.Tables.MetricsExpHistogram)},
+			{c.Tables.MetricsSummary, local(c.Tables.MetricsSummary)},
+		}
+		c.Tables.MetricsGauge = local(c.Tables.MetricsGauge)
+		c.Tables.MetricsSum = local(c.Tables.MetricsSum)
+		c.Tables.MetricsHistogram = local(c.Tables.MetricsHistogram)
+		c.Tables.MetricsExpHistogram = local(c.Tables.MetricsExpHistogram)
+		c.Tables.MetricsSummary = local(c.Tables.MetricsSummary)
+	case Logs:
+		pairs = []dataShardTablePair{{c.Tables.Logs, local(c.Tables.Logs)}}
+		c.Tables.Logs = local(c.Tables.Logs)
+	case Traces:
+		pairs = []dataShardTablePair{
+			{c.Tables.Traces, local(c.Tables.Traces)},
+			{c.Tables.Traces + traceIDTsTableSuffix, local(c.Tables.Traces) + traceIDTsTableSuffix},
+		}
+		c.Tables.Traces = local(c.Tables.Traces)
+	}
+	c.DataShardCount = 0
+	return c, pairs
+}
+
+// dataShardingKey returns Config.DataShardingKey, defaulting to `rand()`
+// when unset — see that field's own doc for why an unweighted default is
+// correctness-neutral for read queries.
+func (c Config) dataShardingKey() chsql.Frag {
+	if c.DataShardingKey != nil {
+		return c.DataShardingKey
+	}
+	return chsql.Call("rand")
+}
+
+// renderDistributedWrapper renders the Distributed-engine `CREATE TABLE
+// <table> ON CLUSTER <cluster> AS <db>.<localTable> ENGINE =
+// Distributed(...)` statement wrapping localTable under table — the name
+// internal/schema's read path expects. Built entirely via the typed
+// chsql.CreateTableBuilder / EngineDistributed constructors — no
+// hand-assembled SQL (invariant 10).
+func renderDistributedWrapper(cfg Config, table, localTable string) string {
+	return chsql.CreateTable(table).
+		Database(cfg.Database).
+		IfNotExists().
+		OnCluster(cfg.Cluster).
+		As(cfg.Database, localTable).
+		Engine(chsql.EngineDistributed(cfg.Cluster, cfg.Database, localTable, cfg.dataShardingKey())).
+		SQL()
+}
+
+// renderDataShardedSignal renders signal s under DataShardCount > 1: exactly the
+// statements renderSignal's own switch would render for a non-sharded
+// deployment, but pointed at each BASE table's "_local" name (see
+// dataShardLocalConfig), PLUS one additional Distributed wrapper CREATE per
+// base table, under its ORIGINAL configured name, appended after that
+// signal's other statements (a Distributed wrapper only needs the local
+// table to already exist, which the preceding CREATE guarantees; it does
+// not care about ALTER ordering).
+func renderDataShardedSignal(cfg Config, s Signal) ([]string, error) {
+	localCfg, pairs := cfg.dataShardLocalConfig(s)
+	stmts, err := renderSignal(localCfg, s)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pairs {
+		stmts = append(stmts, renderDistributedWrapper(cfg, p.original, p.local))
+	}
+	return stmts, nil
+}
+
 // renderSignal returns the ordered list of CREATE statements for a signal.
 // Splitting this out from applySignal keeps the rendering logic testable
 // without a live ClickHouse connection.
+//
+// DataShardCount > 1 (cerberus issue #3077) is handled by a thin wrapper,
+// renderDataShardedSignal, rather than branching inline here: it renders this
+// SAME switch against a shadow Config whose BASE table name(s) are
+// suffixed "_local", then appends a Distributed wrapper CREATE per base
+// table under the original name — see dataShardLocalConfig /
+// renderDistributedWrapper. Every curated ALTER/projection/index/codec
+// statement below therefore transparently targets the local table without
+// this switch needing to know DataShardCount exists.
 func renderSignal(cfg Config, s Signal) ([]string, error) {
+	if cfg.DataShardCount > 1 {
+		return renderDataShardedSignal(cfg, s)
+	}
 	switch s {
 	case Metrics:
 		ttl := cfg.ttlExpr("TimeUnix", cfg.TTL.Metrics, cfg.Tiering.Metrics)
