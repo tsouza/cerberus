@@ -15,6 +15,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
@@ -162,7 +163,27 @@ type MetricsSample struct {
 // lower + wrap) before calling engine.QueryPlan, so Parse is unused
 // and ProjectSamples is a passthrough (the matrix-shape Project is
 // already on top of the plan).
-type metricsLang struct{ spansTable string }
+//
+// cerberus issue #3065 item 1: attrStrategies carries the Handler's
+// resolved chsql.AttrStrategies (h.AttrStrategies, wired via
+// SetAttrStrategies exactly like traceqlLang.AttrStrategies) — every
+// metricsLang{...} construction (metrics_exec.go's two call sites, this
+// file's histogram path, metrics_query_range_compare.go's compare() path)
+// must set it, or a metrics-pipeline plan silently loses attribute-map
+// JSON-strategy rendering even though the SAME schema.Traces columns
+// resolved to AttrStrategyJSON for /api/search's traceqlLang-routed
+// plans. Before this field existed, EmitAttrStrategies() below did not
+// exist either, so engine.attrStrategiesForLang's duck-type check found
+// no attrStrategier implementation for metricsLang and threaded a bare
+// nil onto every metrics-pipeline emit context — the confirmed root cause
+// of `| compare()`'s generic mapKeys/mapValues fan-out
+// (internal/traceql/metrics_compare.go's compareAttrPairsExpr) rendering
+// plain mapKeys/mapContains against a JSON-typed column and failing with
+// ILLEGAL_TYPE_OF_ARGUMENT (see metrics_compare_json_chdb_test.go).
+type metricsLang struct {
+	spansTable     string
+	attrStrategies chsql.AttrStrategies
+}
 
 func (metricsLang) Name() string { return "traceql" }
 
@@ -172,6 +193,11 @@ func (metricsLang) Name() string { return "traceql" }
 // metrics-emitter subtree), but threading it means the chokepoint still runs
 // over the rest of a metrics plan.
 func (l metricsLang) SpansTable() string { return l.spansTable }
+
+// EmitAttrStrategies duck-types metricsLang against engine's attrStrategier
+// interface, exactly like traceqlLang.EmitAttrStrategies — see this type's
+// own doc for why the metrics pipeline needs this method at all.
+func (l metricsLang) EmitAttrStrategies() chsql.AttrStrategies { return l.attrStrategies }
 
 func (metricsLang) Parse(_ context.Context, _ string) (chplan.Node, engine.Meta, error) {
 	// Engine.QueryPlan never calls Parse; the error keeps the adapter

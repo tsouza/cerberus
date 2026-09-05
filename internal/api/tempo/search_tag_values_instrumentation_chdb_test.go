@@ -79,7 +79,7 @@ func TestBuildAttributeValuesSQL_ChDB_InstrumentationScope_IsolatedFromSpanResou
 	s.ScopeAttributesColumn = "ScopeAttributes"
 
 	sqlStr, args := tempo.BuildAttributeValuesSQLForTest(
-		s, "otel.scope.name", tempo.AttrMapScopeInstrumentationForTest, nil, start, end,
+		s, "otel.scope.name", tempo.AttrMapScopeInstrumentationForTest, nil, start, end, nil,
 	)
 
 	got, err := c.QueryStrings(context.Background(), sqlStr, args...)

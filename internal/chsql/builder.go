@@ -205,6 +205,41 @@ func (b *Builder) MapAt(col, key string) {
 	b.sb.WriteByte(']')
 }
 
+// MapContains appends "mapContains(<col>, ?)" with key bound as a
+// positional argument — CH's Map key-existence check.
+//
+// cerberus issue #3065 point 2: this is the ad-hoc-query-builder
+// equivalent of chplan.FnMapContainsKey (exprMapContainsKey) — MapAt's
+// own doc explains why internal/api/loki's ad-hoc query builders need
+// their own JSON branch rather than relying on the chplan-level fix
+// alone; internal/api/tempo's /api/search/tag/{name}/values
+// (search_tag_values.go's mapContainsFrag) has the identical shape: it
+// builds its per-key existence pre-filter through THIS method directly
+// rather than through a chplan tree. When col resolves to
+// AttrStrategyJSON, this renders the same
+//
+//	has(JSONAllPaths(<col>), ?)
+//
+// shape exprMapContainsKey's doc explains in full — unlike MapAt's JSON
+// branch, key flows through b.Arg (a bound `?` placeholder) exactly like
+// the Map branch, since has() takes a runtime argument rather than a
+// compile-time dynamic-subcolumn path token.
+func (b *Builder) MapContains(col, key string) {
+	if b.attrStrategies.Lookup(col) == AttrStrategyJSON {
+		b.sb.WriteString("has(JSONAllPaths(")
+		b.Ident(col)
+		b.sb.WriteString("), ")
+		b.Arg(key)
+		b.sb.WriteByte(')')
+		return
+	}
+	b.sb.WriteString("mapContains(")
+	b.Ident(col)
+	b.sb.WriteString(", ")
+	b.Arg(key)
+	b.sb.WriteByte(')')
+}
+
 // MapKeys appends "mapKeys(<col>)" — CH's built-in for extracting the
 // key set of a Map column. Used by the metadata SQL stack to derive the
 // list of attribute names known for a metric.

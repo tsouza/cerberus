@@ -129,7 +129,7 @@ func (h *Handler) execMetricsRangeHistogram(
 	}
 	wrapped := wrapHistogramForSample(rw, hist)
 
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable, attrStrategies: h.AttrStrategies}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: shape,
 	})
@@ -209,7 +209,7 @@ func (h *Handler) runMetricsWindow(
 	// metricsLang.ProjectSamples is a passthrough (the Sample
 	// projection is already wrapped above) so engine.QueryPlan runs
 	// optimize → emit → execute without re-wrapping the shape.
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable, attrStrategies: h.AttrStrategies}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: shape,
 	})

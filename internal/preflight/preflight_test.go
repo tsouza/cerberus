@@ -453,12 +453,13 @@ func TestRunWrongAttributeTypeFails(t *testing.T) {
 // boot-probe compat AND its deliberate boot-warning-posture decision: a
 // logs table whose attribute-map columns are typed JSON (the upstream OTel
 // exporter's `json:true` schema variant) boots instead of FATALing, with a
-// WARNING that — now that chsql actually has a JSON rendering path for
-// logs' per-key lookups — says what IS supported (not "nothing works
-// yet") and still names what remains unsupported (full-map operations,
-// escape-dots-in-keys schemas). Result.LogsAttrStrategies must resolve the
-// column to AttrStrategyJSON so internal/engine can thread it into a LogQL
-// request's ctx.
+// WARNING that — now that chsql has a JSON rendering path for both logs'
+// per-key lookups AND its full-map operations (cerberus issue #3063) —
+// says what IS supported (not "nothing works yet") and still names the one
+// remaining signal-agnostic gap (escape-dots-in-keys / mixed-history
+// schemas). Result.LogsAttrStrategies must resolve the column to
+// AttrStrategyJSON so internal/engine can thread it into a LogQL request's
+// ctx.
 func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
@@ -495,12 +496,14 @@ func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
 
 // TestRunTracesJSONAttrMapPassesWithWarning is the traces counterpart of
 // TestRunLogsJSONAttrMapPassesWithWarning — the other signal the boot-probe
-// compat covers. Since cerberus issue #3062, chsql's JSON rendering branch
-// IS wired for TraceQL too (exprFieldAccess, not just exprMapAccess — see
-// its own doc), so the warning narrows to the same "per-key lookups
-// supported, full-map operations are not" shape logs already used, and
-// Result.TracesAttrStrategies resolves to AttrStrategyJSON for the
-// detected column instead of staying nil.
+// compat covers. Since cerberus issues #3062 and #3065, chsql's JSON
+// rendering is wired for TraceQL's per-key lookups (exprFieldAccess) AND
+// full-map operations (compare()'s fan-out, /api/search's baseline
+// response, the /api/search/tags discovery endpoints), so the warning
+// narrows to the one remaining signal-agnostic gap — the
+// json_type_escape_dots_in_keys / mixed-history hazard, shared verbatim
+// with logs — and Result.TracesAttrStrategies resolves to AttrStrategyJSON
+// for the detected column instead of staying nil.
 func TestRunTracesJSONAttrMapPassesWithWarning(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()

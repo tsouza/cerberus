@@ -84,7 +84,7 @@ func (h *Handler) CollectAttributeTagScopes(
 	if err != nil {
 		return nil, err
 	}
-	return h.collectAttributeTagScopes(ctx, scope, filter, start, end)
+	return h.collectAttributeTagScopes(ctx, scope, filter, start, end, h.AttrStrategies)
 }
 
 // SortedUnique returns the de-duplicated, lexicographically sorted
@@ -157,10 +157,10 @@ func (h *Handler) FetchTagValues(
 		args   []any
 	)
 	if r.IsIntrinsic {
-		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, filter, start, end)
+		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, filter, start, end, h.AttrStrategies)
 		valueType = intrinsicType(r.IntrinsicName)
 	} else {
-		sqlStr, args = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, filter, start, end)
+		sqlStr, args = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, filter, start, end, h.AttrStrategies)
 		valueType = "string"
 	}
 	raw, err := h.Client.QueryStrings(ctx, sqlStr, args...)
