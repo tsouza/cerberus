@@ -233,12 +233,23 @@ func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lower
 // inside [lower]'s recursive dispatch — so a metric query's inner selector
 // (RangeAggregationExpr.Left, reached via lowerRangeAggregation calling
 // lowerMatchers/lowerPipelineWithLabels directly, never through this
-// function) can never be wrapped: [syntax.LogSelectorExpr] is only ever the
-// TOP-level expr for a genuine log-line query (see logql.IsMetricQuery's
-// type list — every metric-query expr type is a SampleExpr, not a
-// LogSelectorExpr), and lc.LogLineLimit is threaded only by
-// internal/api/loki's Lang.Parse for the request it is actually building a
-// response for.
+// function) can never be wrapped. lc.LogLineLimit is threaded
+// unconditionally by internal/api/loki's Lang.Parse — including for a
+// metric query, since the handler doesn't know which shape it's building
+// until the lowering classifies the parsed expression — so this function,
+// not the caller, is responsible for rejecting every non-log-line shape.
+//
+// The explicit [IsMetricQuery] guard below is required and NOT redundant
+// with the `syntax.LogSelectorExpr` type-assertion that follows:
+// `*syntax.LiteralExpr` and `*syntax.VectorExpr` both implement
+// `isLogSelectorExpr()` (needed so they satisfy `Selector()` when used as
+// a `SampleExpr` leg of a binary expression) while ALSO being genuine
+// top-level metric queries per [IsMetricQuery]. Without this guard, a
+// top-level `vector(1)` or bare-literal query — [logql.lowerVector] /
+// [logql.lowerLiteral]'s one-row synthetic-scalar plan, which carries no
+// Timestamp column — passed the `LogSelectorExpr` assertion and got
+// wrapped in `ORDER BY Timestamp …`, and ClickHouse rejected the SQL with
+// `Unknown expression identifier 'Timestamp'` (cerberus issue #3047).
 //
 // This is a strictly ADDITIVE fast path: internal/api/loki/handler.go's
 // clampLogRows keeps sorting + truncating every decoded row exactly as it
@@ -248,6 +259,9 @@ func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lower
 // byte-identical to before this change, never wrong.
 func maybePushLogLineLimit(expr syntax.Expr, plan chplan.Node, s schema.Logs, lc lowerCtx) chplan.Node {
 	if lc.LogLineLimit <= 0 {
+		return plan
+	}
+	if IsMetricQuery(expr) {
 		return plan
 	}
 	sel, ok := expr.(syntax.LogSelectorExpr)

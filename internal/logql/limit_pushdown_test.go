@@ -208,12 +208,21 @@ func TestLogLineLimitPushdown_DirectionMapsToOrderDirection(t *testing.T) {
 //   - LogLineLimit<=0 (every non-Opts entry point, and every caller that
 //     hasn't parsed a request `limit`) never pushes.
 //   - A metric query (RangeAggregationExpr et al.) never pushes even
-//     when LogLineLimit is positive — [maybePushLogLineLimit] only fires
-//     when the TOP-level parsed expr is itself a syntax.LogSelectorExpr,
-//     which a metric query's top-level expr never is (see
-//     logql.IsMetricQuery). This is what keeps a metric query's inner
-//     selector (reached recursively while lowering the range
-//     aggregation) from ever being wrapped.
+//     when LogLineLimit is positive. [maybePushLogLineLimit] guards this
+//     explicitly with [logql.IsMetricQuery] — NOT merely by the
+//     TOP-level expr failing the `syntax.LogSelectorExpr` assertion, since
+//     `*syntax.LiteralExpr` and `*syntax.VectorExpr` are both genuine
+//     top-level metric queries (see IsMetricQuery) that ALSO implement
+//     `isLogSelectorExpr()` (needed for their dual role as a `SampleExpr`
+//     binary-expression leg). A `count_over_time(...)` top-level expr
+//     happens to fail that assertion on its own and would pass even
+//     without the explicit guard; `vector(1)` and a bare literal do not,
+//     and regressed into a wrong `ORDER BY Timestamp …` wrap ClickHouse
+//     rejected with `Unknown expression identifier 'Timestamp'` — the
+//     synthetic one-row plan [logql.lowerVector] / [logql.lowerLiteral]
+//     build carries no Timestamp column (cerberus issue #3047). All three
+//     shapes are exercised below so the explicit guard cannot regress
+//     silently again.
 func TestLogLineLimitPushdown_NoOpWhenLimitZeroOrMetricQuery(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -237,24 +246,37 @@ func TestLogLineLimitPushdown_NoOpWhenLimitZeroOrMetricQuery(t *testing.T) {
 		}
 	})
 
-	t.Run("metric query is never wrapped", func(t *testing.T) {
-		expr, err := logql.ParseExprPermissive(`count_over_time({app="x"}[5m])`)
-		if err != nil {
-			t.Fatalf("ParseExprPermissive: %v", err)
-		}
-		base, err := logql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
-		if err != nil {
-			t.Fatalf("LowerAtRange: %v", err)
-		}
-		pushed, err := logql.LowerAtRangeOpts(context.Background(), expr, s, start, end, time.Minute, logql.LowerOpts{LogLineLimit: 50, LogLineBackward: true})
-		if err != nil {
-			t.Fatalf("LowerAtRangeOpts: %v", err)
-		}
-		if !pushed.Equal(base) {
-			t.Errorf("a metric query's plan changed when LogLineLimit was set; want byte-identical — the limit must never reach a metric query's plan")
-		}
-		if _, ok := pushed.(*chplan.Limit); ok {
-			t.Errorf("metric query plan's top node is *chplan.Limit; must never be wrapped")
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		// query is parsed as a top-level expr. vector(1) and the bare
+		// literal both implement isLogSelectorExpr() despite being
+		// metric queries (see the function doc comment above) — the
+		// two shapes that actually exercised the #3047 regression.
+		query string
+	}{
+		{name: "range aggregation (count_over_time)", query: `count_over_time({app="x"}[5m])`},
+		{name: "vector(1) — implements LogSelectorExpr despite being a metric query", query: `vector(1)`},
+		{name: "bare literal — implements LogSelectorExpr despite being a metric query", query: `1`},
+	} {
+		t.Run("metric query is never wrapped: "+tc.name, func(t *testing.T) {
+			expr, err := logql.ParseExprPermissive(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExprPermissive(%q): %v", tc.query, err)
+			}
+			base, err := logql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
+			if err != nil {
+				t.Fatalf("LowerAtRange: %v", err)
+			}
+			pushed, err := logql.LowerAtRangeOpts(context.Background(), expr, s, start, end, time.Minute, logql.LowerOpts{LogLineLimit: 50, LogLineBackward: true})
+			if err != nil {
+				t.Fatalf("LowerAtRangeOpts: %v", err)
+			}
+			if !pushed.Equal(base) {
+				t.Errorf("a metric query's plan changed when LogLineLimit was set; want byte-identical — the limit must never reach a metric query's plan")
+			}
+			if _, ok := pushed.(*chplan.Limit); ok {
+				t.Errorf("metric query plan's top node is *chplan.Limit; must never be wrapped")
+			}
+		})
+	}
 }
