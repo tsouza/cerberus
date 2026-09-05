@@ -3012,16 +3012,17 @@ type QueryBuilder struct {
 }
 
 // WithAttrStrategies sets the AttrStrategies this QueryBuilder's Build /
-// subquerySQL renders attribute-map accesses against — both construct a
-// fresh Builder via NewBuilderWithAttrStrategies(s.attrStrategies). Frag
-// does NOT consult it: Frag writes directly into the CALLER's own *Builder
-// (s.writeInto(b)), so any attribute-map access rendered through Frag is
-// governed by that outer Builder's own attrStrategies, not this
-// QueryBuilder's. A caller chaining .WithAttrStrategies(...).Frag() gets no
-// effect from the call — repo-wide, WithAttrStrategies is currently only
-// ever followed by Build, never Frag, but a future Frag caller should be
-// aware this is a real footgun. See AttrStrategies's doc for why this is
-// scoped per signal rather than a single global map.
+// subquerySQL / Frag renders attribute-map accesses against. Build and
+// subquerySQL construct a fresh Builder via
+// NewBuilderWithAttrStrategies(s.attrStrategies); Frag writes directly into
+// the CALLER's own *Builder instead, so it temporarily swaps that outer
+// Builder's attrStrategies to s.attrStrategies for the duration of the
+// write (restoring the previous value afterward) whenever s.attrStrategies
+// is non-nil — a nil s.attrStrategies leaves the outer Builder's own
+// strategies in effect unchanged, so every pre-#3063 QueryBuilder that
+// never called WithAttrStrategies keeps rendering exactly as before. See
+// AttrStrategies's doc for why this is scoped per signal rather than a
+// single global map.
 func (s *QueryBuilder) WithAttrStrategies(strategies AttrStrategies) *QueryBuilder {
 	s.attrStrategies = strategies
 	return s
