@@ -430,10 +430,10 @@ type cardinalityProbeCarrier struct {
 // whose EvalGrid reports a positive step) — and reports it only when that
 // carrier is one of the six kinds this file's own top-level doc names
 // (point 1), carrying at least one series-identity key and a non-nil Input.
-// Every other carrier kind (StepGrid, RangeWindowStaleResample,
-// AbsentOverTime) — and a recognised carrier with no series-identity keys
-// or Input at all — reports ok=false: this file's own top-level doc names
-// this the deliberate carrier-kind scope narrowing.
+// Every other carrier kind (StepGrid, AbsentOverTime) — and a recognised
+// carrier with no series-identity keys or Input at all — reports ok=false:
+// this file's own top-level doc names this the deliberate carrier-kind
+// scope narrowing.
 func findCardinalityProbeCarrier(plan chplan.Node) (*cardinalityProbeCarrier, bool) {
 	var found chplan.Node
 	chplan.Walk(plan, func(n chplan.Node) bool {

@@ -140,15 +140,28 @@ const (
 //     histogramQuantileRankWalkNativeValueFrag clamps that argument
 //     unconditionally and answers Prometheus's own -inf / inf / nan
 //     contract in an outer branch that never touches the aggregate for an
-//     out-of-domain phi. The SAME out-of-range phi can also leave the
-//     window-construction search (which runs on the UNCLAMPED phi, ahead
-//     of that outer branch) unable to find any rung at all — arrayFirstIndex
-//     answers 0 for phi > 1 (target exceeds every cum, including the
-//     terminal) and, for a NaN PhiExpr, every comparison is false for the
-//     same reason. Both degrade the window to just the terminal pair,
-//     which the aggregate answers nan for — a value the outer phi-range /
-//     isNaN branches already discard in favour of their own literal
-//     answer, so the degenerate window is inert rather than wrong.
+//     out-of-domain phi. The window-construction search (which runs on the
+//     UNCLAMPED phi, ahead of that outer branch) reacts differently to each
+//     of the three out-of-domain shapes, and only two of them are
+//     degenerate:
+//   - phi > 1: target exceeds every cum value, including the terminal,
+//     so arrayFirstIndex finds NO rung at all and answers 0 — the
+//     window degrades to just the terminal pair, which the aggregate
+//     answers nan for.
+//   - A NaN PhiExpr: every `c >= target` comparison is false for the
+//     same reason (NaN compares false against everything), so
+//     arrayFirstIndex likewise answers 0 and the window degrades
+//     identically.
+//   - phi < 0: target is NEGATIVE, and every cum value (a
+//     non-negative running count) is trivially >= a negative target,
+//     so arrayFirstIndex finds a rung immediately — idx = 1, a
+//     perfectly ordinary small window, not a degenerate one. Nothing
+//     about this search behaves unusually for phi < 0.
+//     All three shapes are harmless for the identical reason regardless of
+//     which window the search actually builds: the outer phi < 0 -> -inf /
+//     phi > 1 -> inf / isNaN -> nan branches discard whatever the aggregate
+//     would have answered in favour of their own literal, so the window's
+//     own correctness (degenerate or not) never reaches the result.
 func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantile) error {
 	if h.Input == nil {
 		return fmt.Errorf("%w: HistogramQuantile.Input is nil", ErrUnsupported)
