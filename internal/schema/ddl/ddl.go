@@ -1272,6 +1272,64 @@ func renderAddBodyTextIndex(cfg Config) string {
 	return stmt.SQL()
 }
 
+// legacyBodyTokenBFIndexName is the upstream OTel-CH exporter template's own
+// name (sqltemplates' logs_table.sql) for the pre-#2773 tokenbf_v1(32768, 3,
+// 0) skip index over lower(Body) — the SAME name idx_body_text's own doc
+// comment above describes the text-index branch as reusing on a FRESH
+// table (HasFullTextSearch's mutually-exclusive CREATE-time swap), but the
+// name an EXISTING, already-upgraded table's index still carries alongside
+// the separately-named idx_body_text. DropLegacyBodyTokenBFIndexSQL below is
+// the only caller.
+const legacyBodyTokenBFIndexName = "idx_lower_body"
+
+// DropLegacyBodyTokenBFIndexSQL renders the ALTER TABLE DROP INDEX statement
+// retiring the legacy idx_lower_body tokenbf_v1 skip index on an EXISTING
+// logs table that has already been upgraded to carry idx_body_text
+// (cerberus issue #2773) — cerberus issue #2839's retirement follow-up.
+//
+// Live-measured against ClickHouse 26.6 (2,002,000-row logs-shaped table,
+// idx_lower_body tokenbf_v1(32768, 3, 0) GRANULARITY 8 vs idx_body_text
+// text(tokenizer = 'splitByNonAlpha'), a `lower(Body) LIKE '%peer%'`
+// query — the EXACT conjunct shape internal/chsql's exprLineContent emits
+// for chopt text_index_line_filter, cerberus issue #2773): idx_lower_body
+// ALONE prunes ZERO parts/granules for this predicate shape — `EXPLAIN
+// indexes=1` reports the identical Parts 24/24, Granules 255/255 a table
+// with NO index at all reports, and read_rows is identical too (2,002,000
+// rows, a full scan, for both) — while idx_body_text ALONE (or the two
+// together, which perform identically to idx_body_text alone) prunes to
+// Parts 1/24, Granules 1/255, reading only 8,192 rows. A sanity check
+// against the SAME tokenbf_v1 index confirms it is not simply
+// misconfigured: `hasToken(lower(Body), 'peer')` and `lower(Body) = 'peer'`
+// both DO prune via idx_lower_body (Parts 5/24, Granules 35/255) — tokenbf_v1
+// works exactly as documented for token-equality-shaped predicates, it is
+// specifically the LIKE '%needle%' substring shape cerberus's line-filter
+// prefilter emits that it cannot answer. idx_lower_body is confirmed dead
+// weight on any deployment that has already upgraded to idx_body_text: it
+// costs real write-path bloom-filter-maintenance overhead on every
+// insert/merge for zero read-path benefit on the one predicate shape it
+// was built to accelerate.
+//
+// Deliberately NOT wired into Apply / RenderAll / applySignal — the same
+// "an operator runs this once, deliberately" posture
+// `cerberus schema delta-prefix-backfill` / `downsample-tier-rebuild` follow
+// (see cmd/cerberus/cmd_schema.go's `retire-idx-lower-body` verb, the only
+// caller): dropping an index a running deployment's queries might still be
+// planning against is a real production-cluster decision no render-time
+// boot-time DDL apply should make unilaterally, and this measurement's own
+// verdict — idx_lower_body helps nothing on THIS predicate shape — says
+// nothing about whether an operator's OWN queries lean on it some other
+// way this package cannot see. Run this only once idx_body_text has been
+// live and MATERIALIZE'd for a confidence period — see docs/operations.md's
+// runbook step.
+func DropLegacyBodyTokenBFIndexSQL(cfg Config) string {
+	cfg = cfg.withDefaults()
+	stmt := chsql.AlterTableDropIndex(cfg.Database, cfg.Tables.Logs, legacyBodyTokenBFIndexName)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
 const (
 	// temporalityIndexName is the ALTER TABLE ADD INDEX identifier for the
 	// AggregationTemporality skip index — see renderAddTemporalityIndex.

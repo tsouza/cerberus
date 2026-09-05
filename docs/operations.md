@@ -2224,10 +2224,13 @@ mode, so this reproduces the default rather than widening that builder's
 contract for one index type.
 
 **Retiring the now-redundant legacy `idx_lower_body` tokenbf index on an
-upgraded existing table is explicitly out of scope of this feature** —
-dropping an index a running deployment's queries may still be planning
-against is a real production-cluster risk this render-time DDL apply should
-not take unilaterally. Tracked as a follow-up issue.
+upgraded existing table is out of scope of THIS feature's own render-time DDL
+apply** — dropping an index a running deployment's queries may still be
+planning against is a real production-cluster decision no boot-time DDL
+apply should take unilaterally. `cerberus schema retire-idx-lower-body`
+(cerberus issue #2839) is the dedicated, operator-run follow-up; see
+"Retiring the legacy `idx_lower_body` tokenbf index" below for the runbook
+and the live measurement establishing it is safe.
 
 ##### One-time `MATERIALIZE INDEX` back-fill runbook
 
@@ -2288,6 +2291,84 @@ strictly ordered (26.4 > 26.2), so a server can satisfy one without the
 other, and the rewrite is a harmless (if pointless) no-op on any table that
 carries no text index at all — every LIKE conjunct just evaluates against
 the same undexed `lower(Body)` scan the row predicate already pays for.
+Live-confirmed against a real ClickHouse 26.6 server rather than assumed
+(cerberus issue #2839): a 2,002,000-row logs-shaped table with ONLY the
+legacy `idx_lower_body` tokenbf_v1 index (no text index at all) reads
+2,002,000 rows for a `lower(Body) LIKE '%peer%'` query — byte-identical to a
+table with no index whatsoever — confirming the rewrite is genuinely inert,
+not merely assumed inert, on that shape. The same probe is also the
+definitive answer to a narrower question the tokenbf_v1 branch's own history
+left open: whether `idx_lower_body`, specifically, could still prune THIS
+exact `lower(Body) LIKE '%tok%'` conjunct shape once it exists — see
+"Retiring the legacy `idx_lower_body` tokenbf index" immediately below.
+
+##### Retiring the legacy `idx_lower_body` tokenbf index (cerberus issue #2839)
+
+`idx_lower_body`'s pre-#2773 `tokenbf_v1(32768, 3, 0)` shape indexes
+`lower(Body)` — the exact column expression the `text_index_line_filter`
+prefilter above conjuncts against with `LIKE '%tok%'`. That similarity is
+worth stating plainly because it is the one honest reason this repo did not
+simply take the "`tokenbf_v1` provides zero benefit" claim on faith: a
+bloom-filter index over the SAME expression a new predicate shape targets is
+exactly the situation where "no predicate cerberus emits matches this index
+type" claims deserve a live check rather than a re-statement.
+
+Live-measured against a real ClickHouse 26.6 server (not chDB — index
+pruning is genuine server-planner behavior chDB does not reliably model): a
+2,002,000-row logs-shaped table (`idx_lower_body` tokenbf_v1(32768, 3, 0)
+GRANULARITY 8, `idx_body_text` text(tokenizer = 'splitByNonAlpha')
+GRANULARITY 100000000, 2,000 rows containing the word "peer" clustered into
+one narrow time window, matching a realistic incident-log shape) against
+`lower(Body) LIKE '%peer%'` — the exact conjunct shape
+`text_index_line_filter`'s prefilter emits:
+
+| Indexes present                      | `EXPLAIN indexes=1` Parts/Granules pruned  | rows read | query time |
+| ------------------------------------ | ------------------------------------------ | --------- | ---------- |
+| neither                              | 24/24, 255/255 (no pruning)                | 2,002,000 | 191 ms     |
+| `idx_lower_body` alone               | 24/24, 255/255 (no pruning)                | 2,002,000 | 254 ms     |
+| `idx_body_text` alone                | 1/24, 1/255                                | 8,192     | 142 ms     |
+| both (the post-#2773 upgraded shape) | 1/24, 1/255 (identical to text-only)       | 8,192     | 182 ms     |
+
+`idx_lower_body` alone is byte-for-byte identical to no index at all for
+this predicate — confirmed not to be a broken or misconfigured index by the
+same probe: `hasToken(lower(Body), 'peer')` and `lower(Body) = 'peer'`
+against the SAME `idx_lower_body`-only table both DO prune (5/24 parts,
+35/255 granules) — `tokenbf_v1` works exactly as documented for
+token-equality-shaped predicates, it is specifically the `LIKE '%needle%'`
+substring shape cerberus's line-filter prefilter emits that it cannot
+answer. `idx_body_text` alone already accounts for the FULL pruning benefit
+in the "both" row; `idx_lower_body` contributes nothing incremental once
+`idx_body_text` exists. This confirms both #2839's own "zero query-time
+benefit" claim and this document's "harmless (if pointless) no-op" sentence
+above hold up under a real-server check, not just as a re-stated assumption
+— `idx_lower_body` is confirmed dead weight on an upgraded deployment: real
+write-path bloom-filter-maintenance cost on every insert/merge, for zero
+read-path benefit on the one predicate shape it was built to accelerate.
+
+**Runbook** — `cerberus schema retire-idx-lower-body` (chsql's
+`AlterTableDropIndex` Frag, `internal/schema/ddl.DropLegacyBodyTokenBFIndexSQL`)
+renders/executes:
+
+```sql
+ALTER TABLE <db>.otel_logs DROP INDEX IF EXISTS idx_lower_body;
+```
+
+Preview it first with `--dry-run`. Like every other schema-mutation verb in
+this section (`delta-prefix-backfill`, `downsample-tier-rebuild`, and the
+`full_text_index` DDL feature's own `ADD INDEX` above), this is an
+operator-run, one-time ALTER — **not** something cerberus applies
+automatically at boot: dropping an index a running deployment's own queries
+might still be planning against (for a predicate shape this measurement did
+not probe) is a real production-cluster decision, never one a render-time
+DDL apply should make unilaterally. Run it only once `idx_body_text` has
+been live and `MATERIALIZE`'d (see the back-fill runbook above) for a
+confidence period on this deployment. `DROP INDEX` is metadata-only —
+ClickHouse discards the index's on-disk bloom-filter blocks for every part
+in the background; there is no equivalent of `MATERIALIZE INDEX` for a drop.
+Re-adding `idx_lower_body` later (there is no reason to, but if an operator
+ever needs the tokenbf_v1 shape back for some OTHER predicate) needs a full
+`ADD INDEX` + `MATERIALIZE INDEX` re-backfill, since the drop discards the
+existing granule data.
 
 **Unverified ClickHouse 26.6 claims — do not build on these without
 re-verifying against a real 26.6+ instance.** `multiSearchAny` inside the
