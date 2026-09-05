@@ -1,6 +1,11 @@
 {{- if .Values.clickhouse.bundled.enabled }}
 {{- $b := .Values.clickhouse.bundled }}
 {{- $keeper := eq (include "cerberus.clickhouse.keeperEnabled" .) "true" }}
+{{- /* dataShardCount: the number of independent ClickHouse DATA shards
+       (cerberus issue #3077) — see cerberus.clickhouse.dataShardCount's own
+       disambiguation. <= 1 keeps every branch below byte-identical to this
+       chart's pre-#3077 shape. */}}
+{{- $dataShardCount := int (include "cerberus.clickhouse.dataShardCount" .) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -30,6 +35,7 @@ data:
       </merge_tree>
     </clickhouse>
   {{- if $keeper }}
+  {{- if le $dataShardCount 1 }}
   cluster.xml: |
     <clickhouse>
       <macros>
@@ -60,6 +66,65 @@ data:
         </bwc_cluster>
       </remote_servers>
     </clickhouse>
+  {{- else }}
+  {{- /* dataShardCount > 1 (cerberus issue #3077): cluster.xml carries only
+         the cluster-GLOBAL pieces (Keeper node list + the full
+         remote_servers topology, IDENTICAL on every pod of every shard) —
+         the per-shard <macros> block that used to live here moves to its
+         own macros-datashard-<i>.xml key below, one per DATA shard
+         (DISAMBIGUATION: the "shard" XML tag is ClickHouse's own fixed
+         remote_servers schema and cannot be renamed; this key name and the
+         Go/values-file identifiers around it use the datashard compound
+         form instead — see cerberus.clickhouse.dataShardCount's own
+         disambiguation comment). Every shard's StatefulSet mounts ONLY its
+         own macros-datashard-<i>.xml key, aliased to macros.xml via the
+         "config" ConfigMap volume's own `items[].path` list (see
+         statefulset.yaml's own comment on why NOT subPath), never the whole
+         set, so no pod ever sees a <macros><shard> value other than its
+         own. */}}
+  cluster.xml: |
+    <clickhouse>
+      <zookeeper>
+        {{- range $i := until (int $b.keeper.replicas) }}
+        <node>
+          <host>{{ include "cerberus.keeper.fullname" $ }}-{{ $i }}.{{ include "cerberus.keeper.headlessName" $ }}.{{ $.Release.Namespace }}.svc.cluster.local</host>
+          <port>9181</port>
+        </node>
+        {{- end }}
+      </zookeeper>
+      <remote_servers>
+        <bwc_cluster>
+          {{- range $shard := until $dataShardCount }}
+          <!-- DATA shard {{ $shard }} (cerberus issue #3077 — ClickHouse's own shard tag, one per bundled.dataShards.count). -->
+          <shard>
+            <internal_replication>true</internal_replication>
+            {{- range $i := until (int $b.replicas) }}
+            <replica>
+              <host>{{ include "cerberus.clickhouse.fullnameForDataShard" (dict "ctx" $ "shard" $shard) }}-{{ $i }}.{{ include "cerberus.clickhouse.headlessNameForDataShard" (dict "ctx" $ "shard" $shard) }}.{{ $.Release.Namespace }}.svc.cluster.local</host>
+              <port>9000</port>
+            </replica>
+            {{- end }}
+          </shard>
+          {{- end }}
+        </bwc_cluster>
+      </remote_servers>
+    </clickhouse>
+  {{- range $shard := until $dataShardCount }}
+  {{ include "cerberus.clickhouse.macrosKeyForDataShard" $shard }}: |
+    <clickhouse>
+      <macros>
+        <!-- DATA-shard-{{ $shard }} coordinate (cerberus issue #3077 — DISTINCT
+             per macros-datashard-N.xml key, NEVER the bare shard word this
+             package/chart area also uses for internal/solver's own
+             query-time-range sharded-pushdown mechanism). -->
+        <shard>{{ printf "%02d" (add $shard 1) }}</shard>
+        <!-- pod name is unique per replica -> distinct {replica} macro. -->
+        <replica from_env="HOSTNAME" />
+        <cluster>bwc_cluster</cluster>
+      </macros>
+    </clickhouse>
+  {{- end }}
+  {{- end }}
   {{- end }}
   {{- with $b.configOverrides }}
   overrides.xml: |

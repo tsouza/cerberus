@@ -192,6 +192,16 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		TraceMaterializedAttributesEnabled:   p.TraceMaterializedAttrsEnabled,
 		MaterializedSpanAttributeColumns:     cfg.Traces.MaterializedSpanAttributeColumns,
 		MaterializedResourceAttributeColumns: cfg.Traces.MaterializedResourceAttributeColumns,
+		// DataShardCount (cerberus issue #3077) is threaded straight from
+		// cfg.ClusterTopology — the SAME chopt.ClusterTopology.DataShardCount
+		// (CERBERUS_CH_DATA_SHARDS, default 1) internal/solver's admission
+		// control already consumes (cerberus issue #3081/#3084). Reusing the
+		// one resolved value here, rather than a second dedicated DDL-only
+		// env var, keeps "how many data shards" a single source of truth:
+		// the same count that governs the sharded-pushdown solver's
+		// aggregate ClickHouse-side fan-out ceiling also governs whether the
+		// auto-create hook renders the local+Distributed table split.
+		DataShardCount: cfg.ClusterTopology.DataShardCount,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert

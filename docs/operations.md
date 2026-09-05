@@ -1051,6 +1051,55 @@ Auto-create also reuses the **same** table names the query heads read
 (`CERBERUS_SCHEMA_*_TABLE`), so a renamed table is created and queried
 consistently rather than silently diverging onto the upstream defaults.
 
+### ClickHouse cluster DATA-shard topology (`Distributed` tables, cerberus issue #3077)
+
+Everything above is about **replication** — N identical copies of the same
+dataset. `CERBERUS_CH_DATA_SHARDS` (`internal/chopt.ClusterTopology.
+DataShardCount`, epic [#3074](https://github.com/tsouza/cerberus/issues/3074))
+is a genuinely different axis: **partitioning** the dataset across N
+independent ClickHouse DATA shards, each too large for one shard's own
+storage/compute. `1` (the default) means a single logical dataset —
+unreplicated, or replicated N ways onto identical copies — exactly matching
+every deployment that predates this field.
+
+`internal/schema/ddl`'s `Config.DataShardCount > 1` additively renders, per
+base table (the five metrics tables, Logs, and the Traces spans table + its
+`trace_id_ts` lookup — the tables `internal/schema`'s `Metrics`/`Logs`/
+`Traces` structs name for the read path), a `<table>_local` table plus a
+`Distributed`-engine wrapper table under the table's ORIGINAL configured
+name — the name the read path already scans, via the new
+`chsql.EngineDistributed(cluster, database, table, shardingKey)` constructor.
+**Zero `internal/chplan`/`internal/optimizer`/`internal/chsql` emitter
+changes are needed for the read path**: `chplan.Scan`'s table identity is an
+opaque string resolved in one function
+(`internal/chsql/emit_node.go`'s `scanTableFrag`), so swapping the engine
+backing a table name from `MergeTree`/`ReplicatedMergeTree` to `Distributed`
+is a DDL-time decision only.
+
+**Write-path routing is the operator's own OTel Collector responsibility —
+cerberus does not implement or control it.** Recommend
+**direct-to-local-table writes** (the OTel Collector's own ClickHouse
+exporter instances, one per data shard, each pointed at that shard's
+`<table>_local` name) over inserting through the `Distributed` wrapper: a
+`Distributed` `INSERT` buffers asynchronously by default
+(`insert_distributed_sync=0`), so a write acknowledged to the collector is
+not yet durable on the owning shard, and a crash between acknowledgement and
+the background flush loses it. Direct-to-local writes need the collector's
+own deployment to shard consistently (the same series always routing to the
+same shard, matching whatever hash the Distributed wrapper's
+`shardingKey` expression would apply) — cerberus surfaces the
+`Distributed`-table DDL primitive and the shard count
+(`CERBERUS_CH_DATA_SHARDS`), but building or prescribing the collector-side
+routing config is out of scope for this repository.
+
+This is infrastructure-validated only, not yet declared query-correctness
+-supported — see the bundled chart's own
+[DATA-shard topology section](helm-clickhouse.md#clickhouse-cluster-data-shard-topology-datashardscount)
+for what has actually been proven, and epic #3074's later
+[settings-verification](https://github.com/tsouza/cerberus/issues/3078) and
+[e2e-hardening](https://github.com/tsouza/cerberus/issues/3079) sub-issues
+for what closes that gap.
+
 ### Hot/cold storage tiering
 
 `CERBERUS_SCHEMA_STORAGE_POLICY` puts a MergeTree `storage_policy` on every

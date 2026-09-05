@@ -779,6 +779,74 @@ func TestCreateTableDatabase(t *testing.T) {
 	}
 }
 
+// TestEngineDistributed pins the Distributed-engine clause (cerberus issue
+// #3077): three single-quoted string-literal args (cluster, database, LOCAL
+// table) mirroring DatabaseEngineReplicated's own convention, plus the
+// sharding-key Frag rendered as a bare expression (unquoted).
+func TestEngineDistributed(t *testing.T) {
+	got := renderFrag(EngineDistributed("bwc_cluster", "otel", "otel_metrics_sum_local", Call("rand")))
+	want := "Distributed('bwc_cluster', 'otel', 'otel_metrics_sum_local', rand())"
+	if got != want {
+		t.Errorf("EngineDistributed = %q; want %q", got, want)
+	}
+}
+
+// TestEngineDistributed_ColumnShardingKey pins that an arbitrary expression
+// Frag (not just a bare function call) renders unquoted as the fourth
+// argument — the sharding key is SQL, never a string literal.
+func TestEngineDistributed_ColumnShardingKey(t *testing.T) {
+	got := renderFrag(EngineDistributed("c", "db", "t_local", Call("cityHash64", Col("TraceId"))))
+	want := "Distributed('c', 'db', 't_local', cityHash64(`TraceId`))"
+	if got != want {
+		t.Errorf("EngineDistributed = %q; want %q", got, want)
+	}
+}
+
+// TestCreateTableOnCluster pins CreateTableBuilder.OnCluster: the same
+// backtick-quoted ON CLUSTER clause CreateDatabaseBuilder.OnCluster renders,
+// placed between the table name and the column list.
+func TestCreateTableOnCluster(t *testing.T) {
+	cols := []ColumnDef{{Name: "a", Type: TypeRaw("String")}}
+	got := CreateTable("t").Database("otel").IfNotExists().OnCluster("bwc_cluster").
+		Columns(cols...).Engine(EngineMergeTree()).SQL()
+	want := "CREATE TABLE IF NOT EXISTS otel.t ON CLUSTER `bwc_cluster` (`a` String) ENGINE = MergeTree"
+	if got != want {
+		t.Errorf("SQL() = %q; want %q", got, want)
+	}
+}
+
+// TestCreateTableAs pins the `CREATE TABLE x AS y` shape (cerberus issue
+// #3077's Distributed wrapper table): no column list at all — As suppresses
+// it entirely, even when Columns was also called, since the two are mutually
+// exclusive ClickHouse syntax.
+func TestCreateTableAs(t *testing.T) {
+	got := CreateTable("otel_metrics_sum").Database("otel").IfNotExists().OnCluster("bwc_cluster").
+		As("otel", "otel_metrics_sum_local").
+		Engine(EngineDistributed("bwc_cluster", "otel", "otel_metrics_sum_local", Call("rand"))).
+		SQL()
+	want := "CREATE TABLE IF NOT EXISTS otel.otel_metrics_sum ON CLUSTER `bwc_cluster` " +
+		"AS otel.otel_metrics_sum_local ENGINE = Distributed('bwc_cluster', 'otel', 'otel_metrics_sum_local', rand())"
+	if got != want {
+		t.Errorf("SQL() = %q; want %q", got, want)
+	}
+
+	// As wins over a Columns call that also happens to be set — no stray
+	// "(...)" clause survives alongside AS.
+	withColumns := CreateTable("t").Columns(ColumnDef{Name: "a", Type: TypeRaw("String")}).
+		As("", "src").Engine(EngineMergeTree()).SQL()
+	wantWithColumns := "CREATE TABLE t AS src ENGINE = MergeTree"
+	if withColumns != wantWithColumns {
+		t.Errorf("SQL() with both Columns and As = %q; want %q", withColumns, wantWithColumns)
+	}
+
+	// Unqualified As (database "").
+	unqualified := CreateTable("t").As("", "src").SQL()
+	wantUnqualified := "CREATE TABLE t AS src"
+	if unqualified != wantUnqualified {
+		t.Errorf("unqualified As SQL() = %q; want %q", unqualified, wantUnqualified)
+	}
+}
+
 // TestEngineAggregatingMergeTree pins the bare AggregatingMergeTree /
 // ReplicatedAggregatingMergeTree engine clauses — no positional arguments,
 // mirroring EngineMergeTree / EngineReplicatedMergeTree.

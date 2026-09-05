@@ -1,4 +1,11 @@
 {{- if and .Values.clickhouse.bundled.enabled .Values.clickhouse.bundled.podDisruptionBudget.enabled }}
+{{- /* dataShardCount: the number of independent ClickHouse DATA shards
+       (cerberus issue #3077) — see cerberus.clickhouse.dataShardCount's own
+       disambiguation. <= 1 renders the ORIGINAL, untouched PDB below — no
+       range, no rename, nothing new evaluated, so that render stays
+       byte-identical to this chart's pre-#3077 shape. */}}
+{{- $dataShardCount := int (include "cerberus.clickhouse.dataShardCount" .) }}
+{{- if le $dataShardCount 1 }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -11,4 +18,32 @@ spec:
   selector:
     matchLabels:
       {{- include "cerberus.clickhouse.selectorLabels" . | nindent 6 }}
+{{- else }}
+{{- /* dataShardCount > 1 (cerberus issue #3077): ONE PodDisruptionBudget PER
+       DATA shard, INCLUDING index 0 — never a single bare-selector PDB. A
+       single PDB selecting via the shared selectorLabels (matching every
+       shard's pods at once) would let minAvailable be satisfied by ANY
+       shard's surviving pods, so a voluntary eviction could legally drain
+       an ENTIRE other shard at once — silently defeating the very HA
+       property this knob exists to protect. Scoping minAvailable PER SHARD
+       (selectorLabelsForDataShard) keeps the guarantee shard-local, matching
+       the per-shard StatefulSet/Service split. */}}
+{{- range $shard := until $dataShardCount }}
+{{- if gt $shard 0 }}
+---
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cerberus.clickhouse.fullnameForDataShard" (dict "ctx" $ "shard" $shard) }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 4 }}
+spec:
+  minAvailable: {{ $.Values.clickhouse.bundled.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 6 }}
+{{- end }}
+{{- end }}
 {{- end }}

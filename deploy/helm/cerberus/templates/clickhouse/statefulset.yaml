@@ -6,6 +6,13 @@
 {{- if eq (include "cerberus.createSecret" .) "true" }}{{- $passwordSecret = include "cerberus.secretName" . }}{{- else }}{{- $passwordSecret = $ch.existingSecret }}{{- end }}
 {{- $osEnv := include "cerberus.clickhouse.objectStoreEnv" . | trim }}
 {{- $hotDedicated := $b.hotVolume.persistence.enabled }}
+{{- /* dataShardCount: the number of independent ClickHouse DATA shards
+       (cerberus issue #3077) — see cerberus.clickhouse.dataShardCount's own
+       disambiguation. <= 1 renders the ORIGINAL, untouched single-StatefulSet
+       body below — no range, no rename, nothing new evaluated, so that
+       render stays byte-identical to this chart's pre-#3077 shape. */}}
+{{- $dataShardCount := int (include "cerberus.clickhouse.dataShardCount" .) }}
+{{- if le $dataShardCount 1 }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -157,4 +164,199 @@ spec:
           requests:
             storage: {{ $b.hotVolume.persistence.size | quote }}
     {{- end }}
+{{- else }}
+{{- /* dataShardCount > 1 (cerberus issue #3077): one StatefulSet PER DATA
+       shard, INCLUDING index 0 — never a silent partial rename. Every field
+       below mirrors the count<=1 body above exactly, except: the per-shard
+       name/serviceName/selector (fullnameForDataShard/headlessNameForDataShard/
+       selectorLabelsForDataShard), and the "config" ConfigMap volume's `items`
+       list is restricted to the cluster-GLOBAL keys PLUS ONLY this shard's
+       own macros-datashard-<i>.xml key (aliased to macros.xml via
+       `items[].path`) — never another shard's. A separate subPath-mounted
+       volume for just the macros key was tried first and REJECTED: mounting
+       a single ConfigMap key via `subPath` into a directory ANOTHER volume
+       already populates fails on a real cluster ("OCI runtime create
+       failed: ... not a directory") — a real k3d proof surfaced this, not a
+       theoretical concern. Folding the per-shard key into the SAME "config"
+       volume's own `items` list (one ConfigMap volume, one mount, no
+       subPath) avoids the whole class of failure. Keeper is always enabled
+       here (dataShardCount>1 forces cerberus.clickhouse.keeperEnabled — ON
+       CLUSTER DDL coordination needs it regardless of per-shard replica
+       count), so cluster.xml always exists as a ConfigMap key in this
+       branch. */}}
+{{- range $shard := until $dataShardCount }}
+{{- if gt $shard 0 }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cerberus.clickhouse.fullnameForDataShard" (dict "ctx" $ "shard" $shard) }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 4 }}
+spec:
+  serviceName: {{ include "cerberus.clickhouse.headlessNameForDataShard" (dict "ctx" $ "shard" $shard) }}
+  replicas: {{ $b.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll pods when the rendered CH config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/clickhouse/configmap-config.yaml") $ | sha256sum }}
+        checksum/users: {{ include (print $.Template.BasePath "/clickhouse/configmap-users.yaml") $ | sha256sum }}
+      labels:
+        {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "cerberus.clickhouse.serviceAccountName" $ }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if $b.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 20 }}
+      {{- end }}
+      containers:
+        - name: clickhouse
+          image: {{ $b.image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: native
+              containerPort: 9000
+              protocol: TCP
+            - name: http
+              containerPort: 8123
+              protocol: TCP
+            - name: interserver
+              containerPort: 9009
+              protocol: TCP
+          env:
+            # The users config is mounted from a (read-only) ConfigMap at
+            # /etc/clickhouse-server/users.d. The server image entrypoint
+            # otherwise tries to WRITE default-user.xml there to lock the
+            # default user to localhost; on the read-only mount that write
+            # aborts startup (fatal on 26.x). Skip the image's default-user
+            # setup: the mounted cerberus-user.xml already defines the only user
+            # cerberus uses, and the image's built-in default-user.xml keeps
+            # `default` localhost-only without the entrypoint rewriting it.
+            - name: CLICKHOUSE_SKIP_USER_SETUP
+              value: "1"
+            {{- if $hasPassword }}
+            - name: CH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $passwordSecret }}
+                  key: {{ $ch.passwordKey }}
+            {{- end }}
+            {{- with $osEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          {{- with $b.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: metadata
+              mountPath: /var/lib/clickhouse
+            {{- if $hotDedicated }}
+            - name: hot
+              mountPath: /var/lib/clickhouse-hot
+            {{- end }}
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d
+              readOnly: true
+            - name: users
+              mountPath: /etc/clickhouse-server/users.d
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cerberus.clickhouse.fullname" $ }}-config
+            # Restricted to the cluster-GLOBAL keys PLUS ONLY this shard's
+            # own macros-datashard-<i>.xml key (aliased to macros.xml) —
+            # never another shard's (cerberus issue #3077; see
+            # configmap-config.yaml's own comment on why the macros split
+            # exists).
+            items:
+              - key: storage.xml
+                path: storage.xml
+              - key: tuning.xml
+                path: tuning.xml
+              - key: cluster.xml
+                path: cluster.xml
+              - key: {{ include "cerberus.clickhouse.macrosKeyForDataShard" $shard }}
+                path: macros.xml
+              {{- with $b.configOverrides }}
+              - key: overrides.xml
+                path: overrides.xml
+              {{- end }}
+        - name: users
+          configMap:
+            name: {{ include "cerberus.clickhouse.fullname" $ }}-users
+  volumeClaimTemplates:
+    - metadata:
+        name: metadata
+        labels:
+          {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with $b.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $b.persistence.size | quote }}
+    {{- if $hotDedicated }}
+    - metadata:
+        name: hot
+        labels:
+          {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with $b.hotVolume.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $b.hotVolume.persistence.size | quote }}
+    {{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
