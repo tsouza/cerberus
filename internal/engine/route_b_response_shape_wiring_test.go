@@ -121,7 +121,7 @@ func routeBDispatches() []routeBDispatch {
 				memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 
 				cur, _, usedDecision, _, ok := eng.tryRouteMemoHit(
-					context.Background(), solver.LangPromQL, meta.ResponseShape, plan, seed, nil,
+					context.Background(), solver.LangPromQL, meta.ResponseShape, plan, seed, nil, nil,
 				)
 				if !ok {
 					t.Fatal("tryRouteMemoHit did not dispatch on a live PreferB verdict")
@@ -149,14 +149,14 @@ func routeBDispatches() []routeBDispatch {
 				// TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration).
 				if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(
 					context.Background(), solver.LangPromQL, meta.ResponseShape, plan, seed, nil,
-					chclient.ErrMemoryLimitExceeded, 0,
+					chclient.ErrMemoryLimitExceeded, 0, nil,
 				); retried {
 					t.Fatal("probed on the FIRST route-A resource failure — fixture no longer matches the memo's corroboration rule")
 				}
 
 				cur, _, usedDecision, observeFn, retried := eng.retryOnRouteAResourceFailure(
 					context.Background(), solver.LangPromQL, meta.ResponseShape, plan, seed, nil,
-					chclient.ErrMemoryLimitExceeded, 0,
+					chclient.ErrMemoryLimitExceeded, 0, nil,
 				)
 				if !retried {
 					t.Fatal("retryOnRouteAResourceFailure did not probe route B after a resource failure")

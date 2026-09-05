@@ -316,6 +316,62 @@ type Result struct {
 	UnreachableErr    error
 	DatabaseAbsent    bool
 	DatabaseAbsentErr error
+
+	// LogsAttrStrategies resolves, per logs attribute-map column name, the
+	// chsql.AttrStrategy the boot probe detected (cerberus issue #2777):
+	// AttrStrategyJSON for a column system.columns reports as ClickHouse's
+	// JSON type, absent (chsql's nil-safe default) for every column
+	// reporting the expected Map(String,String). nil when the logs table
+	// carries no JSON-typed attribute columns at all — the common case,
+	// and the only case before this issue's work existed.
+	//
+	// cmd/cerberus is the only intended consumer: it threads this into
+	// internal/engine's construction so a LogQL request's ctx carries it
+	// via chsql.WithAttrStrategies, scoped to LogQL only (see
+	// chsql.AttrStrategies's doc for why a bare-column-name map must never
+	// be shared across signals). A nil value here is indistinguishable
+	// from "preflight never ran" and from "every logs attribute column is
+	// Map" — both resolve to the same all-Map behaviour, which is correct
+	// for both.
+	LogsAttrStrategies AttrStrategies
+
+	// TracesAttrStrategies is LogsAttrStrategies's traces counterpart —
+	// resolved by the SAME boot-probe detection (tableReq.jsonAttrMapCompat
+	// covers both logs and traces) but deliberately NOT wired into
+	// internal/engine's TraceQL request context in this version: chsql's
+	// JSON rendering branch (exprMapAccess / FnMapContainsKey) has only
+	// been verified for logs' per-key lookup shapes, and traces carries
+	// its own unverified risk (TraceQL's comparison typing, the
+	// structural-join / nested-set emitters) — see cerberus issue #3062
+	// (traces JSON-attribute query support), a sub-issue of #2777. The
+	// field exists so that follow-up only
+	// has to wire cmd/cerberus + internal/engine, not touch preflight's
+	// detection again — it is always populated (or nil) exactly as
+	// LogsAttrStrategies is, from the same checkSchema pass.
+	TracesAttrStrategies AttrStrategies
+}
+
+// AttrStrategies is preflight's own alias for chsql.AttrStrategies —
+// declared here (rather than importing chsql.AttrStrategies inline at
+// every use) purely so Result's field docs above read as preflight
+// vocabulary; the underlying type is identical and assignment-compatible.
+type AttrStrategies = chsql.AttrStrategies
+
+// attrStrategiesFor turns the JSON-typed attribute-column names one
+// table's boot probe found into an AttrStrategies map, or nil when cols is
+// empty — nil is AttrStrategies's own "every column is Map" default (see
+// chsql.AttrStrategies.Lookup), so a table with no JSON columns detected
+// resolves to exactly the same nil Result field a preflight run before
+// cerberus issue #2777 would have left zero-valued.
+func attrStrategiesFor(cols []string) AttrStrategies {
+	if len(cols) == 0 {
+		return nil
+	}
+	out := make(AttrStrategies, len(cols))
+	for _, c := range cols {
+		out[c] = chsql.AttrStrategyJSON
+	}
+	return out
 }
 
 // SchemaProvisioned reports whether the schema is fully present (whatever
@@ -406,7 +462,7 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 		return Result{DatabaseAbsent: true, DatabaseAbsentErr: dbAbsent}
 	}
 
-	schemaProblems, absent, schemaWarnings, unreachable := checkSchema(ctx, q, req)
+	schemaProblems, absent, schemaWarnings, jsonColsByTable, unreachable := checkSchema(ctx, q, req)
 	if unreachable != nil {
 		return Result{Unreachable: true, UnreachableErr: unreachable}
 	}
@@ -423,7 +479,12 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 
 	problems := append(versionProblems, schemaProblems...)
 
-	res := Result{Warnings: warnings, AbsentTables: absent}
+	res := Result{
+		Warnings:             warnings,
+		AbsentTables:         absent,
+		LogsAttrStrategies:   attrStrategiesFor(jsonColsByTable[req.Logs.LogsTable]),
+		TracesAttrStrategies: attrStrategiesFor(jsonColsByTable[req.Traces.SpansTable]),
+	}
 	if len(problems) == 0 {
 		return res
 	}
@@ -699,6 +760,22 @@ type tableReq struct {
 	// genuine FATAL misconfiguration; requiredTables leaves this false for
 	// every metrics tableReq.
 	jsonAttrMapCompat bool
+	// jsonQuerySupported narrows jsonAttrMapCompat's warning text and
+	// controls whether this table's JSON-typed attribute columns are
+	// surfaced through Result.LogsAttrStrategies / TracesAttrStrategies for
+	// internal/engine to actually render queries against (cerberus issue
+	// #2777, the chsql.Builder attribute-access-strategy threading slice).
+	// True only for logs: chsql's exprMapAccess / FnMapContainsKey render
+	// hooks now have a JSON branch, wired for logs' per-key lookups (label
+	// matchers, detected_level, the OTelDottedFallbackChain candidate
+	// chain). False for traces — detection ships here, but chsql's JSON
+	// branch is not wired into any TraceQL-facing AttrStrategies in this
+	// version, so a JSON-typed traces attribute column still fails at
+	// query time exactly as before (deliberately: TraceQL's comparison
+	// typing and the structural-join emitters are unverified against the
+	// JSON path — see cerberus issue #3062, a sub-issue of #2777).
+	// requiredTables is the only place that sets this.
+	jsonQuerySupported bool
 	// materializedColumns is the subset of columns that must be typed a
 	// SPECIFIC ClickHouse type rather than checked for mere existence —
 	// the materialized span/resource attribute columns an operator opted
@@ -774,8 +851,9 @@ func requiredTables(req Requirements) []tableReq {
 				l.TimestampColumn, l.BodyColumn, l.ServiceNameColumn,
 				l.AttributesColumn, l.ResourceAttributesColumn,
 			),
-			attrMap:           nonEmpty(l.AttributesColumn, l.ResourceAttributesColumn, l.ScopeAttributesColumn),
-			jsonAttrMapCompat: true,
+			attrMap:            nonEmpty(l.AttributesColumn, l.ResourceAttributesColumn, l.ScopeAttributesColumn),
+			jsonAttrMapCompat:  true,
+			jsonQuerySupported: true,
 		})
 	}
 
@@ -862,36 +940,43 @@ func nonEmpty(vals ...string) []string {
 // tableReq.jsonAttrMapCompat). Distinct tables that resolve to the same
 // physical name (Gauge==Sum on a collapsed schema) are introspected once.
 //
-// It returns three slices: the FATAL wrong-shape problems (missing columns /
+// It returns four values: the FATAL wrong-shape problems (missing columns /
 // wrong attribute-map types / introspection errors) for the aggregated boot
 // failure, the ABSENT-table names — tables system.columns reports zero rows
-// for, i.e. not yet provisioned — and the boot-probe WARNINGS (a
-// jsonAttrMapCompat table whose attribute map is JSON-typed). An
+// for, i.e. not yet provisioned — the boot-probe WARNINGS (a
+// jsonAttrMapCompat table whose attribute map is JSON-typed), and
+// jsonColsByTable, the JSON-typed attribute columns found per jsonQuerySupported
+// table name (logs today; see tableReq.jsonQuerySupported) — Run resolves
+// this into Result.LogsAttrStrategies / TracesAttrStrategies. An
 // entirely-absent table is transient (the schema race), so it lands in the
-// second slice and is NOT a wrong-shape problem; a table that exists but has
+// second value and is NOT a wrong-shape problem; a table that exists but has
 // the wrong columns is.
-func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent, warnings []string, unreachable error) {
+func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent, warnings []string, jsonColsByTable map[string][]string, unreachable error) {
 	seen := map[string]bool{}
+	jsonColsByTable = map[string][]string{}
 	for _, t := range requiredTables(req) {
 		if t.name == "" || seen[t.name] {
 			continue
 		}
 		seen[t.name] = true
-		probs, warns, isAbsent, unreach := checkTable(ctx, q, req.Database, t)
+		probs, warns, jsonCols, isAbsent, unreach := checkTable(ctx, q, req.Database, t)
 		if unreach != nil {
 			// A transport failure mid-introspection means the server dropped
 			// (or never came up): abandon the shape gate and report unreachable
 			// so the caller waits rather than recording a half-introspected
 			// schema as wrong-shape.
-			return nil, nil, nil, unreach
+			return nil, nil, nil, nil, unreach
 		}
 		problems = append(problems, probs...)
 		warnings = append(warnings, warns...)
 		if isAbsent {
 			absent = append(absent, t.name)
 		}
+		if len(jsonCols) > 0 {
+			jsonColsByTable[t.name] = append(jsonColsByTable[t.name], jsonCols...)
+		}
 	}
-	return problems, absent, warnings, nil
+	return problems, absent, warnings, jsonColsByTable, nil
 }
 
 // checkTable introspects one table via system.columns and validates its
@@ -912,7 +997,7 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, ab
 //     JSON-typed attribute map on a jsonAttrMapCompat table (logs/traces),
 //     which is a WARNING instead of a problem (cerberus issue #2777 phase 1
 //     boot-probe compat; see tableReq.jsonAttrMapCompat and isJSONAttrType).
-func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems, warnings []string, absent bool, unreachable error) {
+func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems, warnings, jsonCols []string, absent bool, unreachable error) {
 	sql, args := chsql.NewQuery().
 		Select(chsql.Col("name"), chsql.Col("type")).
 		From(chsql.Qual("system", "columns")).
@@ -924,15 +1009,15 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 	rows, err := q.QueryNameTypePairs(ctx, sql, args...)
 	if err != nil {
 		if isUnreachable(err) {
-			return nil, nil, false, err
+			return nil, nil, nil, false, err
 		}
-		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, nil, false, nil
+		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, nil, nil, false, nil
 	}
 	if len(rows) == 0 {
 		// Entirely absent: the schema has not been provisioned yet. This is
 		// the transient startup race, not a misconfiguration — surface it as
 		// absent so the caller waits (NOT READY) rather than exiting.
-		return nil, nil, true, nil
+		return nil, nil, nil, true, nil
 	}
 
 	types := make(map[string]string, len(rows))
@@ -958,17 +1043,38 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 			continue
 		}
 		if t.jsonAttrMapCompat && isJSONAttrType(got) {
-			// Boot-probe compat (cerberus issue #2777 phase 1): a JSON-typed
-			// attribute map on logs/traces boots instead of FATALing, but the
-			// query emitters still assume Map, so this is surfaced as a
-			// WARNING rather than silently accepted — an operator on this
-			// schema needs to know query support isn't there yet.
-			warnings = append(warnings, fmt.Sprintf(
-				"table %s column %s: JSON-typed attribute schema detected (cerberus issue #2777 phase 1 "+
-					"boot-probe compat) — boot allowed, but attribute-path query lowering is not implemented "+
-					"yet; queries touching this column's attribute keys will fail until follow-up work lands",
-				t.name, col,
-			))
+			// Boot-probe compat (cerberus issue #2777): a JSON-typed
+			// attribute map on logs/traces boots instead of FATALing. The
+			// warning's own text is the DELIBERATE per-table posture
+			// decision (never inherited by default): jsonQuerySupported
+			// tables (logs) now have a real, tested chsql JSON rendering
+			// path for per-key attribute lookups, so the warning narrows to
+			// naming the KNOWN remaining gaps rather than claiming nothing
+			// works; a table without it (traces) keeps the original
+			// "nothing works yet" text, because chsql's JSON branch is not
+			// wired into any AttrStrategies TraceQL requests carry.
+			if t.jsonQuerySupported {
+				jsonCols = append(jsonCols, col)
+				warnings = append(warnings, fmt.Sprintf(
+					"table %s column %s: JSON-typed attribute schema detected (cerberus issue #2777) — "+
+						"per-key attribute lookups (label matchers, detected_level, and other bare "+
+						"MapAccess/mapContains reads against this column) are supported. NOT yet "+
+						"supported (tracked as cerberus issue #3063): operations that need the FULL "+
+						"attribute map at once (LogQL line_format / label_format / unpack / keep|drop "+
+						"with no argument list), the /labels /series /detected_fields metadata "+
+						"endpoints, and any table whose ingestion ever used "+
+						"json_type_escape_dots_in_keys=1 or mixed dotted-key encodings — those still "+
+						"fail at query time",
+					t.name, col,
+				))
+			} else {
+				warnings = append(warnings, fmt.Sprintf(
+					"table %s column %s: JSON-typed attribute schema detected (cerberus issue #2777) — "+
+						"boot allowed, but attribute-path query lowering is not implemented for this table "+
+						"yet; queries touching this column's attribute keys will fail until follow-up work lands",
+					t.name, col,
+				))
+			}
 			continue
 		}
 		problems = append(problems, fmt.Sprintf(
@@ -997,7 +1103,7 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 			))
 		}
 	}
-	return problems, warnings, false, nil
+	return problems, warnings, jsonCols, false, nil
 }
 
 // normalizeType canonicalises a ClickHouse type string for comparison:

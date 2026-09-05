@@ -160,6 +160,7 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 
 		emittedSQLMaxBytes: maxEmittedSQLBytesFromCtx(ctx),
 		rootPlan:           n,
+		attrStrategies:     attrStrategiesFromCtx(ctx),
 	}
 	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
 	// single-evaluation scalar binding hoisted to the outermost statement
@@ -353,6 +354,21 @@ type emitter struct {
 	// ceiling first (see requireEmittedSQLBounded). Nothing reads it on the
 	// success path, and an emitter built outside Emit leaves it nil.
 	rootPlan chplan.Node
+
+	// attrStrategies resolves how an attribute-map column that appears as
+	// a bare chplan.ColumnRef renders a per-key access (cerberus issue
+	// #2777) — see AttrStrategies's doc (attr_strategy.go). Seeded once
+	// per Emit call from attrStrategiesFromCtx(ctx) (internal/engine
+	// threads it via chsql.WithAttrStrategies — see emitForHead /
+	// routeBExecCtx). Every per-node QueryBuilder this emitter assembles
+	// via emitSelect copies it on before rendering (QueryBuilder.
+	// WithAttrStrategies), so a plan composed of many nested Scan/Filter/
+	// Aggregate node emits — each of which builds its OWN fresh
+	// chsql.Builder via QueryBuilder.subquerySQL — all see the SAME
+	// resolved strategies. nil (an emitter built outside Emit, or a
+	// request whose ctx never carried one) renders every attribute-map
+	// column as Map, byte-identical to before this field existed.
+	attrStrategies AttrStrategies
 
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the

@@ -8,6 +8,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/routememo"
 	"github.com/tsouza/cerberus/internal/solver"
 	"github.com/tsouza/cerberus/internal/telemetry"
@@ -192,6 +193,7 @@ func (e *Engine) tryRouteMemoHit(
 	plan chplan.Node,
 	seedDecision *solver.Decision,
 	budget *chclient.SampleBudget,
+	attrStrategies chsql.AttrStrategies,
 ) (cursor chclient.Cursor, info *solver.ExecInfo, usedDecision *solver.Decision, key routememo.Key, dispatched bool) {
 	if !e.routeMemoActive() || seedDecision == nil {
 		return nil, nil, nil, routememo.Key{}, false
@@ -228,7 +230,7 @@ func (e *Engine) tryRouteMemoHit(
 	defer dispatchDone()
 
 	cur, execInfo, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, langName, responseShape, d.decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals), langName, d.decision, budget,
+		routeBExecCtx(ctx, langName, responseShape, d.decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals, attrStrategies), langName, d.decision, budget,
 	)
 	if err != nil {
 		// A pre-flight failure (breaker/emit/gate/now64) classifies
@@ -281,6 +283,7 @@ func (e *Engine) retryOnRouteAResourceFailure(
 	budget *chclient.SampleBudget,
 	err error,
 	elapsed time.Duration,
+	attrStrategies chsql.AttrStrategies,
 ) (cursor chclient.Cursor, info *solver.ExecInfo, usedDecision *solver.Decision, observeFn func(drainErr error), retried bool) {
 	if !e.routeMemoActive() || seedDecision == nil {
 		return nil, nil, nil, nil, false
@@ -392,7 +395,7 @@ func (e *Engine) retryOnRouteAResourceFailure(
 	dispatchDone := telemetry.ObserveRoutedDispatchInflight(ctx)
 
 	cur, execInfo, dispatchErr := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, langName, responseShape, d.decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals), langName, d.decision, budget,
+		routeBExecCtx(ctx, langName, responseShape, d.decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals, attrStrategies), langName, d.decision, budget,
 	)
 	if dispatchErr != nil {
 		// A pre-flight failure classifies NoEvidence by construction —
