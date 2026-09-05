@@ -189,7 +189,7 @@ reference Prometheus on NaN-adjacent windows, tracked as
 | `ts_grid_predict_linear`     | `allow_experimental_time_series_aggregate_functions` | opts eligible `predict_linear(<gauge>[<range>], t)` query_range shapes (whole-second literal `t`) onto the native `timeSeriesPredictLinearToGrid` aggregate (per-window slope\*t + intercept forecast), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `ts_grid_recollapse`         | `allow_experimental_time_series_aggregate_functions` | defers the OTel -> Prometheus label-shaping tower PAST an eligible `ts_grid_range` rate grid, splitting it into `timeSeriesRateToGridState` over the raw keys and `timeSeriesRateToGridMerge` over the shaped ones, so the reshape runs once per raw series instead of once per raw row. Narrows `ts_grid_range`. Auto-enabled on server >= 25.9.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `ts_grid_increase`           | `allow_experimental_time_series_aggregate_functions` | opts eligible `increase(<counter>[<range>])` query_range shapes onto the SAME native `timeSeriesRateToGrid` aggregate `ts_grid_range` uses, multiplied back by the window seconds at emit time (`increase()` is `extrapolatedRate()` without the final `/range` divide). Retires the `arrayJoin` sample-per-anchor fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `quantile_prom_histogram`    | (none)                                               | opts the classic `histogram_quantile(phi, ...)` rank walk onto the native `quantilePrometheusHistogram(phi)(le, cum)` aggregate, retiring the `arrayCumSum`/`arrayFirstIndex`/interpolation chain. Opt-in only (never auto): faster at real-world series counts but memory crosses above the classic walk's around 18k-22k series and keeps growing (~3.3x at 73,540) — keep a single call under ~15,000 series ([#2790](https://github.com/tsouza/cerberus/issues/2790)).                                                                                                                                                                                                                                                                                                                                                        |
+| `quantile_prom_histogram`    | (none)                                               | opts the classic `histogram_quantile(phi, ...)` rank walk onto the native `quantilePrometheusHistogram(phi)(le, cum)` aggregate over a BOUNDED ARRAY JOIN window (at most 3 rungs per row, not the whole bucket ladder), retiring the `arrayCumSum`/`arrayFirstIndex`/interpolation chain. Opt-in only (never auto): faster at real-world series counts, and the bounded window measures ~1.5x-2x less native memory than the original unbounded emission at every cardinality tested — but memory still eventually crosses above the classic walk's, so keep a single call under ~30,000 series ([#2790](https://github.com/tsouza/cerberus/issues/2790)).                                                                                                                                                                       |
 | `map_bucketed_serialization` | (none)                                               | stamps `map_serialization_version='with_buckets'` on new logs/traces tables' `CREATE TABLE` SETTINGS tail only, never metrics. Fully transparent to reads (no chsql/chplan change — ClickHouse's Map reader already resolves the bucket for a subscript/`mapContains` read). Opt-in only (never auto): a full-map read measures ~2x slower, and only NEW tables get it — an existing table keeps `basic` until re-provisioned.                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `ts_grid_last_over_time`     | `allow_experimental_time_series_aggregate_functions` | opts eligible `last_over_time(<v>[<range>])` query_range shapes onto the SAME native `timeSeriesResampleToGridWithStaleness` aggregate `ts_grid_resample` uses, with `[range]` as the staleness parameter in place of the bare-selector shape's fixed 5m lookback. Retires the windowed-array `window_vals[length(window_vals)]` fan-out. Opt-in only (never auto): new 26.6 floor, above the family's usual 25.9, fixing two real correctness bugs ([#106504](https://github.com/ClickHouse/ClickHouse/pull/106504), [#106577](https://github.com/ClickHouse/ClickHouse/pull/106577)) that bite the common window-smaller-than-step shape.                                                                                                                                                                                       |
 | `column_statistics`          | (none)                                               | installs the curated `ADD STATISTICS IF NOT EXISTS` ALTER registry on the metrics/logs/traces fact tables — `uniq` on the String-family identity columns (ServiceName/MetricName/SpanName/TraceId), `minmax, uniq` on the numeric ones (SeverityNumber/AggregationTemporality), `minmax, uniq, tdigest` on Duration — feeding the query planner real cardinality estimates for PREWHERE-pushdown and join-ordering. Opt-in only (never auto): unsupported on ClickHouse Cloud (tolerated, not fatal), and while a live probe confirms statistics DO reorder cerberus's own explicit PREWHERE conjuncts, the real-world magnitude on production data is still uncalibrated.                                                                                                                                                        |
@@ -392,8 +392,13 @@ Notes:
   hand-rolled emitter (the observation total, the `arrayFirstIndex` rank-walk
   index, and the linear interpolation with all its edge-case branches) — with
   one `quantilePrometheusHistogram(phi)(le, cum)` call over an `ARRAY JOIN`
-  unnest of the row's (coalesced ExplicitBounds, coalesced cumulative ladder)
-  pair. It is a DIFFERENT node from `ts_grid_histogram` above: that feature
+  unnest of a BOUNDED window (at most 3 rungs: the rung the target
+  cumulative count first reaches, its immediate predecessor, and the
+  mandatory `+Inf` terminal — see
+  `internal/chsql/histogram_quantile_rankwalk_native.go`'s own header doc)
+  of the row's (coalesced ExplicitBounds, coalesced cumulative ladder) pair,
+  rather than the whole ladder. It is a DIFFERENT node from
+  `ts_grid_histogram` above: that feature
   picks how the range-mode per-series `rate` WINDOW stage is computed (the
   input feeding a `HistogramQuantile` node); this one picks how the quantile
   node ITSELF is computed, uniformly, for every shape that node handles
@@ -426,24 +431,34 @@ Notes:
   above range, and a runtime NaN phi). `AutoSelect` is `false`: correctness
   parity is proven, but a real-scale measurement (25.10.7.6, a real OTel
   classic-histogram export) found a genuine performance TRADEOFF, not just
-  an unproven new floor — the emission's `ARRAY JOIN` multiplies row count
-  by the bucket-ladder length before `GROUP BY` collapses it back down,
-  which the legacy walk never does. At real-world dashboard scale (3,677
-  series) the native path was ~2x faster at equal memory; at high series
-  cardinality (73,540 series, ~880k post-unnest rows) wall time stayed
-  roughly even but memory grew ~3.3x. A follow-up real-ClickHouse 25.10
-  measurement at four additional cardinality points between those two (the
-  same real sample, synthetically fanned out) found memory crosses above the
-  classic walk's between roughly 18,000 and 22,000 series (~215k-265k
-  post-unnest rows at this sample's 12-bucket layout) and keeps growing
-  roughly linearly with series count past that point. **Operator-facing
-  ceiling: keep any single `histogram_quantile()` call under roughly 15,000
-  series when opting into this feature**, which stays safely under the
-  measured crossover with margin. See
+  an unproven new floor — the ORIGINAL emission's `ARRAY JOIN` multiplied
+  row count by the bucket-ladder length before `GROUP BY` collapsed it back
+  down, which the legacy walk never does. At real-world dashboard scale
+  (3,677 series) the native path was ~2x faster at equal memory; at high
+  series cardinality (73,540 series, ~880k post-unnest rows) wall time
+  stayed roughly even but memory grew ~3.3x. A follow-up real-ClickHouse
+  25.10 measurement at four additional cardinality points between those two
+  (the same real sample, synthetically fanned out) found memory crossed
+  above the classic walk's between roughly 18,000 and 22,000 series
+  (~215k-265k post-unnest rows at this sample's 12-bucket layout) and kept
+  growing roughly linearly with series count past that point
+  ([#2790](https://github.com/tsouza/cerberus/issues/2790) PR 1).
+  A second real-ClickHouse 25.10 measurement, run after rewriting the
+  emission to the BOUNDED-window shape above (#2790 PR 2), found the native
+  path's OWN peak memory drops ~1.5x-2x at every one of five cardinality
+  points re-tested (3,677 through 73,540 series) relative to the original
+  unbounded emission, because the `ARRAY JOIN` now unnests a small constant
+  number of rungs per row instead of the whole ladder. The tradeoff shrinks
+  rather than disappears — a per-row rank search plus a narrower `ARRAY
+  JOIN` still costs more than the classic walk's pure array-expression form
+  once cardinality is high enough — so `AutoSelect` stays `false`.
+  **Operator-facing ceiling: keep any single `histogram_quantile()` call
+  under roughly 30,000 series when opting into this feature** — roughly
+  double PR 1's original ~15,000-series guidance, reflecting the bounded
+  window's measured improvement with the same comfortable margin under the
+  (now higher) measured crossover. See
   [#2790](https://github.com/tsouza/cerberus/issues/2790) for the full
-  numbers and methodology; the `ARRAY JOIN` unnest rewrite that would remove
-  this ceiling entirely (rather than just documenting it) is tracked as a
-  follow-up in the same issue. The feature is opt-in only
+  numbers and methodology from both PRs. The feature is opt-in only
   (`CERBERUS_CH_OPTIMIZATIONS=quantile_prom_histogram`); this cardinality
   ceiling is the current operator guidance for that opt-in.
 - **`map_bucketed_serialization`** ([#2774](https://github.com/tsouza/cerberus/issues/2774))
