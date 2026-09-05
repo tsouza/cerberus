@@ -190,10 +190,16 @@ per-layer "catches X / misses Y" guidance.
     reimplementations exist so the Apache-2.0 binary never links them. They survive only as
     test-only oracles behind the `agpl_oracle` build tag, quarantined in the `test/oracle` nested
     module. The `agpl-clean` gate fails the build if any AGPL package reaches `cmd/cerberus`.
-15. **Non-trivial CI step logic lives in `.github/scripts/*.mjs`, not inline YAML.**
-    Dependency-light Node ESM, `node:` builtins only, env-driven inputs documented at the top of the
-    file, `::error::` / `::notice::` workflow commands, and `process.exit(1)` on failure. Trivial
-    one-liners and official Actions usage stay inline. See `.github/scripts/README.md`.
+15. **Non-trivial step logic — a CI workflow step or a Justfile recipe body — lives in
+    `.github/scripts/*.mjs`, never inline.** Dependency-light Node ESM, `node:` builtins only,
+    env-driven inputs documented at the top of the file, `::error::` / `::notice::` workflow
+    commands, and `process.exit(1)` on failure. A trivial one-liner — a single `go test` /
+    `cargo` / `docker`-style command, a pure `just` dependency composition (`recipe: dep1 dep2`),
+    or official Actions usage — stays inline; anything with a branch, a loop, a retry,
+    string/format parsing, or logic duplicated across two or more recipes or workflow steps moves
+    to a script, and logic duplicated across two or more scripts moves to
+    `.github/scripts/lib/*.mjs` rather than being copy-pasted per script. See
+    `.github/scripts/README.md`.
 16. **A new `internal/**` package must be declared in `.go-arch-lint.yml`, and — when it carries
     statements — enrolled in the `test/coverage-floor/` ledger.** Two registrations, one change.
     Both gates are CI-only, so a package missing either one passes locally and fails on the PR. The
