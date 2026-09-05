@@ -24,9 +24,9 @@
 //
 // attr_strategy_json_chdb_test.go's own package doc explicitly named this
 // gap and deliberately kept ResourceAttributes Map-typed in every table it
-// seeds "even the JSON variant" — flagging this exact follow-up. This file
-// is that follow-up: it flips ResourceAttributes (not SpanAttributes) to
-// JSON and re-runs /api/search end-to-end.
+// seeds "even the JSON variant". Resolved in this change: this file flips
+// ResourceAttributes (not SpanAttributes) to JSON and re-runs /api/search
+// end-to-end.
 package tempo_test
 
 import (
