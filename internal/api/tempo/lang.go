@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
@@ -54,6 +55,22 @@ var (
 // the meta flag.
 type traceqlLang struct {
 	schema schema.Traces
+
+	// AttrStrategies resolves how the traces attribute-map columns
+	// (schema.AttributesColumn / ResourceAttributesColumn /
+	// ScopeAttributesColumn) are physically stored, per
+	// internal/preflight's boot probe (cerberus issue #2777,
+	// Result.TracesAttrStrategies) — nil (the zero value) means every
+	// column is a genuine ClickHouse Map, rendering byte-identical to
+	// before this field existed. Wired via Handler.SetAttrStrategies,
+	// which cmd/cerberus calls once at construction (mirroring
+	// internal/api/loki's Handler.AttrStrategies + h.Lang.AttrStrategies
+	// copy) — see SetAttrStrategies's doc for why tempo needs a setter
+	// where loki needs only a field assignment. EmitAttrStrategies
+	// (below) is the duck-typed hook engine.emitForHead reads to thread
+	// it onto the emit-time context, exactly like *logql.Lang's field of
+	// the same name (cerberus issue #3062).
+	AttrStrategies chsql.AttrStrategies
 }
 
 func (l *traceqlLang) Name() string { return telemetry.QLTraceQL }
@@ -63,6 +80,15 @@ func (l *traceqlLang) Name() string { return telemetry.QLTraceQL }
 // otel_traces scan in the search / structural / nested-set / trace-by-id plans
 // is resource-bounded.
 func (l *traceqlLang) SpansTable() string { return l.schema.SpansTable }
+
+// EmitAttrStrategies returns the AttrStrategies this Lang's queries should
+// render attribute-map accesses against — see the AttrStrategies field's
+// doc. engine.emitForHead duck-types on this (the attrStrategier
+// interface) to thread it onto the emit context via
+// chsql.WithAttrStrategies, exactly as it already does for LogQL — the
+// duck-typed hook is signal-agnostic, so this method is the entire
+// remaining wiring needed on the Lang side of cerberus issue #3062.
+func (l *traceqlLang) EmitAttrStrategies() chsql.AttrStrategies { return l.AttrStrategies }
 
 func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, engine.Meta, error) {
 	// Parse pipeline-stage stopwatch — mirrors the inlined handler so

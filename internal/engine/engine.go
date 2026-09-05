@@ -108,23 +108,29 @@ type spansTabler interface{ SpansTable() string }
 
 // attrStrategier is implemented by a Lang whose plans should render
 // attribute-map accesses against a resolved chsql.AttrStrategies (cerberus
-// issue #2777) rather than assuming every attribute column is a
-// ClickHouse Map. Only *logql.Lang implements it today — the
-// LogsAttrStrategies preflight resolves is threaded onto it by
-// internal/api/loki's Handler at construction; PromQL / TraceQL don't
-// implement this interface, so their plans render exactly as before this
-// issue's work (chsql.Emit's ctx never carries a non-nil AttrStrategies
+// issue #2777, extended to TraceQL by #3062) rather than assuming every
+// attribute column is a ClickHouse Map. *logql.Lang and the TraceQL head's
+// unexported traceqlLang (internal/api/tempo/lang.go) both implement it —
+// the LogsAttrStrategies / TracesAttrStrategies preflight resolves are
+// threaded onto them by internal/api/loki's / internal/api/tempo's
+// Handlers at construction. PromQL doesn't implement this interface (its
+// route-B sharded-pushdown fan-out is the one path that ever needs
+// AttrStrategies threaded independently of this duck-type — see
+// routeBExecCtx's callers — and metrics attribute columns are Map-only by
+// #2777's own scoping, so PromQL's plans render exactly as before this
+// issue's work: chsql.Emit's ctx never carries a non-nil AttrStrategies
 // for them, which chsql.AttrStrategies.Lookup already treats as "every
 // column is Map").
 type attrStrategier interface{ EmitAttrStrategies() chsql.AttrStrategies }
 
 // attrStrategiesForLang duck-types lang against attrStrategier and returns
 // its resolved AttrStrategies, or nil for a Lang that doesn't implement it
-// (PromQL / TraceQL today). Shared by emitForHead (route A) and every
-// route-B dispatch path (routeBExecCtx's callers) so both routes resolve
-// the identical value for the same Lang — route B's plan is a re-anchored
-// copy of route A's, and the physical column shape a chsql.MapAccess
-// renders against does not change depending on which route dispatches it.
+// (PromQL today). Shared by emitForHead (route A) and every route-B
+// dispatch path (routeBExecCtx's callers) so both routes resolve the
+// identical value for the same Lang — route B's plan is a re-anchored
+// copy of route A's, and the physical column shape a chsql.MapAccess /
+// chplan.FieldAccess renders against does not change depending on which
+// route dispatches it.
 func attrStrategiesForLang(lang Lang) chsql.AttrStrategies {
 	if as, ok := lang.(attrStrategier); ok {
 		return as.EmitAttrStrategies()

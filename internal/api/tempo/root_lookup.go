@@ -85,7 +85,21 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	// emit context so chsql.Emit's RequireSpansScansBounded verifies that bound
 	// is present — a regression that dropped the IN filter would fail closed
 	// rather than full-scan otel_traces.
-	sql, args, err := chsql.Emit(chsql.WithSpansTable(ctx, h.Schema.SpansTable), plan)
+	//
+	// AttrStrategies is threaded here too (cerberus issue #3062): this is
+	// a second hand-rolled direct-chsql.Emit path that bypasses
+	// engine.emitForHead's automatic threading (see
+	// buildRootLookupPlan's aggSvc, a bare chplan.MapAccess against
+	// ResourceAttributesColumn) — without this line a JSON-typed
+	// ResourceAttributes column would fail this query with
+	// ILLEGAL_TYPE_OF_ARGUMENT exactly like runStructuralPhaseA's own
+	// bypass did before it was fixed. Unlike that one, a failure here
+	// WARN-degrades (handleSearch drops root enrichment on error) rather
+	// than 502ing the whole search — but degrading a working feature by
+	// omission is still wrong to leave unfixed.
+	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
+	ctx = chsql.WithAttrStrategies(ctx, h.AttrStrategies)
+	sql, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		return nil, fmt.Errorf("root lookup: emit: %w", err)
 	}

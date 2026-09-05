@@ -185,6 +185,35 @@ type Handler struct {
 	// byte-identical to before this feature existed. Mirrors
 	// internal/api/loki.Handler.LabelCatalogEnabled.
 	TagCatalogEnabled bool
+
+	// AttrStrategies resolves how the traces attribute-map columns are
+	// physically stored — internal/preflight's boot probe's resolved
+	// verdict (cerberus issue #2777 / #3062), wired from cmd/cerberus's
+	// preflight.Result.TracesAttrStrategies via SetAttrStrategies. nil
+	// (the default — no JSON-typed column detected, or the requirements
+	// check disabled) renders byte-identical to before this field
+	// existed. Kept here (in addition to lang.AttrStrategies, which is
+	// what the engine's attrStrategier duck-type actually reads at emit
+	// time) purely so a caller can read back what was configured,
+	// mirroring internal/api/loki.Handler.AttrStrategies — always set
+	// through SetAttrStrategies, never assigned directly, since tempo's
+	// lang is a single long-lived unexported instance (no per-request
+	// Lang construction the way LogQL's langForRequest /
+	// langForRangeRequest build one per request), so there is exactly
+	// one inner copy to keep in sync rather than N per-request ones.
+	AttrStrategies chsql.AttrStrategies
+}
+
+// SetAttrStrategies wires AttrStrategies onto both the Handler (for
+// read-back) and the unexported traceqlLang instance the Engine actually
+// calls at query time — see the AttrStrategies field's doc for why a
+// setter method is needed here rather than the two-line direct field
+// assignment cmd/cerberus uses for LogQL's exported h.Lang: h.lang is
+// unexported (this package's own single long-lived TraceQL adapter), so
+// a caller in cmd/cerberus cannot reach into it directly.
+func (h *Handler) SetAttrStrategies(s chsql.AttrStrategies) {
+	h.AttrStrategies = s
+	h.lang.AttrStrategies = s
 }
 
 // New constructs a Handler with the seed optimizer wired in.

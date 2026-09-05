@@ -184,7 +184,7 @@ func mountAPIHeads(
 	logger *slog.Logger,
 	resourceBounds engine.ResourceBoundOverrides,
 	promResourceBounds promql.ResourceBounds,
-	logsAttrStrategies chsql.AttrStrategies,
+	attrStrategies preflightAttrStrategies,
 ) (apiHeads, error) {
 	// engines accumulates the engines actually built so the corpus reconciler
 	// observes only live heads (a disabled head has no engine to observe), and
@@ -223,7 +223,7 @@ func mountAPIHeads(
 
 	if cfg.HeadEnabled(config.HeadLoki) {
 		lokiClient := client.ForHead(chclient.HeadLoki)
-		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters, logger, resourceBounds, logsAttrStrategies)
+		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters, logger, resourceBounds, attrStrategies.Logs)
 		lokiHandler.Mount(traceMux)
 		engines = append(engines, lokiHandler.Engine)
 	}
@@ -248,6 +248,14 @@ func mountAPIHeads(
 		// on a deployment where the DDL side actually created it. Mirrors
 		// newLokiHandler's own LabelCatalogEnabled wiring.
 		tempoHandler.TagCatalogEnabled = cfg.SchemaTempoTagCatalogMV
+		// AttrStrategies (cerberus issue #2777 / #3062) is the preflight
+		// boot probe's resolved verdict on the traces attribute-map
+		// columns' physical shape — see runRequirementsCheck's doc for
+		// the known cold-start-race limitation shared with the logs
+		// wiring above. nil (the overwhelmingly common case: no
+		// JSON-typed column detected, or the requirements check
+		// disabled) renders byte-identical to before this field existed.
+		tempoHandler.SetAttrStrategies(attrStrategies.Traces)
 		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
 		// The per-query sample budget the ENGINE-level bounds read. The cursor
 		// enforces the same ceiling on rows it drains from ClickHouse, but the
@@ -542,7 +550,7 @@ func run() error {
 	// returned schemaPresent func reports NOT READY on /readyz and a
 	// background re-probe flips it ready once an external writer creates the
 	// schema, with no restart. CERBERUS_REQUIREMENTS_CHECK=false skips it.
-	schemaPresent, logsAttrStrategies, err := runRequirementsCheck(ctx, logger, client, cfg)
+	schemaPresent, attrStrategies, err := runRequirementsCheck(ctx, logger, client, cfg)
 	if err != nil {
 		return err
 	}
@@ -593,7 +601,7 @@ func run() error {
 		return err
 	}
 
-	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, limiters, logger, resourceBounds, promResourceBounds, logsAttrStrategies)
+	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, limiters, logger, resourceBounds, promResourceBounds, attrStrategies)
 	if err != nil {
 		return err
 	}
@@ -2380,30 +2388,44 @@ func preflightRequirementsFromConfig(cfg config.Config) preflight.Requirements {
 	}
 }
 
-// runRequirementsCheck also returns the resolved logs AttrStrategies
-// (cerberus issue #2777) so the caller can wire it onto the Loki head's
-// Handler / *logql.Lang — see newLokiHandler. Known limitation (documented
-// rather than silently accepted): on the TRANSIENT not-ready path (the
-// logs table doesn't exist yet at boot), this is necessarily nil — the
-// shape can't be introspected before the table exists — and it stays nil
-// for the rest of THIS process's life even after the background re-probe
-// (reprobeSchema) flips /readyz once the schema appears; a JSON-typed
-// logs schema created during that race window is picked up correctly only
-// on the NEXT boot. This mirrors decideRequirementsOutcome's own
-// boot-resolved-once posture for every other preflight finding — nothing
-// here re-derives shape facts after the readiness re-probe passes, and
-// doing so would require making the Handler's resolved strategy mutable
-// under concurrent requests, which cerberus issue #2777 explicitly avoids
-// (chopt-style pure, boot-resolved strategy, zero per-query branching).
+// preflightAttrStrategies carries runRequirementsCheck's per-signal
+// AttrStrategies findings back to the caller. Named — rather than two
+// positional chsql.AttrStrategies return values — for the identical
+// anti-transposition reason admitLimiters exists (see its own doc): two
+// same-typed values transpose silently at a callsite, and swapping these
+// would silently apply the traces schema's strategy to the logs head (and
+// vice versa) with no compiler diagnostic.
+type preflightAttrStrategies struct {
+	Logs   chsql.AttrStrategies
+	Traces chsql.AttrStrategies
+}
+
+// runRequirementsCheck also returns the resolved per-signal AttrStrategies
+// (cerberus issue #2777, extended to traces by #3062) so the caller can
+// wire them onto the Loki / Tempo heads' Handlers — see newLokiHandler and
+// mountAPIHeads' tempoHandler.SetAttrStrategies call. Known limitation
+// (documented rather than silently accepted): on the TRANSIENT not-ready
+// path (a table doesn't exist yet at boot), both fields are necessarily
+// the zero value — the shape can't be introspected before the table
+// exists — and they stay zero for the rest of THIS process's life even
+// after the background re-probe (reprobeSchema) flips /readyz once the
+// schema appears; a JSON-typed schema created during that race window is
+// picked up correctly only on the NEXT boot. This mirrors
+// decideRequirementsOutcome's own boot-resolved-once posture for every
+// other preflight finding — nothing here re-derives shape facts after the
+// readiness re-probe passes, and doing so would require making the
+// Handler's resolved strategy mutable under concurrent requests, which
+// cerberus issue #2777 explicitly avoids (chopt-style pure, boot-resolved
+// strategy, zero per-query branching).
 func runRequirementsCheck(
 	ctx context.Context,
 	logger *slog.Logger,
 	client *chclient.Client,
 	cfg config.Config,
-) (health.SchemaPresentFunc, chsql.AttrStrategies, error) {
+) (health.SchemaPresentFunc, preflightAttrStrategies, error) {
 	if !cfg.RequirementsCheck {
 		logger.Info("requirements check disabled (CERBERUS_REQUIREMENTS_CHECK=false)")
-		return nil, nil, nil
+		return nil, preflightAttrStrategies{}, nil
 	}
 	req := preflightRequirementsFromConfig(cfg)
 	res := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req)
@@ -2416,7 +2438,7 @@ func runRequirementsCheck(
 
 	outcome := decideRequirementsOutcome(res, cfg.Schema, cfg.ClickHouse.Database)
 	if outcome.fatalErr != nil {
-		return nil, nil, outcome.fatalErr
+		return nil, preflightAttrStrategies{}, outcome.fatalErr
 	}
 	if outcome.notReadyReason != "" {
 		// Transient: boot but stay NOT READY; the background re-probe (reusing
@@ -2425,7 +2447,7 @@ func runRequirementsCheck(
 		logger.Warn(outcome.logMsg, "reason", outcome.notReadyReason)
 		present := newSchemaPresentSignal(outcome.notReadyReason)
 		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
-		return present.Func(), nil, nil
+		return present.Func(), preflightAttrStrategies{}, nil
 	}
 
 	logger.Info(
@@ -2433,7 +2455,7 @@ func runRequirementsCheck(
 		"database", cfg.ClickHouse.Database,
 		"native_rate", cfg.ExperimentalTSGridRange,
 	)
-	return nil, res.LogsAttrStrategies, nil
+	return nil, preflightAttrStrategies{Logs: res.LogsAttrStrategies, Traces: res.TracesAttrStrategies}, nil
 }
 
 // requirementsOutcome is the boot decision decideRequirementsOutcome derives

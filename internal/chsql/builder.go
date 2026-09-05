@@ -1688,14 +1688,53 @@ func (b *Builder) exprLineContent(l *chplan.LineContent) error {
 	return nil
 }
 
+// exprFieldAccess renders a chplan.FieldAccess. A materialized attribute
+// column reads byte-identical to the Map subscript below (see
+// chplan.FieldAccess.MaterializedColumn's doc and
+// AddColumnBuilder.Default's real-ClickHouse evidence) but avoids
+// decompressing the wide Attributes Map, so the emitter prefers it
+// whenever the lowering layer populated it — checked first,
+// unconditionally, since a materialized reference never touches the
+// carrier map at all regardless of the carrier's AttrStrategy.
+//
+// cerberus issue #3062: FieldAccess is "conceptually a generalised
+// MapAccess" (see its own doc) but is a DISTINCT chplan.Expr type, so it
+// does not automatically inherit exprMapAccess's JSON branch — TraceQL's
+// lowerAttribute (internal/traceql/lower.go) builds FieldAccess, never a
+// bare MapAccess, for every span/resource/scope attribute read, which is
+// precisely why wiring chsql.AttrStrategies end-to-end was NOT sufficient
+// on its own to make a JSON-typed traces attribute column work: this
+// method is the second half of that fix. f.Path is always a compile-time
+// Go string (not a chplan.Expr), so — unlike exprMapAccess's key, which
+// must additionally be checked for *chplan.LitString — the JSON branch
+// here needs only jsonAttrColumn's bare-JSON-strategy-column check on
+// f.Source. Renders the identical
+//
+//	coalesce(<col>.<path, backtick-quoted>.:String, '')
+//
+// shape exprMapAccess's JSON branch does, and for the same reason: every
+// TraceQL comparison lowering (coerceFieldAccess's toFloat64OrNull wrap,
+// equality, regex) is written against the Map contract of "absent key
+// reads as the empty string", so normalising the JSON path's NULL-on-
+// missing behaviour away here keeps every one of those lowerings working
+// unmodified against either physical storage — pinned by a chDB
+// differential (internal/api/tempo/attr_strategy_json_chdb_test.go)
+// exercising both
+// the FieldAccess read itself and a numeric comparison built on top of
+// it.
 func (b *Builder) exprFieldAccess(f *chplan.FieldAccess) error {
-	// A materialized attribute column reads byte-identical to the Map
-	// subscript below (see chplan.FieldAccess.MaterializedColumn's doc and
-	// AddColumnBuilder.Default's real-ClickHouse evidence) but avoids
-	// decompressing the wide Attributes Map, so the emitter prefers it
-	// whenever the lowering layer populated it.
 	if f.MaterializedColumn != "" {
 		b.Ident(f.MaterializedColumn)
+		return nil
+	}
+	if col, ok := jsonAttrColumn(b, f.Source); ok {
+		b.sb.WriteString("coalesce(")
+		if err := b.Expr(col); err != nil {
+			return err
+		}
+		b.sb.WriteByte('.')
+		b.Ident(f.Path)
+		b.sb.WriteString(".:String, '')")
 		return nil
 	}
 	if err := b.Expr(f.Source); err != nil {
