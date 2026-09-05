@@ -30,6 +30,7 @@ const allGreen = {
   'startup-bench': 'success',
   chaos: 'success',
   'bwc-minio': 'success',
+  datashard: 'success',
 };
 
 test('every job success is a clean night', () => {
@@ -135,7 +136,7 @@ const ciWorkflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
 test('nightly-health-notify needs every terminal job and runs on schedule only', () => {
   assert.match(
     e2eWorkflow,
-    /nightly-health-notify:\n    name: nightly-health-notify\n    needs:\n {6}\[compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio\]\n {4}if: always\(\) && github\.event_name == 'schedule'/,
+    /nightly-health-notify:\n    name: nightly-health-notify\n    needs:\n {6}\[compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard\]\n {4}if: always\(\) && github\.event_name == 'schedule'/,
   );
 });
 

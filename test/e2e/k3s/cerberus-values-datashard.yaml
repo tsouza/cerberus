@@ -1,0 +1,93 @@
+# Helm values OVERLAY for the multi-data-shard e2e lane (cerberus issue
+# #3079, epic #3074). Layered ON TOP of cerberus-values.yaml by
+# `just e2e-datashard-up <count>`:
+#
+#   helm upgrade --install cerberus deploy/helm/cerberus \
+#     --values test/e2e/k3s/cerberus-values.yaml \
+#     --values test/e2e/k3s/cerberus-values-datashard.yaml \
+#     --set clickhouse.bundled.dataShards.count=<count>
+#
+# `dataShards.count` itself is passed via `--set` at bring-up time (not
+# hardcoded here) so the SAME overlay drives both the N=2 regression
+# baseline and the N=4 over-subscription leg (`just e2e-datashard-up 2` /
+# `just e2e-datashard-up 4`) — see the Justfile recipe's own doc.
+#
+# STORAGE MODE: hot-only (hotVolume.enabled=true, objectStorage.enabled=
+# false) — a pure local-disk ClickHouse with no MinIO/object-store
+# dependency. This is the EXACT combination docs/helm-clickhouse.md's
+# "Infrastructure-validated only" section already proved manually for
+# issue #3077 (real k3d run, dataShards.count=2, hot-only, single replica
+# per shard) — this lane is what turns that manual, cerberus-binary-less
+# proof into a real `just e2e`-driven, cerberus-image-included run at both
+# N=2 AND N=4, the acceptance bar that section's own "do not run in
+# production until #3079 closes" line names.
+clickhouse:
+  bundled:
+    enabled: true
+    # 26.3 — same tag test/e2e/k3s/cerberus-values-bwc.yaml already pins
+    # (gotcha #1's dedicated non-`default`-user ConfigMap applies
+    # regardless of dataShards.count), so `just e2e-datashard-up` needs no
+    # additional image import beyond what `just e2e-bwc-up` already pulls.
+    image: clickhouse/clickhouse-server:26.3
+    replicas: 1
+    hotVolume:
+      enabled: true
+    objectStorage:
+      enabled: false
+
+    # Sized down for N=4 shards (+ the 3-node Keeper ensemble
+    # dataShards.count>1 auto-enables) sharing one throwaway k3d node
+    # alongside cerberus, Grafana, the collector and the sample apps. Each
+    # shard's own dataset is a fraction of the single-shard lane's, so a
+    # smaller per-shard footprint than cerberus-values-bwc.yaml's is
+    # deliberate, not an oversight.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 384Mi
+      limits:
+        memory: 1Gi
+    persistence:
+      size: 3Gi
+    cache:
+      size: 1Gi
+
+# schema.ttl is REQUIRED in hot-only mode (chart-render-time fail otherwise)
+# — see cerberus-values-bwc-hot-only.yaml's own doc. 7d matches that overlay
+# for consistency.
+schema:
+  ttl: "7d"
+
+# Solver geometry knobs (internal/solver, docs/solver.md), loosened FOR THIS
+# LANE ONLY so the deterministic/rolling e2e seed's modest data volume
+# reliably reaches kEff > 1 (a solver-split, `Distributed`-target query) —
+# the acceptance-criterion regime this lane exists to exercise. The
+# admission-control mechanism under test (`DataShardFanoutGate` /
+# `DataShardFanoutCap`) is orthogonal to the grid-geometry thresholds below;
+# loosening the latter here does not weaken the former, and the geometry
+# thresholds themselves already have dedicated unit/spec coverage
+# (internal/solver's own tests, docs/solver.md's calibration section) this
+# lane is not trying to re-prove. CERBERUS_SHARD_PARALLEL (defaultParallel)
+# is deliberately LEFT AT ITS DEFAULT (3) — the N=4 leg's whole point is
+# DataShardCount(4) exceeding that unmodified default.
+config:
+  # Collapse the grid-geometry admission thresholds so a query over the
+  # e2e seed's real (small) row count still splits: MinFanout/MinAnchorPairs
+  # normally gate splitting to windows with production-scale cardinality
+  # (docs/solver.md's calibration numbers), which this throwaway e2e dataset
+  # never reaches.
+  CERBERUS_SHARD_MIN_FANOUT: "1"
+  CERBERUS_SHARD_MIN_ANCHOR_PAIRS: "1"
+  CERBERUS_SHARD_MIN_ANCHORS_PER_SLICE: "1"
+  # Explicit, not just the default, so a future change to defaultMaxK
+  # (internal/solver/config.go's own doc: it has moved 8 -> 32 -> 8 already)
+  # cannot silently change this lane's own expected kEff ceiling.
+  CERBERUS_SHARD_MAX_K: "8"
+  # DataShardFanoutCap: explicit, not left to derive from
+  # CERBERUS_CH_MAX_OPEN_CONNS (10) minus cmd/cerberus's solverGateReserve
+  # (2) — pinning it here means e2e-datashard-verify.mjs's assertion stays
+  # correct even if either of those two unrelated defaults ever changes.
+  # Independent of DataShardCount by design (that is the fix's whole
+  # point — see docs/solver.md's admission-control section): the SAME
+  # value is correct for both the N=2 and N=4 legs.
+  CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: "8"

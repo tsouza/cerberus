@@ -1364,6 +1364,89 @@ matching the epic's own `N=4` over-subscription case, `count: 4`) cluster is
 issue #3079's job; this sub-issue's scope is limited to writing the plan
 down with concrete, emitter-grounded shapes.
 
+Issue #3079 executes shapes 1, 2, 4, and 6 as permanent, unconditional Go
+`test/e2e` tests (`test/e2e/e2e_datashard_subquery_test.go`) that run in
+**every** `just e2e-run` invocation — the standard single-shard lane, the
+`bwc-minio` lane, and the new `datashard` lane below — so the SAME pinned
+assertions running byte-identically across lanes is itself the "matches a
+single-shard reference run" proof, rather than a separate diff step. Shapes 3
+and 5 already had dedicated coverage before this issue
+(`TestTempoSearch`/`TestTempoSearch_StructuralChild`,
+`test/e2e/e2e_tempo_test.go` / `e2e_tempo_extra_test.go`), which also now run
+against the `Distributed` target via the same lane; they were not duplicated.
+
+### Multi-data-shard e2e-hardening leg (cerberus issue #3079)
+
+`.github/workflows/e2e.yml`'s `datashard` job (`just e2e-datashard-up` /
+`just e2e-run` / `just e2e-datashard-verify`, mirroring the established
+`bwc-minio` k3d pattern) is the leg the two sections above name as closing
+the "infrastructure-validated only" gap: a real k3d cluster, a built cerberus
+image, and the chart's bundled ClickHouse at `dataShards.count: 2` and
+`dataShards.count: 4` (deliberately exceeding `internal/solver`'s own
+unmodified `defaultParallel` of 3 — epic #3074's admission-control section
+names this exact regime), running the full Go e2e correctness suite plus a
+concurrent PromQL/LogQL/TraceQL load burst.
+
+`.github/scripts/e2e-datashard-verify.mjs` asserts, directly from
+`system.query_log` rather than from cerberus's own HTTP responses: a genuine
+solver-split (`kEff > 1`) query reached the `Distributed` target; the real,
+concurrent, cluster-wide per-shard statement count never exceeded
+`DataShardFanoutCap` — `DataShardFanoutGate`'s own unconditional ceiling,
+observed under load rather than merely asserted by the admission-control
+unit tests; every per-shard statement's `max_memory_usage` setting sits
+within the `perShardMemoryBytes` formula's predicted ceiling, confirming
+that formula's live prediction under real concurrent load (moved here from
+the settings-verification sub-issue, #3078, exactly as that issue's own
+"Live-load confirmation is #3079's job, not this one's" line names); and no
+`MEMORY_LIMIT_EXCEEDED`/OOM anywhere in the cluster during the burst. See
+that script's own header comment for the full query_id-trace-grouping
+mechanism this relies on. `datashard`, like `bwc-minio`, is INFORMATIONAL —
+never a PR gate.
+
+### Compat and migration-lane scope: single ClickHouse data shard (cerberus issue #3079)
+
+**Decision: `compat-promql` / `compat-logql` / `compat-traceql` and
+`cerberus migrate` stay scoped to a single ClickHouse data shard,
+permanently — not an open-ended deferral.**
+
+The three differential harnesses (`docs/compatibility.md`) each diff
+cerberus's translation of a query language against a REAL reference
+implementation — Prometheus, Loki, Tempo — none of which has any concept of
+a ClickHouse data shard at all. What they exist to catch is query-LANGUAGE
+fidelity: does cerberus's PromQL/LogQL/TraceQL lowering produce the same
+answer the reference engine would. A `Distributed` table is, by design,
+architecturally transparent to a correct query against it — same logical
+dataset, same query surface, same expected answer — so a second, N-shard
+copy of each harness's reference-comparable ClickHouse target would exercise
+no code path these harnesses were built to catch; it would only roughly
+double each lane's already-heaviest runtime for a dimension none of the
+three reference backends can even express an opinion about.
+
+What multi-shard ACTUALLY puts at risk is ClickHouse's own distributed-query
+execution — the `#29332` legacy-analyzer/subquery interaction, the
+admission-control fan-out ceiling, the per-shard memory apportionment — and
+that risk is real but has nothing to do with any of the three query
+languages' own semantics. Issue #3079's `datashard` e2e leg (previous
+section) targets it directly, with real `system.query_log` evidence a
+three-way reference diff has no way to produce (none of Prometheus, Loki, or
+Tempo runs on ClickHouse, so none can observe ClickHouse's own shard
+fan-out).
+
+`cerberus migrate`'s own verify step (`docs/migration.md`'s Step 10) replays
+real queries against a live cerberus + ClickHouse pair and diffs the
+answers against the source Prometheus — a migration-time correctness tool,
+not a ClickHouse-topology-aware one. Its code
+(`internal/migrate`/`cmd/cerberus`'s migrate command surface) carries zero
+`DataShardCount`/`dataShards` awareness anywhere: it issues the same queries
+through the same cerberus query engine this issue's `datashard` lane
+already validates against a real `Distributed` target, so `cerberus
+migrate`'s own correctness is inherited from that validation rather than
+needing a parallel one. The topology a migrating operator's ClickHouse
+happens to run — single-shard today, or a `dataShards.count > 1` deployment
+following this epic's own manual-migration runbook
+(`docs/helm-clickhouse.md`) — is the operator's own choice and orthogonal to
+what Step 10 checks.
+
 ### Hot/cold storage tiering
 
 `CERBERUS_SCHEMA_STORAGE_POLICY` puts a MergeTree `storage_policy` on every
