@@ -75,6 +75,33 @@ type Executor struct {
 	// alongside Gate (semaphore.Weighted does not expose its size).
 	GateCap int64
 
+	// DataShardFanoutGate is a SECOND, independent global semaphore bounding
+	// the AGGREGATE ClickHouse-side statement fan-out across every
+	// concurrently-admitted request, process-wide (cerberus issue #3081,
+	// epic #3074). It is nil (structurally inert — never allocated or
+	// acquired) whenever Cfg.DataShardCount <= 1, which is what every
+	// deployment before this field existed gets: NewDataShardFanoutGate is
+	// the one place that decision is made, from Cfg.DataShardCount.
+	//
+	// DISAMBIGUATION — "DataShard" here means a ClickHouse cluster's own
+	// physical data partition (a `Distributed` table's own shard), NOT this
+	// package's pre-existing bare-`Shard` concept (runShard /
+	// perShardMemoryBytes / minAnchorsForPerRungShard, Config's own
+	// EstimateMinRowsPerAdditionalShard) — this package's own
+	// query-time-range / anchor-grid split, unrelated to ClickHouse cluster
+	// topology. It sits BESIDE Gate above, not in place of it: Gate bounds
+	// cerberus's OWN outbound connection-pool usage (a real, separate
+	// resource DataShardCount does not affect); DataShardFanoutGate bounds
+	// the aggregate ClickHouse-SIDE statement count each Gate-admitted
+	// connection fans out to once it reaches a `Distributed` table.
+	DataShardFanoutGate *semaphore.Weighted
+
+	// DataShardFanoutCap is DataShardFanoutGate's total size
+	// (semaphore.Weighted hides it, same reason GateCap exists for Gate).
+	// Defaults to GateCap unless Config.DataShardFanoutCapOverride is set —
+	// see NewDataShardFanoutGate.
+	DataShardFanoutCap int64
+
 	// Breaker peeks the circuit state pre-flight so a routed fan-out never
 	// burns the single half-open recovery probe. *chclient.Client in
 	// production. Nil disables the pre-flight (test / no breaker).
@@ -86,17 +113,39 @@ type Executor struct {
 	Admit admitTopUp
 }
 
-// admitAndGate performs the Executor's two-stage weighted admission (step 2)
-// and the atomic global-connection-gate acquisition (step 3) as ONE unit:
-// the gate's own effective shard count (kEff) depends on the admission
-// result (pEff), and a gate-acquire failure must release the admission
-// top-up it already holds — the two steps share state in exactly the way
-// that makes splitting their RELEASE handles across two independent call
-// sites error-prone. Returns the admitted (kEff, pEff) pair, the two
-// idempotent release closures Execute must hand off to the shardCursor (or
-// call itself on an early return), and a non-nil err only when the gate
-// denied the request — already breaker-neutral (no CH connection was ever
-// opened) and with the admit top-up already released before returning.
+// NewDataShardFanoutGate derives the (DataShardFanoutGate, DataShardFanoutCap)
+// pair a production wiring should hand to ExecDeps, from cfg and the
+// pre-existing Gate's own size (gateCap). It mirrors exactly how Gate itself
+// is sized by the caller (a semaphore.Weighted over a resolved cap), so
+// cerberus carries ONE derivation of "is the fanout gate active" — cfg's
+// own DataShardCount <= 1 check — rather than repeating it at every wiring
+// site. Exported so a regression test can assert the DataShardCount <= 1
+// case never allocates a semaphore, and that it defaults to gateCap,
+// without duplicating this arithmetic (cerberus issue #3081).
+func NewDataShardFanoutGate(cfg Config, gateCap int64) (gate *semaphore.Weighted, dataShardFanoutCap int64) {
+	dataShardFanoutCap = gateCap
+	if cfg.DataShardFanoutCapOverride != nil {
+		dataShardFanoutCap = *cfg.DataShardFanoutCapOverride
+	}
+	if cfg.DataShardCount <= 1 {
+		return nil, dataShardFanoutCap
+	}
+	return semaphore.NewWeighted(dataShardFanoutCap), dataShardFanoutCap
+}
+
+// admitAndGate performs the Executor's two-stage weighted admission (step 2),
+// the atomic global-connection-gate acquisition (step 3), and — when
+// DataShardFanoutGate is wired — the SECOND, independent data-shard fanout
+// acquisition (step 3b, cerberus issue #3081) as ONE unit: the gate's own
+// effective shard count (kEff) depends on the admission result (pEff), and
+// an acquire failure at either gate must release everything already held —
+// the steps share state in exactly the way that makes splitting their
+// RELEASE handles across independent call sites error-prone. Returns the
+// admitted (kEff, pEff) pair, the two idempotent release closures Execute
+// must hand off to the shardCursor (or call itself on an early return), and
+// a non-nil err only when a gate denied the request — already
+// breaker-neutral (no CH connection was ever opened) and with everything
+// already acquired released before returning.
 func (x *Executor) admitAndGate(ctx context.Context, k int) (kEff, pEff int, releaseGate, releaseAdmit func(), err error) {
 	// 2. TWO-STAGE WEIGHTED ADMISSION (degrade-don't-reject). The handler
 	// already charged weight 1; ask for (P-1) extra units. On a partial /
@@ -146,9 +195,33 @@ func (x *Executor) admitAndGate(ctx context.Context, k int) (kEff, pEff int, rel
 		kEff = 1
 	}
 
+	// fanoutWeight / fanoutAcquired back the DataShardFanoutGate release
+	// below. fanoutAcquired guards against releasing a weight that was
+	// computed but never actually acquired (the Acquire-failed branch further
+	// down) — semaphore.Weighted has no protection against an over-release,
+	// so releaseGate must never call Release unless the matching Acquire
+	// truly succeeded.
+	var fanoutWeight int64
+	var fanoutAcquired bool
+
 	var gateReleased atomic.Bool
 	releaseGate = func() {
-		if x.Gate != nil && gateReleased.CompareAndSwap(false, true) {
+		if !gateReleased.CompareAndSwap(false, true) {
+			return
+		}
+		// DataShardFanoutGate releases FIRST, Gate releases second — the
+		// fixed, consistent ordering the design requires (cerberus issue
+		// #3081): the two semaphores bound two DIFFERENT resources
+		// (cerberus's own outbound connection pool vs. the aggregate
+		// ClickHouse-side statement fan-out a `Distributed` table produces),
+		// and always releasing the narrower, fan-out-specific bound before
+		// the pool-wide one keeps this the ONE ordering every caller
+		// observes, rather than a coin flip between two independently
+		// correct choices.
+		if fanoutAcquired && x.DataShardFanoutGate != nil {
+			x.DataShardFanoutGate.Release(fanoutWeight)
+		}
+		if x.Gate != nil {
 			x.Gate.Release(int64(kEff))
 		}
 	}
@@ -161,6 +234,37 @@ func (x *Executor) admitAndGate(ctx context.Context, k int) (kEff, pEff int, rel
 			releaseAdmit()
 			return kEff, pEff, releaseGate, releaseAdmit, fmt.Errorf("solver: gate acquire: %w", aerr)
 		}
+	}
+
+	// 3a. DATA-SHARD FANOUT GATE (cerberus issue #3081) — a SECOND,
+	// independent global semaphore, acquired ONLY after the Gate acquire
+	// above succeeds. weight = kEff x DataShardCount is the aggregate
+	// ClickHouse-side statement count THIS request's admitted connections
+	// will fan out to once they reach a `Distributed` table; acquiring it
+	// here enforces Σ(kEff_i x DataShardCount) <= DataShardFanoutCap across
+	// EVERY concurrently-admitted request, process-wide — an exact,
+	// unconditional ceiling with no floor-division degeneracy as
+	// DataShardCount grows (unlike a naive per-request pEff/DataShardCount
+	// divide, which floors to 0 - clamped to 1 - for every DataShardCount
+	// >= defaultParallel+1, providing zero attenuation exactly where it is
+	// needed). DataShardFanoutGate is nil (never allocated) whenever
+	// Cfg.DataShardCount <= 1 (NewDataShardFanoutGate), so this whole branch
+	// is unreached for every deployment that predates this field.
+	if x.DataShardFanoutGate != nil {
+		dataShardCount := x.Cfg.DataShardCount
+		if dataShardCount < 1 {
+			dataShardCount = 1
+		}
+		fanoutWeight = int64(kEff) * int64(dataShardCount)
+		if aerr := x.DataShardFanoutGate.Acquire(ctx, fanoutWeight); aerr != nil {
+			// Release whatever this call already holds (Gate + admit
+			// top-up) before surfacing — same breaker-neutral, no-CH-work
+			// contract as the Gate-acquire-failure branch above.
+			releaseGate()
+			releaseAdmit()
+			return kEff, pEff, releaseGate, releaseAdmit, fmt.Errorf("solver: data-shard fanout gate acquire: %w", aerr)
+		}
+		fanoutAcquired = true
 	}
 
 	// effective concurrency cannot exceed the slots we hold.
@@ -281,14 +385,30 @@ func (x *Executor) Execute(
 	// unapportioned: route A itself is uncapped in that configuration, so a
 	// per-shard cap here would make routed traffic MORE restrictive than
 	// route A, not merely no worse.
+	//
+	// The divisor is kEff x DataShardCount, not kEff alone (cerberus issue
+	// #3081): at least one ClickHouse memory setting remaps to each DATA
+	// SHARD's own independent budget rather than a shared one once a shard's
+	// query reaches a `Distributed` table, so reducing kEff alone does not
+	// bound the per-statement memory amplification a multi-data-shard
+	// cluster introduces. DataShardCount defaults to 1 (chopt.ClusterTopology's
+	// own default), making this an EXACT no-op — cap/(kEff*1) == cap/kEff —
+	// for every deployment that predates this field; see Config.DataShardCount's
+	// own doc for the disambiguation from kEff/this solver's own bare-`Shard`
+	// concept.
 	var perShardMemoryBytes int64
 	if cap := x.Client.MaxQueryMemoryBytes(); cap > 0 {
-		perShardMemoryBytes = cap / int64(kEff)
+		dataShardCount := x.Cfg.DataShardCount
+		if dataShardCount < 1 {
+			dataShardCount = 1
+		}
+		perShardMemoryBytes = cap / (int64(kEff) * int64(dataShardCount))
 		if perShardMemoryBytes < 1 {
-			// Only reachable if cap < kEff — an unrealistic (byte-scale)
-			// configuration. Guards against stamping a literal 0, which
-			// ClickHouse's max_memory_usage setting treats as UNLIMITED —
-			// the opposite of what "apportion the cap" means.
+			// Only reachable if cap < kEff*DataShardCount — an unrealistic
+			// (byte-scale cap, or an extreme DataShardCount) configuration.
+			// Guards against stamping a literal 0, which ClickHouse's
+			// max_memory_usage setting treats as UNLIMITED — the opposite of
+			// what "apportion the cap" means.
 			perShardMemoryBytes = 1
 		}
 	}

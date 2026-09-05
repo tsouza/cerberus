@@ -235,6 +235,7 @@ var envDocs = []EnvDoc{
 
 	// --- ClickHouse connection ---
 	{envCHAddr, "string", groupClickHouseConn, "ClickHouse endpoint(s). Comma-separated for multiple hosts (each trimmed; at least one required)."},
+	{envCHDataShards, "int", groupClickHouseConn, "Number of ClickHouse DATA shards behind this deployment's `Distributed` tables (`chopt.ClusterTopology.DataShardCount`). `1` (default) means a single logical dataset; the sharded-pushdown solver's admission control bounds aggregate ClickHouse-side fan-out from this value. Must be `>= 1`."},
 	{envCHDatabase, "string", groupClickHouseConn, "ClickHouse database name. Matches the upstream OTel ClickHouse exporter default; `AUTO_CREATE_SCHEMA` creates it (idempotently) if absent."},
 	{envCHUsername, "string", groupClickHouseConn, "ClickHouse user."},
 	{envCHPassword, "string", groupClickHouseConn, "ClickHouse password. Source from a secret, never commit."},
