@@ -180,14 +180,17 @@ function count(haystack, needle) {
 // --- 9. Object-store mode (default) unchanged: legacy disk/policy/volume
 // shape, and the bundled ClickHouse Service gains ONLY sessionAffinity beyond
 // its pre-existing spec fields. A repo-checked comparison of this branch's
-// full render against origin/main (every ci/*-values.yaml fixture, plus
-// defaults) additionally confirmed the ONLY diff anywhere in the chart is
-// this sessionAffinity addition — see the PR description's test plan. This
-// section pins the same invariant structurally so it keeps failing a future
-// regression even after that one-time base comparison is no longer meaningful
-// (main will eventually BE this code). ---
+// full render against origin/main (every ci/*-values.yaml fixture — each
+// pinning hotVolume.enabled: false, since #3075 flips the bare default to
+// hot/cold — plus defaults) additionally confirmed the ONLY diff anywhere in
+// the chart is this sessionAffinity addition — see the PR description's test
+// plan. This section pins the same invariant structurally so it keeps
+// failing a future regression even after that one-time base comparison is no
+// longer meaningful (main will eventually BE this code). NOTE: object-store
+// mode requires hotVolume.enabled=false EXPLICITLY here — it is no longer the
+// bare `clickhouse.bundled.enabled=true` default (that is now hot-cold). ---
 {
-  const out = tpl(['--set', 'clickhouse.bundled.enabled=true', '-s', 'templates/clickhouse/configmap-config.yaml'])
+  const out = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '-s', 'templates/clickhouse/configmap-config.yaml'])
   check(out.includes('<bwc_object_disk>'), 'object-store mode: legacy bwc_object_disk name unchanged')
   check(out.includes('<bwc_object_cache>'), 'object-store mode: legacy bwc_object_cache name unchanged')
   check(/<main>\s*<disk>bwc_object_cache<\/disk>\s*<\/main>/.test(out), 'object-store mode: legacy single "main" volume unchanged')
@@ -202,11 +205,22 @@ function count(haystack, needle) {
       && !stripped.includes('sessionAffinity'),
     'ClickHouse ClusterIP Service: stripping sessionAffinity(+Config) leaves exactly the pre-existing spec (type/ports/selector) — sessionAffinity is the ONLY new field',
   )
+
+  // The bare default (no hotVolume/objectStorage override at all) resolves to
+  // hot-cold — locking this in explicitly guards against the default silently
+  // flipping back (or to something else) unnoticed.
+  const bareDefault = tpl(['--set', 'clickhouse.bundled.enabled=true', '-s', 'templates/clickhouse/configmap-config.yaml'])
+  check(bareDefault.includes('<bwc_hot_cold>'), 'bare default (clickhouse.bundled.enabled=true alone) resolves to hot-cold mode')
+  check(bareDefault.includes('<bwc_hot_disk>'), 'bare default renders the local hot disk')
 }
 
 // --- 10. hotVolume x objectStorage four-cell matrix + the two `fail` guards.
 {
-  const bothOff = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.objectStorage.enabled=false'])
+  const bothOff = tplFail([
+    '--set', 'clickhouse.bundled.enabled=true',
+    '--set', 'clickhouse.bundled.hotVolume.enabled=false',
+    '--set', 'clickhouse.bundled.objectStorage.enabled=false',
+  ])
   check(bothOff !== null, 'hotVolume=false + objectStorage=false: render FAILS')
   check(
     bothOff && /hotVolume\.enabled/.test(bothOff) && /objectStorage\.enabled/.test(bothOff),
@@ -311,9 +325,11 @@ function count(haystack, needle) {
 // --- 13. storagePolicyName operator override wins in every mode. ---
 {
   for (const args of [
-    ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
+    // object-store mode (explicit — the bare default is hot-cold since #3075).
+    ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
     ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=true', '--set', 'clickhouse.bundled.objectStorage.enabled=false', '--set', 'schema.ttl=30d', '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
-    ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=true', '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
+    // hot-cold mode (the bare default).
+    ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
   ]) {
     const out = tpl([...args, '-s', 'templates/clickhouse/configmap-config.yaml'])
     check(out.includes('<custom_policy>'), `operator-set storagePolicyName wins over the mode-derived default (args: ${args.join(' ')})`)

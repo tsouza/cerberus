@@ -1770,11 +1770,14 @@ jobs:
         run: just e2e-bwc-up ${{ matrix.scenario }}
 
       # Chart-only, doesn't depend on the scenario's own data — but DOES need
-      # a reachable k8s API (`helm install --dry-run`), which `helm template`
-      # cannot fake, so it runs here rather than in the cluster-less
-      # chart-validate job. Runs once per matrix leg (cheap: a handful of
-      # dry-run installs against a name no scenario uses, nothing persists).
-      - name: Assert NOTES.txt hot-volume capacity warning
+      # a reachable k8s API (`helm install`/`upgrade --dry-run`), which `helm
+      # template` cannot fake, so it runs here rather than in the cluster-less
+      # chart-validate job. Runs once per matrix leg: a handful of throwaway
+      # dry-run installs (names no scenario uses) plus, for the upgrade-hazard
+      # assertion, one real minimal-footprint install+upgrade+uninstall cycle
+      # (bundled DISABLED) so `.Release.IsUpgrade` is genuinely true — nothing
+      # from the scenario under test is ever actually applied.
+      - name: Assert NOTES.txt capacity warning + hot-cold-default upgrade hazard
         run: node .github/scripts/chart-notes-assert.mjs
 
       - name: Seed OTel data (deterministic synthetic rows; rolling)

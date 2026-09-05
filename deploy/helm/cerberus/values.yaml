@@ -202,18 +202,37 @@ clickhouse:
     certFileKey: tls.crt
     # -- Key in the TLS Secret for the client key → CERBERUS_CH_TLS_KEY_FILE.
     keyFileKey: tls.key
-  # -- Bundled ClickHouse on object storage ("bwc" data tier). When enabled, the
-  # chart renders a self-contained ClickHouse StatefulSet (+ Services, + a
-  # Keeper ensemble when `replicas > 1`) backed by an object store (S3 / GCS /
-  # Azure) and DEFAULTS cerberus to point at it. This is the DATA tier and is
-  # ORTHOGONAL to `mode` (monolith / split) — the gateway topology is unchanged.
-  # EVERY bundled object is gated behind `enabled`; with the default
-  # `enabled: false` the chart renders byte-for-byte as if this block did not
-  # exist. Secrets (the ClickHouse user password + static object-store
-  # credentials) NEVER land in a ConfigMap — they ride a Secret injected as env
-  # and are referenced from the ClickHouse XML via `from_env`. NOT every backend
-  # is equally proven: only S3/MinIO single-node (in every storage mode below)
-  # is runtime-proven (k3d e2e); GCS, Azure, cloud workload-identity and
+  # -- Bundled ClickHouse ("bwc" data tier). When enabled, the chart renders a
+  # self-contained ClickHouse StatefulSet (+ Services, + a Keeper ensemble
+  # when `replicas > 1`). This is the DATA tier and is ORTHOGONAL to `mode`
+  # (monolith / split) — the gateway topology is unchanged. EVERY bundled
+  # object is gated behind `enabled`; with the default `enabled: false` the
+  # chart renders byte-for-byte as if this block did not exist.
+  #
+  # DEFAULT STORAGE MODE IS HOT/COLD: `hotVolume.enabled: true` (default) +
+  # `objectStorage.enabled: true` (default) together render a genuine local
+  # "hot" disk new parts land on, tiered onto an object store (S3 / GCS /
+  # Azure) as they age — sensible defaults, not an opt-in. To reproduce the
+  # PRE-#3075 single-volume, object-store-only behavior (the ONLY mode this
+  # chart had before), set `hotVolume.enabled: false` explicitly.
+  #
+  # >>> UPGRADE HAZARD <<< An EXISTING `bundled.enabled: true` deployment that
+  # upgrades this chart WITHOUT pinning `hotVolume.enabled: false` in its own
+  # values silently moves from single-volume object-storage to hot/cold on its
+  # next `helm upgrade` — a real storage-layout change, not just a values
+  # default. ClickHouse's own startup validation catches this loudly (each
+  # mode's storage_policy has a distinct name; an unknown-policy error, not
+  # data corruption) rather than silently doing the wrong thing, but it is
+  # still a startup failure an unprepared operator does not expect. Pin
+  # `hotVolume.enabled: false` before upgrading past this chart version if you
+  # are relying on single-volume object-storage-only behavior. See the
+  # "Upgrading into this default" section of docs/helm-clickhouse.md.
+  #
+  # Secrets (the ClickHouse user password + static object-store credentials)
+  # NEVER land in a ConfigMap — they ride a Secret injected as env and are
+  # referenced from the ClickHouse XML via `from_env`. NOT every backend is
+  # equally proven: only S3/MinIO single-node (in every storage mode) is
+  # runtime-proven (k3d e2e); GCS, Azure, cloud workload-identity and
   # multi-replica+Keeper are render/kubeconform-validated only and need a
   # real-cloud validation pass before production. See the support/validation
   # matrix in docs/helm-clickhouse.md.
@@ -272,12 +291,13 @@ clickhouse:
         storageClass: ""
     # -- Object-store backend the ClickHouse disk targets.
     objectStorage:
-      # -- Render the object-store disk/cache/policy. `true` (default) preserves
-      # today's behavior byte-for-byte. Set `false` alongside `hotVolume.enabled:
-      # true` for a pure local-disk ("hot-only") bundled ClickHouse with no
-      # object-store dependency; `false` with `hotVolume.enabled: false` fails
-      # the render (see `hotVolume.enabled` below) — the chart never silently
-      # renders a ClickHouse with no storage tier at all.
+      # -- Render the object-store disk/cache/policy. `true` (default) +
+      # `hotVolume.enabled: true` (also default) is the hot/cold mode. Set
+      # `false` (with `hotVolume.enabled: true`) for a pure local-disk
+      # ("hot-only") bundled ClickHouse with no object-store dependency at
+      # all; `false` with `hotVolume.enabled: false` fails the render (see
+      # `hotVolume.enabled` below) — the chart never silently renders a
+      # ClickHouse with no storage tier at all.
       enabled: true
       # -- Backend: one of `s3`, `gcs`, `azure`.
       backend: s3
@@ -339,24 +359,29 @@ clickhouse:
         accountName: ""
         # -- Inline Azure storage account key.
         accountKey: ""
-    # -- A genuine local-disk "hot" tier new parts land on. `false` (default)
-    # preserves today's behavior byte-for-byte — no local volume, no policy
-    # change. `true` + `objectStorage.enabled: false` renders a hot-only
-    # single-volume policy (`bwc_hot_only`) on local disk alone, and REQUIRES
-    # `schema.ttl` to be set (the chart fails the render otherwise — an
-    # unbounded local disk with no cold tier and no retention fills forever).
-    # `true` + `objectStorage.enabled: true` (the default) renders a two-volume
-    # hot/cold policy (`bwc_hot_cold`): new inserts land on `hot` (this local
-    # disk), then move to `cold` (the unchanged object-store disk/cache chain)
-    # after `schema.tierAfter` via `moveFactor`. See docs/helm-clickhouse.md.
+    # -- A genuine local-disk "hot" tier new parts land on. `true` (DEFAULT) +
+    # `objectStorage.enabled: true` (also default) renders a two-volume
+    # hot/cold policy (`bwc_hot_cold`) — the chart's sensible default: new
+    # inserts land on `hot` (this local disk), then move to `cold` (the
+    # object-store disk/cache chain) after `schema.tierAfter` via
+    # `moveFactor`. `true` + `objectStorage.enabled: false` instead renders a
+    # hot-only single-volume policy (`bwc_hot_only`) on local disk alone, and
+    # REQUIRES `schema.ttl` to be set (the chart fails the render otherwise —
+    # an unbounded local disk with no cold tier and no retention fills
+    # forever). Set `false` to reproduce the PRE-#3075, object-store-only,
+    # single-volume behavior (`bwc_object_store`) instead — REQUIRED on an
+    # UPGRADE of an existing deployment that relies on that behavior; see the
+    # upgrade-hazard note on `bundled` above and docs/helm-clickhouse.md.
     # Distinct policy names per mode mean toggling this (or `objectStorage.
     # enabled`) on an ALREADY-POPULATED cluster fails ClickHouse's own startup
     # validation loudly (it permits only additive storage-policy changes) —
     # supported at initial install only; migrate a populated cluster
     # out-of-band (e.g. blue-green via `remote()`/`INSERT SELECT`).
     hotVolume:
-      # -- Render the local-disk hot volume/policy.
-      enabled: false
+      # -- Render the local-disk hot volume/policy. DEFAULT `true` — set
+      # `false` to get the pre-#3075 single-volume, object-store-only chart
+      # behavior (REQUIRED to preserve that behavior across an upgrade).
+      enabled: true
       # -- `move_factor` on the hot/cold policy (ignored in hot-only mode,
       # where there is nothing to move to). ClickHouse begins moving parts off
       # `hot` once its free space drops below this fraction, independent of

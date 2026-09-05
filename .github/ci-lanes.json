@@ -960,7 +960,7 @@
     },
     {
       "id": "e2e.bwc-minio",
-      "description": "Bundled ClickHouse plus MinIO object-storage placement and query smoke.",
+      "description": "Bundled ClickHouse storage-tiering (object-storage / hot-only / hot-cold) MinIO placement and query smoke, one matrix leg per scenario (cerberus issue #3075).",
       "owner": {
         "workflow": ".github/workflows/e2e.yml",
         "jobs": ["bwc-minio"],
@@ -968,7 +968,7 @@
         "context_job": "bwc-minio"
       },
       "executions": ["default"],
-      "context": { "match": "exact", "name": "bwc-minio", "protected": false },
+      "context": { "match": "prefix", "name": "bwc-minio (", "protected": false },
       "purpose": "correctness",
       "layers": ["8", "9"],
       "oracle_class": "consumer",

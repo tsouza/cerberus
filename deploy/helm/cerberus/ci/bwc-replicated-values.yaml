@@ -1,11 +1,15 @@
 # ct / helm-template fixture: bundled ClickHouse, replicas > 1 — exercises the
 # auto-enabled Keeper ensemble, ReplicatedMergeTree + zero-copy config, and the
 # defaulted cerberus schema.replicated env wiring. S3/MinIO backend with
-# THROWAWAY render-only credentials.
+# THROWAWAY render-only credentials. hotVolume.enabled: false isolates this to
+# the replication axis this fixture exists to exercise, independent of
+# storage-tiering mode — hotVolume defaults to true (hot/cold) since #3075.
 clickhouse:
   bundled:
     enabled: true
     replicas: 2
+    hotVolume:
+      enabled: false
     objectStorage:
       backend: s3
       bucket: cerberus-bwc

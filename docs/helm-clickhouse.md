@@ -7,25 +7,54 @@ This is the **data tier** and is orthogonal to `mode` (monolith / split) — the
 gateway topology is unchanged. With the default `clickhouse.bundled.enabled:
 false` the chart renders byte-for-byte as if this whole block did not exist.
 
-Two independent toggles pick the storage tier:
+Two independent toggles pick the storage tier — **both default `true`**, so
+**hot/cold is the chart's default storage mode**, not an opt-in:
 
 - `clickhouse.bundled.objectStorage.enabled` (default `true`) — an S3 / GCS /
   Azure object-store disk fronted by a local read-through cache.
-- `clickhouse.bundled.hotVolume.enabled` (default `false`) — a genuine
+- `clickhouse.bundled.hotVolume.enabled` (default `true`) — a genuine
   local-disk "hot" tier new parts land on directly (not a read-through cache
   of object-resident data).
 
 ## The four-cell matrix
 
-| `hotVolume.enabled` | `objectStorage.enabled` | Mode             | `storage_policy`   | Result                                                                                                                                                                                                                                                                                                           |
-| ------------------- | ----------------------- | ---------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `false`             | `true` (default)        | **Object-store** | `bwc_object_store` | Today's behavior, unchanged. One object-store disk fronted by a local cache disk, single-volume policy. Every write round-trips through the cache to object storage.                                                                                                                                             |
-| `true`              | `false`                 | **Hot-only**     | `bwc_hot_only`     | Pure local-disk ClickHouse, no object-store dependency at all — no object disk, no Secret, no credential env. Requires `schema.ttl` to be set explicitly (see below).                                                                                                                                            |
-| `true`              | `true`                  | **Hot/cold**     | `bwc_hot_cold`     | Two-volume policy: `hot` (local disk, listed first so new inserts land there) + `cold` (the unchanged object-store disk/cache chain), joined by `move_factor` (`hotVolume.moveFactor`, default `0.2`). Backend-agnostic by construction — the object-store disk block is reused verbatim from object-store mode. |
-| `false`             | `false`                 | *(invalid)*      | —                  | **Fails the render**, naming both `hotVolume.enabled` and `objectStorage.enabled` — a bundled ClickHouse with no storage tier at all is never silently rendered.                                                                                                                                                 |
+| `hotVolume.enabled`  | `objectStorage.enabled`  | Mode                     | `storage_policy`    | Result                                                                                                                                                                                                                                                                                                                                       |
+| -------------------- | ------------------------ | ------------------------ | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `true` (default)     | `true` (default)         | **Hot/cold**             | `bwc_hot_cold`      | The chart's DEFAULT. Two-volume policy: `hot` (local disk, listed first so new inserts land there) + `cold` (the object-store disk/cache chain), joined by `move_factor` (`hotVolume.moveFactor`, default `0.2`). Backend-agnostic by construction — the object-store disk block is reused verbatim from object-store mode below.            |
+| `false`              | `true`                   | **Object-store**         | `bwc_object_store`  | The chart's ONLY mode before #3075, still fully supported — set `hotVolume.enabled: false` explicitly to get it. One object-store disk fronted by a local cache disk, single-volume policy. Every write round-trips through the cache to object storage. **Set this explicitly to preserve current behavior across an upgrade** — see below. |
+| `true`               | `false`                  | **Hot-only**             | `bwc_hot_only`      | Pure local-disk ClickHouse, no object-store dependency at all — no object disk, no Secret, no credential env. Requires `schema.ttl` to be set explicitly (see below).                                                                                                                                                                        |
+| `false`              | `false`                  | *(invalid)*              | —                   | **Fails the render**, naming both `hotVolume.enabled` and `objectStorage.enabled` — a bundled ClickHouse with no storage tier at all is never silently rendered.                                                                                                                                                                             |
 
 The policy name is mode-derived automatically; an explicit
 `clickhouse.bundled.storagePolicyName` always overrides it, in every mode.
+
+## Upgrading into the hot/cold default
+
+**This chart's bundled ClickHouse changed its DEFAULT storage mode** from
+single-volume object-storage-only to hot/cold (#3075). That is a genuine
+storage-layout change, not just a values default: a fresh install still just
+works, but an **existing** `clickhouse.bundled.enabled: true` deployment that
+upgrades to a chart version carrying this change — without itself pinning
+`hotVolume.enabled` — silently asks for a `bwc_hot_cold` policy where its
+ClickHouse only has `bwc_object_store` on disk.
+
+ClickHouse's own startup validation catches this loudly rather than
+corrupting anything: each mode's `storage_policy` has a distinct name (see the
+mode-toggling section below), and ClickHouse refuses to add a policy that
+doesn't match what's already provisioned — the pod fails to start with an
+"unknown storage policy" — style error, not silent data loss. Still, that is a
+scary and avoidable surprise for an operator who didn't expect a default
+change. `templates/NOTES.txt` renders a prominent warning on every `helm
+upgrade` of a `bundled.enabled: true` release that resolves to hot/cold mode,
+naming the fix.
+
+**The fix: pin `clickhouse.bundled.hotVolume.enabled: false` in your own
+values BEFORE upgrading past the chart version that introduced this default**,
+if you are relying on (or unsure whether you're relying on) the previous
+single-volume, object-storage-only behavior. That one line reproduces the
+exact pre-#3075 chart behavior indefinitely, regardless of any future default
+change. A genuinely fresh hot/cold install needs no action — the default is
+exactly what you want.
 
 **Hot-only requires `schema.ttl`.** A bounded local disk with no cold tier and
 unset `schema.ttl` (infinite retention) would fill unboundedly, so the chart
@@ -82,6 +111,10 @@ This is supported at **initial install only**. Migrating a populated cluster
 between modes is an out-of-band operation — e.g. a blue-green cutover via
 ClickHouse's `remote()` table function or `INSERT SELECT` into a
 freshly-installed release in the new mode — not something the chart automates.
+This is exactly the mechanism behind the ["Upgrading into the hot/cold
+default"](#upgrading-into-the-hotcold-default) hazard above: it fails loudly
+for the same additive-only-policy reason, it just now happens by DEFAULT
+rather than only on a deliberate mode change.
 
 ## Multi-replica consistency
 

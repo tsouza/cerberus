@@ -7,13 +7,14 @@
 // checker rather than three parallel ones — only the expected disk/policy
 // shape and the aging step differ:
 //
-//   object-storage (default) — today's mode. Backed by in-cluster MinIO.
+//   object-storage — the chart's PRE-#3075 mode (hotVolume.enabled=false),
+//               unchanged. Backed by in-cluster MinIO.
 //   hot-only  — clickhouse.bundled.hotVolume.enabled=true + objectStorage.
 //               enabled=false. No object-store disk/secret/env at all.
-//   hot-cold  — hotVolume.enabled=true, objectStorage stays on. Fresh rows
-//               land on the local hot disk; rows aged past schema.tierAfter
-//               are asserted to move onto the cold (object-store) disk after
-//               forcing a merge.
+//   hot-cold  — the chart's DEFAULT mode since #3075 (hotVolume.enabled=true,
+//               objectStorage stays on). Fresh rows land on the local hot
+//               disk; rows aged past schema.tierAfter are asserted to move
+//               onto the cold (object-store) disk after forcing a merge.
 //
 // It PROVES the data tier actually lives where the scenario claims — not just
 // that the chart rendered — by asserting independent facts against the live

@@ -944,13 +944,18 @@ deferred, app-side concern, not something the scheduling preset can deliver.
 
 `clickhouse.bundled.enabled` renders a self-contained ClickHouse StatefulSet
 (plus its Services, plus a Keeper ensemble once `replicas > 1`) backed by
-local disk, an object store (S3 / GCS / Azure), or both tiered together. This
-is the **data tier** and is orthogonal to `mode` (monolith / split) — the
-gateway topology is unchanged. See
+local disk, an object store (S3 / GCS / Azure), or both tiered together — the
+DEFAULT mode is hot/cold (a local hot disk tiering onto object storage), not
+object-storage-only. This is the **data tier** and is orthogonal to `mode`
+(monolith / split) — the gateway topology is unchanged. See
 [`helm-clickhouse.md`](helm-clickhouse.md) for the full story: the four-cell
 storage-mode matrix (object-store / hot-only / hot/cold), the per-backend
 support/validation matrix, the `sessionAffinity` multi-replica consistency
-mechanism, and the initial-install-only mode-toggle caveat.
+mechanism, the initial-install-only mode-toggle caveat, and — **if you are
+upgrading an existing bundled deployment** — the
+[hot/cold-default upgrade hazard](helm-clickhouse.md#upgrading-into-the-hotcold-default)
+that requires pinning `hotVolume.enabled: false` to preserve pre-existing
+single-volume behavior.
 
 ## Lifecycle
 

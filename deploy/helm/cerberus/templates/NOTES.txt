@@ -67,6 +67,22 @@ cerberus endpoint below — it speaks all three wire formats on one port.
    for production prefer `clickhouse.existingSecret` so the password never
    lives in your values file or Helm release history.
 {{- end }}
+{{- if and .Values.clickhouse.bundled.enabled .Release.IsUpgrade (eq (include "cerberus.clickhouse.mode" .) "hot-cold") }}
+
+   WARNING — UPGRADE: the bundled ClickHouse's DEFAULT storage mode is now
+   hot/cold (clickhouse.bundled.hotVolume.enabled: true + objectStorage.
+   enabled: true) — a real storage-layout change from the single-volume,
+   object-storage-only mode this chart used to ship as its ONLY mode. If this
+   deployment predates that default (never set hotVolume.enabled itself) and
+   relies on single-volume behavior, THIS UPGRADE WILL FAIL TO START
+   ClickHouse: each storage mode has a distinct storage_policy name, and
+   ClickHouse refuses to add a policy that does not match what is already on
+   disk (an "unknown storage policy" startup error — NOT data corruption).
+   Set clickhouse.bundled.hotVolume.enabled=false explicitly to keep the
+   pre-existing single-volume behavior across this upgrade. Already on
+   hot/cold on purpose? Ignore this. See "Upgrading into the hot/cold
+   default" in docs/helm-clickhouse.md.
+{{- end }}
 {{- if and .Values.clickhouse.bundled.enabled .Values.clickhouse.bundled.hotVolume.enabled (not .Values.clickhouse.bundled.hotVolume.persistence.enabled) }}
 
    WARNING: clickhouse.bundled.hotVolume.enabled is true with no dedicated
