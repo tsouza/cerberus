@@ -329,15 +329,16 @@ layer map and CI-gate inventory.
 
 ### Using cerberus
 
-| Doc                                                          | What's in it                                                                                                                |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| [`migration.md`](docs/migration.md)                          | Operator playbook for moving off Prometheus: assess your queries, verify parity against both backends, then flip over.      |
-| [`migration-reference.md`](docs/migration-reference.md)      | The contract behind that playbook: every `migrate` flag, what each comparator calls equal, what each gate blocks on.        |
-| [`configuration.md`](docs/configuration.md)                  | Every setting, grouped by area, with types and defaults — as a `CERBERUS_*` variable or the equivalent `cerberus.yaml` key. |
-| [`operations.md`](docs/operations.md)                        | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                         |
-| [`coverage.md`](docs/coverage.md)                            | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                |
-| [`observability.md`](docs/observability.md)                  | Self-observability across logs / metrics / traces (OTLP export).                                                            |
-| [`health.md`](docs/health.md)                                | `/readyz` / `/healthz` probe semantics.                                                                                     |
+| Doc                                                          | What's in it                                                                                                                   |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| [`migration.md`](docs/migration.md)                          | Operator playbook for moving off Prometheus: assess your queries, verify parity against both backends, then flip over.         |
+| [`migration-reference.md`](docs/migration-reference.md)      | The contract behind that playbook: every `migrate` flag, what each comparator calls equal, what each gate blocks on.           |
+| [`configuration.md`](docs/configuration.md)                  | Every setting, grouped by area, with types and defaults — as a `CERBERUS_*` variable or the equivalent `cerberus.yaml` key.    |
+| [`operations.md`](docs/operations.md)                        | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                            |
+| [`helm-clickhouse.md`](docs/helm-clickhouse.md)              | Bundled-ClickHouse Helm chart: object-store / hot-only / hot-cold storage modes, multi-replica consistency, validation status. |
+| [`coverage.md`](docs/coverage.md)                            | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                   |
+| [`observability.md`](docs/observability.md)                  | Self-observability across logs / metrics / traces (OTLP export).                                                               |
+| [`health.md`](docs/health.md)                                | `/readyz` / `/healthz` probe semantics.                                                                                        |
 
 ### How it works inside
 

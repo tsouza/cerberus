@@ -2145,8 +2145,20 @@ e2e: e2e-up e2e-seed-rolling e2e-wait-otel e2e-run e2e-playwright e2e-down
 #      cerberus's stamped tables already present and its CREATE … IF NOT EXISTS
 #      is a no-op.
 
-# Boot the k3d stack with the chart's bundled ClickHouse on MinIO object storage.
-e2e-bwc-up: e2e-down
+# `scenario` selects the storage-tiering overlay layered on top of the base
+# `cerberus-values-bwc.yaml` (cerberus issue #3075):
+#   object-storage — the chart's PRE-#3075 mode (hotVolume.enabled=false +
+#                    objectStorage.enabled=true), unchanged.
+#   hot-only       — clickhouse.bundled.hotVolume.enabled=true +
+#                    objectStorage.enabled=false + an explicit schema.ttl.
+#   hot-cold       — the chart's DEFAULT mode: hotVolume.enabled=true,
+#                    objectStorage stays on.
+# MinIO + the bucket-create Job still come up in every scenario (shared setup,
+# per the issue's "extend the SAME lane" design) even though hot-only never
+# touches them.
+
+# Boot the k3d stack with the chart's bundled ClickHouse for the given scenario.
+e2e-bwc-up scenario="object-storage": e2e-down
     @echo "==> [bwc] pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
     @echo "==> [bwc] creating k3d cluster {{K3D_CLUSTER}}"
@@ -2203,11 +2215,18 @@ e2e-bwc-up: e2e-down
     kubectl -n cerberus rollout status deployment/minio --timeout=120s
     @echo "==> [bwc] waiting for the bucket-create Job to complete"
     kubectl -n cerberus wait --for=condition=complete job/minio-create-bucket --timeout=120s
-    @echo "==> [bwc] phase 2: installing cerberus + bundled ClickHouse via Helm (object storage)"
+    @echo "==> [bwc] phase 2: installing cerberus + bundled ClickHouse via Helm (scenario: {{scenario}})"
+    @case "{{scenario}}" in \
+        object-storage) overlay="" ;; \
+        hot-only) overlay="--values test/e2e/k3s/cerberus-values-bwc-hot-only.yaml" ;; \
+        hot-cold) overlay="--values test/e2e/k3s/cerberus-values-bwc-hot-cold.yaml" ;; \
+        *) echo "ERROR: unknown scenario '{{scenario}}' (expected object-storage|hot-only|hot-cold)" >&2; exit 1 ;; \
+    esac; \
     helm upgrade --install cerberus deploy/helm/cerberus \
         --namespace cerberus \
         --values test/e2e/k3s/cerberus-values.yaml \
         --values test/e2e/k3s/cerberus-values-bwc.yaml \
+        $overlay \
         --wait --timeout 360s
     @echo "==> [bwc] waiting for bundled ClickHouse StatefulSet + cerberus"
     kubectl -n cerberus rollout status statefulset/cerberus-clickhouse --timeout=300s
@@ -2218,16 +2237,19 @@ e2e-bwc-up: e2e-down
     kubectl -n cerberus rollout status deployment/grafana --timeout=180s
     @echo "==> e2e-bwc-up done (bundled ClickHouse on MinIO object storage)"
 
-# Assert the data tier actually lives on object storage: storage_policy stamped
-# on every MergeTree table, active parts on the object/cache disk (not the local
-# `default` disk), and the MinIO bucket non-empty after the seed. Run AFTER
-# `just e2e-seed-rolling`. Logic lives in the env-driven Node module (per the
-# CLAUDE.md "non-trivial step logic in .github/scripts/*.mjs" rule), invoked
-# with the pinned mc image so the in-cluster bucket-ls pod matches the lane.
+# Assert the data tier actually lives on the storage tier `scenario` claims
+# (MUST match the one passed to `e2e-bwc-up`): storage_policy stamped on every
+# MergeTree table, active parts on the expected disk(s) (never the local
+# `default` disk), and — for object-storage / hot-cold — the MinIO bucket
+# non-empty after the seed. Run AFTER `just e2e-seed-rolling`. Logic lives in
+# the env-driven Node module (per the CLAUDE.md "non-trivial step logic in
+# .github/scripts/*.mjs" rule), invoked with the pinned mc image so the
+# in-cluster bucket-ls pod matches the lane.
 
-# Assert the bwc data tier really lives on object storage. Run after e2e-seed-rolling.
-e2e-bwc-verify:
-    @echo "==> [bwc] verifying object-storage placement"
+# Assert the bwc data tier really lives on the storage tier the scenario claims.
+e2e-bwc-verify scenario="object-storage":
+    @echo "==> [bwc] verifying {{scenario}} placement"
+    SCENARIO="{{scenario}}" \
     MC_IMAGE="minio/mc:RELEASE.2025-08-13T08-35-41Z" \
         node .github/scripts/e2e-bwc-verify-placement.mjs
 

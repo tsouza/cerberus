@@ -1,0 +1,14 @@
+# ct / helm-template fixture: bundled ClickHouse, HOT-ONLY mode
+# (hotVolume.enabled: true + objectStorage.enabled: false) — a pure
+# local-disk ClickHouse with no object-store dependency at all. Requires an
+# explicit schema.ttl (the chart fails the render otherwise — an unbounded
+# local disk with no cold tier and infinite retention fills forever).
+clickhouse:
+  bundled:
+    enabled: true
+    hotVolume:
+      enabled: true
+    objectStorage:
+      enabled: false
+schema:
+  ttl: "30d"

@@ -1,0 +1,30 @@
+# Helm values OVERLAY for the bundled-ClickHouse ("bwc") e2e lane's HOT-ONLY
+# scenario (cerberus issue #3075). Layered ON TOP of cerberus-values.yaml AND
+# cerberus-values-bwc.yaml by `just e2e-bwc-up hot-only`:
+#
+#   helm upgrade --install cerberus deploy/helm/cerberus \
+#     --values test/e2e/k3s/cerberus-values.yaml \
+#     --values test/e2e/k3s/cerberus-values-bwc.yaml \
+#     --values test/e2e/k3s/cerberus-values-bwc-hot-only.yaml
+#
+# Turns OFF the object-store disk (objectStorage.enabled: false) that the base
+# bwc overlay configures and turns ON the local-disk hot volume instead — a
+# pure local-disk ClickHouse with NO object-store dependency at all. MinIO and
+# the bucket-create Job still come up (shared e2e setup) but this scenario
+# never talks to them; `e2e-bwc-verify-placement.mjs` (SCENARIO=hot-only)
+# asserts exactly that: no object-store disk/secret/credential env renders,
+# and the seeded parts land on the local hot disk instead.
+#
+# schema.ttl is REQUIRED in hot-only mode (the chart fails the render
+# otherwise — an unbounded local disk with no cold tier and infinite retention
+# fills forever). 7d is a real, if arbitrary, retention window for this
+# throwaway lane.
+clickhouse:
+  bundled:
+    objectStorage:
+      enabled: false
+    hotVolume:
+      enabled: true
+
+schema:
+  ttl: "7d"

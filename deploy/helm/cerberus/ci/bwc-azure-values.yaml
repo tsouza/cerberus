@@ -1,9 +1,14 @@
 # ct / helm-template fixture: bundled ClickHouse on Azure Blob storage with a
 # static account key. Inline account name/key are THROWAWAY render-only values;
 # real installs use objectStorage.azure.credentialsSecret or useManagedIdentity.
+# hotVolume.enabled: false isolates this to the object-store disk shape this
+# fixture exists to exercise — hotVolume defaults to true (hot/cold) since
+# #3075.
 clickhouse:
   bundled:
     enabled: true
+    hotVolume:
+      enabled: false
     objectStorage:
       backend: azure
       azure:

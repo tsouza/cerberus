@@ -551,7 +551,15 @@ Benign-but-pointless combinations are **not** hard errors - they are noted here
 rather than rejected:
 
 - `CERBERUS_CH_CONN_OPEN_STRATEGY=round_robin` with a single `CERBERUS_CH_ADDR`
-  host: the strategy has nothing to rotate over, but it is harmless.
+  host: the strategy has nothing to rotate over, but it is harmless. This is
+  the case the Helm chart's bundled ClickHouse always produces (`CERBERUS_CH_ADDR`
+  defaults to the single-element bundled Service address regardless of
+  `bundled.replicas`), so `round_robin` only does anything real for a
+  manually configured multi-host `CERBERUS_CH_ADDR` OUTSIDE the bundled
+  chart's default — see
+  [`helm-clickhouse.md`](helm-clickhouse.md#multi-replica-consistency) for how
+  the bundled chart instead closes cross-replica divergence at the Kubernetes
+  Service layer (`sessionAffinity: ClientIP`), independent of this setting.
 - Keepalive timing sub-knobs (`CERBERUS_CH_KEEPALIVE_IDLE` / `_INTERVAL` /
   `_COUNT`) while `CERBERUS_CH_KEEPALIVE_ENABLED=false`: inert (the kernel never
   arms a probe schedule), so a degenerate value is accepted, not rejected.

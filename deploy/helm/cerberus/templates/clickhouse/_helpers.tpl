@@ -123,13 +123,16 @@ static object-store credentials.
 
 {{/*
 cerberus.clickhouse.createObjectStoreSecret — "true" when the chart should
-render its own Secret for static object-store creds: the backend uses static
-keys (NOT cloud identity) AND inline credentials were supplied AND no existing
-credentialsSecret was named (an existing Secret takes precedence).
+render its own Secret for static object-store creds: objectStorage is enabled
+AND the backend uses static keys (NOT cloud identity) AND inline credentials
+were supplied AND no existing credentialsSecret was named (an existing Secret
+takes precedence). Always empty in hot-only mode (objectStorage.enabled:
+false) — no object-store disk means no object-store credentials of any kind.
 */}}
 {{- define "cerberus.clickhouse.createObjectStoreSecret" -}}
 {{- $os := .Values.clickhouse.bundled.objectStorage -}}
-{{- if eq $os.backend "s3" -}}
+{{- if not $os.enabled -}}
+{{- else if eq $os.backend "s3" -}}
 {{- if and (not $os.s3.useEnvironmentCredentials) (not $os.s3.credentialsSecret) $os.s3.accessKeyId -}}true{{- end -}}
 {{- else if eq $os.backend "gcs" -}}
 {{- if and (not $os.gcs.credentialsSecret) $os.gcs.accessKeyId -}}true{{- end -}}
@@ -142,12 +145,14 @@ credentialsSecret was named (an existing Secret takes precedence).
 cerberus.clickhouse.objectStoreEnv — the ClickHouse container `env:` entries that
 feed the storage XML's `from_env` references. Pulls static credentials from the
 existing credentialsSecret when named, else from the chart-managed Secret.
-Emits nothing for cloud-identity backends (IRSA / managed identity). Renders a
+Emits nothing for cloud-identity backends (IRSA / managed identity) AND
+nothing at all in hot-only mode (objectStorage.enabled: false). Renders a
 YAML list (one `- name:` block per credential).
 */}}
 {{- define "cerberus.clickhouse.objectStoreEnv" -}}
 {{- $os := .Values.clickhouse.bundled.objectStorage -}}
-{{- if eq $os.backend "s3" -}}
+{{- if not $os.enabled -}}
+{{- else if eq $os.backend "s3" -}}
 {{- if not $os.s3.useEnvironmentCredentials -}}
 {{- $secret := default (include "cerberus.clickhouse.objectStoreSecretName" .) $os.s3.credentialsSecret -}}
 - name: S3_ACCESS_KEY_ID
@@ -191,21 +196,102 @@ YAML list (one `- name:` block per credential).
 {{- end }}
 
 {{/*
+cerberus.clickhouse.mode — one of "object-store" | "hot-only" | "hot-cold",
+derived from hotVolume.enabled x objectStorage.enabled. Also enforces the two
+render-time invariants that keep the chart from ever rendering a ClickHouse
+with no usable storage tier:
+  - hotVolume.enabled=false + objectStorage.enabled=false has NOTHING to put
+    data on -> fails, naming both keys.
+  - hotVolume.enabled=true + objectStorage.enabled=false (hot-only) with no
+    schema.ttl set would fill an unbounded local disk forever with no cold
+    tier to relieve it and no retention to cap it -> fails, naming schema.ttl.
+Input is the root context.
+*/}}
+{{- define "cerberus.clickhouse.mode" -}}
+{{- $b := .Values.clickhouse.bundled -}}
+{{- $hot := $b.hotVolume.enabled -}}
+{{- $os := $b.objectStorage.enabled -}}
+{{- if and (not $hot) (not $os) -}}
+{{- fail "clickhouse.bundled: both hotVolume.enabled and objectStorage.enabled are false — the bundled ClickHouse would have no storage tier at all. Set one of them (or both) to true." -}}
+{{- else if and $hot (not $os) -}}
+{{- if not .Values.schema.ttl -}}
+{{- fail "clickhouse.bundled.hotVolume.enabled is true with objectStorage.enabled false (hot-only mode), but schema.ttl is unset — an unbounded local disk with no cold tier and infinite retention fills forever. Set schema.ttl explicitly." -}}
+{{- end -}}
+hot-only
+{{- else if and $hot $os -}}
+hot-cold
+{{- else -}}
+object-store
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.effectivePolicyName — the MergeTree storage_policy name
+actually emitted, mirroring cerberus.bundled.apply's "operator override wins"
+style. An operator who set storagePolicyName away from the chart's own
+shipped default (bwc_object_store) always gets that name back, in every mode.
+Left at the shipped default, the effective name is MODE-DERIVED instead:
+bwc_object_store (object-store mode, unchanged), bwc_hot_only, or
+bwc_hot_cold — distinct names per mode so switching mode against an
+already-populated cluster fails ClickHouse's own startup validation loudly
+(additive-only storage-policy changes) rather than silently reusing a name.
+*/}}
+{{- define "cerberus.clickhouse.effectivePolicyName" -}}
+{{- $b := .Values.clickhouse.bundled -}}
+{{- if ne $b.storagePolicyName "bwc_object_store" -}}
+{{- $b.storagePolicyName -}}
+{{- else -}}
+{{- $mode := include "cerberus.clickhouse.mode" . -}}
+{{- if eq $mode "hot-only" -}}bwc_hot_only
+{{- else if eq $mode "hot-cold" -}}bwc_hot_cold
+{{- else -}}{{ $b.storagePolicyName }}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.hotDiskPath — the local-disk path the `bwc_hot_disk`
+storage-XML disk points at, and the StatefulSet mount path backing it. The
+zero-new-PVC default is a subpath of the ALREADY-mounted `metadata` PVC
+(/var/lib/clickhouse/hot/); hotVolume.persistence.enabled instead mounts a
+DEDICATED PVC at a distinct top-level path (/var/lib/clickhouse-hot/), so the
+two modes are trivially distinguishable in a rendered manifest. Input is the
+root context.
+*/}}
+{{- define "cerberus.clickhouse.hotDiskPath" -}}
+{{- if .Values.clickhouse.bundled.hotVolume.persistence.enabled -}}
+/var/lib/clickhouse-hot/
+{{- else -}}
+/var/lib/clickhouse/hot/
+{{- end -}}
+{{- end }}
+
+{{/*
 cerberus.clickhouse.storageXML — the ClickHouse storage_configuration config.d
-file: one object-store disk (S3 / GCS-over-S3 / Azure), a local cache disk
-fronting it, and a single-volume policy (storagePolicyName) selecting the cache
-disk. Static credentials are referenced via `from_env` so they never appear in
-the ConfigMap; cloud-identity backends emit use_environment_credentials /
+file. Three shapes, selected by cerberus.clickhouse.mode:
+  - object-store (default, unchanged): one object-store disk (S3 / GCS-over-S3
+    / Azure), a local cache disk fronting it, single-volume policy `main`.
+  - hot-only: one local disk, single-volume policy `hot`, no object-store disk
+    / secret / credential env at all.
+  - hot-cold: BOTH — a `hot` volume (the local disk, listed FIRST so new
+    inserts land there) and a `cold` volume (the unchanged object-store
+    disk/cache chain), joined by move_factor. The object-store disk block is
+    reused verbatim, so this is backend-agnostic by construction.
+Static credentials are referenced via `from_env` so they never appear in the
+ConfigMap; cloud-identity backends emit use_environment_credentials /
 use_managed_identity instead. Input is the root context.
 */}}
 {{- define "cerberus.clickhouse.storageXML" -}}
 {{- $b := .Values.clickhouse.bundled -}}
 {{- $os := $b.objectStorage -}}
-{{- $policy := $b.storagePolicyName -}}
+{{- $mode := include "cerberus.clickhouse.mode" . -}}
+{{- $policy := include "cerberus.clickhouse.effectivePolicyName" . -}}
 {{- $cacheBytes := include "cerberus.memBytes" $b.cache.size -}}
+{{- $hotPath := include "cerberus.clickhouse.hotDiskPath" . -}}
 <clickhouse>
   <storage_configuration>
     <disks>
+      {{- if ne $mode "hot-only" }}
       <bwc_object_disk>
         {{- if eq $os.backend "s3" }}
         <type>s3</type>
@@ -256,8 +342,36 @@ use_managed_identity instead. Input is the root context.
         <max_size>{{ . }}</max_size>
         {{- end }}
       </bwc_object_cache>
+      {{- end }}
+      {{- if ne $mode "object-store" }}
+      <bwc_hot_disk>
+        <type>local</type>
+        <path>{{ $hotPath }}</path>
+      </bwc_hot_disk>
+      {{- end }}
     </disks>
     <policies>
+      {{- if eq $mode "hot-only" }}
+      <{{ $policy }}>
+        <volumes>
+          <hot>
+            <disk>bwc_hot_disk</disk>
+          </hot>
+        </volumes>
+      </{{ $policy }}>
+      {{- else if eq $mode "hot-cold" }}
+      <{{ $policy }}>
+        <volumes>
+          <hot>
+            <disk>bwc_hot_disk</disk>
+          </hot>
+          <cold>
+            <disk>bwc_object_cache</disk>
+          </cold>
+        </volumes>
+        <move_factor>{{ $b.hotVolume.moveFactor }}</move_factor>
+      </{{ $policy }}>
+      {{- else }}
       <{{ $policy }}>
         <volumes>
           <main>
@@ -265,6 +379,7 @@ use_managed_identity instead. Input is the root context.
           </main>
         </volumes>
       </{{ $policy }}>
+      {{- end }}
     </policies>
   </storage_configuration>
 </clickhouse>
@@ -284,9 +399,32 @@ is disabled, so non-bundled renders are byte-identical.
 {{- if eq (toJson .Values.clickhouse.addr) (toJson (list "clickhouse:9000")) -}}
 {{- $_ := set .Values.clickhouse "addr" (list (printf "%s:9000" (include "cerberus.clickhouse.fullname" .))) -}}
 {{- end -}}
-{{- /* storage_policy -> bwc policy, unless the operator set one */ -}}
+{{- /* storage_policy -> the mode-derived bwc policy name, unless the operator
+       set one. Also validates/derives the mode as a side effect — this is the
+       first cerberus.bundled.apply call site to run, so an invalid
+       hotVolume/objectStorage combination (or a missing schema.ttl in
+       hot-only mode) fails here rather than reaching the templates that
+       render it. */ -}}
+{{- $mode := include "cerberus.clickhouse.mode" . -}}
 {{- if not .Values.schema.storagePolicy -}}
-{{- $_ := set .Values.schema "storagePolicy" $b.storagePolicyName -}}
+{{- $_ := set .Values.schema "storagePolicy" (include "cerberus.clickhouse.effectivePolicyName" .) -}}
+{{- end -}}
+{{- /* Hot/cold mode: default schema.tierVolume=cold and, independently,
+       schema.tierAfter=7d — unless the operator set the BASE value
+       themselves. Checked against ONLY the base tierVolume/tierAfter keys,
+       NEVER against any TIER_AFTER_METRICS/LOGS/TRACES per-signal override
+       riding the schema.<KEY> long-tail passthrough — so setting only, say,
+       schema.TIER_AFTER_METRICS still leaves this base default in place for
+       Logs/Traces. A per-signal override ADDS a customization; it must never
+       accidentally suppress the base default for the signals the operator
+       didn't touch. */ -}}
+{{- if eq $mode "hot-cold" -}}
+{{- if not .Values.schema.tierVolume -}}
+{{- $_ := set .Values.schema "tierVolume" "cold" -}}
+{{- end -}}
+{{- if not .Values.schema.tierAfter -}}
+{{- $_ := set .Values.schema "tierAfter" "7d" -}}
+{{- end -}}
 {{- end -}}
 {{- /* a fresh bundled CH is empty: auto-create the database + schema. autoCreate
        is tri-state (null/true/false) — only an UNSET (null) toggle is promoted

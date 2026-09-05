@@ -127,6 +127,7 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
+                "enabled": { "type": "boolean" },
                 "backend": { "type": "string", "enum": ["s3", "gcs", "azure"] },
                 "bucket": { "type": "string" },
                 "path": { "type": "string" },
@@ -166,6 +167,23 @@
                 }
               }
             },
+            "hotVolume": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "moveFactor": { "type": "number", "minimum": 0, "maximum": 1 },
+                "persistence": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "size": { "type": "string" },
+                    "storageClass": { "type": "string" }
+                  }
+                }
+              }
+            },
             "podDisruptionBudget": {
               "type": "object",
               "additionalProperties": false,
@@ -179,6 +197,14 @@
             "settings": {
               "type": "object",
               "additionalProperties": { "type": ["string", "number", "boolean"] }
+            },
+            "service": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sessionAffinity": { "type": "string", "enum": ["ClientIP", "None"] },
+                "sessionAffinityTimeoutSeconds": { "type": "integer", "minimum": 1 }
+              }
             }
           }
         }

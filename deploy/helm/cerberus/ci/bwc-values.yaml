@@ -3,9 +3,14 @@
 # credentials are THROWAWAY render-only values (MinIO defaults) so kubeconform
 # can validate the chart-managed object-store Secret; real installs use
 # objectStorage.s3.credentialsSecret or useEnvironmentCredentials (IRSA).
+# hotVolume.enabled: false pins the PRE-#3075 single-volume, object-store-only
+# mode this fixture exists to exercise — hotVolume defaults to true (hot/cold)
+# since #3075; that combination has its own ci/bwc-hot-cold-values.yaml.
 clickhouse:
   bundled:
     enabled: true
+    hotVolume:
+      enabled: false
     objectStorage:
       backend: s3
       bucket: cerberus-bwc

@@ -1,9 +1,13 @@
 # ct / helm-template fixture: bundled ClickHouse on GCS (via its S3-compatible
 # endpoint with HMAC credentials). Inline HMAC keys are THROWAWAY render-only
-# values; real installs use objectStorage.gcs.credentialsSecret.
+# values; real installs use objectStorage.gcs.credentialsSecret. hotVolume.
+# enabled: false isolates this to the object-store disk shape this fixture
+# exists to exercise — hotVolume defaults to true (hot/cold) since #3075.
 clickhouse:
   bundled:
     enabled: true
+    hotVolume:
+      enabled: false
     objectStorage:
       backend: gcs
       bucket: cerberus-bwc

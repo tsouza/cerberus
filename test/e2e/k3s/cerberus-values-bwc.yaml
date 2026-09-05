@@ -20,10 +20,18 @@
 # object storage (the seeder's CREATE ... IF NOT EXISTS is then a no-op insert
 # path). This is the dogfood: the chart, not the test harness, puts the data on
 # object storage.
+#
+# hotVolume.enabled: false pins this as the SINGLE-VOLUME, object-storage-only
+# scenario ("object-storage" in the bwc-minio e2e matrix, cerberus issue
+# #3075) — hotVolume defaults to true (hot/cold) since #3075, and the
+# hot-only / hot-cold scenarios layer their own overlay ON TOP of this file
+# (after it in the --values list) to override this back on.
 
 clickhouse:
   bundled:
     enabled: true
+    hotVolume:
+      enabled: false
 
     # CH 26.x to exercise GOTCHA #1: the 26.x image's default-user.xml restricts
     # the `default` user to 127.0.0.1. The chart's resolution is the "dedicated

@@ -1,4 +1,5 @@
 {{- if .Values.clickhouse.bundled.enabled }}
+{{- $svc := .Values.clickhouse.bundled.service }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,6 +9,17 @@ metadata:
     {{- include "cerberus.clickhouse.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
+  {{- /* ClientIP (default): pins every new connection a given cerberus pod
+         opens to the SAME ClickHouse replica for the affinity window,
+         closing cross-replica divergence within one multi-statement request
+         (including every sharded-pushdown fan-out) under replicas > 1. "None"
+         opts back out to plain kube-proxy per-connection Service routing. */}}
+  sessionAffinity: {{ $svc.sessionAffinity }}
+  {{- if ne $svc.sessionAffinity "None" }}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ $svc.sessionAffinityTimeoutSeconds }}
+  {{- end }}
   ports:
     - name: native
       port: 9000

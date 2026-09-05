@@ -1,0 +1,22 @@
+# Helm values OVERLAY for the bundled-ClickHouse ("bwc") e2e lane's HOT-COLD
+# scenario (cerberus issue #3075). Layered ON TOP of cerberus-values.yaml AND
+# cerberus-values-bwc.yaml by `just e2e-bwc-up hot-cold`:
+#
+#   helm upgrade --install cerberus deploy/helm/cerberus \
+#     --values test/e2e/k3s/cerberus-values.yaml \
+#     --values test/e2e/k3s/cerberus-values-bwc.yaml \
+#     --values test/e2e/k3s/cerberus-values-bwc-hot-cold.yaml
+#
+# Turns ON the local-disk hot volume ALONGSIDE the base overlay's object-store
+# config (objectStorage.enabled stays at its true default) — the two-volume
+# hot/cold policy. schema.tierAfter is overridden down to 30s (the chart's own
+# default is 7d) purely so this throwaway e2e lane can observe the TTL ... TO
+# VOLUME move within a bounded CI wait instead of waiting a week;
+# e2e-bwc-verify-placement.mjs's TIER_AFTER_SECONDS env MUST match this value.
+clickhouse:
+  bundled:
+    hotVolume:
+      enabled: true
+
+schema:
+  tierAfter: "30s"
