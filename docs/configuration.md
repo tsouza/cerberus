@@ -552,8 +552,8 @@ rather than rejected:
 
 - `CERBERUS_CH_CONN_OPEN_STRATEGY=round_robin` with a single `CERBERUS_CH_ADDR`
   host: the strategy has nothing to rotate over, but it is harmless. This is
-  the case the Helm chart's bundled ClickHouse always produces (`CERBERUS_CH_
-  ADDR` defaults to the single-element bundled Service address regardless of
+  the case the Helm chart's bundled ClickHouse always produces (`CERBERUS_CH_ADDR`
+  defaults to the single-element bundled Service address regardless of
   `bundled.replicas`), so `round_robin` only does anything real for a
   manually configured multi-host `CERBERUS_CH_ADDR` OUTSIDE the bundled
   chart's default — see
