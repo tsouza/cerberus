@@ -689,6 +689,27 @@ func classifyEngineErr(err error) error {
 			Status: http.StatusServiceUnavailable,
 		}
 	}
+	// ClickHouse Distributed-query partial-shard-failure / stale-replica
+	// rejection (cerberus issue #3078): a data shard with no reachable
+	// replica at all (ErrShardUnavailable, CH code 279
+	// ALL_CONNECTION_TRIES_FAILED, cerberus's own skip_unavailable_shards=0
+	// pin), or one whose reachable replicas are all stale and cerberus's
+	// own fallback_to_stale_replicas_for_distributed_queries=0 pin refuses
+	// to silently serve one anyway (ErrStaleReplicaFallbackDenied, CH code
+	// 369 ALL_REPLICAS_ARE_STALE). HTTP 503 errorType=unavailable, the same
+	// class as a tripped circuit breaker: ClickHouse itself is healthy, one
+	// data shard behind the Distributed table is not.
+	if errors.Is(err, chclient.ErrShardUnavailable) || errors.Is(err, chclient.ErrStaleReplicaFallbackDenied) {
+		msg := "distributed shard unavailable: ClickHouse could not reach any replica of at least one data shard"
+		if errors.Is(err, chclient.ErrStaleReplicaFallbackDenied) {
+			msg = "distributed shard unavailable: every reachable replica of at least one data shard is stale; refusing to silently serve stale data"
+		}
+		return &apiError{
+			Kind:   ErrUnavailable,
+			Err:    errors.New(msg),
+			Status: http.StatusServiceUnavailable,
+		}
+	}
 	// Caller-initiated cancellation: the client closed the connection (a
 	// browser tab shutting on a slow panel, an aborted fetch, a dashboard
 	// refresh superseding its own in-flight request), so net/http cancels

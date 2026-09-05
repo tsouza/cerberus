@@ -1100,6 +1100,270 @@ for what has actually been proven, and epic #3074's later
 [e2e-hardening](https://github.com/tsouza/cerberus/issues/3079) sub-issues
 for what closes that gap.
 
+### ClickHouse Distributed-query settings, error taxonomy, and known risks (cerberus issue #3078)
+
+This is the static/docs verification the epic's settings-verification sub-issue
+scopes: for every `internal/chopt`-stamped ClickHouse setting, whether it
+forwards to a `Distributed` table's data shards as-is, is remapped, or does
+not apply — confirmed against ClickHouse's own source and docs for **25.8**,
+the version `deploy/helm/cerberus/values.yaml`'s bundled
+`clickhouse.bundled.image` pins (`clickhouse/clickhouse-server:25.8`).
+Confirming the formulas below hold under real concurrent load against a real
+multi-shard cluster is explicitly out of scope here — that is issue #3079's
+job (chDB is single-node and cannot exercise `Distributed` fan-out at all).
+
+Two source-level facts anchor every row below, verified directly against
+`ClickHouse/ClickHouse` rather than assumed:
+
+- **Per-query settings forward to every shard by default.**
+  `Connection::sendQuery` (`src/Client/Connection.cpp`) serialises the
+  session's live `Settings` object onto the wire immediately before the query
+  text itself ("`/// Per query settings.`"), and this is the SAME `Connection`
+  class a `Distributed` table's `ClusterProxy` dispatch opens to each shard —
+  so any setting a query carries rides along to every shard's connection
+  unless something explicitly strips or overrides it first.
+- **A small, named set of settings IS stripped or remapped before that
+  forward, and none of cerberus's stamped settings are in it.** Fetched
+  `src/Interpreters/ClusterProxy/executeQuery.cpp` at the exact pinned tag
+  (`v25.8.1.5101-lts`, matching the `clickhouse/clickhouse-server:25.8` image)
+  rather than `master` — the file has no `stripInitiatorOnlySettings` at this
+  version; that helper is a later refactor. At 25.8, all of the stripping and
+  remapping lives in one function, `updateSettingsAndClientInfoForCluster`:
+  it zeroes `offset` and `limit` (query-shaping settings that make sense only
+  once, on the initiator's own merge), zeroes `max_concurrent_queries_for_user`
+  / `max_memory_usage_for_user` (a different-user note: "Does not matter on
+  remote servers, because queries are sent under different user"), derives
+  `queue_max_wait_ms` from `max_execution_time`, appends to
+  `additional_table_filters`, adjusts `allow_experimental_parallel_reading_from_replicas`
+  / `load_balancing` for parallel-replicas clusters, and — only when the QUERY
+  itself left it unset — substitutes `skip_unavailable_shards` from the
+  `Distributed` table's own DDL-level `distributed_settings` default. None of
+  cerberus's stamped settings appear anywhere in this function.
+
+#### Per-query setting → `Distributed` behavior
+
+Column 3 is a fact about `Distributed`-forwarding mechanics, independent of
+whether cerberus's own `internal/chopt` registry ever actually stamps the
+setting on the pinned image. Column 4 is that second, separate fact,
+cross-checked against each feature's `MinVersion` in
+`internal/chopt/registry.go` against the pinned 25.8 image. Four of the
+seven feature rows below are gated behind a floor ABOVE 25.8 — cerberus's
+own registry never stamps them on the bundled ClickHouse today, regardless
+of how the setting itself would forward once stamped. That is not a defect
+in either the registry (the floors are independently justified in-tree,
+next to each `Feature*` constant) or in this table — it means those rows
+describe correctness at the version each stamp actually activates, not a
+live protection today. An operator reading only column 3 could otherwise
+conclude all seven are active now, which is false for four of them.
+
+| Setting(s)                                                                                                                        | `internal/chopt` feature                                       | Behavior under `Distributed`                                                                                                                                                                                                                                           | Reachable on pinned 25.8?                                                                                                                                                                         | Source/doc citation                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `optimize_aggregation_in_order`                                                                                                   | `aggregation_in_order`                                         | Forwards as-is; each shard applies it to its own local `GROUP BY`, which is exactly the granularity the setting already targets                                                                                                                                        | Yes — floor 24.8                                                                                                                                                                                  | [docs: optimize-aggregation-in-order](https://clickhouse.com/docs/reference/settings/session-settings/optimize-aggregation-in-order) — "Enables GROUP BY optimization … for aggregating data in corresponding order in MergeTree tables"; absent from `updateSettingsAndClientInfoForCluster` (verified against `executeQuery.cpp` at tag `v25.8.1.5101-lts`)                                         |
+| `use_query_condition_cache` (+ co-stamped `enable_analyzer=1`)                                                                    | `condition_cache`                                              | Forwards as-is; the condition cache is a per-part server-side cache, so each shard populates and reads its OWN cache for its OWN local parts — no cross-shard sharing is expected or needed                                                                            | Yes — floor 25.3                                                                                                                                                                                  | [docs: use_query_condition_cache](https://clickhouse.com/docs/reference/settings/session-settings/use-query#use_query_condition_cache) — "The cache stores ranges of granules in data parts …"; `allow_experimental_analyzer` (alias `enable_analyzer`) confirmed via `src/Core/Settings.cpp` (`DECLARE_WITH_ALIAS(Bool, allow_experimental_analyzer, true, …, enable_analyzer)`, marked `IMPORTANT`) |
+| `max_bytes_before_external_join`                                                                                                  | `join_spill`                                                   | Forwards as-is BY NAME, but — like `max_memory_usage` below — the threshold is evaluated independently by each shard's own local join build, so a K-way fan-out gets K independent spill decisions at the SAME threshold, not one shared one                           | **No — floor 26.4** (`FeatureJoinSpill`); the setting is absent from 25.8's own `src/Core/Settings.cpp` entirely, not merely un-stamped                                                           | [docs: max_bytes_before_external_join](https://clickhouse.com/docs/reference/settings/session-settings/max-bytes#max_bytes_before_external_join)                                                                                                                                                                                                                                                      |
+| `min_table_rows_to_use_projection_index`                                                                                          | `trace_id_bitmap_filter`                                       | Forwards as-is; each shard evaluates its OWN local table's row count against the threshold, which is correct — a shard's local `_local` table is what actually carries the projection                                                                                  | **No — floor 25.11** (`FeatureTraceIDBitmapFilter`); the setting is absent from 25.8's own `src/Core/Settings.cpp` entirely, not merely un-stamped                                                | [docs: min_table_rows_to_use_projection_index](https://clickhouse.com/docs/reference/settings/session-settings/min#min_table_rows_to_use_projection_index)                                                                                                                                                                                                                                            |
+| `query_plan_optimize_lazy_materialization` + `query_plan_max_limit_for_lazy_materialization` (+ co-stamped `enable_analyzer=1`)   | `lazy_materialization`                                         | Forwards as-is; lazy materialisation is a per-shard read-order optimization over that shard's own local `ORDER BY … LIMIT N`, composing normally with the initiator's own merge-and-re-limit of the per-shard results                                                  | **No — floor 25.11** (`FeatureLazyMaterialization`); the ClickHouse setting itself already exists at 25.8 (default `true`/`10`), but cerberus's OWN registry gate withholds the stamp until 25.11 | [docs: query_plan_optimize_lazy_materialization](https://clickhouse.com/docs/reference/settings/session-settings/query-plan#query_plan_optimize_lazy_materialization)                                                                                                                                                                                                                                 |
+| `use_query_cache` + `query_cache_ttl` + `query_cache_nondeterministic_function_handling`                                          | `result_cache`                                                 | Forwards as-is; ClickHouse's query result cache keys and stores the INITIATOR's final merged result (not a per-shard partial), so caching composes with `Distributed` exactly as it does with a plain table                                                            | Yes — floor 24.8                                                                                                                                                                                  | [docs: use_query_cache](https://clickhouse.com/docs/reference/settings/session-settings/use-query#use_query_cache), [query_cache_ttl](https://clickhouse.com/docs/reference/settings/session-settings/query-cache#query_cache_ttl)                                                                                                                                                                    |
+| `allow_experimental_time_series_aggregate_functions`                                                                              | the `ts_grid_*` family (native `timeSeries*ToGrid` aggregates) | Forwards as-is; each shard evaluates the aggregate over its own local rows and returns a normal partial aggregate STATE, which the initiator merges exactly as it merges any other `AggregateFunction` state across shards — no `Distributed`-specific interaction     | **No — floor 25.9** (`FeatureTSGridRange`, the family's own gate)                                                                                                                                 | [docs: allow_experimental_time_series_aggregate_functions](https://clickhouse.com/docs/reference/settings/session-settings/allow-experimental#allow_experimental_time_series_aggregate_functions)                                                                                                                                                                                                     |
+| `skip_unavailable_shards`                                                                                                         | pinned in `internal/chclient` (this issue)                     | Forwards as-is; because cerberus stamps it on EVERY query, ClickHouse's `!settings[skip_unavailable_shards].changed` guard never fires, so cerberus's own `0` always wins over any DDL-level `distributed_settings` default the `Distributed` table itself might carry | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: skip_unavailable_shards](https://clickhouse.com/docs/reference/settings/session-settings/skip-unavailable-shards#skip_unavailable_shards); the changed-flag gate is `src/Interpreters/ClusterProxy/executeQuery.cpp`'s `updateSettingsAndClientInfoForCluster`, confirmed at line 170 of the pinned `v25.8.1.5101-lts` tag                                                                     |
+| `fallback_to_stale_replicas_for_distributed_queries`                                                                              | pinned in `internal/chclient` (this issue)                     | Forwards as-is; consumed directly by `ConnectionPoolWithFailover`/`PoolWithFailoverBase` at replica-selection time, one shard at a time                                                                                                                                | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: fallback_to_stale_replicas_for_distributed_queries](https://clickhouse.com/docs/reference/settings/session-settings/other#fallback_to_stale_replicas_for_distributed_queries) — "Forces a query to an out-of-date replica if updated data is not available … By default, 1 (enabled)"; consumption site is `src/Common/PoolWithFailoverBase.h`                                                 |
+
+No `internal/chopt`-stamped setting was found to be unsafe or produce wrong
+results under `Distributed`, at any version — every row above is
+**forwards-as-is**, and the taxonomy has no `disabled-until-fixed` row.
+But only three rows (`aggregation_in_order`, `condition_cache`,
+`result_cache`) plus the two unconditional distributed-query pins are
+actually reachable against the bundled 25.8 image today; the other four
+(`join_spill`, `trace_id_bitmap_filter`, `lazy_materialization`, the
+`ts_grid_*` family) describe behavior that only starts applying once the
+bundled image is bumped past each row's own floor. If a future ClickHouse
+version changes any of the above, or the bundled image crosses one of
+these floors, `just gen-opt-docs`'s own registry table
+(`docs/clickhouse-optimizations.md`) and this table are the two places to
+re-verify.
+
+#### The solver's `perShardMemoryBytes` setting: `max_memory_usage`
+
+`internal/solver/executor.go`'s `perShardMemoryBytes = cap / (kEff *
+DataShardCount)` (cerberus issue #3081, already merged) is stamped as
+`max_memory_usage` (`internal/solver/executor.go`, `chclient.WithQuerySetting(pctx,
+"max_memory_usage", perShardMemoryBytes)`). The literal setting name and its
+Distributed semantics are confirmed against
+[docs: max_memory_usage](https://clickhouse.com/docs/reference/settings/session-settings/max-memory-usage#max_memory_usage):
+
+> The maximum amount of RAM to use for running a query on a single server.
+> … This setting does not consider the volume of available memory or the
+> total volume of memory on the machine. **The restriction applies to a
+> single query within a single server.**
+
+That last sentence is the whole reason the formula divides by
+`DataShardCount`: the setting name forwards to every shard UNCHANGED (per the
+two source facts above), but its enforcement is **per shard, independently**
+— each of the `DataShardCount` shards a fan-out touches gets its OWN,
+separate `max_memory_usage` budget at the SAME value, not one budget shared
+across them. Sending the un-apportioned `cap` value would let a `K`-way
+`kEff` fan-out against `N` data shards use up to `K × N × cap` bytes of
+aggregate ClickHouse-side memory before any single query hits its own limit —
+exactly the amplification `perShardMemoryBytes` exists to divide back out.
+Live-load confirmation that the formula holds under real concurrent
+multi-shard traffic is issue #3079's job, not this one's.
+
+#### `skip_unavailable_shards` / `fallback_to_stale_replicas_for_distributed_queries` policy
+
+Both are pinned to the fail-loud value in `internal/chclient/
+distributed_query_settings.go`, unconditionally on every data-plane
+read-path query (`Client.querySettings`) — harmless no-ops against a
+single-shard deployment, and the correct posture once
+`dataShards.count > 1`:
+
+- **`skip_unavailable_shards=0`** — ClickHouse's own default already, pinned
+  explicitly so the decision survives a future ClickHouse default change. A
+  fully-unreachable data shard aborts the query rather than silently
+  answering "based on partial data" (the documented `=1` behavior) —
+  a correctness-focused gateway must not return a silently incomplete
+  answer for a `Distributed`-backed panel.
+- **`fallback_to_stale_replicas_for_distributed_queries=0`** — the OPPOSITE
+  of ClickHouse's own default (`1`, "forces a query to an out-of-date
+  replica if updated data is not available"). Pinned to `0` so a shard whose
+  reachable replicas are ALL stale aborts the query instead of silently
+  answering from data that may be missing recent writes.
+
+#### Distributed-query error taxonomy
+
+`internal/chclient/distributed_shard_error.go` extends the existing typed
+ClickHouse-error-wrapping pattern (`memlimit.go`, `timeout.go`) with the two
+error codes a `Distributed` query under the policy above can actually raise
+— verified against `src/Common/PoolWithFailoverBase.h`'s
+`PoolWithFailoverBase<TNestedPool>::getMany()`, the connection-acquisition
+path every shard fan-out runs through:
+
+- **`ALL_CONNECTION_TRIES_FAILED` (code 279)** — `*chclient.ShardUnavailableError`
+  — thrown when a shard's usable-replica count falls below `min_entries`
+  (`1`, since cerberus pins `skip_unavailable_shards=0`): "All connection
+  tries failed." Mapped by `prom`/`loki`/`tempo` to a `503`
+  `errorType=unavailable` response — the same class as a tripped circuit
+  breaker, since ClickHouse's initiator is healthy and one data shard is not.
+  It is already classified `breakerScopeServerHealth` in
+  `internal/chclient/breaker_classify.go` (pre-existing).
+- **`ALL_REPLICAS_ARE_STALE` (code 369)** — `*chclient.StaleReplicaFallbackDeniedError`
+  — thrown when a shard's reachable replicas are all stale AND
+  `fallback_to_stale_replicas_for_distributed_queries=0`: "Could not find
+  enough connections to up-to-date replicas." Same `503`
+  `errorType=unavailable` mapping. This issue additionally enrols it in
+  `breakerServerHealthCodes` (it was not there before) — a replication-lag
+  condition that outlives the statement, matching the criterion every other
+  entry in that set already documents.
+
+**A note on the issue's own third named code.** The issue's Problem
+statement named `SHARD_HAS_NO_REPLICAS` as the third error to cover. A
+`search/code` sweep of `github.com/ClickHouse/ClickHouse` found **zero**
+matches for that identifier anywhere in the codebase — it does not exist.
+The nearest same-shaped name, `SHARD_HAS_NO_CONNECTIONS` (code 297,
+`src/Interpreters/Cluster.cpp`), is a cluster-CONFIG parse-time error ("No
+cluster elements (shard, node) specified in config"), never raised by a
+running query, so using it here would misrepresent a config-loading bug as a
+query-time failure. `ALL_CONNECTION_TRIES_FAILED` (already named correctly
+elsewhere in the same issue sentence) is the real runtime "a shard has no
+usable replica" code, and `ALL_REPLICAS_ARE_STALE` is the real "replica
+staleness path" the issue also asked for — both are covered above.
+`TOO_MANY_UNAVAILABLE_SHARDS` (code 904) exists too, but is unreachable under
+cerberus's own `skip_unavailable_shards=0` pin (it only fires when skipping
+is ENABLED and too many shards get skipped), so it is not wired into the
+taxonomy.
+
+New fixtures proving wire-format-correct translation of both codes exist per
+head: `internal/api/prom/handler_distributed_shard_error_test.go`,
+`internal/api/loki/handler_distributed_shard_error_test.go`,
+`internal/api/tempo/handler_distributed_shard_error_test.go`.
+
+#### Known ClickHouse risk: predicate pushdown through subqueries against `Distributed` (ClickHouse#29332)
+
+[ClickHouse#29332](https://github.com/ClickHouse/ClickHouse/issues/29332),
+"Pushdown of predicate may produce wrong queries with subqueries to
+distributed tables", is real but **already closed** — verified by reading
+the issue directly rather than assuming the epic's own summary was complete.
+It is specific to the **legacy** query pipeline's `enable_optimize_predicate_expression`
+rewrite (pre-analyzer): a `WHERE`/`HAVING` predicate pushed through a
+subquery over a `Distributed` table got inconsistently rewritten to `GLOBAL
+IN` in one scope but plain (shard-local) `IN` in another, producing wrong or
+inconsistent results. ClickHouse's own maintainer closed it in comments:
+*"This was an issue with the legacy analyzer's `enable_optimize_predicate_expression`
+optimization. The new analyzer (default since 24.3+) handles predicate
+pushdown completely differently and does not have this issue."*
+
+**Why this is still a genuine, concrete risk for cerberus, not a closed
+non-issue.** `enable_analyzer` defaults to `1` (the new analyzer) on every
+ClickHouse version cerberus supports (>= 24.8, well past the 24.3+ fix), so
+ordinary cerberus queries are not exposed. But
+`internal/engine/query_settings_rules.go`'s `applyNativeHistogramAnalyzerFix`
+**unconditionally forces `enable_analyzer=0`** — reactivating the exact
+legacy pipeline `#29332` lived in — for every query whose plan reaches a
+`chplan.HistogramQuantileNative` or `chplan.HistogramProjection` node (the
+native/exponential-histogram `histogram_quantile()`/`sum()`/`avg()`/
+`rate()`/`increase()` family). And that SAME family routinely builds
+`chplan.ScalarSubquery` nodes — `internal/chplan/histogram_quantile.go` and
+`histogram_quantile_native.go` both document the cross-series total as
+"typically a `ScalarSubquery` built from `scalar(<vector>)`" — the exact
+subquery-over-predicate shape `#29332`'s class of bug targets. This
+combination (forced legacy analyzer + a subquery cerberus's own emitter
+routinely builds) exists ONLY once a `Distributed` table is the scan target,
+so it has never been exercisable before epic #3074 and chDB's single-node
+substrate cannot exercise it either.
+
+**Concrete subquery/derived-table shapes in `internal/chsql`/`internal/chplan`
+issue #3079 should execute against a real multi-shard cluster**, expected
+results in parentheses (every shape below must match its single-shard/chDB
+answer exactly — that equality, not a specific number, is the pass
+criterion):
+
+1. **Priority 1 — native-histogram `histogram_quantile()` over a
+   `Distributed` table** (`internal/chplan/histogram_quantile_native.go:39`'s
+   `ScalarSubquery`, reached with `enable_analyzer=0` forced by
+   `applyNativeHistogramAnalyzerFix`): `histogram_quantile(0.9,
+   sum(rate(demo_exp_hist[5m])))` and the plain
+   `histogram_quantile(0.9, demo_exp_hist)` selector form, both against a
+   `dataShards.count: 2+` cluster with series distributed across shards by
+   the sharding key. (Expected: identical quantile to the same query against
+   a single-shard/chDB copy of the same data — this is the shape most
+   directly analogous to `#29332`'s own reproduction, a `WHERE`/aggregate
+   wrapping a `ScalarSubquery` over a `Distributed` table under the legacy
+   analyzer.)
+2. **`scalar(<vector>)` PromQL queries in general**
+   (`internal/promql`'s lowering into `chplan.ScalarSubquery`, e.g.
+   `internal/chplan/range_window.go:210`'s range-window scalar argument) —
+   under the DEFAULT analyzer (`enable_analyzer=1`), as a baseline-regression
+   control proving the new-analyzer fix genuinely holds on a real multi-shard
+   cluster and not just on ClickHouse's own single-node test suite. (Expected:
+   identical to single-shard.)
+3. **TraceQL `/api/search` root-lookup `InSubquery`**
+   (`internal/chsql/metrics_compare.go`'s `cohortPred`/`bindRootLookupTraceIDTsEnvelope`,
+   `TraceId IN (<subquery>)`) against a `Distributed` spans table, both a
+   plain search and a `compare()` query (which nests the InSubquery inside
+   an additional bounded root leg). (Expected: identical trace set to
+   single-shard.)
+4. **`BoundedTraceScope`'s structure-tab top-N gate**
+   (`internal/chplan/bounded_trace_scope_bind.go`, another `TraceId IN
+   (<subquery>)` shape with an additional row-count bound) against a
+   `Distributed` spans table. (Expected: identical bounded trace set.)
+5. **TraceQL structural join's recursive CTE**
+   (`internal/chsql/structural_join.go`'s `WITH RECURSIVE`, reached by every
+   `>`/`<`/`>>`/`<<` structural query) against a `Distributed` spans table —
+   not the same predicate-pushdown mechanism `#29332` names, but the other
+   large recursive/derived-table shape in the emitter, worth a pass since
+   recursive CTEs interacting with `Distributed` fan-out have no ClickHouse
+   documentation either way. (Expected: identical structural match set to
+   single-shard; see also this doc's own [Recursive-CTE parallelism
+   section](#recursive-cte-parallelism--recommend-clickhouse--266-for-trace-structure)
+   for an unrelated, already-tracked recursive-CTE caveat.)
+6. **`NotInSubquery` gap-detection** (`internal/chsql/absent_over_time.go:129`,
+   `absent_over_time()`'s covered-anchor exclusion) against a `Distributed`
+   metrics table. (Expected: identical gap set to single-shard.)
+
+Live execution of this plan against a real `dataShards.count: 2` (and,
+matching the epic's own `N=4` over-subscription case, `count: 4`) cluster is
+issue #3079's job; this sub-issue's scope is limited to writing the plan
+down with concrete, emitter-grounded shapes.
+
 ### Hot/cold storage tiering
 
 `CERBERUS_SCHEMA_STORAGE_POLICY` puts a MergeTree `storage_policy` on every
