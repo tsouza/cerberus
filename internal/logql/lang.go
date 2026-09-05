@@ -13,7 +13,6 @@ import (
 	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
@@ -87,14 +86,17 @@ type Lang struct {
 	// hook engine.emitForHead reads to thread it onto the emit-time
 	// context — the same pattern spansTabler / rangeSeriesOrderer already
 	// use for Tempo / Prometheus-specific emit behaviour.
-	AttrStrategies chsql.AttrStrategies
+	AttrStrategies chplan.AttrStrategies
 }
 
 // EmitAttrStrategies returns the AttrStrategies this Lang's queries should
 // render attribute-map accesses against — see the AttrStrategies field's
 // doc. engine.emitForHead duck-types on this to thread it onto the emit
-// context via chsql.WithAttrStrategies.
-func (l *Lang) EmitAttrStrategies() chsql.AttrStrategies { return l.AttrStrategies }
+// context via chsql.WithAttrStrategies. Returns chplan.AttrStrategies
+// (a chsql.AttrStrategies alias) rather than importing chsql directly:
+// logql is architecturally forbidden from depending on chsql
+// (.go-arch-lint.yml) — see chplan.AttrStrategy's own doc.
+func (l *Lang) EmitAttrStrategies() chplan.AttrStrategies { return l.AttrStrategies }
 
 // errorTypes mirrors the Loki errorType vocabulary the handler emits.
 // Duplicated here (not re-imported from internal/api/loki) so the LogQL
