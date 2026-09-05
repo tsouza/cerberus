@@ -177,10 +177,10 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 			args   []any
 		)
 		if resolved.IsIntrinsic {
-			sqlStr, args = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end)
+			sqlStr, args = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end, h.AttrStrategies)
 			valueTyp = intrinsicType(resolved.IntrinsicName)
 		} else {
-			sqlStr, args = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end)
+			sqlStr, args = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end, h.AttrStrategies)
 		}
 		h.Logger.Debug("cerberus tempo /search/tag/values",
 			"tag", name,
@@ -225,10 +225,11 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 // `filter` is the optional `?q=` span-row predicate (see
 // search_tags_filter.go); a nil filter appends no clause, so a request
 // without `q` renders exactly the SQL it always did.
-func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, start, end time.Time) (string, []any) {
+func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
 	sb := chsql.NewQuery().
 		Select(distinctToStringFrag(col)).
-		From(chsql.Col(s.SpansTable))
+		From(chsql.Col(s.SpansTable)).
+		WithAttrStrategies(strategies)
 	if !start.IsZero() {
 		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
@@ -305,21 +306,21 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, sta
 // it short-circuits to an empty result instead, the same treatment
 // attributeTagScopes() already gives an unconfigured instrumentation
 // bucket for /search/tags.
-func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time) (string, []any) {
+func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
 	switch scope {
 	case attrMapScopeEvent:
-		return buildNestedAttributeValuesSQL(s, s.EventsColumn, name, filter, start, end)
+		return buildNestedAttributeValuesSQL(s, s.EventsColumn, name, filter, start, end, strategies)
 	case attrMapScopeLink:
-		return buildNestedAttributeValuesSQL(s, s.LinksColumn, name, filter, start, end)
+		return buildNestedAttributeValuesSQL(s, s.LinksColumn, name, filter, start, end, strategies)
 	}
 	switch scope {
 	case attrMapScopeResource:
 		if col, ok := s.MaterializedResourceAttributeColumns[name]; ok {
-			return buildMaterializedAttributeValuesSQL(s, col, materializedColumnNumeric(name), filter, start, end)
+			return buildMaterializedAttributeValuesSQL(s, col, materializedColumnNumeric(name), filter, start, end, strategies)
 		}
 	case attrMapScopeSpan:
 		if col, ok := s.MaterializedSpanAttributeColumns[name]; ok {
-			return buildMaterializedAttributeValuesSQL(s, col, materializedColumnNumeric(name), filter, start, end)
+			return buildMaterializedAttributeValuesSQL(s, col, materializedColumnNumeric(name), filter, start, end, strategies)
 		}
 	case attrMapScopeAny:
 		spanCol, spanMaterialized := s.MaterializedSpanAttributeColumns[name]
@@ -329,7 +330,7 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 				s, name,
 				spanCol, spanMaterialized,
 				resCol, resMaterialized,
-				filter, start, end,
+				filter, start, end, strategies,
 			)
 		}
 	}
@@ -379,7 +380,8 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 	inner := chsql.NewQuery().
 		Select(selFrag).
 		From(chsql.Col(s.SpansTable)).
-		Where(whereFrag)
+		Where(whereFrag).
+		WithAttrStrategies(strategies)
 	if !start.IsZero() {
 		inner.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
@@ -393,7 +395,8 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 	outer := chsql.NewQuery().
 		Select(chsql.Distinct(chsql.Col("v"))).
 		From(inner.Frag()).
-		Where(nonEmptyFrag("v"))
+		Where(nonEmptyFrag("v")).
+		WithAttrStrategies(strategies)
 	return outer.Build()
 }
 
@@ -420,7 +423,7 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 // auto-scope form — an event./link. prefix is always a single-scope
 // request (see resolveTagName) — so unlike its flat-Map sibling this
 // builder has no attrMapScopeAny-shaped union branch to consider.
-func buildNestedAttributeValuesSQL(s schema.Traces, nestedCol, name string, filter chsql.Frag, start, end time.Time) (string, []any) {
+func buildNestedAttributeValuesSQL(s schema.Traces, nestedCol, name string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
 	inner := chsql.NewQuery().
 		Select(chsql.Col("v")).
 		From(chsql.Col(s.SpansTable)).
@@ -428,7 +431,8 @@ func buildNestedAttributeValuesSQL(s schema.Traces, nestedCol, name string, filt
 			chsql.As(nestedMapKeysFlatFrag(nestedCol), "k"),
 			chsql.As(nestedMapValuesFlatFrag(nestedCol), "v"),
 		).
-		Where(chsql.Eq(chsql.Col("k"), chsql.Lit(name)))
+		Where(chsql.Eq(chsql.Col("k"), chsql.Lit(name))).
+		WithAttrStrategies(strategies)
 	if !start.IsZero() {
 		inner.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
@@ -442,7 +446,8 @@ func buildNestedAttributeValuesSQL(s schema.Traces, nestedCol, name string, filt
 	outer := chsql.NewQuery().
 		Select(chsql.Distinct(chsql.Col("v"))).
 		From(inner.Frag()).
-		Where(nonEmptyFrag("v"))
+		Where(nonEmptyFrag("v")).
+		WithAttrStrategies(strategies)
 	return outer.Build()
 }
 
@@ -493,11 +498,12 @@ func materializedColumnPresenceFrag(col string, numeric bool) chsql.Frag {
 // buildAttributeValuesSQL's map-backed shape, this needs no arrayJoin
 // fan-out, no mapContains pre-filter, and no inner/outer query split: a
 // direct DISTINCT read is both the correct and the cheapest shape.
-func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, numeric bool, filter chsql.Frag, start, end time.Time) (string, []any) {
+func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, numeric bool, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
 	sb := chsql.NewQuery().
 		Select(distinctToStringFrag(col)).
 		From(chsql.Col(s.SpansTable)).
-		Where(materializedColumnPresenceFrag(col, numeric))
+		Where(materializedColumnPresenceFrag(col, numeric)).
+		WithAttrStrategies(strategies)
 	if !start.IsZero() {
 		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
@@ -568,15 +574,17 @@ func buildAutoScopeUnionAttributeValuesSQL(
 	spanCol string, spanMaterialized bool,
 	resCol string, resMaterialized bool,
 	filter chsql.Frag, start, end time.Time,
+	strategies chsql.AttrStrategies,
 ) (string, []any) {
 	numeric := materializedColumnNumeric(name)
-	spanArm := attrValueArmFrag(s, s.AttributesColumn, spanCol, spanMaterialized, numeric, name, filter, start, end)
-	resArm := attrValueArmFrag(s, s.ResourceAttributesColumn, resCol, resMaterialized, numeric, name, filter, start, end)
+	spanArm := attrValueArmFrag(s, s.AttributesColumn, spanCol, spanMaterialized, numeric, name, filter, start, end, strategies)
+	resArm := attrValueArmFrag(s, s.ResourceAttributesColumn, resCol, resMaterialized, numeric, name, filter, start, end, strategies)
 
 	outer := chsql.NewQuery().
 		Select(chsql.Distinct(chsql.Col("v"))).
 		From(chsql.Paren(chsql.UnionAll(spanArm, resArm))).
-		Where(nonEmptyFrag("v"))
+		Where(nonEmptyFrag("v")).
+		WithAttrStrategies(strategies)
 	return outer.Build()
 }
 
@@ -596,8 +604,8 @@ func buildAutoScopeUnionAttributeValuesSQL(
 // (mirrors buildAttributeValuesSQL's single-scope map-backed branch,
 // already String). materializedCol and numeric are both ignored when
 // materialized is false.
-func attrValueArmFrag(s schema.Traces, mapCol, materializedCol string, materialized, numeric bool, name string, filter chsql.Frag, start, end time.Time) chsql.Frag {
-	arm := chsql.NewQuery().From(chsql.Col(s.SpansTable))
+func attrValueArmFrag(s schema.Traces, mapCol, materializedCol string, materialized, numeric bool, name string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) chsql.Frag {
+	arm := chsql.NewQuery().From(chsql.Col(s.SpansTable)).WithAttrStrategies(strategies)
 	if materialized {
 		arm.Select(chsql.As(chsql.Call("toString", chsql.Col(materializedCol)), "v")).
 			Where(materializedColumnPresenceFrag(materializedCol, numeric))
@@ -833,35 +841,45 @@ func mapContainsAnyFrag(attrCol, resCol, key string) chsql.Frag {
 	))
 }
 
-// mapContainsFrag emits "mapContains(`<col>`, ?)" with key bound as a
-// positional argument. Composes through the typed Call constructor;
-// column / key operands flow through Col / Lit.
+// mapContainsFrag adapts Builder.MapContains into a Frag — emits
+// "mapContains(`<col>`, ?)" with key bound as a positional argument, or
+// (cerberus issue #3065 point 2) the "has(JSONAllPaths(`<col>`), ?)" shape
+// when col resolves to AttrStrategyJSON on the enclosing QueryBuilder's
+// threaded .WithAttrStrategies. Delegating to Builder.MapContains rather
+// than chsql.Call directly is what makes that threading take effect
+// here — see Builder.MapContains's own doc (internal/chsql/builder.go)
+// for the full rationale.
 //
-// Deliberately NOT spelled as the explicit has(<col>.keys, ?) subcolumn
-// form: cerberus issue #2775 verified (chDB 26.5.1.1, EXPLAIN QUERY TREE)
-// that ClickHouse's analyzer already rewrites mapContains(<col>, ?) into
-// exactly that has(<col>.keys, ?) shape internally, AND — unlike a
-// hand-written has(<col>.keys, ?) — the analyzer-rewritten form is the
-// ONLY one confirmed (via EXPLAIN indexes=1) to still match a
-// conventionally-declared `INDEX ... mapKeys(<col>) TYPE bloom_filter`
-// skip index; a directly-authored has(<col>.keys, ?) showed NO Skip
-// section at all against that same index. So mapContains(<col>, ?) is
-// strictly no worse (same key-only decode once the default-on
+// Map-branch rationale, preserved from the pre-#3065 direct-Call
+// spelling: deliberately NOT spelled as the explicit has(<col>.keys, ?)
+// subcolumn form — cerberus issue #2775 verified (chDB 26.5.1.1, EXPLAIN
+// QUERY TREE) that ClickHouse's analyzer already rewrites
+// mapContains(<col>, ?) into exactly that has(<col>.keys, ?) shape
+// internally, AND — unlike a hand-written has(<col>.keys, ?) — the
+// analyzer-rewritten form is the ONLY one confirmed (via EXPLAIN
+// indexes=1) to still match a conventionally-declared
+// `INDEX ... mapKeys(<col>) TYPE bloom_filter` skip index; a
+// directly-authored has(<col>.keys, ?) showed NO Skip section at all
+// against that same index. So mapContains(<col>, ?) is strictly no worse
+// (same key-only decode once the default-on
 // optimize_functions_to_subcolumns fires) and strictly safer
 // (index-compatible) than the subcolumn spelling the issue originally
 // proposed — see the issue for the full investigation.
 func mapContainsFrag(col, key string) chsql.Frag {
-	return chsql.Call("mapContains", chsql.Col(col), chsql.Lit(key))
+	return func(b *chsql.Builder) { b.MapContains(col, key) }
 }
 
-// mapAtFrag emits "`<col>`[?]" — CH's Map column access shape — with
-// key bound as a positional argument. Composed via the typed
-// typed chsql.Subscript constructor, with the column flowing through
-// Col (backtick-quoted) and the key through Lit
-// (`?`-bound). Equivalent to Builder.MapAt but exposed as a typed
-// Frag for QueryBuilder slot composition.
+// mapAtFrag adapts Builder.MapAt into a Frag — emits "`<col>`[?]" with
+// the key bound as a positional argument, or (cerberus issue #3065 point
+// 2) the JSON dynamic-subcolumn coalesce shape when col resolves to
+// AttrStrategyJSON on the enclosing QueryBuilder's threaded
+// .WithAttrStrategies. Delegating to Builder.MapAt rather than
+// chsql.Subscript directly is what makes that threading take effect here
+// — see Builder.MapAt's own doc (internal/chsql/builder.go) for the full
+// rationale, mirroring internal/api/loki/label_values.go's identical
+// mapAtFrag.
 func mapAtFrag(col, key string) chsql.Frag {
-	return chsql.Subscript(chsql.Col(col), chsql.Lit(key))
+	return func(b *chsql.Builder) { b.MapAt(col, key) }
 }
 
 // nonEmptyFrag emits "`<col>` != ?" binding the empty string as a

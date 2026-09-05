@@ -217,7 +217,7 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route Tags
 		scopes, ok = h.tagsFromCatalog(ctx, scope)
 	}
 	if !ok {
-		scopes, err = h.collectAttributeTagScopes(ctx, scope, filter, start, end)
+		scopes, err = h.collectAttributeTagScopes(ctx, scope, filter, start, end, h.AttrStrategies)
 		if err != nil {
 			writeError(w, tagsErrStatus(err), "", "", err)
 			return
@@ -258,14 +258,14 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route Tags
 // layer actually reported, so emitting an empty one would put cerberus
 // a scope ahead of reference Tempo.
 func (h *Handler) collectAttributeTagScopes(
-	ctx context.Context, scope string, filter chsql.Frag, start, end time.Time,
+	ctx context.Context, scope string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies,
 ) ([]TagScope, error) {
 	var scopes []TagScope
-	for _, src := range attributeTagScopes(h.Schema) {
+	for _, src := range attributeTagScopes(h.Schema, strategies) {
 		if scope != tagScopeNone && scope != src.name {
 			continue
 		}
-		tags, err := h.fetchTagKeys(ctx, src.name, src.keys, filter, start, end)
+		tags, err := h.fetchTagKeys(ctx, src.name, src.keys, filter, start, end, strategies)
 		if err != nil {
 			h.Logger.Error("cerberus tempo tag-key lookup failed", "scope", src.name, "err", err)
 			return nil, err
@@ -296,19 +296,19 @@ type attributeTagScope struct {
 // point ScopeAttributesColumn at one, which puts the bucket back).
 // Requesting such a scope is still a 200 — upstream accepts the value
 // and answers with whatever its storage reports, which is nothing.
-func attributeTagScopes(s schema.Traces) []attributeTagScope {
+func attributeTagScopes(s schema.Traces, strategies chsql.AttrStrategies) []attributeTagScope {
 	out := make([]attributeTagScope, 0, 5)
 	add := func(name string, keys chsql.Frag) {
 		out = append(out, attributeTagScope{name: name, keys: keys})
 	}
 	if s.ResourceAttributesColumn != "" {
-		add(tagScopeResource, distinctMapKeysFrag(s.ResourceAttributesColumn))
+		add(tagScopeResource, distinctAttrKeysFrag(strategies, s.ResourceAttributesColumn))
 	}
 	if s.ScopeAttributesColumn != "" {
-		add(tagScopeInstrumentation, distinctMapKeysFrag(s.ScopeAttributesColumn))
+		add(tagScopeInstrumentation, distinctAttrKeysFrag(strategies, s.ScopeAttributesColumn))
 	}
 	if s.AttributesColumn != "" {
-		add(tagScopeSpan, distinctMapKeysFrag(s.AttributesColumn))
+		add(tagScopeSpan, distinctAttrKeysFrag(strategies, s.AttributesColumn))
 	}
 	if s.EventsColumn != "" {
 		add(tagScopeEvent, distinctNestedMapKeysFrag(s.EventsColumn))
@@ -352,8 +352,9 @@ func (h *Handler) fetchTagKeys(
 	scope string,
 	keys, filter chsql.Frag,
 	start, end time.Time,
+	strategies chsql.AttrStrategies,
 ) ([]string, error) {
-	sqlStr, args := buildSearchTagsSQL(h.Schema, keys, filter, start, end)
+	sqlStr, args := buildSearchTagsSQL(h.Schema, keys, filter, start, end, strategies)
 	h.Logger.Debug("cerberus tempo /search/tags", "scope", scope, "sql", sqlStr,
 		"args", telemetry.SanitizeArgsForLog(args))
 	return h.Client.QueryStrings(ctx, sqlStr, args...)
@@ -366,10 +367,11 @@ func (h *Handler) fetchTagKeys(
 // `filter` is the optional `?q=` span-row predicate (see
 // search_tags_filter.go); a nil filter appends no clause, so a request
 // without `q` renders exactly the SQL it always did.
-func buildSearchTagsSQL(s schema.Traces, keys, filter chsql.Frag, start, end time.Time) (string, []any) {
+func buildSearchTagsSQL(s schema.Traces, keys, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
 	sb := chsql.NewQuery().
 		Select(keys).
-		From(chsql.Col(s.SpansTable))
+		From(chsql.Col(s.SpansTable)).
+		WithAttrStrategies(strategies)
 	if !start.IsZero() {
 		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}

@@ -2913,22 +2913,50 @@ precise boot-time finding:
       a JSON-typed column too — span/resource/scope attribute matchers
       (`{ span.foo = "bar" }`), numeric/duration comparisons
       (`{ span.http.status_code > 100 }`), and existence checks
-      (`{ span.foo != nil }`). The warning names what remains unsupported:
-      the `compare()` spanset-metrics operator's well-known/generic
-      attribute fan-out, the `/api/search/tags` /
-      `/api/search/tag/{name}/values` discovery endpoints (their queries
-      bypass the per-key lowering entirely, like logs' metadata endpoints
-      above), and a table whose ingestion ever used
-      `json_type_escape_dots_in_keys=1` or mixes dotted-key encodings —
-      tracked as [#3065](https://github.com/tsouza/cerberus/issues/3065).
-      One further caveat specific to `ResourceAttributes`: `/api/search`'s
-      own baseline response shaping merges `ResourceAttributes` with
-      synthetic trace/span/parent-span-id keys on every response, which is
-      itself a full-map operation a JSON-typed `ResourceAttributes` column
-      cannot satisfy yet — so `/api/search` fails on every query
-      regardless of filter shape until #3065 lands the full-map JSON
-      bridge, if `ResourceAttributes` (not `SpanAttributes` /
-      `ScopeAttributes`) is the JSON-typed column.
+      (`{ span.foo != nil }`).
+      [#3065](https://github.com/tsouza/cerberus/issues/3065) closed the
+      remaining TraceQL-side gaps this warning used to name:
+      - **`/api/search`'s baseline response** — `canonicalSampleProjections`
+        / `sampleProjectionsWithSelected` (`internal/api/tempo/handler.go`)
+        unconditionally merge `ResourceAttributes` with synthetic
+        trace/span/parent-span-id keys on **every** response via
+        `mapConcat`/`chplan.FnMapMerge` — a full-map read a JSON-typed
+        `ResourceAttributes` column could not satisfy before this fixed it,
+        which broke the baseline endpoint on every query regardless of
+        filter shape (the highest-priority gap the issue named). No
+        `internal/api/tempo` code change was needed here: the same
+        bounded-depth reconstruction the Logs full-map fix above added to
+        `chsql`'s generic `FnMapMerge`/`FnMapKeys`/`FnMapValues` handling
+        already covers any chplan tree built from those Fn identifiers,
+        TraceQL's included.
+      - **`compare()`'s generic attribute fan-out** — the spanset-metrics
+        operator's well-known/generic attribute enumeration
+        (`compareAttrPairsExpr`, `internal/traceql/metrics_compare.go`)
+        builds its fan-out from the same `FnMapKeys`/`FnMapValues` shape, so
+        it too benefited from the generic `chsql` fix — but the
+        `/api/metrics/query_range` and `/api/metrics/query` pipeline's own
+        `Engine.Lang` adapter (`metricsLang`, `internal/api/tempo/
+        metrics_query_range.go`) never implemented the `EmitAttrStrategies`
+        hook `traceqlLang` (the `/api/search` path) already had — every
+        metrics-pipeline plan silently rendered with `AttrStrategyMap`
+        regardless of the resolved column strategy, a real gap found and
+        fixed by wiring the missing hook (`metricsLang.attrStrategies` +
+        `EmitAttrStrategies()`) onto its three `metricsLang{...}`
+        construction sites.
+      - **`/api/search/tags` / `/api/v2/search/tags` /
+        `/api/search/tag/{name}/values`** — these discovery endpoints
+        build their SQL directly against `chsql.NewQuery()` rather than
+        through `chplan`, so they never reached `AttrStrategies` threading
+        at all — the identical gap Logs' metadata endpoints had. Each now
+        resolves the Handler's `AttrStrategies` itself
+        (`internal/api/tempo/attr_strategy.go`) and threads it onto every
+        `chsql.QueryBuilder` it builds, reaching `chsql.Builder.MapAt` /
+        the new `Builder.MapContains` (the ad-hoc-query-builder
+        equivalents of `chplan.MapAccess` / `FnMapContainsKey`) for
+        per-key value/existence lookups, and `distinctAttrKeysFrag`'s
+        `JSONAllPaths`-based rendering for key discovery.
+      - **`json_type_escape_dots_in_keys` / mixed-history hazard** — see
+        the dedicated callout below this list, shared verbatim with logs.
     - **`json_type_escape_dots_in_keys` / mixed-history hazard — the
       decision, shared by logs and traces (cerberus issues #3063 and
       #3065's identical point 3).** Every JSON rendering above (per-key

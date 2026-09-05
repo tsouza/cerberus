@@ -787,15 +787,13 @@ type tableReq struct {
 	// capability still missing against a jsonQuerySupported table's
 	// JSON-typed attribute column. Required whenever jsonQuerySupported is
 	// true (checkTable's message composition has no other source for this
-	// text), because the remaining gap is genuinely signal-specific: LogQL
-	// needs the full attribute map at once for line_format / label_format /
-	// unpack / keep|drop with no argument list AND its ad-hoc /labels
-	// /series /detected_fields query builders bypass chplan entirely
-	// (cerberus issue #3063); TraceQL needs it for compare()'s
-	// well-known/generic attribute fan-out AND its own ad-hoc
-	// /api/search/tags /api/search/tag/{name}/values query builders
-	// bypass chplan the same way (cerberus issue #3065). Ignored when
-	// jsonQuerySupported is false.
+	// text). Cerberus issues #3063 (LogQL) and #3065 (TraceQL) closed every
+	// query-time gap each signal's full-map operations and ad-hoc discovery
+	// query builders used to have; the one gap that remains for BOTH — a
+	// table whose ingestion ever used json_type_escape_dots_in_keys=1 or
+	// mixed dotted-key encodings — is signal-agnostic, so
+	// logsJSONQuerySupportedGaps / tracesJSONQuerySupportedGaps below name
+	// only that. Ignored when jsonQuerySupported is false.
 	jsonQuerySupportedGaps string
 	// materializedColumns is the subset of columns that must be typed a
 	// SPECIFIC ClickHouse type rather than checked for mere existence —
@@ -828,24 +826,16 @@ type materializedColumnCheck struct {
 // checkTable renders is reviewable in one place per signal, matching
 // invariant 13's spirit for meaning-bearing literals.
 const (
-	logsJSONQuerySupportedGaps = "operations that need the FULL attribute map at once " +
-		"(LogQL line_format / label_format / unpack / keep|drop with no argument list), " +
-		"the /labels /series /detected_fields metadata endpoints, and any table whose " +
-		"ingestion ever used json_type_escape_dots_in_keys=1 or mixed dotted-key " +
-		"encodings — those still fail at query time (tracked as cerberus issue #3063)"
-	tracesJSONQuerySupportedGaps = "operations that need the FULL attribute map at once. " +
-		"If ResourceAttributes specifically is the JSON-typed column, this includes " +
-		"/api/search's OWN baseline response shaping — every response merges " +
-		"ResourceAttributes with synthetic trace/span/parent-span-id keys, which is a " +
-		"full-map operation a JSON column cannot satisfy today (a CAST-based Map bridge " +
-		"does not work on ClickHouse; verified empirically), so /api/search fails on EVERY " +
-		"query regardless of its filter shape until this is addressed — SpanAttributes and " +
-		"ScopeAttributes are unaffected by this specific gap. Also unsupported for any " +
-		"jsonQuerySupported column: the compare() spanset-metrics operator's " +
-		"well-known/generic attribute fan-out, the /api/search/tags and " +
-		"/api/search/tag/{name}/values discovery endpoints, and any table whose ingestion " +
-		"ever used json_type_escape_dots_in_keys=1 or mixed dotted-key encodings — those " +
-		"still fail at query time (tracked as cerberus issue #3065)"
+	logsJSONQuerySupportedGaps = "a table whose ingestion ever used " +
+		"json_type_escape_dots_in_keys=1 or mixed dotted-key encodings — every rendering " +
+		"targets ClickHouse's DEFAULT dot-nesting behaviour only, and no boot-time schema " +
+		"check can rule out a past or mixed ingestion-time setting (tracked as cerberus " +
+		"issue #3063; see docs/operations.md for the full design rationale)"
+	tracesJSONQuerySupportedGaps = "a table whose ingestion ever used " +
+		"json_type_escape_dots_in_keys=1 or mixed dotted-key encodings — every rendering " +
+		"targets ClickHouse's DEFAULT dot-nesting behaviour only, and no boot-time schema " +
+		"check can rule out a past or mixed ingestion-time setting (tracked as cerberus " +
+		"issue #3065; see docs/operations.md for the full design rationale)"
 )
 
 // requiredTables resolves the active config into the per-table shape

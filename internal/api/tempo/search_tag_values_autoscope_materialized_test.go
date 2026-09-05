@@ -78,7 +78,7 @@ func TestBuildAttributeValuesSQL_AutoScopeMaterializedColumnRouting(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sqlStr, _ := tempo.BuildAttributeValuesSQLForTest(s, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end)
+			sqlStr, _ := tempo.BuildAttributeValuesSQLForTest(s, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, nil)
 
 			for _, marker := range tc.wantMaterializedMarkers {
 				if !strings.Contains(sqlStr, marker) {
@@ -124,8 +124,8 @@ func TestBuildAttributeValuesSQL_AutoScopeMaterializedUnchangedForConfiguredOthe
 	start := time.Unix(1000, 0).UTC()
 	end := time.Unix(2000, 0).UTC()
 
-	gotWith, _ := tempo.BuildAttributeValuesSQLForTest(withRegistry, "rpc.method", tempo.AttrMapScopeAnyForTest, nil, start, end)
-	gotWithout, _ := tempo.BuildAttributeValuesSQLForTest(without, "rpc.method", tempo.AttrMapScopeAnyForTest, nil, start, end)
+	gotWith, _ := tempo.BuildAttributeValuesSQLForTest(withRegistry, "rpc.method", tempo.AttrMapScopeAnyForTest, nil, start, end, nil)
+	gotWithout, _ := tempo.BuildAttributeValuesSQLForTest(without, "rpc.method", tempo.AttrMapScopeAnyForTest, nil, start, end, nil)
 	if gotWith != gotWithout {
 		t.Errorf("unconfigured key's auto-scope SQL differs based on registry presence:\nwith registry:    %s\nwithout registry: %s", gotWith, gotWithout)
 	}

@@ -42,7 +42,7 @@ func TestBuildAttributeValuesSQL_MaterializedColumnRouting(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sqlStr, _ := tempo.BuildAttributeValuesSQLForTest(s, tc.key, tc.scope, nil, start, end)
+			sqlStr, _ := tempo.BuildAttributeValuesSQLForTest(s, tc.key, tc.scope, nil, start, end, nil)
 			isMaterialized := strings.Contains(sqlStr, "__cerberus_materialized")
 			if isMaterialized != tc.wantMaterialized {
 				t.Errorf("materialized routing = %v, want %v; SQL: %s", isMaterialized, tc.wantMaterialized, sqlStr)
@@ -71,8 +71,8 @@ func TestBuildAttributeValuesSQL_UnmaterializedSchemaUnchanged(t *testing.T) {
 
 	// A DIFFERENT key than the one configured in withRegistry must render
 	// identically regardless of whether the registry exists at all.
-	gotWith, _ := tempo.BuildAttributeValuesSQLForTest(withRegistry, "rpc.method", tempo.AttrMapScopeSpanForTest, nil, start, end)
-	gotWithout, _ := tempo.BuildAttributeValuesSQLForTest(without, "rpc.method", tempo.AttrMapScopeSpanForTest, nil, start, end)
+	gotWith, _ := tempo.BuildAttributeValuesSQLForTest(withRegistry, "rpc.method", tempo.AttrMapScopeSpanForTest, nil, start, end, nil)
+	gotWithout, _ := tempo.BuildAttributeValuesSQLForTest(without, "rpc.method", tempo.AttrMapScopeSpanForTest, nil, start, end, nil)
 	if gotWith != gotWithout {
 		t.Errorf("unconfigured key's SQL differs based on registry presence:\nwith registry:    %s\nwithout registry: %s", gotWith, gotWithout)
 	}
