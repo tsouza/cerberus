@@ -1,0 +1,40 @@
+# Helm values OVERLAY for the bundled-ClickHouse ("bwc") e2e lane's
+# MODE-TOGGLE migration-safety leg (cerberus issue #3082). Layered ON TOP of
+# cerberus-values.yaml + cerberus-values-bwc.yaml +
+# cerberus-values-bwc-hot-cold.yaml, for the `helm upgrade` step ONLY (never
+# the initial install, which brings the cluster up as the plain
+# object-storage scenario so it starts out genuinely populated in
+# bwc_object_store mode — see `just e2e-bwc-toggle-mode`):
+#
+#   helm upgrade --install cerberus deploy/helm/cerberus \
+#     --values test/e2e/k3s/cerberus-values.yaml \
+#     --values test/e2e/k3s/cerberus-values-bwc.yaml \
+#     --values test/e2e/k3s/cerberus-values-bwc-hot-cold.yaml \
+#     --values test/e2e/k3s/cerberus-values-bwc-mode-toggle.yaml
+#
+# The hot-cold overlay above already does the load-bearing part: it flips
+# `hotVolume.enabled` back to `true` without pinning `hotVolume.enabled:
+# false`, reproducing EXACTLY the real-world hazard
+# docs/helm-clickhouse.md's "Upgrading into the hot/cold default" section
+# describes — an existing object-storage-only (`bwc_object_store`) release
+# upgrading into a chart version whose default resolves to hot-cold
+# (`bwc_hot_cold`), a policy name the already-populated ClickHouse has never
+# seen. ClickHouse's own startup validation must refuse this loudly — the
+# object-store -> hot-cold direction of cerberus issue #3075/#3076's
+# per-mode storage-policy names — not silently, and not by merely hanging.
+#
+# This overlay ONLY adds `configOverrides` to turn on ClickHouse's console
+# logger. That is the general-purpose raw-XML escape hatch the chart already
+# ships (`clickhouse.bundled.configOverrides`, values.yaml) — not a
+# test-only fork of the chart — and it exists here purely so the resulting
+# "Unknown storage policy" exception (ClickHouse error code 478,
+# UNKNOWN_POLICY) reaches `kubectl logs`, where
+# `.github/scripts/e2e-bwc-verify-mode-toggle.mjs` can assert on it: as
+# shipped, ClickHouse's default logger config writes this exception ONLY to
+# a log file inside the container, which `kubectl logs` never sees.
+clickhouse:
+  bundled:
+    configOverrides: |
+      <logger>
+        <console>1</console>
+      </logger>
