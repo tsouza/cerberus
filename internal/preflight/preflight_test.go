@@ -495,12 +495,12 @@ func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
 
 // TestRunTracesJSONAttrMapPassesWithWarning is the traces counterpart of
 // TestRunLogsJSONAttrMapPassesWithWarning — the other signal the boot-probe
-// compat covers. Unlike logs, chsql's JSON rendering branch is NOT wired
-// into any TraceQL-facing AttrStrategies in this version (see
-// tableReq.jsonQuerySupported's doc), so the warning keeps its original
-// "nothing works at query time yet" text, and Result.TracesAttrStrategies
-// stays nil even though the column WAS detected as JSON — a deliberate
-// choice, not an oversight: see cerberus issue #3062, a sub-issue of #2777.
+// compat covers. Since cerberus issue #3062, chsql's JSON rendering branch
+// IS wired for TraceQL too (exprFieldAccess, not just exprMapAccess — see
+// its own doc), so the warning narrows to the same "per-key lookups
+// supported, full-map operations are not" shape logs already used, and
+// Result.TracesAttrStrategies resolves to AttrStrategyJSON for the
+// detected column instead of staying nil.
 func TestRunTracesJSONAttrMapPassesWithWarning(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
@@ -519,14 +519,16 @@ func TestRunTracesJSONAttrMapPassesWithWarning(t *testing.T) {
 		t.Fatalf("want exactly 1 warning, got %d: %v", len(res.Warnings), res.Warnings)
 	}
 	w := res.Warnings[0]
-	for _, want := range []string{tr.SpansTable, tr.ResourceAttributesColumn, "JSON-typed attribute schema", "#2777", "not implemented"} {
+	for _, want := range []string{tr.SpansTable, tr.ResourceAttributesColumn, "JSON-typed attribute schema", "#2777", "are supported", "#3065"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warning missing %q: %s", want, w)
 		}
 	}
-	if res.TracesAttrStrategies != nil {
-		t.Errorf("TracesAttrStrategies = %v, want nil — chsql's JSON branch is not wired for traces in this version",
-			res.TracesAttrStrategies)
+	if strings.Contains(w, "not implemented") {
+		t.Errorf("traces warning must not claim query lowering is unimplemented — it is, for per-key lookups: %s", w)
+	}
+	if got := res.TracesAttrStrategies.Lookup(tr.ResourceAttributesColumn); got != chsql.AttrStrategyJSON {
+		t.Errorf("TracesAttrStrategies.Lookup(%q) = %v, want AttrStrategyJSON", tr.ResourceAttributesColumn, got)
 	}
 	if res.LogsAttrStrategies != nil {
 		t.Errorf("LogsAttrStrategies = %v, want nil (no logs column was made JSON in this test)", res.LogsAttrStrategies)

@@ -2879,10 +2879,26 @@ precise boot-time finding:
       per-key lowering entirely), and a table whose ingestion ever used
       `json_type_escape_dots_in_keys=1` or mixes dotted-key encodings —
       tracked as [#3063](https://github.com/tsouza/cerberus/issues/3063).
-    - **Traces**: query lowering against a JSON-typed attribute map is not
-      implemented yet (only detection is), so queries touching that column's
-      keys still fail, just at query time instead of at boot — tracked as
-      [#3062](https://github.com/tsouza/cerberus/issues/3062).
+    - **Traces**: per-key attribute lookups and comparisons now work against
+      a JSON-typed column too — span/resource/scope attribute matchers
+      (`{ span.foo = "bar" }`), numeric/duration comparisons
+      (`{ span.http.status_code > 100 }`), and existence checks
+      (`{ span.foo != nil }`). The warning names what remains unsupported:
+      the `compare()` spanset-metrics operator's well-known/generic
+      attribute fan-out, the `/api/search/tags` /
+      `/api/search/tag/{name}/values` discovery endpoints (their queries
+      bypass the per-key lowering entirely, like logs' metadata endpoints
+      above), and a table whose ingestion ever used
+      `json_type_escape_dots_in_keys=1` or mixes dotted-key encodings —
+      tracked as [#3065](https://github.com/tsouza/cerberus/issues/3065).
+      One further caveat specific to `ResourceAttributes`: `/api/search`'s
+      own baseline response shaping merges `ResourceAttributes` with
+      synthetic trace/span/parent-span-id keys on every response, which is
+      itself a full-map operation a JSON-typed `ResourceAttributes` column
+      cannot satisfy yet — so `/api/search` fails on every query
+      regardless of filter shape until #3065 lands the full-map JSON
+      bridge, if `ResourceAttributes` (not `SpanAttributes` /
+      `ScopeAttributes`) is the JSON-typed column.
     - Metrics attribute-map columns are **not** covered by this exception
       and stay `Map(String, String)`-only — they carry the metric's series
       identity, out of scope per the issue itself.

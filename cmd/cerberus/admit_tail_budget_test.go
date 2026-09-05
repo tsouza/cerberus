@@ -189,7 +189,7 @@ func TestMountAPIHeads_TailAndQueryBudgetsAreWiredEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	mux := http.NewServeMux()
-	if _, err := mountAPIHeads(ctx, mux, lazyClient(t), cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, nil); err != nil {
+	if _, err := mountAPIHeads(ctx, mux, lazyClient(t), cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, preflightAttrStrategies{}); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 	srv := httptest.NewServer(mux)

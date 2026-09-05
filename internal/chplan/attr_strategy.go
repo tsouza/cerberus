@@ -36,24 +36,28 @@ const (
 	AttrStrategyMap AttrStrategy = iota
 
 	// AttrStrategyJSON means the column is ClickHouse's native JSON type.
-	// chsql's exprMapAccess and its FnMapContainsKey render hook branch on
-	// it — see their doc comments for the exact SQL shape and the
-	// missing-vs-empty semantics decision. Only applies when the map/column
-	// operand is a bare *ColumnRef (never a composed intermediate Map
-	// expression built by mapUpdate/mapConcat/map(), which really is a Map
-	// at the SQL level regardless of the strategy of the column it was
-	// seeded from) — MapAccess additionally requires a literal
-	// (*LitString) key, since ClickHouse's JSON dynamic-subcolumn path
-	// syntax is a compile-time path expression, not a bound parameter.
+	// chsql's exprMapAccess, exprFieldAccess, and the FnMapContainsKey
+	// render hook all branch on it — see their doc comments for the exact
+	// SQL shape and the missing-vs-empty semantics decision. Only applies
+	// when the map/column operand is a bare *ColumnRef (never a composed
+	// intermediate Map expression built by mapUpdate/mapConcat/map(),
+	// which really is a Map at the SQL level regardless of the strategy
+	// of the column it was seeded from) — MapAccess additionally requires
+	// a literal (*LitString) key, since ClickHouse's JSON
+	// dynamic-subcolumn path syntax is a compile-time path expression,
+	// not a bound parameter (FieldAccess's Path is always a Go string,
+	// never an Expr, so it satisfies this trivially).
 	//
-	// Scope (cerberus issue #2777, this slice): wired for LOGS only.
-	// Traces detection already ships (preflight's jsonAttrMapCompat), but
-	// query-time rendering for traces is tracked separately as cerberus
-	// issue #3062 — internal/engine never resolves a non-nil
-	// AttrStrategies for a TraceQL request in this version, so a
-	// JSON-typed traces attribute column still fails at query time
-	// exactly as before (no behaviour change, no untested accidental
-	// support). Metrics never sets this: attribute maps there carry
+	// Scope: wired for LOGS in cerberus issue #2777's original slice, and
+	// for TRACES in the #3062 follow-up (both per-key lookups AND
+	// comparisons — TraceQL's lowering builds FieldAccess, not MapAccess,
+	// for every attribute read, which is why exprFieldAccess needed its
+	// own JSON branch rather than inheriting exprMapAccess's). Full-map
+	// operations (LogQL line_format/label_format/unpack, TraceQL's
+	// compare() attribute fan-out) and the ad-hoc metadata/tag-discovery
+	// query builders that bypass chplan entirely remain unsupported for
+	// both signals — tracked as cerberus issues #3063 (logs) and #3065
+	// (traces). Metrics never sets this: attribute maps there carry
 	// series identity and preflight FATALs on anything but Map.
 	AttrStrategyJSON
 )
@@ -72,9 +76,10 @@ const (
 // resolves one map per signal (Result.LogsAttrStrategies /
 // TracesAttrStrategies), and internal/engine injects only the map for the
 // signal actually being queried (chsql.WithAttrStrategies(ctx, ...) called
-// with LogsAttrStrategies for a LogQL request, nil for PromQL/TraceQL in
-// this version) — so a chsql.Builder rendering one query only ever sees
-// that one signal's resolved strategies, never a merged cross-signal map.
+// with LogsAttrStrategies for a LogQL request, TracesAttrStrategies for a
+// TraceQL request, nil for PromQL, which never resolves either) — so a
+// chsql.Builder rendering one query only ever sees that one signal's
+// resolved strategies, never a merged cross-signal map.
 type AttrStrategies map[string]AttrStrategy
 
 // Lookup returns the AttrStrategy configured for column, or

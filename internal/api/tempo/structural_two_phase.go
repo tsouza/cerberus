@@ -220,9 +220,28 @@ func (h *Handler) runStructuralTwoPhase(ctx context.Context, sj *chplan.Structur
 // ids, not a Sample stream — the same direct-emit pattern resolveTraceRoots
 // uses. The spans table is threaded onto the emit context so the resource-
 // bound gate verifies the closure's scans stay windowed.
+//
+// AttrStrategies is threaded here too (cerberus issue #3062) precisely
+// because this bypasses engine.emitForHead — the ONE chokepoint that
+// duck-types h.lang against attrStrategier and calls
+// chsql.WithAttrStrategies automatically. Every other emit path in this
+// package reaches emitForHead through h.Engine.QueryPlan and picks the
+// strategy up for free; this hand-rolled direct-emit path is the
+// exception the #2777 PR body's own risk note anticipated ("structural-
+// join/nested-set emitters that may not route through the emitSelect
+// chokepoint"), and a real chDB differential
+// (TestTraceQL_JSONAttrStrategy_StructuralJoin_ChDB) caught it: the
+// closure's own predicate against a JSON-typed span attribute column
+// failed with ILLEGAL_TYPE_OF_ARGUMENT until this line was added — the
+// narrow ranking query still evaluates every closure predicate (it is
+// the SAME closure, just projecting fewer columns), so a JSON-typed
+// attribute referenced anywhere in it needs the strategy exactly like
+// phase B and the single-query path do.
 func (h *Handler) runStructuralPhaseA(ctx context.Context, sj *chplan.StructuralJoin, limit int) ([]string, error) {
 	phaseA := buildStructuralPhaseAPlan(sj, h.Schema, limit)
-	sql, args, err := chsql.Emit(chsql.WithSpansTable(ctx, h.Schema.SpansTable), phaseA)
+	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
+	ctx = chsql.WithAttrStrategies(ctx, h.AttrStrategies)
+	sql, args, err := chsql.Emit(ctx, phaseA)
 	if err != nil {
 		// Mirror the engine's `emit:` wrapping so ClassifyErr maps this
 		// to HTTP 500 like any other emit failure.
