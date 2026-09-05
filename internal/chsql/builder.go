@@ -671,14 +671,19 @@ func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
 // (see the PR that introduced this function for the empirical
 // before/after `match()` calls).
 //
-// v's shape is almost always *chplan.LitString — every matcher lowerer
-// binds the pattern as a plain string literal — in which case the
+// v's shape is almost always *chplan.LitString — every STATIC matcher
+// lowerer binds the pattern as a plain string literal — in which case the
 // anchors are folded into the Go string before it becomes the bound
 // `?` parameter, so the emitted SQL is byte-identical in shape to the
-// unanchored form, just a longer parameter value. Any other Expr shape
-// (defensive — no current caller produces one) is wrapped with CH's
-// concat() instead, composed via the typed FuncCall Frag rather than
-// string concatenation.
+// unanchored form, just a longer parameter value. Any other Expr shape is
+// wrapped with CH's concat() instead, composed via the typed FuncCall Frag
+// rather than string concatenation — this is a REAL, reachable shape, not
+// defensive: TraceQL's dynamic-attribute regex match (`{ .x =~ .y }`) has
+// no compile-time pattern to validate (internal/traceql/ast's
+// validateRegexPattern explicitly skips a non-Static RHS) and lowers its
+// RHS the same way any other operand reaches this function, so v can be a
+// bare ColumnRef/MapAccess resolved per span at query time. Pinned by
+// builder_test.go's "binary_match_dynamic_pattern" case.
 func anchoredRegexPattern(v chplan.Expr) chplan.Expr {
 	const anchorPrefix = "^(?:"
 	const anchorSuffix = ")$"

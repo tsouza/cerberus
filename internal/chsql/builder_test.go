@@ -854,6 +854,25 @@ func TestBuilder_Expr(t *testing.T) {
 			wantArg: []any{"^(?:^api-.*)$"},
 		},
 		{
+			// anchoredRegexPattern's non-literal branch: a TraceQL dynamic
+			// attribute pattern (`{ .x =~ .y }`) is resolved per span at
+			// query time, so validateRegexPattern (internal/traceql/ast)
+			// explicitly leaves it unchecked at parse time — this is a
+			// real, documented query shape, not a hypothetical. Right is a
+			// bare ColumnRef standing in for the lowered dynamic-attribute
+			// expression; anchoredRegexPattern must wrap it with concat()
+			// rather than folding the anchors into a Go string, since
+			// there is no compile-time string to fold them into.
+			name: "binary_match_dynamic_pattern",
+			expr: &chplan.Binary{
+				Op:    chplan.OpMatch,
+				Left:  &chplan.ColumnRef{Name: "ServiceName"},
+				Right: &chplan.ColumnRef{Name: "Pattern"},
+			},
+			wantSQL: "match(`ServiceName`, concat(?, `Pattern`, ?))",
+			wantArg: []any{"^(?:", ")$"},
+		},
+		{
 			// TraceQL link / event spanset filters lower to this shape
 			// (see chplan.NestedArrayExists). Key + Value bind through
 			// Arg, so the rendered SQL carries two parameter slots.
