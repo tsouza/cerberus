@@ -131,6 +131,70 @@ type nativeTSGridAgg struct {
 // which no NaN propagates into) and irate/idelta (trailing-pair folds, blind
 // to an interior NaN) break the premise a second and third way.
 //
+// # Verdict on the scan-order gate (cerberus issue #2924): rejected, measured
+//
+// A second repair — sound this time — exists: a window aggregate
+// (`max(isNaN(Value)) OVER (PARTITION BY <series keys>, <ts>)`) ahead of the
+// scan drops a finite row iff some row shares its (series, timestamp) and
+// carries a NaN, leaving the timeSeries*ToGrid fold nothing ambiguous to
+// collapse. It was not shipped, because its cost was measured and it is not
+// close to free even in the BEST case.
+//
+// Measured against a real ClickHouse 25.10.7.6 (above the family's 25.9
+// floor), one MergeTree table (ORDER BY (SeriesId, TimeUnix), matching the
+// production schema's (MetricName, Attributes, …, TimeUnix) shape for a
+// single-metric query with no relabeling), 2000 series x 2880 samples/series
+// (5.76M rows, 30s scrape interval over 24h), one representative
+// `rate(<counter>[5m])` query_range shape at a 60s step over the full day —
+// exactly emitRangeWindowGridNative's own two-level SQL, before and after
+// inserting the gate ahead of the inner GROUP BY. Each variant run 8x
+// end-to-end (clickhouse-client wall clock) plus once with query_id tagging
+// for a system.query_log cross-check:
+//
+//   - baseline (today's shape): 618-1090ms wall clock (median ~700ms);
+//     query_log query_duration_ms=775, memory_usage=453MiB.
+//   - gated, PARTITION BY key IDENTICAL to the table's physical ORDER BY (the
+//     best case the deployment can offer — no re-sort should be needed):
+//     1568-1764ms wall clock (median ~1660ms, EVERY rep slower than the
+//     baseline's slowest); query_log query_duration_ms=1769,
+//     memory_usage=447MiB.
+//   - gated, PARTITION BY key that does NOT match the physical order
+//     (`SeriesId % 37`, forcing a genuine resort): 1712-2337ms wall clock —
+//     close to, not dramatically worse than, the matching-order case.
+//
+// EXPLAIN PIPELINE confirms why the two gated cases are close: even the
+// order-matching case gets a Sorting step and a WindowTransform (ClickHouse
+// does not skip window-function bookkeeping just because the input already
+// satisfies the partition order); the mismatched case additionally gets an
+// 8-way PartialSortingTransform / MergeSortingTransform pair, and that extra
+// real sort is a SMALLER increment than the WindowTransform bookkeeping
+// itself. A control run — the identical two-level nesting with a plain
+// boolean filter swapped in for the window aggregate — reproduced the
+// baseline's own timing (median ~840ms), ruling out "one more subquery
+// level" as the cause and isolating the cost to the window function.
+//
+// Net: the gate adds roughly +130% wall-clock latency (2.1-2.4x) to the
+// flagship native rate() path, on EVERY query down that path, with no
+// memory benefit, even under the most favourable ORDER BY alignment a
+// deployment could have — to correctly resolve an edge case (two samples at
+// one series' exact timestamp with one of them NaN) real telemetry rarely
+// produces. This is this repo's own established pattern for a change that
+// looks like an obvious win before it is actually measured (see
+// classic_bucket_merge_summap.go's own "Verdict" section for the same
+// shape of finding) — the number kills it. No chopt feature is added for
+// this gate, opt-in or otherwise: a mandatory ~2x tax on the flagship native
+// path is not something worth carrying, gated or not, for a rarity this
+// narrow.
+//
+// The only remaining path is cerberus issue #2924's Option 1: the family's
+// own documentation states a NaN-loses rule it does not deliver, which is a
+// documented-contract violation upstream, not a cerberus modelling gap — but
+// reporting it needs a maintainer contact or triage path outside this
+// repository, and that requires explicit human authorization this issue does
+// not have. No such report has been filed or attempted. The divergence stays
+// tracked exactly where cerberus issue #2798 already pinned it; #2924 closes
+// on this measured negative result.
+//
 // StateFn / MergeFn name the aggregate's partial-state combinator pair, which
 // the deferred label-shaping shape (chplan.RangeWindowGridNative.Recollapse)
 // needs: the inner level emits <fn>ToGridState per RAW series and the middle
