@@ -2021,11 +2021,23 @@ the codec swap:
   adopted; Value / Sum keep `ZSTD(1)`, unchanged.
 
 See the codec-tuning PR (cerberus issue #2768) for the full benchmark
-transcript and measured numbers. Cerberus issue #2822 tracks the one
-candidate the issue explicitly deferred rather than benchmarked here:
-experimental ALP for Value/Sum, earmarked for a future `>= 26.8` version
-floor (its 26.8 Float32 arithmetic change is a live on-disk decode-compat
-risk below that floor).
+transcript and measured numbers.
+
+**NOT adopted — Value / Sum Float64, ALP codec (cerberus issue #2822):**
+this third Value/Sum candidate was originally deferred rather than
+benchmarked, on the premise that it needed a `>= 26.8` version-floor bump
+to resolve a Float32 arithmetic decode-compat risk in ALP's 26.8 release.
+That premise was corrected when #2822 closed: no floor bump was needed
+(chopt already ships per-feature floors — e.g. `full_text_index` at 26.2 —
+well above the 24.8 global `min_clickhouse`), and the cited Float32
+decode-compat risk never applied, since every targeted column (Value, Sum)
+is Float64, not Float32. Benchmarked directly against the same real
+production-shaped samples on live ClickHouse 26.6/26.7/26.8 servers, ALP
+measured dramatically worse than even Gorilla/FPC above — the histogram
+Sum column compressed to ~99.9% of its uncompressed size (essentially no
+compression) versus ZSTD(1)'s ~11x, and the counter Value column to ~19%
+of uncompressed versus ZSTD(1)'s ~2.7%, consistently across all three
+versions. ALP is not adopted; Value / Sum keep `ZSTD(1)`, unchanged.
 
 All codecs used above are supported at ClickHouse >= 22.9, well under this
 repo's 24.8 version floor (`docs/toolchain.md`), so — like `ADD PROJECTION`
@@ -2370,18 +2382,59 @@ ever needs the tokenbf_v1 shape back for some OTHER predicate) needs a full
 `ADD INDEX` + `MATERIALIZE INDEX` re-backfill, since the drop discards the
 existing granule data.
 
-**Unverified ClickHouse 26.6 claims — do not build on these without
-re-verifying against a real 26.6+ instance.** `multiSearchAny` inside the
-skip-index analyzer and a dedicated posting-list segment cache were both
-raised as possible 26.6 extras. Live-probed against a real ClickHouse
-26.6.3.62 server: `multiSearchAny(Body, [...])` produced NO skip-index entry
-in `EXPLAIN indexes=1` at all (full granule scan, unlike `hasAnyTokens` /
-`hasAllTokens` / `hasToken`, which all pruned correctly) — this claim did
-NOT hold on the probed build. `use_text_index_postings_cache` DOES exist as
-a real setting on 26.6.3.62, defaulting to `0` (off) — its existence is
-confirmed, but no benchmark evidence was gathered on its actual effect.
-Neither claim is relied on by `text_index_line_filter`. See the follow-up
-issue this PR files for someone with continued 26.6+ access to settle these.
+**Re-verified ClickHouse 26.6-26.8 claims (cerberus issue #2838) — both
+REFUTED / no realized win, confirmed across three live server versions.**
+`multiSearchAny` inside the skip-index analyzer and a dedicated posting-list
+segment cache were both raised as possible 26.6 extras and originally only
+probed on one 26.6.3.62 build. Re-verified against real ClickHouse
+26.6.4.55, 26.7.6.57, and 26.8.2.7 servers (Docker `clickhouse/clickhouse-
+server`), each seeded with 20M realistic log rows and an `idx_lower_body`
+text index:
+
+- **`multiSearchAny` stays out of the skip index on every probed build,
+  including 26.8.** `EXPLAIN indexes=1` on `multiSearchAny(lower(Body),
+  [...])` produced no `Skip` entry and a full granule scan (`Granules:
+  612/612` and `2442/2442` across two differently-sized test tables) on all
+  three versions, while `hasAnyTokens` on the identical predicate correctly
+  pruned to the matching granules only (and even resolved to a trivial
+  index-only count on 26.8). This is the real production consumer LogQL's
+  own or-filter chains would hit: chained `|=`/`or` alternates
+  (`internal/logql/lower.go`'s `lowerLineFilterChain`) lower to an `OpOr`
+  tree of per-alternate `position(Body, ?) > 0` predicates — the exact shape
+  a working `multiSearchAny` skip-index collapse would target — and it does
+  not fire at any tested version. The original refutation was not a
+  26.6.3-specific gap; it holds through 26.8.
+- **`use_text_index_postings_cache=1` measured no win** on a chained
+  multi-stage AND predicate matching cerberus's own emitted
+  `text_index_line_filter` shape (`lower(Body) LIKE '%tok%' AND
+  position(Body, ?) > 0`, ANDed across 2-3 stages) run repeatedly against
+  the identical predicate — the cache's best case. Across repeated
+  `clickhouse-benchmark` trials on ClickHouse 26.8 it was consistently at or
+  slightly below the `0` (off) baseline (e.g. 27.1 vs 26.3 QPS on a 3-stage
+  chain, 12.7 vs 12.4 QPS on a 2-stage chain) — no realized throughput or
+  latency win to justify stamping it.
+
+Neither is relied on by `text_index_line_filter`, and neither warrants a new
+`chopt` feature: #2838 closed both findings negative with this evidence.
+
+**`text_index_posting_list_apply_mode=lazy` (cerberus issue #2837) —
+measured no win, closed negative.** `lazy` is default-off (`materialize`) on
+26.6/26.7 and becomes the server default at 26.8. Benchmarked explicitly
+stamping `text_index_posting_list_apply_mode=lazy` (plus
+`allow_experimental_text_index_lazy_apply=1` where required) against the
+unchanged `materialize` default, on the same 3-stage chained-AND workload,
+across repeated trials on both 26.6 and 26.7: `lazy` measured slightly
+WORSE than `materialize` on both (26.6: ~22.4 vs ~23.1 QPS averaged across 3
+trials; 26.7: ~25.4 vs ~25.8 QPS), never a consistent win. On 26.8, where
+`lazy` is already the default, explicitly stamping it is a no-op by
+definition — "no chopt feature ships whose stamp merely duplicates what the
+server already defaults to." `text_index_density_threshold` (the lever
+`lazy` mode uses internally to pick leapfrog-intersection vs brute-force
+bitmap) was also swept from `0.01` to `0.9` on 26.8 against the same
+workload and moved throughput by less than the run-to-run noise floor
+already established by the trials above (~2-4%) — no version default-flip
+backs it either, so there is no floor at which to gate a feature even if a
+real effect existed. Neither setting warrants a `chopt` feature.
 
 ### DELTA-prefix aggregate table + backfill (cerberus issue #2389)
 
