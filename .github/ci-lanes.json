@@ -960,7 +960,7 @@
     },
     {
       "id": "e2e.bwc-minio",
-      "description": "Bundled ClickHouse storage-tiering (object-storage / hot-only / hot-cold) MinIO placement and query smoke, one matrix leg per scenario (cerberus issue #3075).",
+      "description": "Bundled ClickHouse storage-tiering (object-storage / hot-only / hot-cold) MinIO placement and query smoke, plus a mode-toggle migration-safety leg, one matrix leg per scenario (cerberus issues #3075, #3082).",
       "owner": {
         "workflow": ".github/workflows/e2e.yml",
         "jobs": ["bwc-minio"],
@@ -972,7 +972,13 @@
       "purpose": "correctness",
       "layers": ["8", "9"],
       "oracle_class": "consumer",
-      "recipes": ["e2e-bwc-up", "e2e-bwc-verify", "e2e-run"],
+      "recipes": [
+        "e2e-bwc-up",
+        "e2e-bwc-verify",
+        "e2e-run",
+        "e2e-bwc-toggle-mode",
+        "e2e-bwc-verify-mode-toggle"
+      ],
       "command": "bundled-ClickHouse MinIO k3d scenario",
       "build_tags": ["e2e"],
       "package_globs": ["test/e2e/**"],

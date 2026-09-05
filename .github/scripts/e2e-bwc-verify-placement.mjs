@@ -52,6 +52,7 @@
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
+import { makeKubectl, clickhousePodName } from './lib/bwc-k8s.mjs';
 
 const SCENARIO = process.env.SCENARIO || 'object-storage';
 const NS = process.env.NAMESPACE || 'cerberus';
@@ -109,24 +110,10 @@ const CANONICAL_TABLES = new Set([
   'otel_metrics_summary',
 ]);
 
-function kubectl(args, opts = {}) {
-  return capture('kubectl', ['-n', NS, ...args], opts);
-}
-
-// Resolve the bundled ClickHouse pod by the chart's immutable selector label.
-function clickhousePod() {
-  const res = kubectl([
-    'get', 'pod',
-    '-l', 'app.kubernetes.io/component=clickhouse',
-    '-o', 'jsonpath={.items[0].metadata.name}',
-  ]);
-  const name = res.stdout.trim();
-  if (res.status !== 0 || !name) {
-    error(`could not resolve bundled ClickHouse pod in namespace ${NS}: ${res.stderr.trim()}`);
-    process.exit(1);
-  }
-  return name;
-}
+// Namespaced kubectl runner + pod lookup, shared with
+// e2e-bwc-verify-mode-toggle.mjs via lib/bwc-k8s.mjs.
+const kubectl = makeKubectl(capture, NS);
+const clickhousePod = () => clickhousePodName(kubectl, NS);
 
 // Run a ClickHouse query inside the CH pod as the dedicated cerberus user.
 function chQuery(pod, sql) {
