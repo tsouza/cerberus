@@ -2279,6 +2279,25 @@ func renderTracesCreateTsView(cfg Config) string {
 //     regressed — Gorilla 27%-2182% larger, FPC 84%-2662% larger — so
 //     neither is adopted; Value / Sum keep ZSTD(1), unchanged.
 //
+// A third candidate for the same Value/Sum columns — the experimental ALP
+// (Adaptive Lossless floating-Point) codec — was deferred to a follow-up
+// (cerberus issue #2822) rather than benchmarked here, on the premise that
+// it needed a >= 26.8 version-floor bump to resolve a Float32 arithmetic
+// decode-compat risk in ALP's 26.8 release. That premise did not survive
+// scrutiny when #2822 was closed: no floor bump was needed (chopt already
+// ships per-feature floors — e.g. full_text_index at 26.2 — well above the
+// 24.8 global min_clickhouse), and the cited Float32 decode-compat risk
+// never applied in the first place, since every targeted column (Value,
+// Sum) is Float64, not Float32. On the actual question — does ALP beat
+// ZSTD(1) on this data — #2822 measured it directly against real
+// production-shaped samples (the same #2411 corpus this issue used) on
+// live ClickHouse 26.6/26.7/26.8 servers: ALP was dramatically WORSE than
+// even Gorilla/FPC above, compressing the histogram Sum column to ~99.9%
+// of its uncompressed size (essentially no compression at all, versus
+// ZSTD(1)'s ~11x) and the counter Value column to ~19% of uncompressed
+// (versus ZSTD(1)'s ~2.7%, a ~7x gap) — consistent across all three
+// versions. ALP is not adopted; Value / Sum keep ZSTD(1), unchanged.
+//
 // Two candidates DID measure a real, safe win and are adopted below:
 //
 //   - Logs Body (String): ZSTD(3) measured ~1.3%-1.8% smaller than ZSTD(1)

@@ -748,20 +748,29 @@ against the live server rather than assume it from documentation alone, no
 `chopt` feature is registered for either family: it would be machinery
 duplicating what the server already does unconditionally.
 
-**A genuinely open question this audit surfaced, not resolved by it**: the
-issue's own "fan-out-heavy wide scans vs point lookups" framing implies the
-OPPOSITE tuning direction might pay off — deliberately RAISING the
-remote-filesystem concurrent-read thresholds (toward the local-disk
-defaults) on a detected narrow, highly-selective point-lookup shape, to
-avoid the coordination overhead of spinning up concurrent S3 fetches for a
-read that only touches a handful of granules. That is a real, plausible
-optimization, but — unlike the two settings families above — it needs an
-optcorpus A/B pass against representative point-lookup and wide-scan query
-shapes to earn adoption, the same bar `fixed_accumulator_extrapolated` and
-`sorted_slab_over_time` were held to before their own AutoSelect posture was
-decided. Tracked at
-[cerberus#2827](https://github.com/tsouza/cerberus/issues/2827), not
-attempted in this PR.
+**The follow-up question this audit surfaced — settled negative
+(cerberus issue #2827).** The issue's own "fan-out-heavy wide scans vs
+point lookups" framing implied the OPPOSITE tuning direction might pay
+off: deliberately RAISING the remote-filesystem concurrent-read thresholds
+(toward the local-disk defaults, 163840 rows / 240 MiB) on a detected
+narrow, highly-selective point-lookup shape, to avoid the coordination
+overhead of spinning up concurrent S3 fetches for a read that only touches
+a handful of granules. Benchmarked directly against a real ClickHouse 26.8
+server backed by a live MinIO (S3-compatible) disk — 20M rows, a single
+`id = <literal>` point-lookup shape, `clickhouse-benchmark` over 2,000
+distinct random-id queries per configuration with the mark cache dropped
+between runs: the default (`0`/`0`, max concurrency) and the raised
+local-disk-matching thresholds measured statistically indistinguishable
+throughput (83.577 vs 83.655 QPS, a ~0.1% gap, well inside run-to-run
+noise). Smaller repeated trials (500 queries x 3) leaned the OPPOSITE
+direction from the hypothesis — raised thresholds ~2-3% SLOWER, not
+faster. A single-key point lookup only ever touches on the order of one
+granule regardless of the concurrent-read threshold, so there is no
+coordination overhead this setting family removes for that shape on real
+S3-backed storage: the threshold governs whether a read gets SPLIT into
+concurrent sub-ranges, and a read this narrow has nothing left to split
+either way. No `chopt` feature is adopted; #2827 is closed with this
+evidence rather than left open.
 
 **Local filesystem cache** (`enable_filesystem_cache` + the server-side
 cache disk) IS adopted by this issue, but as documented operator guidance
