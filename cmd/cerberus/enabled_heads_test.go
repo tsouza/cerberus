@@ -62,7 +62,7 @@ func buildHeadsTestServer(t *testing.T, enabledHeads string) *httptest.Server {
 	// past the test.
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	if _, err := mountAPIHeads(ctx, traceMux, client, cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}); err != nil {
+	if _, err := mountAPIHeads(ctx, traceMux, client, cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, nil); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 

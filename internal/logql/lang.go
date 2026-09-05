@@ -72,7 +72,31 @@ type Lang struct {
 	// see its doc comment.
 	LogLineLimit    int64
 	LogLineBackward bool
+
+	// AttrStrategies resolves how the logs attribute-map columns
+	// (Schema.AttributesColumn / ResourceAttributesColumn /
+	// ScopeAttributesColumn) are physically stored, per
+	// internal/preflight's boot probe (cerberus issue #2777,
+	// Result.LogsAttrStrategies) — nil (the zero value) means every
+	// column is a genuine ClickHouse Map, rendering byte-identical to
+	// before this field existed. internal/api/loki's Handler resolves
+	// this once at construction (from the preflight Result cmd/cerberus
+	// already runs) and copies it onto every per-request *Lang it builds,
+	// exactly like Schema. EmitAttrStrategies (below) is the duck-typed
+	// hook engine.emitForHead reads to thread it onto the emit-time
+	// context — the same pattern spansTabler / rangeSeriesOrderer already
+	// use for Tempo / Prometheus-specific emit behaviour.
+	AttrStrategies chplan.AttrStrategies
 }
+
+// EmitAttrStrategies returns the AttrStrategies this Lang's queries should
+// render attribute-map accesses against — see the AttrStrategies field's
+// doc. engine.emitForHead duck-types on this to thread it onto the emit
+// context via chsql.WithAttrStrategies. Returns chplan.AttrStrategies
+// (a chsql.AttrStrategies alias) rather than importing chsql directly:
+// logql is architecturally forbidden from depending on chsql
+// (.go-arch-lint.yml) — see chplan.AttrStrategy's own doc.
+func (l *Lang) EmitAttrStrategies() chplan.AttrStrategies { return l.AttrStrategies }
 
 // errorTypes mirrors the Loki errorType vocabulary the handler emits.
 // Duplicated here (not re-imported from internal/api/loki) so the LogQL

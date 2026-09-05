@@ -13,6 +13,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -448,12 +449,16 @@ func TestRunWrongAttributeTypeFails(t *testing.T) {
 	}
 }
 
-// TestRunLogsJSONAttrMapPassesWithWarning pins cerberus issue #2777 phase
-// 1's boot-probe compat: a logs table whose attribute-map columns are typed
-// JSON (the upstream OTel exporter's `json:true` schema variant) boots
-// instead of FATALing, with a WARNING naming the table/column and pointing
-// at the issue — the query emitters don't lower against JSON yet, so an
-// operator on this schema needs to know that up front.
+// TestRunLogsJSONAttrMapPassesWithWarning pins cerberus issue #2777's
+// boot-probe compat AND its deliberate boot-warning-posture decision: a
+// logs table whose attribute-map columns are typed JSON (the upstream OTel
+// exporter's `json:true` schema variant) boots instead of FATALing, with a
+// WARNING that — now that chsql actually has a JSON rendering path for
+// logs' per-key lookups — says what IS supported (not "nothing works
+// yet") and still names what remains unsupported (full-map operations,
+// escape-dots-in-keys schemas). Result.LogsAttrStrategies must resolve the
+// column to AttrStrategyJSON so internal/engine can thread it into a LogQL
+// request's ctx.
 func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
@@ -472,16 +477,30 @@ func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
 		t.Fatalf("want exactly 1 warning, got %d: %v", len(res.Warnings), res.Warnings)
 	}
 	w := res.Warnings[0]
-	for _, want := range []string{l.LogsTable, l.AttributesColumn, "JSON-typed attribute schema", "#2777"} {
+	for _, want := range []string{l.LogsTable, l.AttributesColumn, "JSON-typed attribute schema", "#2777", "are supported"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warning missing %q: %s", want, w)
 		}
 	}
+	if strings.Contains(w, "not implemented") {
+		t.Errorf("logs warning must not claim query lowering is unimplemented — it is, for per-key lookups: %s", w)
+	}
+	if got := res.LogsAttrStrategies.Lookup(l.AttributesColumn); got != chsql.AttrStrategyJSON {
+		t.Errorf("LogsAttrStrategies.Lookup(%q) = %v, want AttrStrategyJSON", l.AttributesColumn, got)
+	}
+	if res.TracesAttrStrategies != nil {
+		t.Errorf("TracesAttrStrategies = %v, want nil (no traces column was made JSON in this test)", res.TracesAttrStrategies)
+	}
 }
 
 // TestRunTracesJSONAttrMapPassesWithWarning is the traces counterpart of
-// TestRunLogsJSONAttrMapPassesWithWarning — the other signal the issue's
-// Phase 1 boot-probe compat covers.
+// TestRunLogsJSONAttrMapPassesWithWarning — the other signal the boot-probe
+// compat covers. Unlike logs, chsql's JSON rendering branch is NOT wired
+// into any TraceQL-facing AttrStrategies in this version (see
+// tableReq.jsonQuerySupported's doc), so the warning keeps its original
+// "nothing works at query time yet" text, and Result.TracesAttrStrategies
+// stays nil even though the column WAS detected as JSON — a deliberate
+// choice, not an oversight: see cerberus issue #3062, a sub-issue of #2777.
 func TestRunTracesJSONAttrMapPassesWithWarning(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
@@ -500,10 +519,17 @@ func TestRunTracesJSONAttrMapPassesWithWarning(t *testing.T) {
 		t.Fatalf("want exactly 1 warning, got %d: %v", len(res.Warnings), res.Warnings)
 	}
 	w := res.Warnings[0]
-	for _, want := range []string{tr.SpansTable, tr.ResourceAttributesColumn, "JSON-typed attribute schema", "#2777"} {
+	for _, want := range []string{tr.SpansTable, tr.ResourceAttributesColumn, "JSON-typed attribute schema", "#2777", "not implemented"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warning missing %q: %s", want, w)
 		}
+	}
+	if res.TracesAttrStrategies != nil {
+		t.Errorf("TracesAttrStrategies = %v, want nil — chsql's JSON branch is not wired for traces in this version",
+			res.TracesAttrStrategies)
+	}
+	if res.LogsAttrStrategies != nil {
+		t.Errorf("LogsAttrStrategies = %v, want nil (no logs column was made JSON in this test)", res.LogsAttrStrategies)
 	}
 }
 

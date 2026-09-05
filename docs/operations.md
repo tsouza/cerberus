@@ -2864,16 +2864,28 @@ precise boot-time finding:
   signal. The check honours every `CERBERUS_SCHEMA_*` table rename — it
   validates the *active* shape.
   - **Exception: JSON-typed attribute maps on logs/traces.** Cerberus issue
-    [#2777](https://github.com/tsouza/cerberus/issues/2777) phase 1: when a
-    **logs or traces** table's attribute-map column is typed ClickHouse's
-    `JSON` instead (the upstream OTel exporter's `json:true` schema variant),
+    [#2777](https://github.com/tsouza/cerberus/issues/2777): when a **logs or
+    traces** table's attribute-map column is typed ClickHouse's `JSON`
+    instead (the upstream OTel exporter's `json:true` schema variant),
     startup **boots** rather than failing, with a **warning** logged naming
-    the table/column — query lowering against a JSON-typed attribute map is
-    not implemented yet (only detection is), so queries touching that
-    column's keys still fail, just at query time instead of at boot. Metrics
-    attribute-map columns are **not** covered by this exception and stay
-    `Map(String, String)`-only — they carry the metric's series identity, out
-    of scope per the issue itself.
+    the table/column.
+    - **Logs**: per-key attribute lookups now work against a JSON-typed
+      column — stream-selector label matchers (`{app="foo"}`),
+      `detected_level`, and any other bare `MapAccess`/`mapContains` read.
+      The warning names what remains unsupported: LogQL operations that need
+      the *whole* attribute map at once (`| line_format`, `| label_format`,
+      `| unpack`, wildcard `keep`/`drop`), the `/labels` / `/series` /
+      `/detected_fields` metadata endpoints (their queries bypass the
+      per-key lowering entirely), and a table whose ingestion ever used
+      `json_type_escape_dots_in_keys=1` or mixes dotted-key encodings —
+      tracked as [#3063](https://github.com/tsouza/cerberus/issues/3063).
+    - **Traces**: query lowering against a JSON-typed attribute map is not
+      implemented yet (only detection is), so queries touching that column's
+      keys still fail, just at query time instead of at boot — tracked as
+      [#3062](https://github.com/tsouza/cerberus/issues/3062).
+    - Metrics attribute-map columns are **not** covered by this exception
+      and stay `Map(String, String)`-only — they carry the metric's series
+      identity, out of scope per the issue itself.
 - **Absent (not-yet-provisioned) schema.** When the configured tables are
   **entirely absent** (`system.columns` reports zero rows for them), cerberus
   does **not** crash-loop — it **boots and waits**. This is the cerberus +

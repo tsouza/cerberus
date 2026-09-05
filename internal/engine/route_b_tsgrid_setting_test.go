@@ -117,7 +117,7 @@ func TestRouteBExecCtx_StampsTSGridSettingForNativeShards(t *testing.T) {
 			t.Parallel()
 
 			ctx := routeBExecCtx(context.Background(), "promql",
-				chclient.ResponseShapeMatrix, tsGridRouteBDecision(tc.wrap), 0, false, ResourceBoundOverrides{}, 0, 0, nil)
+				chclient.ResponseShapeMatrix, tsGridRouteBDecision(tc.wrap), 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
 
 			settings := chclient.QuerySettingsFromContext(ctx)
 			_, got := settings[chclient.SettingExperimentalTSGridAggregate]
@@ -144,7 +144,7 @@ func TestRouteBExecCtx_StampsTSGridSettingForNativeShards(t *testing.T) {
 func TestRouteBExecCtx_NilDecisionStampsNothing(t *testing.T) {
 	t.Parallel()
 
-	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, nil, 0, false, ResourceBoundOverrides{}, 0, 0, nil)
+	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, nil, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
 	if settings := chclient.QuerySettingsFromContext(ctx); len(settings) != 0 {
 		t.Fatalf("nil decision stamped settings %v", settings)
 	}

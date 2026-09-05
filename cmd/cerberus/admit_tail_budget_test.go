@@ -145,7 +145,7 @@ func TestNewLokiHandler_WiresBothBudgets(t *testing.T) {
 	})
 	limiters := newAdmitLimiters(cfg, quietLogger())
 
-	h := newLokiHandler(lazyClient(t), cfg, chopt.EnabledSet{}, limiters, quietLogger(), engine.ResourceBoundOverrides{})
+	h := newLokiHandler(lazyClient(t), cfg, chopt.EnabledSet{}, limiters, quietLogger(), engine.ResourceBoundOverrides{}, nil)
 
 	if h.Limiter != limiters.loki {
 		t.Errorf("Handler.Limiter = %p, want the loki request budget %p", h.Limiter, limiters.loki)
@@ -189,7 +189,7 @@ func TestMountAPIHeads_TailAndQueryBudgetsAreWiredEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	mux := http.NewServeMux()
-	if _, err := mountAPIHeads(ctx, mux, lazyClient(t), cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}); err != nil {
+	if _, err := mountAPIHeads(ctx, mux, lazyClient(t), cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, nil); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 	srv := httptest.NewServer(mux)

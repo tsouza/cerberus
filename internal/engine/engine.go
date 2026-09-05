@@ -106,6 +106,32 @@ func (ChsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, 
 // chsql.Emit's RequireSpansScansBounded chokepoint runs over the whole plan.
 type spansTabler interface{ SpansTable() string }
 
+// attrStrategier is implemented by a Lang whose plans should render
+// attribute-map accesses against a resolved chsql.AttrStrategies (cerberus
+// issue #2777) rather than assuming every attribute column is a
+// ClickHouse Map. Only *logql.Lang implements it today — the
+// LogsAttrStrategies preflight resolves is threaded onto it by
+// internal/api/loki's Handler at construction; PromQL / TraceQL don't
+// implement this interface, so their plans render exactly as before this
+// issue's work (chsql.Emit's ctx never carries a non-nil AttrStrategies
+// for them, which chsql.AttrStrategies.Lookup already treats as "every
+// column is Map").
+type attrStrategier interface{ EmitAttrStrategies() chsql.AttrStrategies }
+
+// attrStrategiesForLang duck-types lang against attrStrategier and returns
+// its resolved AttrStrategies, or nil for a Lang that doesn't implement it
+// (PromQL / TraceQL today). Shared by emitForHead (route A) and every
+// route-B dispatch path (routeBExecCtx's callers) so both routes resolve
+// the identical value for the same Lang — route B's plan is a re-anchored
+// copy of route A's, and the physical column shape a chsql.MapAccess
+// renders against does not change depending on which route dispatches it.
+func attrStrategiesForLang(lang Lang) chsql.AttrStrategies {
+	if as, ok := lang.(attrStrategier); ok {
+		return as.EmitAttrStrategies()
+	}
+	return nil
+}
+
 // rangeSeriesOrderer is implemented by a Lang whose route-A SQL wants its
 // rows sorted before a streaming, per-series pivot downstream reads them
 // (the Prom head's matrixFromCursor — see prom.lang.RangeSeriesOrder's doc
@@ -162,6 +188,7 @@ func emitForHead(
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
 	}
+	ctx = chsql.WithAttrStrategies(ctx, attrStrategiesForLang(lang))
 	if ro, ok := lang.(rangeSeriesOrderer); ok {
 		plan = ro.RangeSeriesOrder(plan)
 	}
@@ -1766,8 +1793,18 @@ func routeBExecCtx(
 	bounds ResourceBoundOverrides,
 	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
 	actualsTracker *actuals.Tracker,
+	attrStrategies chsql.AttrStrategies,
 ) context.Context {
 	ctx = chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
+	// cerberus issue #2777: route B's shards emit through
+	// engine.ChsqlEmitter, which never sees a Lang (see ChsqlEmitter's
+	// doc) — so, exactly like DeltaPrefixLookback below, the resolved
+	// AttrStrategies has to ride the ctx every route-B dispatch builds
+	// here rather than being read from a Lang at emit time. Every one of
+	// this function's 4 callers resolves it via attrStrategiesForLang(lang)
+	// BEFORE calling in, so a shard's rendering matches what route A would
+	// have rendered for the identical (re-anchored) plan.
+	ctx = chsql.WithAttrStrategies(ctx, attrStrategies)
 	// Issue #2789: tag this route-B dispatch for actuals capture — see
 	// applyActualsCapture's own doc. Threaded here (rather than assumed
 	// already on ctx) because route B is the SAME funnel every
@@ -1861,6 +1898,7 @@ func (e *Engine) executeRouted(
 		routeBExecCtx(
 			ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
+			attrStrategiesForLang(lang),
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
@@ -2073,7 +2111,8 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// back to the ordinary route-A dispatch below exactly as if this had
 	// never run (Major-2's symmetric fallback).
 	budget := chclient.SampleBudgetFromContext(ctx)
-	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(ctx, lang.Name(), meta.ResponseShape, plan, decision, budget); ok {
+	attrStrategies := attrStrategiesForLang(lang)
+	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, attrStrategies); ok {
 		result := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "memo-hit")
 		// See routeMemoHitObserveDrainOutcome's own doc: issue #3035's
 		// sampling-bias fix, unlike Retry below (which only ever fires on a
@@ -2115,7 +2154,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		// failure (including "retry does not apply here") the original
 		// route-A error is what surfaces, unchanged.
 		if cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(
-			ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, err, time.Since(dispatchStart),
+			ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, err, time.Since(dispatchStart), attrStrategies,
 		); retried {
 			retryResult := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "retry")
 			retryResult.ObserveDrainOutcome = observeFn
@@ -2144,7 +2183,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 			// drain — the full wall time this route-A attempt cost before the
 			// caller saw drainErr, which is what the cancellation floor reads.
 			cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(
-				retryCtx, lang.Name(), meta.ResponseShape, plan, decision, budget, drainErr, time.Since(dispatchStart),
+				retryCtx, lang.Name(), meta.ResponseShape, plan, decision, budget, drainErr, time.Since(dispatchStart), attrStrategies,
 			)
 			if !retried {
 				return CursorResult{}, false
@@ -2375,6 +2414,7 @@ func (e *Engine) executeRoutedCursor(
 		routeBExecCtx(
 			ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
+			attrStrategiesForLang(lang),
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)

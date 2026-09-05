@@ -63,11 +63,24 @@ func (e *emitter) subqueryFrag(n chplan.Node) (Frag, error) {
 // SQL + args into the emitter's output. Centralises the splice
 // boilerplate so the per-node emitters stay focused on slot assembly.
 //
+// sb.attrStrategies is stamped from e.attrStrategies (cerberus issue
+// #2777) before rendering, unconditionally: every per-node emitter builds
+// its OWN fresh QueryBuilder and this is the one chokepoint every one of
+// them funnels through to render it, so this single line is what makes
+// the emitter's resolved AttrStrategies (seeded once from ctx by Emit)
+// reach every Scan/Filter/Aggregate/... node's chsql.MapAccess /
+// FnMapContainsKey rendering without each per-node emitter function
+// having to know this mechanism exists. e.attrStrategies is nil unless
+// Emit's ctx carried one, so a caller/plan that never heard of this
+// feature overwrites sb.attrStrategies with the same nil it already had —
+// a genuine no-op.
+//
 // Returns sb's sticky first-error (see Builder.err, #1449) instead of
 // silently dropping it — callers propagate it via `return e.emitSelect(sb)`
 // rather than the old pre-flight-render-then-discard-and-render-again
 // pattern.
 func (e *emitter) emitSelect(sb *QueryBuilder) error {
+	sb.attrStrategies = e.attrStrategies
 	sql, args, err := sb.subquerySQL()
 	if err != nil {
 		return err

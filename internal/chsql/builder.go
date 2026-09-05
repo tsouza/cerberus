@@ -29,6 +29,16 @@ type Builder struct {
 	sb   strings.Builder
 	args []any
 
+	// attrStrategies resolves how an attribute-map column that appears as
+	// a bare chplan.ColumnRef renders a per-key access (exprMapAccess,
+	// the FnMapContainsKey render hook) — see AttrStrategies's doc
+	// (attr_strategy.go). nil (the zero value, set by every existing
+	// NewBuilder() call) means AttrStrategyMap for every column, so this
+	// field is purely additive: nothing that predates cerberus issue
+	// #2777 sets it, and every one of those call sites keeps emitting
+	// byte-identical SQL.
+	attrStrategies AttrStrategies
+
 	// err is the first error Expr encountered while rendering into this
 	// Builder, first-error-wins. It exists because Frag has no error
 	// return (`func(b *Builder)`), so an expression embedded via a
@@ -47,6 +57,13 @@ type Builder struct {
 
 // NewBuilder returns an empty Builder. Equivalent to &Builder{}.
 func NewBuilder() *Builder { return &Builder{} }
+
+// NewBuilderWithAttrStrategies returns an empty Builder that renders
+// attribute-map accesses against s (see AttrStrategies). QueryBuilder's
+// internal render path (subquerySQL) is the only caller — external code
+// opts in via QueryBuilder.WithAttrStrategies, not this constructor
+// directly.
+func NewBuilderWithAttrStrategies(s AttrStrategies) *Builder { return &Builder{attrStrategies: s} }
 
 // String returns the accumulated SQL.
 func (b *Builder) String() string { return b.sb.String() }
@@ -868,7 +885,18 @@ func (b *Builder) emitGoModulo(left, right chplan.Expr) error {
 
 // exprFunc renders a FuncCall by resolving its sealed Fn through
 // fnResolutions (internal/chsql/fnresolution.go).
+//
+// chplan.FnMapContainsKey is special-cased ahead of that lookup (see
+// exprMapContainsKey) rather than via fnResolution's Render hook: a Render
+// function stored in the fnResolutions map that itself calls b.Expr
+// transitively reaches resolveFn again (through the generic exprFunc /
+// resolveAggFuncName paths), which reads that very map — Go's
+// initialization-dependency analysis treats that as a package-init cycle
+// even though it is runtime-safe, so the branch has to live here instead.
 func (b *Builder) exprFunc(f *chplan.FuncCall) error {
+	if f.Fn == chplan.FnMapContainsKey {
+		return b.exprMapContainsKey(f.Args)
+	}
 	name, render, err := resolveFn(f.Fn)
 	if err != nil {
 		return err
@@ -942,7 +970,74 @@ func (b *Builder) exprWindow(w *chplan.WindowExpr) error {
 	return firstErr
 }
 
+// exprMapAccess renders a chplan.MapAccess. The default (AttrStrategyMap,
+// or a Map operand that isn't a bare column — a composed intermediate map
+// like mapUpdate/mapConcat's result really IS a ClickHouse Map regardless
+// of the strategy of the column it was seeded from) shape is unchanged:
+// `<Map>[<Key>]`.
+//
+// cerberus issue #2777: when m.Map is a bare *chplan.ColumnRef whose
+// AttrStrategy (b.attrStrategies) is AttrStrategyJSON, AND m.Key is a
+// compile-time literal (*chplan.LitString) — ClickHouse's JSON
+// dynamic-subcolumn path syntax is a syntax-level path expression, not a
+// function argument, so a non-literal key cannot use it and falls back to
+// the Map shape (which will fail at query time against a real JSON column,
+// exactly as it did before this issue's work; no plan in this codebase
+// currently builds a non-literal MapAccess against a bare attribute-map
+// column, see attribute_lookup.go) — the rendering instead reads the
+// dynamic subcolumn:
+//
+//	coalesce(<col>.<key, backtick-quoted>.:String, the empty string)
+//
+// Two decisions this bakes in, both empirically verified against real
+// ClickHouse (26.5, JSON GA since 25.3) rather than assumed:
+//
+//  1. Dotted OTel keys (http.status_code) nest by ClickHouse's JSON
+//     default — inserting {"http.status_code":"200"} creates a two-level
+//     path, and a single backtick-quoted identifier carrying the literal
+//     dotted string as ONE token reads it back correctly: ClickHouse's
+//     JSON path grammar splits on the dot for nesting regardless of
+//     backtick quoting, so b.Ident(key) — the same backtick-doubling
+//     identifier writer QualIdent uses, safe against a key containing
+//     backticks/spaces/anything else — is both the safe AND the correct
+//     choice; no manual segment-splitting is needed. This targets
+//     ClickHouse's DEFAULT dot-nesting behaviour only; a table whose
+//     ingestion path also or ever set json_type_escape_dots_in_keys=1
+//     (percent-encoded flat keys, CH 25.8+) is an explicit, documented
+//     non-goal of this slice — tracked as cerberus issue #3063's
+//     mixed-history hazard.
+//  2. Missing-vs-empty semantics deliberately DIFFER between a raw JSON
+//     path read and a Map subscript, and the coalesce wrap exists to
+//     NORMALISE that difference away at this one rendering boundary: a
+//     JSON path read on a missing key returns SQL NULL (verified: a
+//     present-but-empty-string value reads back as the empty string, a
+//     genuinely absent path reads back NULL — JSON's Dynamic-subcolumn
+//     read distinguishes the two), whereas a ClickHouse Map subscript on
+//     a missing key returns the value type's default — the empty string,
+//     never NULL. Every existing chplan-level lowering
+//     (OTelDottedFallbackChain's terminal bare-MapAccess arm, PromQL/LogQL
+//     label resolution, ...) was written against the Map contract and
+//     relies on bare MapAccess silently defaulting to the empty string for
+//     an absent key, using a SEPARATE mapContains/FnMapContainsKey check
+//     wherever it needs to distinguish present-empty from absent.
+//     Coalescing to the empty string here reproduces that exact contract
+//     for a JSON-typed column so every one of those call sites keeps
+//     working unmodified against either physical storage; genuine
+//     presence/absence still goes through FnMapContainsKey, whose JSON
+//     rendering (below) preserves the real distinction via
+//     has(JSONAllPaths(...), ...). Pinned by a chDB differential test
+//     (attr_strategy_json_chdb_test.go).
 func (b *Builder) exprMapAccess(m *chplan.MapAccess) error {
+	if col, key, ok := jsonAttrKeyAccess(b, m); ok {
+		b.sb.WriteString("coalesce(")
+		if err := b.Expr(col); err != nil {
+			return err
+		}
+		b.sb.WriteByte('.')
+		b.Ident(key)
+		b.sb.WriteString(".:String, '')")
+		return nil
+	}
 	if err := b.Expr(m.Map); err != nil {
 		return err
 	}
@@ -951,6 +1046,88 @@ func (b *Builder) exprMapAccess(m *chplan.MapAccess) error {
 		return err
 	}
 	b.sb.WriteByte(']')
+	return nil
+}
+
+// jsonAttrColumn reports whether e is a bare *chplan.ColumnRef whose
+// AttrStrategy (per b.attrStrategies) is AttrStrategyJSON — the shared
+// precondition exprMapAccess and exprMapContainsKey both branch on.
+func jsonAttrColumn(b *Builder, e chplan.Expr) (*chplan.ColumnRef, bool) {
+	col, ok := e.(*chplan.ColumnRef)
+	if !ok {
+		return nil, false
+	}
+	if b.attrStrategies.Lookup(col.Name) != AttrStrategyJSON {
+		return nil, false
+	}
+	return col, true
+}
+
+// jsonAttrKeyAccess reports whether m is a JSON-strategy attribute-map
+// access with a compile-time-known key: m.Map is a bare JSON-strategy
+// ColumnRef (jsonAttrColumn) and m.Key is a *chplan.LitString. Both
+// conditions are required — see exprMapAccess's doc for why a non-literal
+// key can't use the JSON dynamic-subcolumn path syntax.
+func jsonAttrKeyAccess(b *Builder, m *chplan.MapAccess) (*chplan.ColumnRef, string, bool) {
+	col, ok := jsonAttrColumn(b, m.Map)
+	if !ok {
+		return nil, "", false
+	}
+	key, ok := m.Key.(*chplan.LitString)
+	if !ok {
+		return nil, "", false
+	}
+	return col, key.V, true
+}
+
+// exprMapContainsKey renders chplan.FnMapContainsKey. exprFunc dispatches
+// here ahead of the generic fnResolutions lookup (see exprFunc's doc for
+// why this can't be a fnRender hook stored in that table). The default
+// shape — args[0] not a JSON-strategy bare column, or an unexpected arity
+// — is unchanged: `mapContains(<args>)`, byte-identical to the plain-Name
+// resolution this replaces.
+//
+// cerberus issue #2777: when args[0] is a bare JSON-strategy ColumnRef,
+// existence renders as
+//
+//	has(JSONAllPaths(<col>), <key>)
+//
+// — ClickHouse's JSON type reports the FULL dotted OTel key as one leaf
+// path string in JSONAllPaths (verified: {"http.status_code":"200"}
+// reports the path "http.status_code", not the two intermediate/nested
+// segments), so args[1] renders exactly as it would for mapContains — no
+// per-segment decomposition needed, and (unlike exprMapAccess's JSON
+// branch) args[1] need not be a literal, since has(...) takes a plain
+// runtime argument rather than a path-syntax token. This is the real
+// present-vs-absent existence check exprMapAccess's coalesce-to-empty-string wrap
+// deliberately gives up in exchange for reproducing the Map contract —
+// see that function's doc. Pinned by a chDB differential test
+// (attr_strategy_json_chdb_test.go).
+func (b *Builder) exprMapContainsKey(args []chplan.Expr) error {
+	if len(args) == 2 {
+		if col, ok := jsonAttrColumn(b, args[0]); ok {
+			b.sb.WriteString("has(JSONAllPaths(")
+			if err := b.Expr(col); err != nil {
+				return err
+			}
+			b.sb.WriteString("), ")
+			if err := b.Expr(args[1]); err != nil {
+				return err
+			}
+			b.sb.WriteByte(')')
+			return nil
+		}
+	}
+	b.sb.WriteString("mapContains(")
+	for i, a := range args {
+		if i > 0 {
+			b.sb.WriteString(", ")
+		}
+		if err := b.Expr(a); err != nil {
+			return err
+		}
+	}
+	b.sb.WriteByte(')')
 	return nil
 }
 
@@ -2739,6 +2916,25 @@ type QueryBuilder struct {
 	limit      int64
 	hasLimit   bool
 	limitBy    []Frag
+
+	// attrStrategies is threaded into the Builder subquerySQL renders
+	// against (see AttrStrategies). Set via WithAttrStrategies; the zero
+	// value (nil) renders every attribute-map column as Map, exactly as
+	// before cerberus issue #2777. chsql.emitSelect is the one production
+	// setter — it copies the emitter's resolved strategies onto every
+	// QueryBuilder it renders, so a plan assembled across many nested
+	// QueryBuilders (one per chplan node) sees the same resolved
+	// strategies throughout without each node's lowering/emit code having
+	// to know about it.
+	attrStrategies AttrStrategies
+}
+
+// WithAttrStrategies sets the AttrStrategies this QueryBuilder's Build /
+// Frag renders attribute-map accesses against. See AttrStrategies's doc
+// for why this is scoped per signal rather than a single global map.
+func (s *QueryBuilder) WithAttrStrategies(strategies AttrStrategies) *QueryBuilder {
+	s.attrStrategies = strategies
+	return s
 }
 
 type orderKey struct {
@@ -2989,7 +3185,7 @@ func (s *QueryBuilder) Build() (string, []any) {
 // work around. Unexported: Build stays the public two-value surface
 // every non-chsql caller already depends on.
 func (s *QueryBuilder) subquerySQL() (string, []any, error) {
-	b := NewBuilder()
+	b := NewBuilderWithAttrStrategies(s.attrStrategies)
 	s.writeInto(b)
 	return b.Build()
 }

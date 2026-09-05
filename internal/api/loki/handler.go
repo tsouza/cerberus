@@ -19,6 +19,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/api/reqctx"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/optimizer"
@@ -134,6 +135,17 @@ type Handler struct {
 	// default — every bare Handler{} test fixture) keeps the LogQL emitter
 	// byte-identical to today.
 	TextIndexLineFilter bool
+
+	// AttrStrategies resolves how the logs attribute-map columns are
+	// physically stored (cerberus issue #2777), wired from
+	// preflight.Result.LogsAttrStrategies in cmd/cerberus — mirroring
+	// TextIndexLineFilter above: langForRequest / langForRangeRequest copy
+	// it onto every per-request *logql.Lang, and New's own long-lived
+	// h.Lang picks it up the same way. nil (the default — every bare
+	// Handler{} test fixture, and any deployment whose logs attribute-map
+	// columns are all Map(String,String)) keeps the LogQL emitter
+	// byte-identical to before this field existed.
+	AttrStrategies chsql.AttrStrategies
 
 	// LabelCatalogEnabled reports whether internal/schema/ddl provisioned
 	// the loki_label_catalog refreshable materialized view (cerberus issue
@@ -534,6 +546,7 @@ func (h *Handler) langForRequest(start, end time.Time, limit int, dir logDirecti
 		TextIndexLineFilter: h.TextIndexLineFilter,
 		LogLineLimit:        int64(limit),
 		LogLineBackward:     dir == directionBackward,
+		AttrStrategies:      h.AttrStrategies,
 	}
 }
 
@@ -557,6 +570,7 @@ func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration, 
 		TextIndexLineFilter: h.TextIndexLineFilter,
 		LogLineLimit:        int64(limit),
 		LogLineBackward:     dir == directionBackward,
+		AttrStrategies:      h.AttrStrategies,
 	}
 }
 

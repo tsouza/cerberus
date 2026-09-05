@@ -70,9 +70,23 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnTupleElement:      {Name: "tupleElement"},
 
 	// Map functions.
-	chplan.FnMap:            {Name: "map"},
-	chplan.FnMapApply:       {Name: "mapApply"},
-	chplan.FnMapMerge:       {Name: "mapConcat"},
+	chplan.FnMap:      {Name: "map"},
+	chplan.FnMapApply: {Name: "mapApply"},
+	chplan.FnMapMerge: {Name: "mapConcat"},
+	// FnMapContainsKey's Name entry below is only the fallback path a
+	// non-JSON-strategy call takes: exprFunc special-cases this Fn ahead
+	// of the resolveFn lookup (see exprMapContainsKey in builder.go) so
+	// cerberus issue #2777's `has(JSONAllPaths(<col>), <key>)` JSON
+	// rendering can call b.Expr on its args without creating a
+	// package-init cycle through fnResolutions (a fnRender hook stored in
+	// this map that itself calls b.Expr transitively reaches resolveFn,
+	// which reads this very map — Go's initialization-dependency analysis
+	// flags that as illegal even though it's runtime-safe). The Name
+	// entry stays so resolveFn's completeness scan
+	// (fnresolution_completeness_test.go) keeps validating this Fn is
+	// declared exactly once, and so exprMapContainsKey's own fallback
+	// renders the byte-identical `mapContains(...)` a plain Name
+	// resolution always has.
 	chplan.FnMapContainsKey: {Name: "mapContains"},
 	chplan.FnMapFilter:      {Name: "mapFilter"},
 	chplan.FnMapFromArrays:  {Name: "mapFromArrays"},
