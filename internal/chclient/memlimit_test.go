@@ -97,9 +97,17 @@ func TestMemoryLimitError_NoCapConfigured(t *testing.T) {
 	}
 }
 
+// distributedPinCount is the number of settings distributed_query_settings.go
+// pins UNCONDITIONALLY on every querySettings() call (cerberus issue #3078:
+// skip_unavailable_shards + fallback_to_stale_replicas_for_distributed_queries).
+// Every exact-entry-count assertion in this file adds this in, so a future
+// third unconditional pin only needs updating here.
+const distributedPinCount = 2
+
 // TestQuerySettings_MaxMemoryUsage — the per-query settings map carries
-// max_memory_usage with the configured byte value, and is nil (setting
-// not sent at all) when the cap is 0/unset.
+// max_memory_usage with the configured byte value, and carries ONLY the
+// two unconditional distributed-query pins (never max_memory_usage) when
+// the cap is 0/unset.
 func TestQuerySettings_MaxMemoryUsage(t *testing.T) {
 	t.Parallel()
 
@@ -115,13 +123,19 @@ func TestQuerySettings_MaxMemoryUsage(t *testing.T) {
 	if got != int64(1<<30) {
 		t.Errorf("max_memory_usage = %v (%T); want %d (int64)", got, got, int64(1<<30))
 	}
-	if len(settings) != 1 {
-		t.Errorf("settings carries %d entries (%v); want exactly max_memory_usage", len(settings), settings)
+	if len(settings) != 1+distributedPinCount {
+		t.Errorf("settings carries %d entries (%v); want exactly max_memory_usage plus the %d distributed pins",
+			len(settings), settings, distributedPinCount)
 	}
 
 	unset := &Client{}
-	if s := unset.querySettings(context.Background()); s != nil {
-		t.Errorf("querySettings() with cap 0 = %v; want nil (setting not sent)", s)
+	s := unset.querySettings(context.Background())
+	if _, ok := s["max_memory_usage"]; ok {
+		t.Errorf("querySettings() with cap 0 = %v; want max_memory_usage absent", s)
+	}
+	if len(s) != distributedPinCount {
+		t.Errorf("querySettings() with cap 0 carries %d entries (%v); want exactly the %d unconditional distributed pins",
+			len(s), s, distributedPinCount)
 	}
 }
 
@@ -148,8 +162,9 @@ func TestQuerySettings_TSGridSetting(t *testing.T) {
 	if marked["max_memory_usage"] != int64(1<<30) {
 		t.Errorf("max_memory_usage = %v; want %d (the merge must not drop the cap)", marked["max_memory_usage"], int64(1<<30))
 	}
-	if len(marked) != 2 {
-		t.Errorf("marked settings carries %d entries (%v); want exactly the two knobs", len(marked), marked)
+	if len(marked) != 2+distributedPinCount {
+		t.Errorf("marked settings carries %d entries (%v); want exactly the two knobs plus the %d distributed pins",
+			len(marked), marked, distributedPinCount)
 	}
 
 	// Marked ctx with NO memory cap → only the experimental knob, no
@@ -161,8 +176,9 @@ func TestQuerySettings_TSGridSetting(t *testing.T) {
 	if _, ok := bare["max_memory_usage"]; ok {
 		t.Errorf("bare client carries max_memory_usage; want it absent (cap is 0)")
 	}
-	if len(bare) != 1 {
-		t.Errorf("bare settings carries %d entries (%v); want exactly the experimental knob", len(bare), bare)
+	if len(bare) != 1+distributedPinCount {
+		t.Errorf("bare settings carries %d entries (%v); want exactly the experimental knob plus the %d distributed pins",
+			len(bare), bare, distributedPinCount)
 	}
 }
 
@@ -183,16 +199,19 @@ func TestSettingExperimentalTSGridAggregate_ExactName(t *testing.T) {
 	}
 }
 
-// TestQueryContext_Derivation — queryContext derives a new context only
-// when a cap is configured; with cap 0 the caller's ctx is returned
-// verbatim so the unconfigured path stays allocation-free.
+// TestQueryContext_Derivation — queryContext ALWAYS derives a new context,
+// with or without a configured memory cap: cerberus issue #3078's two
+// distributed-query pins (skip_unavailable_shards +
+// fallback_to_stale_replicas_for_distributed_queries) ride on every
+// data-plane query unconditionally, so querySettings is never empty and
+// there is no longer an "unconfigured, pass ctx through verbatim" path.
 func TestQueryContext_Derivation(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	unset := &Client{}
-	if got := unset.queryContext(ctx); got != ctx {
-		t.Error("queryContext with cap 0 derived a new ctx; want pass-through")
+	if got := unset.queryContext(ctx); got == ctx {
+		t.Error("queryContext with cap 0 returned ctx verbatim; want a derived ctx carrying the two unconditional distributed pins")
 	}
 	capped := &Client{maxMemory: 1 << 30}
 	if got := capped.queryContext(ctx); got == ctx {

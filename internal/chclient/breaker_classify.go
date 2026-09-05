@@ -232,6 +232,9 @@ var breakerServerHealthCodes = map[chproto.Error]string{
 		"cluster topology is degraded",
 	chproto.ErrAllReplicasLost: "every replica for the data is gone; the condition is total and statement-" +
 		"independent",
+	chproto.ErrAllReplicasAreStale: "cerberus's own fallback_to_stale_replicas_for_distributed_queries=0 pin " +
+		"(cerberus issue #3078) found every reachable replica of a shard behind on replication; a " +
+		"replication-lag condition that outlives the statement, not something a different query text would avoid",
 	chproto.ErrSystemError: "a syscall-level failure inside the server; the process itself is in trouble",
 	chproto.ErrCannotScheduleTask: "the server's thread pool could not accept the work; it is saturated and the " +
 		"next statement will be too",

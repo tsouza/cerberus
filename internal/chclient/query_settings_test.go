@@ -55,8 +55,9 @@ func TestQuerySettings_GeneralisedCarrierCoexists(t *testing.T) {
 	if s["max_memory_usage"] != int64(1<<30) {
 		t.Errorf("max_memory_usage = %v; want the cap (no clobber)", s["max_memory_usage"])
 	}
-	if len(s) != 3 {
-		t.Errorf("settings carries %d entries (%v); want the three knobs", len(s), s)
+	if len(s) != 3+distributedPinCount {
+		t.Errorf("settings carries %d entries (%v); want the three knobs plus the %d distributed pins",
+			len(s), s, distributedPinCount)
 	}
 }
 

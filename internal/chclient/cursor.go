@@ -380,6 +380,16 @@ func (c *rowsCursor) Next() bool {
 			// of a 502 (k3d run 27277793810 surfaced the memory case
 			// mid-stream; a long-window matrix can hit max_execution_time
 			// the same way).
+			//
+			// distributed_shard_error.go's two codes (279, 369) are
+			// deliberately NOT in this chain: both fire during a
+			// Distributed query's shard CONNECTION acquisition
+			// (PoolWithFailoverBase::getMany, see that file's own doc),
+			// which completes before ClickHouse emits the first data
+			// block — an OPEN-time failure, never a mid-stream one, so
+			// classifyDriverErr's chain (the open-time wrap site) is
+			// where it belongs, not this drain-time one. wrapThrowIf is
+			// similarly absent from this mid-stream chain already.
 			c.err = fmt.Errorf("chclient: rows.Err: %w", wrapQueryTimeout(wrapMemoryLimit(err, c.maxMemoryBytes), c.queryTimeout))
 		}
 		return false
