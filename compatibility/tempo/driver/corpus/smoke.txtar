@@ -1626,10 +1626,21 @@ duration_gt_dynamic_attribute
 # NOT repointed at a real numeric attribute (e.g. `span.child.index`):
 # doing so exposed a genuine, separate divergence — reference Tempo
 # returns 0 traces for `duration > span.child.index` (an Int-typed
-# attribute) while cerberus returns 100, so cerberus's per-row
-# coercion is over-eager relative to Tempo's real per-row typing rule.
-# See #2039, which tracks that divergence on its own; fixing it is out
-# of scope for this PR's static-validation subject.
+# attribute) while cerberus returns 100. That is NOT cerberus
+# over-eager coercion: #2039's own investigation root-caused it to a
+# proven defect in reference Tempo's live storage/search pushdown path
+# (`BinaryOperation.execute`, `pkg/traceql/ast_execute.go` L365-414 at
+# the pinned compat commit) — Tempo's own canonical evaluator and its
+# `TestBinaryOperationsWorkAcrossNumberTypes` unit test both allow a
+# mixed numeric/duration comparison like this one to match, so the
+# live reference's zero-trace answer contradicts Tempo's own semantics
+# and tests. Cerberus's 100-trace answer is the one consistent with
+# Tempo's documented evaluator; it is not something to "fix" to agree
+# with the buggy reference. See #2039, which tracks the divergence and
+# cites the blocking external tracker, grafana/tempo#7774 — invariant
+# 7 forbids emulating the broken reference here, so this case stays
+# pointed at `span.budget_ns` (empty vs. empty on both backends) until
+# that upstream defect is resolved, not repointed at `child.index`.
 -- query --
 { duration > span.budget_ns }
 -- endpoint --
