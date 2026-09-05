@@ -15,13 +15,17 @@
 //     system.columns and validated to carry the essential columns the
 //     emitters require, with the attribute-map columns typed
 //     Map(String, String) — except logs' and traces' attribute maps, which
-//     may alternatively be typed JSON (cerberus issue #2777 phase 1's
-//     boot-probe compat: the upstream OTel exporter's `json:true` schema
-//     variant). A JSON-typed attribute map there boots with a WARNING rather
-//     than a FATAL, since query lowering against it is a follow-up (the
-//     emitters still assume Map). Metrics attribute maps carry series
-//     identity and stay Map-only per the issue's own scoping — see
-//     tableReq.jsonAttrMapCompat.
+//     may alternatively be typed JSON (cerberus issue #2777: the upstream
+//     OTel exporter's `json:true` schema variant). A JSON-typed attribute
+//     map there boots with a WARNING rather than a FATAL and, for LOGS,
+//     also RESOLVES a chsql.AttrStrategies the query emitters actually
+//     render against for per-key lookups (Result.LogsAttrStrategies —
+//     internal/engine threads it onto the emit context; see
+//     tableReq.jsonQuerySupported). Traces detection ships too
+//     (Result.TracesAttrStrategies is resolved) but is not yet threaded
+//     into any TraceQL request (cerberus issue #3062). Metrics attribute
+//     maps carry series identity and stay Map-only per the issue's own
+//     scoping — see tableReq.jsonAttrMapCompat.
 //   - Gate 3 (storage tiering): when a storage policy or a tiering volume is
 //     configured, the policy's volumes are read from system.storage_policies
 //     and the configuration is checked for being ACCEPTED BUT INERT — a
