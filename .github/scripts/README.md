@@ -1,9 +1,9 @@
 # `.github/scripts/` — reusable CI step logic (Node ESM)
 
-Non-trivial CI step logic (multi-line `bash` / `jq` / `awk` / `perl`
-embedded in workflow `run:` blocks) lives here as dependency-light Node
-ESM (`.mjs`) modules, not inline YAML. See the **CI / workflow scripts**
-rule in the repo `CLAUDE.md` for the why.
+Non-trivial step logic — multi-line `bash` / `jq` / `awk` / `perl` embedded
+in a workflow `run:` block, or in a Justfile recipe body — lives here as
+dependency-light Node ESM (`.mjs`) modules, not inline YAML or `just`
+recipes. See invariant 15 in the repo `CLAUDE.md` for the why.
 
 Each module:
 
