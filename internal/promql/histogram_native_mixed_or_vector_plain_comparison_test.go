@@ -2,6 +2,7 @@ package promql_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,4 +195,39 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorPlainCompare_StepAligned(t *testi
 			t.Fatalf("lower(%q) range: MixedVectorJoin.StepAligned = false, want true (Step > 0)", query)
 		}
 	})
+}
+
+// TestLower_ExpHistogram_MixedSetOpOr_VectorPlainCompare_ManyToMany pins
+// that [comparisonVectorPlainOverMixedExpHistogramSetOp]'s own
+// `CardManyToMany` `default:` branch — documented as "unreachable here in
+// practice, rejected defensively" — is genuinely reachable. Like its
+// arithmetic sibling
+// (histogram_native_mixed_or_vector_plain_arithmetic_test.go's own
+// `TestLower_ExpHistogram_MixedSetOpOr_VectorPlainArithmetic_ManyToMany`),
+// this recognizer's Card switch runs AFTER its `lhsOk == rhsOk`
+// disjointness check and its histogram-valued-plain-side rejection, so a
+// genuine mixed-`or`-vs-plain-vector comparison operand pair is required
+// to reach it before hand-setting VectorMatching.Card.
+func TestLower_ExpHistogram_MixedSetOpOr_VectorPlainCompare_ManyToMany(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	query := mixedOrExpr + " == " + mvpPlainVector
+	expr, err := p.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	bin, ok := expr.(*parser.BinaryExpr)
+	if !ok {
+		t.Fatalf("expected *parser.BinaryExpr, got %T", expr)
+	}
+	bin.VectorMatching = &parser.VectorMatching{Card: parser.CardManyToMany}
+
+	if _, err := promql.Lower(context.Background(), expr, s); err == nil {
+		t.Fatalf("Lower(%q): expected many-to-many error, got nil", query)
+	} else if !strings.Contains(err.Error(), "many-to-many matching not allowed") {
+		t.Errorf("Lower(%q): error %q does not contain 'many-to-many matching not allowed'", query, err.Error())
+	}
 }
