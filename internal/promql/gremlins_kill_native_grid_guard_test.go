@@ -193,6 +193,74 @@ func TestNativeLastOverTimeNode_GridGuardRejectsEachUnpinnedClause(t *testing.T)
 	}
 }
 
+// TestNativeTSGridMatrixNode_WholeSecondsConjunction and
+// TestNativeLastOverTimeNode_WholeSecondsConjunction pin the sub-second
+// carve-out added for issue #3068, mirroring
+// TestNativeClassicHistogramEligible_WholeSecondsConjunction (the sibling
+// guard [nativeClassicHistogramEligible] already applied via its own
+// `wholeSeconds` conjunction): a non-whole-second Step, Range, or Offset must
+// each independently reject, one clause at a time so a `&&` collapsed to
+// `||` cannot hide behind the other two staying whole-second.
+//
+// Every field these two funnels gate flows into the timeSeries*ToGrid
+// family's whole-second integer/DateTime parameters (see
+// nativeGridTimeBoundFrag's own doc and this package's use of
+// int64(d.Seconds()) in the chsql emitters). A sub-second Step that reached
+// the native path used to truncate via int64(d.Seconds()) — e.g. 500ms to
+// int64(0.5) == 0 — which ClickHouse rejects outright ("Step should be
+// greater than zero", code 36; the exact issue #3068 rejection, reproduced
+// directly against chDB). Passing the duration through unchanged instead of
+// truncating it is not an option either: chDB also rejects a Float64 step_s
+// argument to timeSeriesRange / timeSeriesResampleToGridWithStaleness with
+// ILLEGAL_TYPE_OF_ARGUMENT, so the family has no faithful sub-second
+// representation at all — the fan-out path these funnels fall back to on
+// rejection fans out at nanosecond precision instead.
+func TestNativeTSGridMatrixNode_WholeSecondsConjunction(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+
+	for _, tc := range []struct {
+		name string
+		mut  func(*chplan.RangeWindow)
+	}{
+		{"step_sub_second", func(rw *chplan.RangeWindow) { rw.Step = 30*time.Second + 500*time.Millisecond }},
+		{"range_sub_second", func(rw *chplan.RangeWindow) { rw.Range = 5*time.Minute + 500*time.Millisecond }},
+		{"offset_sub_second", func(rw *chplan.RangeWindow) { rw.Offset = 500 * time.Millisecond }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rw := acceptedGridWindow(s)
+			tc.mut(rw)
+			if got := nativeTSGridMatrixNode(rw, "rate", s, false); got != nil {
+				t.Errorf("nativeTSGridMatrixNode accepted a %s window: %#v; want nil so the fan-out path answers it at full precision", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestNativeLastOverTimeNode_WholeSecondsConjunction(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+
+	for _, tc := range []struct {
+		name string
+		mut  func(*chplan.RangeWindow)
+	}{
+		{"step_sub_second", func(rw *chplan.RangeWindow) { rw.Step = 30*time.Second + 500*time.Millisecond }},
+		{"range_sub_second", func(rw *chplan.RangeWindow) { rw.Range = 5*time.Minute + 500*time.Millisecond }},
+		{"offset_sub_second", func(rw *chplan.RangeWindow) { rw.Offset = 500 * time.Millisecond }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rw := acceptedLastOverTimeWindow(s)
+			tc.mut(rw)
+			if got := nativeLastOverTimeNode(rw, s); got != nil {
+				t.Errorf("nativeLastOverTimeNode accepted a %s window: %#v; want nil so the fan-out path answers it at full precision", tc.name, got)
+			}
+		})
+	}
+}
+
 // TestNativeLastOverTimeNode_RequiresSoleIdentityGroupKey pins BOTH halves of
 // the series-identity precondition, which is a disjunction of two independently
 // sufficient rejections.
