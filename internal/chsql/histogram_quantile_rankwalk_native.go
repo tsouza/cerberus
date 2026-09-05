@@ -17,8 +17,9 @@ const (
 
 	// hqRankWalkCumTermColumn is the terminal-appended cumulative ladder
 	// (the FULL-length cum array the pre-#2790 emission ARRAY JOINed
-	// directly) — read twice below (the bounded index search and the
-	// window's own length / terminal-membership test), so it is
+	// directly) — read THREE times below (the bounded index search's
+	// override of w.cum(), the arraySlice building the bracketing window,
+	// and needsTerminal's own length() terminal-membership test), so it is
 	// materialised once rather than re-derived at each read site.
 	hqRankWalkCumTermColumn = "_cerb_hqn_cumterm"
 
@@ -41,6 +42,16 @@ const (
 	// arraySlice itself is materialised rather than re-evaluated per arm.
 	hqRankWalkSliceLeColumn  = "_cerb_hqn_slice_le"
 	hqRankWalkSliceCumColumn = "_cerb_hqn_slice_cum"
+
+	// hqRankWalkNeedsTerminalColumn is the boolean "does the window still
+	// need the terminal (+Inf, total) pair appended" verdict — read TWICE
+	// below (both arms of the conditional terminal append, windowLe and
+	// windowCum), so — matching this file's own materialize-every-
+	// multi-use-quantity discipline (cumTerm, idx, and the slice columns
+	// above each get their own stage for the identical reason) — it is
+	// materialised once rather than re-embedded as the same Go-level Frag
+	// at each read site.
+	hqRankWalkNeedsTerminalColumn = "_cerb_hqn_needsterm"
 )
 
 // emitHistogramQuantileRankWalkNative renders a chplan.HistogramQuantile
@@ -129,15 +140,28 @@ const (
 //     histogramQuantileRankWalkNativeValueFrag clamps that argument
 //     unconditionally and answers Prometheus's own -inf / inf / nan
 //     contract in an outer branch that never touches the aggregate for an
-//     out-of-domain phi. The SAME out-of-range phi can also leave the
-//     window-construction search (which runs on the UNCLAMPED phi, ahead
-//     of that outer branch) unable to find any rung at all — arrayFirstIndex
-//     answers 0 for phi > 1 (target exceeds every cum, including the
-//     terminal) and, for a NaN PhiExpr, every comparison is false for the
-//     same reason. Both degrade the window to just the terminal pair,
-//     which the aggregate answers nan for — a value the outer phi-range /
-//     isNaN branches already discard in favour of their own literal
-//     answer, so the degenerate window is inert rather than wrong.
+//     out-of-domain phi. The window-construction search (which runs on the
+//     UNCLAMPED phi, ahead of that outer branch) reacts differently to each
+//     of the three out-of-domain shapes, and only two of them are
+//     degenerate:
+//   - phi > 1: target exceeds every cum value, including the terminal,
+//     so arrayFirstIndex finds NO rung at all and answers 0 — the
+//     window degrades to just the terminal pair, which the aggregate
+//     answers nan for.
+//   - A NaN PhiExpr: every `c >= target` comparison is false for the
+//     same reason (NaN compares false against everything), so
+//     arrayFirstIndex likewise answers 0 and the window degrades
+//     identically.
+//   - phi < 0: target is NEGATIVE, and every cum value (a
+//     non-negative running count) is trivially >= a negative target,
+//     so arrayFirstIndex finds a rung immediately — idx = 1, a
+//     perfectly ordinary small window, not a degenerate one. Nothing
+//     about this search behaves unusually for phi < 0.
+//     All three shapes are harmless for the identical reason regardless of
+//     which window the search actually builds: the outer phi < 0 -> -inf /
+//     phi > 1 -> inf / isNaN -> nan branches discard whatever the aggregate
+//     would have answered in favour of their own literal, so the window's
+//     own correctness (degenerate or not) never reaches the result.
 func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantile) error {
 	if h.Input == nil {
 		return fmt.Errorf("%w: HistogramQuantile.Input is nil", ErrUnsupported)
@@ -205,10 +229,11 @@ func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantil
 		Call("arrayPushBack", Col(hqClassicCumColumn), Col(hqClassicObservationsColumn)),
 	)
 
-	// Stage 4 — the terminal-appended cumulative ladder: read twice below
-	// (the bounded index search and the window's own length /
-	// terminal-membership test), so it is materialized once rather than
-	// re-derived at each read site — see hqRankWalkCumTermColumn's own doc.
+	// Stage 4 — the terminal-appended cumulative ladder: read THREE times
+	// below (the bounded index search, the arraySlice building the window,
+	// and needsTerminal's own length() check), so it is materialized once
+	// rather than re-derived at each read site — see
+	// hqRankWalkCumTermColumn's own doc.
 	termed := NewQuery().
 		Select(Star(), As(cumTerm, hqRankWalkCumTermColumn)).
 		From(Subquery(counted))
@@ -246,24 +271,30 @@ func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantil
 		).
 		From(Subquery(indexed))
 
-	// needsTerminal is false exactly when the found index ALREADY IS the
-	// terminal rung — the slice above already carries (+Inf, total) in
-	// that case, and appending it again would DUPLICATE it, which a probe
-	// against a real server confirmed corrupts interior-phi answers (see
-	// this function's own doc). Only when the found rung sits strictly
-	// before the terminal is it appended, closing #2790's ARRAY JOIN
-	// blow-up: the window ARRAY JOINs at most three rungs regardless of
-	// the ladder's own length.
-	needsTerminal := Neq(Col(hqRankWalkIdxColumn), Call("length", Col(hqRankWalkCumTermColumn)))
-	windowLe := If(needsTerminal,
+	// Stage 7 — needsTerminal: false exactly when the found index ALREADY
+	// IS the terminal rung — the slice above already carries (+Inf, total)
+	// in that case, and appending it again would DUPLICATE it, which a
+	// probe against a real server confirmed corrupts interior-phi answers
+	// (see this function's own doc). Only when the found rung sits
+	// strictly before the terminal is it appended, closing #2790's ARRAY
+	// JOIN blow-up: the window ARRAY JOINs at most three rungs regardless
+	// of the ladder's own length. Read twice below (both arms of the
+	// conditional terminal append), so it is materialized here rather than
+	// re-embedded per arm — see hqRankWalkNeedsTerminalColumn's own doc.
+	needsTerminalExpr := Neq(Col(hqRankWalkIdxColumn), Call("length", Col(hqRankWalkCumTermColumn)))
+	termFlagged := NewQuery().
+		Select(Star(), As(needsTerminalExpr, hqRankWalkNeedsTerminalColumn)).
+		From(Subquery(sliced))
+
+	windowLe := If(Col(hqRankWalkNeedsTerminalColumn),
 		Call("arrayPushBack", Col(hqRankWalkSliceLeColumn), verbatim("inf")),
 		Col(hqRankWalkSliceLeColumn))
-	windowCum := If(needsTerminal,
+	windowCum := If(Col(hqRankWalkNeedsTerminalColumn),
 		Call("arrayPushBack", Col(hqRankWalkSliceCumColumn), Col(hqClassicObservationsColumn)),
 		Col(hqRankWalkSliceCumColumn))
 
 	sb := NewQuery().
-		From(Subquery(sliced)).
+		From(Subquery(termFlagged)).
 		ArrayJoin(As(windowLe, hqRankWalkLeColumn), As(windowCum, hqRankWalkCumColumn))
 
 	groupByFrags := make([]Frag, 0, len(h.GroupBy))

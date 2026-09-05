@@ -53,6 +53,19 @@ var hqRankWalkDiffCases = []hqRankWalkDiffCase{
 	{name: "all_zero_counts", buckets: []uint64{0, 0, 0, 0, 0}, bounds: []float64{1, 2, 4, 8}},
 	// Single finite bucket plus the overflow rung.
 	{name: "single_bucket", buckets: []uint64{5, 3}, bounds: []float64{10}},
+	// ZERO finite buckets: ExplicitBounds is empty but BucketCounts still
+	// carries one count (the lone +Inf-only rung) — a genuinely different
+	// shape from "empty" above, which has BOTH arrays empty and never
+	// reaches this file's logic at all (it hits the earlier
+	// length(BucketCounts) == 0 -> nan guard in
+	// histogramQuantileRankWalkNativeValueFrag before the aggregate is
+	// even considered). Here length(BucketCounts) == 1 != 0, so the row
+	// proceeds through Stage 1 coalescing (nothing to coalesce — an empty
+	// ExplicitBounds keeps every index), Stage 3's observation total (the
+	// lone count), and into the bounded rank walk with a ladder of exactly
+	// one rung: (+Inf, observations). Every phi must resolve straight to
+	// that rung's own value.
+	{name: "inf_only_rung", buckets: []uint64{7}, bounds: []float64{}},
 }
 
 // hqRankWalkDiffPhis covers reference Prometheus's full domain split: below

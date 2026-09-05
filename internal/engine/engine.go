@@ -298,12 +298,14 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// to the older analyzer (cerberus issue #2355). Always-on and
 	// result-equivalent, like the compare() bound above.
 	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
-	// Sorted-slab sum_over_time()/avg_over_time()-only: cap max_block_size at
-	// 1 so the per-anchor arrayFilter/arrayMap intermediates the emitter
-	// builds per series row are freed row-by-row instead of retained across
-	// an entire vectorized block (cerberus issue #3046). Always-on and
-	// result-equivalent, like the two bounds above; fires only when the plan
-	// carries the opt-in sorted-slab RangeWindow shape.
+	// Sorted-slab-eligible shapes only (chopt.FeatureSortedSlabOverTime's own
+	// doc names the current 6-function set: sum/avg/first/stddev/stdvar/
+	// mad_over_time): cap max_block_size at 1 so the per-anchor
+	// arrayFilter/arrayMap intermediates the emitter builds per series row
+	// are freed row-by-row instead of retained across an entire vectorized
+	// block (cerberus issue #3046). Always-on and result-equivalent, like
+	// the two bounds above; fires only when the plan carries the opt-in
+	// sorted-slab RangeWindow shape.
 	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
 	ctx = e.settings().apply(ctx, plan)
 	// Issue #2789: tag this route-A dispatch for actuals capture — see

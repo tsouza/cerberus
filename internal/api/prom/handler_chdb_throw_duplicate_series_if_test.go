@@ -145,20 +145,37 @@ func TestQuery_InstantNameDrop_DistinctLabelsets_ThrowDuplicateSeriesIf_ChDB(t *
 	assertNamelessSeriesByHost(t, body, status, query, "a", "b")
 }
 
-// TestQueryRange_RateMultiName_DuplicateSeriesTags_ChDB is the RANGE-vector
-// name-drop guard's (wrapDropNameCollisionGuard, lower.go) own
-// differential against TestQuery_RateMultiName_DuplicateLabelset_ChDB —
-// the other call site sharing duplicateLabelsetGuardExpr, reached from a
-// completely different lowering (a name-dropping range function) rather
-// than an instant math fn.
-func TestQueryRange_RateMultiName_DuplicateSeriesTags_ChDB(t *testing.T) {
-	start, end, _ := subqueryNameWindow()
+// TestQueryRange_Subquery_RateInner_DuplicateSeriesTags_ChDB is the
+// RANGE-vector name-drop guard's (wrapDropNameCollisionGuard, lower.go)
+// own differential against
+// TestQueryRange_Subquery_RateInner_DuplicateLabelset_ChDB (handler_chdb_
+// duplicate_labelset_test.go) — the SAME subquery shape, reached the SAME
+// way (a real /api/v1/query_range request, drained through
+// executeRangeStreaming), but with ThrowDuplicateSeriesIf turned on.
+//
+// The shape matters: a BARE top-level `rate(m[5m])` under query_range
+// lowers through the windowed-array fan-out, which keeps one row per
+// series (an array-valued Value column unnested downstream), so
+// wrapDropNameCollisionGuard's anchorTS stays nil there — no different,
+// guard-wise, from the instant shape. Only a range-vector call that is
+// itself the INNER expression of a `[<range>:<step>]` subquery (rw.
+// OuterRange > 0, dropNameGuardAnchor) produces one literal row per
+// subquery anchor up front, so the guard's grouping key must also widen
+// with `anchor_ts` (guardKeysOnTimestamp) to avoid collapsing distinct
+// anchors together. A prior version of this test called the INSTANT
+// endpoint (`/api/v1/query?...&time=...`) with a bare `rate(...)`, which
+// gave this exact anchorTS!=nil branch zero coverage — see the git history
+// for that mistake; this rewrite is the fix.
+func TestQueryRange_Subquery_RateInner_DuplicateSeriesTags_ChDB(t *testing.T) {
+	start, end, step := subqueryNameWindow()
 	srv := newChDBServerWithThrowDuplicateSeriesIf(t, dupLabelsetSeed(t, start, end,
 		"map('host', 'a')", "map('host', 'a')"), false)
 
-	const query = `rate({__name__=~"cpu_temp|gpu_temp"}[5m])`
-	status, body := getBody(t, fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
-		srv.URL, url.QueryEscape(query), end.Unix()))
+	const query = `last_over_time(rate({__name__=~"cpu_temp|gpu_temp"}[5m])[10m:1m])`
+	status, body := getBody(t, fmt.Sprintf(
+		"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+		srv.URL, url.QueryEscape(query), start.Unix(), end.Unix(), int(step.Seconds()),
+	))
 	assertDuplicateSeriesTagsRejected(t, body, status, query)
 }
 

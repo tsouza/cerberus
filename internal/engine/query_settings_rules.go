@@ -422,7 +422,9 @@ const settingMaxBlockSize = "max_block_size"
 
 // sortedSlabOverTimeMaxBlockSize is the per-request max_block_size cerberus
 // stamps on a query carrying a chplan.RangeWindow.SortedSlabOverTime shape
-// (cerberus issue #2761's sum_over_time()/avg_over_time() decomposition,
+// (cerberus issue #2761's original decomposition, widened by issue #2804 to
+// the full sorted-slab-eligible over_time function set —
+// chopt.FeatureSortedSlabOverTime's own doc names it —
 // internal/chsql/range_window_sorted_slab.go). Forcing single-row blocks
 // closes cerberus issue #3046: real ClickHouse 26.6.4.55 profiling (EXPLAIN
 // PIPELINE plus a block-size sweep against the issue's own 500-series/

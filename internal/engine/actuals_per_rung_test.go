@@ -183,9 +183,32 @@ func TestMaybeSeedPerRungAdmissionFromActuals_DoesNotReseedAFreshEntry(t *testin
 	e.maybeSeedPerRungAdmissionFromActuals(plan, shape, decision)
 	e.PerRungAdmission.mu.Lock()
 	postStaleObservedAt := e.PerRungAdmission.states[key].lastObserved
+	postStaleStreak := e.PerRungAdmission.states[key].consecutiveCheap
 	e.PerRungAdmission.mu.Unlock()
 	if !postStaleObservedAt.After(firstObservedAt) {
 		t.Fatal("a seed call on a genuinely stale entry must still reseed — the guard only skips an " +
 			"already-fresh entry, it must never permanently disable seeding for a shape")
+	}
+
+	// This is the direct regression check for the record()-doesn't-reset-on-
+	// expiry bug (a distinct bug from #3034's above, closed in the same
+	// batch): firstStreak was already 1 (one seed's worth) BEFORE the entry
+	// went stale. If record() reused that stale consecutiveCheap instead of
+	// resetting it, this single post-staleness observation would bump it
+	// straight to firstStreak+1 == perRungEvidenceMinObservations and
+	// immediately re-trip ShouldDeclineBypass off what is really only ONE
+	// fresh observation — exactly the self-confirming-decline bug #3044 was
+	// supposed to close, resurfacing because record() itself never reset
+	// state on expiry. A correct reset leaves consecutiveCheap at exactly 1
+	// here (one fresh observation, counted from zero), which is below
+	// perRungEvidenceMinObservations and must not decline the bypass.
+	if postStaleStreak != 1 {
+		t.Fatalf("consecutiveCheap after a post-staleness reseed = %d, want 1 — "+
+			"record() must reset consecutiveCheap to 0 before applying the new observation "+
+			"when the existing entry has expired, not reuse the stale count", postStaleStreak)
+	}
+	if e.PerRungAdmission.ShouldDeclineBypass(key) {
+		t.Fatal("one fresh observation immediately after expiry incorrectly declined the bypass — " +
+			"record() combined it with a stale pre-expiry consecutiveCheap count instead of resetting")
 	}
 }

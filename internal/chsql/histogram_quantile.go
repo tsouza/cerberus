@@ -258,9 +258,32 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile, helpers hqClassicHe
 	lowestBound := Subscript(w.bounds(), InlineLit(1))
 	firstBucketNonPositive := And(Eq(w.idx(), InlineLit(1)), Lte(lowestBound, InlineLit(0)))
 	hasOverflowRung := Neq(w.cumCount(), w.boundCount())
+
+	// noFiniteBuckets mirrors upstream bucketQuantile's `len(buckets) < 2`
+	// guard: when ExplicitBounds carries NO entries at all, the row's only
+	// bucket is the trailing +Inf overflow rung — a single-bucket
+	// histogram, for which Prometheus's own quantile is undefined (every
+	// observation sits in a half-open (0, +Inf] range with no finite edge
+	// to interpolate against). Without this guard the highest-bound
+	// branch below indexes `_cerb_hqc_bounds[length(_cerb_hqc_bounds)]`
+	// — position 0 of an EMPTY coalesced bounds array — which ClickHouse
+	// resolves to a silent 0.0 default rather than the correct nan. A
+	// real-CH differential caught this
+	// (TestHistogramQuantile_RankWalkNative_DifferentialRealCH's
+	// "inf_only_rung" case): the native rank-walk path already answers
+	// nan here on its own (an ARRAY JOIN window of a lone (+Inf, total)
+	// pair leaves quantilePrometheusHistogram with no finite rung to
+	// interpolate against either), so this guard brings the classic
+	// (fan-out) path into agreement rather than changing the reference
+	// answer. hasOverflowRung is always true whenever noFiniteBuckets
+	// holds (cumCount = boundCount + 1 = 1 when boundCount = 0), and idx
+	// always lands on that lone rung (length(cum) = 1), so this case
+	// never reaches the firstBucketNonPositive branch's own
+	// bounds[1]-indexing else-arm below.
+	noFiniteBuckets := Eq(w.boundCount(), InlineLit(0))
 	idxBranch := If(
 		And(Eq(w.idx(), Call("length", w.cum())), hasOverflowRung),
-		highestBound,
+		If(noFiniteBuckets, nan, highestBound),
 		If(firstBucketNonPositive, lowestBound, interp),
 	)
 
