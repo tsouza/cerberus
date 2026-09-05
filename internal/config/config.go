@@ -34,6 +34,17 @@ type Config struct {
 	ClickHouse chclient.Config
 	Schema     schema.Metrics
 
+	// ClusterTopology carries chopt.ClusterTopology.DataShardCount — the
+	// number of ClickHouse DATA shards behind this deployment's
+	// `Distributed` tables (CERBERUS_CH_DATA_SHARDS, default 1 — cerberus
+	// issue #3081, epic #3074). cmd/cerberus's buildSolver copies
+	// ClusterTopology.DataShardCount into solver.Config.DataShardCount once,
+	// at solver construction, rather than internal/solver importing chopt
+	// itself to read it directly (see solver.Config.DataShardCount's own
+	// doc for why). See chopt.ClusterTopology's own doc for the three-way
+	// "shard" disambiguation this repo needs.
+	ClusterTopology chopt.ClusterTopology
+
 	// DebugPProf, when true, mounts the net/http/pprof debug handlers
 	// (/debug/pprof/…) on the main HTTP listener. Default false — the
 	// profiling surface stays OFF in production so it is never reachable
@@ -917,6 +928,7 @@ type OTLPConfig struct {
 const (
 	envHTTPAddr                 = "CERBERUS_HTTP_ADDR"
 	envCHAddr                   = "CERBERUS_CH_ADDR"
+	envCHDataShards             = "CERBERUS_CH_DATA_SHARDS"
 	envCHDatabase               = "CERBERUS_CH_DATABASE"
 	envCHUsername               = "CERBERUS_CH_USERNAME"
 	envCHPassword               = "CERBERUS_CH_PASSWORD"
@@ -1188,6 +1200,10 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	topology, err := clusterTopologyFromEnv(v)
+	if err != nil {
+		return Config{}, err
+	}
 	flags, err := bootFlagsFromEnv(v)
 	if err != nil {
 		return Config{}, err
@@ -1223,16 +1239,7 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// Unlike envQueryMaxSamples, an explicit 0 here is meaningful (disable —
-	// see Config.DeltaPrefixLookback's doc), not "use the default" — v.SetDefault
-	// below already resolves an UNSET env var to defaultDeltaPrefixLookback, so
-	// no separate resolve-0-to-default step is needed; getNonNegativeDuration's
-	// only job is rejecting a negative value.
-	deltaPrefixLookback, err := getNonNegativeDuration(v, envDeltaPrefixLookback)
-	if err != nil {
-		return Config{}, err
-	}
-	deltaPrefixReadEnabled, err := getBool(v, envDeltaPrefixReadEnabled)
+	deltaPrefixLookback, deltaPrefixReadEnabled, err := deltaPrefixFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1329,6 +1336,7 @@ func FromEnv() (Config, error) {
 		RangeBucketGridNativeMaxRows:         rbgnMaxRows,
 		RangeBucketGridNativeMaxDensityUnits: rbgnMaxDensityUnits,
 		ClickHouse:                           chCfg,
+		ClusterTopology:                      topology,
 		// Resolved through the file-aware lookup rather than os.Getenv so the
 		// read-side schema shape obeys a cerberus.yaml exactly as the rest of
 		// the surface does — internal/schema owns these defaults, so they never
@@ -1363,6 +1371,7 @@ func FromEnv() (Config, error) {
 var allEnvKeys = []string{
 	envHTTPAddr,
 	envCHAddr,
+	envCHDataShards,
 	envCHDatabase,
 	envCHUsername,
 	envCHPassword,
@@ -1533,6 +1542,7 @@ func newDefaults() *viper.Viper {
 	// unmarshalling agree.
 	v.SetDefault(envHTTPAddr, defaultHTTPAddr)
 	v.SetDefault(envCHAddr, defaultCHAddr)
+	v.SetDefault(envCHDataShards, chopt.DefaultClusterTopology().DataShardCount)
 	v.SetDefault(envCHDatabase, defaultCHDatabase)
 	v.SetDefault(envCHUsername, defaultCHUsername)
 	v.SetDefault(envCHPassword, defaultCHPassword)
@@ -2798,6 +2808,27 @@ func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
 	}, nil
 }
 
+// deltaPrefixFromEnv parses CERBERUS_DELTA_PREFIX_LOOKBACK and
+// CERBERUS_DELTA_PREFIX_READ_ENABLED. Unlike envQueryMaxSamples, an
+// explicit 0 lookback is meaningful (disable — see Config.DeltaPrefixLookback's
+// doc), not "use the default" — v.SetDefault elsewhere already resolves an
+// UNSET env var to defaultDeltaPrefixLookback, so no separate
+// resolve-0-to-default step is needed; getNonNegativeDuration's only job here
+// is rejecting a negative value. Extracted from FromEnv so the two related
+// parses live in one place and share one error check, the same
+// statement-count reason resultCacheDurationsFromEnv above exists.
+func deltaPrefixFromEnv(v *viper.Viper) (lookback time.Duration, readEnabled bool, err error) {
+	lookback, err = getNonNegativeDuration(v, envDeltaPrefixLookback)
+	if err != nil {
+		return 0, false, err
+	}
+	readEnabled, err = getBool(v, envDeltaPrefixReadEnabled)
+	if err != nil {
+		return 0, false, err
+	}
+	return lookback, readEnabled, nil
+}
+
 // resultCacheDurationsFromEnv parses CERBERUS_RESULT_CACHE_INGEST_LAG and
 // CERBERUS_RESULT_CACHE_TTL. Both accept 0 (see their own field doc: 0
 // disables the respective margin/ttl rather than meaning "use the default"
@@ -2815,6 +2846,21 @@ func resultCacheDurationsFromEnv(v *viper.Viper) (ingestLag, ttl time.Duration, 
 		return 0, 0, err
 	}
 	return ingestLag, ttl, nil
+}
+
+// clusterTopologyFromEnv parses CERBERUS_CH_DATA_SHARDS (cerberus issue
+// #3081, epic #3074): the number of ClickHouse data shards behind this
+// deployment's `Distributed` tables. getPositiveInt enforces >= 1 — the same
+// floor chopt.ClusterTopology's own doc and solver.Config.Validate both
+// apply. Extracted from FromEnv so the single parse does not itself push
+// FromEnv over its statement-count budget, the same reason
+// resultCacheDurationsFromEnv above is its own function.
+func clusterTopologyFromEnv(v *viper.Viper) (chopt.ClusterTopology, error) {
+	dataShardCount, err := getPositiveInt(v, envCHDataShards)
+	if err != nil {
+		return chopt.ClusterTopology{}, err
+	}
+	return chopt.ClusterTopology{DataShardCount: dataShardCount}, nil
 }
 
 // chOptCorpusFromEnv parses the CERBERUS_CH_OPT_CORPUS_* knobs into a

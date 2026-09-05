@@ -47,13 +47,15 @@ func New(cfg Config, emitter SQLEmitter, deps ExecDeps) *Solver {
 	return &Solver{
 		Planner: &Planner{Cfg: cfg},
 		Executor: &Executor{
-			Client:  deps.Client,
-			Emitter: emitter,
-			Cfg:     cfg,
-			Gate:    deps.Gate,
-			GateCap: deps.GateCap,
-			Breaker: deps.Breaker,
-			Admit:   deps.Admit,
+			Client:              deps.Client,
+			Emitter:             emitter,
+			Cfg:                 cfg,
+			Gate:                deps.Gate,
+			GateCap:             deps.GateCap,
+			DataShardFanoutGate: deps.DataShardFanoutGate,
+			DataShardFanoutCap:  deps.DataShardFanoutCap,
+			Breaker:             deps.Breaker,
+			Admit:               deps.Admit,
 		},
 		Cfg: cfg,
 	}
@@ -70,6 +72,15 @@ type ExecDeps struct {
 	Gate *semaphore.Weighted
 	// GateCap is the Gate's total size (semaphore.Weighted hides it).
 	GateCap int64
+	// DataShardFanoutGate / DataShardFanoutCap are the SECOND, independent
+	// global semaphore + its size (cerberus issue #3081) — see
+	// Executor.DataShardFanoutGate's own doc for the full disambiguation
+	// from Gate above. Production wiring derives both from cfg via
+	// NewDataShardFanoutGate; the zero value (nil, 0) is the documented
+	// no-op, identical to every deployment before this field existed
+	// whenever cfg.DataShardCount <= 1.
+	DataShardFanoutGate *semaphore.Weighted
+	DataShardFanoutCap  int64
 	// Breaker peeks the circuit state pre-flight (*chclient.Client).
 	Breaker breakerPeeker
 	// Admit is the two-stage weighted-admission hook (*admit.Limiter).

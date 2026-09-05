@@ -319,11 +319,31 @@ returned to the handler:
    least two routed requests can always make progress. A gate-acquire denial
    honours the request ctx (timeout / client cancel) and is breaker-neutral —
    no CH connection was opened.
-5. **Wall-clock deadline.** A dedicated cancel cause bounds the routed request
+5. **Data-shard fanout gate** (cerberus issue #3081, epic #3074). Once
+   ClickHouse becomes a `Distributed` table over `DataShardCount` real data
+   shards, every admitted connection above fans out `DataShardCount`-ways
+   *inside* ClickHouse — invisible to the gate arithmetic above, and because
+   `Gate` is shared across every concurrently-routed request, shrinking one
+   request's own `K_eff` cannot shrink the process-wide total. A SECOND,
+   independent global semaphore, `DataShardFanoutGate` — nil (never
+   allocated) whenever `DataShardCount <= 1`, which is every deployment that
+   predates this mechanism — is acquired immediately after the Gate acquire
+   above succeeds, with weight `K_eff x DataShardCount`, and released
+   BEFORE `Gate`'s own release (a fixed ordering, not a correctness
+   requirement — the two bound independent resources). This enforces
+   `Σ(K_eff_i x DataShardCount) <= DataShardFanoutCap` across every
+   concurrently-admitted request, process-wide — an exact, unconditional
+   ceiling with no floor-division degeneracy as `DataShardCount` grows,
+   unlike a naive per-request `P_eff / DataShardCount` divide (which floors
+   to 0, clamped to 1, for every `DataShardCount >= defaultParallel + 1`).
+   `DataShardFanoutCap` defaults to `Gate`'s own size, independently
+   overridable. `DataShardCount` is sourced once, at startup, from
+   `internal/chopt.ClusterTopology` (`CERBERUS_CH_DATA_SHARDS`, default 1).
+6. **Wall-clock deadline.** A dedicated cancel cause bounds the routed request
    end-to-end (`Config.Timeout`). The distinct cause makes a solver timeout
    breaker-neutral and distinguishable from a real `DeadlineExceeded`; it maps
    to a typed 504.
-6. **Per-shard execution.** Producers run under an errgroup limited to `P_eff`,
+7. **Per-shard execution.** Producers run under an errgroup limited to `P_eff`,
    launched **newest-slice-first** (which minimizes live-edge snapshot skew;
    composition order stays oldest-first because the channels buffer). Each
    producer derives its own progress recorder (one per ctx key — sharing would
@@ -573,14 +593,22 @@ Route A's single statement runs under the client's configured
 that SAME full cap would let total server-side memory exposure reach up to
 `K` times route A's — exactly backwards from the mechanism's premise that
 sharding reduces resource use. `internal/solver/executor.go`'s `Execute`
-therefore divides the cap by the shard count it actually dispatches
-(`perShardMemoryBytes = cap / kEff`) and stamps that value onto every shard's
-`max_memory_usage` query setting. This is unconditional — there is no config
-knob to disable it — because closing an accidental resource-amplification
+therefore divides the cap by the shard count it actually dispatches, times
+`DataShardCount` (cerberus issue #3081) —
+`perShardMemoryBytes = cap / (kEff * DataShardCount)` — and stamps that value
+onto every shard's `max_memory_usage` query setting. The `DataShardCount`
+factor exists because at least one ClickHouse memory setting remaps to each
+DATA SHARD's own independent budget once a shard's query reaches a
+`Distributed` table, so reducing `kEff` alone would not bound the
+per-statement memory amplification a multi-data-shard cluster introduces;
+`DataShardCount` defaults to 1 (`internal/chopt.ClusterTopology`'s own
+default), making this an EXACT no-op — `cap/(kEff*1) == cap/kEff` — for every
+deployment that predates this field. This is unconditional — there is no
+config knob to disable it — because closing an accidental resource-amplification
 hole is a correctness property of routing itself, not a togglable safety
 feature; `kEff` is already bounded above by the structural `MaxK` clamp, so
-the minimum possible per-shard cap is `cap / MaxK`, a floor the mechanism
-already guarantees. When no cap is configured
+the minimum possible per-shard cap is `cap / MaxK` (at `DataShardCount == 1`),
+a floor the mechanism already guarantees. When no cap is configured
 (`Client.MaxQueryMemoryBytes() == 0`, meaning route A itself runs uncapped),
 apportionment is skipped entirely — stamping a per-shard cap in that case
 would make routed traffic MORE restrictive than route A, not merely no worse.

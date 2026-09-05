@@ -49,6 +49,11 @@ func drawValidConfig(t *rapid.T) Config {
 		EstimateNearEmptyRowFloor:         int64(rapid.IntRange(0, 100_000).Draw(t, "estimateNearEmptyRowFloor")),
 		MaxKWithEstimate:                  rapid.IntRange(maxK, 64).Draw(t, "maxKWithEstimate"),
 		EstimateMinRowsPerAdditionalShard: int64(rapid.IntRange(1, 1_000_000).Draw(t, "estimateMinRowsPerAdditionalShard")),
+		// DataShardCount (cerberus issue #3081) is Planner-invisible — only
+		// the Executor's admission control reads it — but Validate requires
+		// it >= 1, so it is drawn here too rather than left at the invalid
+		// Go zero value.
+		DataShardCount: rapid.IntRange(1, 32).Draw(t, "dataShardCount"),
 	}
 	// The ranges above are bounded to the valid space by construction, so every
 	// draw must validate. A failure here means a range edit widened past the
