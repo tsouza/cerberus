@@ -325,6 +325,33 @@ type Config struct {
 	// API heads as resource-exhausted, not internal.
 	MaxQueryMemoryBytes int64
 
+	// DataShardCount is the number of ClickHouse DATA shards behind this
+	// deployment's `Distributed` tables — internal/chopt.ClusterTopology.
+	// DataShardCount, the single source of truth (cerberus issue #3081),
+	// threaded here so THIS client can apportion MaxQueryMemoryBytes by it
+	// (cerberus issue #3122). 0 or 1 (the default) is an EXACT no-op: every
+	// deployment that predates this field, and every single-data-shard
+	// deployment, stamps max_memory_usage unchanged.
+	//
+	// A `Distributed`-engine read fans a SINGLE logical statement this
+	// Client dispatches ("route A" — internal/solver/executor.go's own
+	// terminology for the unrouted path) out across every one of
+	// DataShardCount's independent data-shard nodes, each of which
+	// enforces max_memory_usage against its OWN local working set. Once
+	// DataShardCount > 1, stamping the RAW configured cap on that single
+	// statement lets aggregate cluster-wide memory exposure scale with
+	// DataShardCount for a request the solver never split at all — the
+	// exact amplification internal/solver/executor.go's own kEff x
+	// DataShardCount apportionment exists to close for a K-shard
+	// fan-out (cerberus issue #3081), just one level up: a solver K-shard
+	// fan-out ALSO reaches this same Distributed engine on every shard it
+	// dispatches, so apportioning the base cap here is what a K=1 (never
+	// routed) request needs, and is exactly what the solver's own
+	// perShardMemoryBytes formula already assumes when it uses kEff=1 for
+	// an unsplit statement (see querySettings and
+	// chclient.ApportionMemoryBytes).
+	DataShardCount int
+
 	// QueryTimeoutSeconds caps the server-side wall-clock duration of a
 	// single data-plane query: it is stamped as the per-query
 	// `max_execution_time` setting (with `timeout_overflow_mode=throw`)
@@ -429,6 +456,15 @@ type Client struct {
 	// `max_memory_usage` ClickHouse setting applied to every data-plane
 	// query via queryContext. 0 = setting not sent.
 	maxMemory int64
+	// dataShardCount is Config.DataShardCount, verbatim (0 for a bare
+	// Config, matching every construction path including the test-only
+	// newWithConn seam). ApportionMemoryBytes floors it to 1 at the one
+	// place it is consumed (querySettings), so no path here needs its own
+	// floor. Used ONLY to apportion maxMemory (cerberus issue #3122) —
+	// every other DataShardCount-gated behavior in this package (the
+	// distributed-query pins in distributed_query_settings.go) is
+	// unconditional and does not need the integer value itself.
+	dataShardCount int64
 	// queryTimeout is Config.QueryTimeoutSeconds as a time.Duration —
 	// the per-query `max_execution_time` ClickHouse setting applied to
 	// every data-plane query via queryContext (overridable per-request,
@@ -762,13 +798,14 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 		newGlobalBreakerMetrics(),
 	)
 	c := &Client{
-		conn:         conn,
-		addr:         cfg.Addr,
-		br:           def,
-		breakers:     registry,
-		maxSamples:   cfg.MaxQuerySamples,
-		maxMemory:    cfg.MaxQueryMemoryBytes,
-		queryTimeout: cfg.QueryTimeout,
+		conn:           conn,
+		addr:           cfg.Addr,
+		br:             def,
+		breakers:       registry,
+		maxSamples:     cfg.MaxQuerySamples,
+		maxMemory:      cfg.MaxQueryMemoryBytes,
+		dataShardCount: int64(cfg.DataShardCount),
+		queryTimeout:   cfg.QueryTimeout,
 	}
 	// Resolve the cursor-decode strategy ONCE, here at construction. The
 	// default is the concrete row path; when Config.ColumnarMatrixDecode is set
@@ -836,7 +873,17 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 //     cerberus's default (`rand()`) data-shard sharding key; likewise a
 //     no-op against a single-shard/non-Distributed deployment.
 //   - `max_memory_usage` — ClickHouse's per-query memory cap, from
-//     Config.MaxQueryMemoryBytes (when > 0).
+//     Config.MaxQueryMemoryBytes (when > 0), apportioned by
+//     Config.DataShardCount (cerberus issue #3122 — a no-op divide-by-1
+//     whenever DataShardCount is 0 or 1). A `Distributed`-engine read fans
+//     this SAME statement out across every data shard, each enforcing the
+//     stamped cap against its own local working set, so leaving it
+//     unapportioned here would let cluster-wide exposure scale with
+//     DataShardCount for every query this Client dispatches that the
+//     solver never split (internal/solver/executor.go's "route A") —
+//     exactly the amplification the solver's OWN kEff x DataShardCount
+//     apportionment closes for a K-shard fan-out. See
+//     chclient.ApportionMemoryBytes, the helper both call sites share.
 //   - `max_execution_time` + `timeout_overflow_mode=throw` — the
 //     per-query wall-clock cap from Config.QueryTimeoutSeconds (when the
 //     effective timeout, after any per-request WithQueryTimeout override,
@@ -877,7 +924,7 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 		settingDistributedProductMode:                       distributedProductModeGlobal,
 	}
 	if c.maxMemory > 0 {
-		s["max_memory_usage"] = c.maxMemory
+		s["max_memory_usage"] = ApportionMemoryBytes(c.maxMemory, c.dataShardCount)
 	}
 	if timeout > 0 {
 		// ClickHouse's max_execution_time is a Float64 in seconds; send

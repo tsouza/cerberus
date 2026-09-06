@@ -1322,6 +1322,7 @@ func FromEnv() (Config, error) {
 		keepAlive:       keepAlive,
 		maxSamples:      maxSamples,
 		maxMemory:       maxMemory,
+		dataShardCount:  topology.DataShardCount,
 		queryTimeout:    queryTimeout,
 		breaker:         breaker,
 		extra:           surface.ch,

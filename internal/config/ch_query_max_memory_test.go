@@ -75,3 +75,43 @@ func TestFromEnv_CHQueryMaxMemory_Invalid(t *testing.T) {
 		})
 	}
 }
+
+// TestFromEnv_CHDataShardCount_ThreadsIntoClickHouseConfig — cerberus issue
+// #3122: cfg.ClickHouse.DataShardCount (the field Client.querySettings reads
+// to apportion MaxQueryMemoryBytes for route A) must mirror
+// cfg.ClusterTopology.DataShardCount exactly — the SAME
+// CERBERUS_CH_DATA_SHARDS value FromEnv already threads into
+// solver.Config.DataShardCount (cerberus issue #3081) via buildSolver.
+// Without this, chclient.Client never learns the real shard count and
+// route A's own statement stays unapportioned even when the solver's own
+// K-shard apportionment is wired correctly.
+func TestFromEnv_CHDataShardCount_ThreadsIntoClickHouseConfig(t *testing.T) {
+	cases := []struct {
+		env  string
+		want int
+	}{
+		{"", 1}, // default (chopt.DefaultClusterTopology)
+		{"1", 1},
+		{"2", 2},
+		{"4", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.env, func(t *testing.T) {
+			if tc.env != "" {
+				t.Setenv("CERBERUS_CH_DATA_SHARDS", tc.env)
+			}
+			cfg, err := FromEnv()
+			if err != nil {
+				t.Fatalf("FromEnv: %v", err)
+			}
+			if cfg.ClusterTopology.DataShardCount != tc.want {
+				t.Fatalf("ClusterTopology.DataShardCount = %d; want %d (fixture assumption broken)",
+					cfg.ClusterTopology.DataShardCount, tc.want)
+			}
+			if cfg.ClickHouse.DataShardCount != tc.want {
+				t.Errorf("ClickHouse.DataShardCount = %d; want %d (must mirror ClusterTopology.DataShardCount)",
+					cfg.ClickHouse.DataShardCount, tc.want)
+			}
+		})
+	}
+}

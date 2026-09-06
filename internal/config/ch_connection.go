@@ -122,6 +122,7 @@ type chConfigInputs struct {
 	keepAlive       keepAliveInputs
 	maxSamples      int64
 	maxMemory       int64
+	dataShardCount  int
 	queryTimeout    time.Duration
 	breaker         breakerConfig
 	extra           chExtra
@@ -145,6 +146,7 @@ func assembleCHConfig(in chConfigInputs) chclient.Config {
 		KeepAliveProbes:     in.keepAlive.probes,
 		MaxQuerySamples:     in.maxSamples,
 		MaxQueryMemoryBytes: in.maxMemory,
+		DataShardCount:      in.dataShardCount,
 		QueryTimeout:        in.queryTimeout,
 		BreakerThreshold:    in.breaker.Threshold,
 		BreakerWindow:       in.breaker.Window,
