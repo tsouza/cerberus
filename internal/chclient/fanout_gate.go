@@ -98,44 +98,99 @@ import (
 // check is a cheap single field read, and no extra round-trip is ever made
 // for the overwhelming majority of dispatches that simply finish.
 //
-// Residual gap, CONFIRMED against a real cluster (cerberus issue #3128, e2e
-// dispatch run 34040395235, AFTER this fix landed): `datashard (N=2)` and
-// `(N=4)` both still show a real, if smaller, point-2 overshoot —
-// N=2: peak concurrent 9 > cap 8 (down from the pre-fix 10); N=4: peak
-// concurrent 23 > cap 8 (down from the pre-fix 24). This fix closes the ONE
-// mechanism it was written for (cerberus's own premature client-side
-// release racing clickhouse-go's fire-and-forget ClientCancel — proven by
-// this file's own unit tests) and measurably shrinks the real overshoot,
-// but does NOT make e2e-datashard-verify.mjs's point 2 assertion pass on
-// either leg. Two candidate explanations for the remainder, NEITHER
-// confirmed nor ruled out yet (both need direct instrumentation against a
-// real cluster, correlating cerberus's own gate-hold intervals against
-// system.query_log's wall-clock windows, to disambiguate):
+// Residual gap, round 3 findings (cerberus issue #3128, real e2e dispatch
+// runs 34043234494 through 34048062673, AFTER this fix landed): `datashard
+// (N=2)` and `(N=4)` both still show a real point-2 overshoot even after the
+// cancellation fix above. Direct instrumentation against a real cluster
+// (a temporary chclient acquire/release diagnostic, and an
+// e2e-datashard-verify.mjs point-2 query extended with query_kind,
+// initial_query_id, and full query text — both since removed, see the PR
+// that added and removed them for the full trace) resolved THREE separate
+// questions this investigation had open, two of them conclusively:
 //
-//  1. `KILL QUERY ... SYNC` run against the COORDINATOR's own query_id (the
-//     is_initial_query=1 statement cerberus dispatched) confirms only that
-//     the coordinator's own local execution stopped. Point 2 measures
-//     is_initial_query=0 rows — the CHILD statements ClickHouse's own
-//     Distributed table engine fans out internally to the real data-shard
-//     nodes — and nothing in this file's mechanism proves ClickHouse
-//     propagates that cancellation down to those children synchronously
-//     with the coordinator's own SYNC confirmation; a child already
-//     dispatched before the KILL lands could keep running to a natural
-//     QueryFinish on its own node.
-//  2. The pre-existing alternate hypothesis this issue was filed with
-//     (still open, never disambiguated from (1) above): a query_log child
-//     row's `query_start_time_microseconds` + `query_duration_ms` window
-//     may include time the statement spent QUEUED inside ClickHouse before
-//     cerberus's own gate-held admission window began, inflating measured
-//     overlap beyond anything the gate ever actually admitted concurrently
-//     — independent of cancellation entirely, and more exposed at higher
-//     DataShardCount (more child statements contending for the same
-//     server-side thread pool per logical dispatch).
+//  1. CONFIRMED AND FIXED — seeder contamination. is_initial_query=0 also
+//     counts `just e2e-seed-rolling`'s rolling seeder (test/e2e/seed/cmd/
+//     seed), which writes to ClickHouse DIRECTLY over the native protocol —
+//     bypassing cerberus, and so this gate, entirely — throughout the
+//     burst window. Its Insert/Alter children were never subject to this
+//     gate, so counting them against DataShardFanoutCap tested something
+//     the gate was never built to bound. e2e-datashard-verify.mjs's point 2
+//     now scopes its assertion to query_kind='Select' — the only kind this
+//     gate's one seam (queryOpen/queryCursorColumnar) ever dispatches. This
+//     alone fully explained at least one real run's N=2 failure (unfiltered
+//     peak 9 > cap 8; Select-only peak 7 <= cap 8, with the 2-statement
+//     excess being exactly 1 Insert + 1 unrelated overlap).
+//  2. REFUTED — self-join / distributed_product_mode=global amplification.
+//     A dispatch whose own child count exceeds DataShardCount (grouped by
+//     the CHILDREN's shared initial_query_id, which is exactly the
+//     coordinator's own globally-unique per-dispatch query_id —
+//     mintQueryID's process-wide atomic counter makes two distinct
+//     dispatches sharing one id structurally impossible) was hypothesized
+//     to be a query that self-references the Distributed table more than
+//     once (distributed_query_settings.go's settingDistributedProductMode
+//     doc lists the shapes: TraceQL structural operators, nested-set-
+//     annotate, `compare`). Real over-width dispatches were pulled back to
+//     their FULL emitted SQL text (not the 120-char prefix Select-only
+//     filtering alone needed) and traced through the actual Go dispatch
+//     path (internal/api/tempo's handleSearch -> engine.QueryPlan for the
+//     dominant offending shape, a plain non-structural TraceQL attribute
+//     filter): the emitted SQL is a flat, single-table
+//     `SELECT ... FROM otel_traces WHERE ... AND match(...)` with no JOIN,
+//     subquery, or CTE, dispatched through EXACTLY ONE chclient.Client.Query
+//     -> QueryCursor call — Route A, one queryOpen call, one gate
+//     acquisition of weight DataShardCount, confirmed by direct code
+//     tracing (internal/engine/engine.go's QueryPlan, internal/chclient/
+//     client.go's Query/QueryCursor) to be the ONLY dispatch this logical
+//     HTTP request makes. Self-join amplification, solver route-B K-shard
+//     multiplication, and a same-context multi-round-trip pattern are all
+//     therefore ruled out for this shape: cerberus's own code makes exactly
+//     one physical dispatch, and the FULL emitted SQL never re-reads the
+//     Distributed source.
+//  3. CONFIRMED PRESENT, ROOT CAUSE NOT YET LOCATED — real ClickHouse-side
+//     multiplication independent of cerberus's own dispatch code. With (1)
+//     and (2) fully accounted for, MANY real dispatches' own initial_query_id
+//     groups still show far more Select-kind is_initial_query=0 children
+//     than DataShardCount predicts (observed: a DataShardCount=2 dispatch
+//     with 3 children, own internal peak concurrency 2 — consistent with one
+//     extra, largely-sequential statement; a DataShardCount=4 dispatch with
+//     15-18 children, own internal peak concurrency up to 10 — genuinely
+//     CONCURRENT children, not sequential retries, at roughly 2.5x the
+//     expected fan-out width). Ruled out as causes: cerberus's own gate
+//     bookkeeping (PR #3132's held-weight counter, and this round's own
+//     acquire/release diagnostic, never observed an over-cap acquisition or
+//     a cancellation-driven release in the windows captured); query_id
+//     collision (structurally impossible, see above); cluster topology
+//     (deploy/helm/cerberus/templates/clickhouse/configmap-config.yaml's
+//     `remote_servers` renders exactly DataShardCount `<shard>` blocks, each
+//     with exactly `replicas` (1, this e2e lane) `<replica>` entries,
+//     confirmed by direct template inspection); and every cerberus-side
+//     dispatch-multiplication mechanism named in (2). ClickHouse's own
+//     documented cancellation-propagation behavior (KILL QUERY / a native
+//     ClientCancel both drive the SAME in-process pipeline-cancel path that
+//     synchronously waits for shard-side cancel acks — see
+//     RemoteQueryExecutor::cancel()/tryCancel() in ClickHouse's own source)
+//     argues AGAINST hypothesis 1 above being the dominant mechanism either,
+//     though it has not been exhaustively re-tested now that (1) and (2) are
+//     closed. What remains is consistent with a real, hard ClickHouse-
+//     server-side or transport-layer effect (e.g. connection-level retries
+//     under genuine concurrent-connection pressure against this e2e lane's
+//     deliberately thin per-shard pod sizing — see cerberus-values-
+//     datashard.yaml's own "sized down" doc) that creates extra per-shard
+//     statement executions this gate has no visibility into and cannot
+//     bound from the client side. Cerberus issue #3128's own filing text
+//     explicitly forbids a raised threshold as the resolution, so this is
+//     NOT worked around here; it stays open, and the concrete next step is
+//     ClickHouse-side profiling (system.text_log at a higher verbosity
+//     during a burst, or EXPLAIN PIPELINE against the exact offending SQL)
+//     that this investigation's tooling (an external e2e verify script and
+//     cerberus's own client-side logs) cannot reach.
 //
 // Route A's admission gap this file closes (Route A was completely
 // ungated before #3128's move) is a genuine, confirmed improvement over the
-// pre-move state regardless. Tracked on issue #3128, still open, until the
-// point-2 assertion passes cleanly on both legs.
+// pre-move state regardless, and the seeder-contamination fix (1 above) is a
+// genuine, confirmed improvement over the pre-round-3 measurement. Tracked
+// on issue #3128, still open, until finding 3's real cause is located and
+// point 2 passes cleanly on both legs.
 
 // ErrDataShardFanoutGateBusy is the sentinel wrapped into the error
 // [Client.acquireDataShardFanout] returns when the request's own ctx
@@ -209,12 +264,6 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 	if aerr := c.dataShardFanoutGate.Acquire(ctx, weight); aerr != nil {
 		return nil, fmt.Errorf("chclient: data-shard fanout gate acquire: %w: %w", ErrDataShardFanoutGateBusy, aerr)
 	}
-	// TEMPORARY diagnostic (cerberus issue #3128's residual-gap round 3) —
-	// see this file's own "Residual gap" doc above for what it disambiguates,
-	// and logDataShardFanoutEvent's own doc for why it is scoped to only the
-	// dispatches that can actually be joined back to system.query_log.
-	queryID := queryIDFromContext(ctx)
-	logDataShardFanoutEvent(queryID, "acquire", weight, false)
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -226,50 +275,14 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 			// typed *clickhouse.Exception). Only the cancellation-unwind
 			// path pays for the extra KILL QUERY round-trip; a normal finish
 			// falls straight through to Release below, unconditionally.
-			cancelled := ctx.Err() != nil
-			if cancelled {
-				if queryID != "" {
+			if ctx.Err() != nil {
+				if queryID := queryIDFromContext(ctx); queryID != "" {
 					c.killDataShardQuery(queryID)
 				}
 			}
-			logDataShardFanoutEvent(queryID, "release", weight, cancelled)
 			c.dataShardFanoutGate.Release(weight)
 		})
 	}, nil
-}
-
-// logDataShardFanoutEvent is the TEMPORARY diagnostic instrumentation for
-// cerberus issue #3128's residual-gap investigation, round 3 — added to
-// correlate cerberus's own gate-hold intervals (this log's wall-clock
-// timestamps, which slog stamps automatically) against
-// system.query_log's is_initial_query=0 child-row windows
-// (.github/scripts/e2e-datashard-verify.mjs's point-2 query), to
-// disambiguate the two candidate explanations fanout_gate.go's own
-// "Residual gap" doc lists for why the gate's admitted concurrency and the
-// real cluster-observed concurrency still diverge.
-//
-// Logged at INFO (not DEBUG) so it surfaces in the e2e lane's pod logs
-// without a log-level bump — CERBERUS_LOG_LEVEL defaults to "info"
-// (internal/config/config.go's defaultLogLevel) and neither
-// cerberus-values.yaml nor cerberus-values-datashard.yaml overrides it for
-// this lane.
-//
-// queryID is the dispatch's own per-query_id (queryIDFromContext) — empty
-// only for the no-trace case (ensureQueryID's own contract), which this
-// diagnostic skips entirely since an empty id can never be joined back to a
-// system.query_log row anyway.
-//
-// This function, and every call site above, is scoped for removal once the
-// investigation concludes — see the PR that introduces it for the decision
-// on whether any part of it graduates to permanent instrumentation.
-func logDataShardFanoutEvent(queryID, phase string, weight int64, cancelled bool) {
-	if queryID == "" {
-		return
-	}
-	breakerLogger().Info(
-		"chclient: data-shard fanout gate diagnostic (issue #3128 round 3, temporary)",
-		"phase", phase, "query_id", queryID, "weight", weight, "cancelled", cancelled,
-	)
 }
 
 // killDataShardQueryTimeout bounds how long killDataShardQuery waits for
