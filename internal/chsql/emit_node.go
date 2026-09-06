@@ -20,16 +20,25 @@ import (
 // standalone. Both renderings come from this one function, so a sub-relation
 // rendered on its own is byte-identical to the one the enclosing statement
 // embeds.
-func (e *emitter) renderNode(n chplan.Node) (string, []any, error) {
-	saveB, saveArgs := e.b, e.args
+//
+// The returned physicalScans is how many physical table references the
+// rendered text contains (Builder.physicalScans's doc). It is NOT added to
+// the emitter's own running count here: the caller wraps the text in a
+// PreRenderedSQL carrying it, and the count lands on whichever Builder that
+// text is spliced into, once per splice — so a sub-statement embedded twice
+// is counted twice, matching what ClickHouse executes.
+func (e *emitter) renderNode(n chplan.Node) (sql string, args []any, physicalScans int, err error) {
+	saveB, saveArgs, saveScans := e.b, e.args, e.physicalScans
 	e.b = strings.Builder{}
 	e.args = nil
-	err := e.emitNode(n)
-	sql, args := e.b.String(), e.args
+	e.physicalScans = 0
+	err = e.emitNode(n)
+	sql, args, physicalScans = e.b.String(), e.args, e.physicalScans
 	e.b = saveB
 	e.args = saveArgs
+	e.physicalScans = saveScans
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	// The enclosing statement embeds this text verbatim, so a sub-statement
 	// already past the emitted-SQL byte bound proves the whole statement is
@@ -37,9 +46,9 @@ func (e *emitter) renderNode(n chplan.Node) (string, []any, error) {
 	// what keeps rejecting a deeply-composed plan cheap — see
 	// emit_size_bound.go's "The two call sites".
 	if err := e.requireEmittedSQLBounded(n, sql); err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
-	return sql, args, nil
+	return sql, args, physicalScans, nil
 }
 
 // subqueryFrag returns a Frag that renders n as a parenthesised
@@ -52,11 +61,11 @@ func (e *emitter) renderNode(n chplan.Node) (string, []any, error) {
 // rather than at splice time, and the captured (sql, args) pair replays
 // cheaply on each Frag invocation via the PreRenderedSQL adapter.
 func (e *emitter) subqueryFrag(n chplan.Node) (Frag, error) {
-	sql, args, err := e.renderNode(n)
+	sql, args, scans, err := e.renderNode(n)
 	if err != nil {
 		return nil, err
 	}
-	return Subquery(PreRenderedSQL{SQL: sql, Args: args}), nil
+	return Subquery(PreRenderedSQL{SQL: sql, Args: args, PhysicalScans: scans}), nil
 }
 
 // emitSelect runs the assembled QueryBuilder and splices its rendered
@@ -87,6 +96,7 @@ func (e *emitter) emitSelect(sb *QueryBuilder) error {
 	}
 	e.b.WriteString(sql)
 	e.args = append(e.args, args...)
+	e.physicalScans += sb.physicalScans()
 	return nil
 }
 
@@ -102,6 +112,7 @@ func (e *emitter) splice(b *Builder) error {
 	}
 	e.b.WriteString(sql)
 	e.args = append(e.args, args...)
+	e.physicalScans += b.physicalScans
 	return nil
 }
 
@@ -312,14 +323,21 @@ func (e *emitter) emitCrossJoin(j *chplan.CrossJoin) error {
 // `EXPLAIN`). The emitter therefore doesn't have to manually fan
 // PREWHERE per arm — the legacy emitFilterScan path drives the single
 // PREWHERE on the outer SELECT and CH does the rest.
+//
+// Every physical table reference is counted on the receiving Builder
+// (countPhysicalScans — Builder.physicalScans's doc): one per plain table,
+// one per member of a `merge()` union (ClickHouse reads each member table,
+// and on a multi-data-shard deployment each member is its own Distributed
+// wrapper), and none for a database-qualified synthetic source such as
+// `system.one`, which is never a Distributed wrapper.
 func scanTableFrag(s *chplan.Scan) Frag {
 	if len(s.UnionTables) > 0 {
-		return mergeTableFrag(s.Database, s.UnionTables)
+		return countPhysicalScans(len(s.UnionTables), mergeTableFrag(s.Database, s.UnionTables))
 	}
 	if s.Database != "" {
 		return Qual(s.Database, s.Table)
 	}
-	return Col(s.Table)
+	return physicalTableFrag(s.Table)
 }
 
 // mergeTableFrag renders the CH `merge(currentDatabase(), '<regex>')`

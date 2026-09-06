@@ -140,8 +140,8 @@ func (c *fakeMemoWiringCursor) Inspected() int64        { return 0 }
 // string — the Executor's now64 belt-and-braces guard must not fire.
 type fakeSolverEmitter struct{}
 
-func (fakeSolverEmitter) Emit(context.Context, chplan.Node) (string, []any, error) {
-	return "SELECT 1", nil, nil
+func (fakeSolverEmitter) Emit(context.Context, chplan.Node) (string, []any, int, error) {
+	return "SELECT 1", nil, 1, nil
 }
 
 // alwaysClosedBreaker satisfies solver's package-local breakerPeeker via
@@ -738,8 +738,8 @@ func TestTryRouteMemoHit_StaleVerdictFallsBackToCaller(t *testing.T) {
 // surfaces later, from the CALLER's drain of the returned cursor).
 type fakeFailingSolverEmitter struct{ err error }
 
-func (f fakeFailingSolverEmitter) Emit(context.Context, chplan.Node) (string, []any, error) {
-	return "", nil, f.err
+func (f fakeFailingSolverEmitter) Emit(context.Context, chplan.Node) (string, []any, int, error) {
+	return "", nil, 0, f.err
 }
 
 // TestTryRouteMemoHit_PreFlightFailureFallsBackToRouteA pins the half of

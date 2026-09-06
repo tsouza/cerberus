@@ -24,15 +24,15 @@ type fakeEmitter struct {
 
 func newFakeEmitter() *fakeEmitter { return &fakeEmitter{failAt: -1, now64At: -1} }
 
-func (e *fakeEmitter) Emit(_ context.Context, _ chplan.Node) (string, []any, error) {
+func (e *fakeEmitter) Emit(_ context.Context, _ chplan.Node) (string, []any, int, error) {
 	n := int(e.calls.Add(1)) - 1
 	if e.failAt >= 0 && n == e.failAt {
-		return "", nil, fmt.Errorf("synthetic emit failure on shard %d", n)
+		return "", nil, 0, fmt.Errorf("synthetic emit failure on shard %d", n)
 	}
 	if e.now64At >= 0 && n == e.now64At {
-		return fmt.Sprintf("SELECT now64(9) /* shard %d */", n), []any{n}, nil
+		return fmt.Sprintf("SELECT now64(9) /* shard %d */", n), []any{n}, 1, nil
 	}
-	return fmt.Sprintf("SELECT 1 /* shard %d */", n), []any{n}, nil
+	return fmt.Sprintf("SELECT 1 /* shard %d */", n), []any{n}, 1, nil
 }
 
 // ---- fake CursorQuerier -------------------------------------------------

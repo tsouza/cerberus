@@ -66,8 +66,8 @@ func routeMemoURL(base string) string {
 // fakeSolverEmitter).
 type routeMemoFakeEmitter struct{}
 
-func (routeMemoFakeEmitter) Emit(context.Context, chplan.Node) (string, []any, error) {
-	return "SELECT 1", nil, nil
+func (routeMemoFakeEmitter) Emit(context.Context, chplan.Node) (string, []any, int, error) {
+	return "SELECT 1", nil, 1, nil
 }
 
 // routeMemoCursor is a minimal chclient.Cursor: it yields its canned

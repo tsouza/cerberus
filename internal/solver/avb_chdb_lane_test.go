@@ -1020,8 +1020,8 @@ func cellAsFloat64(v any) float64 {
 // solver + chsql + chDB, matching the differential loop above).
 type chsqlEmitter struct{}
 
-func (chsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, error) {
-	return chsql.Emit(ctx, plan)
+func (chsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, int, error) {
+	return chsql.EmitCounted(ctx, plan)
 }
 
 // TestSolver_AvsB_ChDB_OutputCapContract proves the REAL contract behind

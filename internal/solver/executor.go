@@ -37,6 +37,13 @@ type ExecInfo struct {
 	// simply not recorded), matching chclient's own no-trace contract.
 	ShardQueryIDs []string
 
+	// PhysicalScans is, per shard, the number of physical table references
+	// that shard's emitted SQL contains (SQLEmitter's doc) — the data-shard
+	// fan-out multiplier runShard stamps on the shard's dispatch ctx so
+	// chclient's DataShardFanoutGate charges the statement's real
+	// ClickHouse-side width (cerberus issue #3128).
+	PhysicalScans []int
+
 	// Parallelism is the effective P after the admission clamp — equal to
 	// Cfg.Parallel when the top-up granted everything, lower (down to 1)
 	// when it degraded. Reported so capacity dashboards can see the clamp.
@@ -260,9 +267,10 @@ func (x *Executor) Execute(
 		SQLs:          make([]string, k),
 		ShardArgs:     make([][]any, k),
 		ShardQueryIDs: make([]string, k),
+		PhysicalScans: make([]int, k),
 	}
 	for i := range d.Slices {
-		sql, args, err := x.Emitter.Emit(ctx, d.Slices[i].Plan)
+		sql, args, physicalScans, err := x.Emitter.Emit(ctx, d.Slices[i].Plan)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w: shard %d: %w", ErrSolverEmit, i, err)
 		}
@@ -271,6 +279,7 @@ func (x *Executor) Execute(
 		}
 		info.SQLs[i] = sql
 		info.ShardArgs[i] = args
+		info.PhysicalScans[i] = physicalScans
 		// One query_id per shard, fixed here so the caller can record the whole
 		// fan-out at the dispatch seam and runShard stamps the same id onto the
 		// query ClickHouse actually runs.
@@ -422,9 +431,10 @@ func (sc *shardCursor) launchShards(
 			sql := info.SQLs[shardIdx]
 			args := info.ShardArgs[shardIdx]
 			queryID := info.ShardQueryIDs[shardIdx]
+			physicalScans := info.PhysicalScans[shardIdx]
 			out := sc.chans[shardIdx]
 			sc.g.Go(func() error {
-				return sc.runShard(sc.gctx, langName, shardIdx, sql, args, queryID, budget, perShardMemoryBytes, out)
+				return sc.runShard(sc.gctx, langName, shardIdx, sql, args, queryID, physicalScans, budget, perShardMemoryBytes, out)
 			})
 		}
 	}()
@@ -456,6 +466,7 @@ func (sc *shardCursor) runShard(
 	sql string,
 	args []any,
 	queryID string,
+	physicalScans int,
 	budget *chclient.SampleBudget,
 	perShardMemoryBytes int64,
 	out chan<- chclient.Sample,
@@ -466,6 +477,10 @@ func (sc *shardCursor) runShard(
 
 	// Per-shard progress recorder (one per ctx key).
 	pctx := chclient.WithProgressFor(gctx, langName)
+	// This shard's real ClickHouse-side width for chclient's DataShardFanoutGate
+	// (ExecInfo.PhysicalScans's doc): the statement's physical table
+	// references, each a Distributed fan-out on a multi-data-shard deployment.
+	pctx = chclient.WithDataShardFanoutMultiplier(pctx, physicalScans)
 	// This shard's own ClickHouse query_id, pre-minted by Execute. Stamping it
 	// here — rather than letting chclient mint one lazily — is what makes the
 	// fan-out joinable: the id recorded for the request at the dispatch seam is

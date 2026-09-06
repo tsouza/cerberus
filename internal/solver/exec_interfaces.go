@@ -42,13 +42,18 @@ type CursorQuerier interface {
 }
 
 // SQLEmitter lowers a re-anchored shard plan into a parameterised
-// ClickHouse SQL string + positional args. internal/chsql.Emit satisfies
-// it; the solver takes it as an interface so this package never imports
-// the emitter (scope + keeps the dependency cone tight). Emit is called
-// for ALL K shards before any cursor opens, so an emit failure aborts the
-// routed request with zero CH work.
+// ClickHouse SQL string + positional args, plus the number of physical
+// table references the statement contains (chsql.EmitCounted's own doc):
+// on a multi-data-shard deployment that count x DataShardCount is the
+// per-shard ClickHouse statements one dispatch of the SQL produces, which
+// runShard stamps as the dispatch's data-shard fan-out multiplier
+// (chclient.WithDataShardFanoutMultiplier, cerberus issue #3128).
+// internal/engine.ChsqlEmitter satisfies it; the solver takes it as an
+// interface so this package never imports the emitter (scope + keeps the
+// dependency cone tight). Emit is called for ALL K shards before any cursor
+// opens, so an emit failure aborts the routed request with zero CH work.
 type SQLEmitter interface {
-	Emit(ctx context.Context, plan chplan.Node) (sql string, args []any, err error)
+	Emit(ctx context.Context, plan chplan.Node) (sql string, args []any, physicalScans int, err error)
 }
 
 // breakerState is the stable, package-local mirror of chclient's breaker

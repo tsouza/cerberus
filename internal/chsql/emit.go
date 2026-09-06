@@ -112,12 +112,27 @@ var ErrUnsupported = errors.New("chsql: unsupported")
 // serialization took. The emitted SQL byte length is surfaced as
 // `cerberus.sql_length` on the span.
 func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
+	sql, args, _, err := EmitCounted(ctx, n)
+	return sql, args, err
+}
+
+// EmitCounted is Emit plus the number of physical (schema) table references
+// the rendered statement contains — see Builder.physicalScans's doc. On a
+// multi-data-shard deployment every such reference is a `Distributed`
+// wrapper that fans out DataShardCount per-shard statements, so this count
+// is the exact per-request multiplier chclient's DataShardFanoutGate must
+// charge for one dispatch of the statement (cerberus issue #3128): the
+// engine stamps it via chclient.WithDataShardFanoutMultiplier. Counted at
+// render time, where the text is written, because the plan alone cannot
+// know it — one Scan node is rendered twice by SearchTraceLimit and three
+// times by rate()'s window arms.
+func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, physicalScans int, err error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
 	if n == nil {
 		err := fmt.Errorf("%w: nil node", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	// Establish the IR-level scan time bound on any instant windowed-array
 	// leaf Scan that lacks one. In production the optimizer's
@@ -136,7 +151,7 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	spansTable := spansTableFromCtx(ctx)
 	if err := chplan.RequireSpansScansBounded(spansTable, n); err != nil {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	// Establish the Map key-order invariant on every series-identity key at the
 	// same chokepoint. Each head's lowering already establishes it, so this is
@@ -169,12 +184,12 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	// and every unbounded TraceQL one.
 	if err := e.emitBound(chplan.BindBoundedTraceScope(n), n); err != nil {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
-	sql := e.b.String()
+	sql = e.b.String()
 	if err := GuardEmittedSQL(ctx, sql); err != nil {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	// Reject a statement ClickHouse would refuse to parse (issue #2733,
 	// emit_size_bound.go) with a cerberus error that names the composition,
@@ -185,16 +200,16 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	// size is in the assembly rather than in any one of its parts.
 	if err := e.requireEmittedSQLBounded(n, sql); err != nil {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	// chaosSleepWrap is a no-op in every build except the chaos e2e
 	// lane's `chaos_sleep`-tagged image, where it splices a server-side
 	// ClickHouse sleep when the request ctx carries one (see
 	// chaos_sleep.go / chaos_sleep_stub.go). Production links the stub,
 	// so this is the identity transform.
-	sql, args := chaosSleepWrap(ctx, sql, e.args)
+	sql, args = chaosSleepWrap(ctx, sql, e.args)
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
-	return sql, args, nil
+	return sql, args, e.physicalScans, nil
 }
 
 // emitBound renders the plan, hoisting the shared top-N trace-id binding
@@ -252,6 +267,10 @@ func boundedRootScopeIDsQuery(s *chplan.BoundedTraceScope) *QueryBuilder {
 type emitter struct {
 	b    strings.Builder
 	args []any
+	// physicalScans accumulates the physical table references of every
+	// statement spliced into b (emitSelect / splice), including those carried
+	// by pre-rendered subqueries — see Builder.physicalScans's doc.
+	physicalScans int
 
 	// spansTable is the TraceQL spans table under resource-bound enforcement,
 	// or "" when none (PromQL / metrics matrix emit). When non-empty, the

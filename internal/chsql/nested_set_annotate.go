@@ -551,7 +551,7 @@ func boundedRootScopeFrag(spansTable, traceIDCol, parentCol, tsCol string, limit
 	}
 	return NewQuery().
 		Select(Col(traceIDCol)).
-		From(Col(spansTable)).
+		From(physicalTableFrag(spansTable)).
 		Where(where...).
 		GroupBy(Col(traceIDCol)).
 		OrderBy(Call("min", Col(tsCol)), true).

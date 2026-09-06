@@ -248,22 +248,14 @@ import (
 //     DataShardCount-wide weight acquireDataShardFanout charges it, a real
 //     gap in the gate's charging model, not a measurement artefact.
 //
-// THE FIX: acquireDataShardFanout now multiplies its charged weight by a
-// per-request fan-out multiplier (WithDataShardFanoutMultiplier, default 1)
-// that internal/engine.Engine.execContext stamps to
-// searchTraceLimitFanoutMultiplier (2) whenever the plan being dispatched
-// contains a chplan.SearchTraceLimit node — the ONE shape this round
-// directly proved against a real cluster. distributed_query_settings.go's
-// own doc already named three OTHER shapes that self-reference a
-// Distributed table under distributed_product_mode=global (TraceQL
-// structural operators, `select(nestedSet*)`, `| compare(...)`) that this
-// round's e2e burst never exercises (it fires only a bare, non-structural
-// TraceQL attribute search, a PromQL range query, and a LogQL range query)
-// and this fix does NOT audit or multiplier-charge — cerberus issue #3141
-// tracks auditing and, where warranted, extending the SAME multiplier
-// mechanism to those shapes with their own real-cluster evidence, the same
-// rigor this round applied to SearchTraceLimit, rather than a guessed
-// blanket multiplier applied without verification.
+// THE FIX (round 4, since generalised — see ROUND 5 below): acquireDataShardFanout
+// multiplies its charged weight by a per-request fan-out multiplier
+// (WithDataShardFanoutMultiplier, default 1). Round 4 stamped it to a
+// per-shape constant (2) for plans carrying a chplan.SearchTraceLimit node
+// — the ONE shape that round had proved against a real cluster — and left
+// distributed_query_settings.go's three other self-referencing shapes
+// (TraceQL structural operators, `select(nestedSet*)`, `| compare(...)`)
+// to cerberus issue #3141's audit rather than guess a blanket constant.
 //
 // Cerberus issue #3128's own filing text explicitly forbids a raised
 // DataShardFanoutCap as the resolution; this fix does not touch the cap —
@@ -289,10 +281,29 @@ import (
 // (chsql.GlobalInSubquery), which the initiator honours regardless of
 // nesting — the ranking subquery runs once (N children), its LIMIT-bounded
 // id set is broadcast, and the drain fans out once more (N children), two
-// sequential phases the 2x multiplier above now covers exactly rather than
-// approximately. The multiplier stays: see engine.go's
-// searchTraceLimitFanoutMultiplier doc for why 2, not 1, remains the
-// honest charge for two sequential phases.
+// sequential phases of DataShardCount statements each.
+//
+// The same run also retired the per-shape constant itself. With the trace
+// search fixed, the remaining over-width dispatches were PromQL rate()
+// range queries: their SQL renders the metrics Distributed table THREE
+// times (the extrapolation's window arms — three Union(ReadFromMergeTree,
+// ReadFromRemote) blocks in the captured EXPLAIN PIPELINE), so a dispatch
+// charged DataShardCount produced 3 x DataShardCount statements. A
+// per-shape multiplier would have needed a third round to learn that, and
+// a fourth for the next shape. The multiplier is now the EMITTED
+// statement's physical-table scan count, counted where the text is written
+// (chsql.EmitCounted / Builder.physicalScans — one per rendered table
+// reference, once per splice of a pre-rendered sub-statement, one per
+// merge() member) and stamped by every dispatch site (internal/engine's
+// route A, internal/solver's runShard for route B). Per-shape auditing of
+// the WEIGHT is thereby closed for every present and future emitter; issue
+// #3141's audit is about the other half — whether a shape's self-reference
+// nests through a derived table the way SearchTraceLimit's did, which is a
+// correctness/plan question the count cannot answer. Because a single
+// statement's width can now legitimately exceed the whole cap (3 scans x
+// 4 shards = 12 against a cap of 8), acquireDataShardFanout admits such a
+// statement ALONE with the cap as its weight instead of parking it until
+// its deadline — see that function's own doc.
 //
 // ROUND 4 — a SECOND, real, still-open contributing cause: this gate's
 // admission ceiling is PER-PROCESS, but a real deployment runs multiple
@@ -421,34 +432,29 @@ var dataShardFanoutMultiplierKey = dataShardFanoutMultiplierKeyType{}
 // (invariant 13).
 const defaultDataShardFanoutMultiplier = 1
 
-// WithDataShardFanoutMultiplier returns a ctx that scales
-// acquireDataShardFanout's charged weight by multiplier x DataShardCount
-// instead of the default DataShardCount alone (cerberus issue #3128 round
-// 4 — see this file's own "ROUND 4" doc above for the real-cluster evidence
-// that motivated this).
+// WithDataShardFanoutMultiplier returns a ctx that makes
+// acquireDataShardFanout charge multiplier x DataShardCount for the dispatch
+// instead of DataShardCount alone (cerberus issue #3128).
 //
-// This exists because acquireDataShardFanout charges a FIXED weight per
-// dispatch on the assumption that one chclient dispatch makes exactly one
-// real Distributed-table fan-out. That assumption is false for a plan shape
-// that references the SAME Distributed table more than once WITHIN one
-// physical SQL statement — internal/chsql/search_trace_limit.go's
-// emitSearchTraceLimit is the first PROVEN instance (its own doc: "the
-// input subquery is emitted twice"), and distributed_query_settings.go
-// separately documents three OTHER shapes with the same self-reference
-// property (TraceQL structural operators, nestedSet annotate, compare) that
-// have not been round-4-verified against a real cluster and so do NOT set
-// this yet (cerberus issue #3141 tracks that audit). A shape that has not
-// been proven to over-fan-out must never claim it has — this carrier
-// exists precisely so that claim is made per-shape, with evidence, not
-// guessed globally.
+// multiplier is the number of physical (schema) table references the
+// dispatched statement contains — chsql.EmitCounted's physicalScans, which
+// the engine (route A) and the solver's runShard (route B) stamp right after
+// emitting the SQL they are about to dispatch. On a multi-data-shard
+// deployment every such reference is a `Distributed` wrapper that fans out
+// DataShardCount per-shard statements, so the product is exactly the
+// ClickHouse-side statement count this one dispatch produces: 1 for a plain
+// scan, 2 for SearchTraceLimit's two arms, 3 for rate()'s window arms, and
+// whatever a future emitter renders — counted where the text is written, so
+// no per-shape audit or guessed constant is involved (rounds 4 and 5 of
+// issue #3128 each found one more shape a per-shape constant had missed).
 //
 // multiplier <= 0 is treated as defaultDataShardFanoutMultiplier (1) — a
-// caller bug should never UNDER-charge the gate below what the pre-round-4
-// mechanism already charged.
+// caller that dispatches SQL without stamping the count must never
+// UNDER-charge the gate below one full fan-out.
 //
 // A context value, not a Client field, so it is per-request: two concurrent
-// dispatches, one SearchTraceLimit-shaped and one not, never
-// cross-contaminate each other's charged weight.
+// dispatches of different statements never cross-contaminate each other's
+// charged weight.
 func WithDataShardFanoutMultiplier(ctx context.Context, multiplier int) context.Context {
 	return context.WithValue(ctx, dataShardFanoutMultiplierKey, multiplier)
 }
@@ -502,6 +508,17 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 	weight := c.dataShardCount * int64(dataShardFanoutMultiplierFromContext(ctx))
 	if weight < 1 {
 		weight = 1
+	}
+	// A statement whose own fan-out exceeds the whole budget (several
+	// Distributed scans x a wide shard set) is admitted ALONE — weight capped
+	// at the gate's size — rather than never: semaphore.Weighted parks any
+	// acquisition wider than its size until ctx expires, which would turn
+	// such a query into a guaranteed deadline error. The gate then bounds
+	// concurrent dispatches exactly as before; what it cannot do is shrink a
+	// single statement below its inherent width, and operators size
+	// DataShardFanoutCap with that in mind (docs/solver.md, point 5).
+	if weight > c.dataShardFanoutCap {
+		weight = c.dataShardFanoutCap
 	}
 	if aerr := c.dataShardFanoutGate.Acquire(ctx, weight); aerr != nil {
 		return nil, fmt.Errorf("chclient: data-shard fanout gate acquire: %w: %w", ErrDataShardFanoutGateBusy, aerr)

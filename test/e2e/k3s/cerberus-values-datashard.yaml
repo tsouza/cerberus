@@ -61,15 +61,21 @@ clickhouse:
     dataShards:
       # CLUSTER-WIDE DataShardFanoutCap budget (cerberus issue #3128). The
       # gate is per cerberus PROCESS, so the chart apportions this across the
-      # fixed replicaCount below: 16 / 2 = 8 per process, for BOTH the N=2
-      # and N=4 legs (`count` itself arrives via --set). Deliberately a
+      # fixed replicaCount below: 32 / 2 = 16 per process, for BOTH the N=2
+      # and N=4 legs (`count` itself arrives via --set). 16 rather than 8
+      # because a single statement's own width is DataShardCount x its
+      # physical-table scan count (chsql.EmitCounted), and the burst's
+      # widest shape — PromQL rate(), three window scans — is 3 x 4 = 12 at
+      # N=4; a per-process cap below one statement's width can only be met
+      # by admitting that statement alone, which proves nothing about the
+      # cross-request bound this lane exists to exercise. Deliberately a
       # chart-level budget rather than a per-process literal under `config:`
       # — this lane dogfoods the apportionment, and
       # e2e-datashard-verify.mjs asserts BOTH contracts: each cerberus pod's
       # own per-shard concurrency stays within the per-process cap the chart
       # rendered (read back from the env ConfigMap), and the cluster-wide
       # total stays within replicas x that cap.
-      fanoutCap: 16
+      fanoutCap: 32
 
 # The base overlay enables the HPA (2..4 replicas). This lane pins a FIXED
 # cerberus replica count instead: the admission-control assertion is about a

@@ -273,7 +273,7 @@ func queryExemplarsSelect(
 			As(attrsField, "attrs_arr"),
 			As(Call("arrayJoin", Call("arrayEnumerate", tsField)), "i"),
 		).
-		From(Col(exemplarsTable))
+		From(physicalTableFrag(exemplarsTable))
 
 	// Predicate composition: (matcher_predicate) AND
 	// (TimeUnix >= toDateTime64(start, 9)) AND

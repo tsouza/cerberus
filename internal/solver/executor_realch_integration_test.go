@@ -199,8 +199,8 @@ ORDER BY grp`
 // deliberately runs the identical deterministic-memory query.
 type memProbeEmitter struct{}
 
-func (memProbeEmitter) Emit(_ context.Context, _ chplan.Node) (string, []any, error) {
-	return memProbeAggregateSQL, nil, nil
+func (memProbeEmitter) Emit(_ context.Context, _ chplan.Node) (string, []any, int, error) {
+	return memProbeAggregateSQL, nil, 1, nil
 }
 
 // TestExecutor_PerShardMaxMemoryUsage_RealClickHouse is the real-CH
