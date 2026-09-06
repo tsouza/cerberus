@@ -1,9 +1,9 @@
 # `.github/scripts/` — reusable CI step logic (Node ESM)
 
-Non-trivial CI step logic (multi-line `bash` / `jq` / `awk` / `perl`
-embedded in workflow `run:` blocks) lives here as dependency-light Node
-ESM (`.mjs`) modules, not inline YAML. See the **CI / workflow scripts**
-rule in the repo `CLAUDE.md` for the why.
+Non-trivial step logic — multi-line `bash` / `jq` / `awk` / `perl` embedded
+in a workflow `run:` block, or in a Justfile recipe body — lives here as
+dependency-light Node ESM (`.mjs`) modules, not inline YAML or `just`
+recipes. See invariant 15 in the repo `CLAUDE.md` for the why.
 
 Each module:
 
@@ -1923,6 +1923,32 @@ what actually runs.
   - Env: `NAMESPACE` (default `cerberus`), `PPROF_OUT_DIR` (default `/tmp`).
   - Exit: `0` when restarts == 0 (or unreadable), `1` when restarts > 0
     (after dumping evidence).
+- **`e2e-datashard-verify.mjs`** — `e2e.yml`, the `datashard` job (multi-data-shard
+  lane, cerberus issue #3079), invoked via `just e2e-datashard-verify <count>`
+  after a concurrent PromQL/LogQL/TraceQL burst has run against the
+  `Distributed` target. Reads `system.query_log` (never cerberus's own HTTP
+  responses) to prove: a genuine solver-split (`kEff > 1`) query reached the
+  cluster at all (otherwise the leg is vacuous); the real, concurrent,
+  cluster-wide per-shard statement count (`is_initial_query=0` rows) never
+  exceeded `DATA_SHARD_FANOUT_CAP` — `DataShardFanoutGate`'s own ceiling,
+  not merely the trivially-safe `N=2` case; no cerberus 5xx during the burst
+  (admission control degrades, never rejects); every per-shard statement's
+  own `max_memory_usage` setting sits within `perShardMemoryBytes`'s
+  predicted ceiling for THAT STATEMENT's own `kEff` (joined back via its
+  `initial_query_id`, not a group-wide bound) and no
+  `MEMORY_LIMIT_EXCEEDED`/OOM appears anywhere in the cluster. `kEff` and
+  the per-shard fan-out are both
+  recovered by grouping `query_id` on its leading 32-hex-char trace-id
+  component (`internal/chclient/client.go`'s `mintQueryID` shape) — see the
+  script's own header for the full mechanism. INFORMATIONAL — never a PR
+  gate.
+  - Env: `NAMESPACE` (default `cerberus`), `CERBERUS_URL` (default
+    `http://localhost:8080`), `DB` (default `otel`), `CH_USER`/`CH_PASSWORD`
+    (default `cerberus`/`cerberus`), `CH_CLUSTER` (default `bwc_cluster`),
+    `DATA_SHARD_COUNT` / `DATA_SHARD_FANOUT_CAP` (required), `BURST_SECONDS`
+    (default `20`), `BURST_CONCURRENCY` (default `6`), `FLUSH_WAIT_SECONDS`
+    (default `10`).
+  - Exit: `0` all assertions passed, `1` on any failure.
 - **`promql-surface-gate.mjs`** — `compatibility.yml`, the
   `compatibility/promql-surface` job (reference-backed full-surface PromQL
   rejection-completeness gate, #106). Stands up a flag-enabled reference

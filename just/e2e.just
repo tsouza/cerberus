@@ -50,6 +50,14 @@ E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.6-alpine ghcr.io/open-te
 # e2e values), so the exact bundled-CH tag MUST be imported here.
 E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.3"
 
+# The multi-data-shard lane (cerberus issue #3079) needs only the bundled
+# ClickHouse image, at the SAME tag E2E_BWC_IMAGES already pins (gotcha #1's
+# dedicated-user ConfigMap applies regardless of dataShards.count) — no MinIO
+# (hot-only mode, see cerberus-values-datashard.yaml's own doc), so this is a
+# standalone constant rather than reusing E2E_BWC_IMAGES wholesale, which
+# would pull two MinIO images this lane never runs.
+E2E_DATASHARD_IMAGES := "clickhouse/clickhouse-server:26.3"
+
 # Extra args appended verbatim to `k3d cluster create` in `e2e-up`. Empty by
 # default (CI uses none). Interpolated unquoted, so the value is shell-parsed:
 # wrap any single arg containing shell metacharacters (`<`, `%`, `,`) in

@@ -347,9 +347,21 @@ work on a real multi-node cluster. It does **not** prove cerberus's own
 compiled binary running this path end-to-end inside the cluster (that needs
 a built cerberus image, which is the heavier `just e2e`-style lane), it has
 **not** been validated under concurrent solver-driven load, and every
-compat/e2e harness in this repository remains single-shard-only. Do not run
-`count > 1` in production until the e2e-hardening sub-issue
+compat/e2e harness in this repository remains single-shard-only (by
+permanent, stated design for the three differential compat harnesses and
+`cerberus migrate` — see
+[`operations.md`'s scoping section](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard-cerberus-issue-3079)).
+Do not run `count > 1` in production until the e2e-hardening sub-issue
 ([#3079](https://github.com/tsouza/cerberus/issues/3079)) closes.
+
+Issue #3079 adds the `datashard` e2e leg (`.github/workflows/e2e.yml`) that
+runs exactly this combination — a built cerberus image, a real concurrent
+PromQL/LogQL/TraceQL load burst through the solver's sharded-pushdown path,
+at both `dataShards.count: 2` and `dataShards.count: 4` — in CI, and asserts
+the real ClickHouse-side admission-control ceiling and memory apportionment
+against `system.query_log`. See
+[`operations.md`'s own section](operations.md#multi-data-shard-e2e-hardening-leg-cerberus-issue-3079)
+for exactly what it checks.
 
 ### #3075 compatibility: object-disk path is shard-agnostic; sessionAffinity gains a new gap
 

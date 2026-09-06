@@ -1857,6 +1857,131 @@ jobs:
         if: always()
         run: just e2e-bwc-down
 
+  # datashard — multi-data-shard e2e lane (cerberus issue #3079, epic #3074).
+  # A 2-leg matrix over `dataShardCount` shares the SAME k3d/Helm bring-up
+  # shape as `bwc-minio` above (a chart-deployed bundled ClickHouse, hot-only
+  # local-disk storage mode — no MinIO dependency, see
+  # cerberus-values-datashard.yaml's own doc) but exercises a DIFFERENT axis:
+  # `clickhouse.bundled.dataShards.count > 1` (cerberus issue #3077's
+  # `Distributed`-engine topology) under real concurrent solver-driven load,
+  # the ONE thing docs/helm-clickhouse.md's "infrastructure-validated only,
+  # not yet query-correctness-supported" callout says has NOT been proven:
+  #
+  #   2 — regression baseline, cheap to stand up.
+  #   4 — deliberately EXCEEDS the solver's own unmodified defaultParallel
+  #       (3), the exact regime a naive per-request divide would have given
+  #       zero protection in (epic #3074's admission-control section).
+  #
+  # Each leg: brings up its own dataShardCount-shard cluster + a built
+  # cerberus image (`just e2e-datashard-up`), seeds the deterministic OTel
+  # rows (`just e2e-seed-rolling`), runs the FULL Go e2e suite
+  # (`just e2e-run` — includes the new ClickHouse#29332 subquery-shaped
+  # tests in test/e2e/e2e_datashard_subquery_test.go, run UNCONDITIONALLY in
+  # every lane so the SAME pinned assertions prove "matches the single-shard
+  # reference" by construction rather than by a separate diff step), then
+  # fires a concurrent PromQL/LogQL/TraceQL burst and asserts the real
+  # ClickHouse-side admission-control + memory behavior against
+  # `system.query_log` (`just e2e-datashard-verify` —
+  # .github/scripts/e2e-datashard-verify.mjs has the full mechanism).
+  #
+  # INFORMATIONAL, never a PR gate — SAME trigger posture as `bwc-minio` /
+  # `dashboard` / `chaos`: push-to-main + nightly + manual dispatch ONLY.
+  # Own concurrency + timeout; a separate single-cluster lane, not a
+  # Playwright shard.
+  datashard:
+    name: datashard (N=${{ matrix.dataShardCount }})
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        dataShardCount: [2, 4]
+    concurrency:
+      group: e2e-datashard-${{ github.run_id }}-${{ matrix.dataShardCount }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      # ---- free runner disk BEFORE k3d + the stack boot (infra-flake fix) ----
+      # N=4 boots FOUR ClickHouse StatefulSets + a 3-node Keeper ensemble
+      # (dataShards.count>1 auto-enables Keeper) + cerberus + the collector +
+      # Grafana + 3 sample apps on ONE k3d node — same rationale as
+      # dashboard-shard / bwc-minio.
+      - uses: ./.github/actions/free-disk-space
+
+      - uses: ./.github/actions/setup-go
+
+      # node for .github/scripts/e2e-datashard-verify.mjs (node: builtins
+      # only — no npm install).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
+        with:
+          tool: just
+
+      # cerberus + the bundled ClickHouse data tier are deployed via the Helm
+      # chart in `just e2e-datashard-up` (dogfooding the chart, same as
+      # `bwc-minio`), so the runner needs helm.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
+        with:
+          version: v3.21.1
+
+      - name: Install k3d
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Bring up k3d + bundled-ClickHouse stack (dataShards.count=${{ matrix.dataShardCount }})
+        run: just e2e-datashard-up ${{ matrix.dataShardCount }}
+
+      - name: Seed OTel data (deterministic synthetic rows; rolling)
+        run: just e2e-seed-rolling
+
+      # Reused UNCHANGED across every e2e lane (standard, bwc, datashard) —
+      # includes test/e2e/e2e_datashard_subquery_test.go's ClickHouse#29332
+      # subquery-shaped tests, so the SAME pinned assertions running
+      # byte-identically here is the "matches a single-shard reference run"
+      # correctness proof (docs/operations.md's #29332 test-plan section).
+      - name: Run Go E2E tests (correctness against the real multi-data-shard cluster)
+        run: just e2e-run
+
+      - name: Verify admission control + memory bound + query_log evidence under concurrent load
+        run: just e2e-datashard-verify ${{ matrix.dataShardCount }}
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h || true
+          echo "=== pods ==="
+          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
+          echo "=== events (last 50) ==="
+          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
+          echo "=== cerberus logs ==="
+          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
+          echo "=== data-shard clickhouse pods ==="
+          for p in $(kubectl -n cerberus get pod -l app.kubernetes.io/component=clickhouse -o jsonpath='{.items[*].metadata.name}'); do \
+            echo "--- $p ---"; \
+            kubectl -n cerberus logs "$p" --tail 100 || true; \
+          done
+          echo "=== rolling seeder log (tail 200) ==="
+          tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
+          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
+             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
+            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
+
+      - name: Tear down
+        if: always()
+        run: just e2e-datashard-down
+
   # #1861 acceptance criterion #2. Reaching a real terminal `failure` instead
   # of `cancelled` (crawl-terminal / dashboard-crawl-terminal, above) is not
   # the same as anyone SEEING that failure: the `schedule` trigger has no PR,
@@ -1876,13 +2001,13 @@ jobs:
   # never rot into a permanent false alarm. `needs` lists every job whose
   # result actually matters for "did the nightly pass": the two required
   # aggregates (`compose-smoke`, `dashboard`), the two crawl-terminality
-  # readers, and the three informational-but-schedule-run leaf jobs. `always()`
+  # readers, and the four informational-but-schedule-run leaf jobs. `always()`
   # so it still runs (and can still notify) when an upstream job failed rather
   # than being skipped by GitHub's default `success()` gate.
   nightly-health-notify:
     name: nightly-health-notify
     needs:
-      [compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio]
+      [compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard]
     if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1908,4 +2033,5 @@ jobs:
           RESULT_STARTUP_BENCH: ${{ needs.startup-bench.result }}
           RESULT_CHAOS: ${{ needs.chaos.result }}
           RESULT_BWC_MINIO: ${{ needs.bwc-minio.result }}
+          RESULT_DATASHARD: ${{ needs.datashard.result }}
         run: node .github/scripts/notify-nightly-failure.mjs

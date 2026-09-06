@@ -177,6 +177,136 @@ e2e-bwc-verify-mode-toggle:
 # Tear the bundled-ClickHouse (bwc) lane down.
 e2e-bwc-down: e2e-down
 
+# Multi-data-shard e2e leg (cerberus issue #3079, epic #3074) — the
+# validation-only sub-issue that closes docs/helm-clickhouse.md's
+# "infrastructure-validated only, not yet query-correctness-supported"
+# gap for `clickhouse.bundled.dataShards.count > 1` (cerberus issue #3077)
+# by actually running the solver's sharded-pushdown path, a built cerberus
+# image, and real concurrent load against it — the ONE thing the #3077
+# manual k3d proof explicitly did NOT cover.
+#
+# `count` selects the data-shard topology:
+#   2 — regression baseline, cheap to stand up.
+#   4 — deliberately EXCEEDS the solver's own unmodified defaultParallel
+#       (3, internal/solver/config.go), the exact regime a naive per-request
+#       divide would have given zero protection in — see
+#       `internal/solver.NewDataShardFanoutGate`'s own doc and epic #3074's
+#       "admission-control interaction" section.
+#
+# Same k3d cluster name, same cerberus:e2e image, same otel.* tables on
+# svc/clickhouse:9000 (via k3s-datashard's alias, same trick as k3s-bwc) — so
+# the seed + Go-test recipes (`e2e-seed-rolling`, `e2e-run`) are REUSED
+# UNCHANGED, exactly as the bwc lane reuses them. Ordering mirrors
+# `e2e-bwc-up`: bring the chart-managed cluster up FIRST (cerberus's
+# auto-create DDL then stamps the `Distributed` wrapper tables across every
+# shard before anything else can race it), THEN the otel collector / grafana
+# / sample-app fixtures.
+
+# Boot the k3d stack with the chart's bundled ClickHouse at the given data-shard count.
+e2e-datashard-up count="2": e2e-down
+    @echo "==> [datashard] pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
+    @just _pull-retry {{K3S_IMAGE}}
+    @echo "==> [datashard] creating k3d cluster {{K3D_CLUSTER}}"
+    k3d cluster create {{K3D_CLUSTER}} \
+        --image {{K3S_IMAGE}} \
+        --port "3000:30030@loadbalancer" \
+        --port "8080:30080@loadbalancer" \
+        --no-lb=false \
+        --k3s-arg "--disable=traefik@server:0" \
+        {{K3D_EXTRA_ARGS}} \
+        --wait
+    @echo "==> [datashard] building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
+    node .github/scripts/build-with-registry-retry.mjs \
+        docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
+    @echo "==> [datashard] pre-pulling external + bundled-CH images on host docker"
+    @for img in {{E2E_EXTERNAL_IMAGES}} {{E2E_DATASHARD_IMAGES}}; do \
+        case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
+        just _pull-retry "$img"; \
+    done
+    @# Import each image individually + VERIFY it landed (same robust loop as
+    @# e2e-up / e2e-bwc-up — see the comment on e2e-up for why).
+    @for img in {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_DATASHARD_IMAGES}}; do \
+        case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
+        ref="$img"; \
+        case "$ref" in \
+            *.*/*|*:*/*) ;; \
+            */*) ref="docker.io/$ref" ;; \
+            *) ref="docker.io/library/$ref" ;; \
+        esac; \
+        landed=0; \
+        for attempt in 1 2 3 4 5; do \
+            k3d image import "$img" -c {{K3D_CLUSTER}} || true; \
+            if docker exec k3d-{{K3D_CLUSTER}}-server-0 ctr -n k8s.io images ls -q | grep -qF "$ref"; then \
+                landed=1; break; \
+            fi; \
+            echo "  import attempt $attempt: $ref not in containerd yet, retrying with backoff" >&2; \
+            sleep $((attempt * 2)); \
+        done; \
+        if [ "$landed" != "1" ]; then \
+            echo "ERROR: $ref missing from k3d node containerd after 5 import attempts" >&2; \
+            exit 1; \
+        fi; \
+    done
+    @echo "==> [datashard] phase 1: namespace"
+    kubectl apply -f test/e2e/k3s/namespace.yaml
+    @echo "==> [datashard] phase 2: installing cerberus + bundled ClickHouse (dataShards.count={{count}}) via Helm"
+    helm upgrade --install cerberus deploy/helm/cerberus \
+        --namespace cerberus \
+        --values test/e2e/k3s/cerberus-values.yaml \
+        --values test/e2e/k3s/cerberus-values-datashard.yaml \
+        --set clickhouse.bundled.dataShards.count={{count}} \
+        --wait --timeout 420s
+    @echo "==> [datashard] waiting for every data-shard StatefulSet + cerberus"
+    @i=0; while [ "$i" -lt "{{count}}" ]; do \
+        kubectl -n cerberus rollout status statefulset/cerberus-clickhouse-datashard-$i --timeout=300s; \
+        i=$((i + 1)); \
+    done
+    kubectl -n cerberus rollout status deployment/cerberus --timeout=180s
+    @echo "==> [datashard] phase 3: applying grafana / collector / sample-app fixtures + clickhouse alias"
+    kubectl kustomize --load-restrictor=LoadRestrictionsNone test/e2e/k3s-datashard | kubectl apply -f -
+    @echo "==> [datashard] waiting for grafana"
+    kubectl -n cerberus rollout status deployment/grafana --timeout=180s
+    @echo "==> e2e-datashard-up done (dataShards.count={{count}})"
+
+# Fires representative concurrent PromQL/LogQL/TraceQL load through the
+# solver's sharded-pushdown path against the `Distributed` target, then
+# asserts against real ClickHouse `system.query_log` state:
+#   - a solver-split (kEff > 1) query is genuinely reached;
+#   - the real concurrent per-shard statement count stays within
+#     CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP (8, pinned by
+#     cerberus-values-datashard.yaml) — DataShardFanoutGate's real,
+#     unconditional ceiling, not merely the trivially-safe N=2 case;
+#   - no MEMORY_LIMIT_EXCEEDED / OOM anywhere in the cluster during the
+#     burst, and every observed per-shard max_memory_usage setting matches
+#     perShardMemoryBytes = cap/(kEff*DataShardCount) for ITS OWN kEff.
+# This recipe does NOT check the ClickHouse#29332 subquery-shaped test plan
+# (docs/operations.md's "predicate pushdown through subqueries against
+# Distributed" section) — that is `test/e2e/e2e_datashard_subquery_test.go`'s
+# job, run via the normal `just e2e-run` (Go e2e suite), not this script.
+# Run AFTER `just e2e-seed-rolling` (+ `just e2e-run` for both the
+# deterministic correctness check against single-shard-pinned expected
+# values AND the #29332 subquery plan). Logic lives in the env-driven Node
+# module per the CLAUDE.md "non-trivial step logic in .github/scripts/*.mjs"
+# rule.
+
+# Assert the real cluster's admission-control + memory-bound behavior (see e2e_datashard_subquery_test.go for #29332).
+e2e-datashard-verify count="2":
+    @echo "==> [datashard] verifying admission control + memory bound (count={{count}})"
+    # "8" here must stay equal to CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP in
+    # test/e2e/k3s/cerberus-values-datashard.yaml (see that file's own
+    # comment for why it's pinned rather than derived) -- there is no
+    # runtime endpoint to read it back from, so the two literals are kept
+    # in sync by hand; a future edit to one MUST update the other.
+    DATA_SHARD_COUNT="{{count}}" \
+    DATA_SHARD_FANOUT_CAP="8" \
+        node .github/scripts/e2e-datashard-verify.mjs
+
+# Tear down the datashard lane. Same cluster name + rolling seeder as the
+# standard lane, so the standard teardown covers it exactly.
+
+# Tear the multi-data-shard lane down.
+e2e-datashard-down: e2e-down
+
 # Run the compose-stack Grafana catch-net spec locally. Assumes the
 # quickstart compose stack is already up (`docker compose up --wait`).
 # Drives Grafana through every provisioned dashboard and asserts every
