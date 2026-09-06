@@ -283,8 +283,20 @@ clickhouse:
       # shard — see docs/helm-clickhouse.md's DATA-shard topology section
       # for the full transcript. It has NOT been validated under concurrent
       # solver-driven load, and every compat/e2e harness in this repo
-      # remains single-shard-only. Do not run `count > 1` in production
-      # until issue #3079 (e2e hardening) closes.
+      # remains single-shard-only.
+      #
+      # >>> STILL TRUE AFTER #3079 MERGED <<< Issue #3079 (e2e hardening)
+      # has merged and added an automated `datashard` N=2/N=4 leg to
+      # `.github/workflows/e2e.yml` (push/nightly/dispatch-only, never a
+      # required PR gate) — but that lane has NOT yet gone green in real
+      # CI. Its only post-merge run so far
+      # (github.com/tsouza/cerberus/actions/runs/33998800104) failed both
+      # legs at `helm upgrade --install` itself (context deadline exceeded
+      # bringing up the multi-shard StatefulSets), before any of its
+      # query_log-based correctness/admission-control assertions ran. Do
+      # NOT run `count > 1` in production until that lane actually passes —
+      # see docs/operations.md's DATA-shard topology section for the
+      # current status.
       #
       # >>> 1 -> N IS MANUAL-MIGRATION-ONLY <<< Bumping this on an ALREADY
       # populated single-shard deployment is NOT a supported in-place `helm

@@ -1092,13 +1092,56 @@ same shard, matching whatever hash the Distributed wrapper's
 (`CERBERUS_CH_DATA_SHARDS`), but building or prescribing the collector-side
 routing config is out of scope for this repository.
 
-This is infrastructure-validated only, not yet declared query-correctness
--supported — see the bundled chart's own
+**`1 -> N` is manual-migration-only.** Bumping `dataShards.count` on an
+already-populated deployment is not a supported in-place `helm upgrade` —
+renaming shard 0's StatefulSet orphans its existing PVCs, and there is no
+automatic repartitioning path. See the bundled chart's own
+[`1 -> N` migration runbook](helm-clickhouse.md#1---n-is-a-manual-migration-only-operation)
+for the full hazard and the manual, out-of-band procedure a real shard split
+requires.
+
+**The perf harness cannot see ClickHouse-side `Distributed` execution.**
+[`performance.md`'s assurance framework](performance.md#how-fast-is-kept-fast--the-assurance-framework)
+profiles every corpus fixture via chDB `EXPLAIN` (layers 1-4) or a single
+testcontainers-go ClickHouse instance (layer 5, `test/perf/smoke`) — neither
+substrate has a cluster or a `Distributed` table, so none of those five
+layers observes real per-DATA-shard execution. (This is unrelated to that
+doc's own sharded-pushdown solver "shard" — the query-time-range slicing
+`internal/solver` performs against a single ClickHouse target regardless of
+`DataShardCount`.) The only real per-shard signal this repository collects
+comes from `system.query_log` in the `datashard` e2e leg below, never from
+`EXPLAIN` — a permanent, structural gap in the perf harness, not a
+to-be-scheduled follow-up.
+
+**The sessionAffinity-vs-`Distributed`-fan-out question is open, not
+resolved.** `clickhouse.bundled.service.sessionAffinity` (see
+[Multi-replica consistency](helm-clickhouse.md#multi-replica-consistency))
+still closes cross-replica divergence for the shard a cerberus connection
+actually lands on, but whether ClickHouse's own internal replica selection
+for every OTHER shard a `Distributed` fan-out touches can diverge across two
+statements of the same multi-statement request is unresolved. Tracked as
+[#3086](https://github.com/tsouza/cerberus/issues/3086); see the bundled
+chart's own
+[sessionAffinity-gap section](helm-clickhouse.md#3075-compatibility-object-disk-path-is-shard-agnostic-sessionaffinity-gains-a-new-gap)
+for the full mechanism and what is and isn't already covered.
+
+**Current status: infrastructure-validated only, not yet
+query-correctness-proven under real load.** See the bundled chart's own
 [DATA-shard topology section](helm-clickhouse.md#clickhouse-cluster-data-shard-topology-datashardscount)
-for what has actually been proven, and epic #3074's later
-[settings-verification](https://github.com/tsouza/cerberus/issues/3078) and
-[e2e-hardening](https://github.com/tsouza/cerberus/issues/3079) sub-issues
-for what closes that gap.
+for what the manual k3d run in cerberus issue #3077 actually proved. The
+epic's own [settings-verification](https://github.com/tsouza/cerberus/issues/3078)
+and [e2e-hardening](https://github.com/tsouza/cerberus/issues/3079)
+sub-issues have both since merged — their analysis is the two sections
+below — but **the automated `datashard` e2e lane issue #3079 added has not
+yet gone green in real CI**: its only post-merge run so far,
+[run 33998800104](https://github.com/tsouza/cerberus/actions/runs/33998800104)
+(triggered by issue #3079's own merge to `main`), failed both the `N=2` and
+`N=4` legs at `helm upgrade --install` itself — `Error: context deadline
+exceeded` bringing up the multi-shard ClickHouse StatefulSets within the
+job's 420s timeout — before any of the correctness/admission-control
+assertions described below ever ran. Nothing in this document should be
+read as that lane having passed; `count > 1` remains unproven under real
+concurrent multi-shard load until it does.
 
 ### ClickHouse Distributed-query settings, error taxonomy, and known risks (cerberus issue #3078)
 
@@ -1402,6 +1445,12 @@ the settings-verification sub-issue, #3078, exactly as that issue's own
 that script's own header comment for the full query_id-trace-grouping
 mechanism this relies on. `datashard`, like `bwc-minio`, is INFORMATIONAL —
 never a PR gate.
+
+**This describes what the lane is built to check, not a result it has
+produced.** As the topology-status note above says, the lane's only run to
+date failed bringing the cluster up, before `e2e-datashard-verify.mjs` ever
+executed — none of the `query_log` assertions in this section have actually
+observed a pass yet.
 
 ### Compat and migration-lane scope: single ClickHouse data shard (cerberus issue #3079)
 
