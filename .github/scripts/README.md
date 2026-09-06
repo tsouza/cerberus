@@ -2062,20 +2062,20 @@ what actually runs.
     `POLL_SECONDS` (default `180`), `POLL_INTERVAL_SECONDS` (default `5`),
     `MIN_HISTORY_SECONDS` (default `60`).
   - Exit: `0` once every signal clears the floor; `1` on timeout.
-- **`k3d-image-import.mjs`** — the Justfile (`e2e-up`), extracted from its
-  image-import-and-verify retry loop (cerberus issue #3096). k3d bundles
-  every image into one tarball and runs `ctr image import` inside a
-  transient tools node — the bundled tarball intermittently vanishes
-  mid-import (importing one image at a time shrinks the race), and `k3d
-  image import` reports success even on a silent node-level failure (so
+- **`k3d-image-import.mjs`** — the Justfile (`e2e-up` and `e2e-bwc-up`),
+  extracted from `e2e-up`'s image-import-and-verify retry loop (cerberus
+  issue #3096). k3d bundles every image into one tarball and runs `ctr image
+  import` inside a transient tools node — the bundled tarball intermittently
+  vanishes mid-import (importing one image at a time shrinks the race), and
+  `k3d image import` reports success even on a silent node-level failure (so
   landing is VERIFIED against the node's own containerd, never trusted from
   k3d's exit code). Designed from day one for reuse by `e2e-bwc-up`
-  (sub-issue #3097, not wired to this script by #3096) and the
-  multi-data-shard `e2e-datashard-up` (issue #3107): an arbitrary argv image
-  list plus an `IMAGE_IMPORT_EXCLUDE` glob-pattern parameter (`e2e-bwc-up`
-  needs to skip the standalone `clickhouse/clickhouse-server:*-alpine` image
-  its kustomization never applies) are first-class from the start, not a
-  retrofit.
+  (sub-issue #3097, wired up in that issue): an arbitrary argv image list
+  plus an `IMAGE_IMPORT_EXCLUDE` glob-pattern parameter let `e2e-bwc-up`
+  reuse this script unchanged, skipping the standalone
+  `clickhouse/clickhouse-server:*-alpine` image its kustomization never
+  applies. The multi-data-shard `e2e-datashard-up` (issue #3107) still
+  duplicates this loop rather than reusing this script.
   - Usage: `node .github/scripts/k3d-image-import.mjs <image>...`.
   - Env: `K3D_CLUSTER` (required), `IMAGE_IMPORT_EXCLUDE` (optional,
     whitespace-separated globs), `IMAGE_IMPORT_ATTEMPTS` (default `5`),
