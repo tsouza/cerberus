@@ -462,7 +462,17 @@ async function main() {
   const overWidthSampleLimit = 10;
   log(`dispatches (by initial_query_id) whose own child count exceeds DataShardCount=${DATA_SHARD_COUNT}: ${overWidthGroups.length} of ${childrenByQid.size} total`);
   for (const [qid, rows] of overWidthGroups.slice(0, overWidthSampleLimit)) {
-    log(`  over-width dispatch ${qid}: ${rows.length} children (expected <= ${DATA_SHARD_COUNT}); sample query: ${rows[0].snippet}`);
+    // selfMaxConcurrent — this ONE group's own children, swept in isolation.
+    // 1 means the group's own children never overlap EACH OTHER (a
+    // sequential-round-trip pattern: N separate ClickHouse statements, one
+    // after another, all sharing one query_id) — each already paid its own
+    // separate gate acquire/release, so the group itself is not what
+    // breaches the cap even though its own row COUNT exceeds DataShardCount.
+    // > 1 means this group's own children genuinely ran concurrently WITH
+    // EACH OTHER — real evidence of one gate acquisition under-charging a
+    // dispatch that structurally fans out wider than DataShardCount.
+    const selfMaxConcurrent = maxConcurrent(rows.map((r) => [r.startUs, r.durUs]));
+    log(`  over-width dispatch ${qid}: ${rows.length} children (expected <= ${DATA_SHARD_COUNT}), own internal peak concurrency=${selfMaxConcurrent}; sample query: ${rows[0].snippet}`);
   }
 
   if (peakConcurrentSelectOnly > DATA_SHARD_FANOUT_CAP) {
