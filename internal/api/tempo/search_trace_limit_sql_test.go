@@ -109,17 +109,24 @@ func searchSQL(t *testing.T, query string) string {
 
 // TestSearch_TraceLimitPushdown_SQLShape pins that a plain `{}` search
 // carries the top-N trace subquery: the outer drain is restricted to
-// `TraceId IN (SELECT TraceId FROM (...) GROUP BY TraceId ORDER BY
+// `TraceId GLOBAL IN (SELECT TraceId FROM (...) GROUP BY TraceId ORDER BY
 // min(Timestamp) DESC, TraceId LIMIT <limit>)`. This is the SQL that
 // bounds the Go-side drain to the kept traces' spans instead of every
-// matching row.
+// matching row. GLOBAL is load-bearing, not cosmetic: the subquery reads
+// the traces table through a derived table, which ClickHouse's
+// distributed_product_mode=global rewrite never reaches, so a plain IN
+// re-fans the ranking out on every data shard (cerberus issue #3128 —
+// see chsql.GlobalInSubquery's doc).
 func TestSearch_TraceLimitPushdown_SQLShape(t *testing.T) {
 	t.Parallel()
 	sql := searchSQL(t, "/api/search?q=%7B%7D&limit=3")
 
-	// The IN-subquery restriction over the trace-id column.
-	if !strings.Contains(sql, "`TraceId` IN (SELECT `TraceId` FROM (") {
-		t.Errorf("plain {} search SQL missing TraceId IN (subquery) restriction:\n%s", sql)
+	// The GLOBAL IN-subquery restriction over the trace-id column.
+	if !strings.Contains(sql, "`TraceId` GLOBAL IN (SELECT `TraceId` FROM (") {
+		t.Errorf("plain {} search SQL missing TraceId GLOBAL IN (subquery) restriction:\n%s", sql)
+	}
+	if strings.Contains(sql, "`TraceId` IN (SELECT") {
+		t.Errorf("plain {} search SQL restricts with a plain IN — re-fans the ranking subquery out on every data shard:\n%s", sql)
 	}
 	// Top-N ranking: newest-by-min-start, TraceId tie-break — NEVER max.
 	if !strings.Contains(sql, "GROUP BY `TraceId`") {
@@ -143,8 +150,8 @@ func TestSearch_TraceLimitPushdown_SQLShape(t *testing.T) {
 func TestSearch_TraceLimitPushdown_DefaultLimit(t *testing.T) {
 	t.Parallel()
 	sql := searchSQL(t, "/api/search?q=%7B%7D")
-	if !strings.Contains(sql, "`TraceId` IN (SELECT `TraceId` FROM (") {
-		t.Fatalf("default-limit search SQL missing IN (subquery):\n%s", sql)
+	if !strings.Contains(sql, "`TraceId` GLOBAL IN (SELECT `TraceId` FROM (") {
+		t.Fatalf("default-limit search SQL missing GLOBAL IN (subquery):\n%s", sql)
 	}
 	if !strings.Contains(sql, "LIMIT 20") {
 		t.Errorf("SQL missing LIMIT 20 (DefaultSearchLimit):\n%s", sql)
