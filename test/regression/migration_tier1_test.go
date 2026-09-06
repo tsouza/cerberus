@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -513,11 +514,7 @@ func TestMigrationTier1ReferencePrometheusIsWriteOnly(t *testing.T) {
 func TestMigrationTier1ArchetypeIdentitiesAreDisjoint(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	archetypes := justVariableList(t, string(buf), "MIGRATION_TIER1_ARCHETYPES")
+	archetypes := justVariableList(t, "MIGRATION_TIER1_ARCHETYPES")
 	if len(archetypes) < 2 {
 		t.Fatalf("MIGRATION_TIER1_ARCHETYPES lists %d archetype(s) (%v); with fewer than two "+
 			"sharing a stack this invariant would assert nothing", len(archetypes), archetypes)
@@ -556,16 +553,13 @@ func TestMigrationTier1ArchetypeIdentitiesAreDisjoint(t *testing.T) {
 	}
 }
 
-// justVariableList reads a `NAME := "a b c"` Justfile assignment as a slice.
-func justVariableList(t *testing.T, justfile, name string) []string {
+// justVariableList reads a top-level `NAME := "a b c"` assignment as a
+// whitespace-separated slice, via justDump() (#3093) — `import` merges
+// every just/*.just file's assignments into one flat map, so this no longer
+// needs to know which physical file declares NAME.
+func justVariableList(t *testing.T, name string) []string {
 	t.Helper()
-
-	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\s*:=\s*"([^"]*)"`)
-	m := re.FindStringSubmatch(justfile)
-	if m == nil {
-		t.Fatalf("Justfile has no %s assignment; the tier-1 seed recipe reads its archetype list from it", name)
-	}
-	return strings.Fields(m[1])
+	return strings.Fields(justDump(t).assignment(t, name).stringValue(t))
 }
 
 // TestMigrationTier1JustfileRecipes pins the recipe shape the lane is driven
@@ -576,11 +570,7 @@ func justVariableList(t *testing.T, justfile, name string) []string {
 func TestMigrationTier1JustfileRecipes(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	body := string(buf)
+	d := justDump(t)
 
 	const composeRef = "test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml"
 	for _, tc := range []struct {
@@ -597,7 +587,7 @@ func TestMigrationTier1JustfileRecipes(t *testing.T) {
 		{recipe: "migration-tier1-run", wants: []string{"-tags=migration_tier1", "./test/e2e/migration/"}},
 		{recipe: "migration-tier1-down", wants: []string{composeRef, "down -v"}},
 	} {
-		recipeBody := justRecipeBody(t, body, tc.recipe)
+		recipeBody := d.recipe(t, tc.recipe).bodyText(t)
 		for _, want := range tc.wants {
 			if !strings.Contains(recipeBody, want) {
 				t.Fatalf("Justfile recipe %s does not contain %q; body:\n%s", tc.recipe, want, recipeBody)
@@ -605,16 +595,15 @@ func TestMigrationTier1JustfileRecipes(t *testing.T) {
 		}
 	}
 
-	// The composite must carry the seed step. Without it the assertions run
-	// against an empty stack, where "both sides agree" is vacuously true.
-	if !strings.Contains(body, tier1Composite) {
-		t.Fatalf("Justfile has no `migration-tier1` composite chaining up -> seed -> run -> down; want %q",
-			tier1Composite)
+	// The composite must carry the seed step, in order. Without it the
+	// assertions run against an empty stack, where "both sides agree" is
+	// vacuously true.
+	got := d.recipe(t, "migration-tier1").dependencyNames()
+	want := []string{"migration-tier1-up", "migration-tier1-seed", "migration-tier1-run", "migration-tier1-down"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("`migration-tier1` must chain %v in order, got %v", want, got)
 	}
 }
-
-// tier1Composite is the lane's full lifecycle, in order.
-const tier1Composite = "migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down"
 
 // tier1WorkflowPath is the workflow whose migration-tier1 job executes the
 // tagged assertions. It used to be its own migration.yml; the Tier-1 lane
@@ -644,11 +633,7 @@ const tier1JobName = "migration-tier1"
 func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
 	t.Parallel()
 
-	justfile, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	testRecipe := justRecipeBodyWithDeps(t, string(justfile), "test")
+	testRecipe := justRecipeBodyWithDeps(t, "test")
 	for _, want := range []string{"-tags=migration_tier1", "./test/e2e/migration/"} {
 		if !strings.Contains(testRecipe, want) {
 			t.Fatalf("the `test` recipe does not type-check the migration_tier1 lane (missing %q); "+
@@ -743,31 +728,12 @@ func workflowJobBody(t *testing.T, workflow, job string) string {
 	return strings.Join(out, "\n")
 }
 
-// justRecipeBody returns the lines of a Justfile recipe: everything from its
-// `name:` header up to the next non-indented, non-blank line. A recipe with
-// parameters (`recipe param="default":`) has a space, not a colon, right
-// after its name, so both header shapes are matched.
-func justRecipeBody(t *testing.T, justfile, recipe string) string {
+// justRecipeBody returns one recipe's body text, via justDump() (#3093)
+// rather than a hardcoded `../../Justfile` read — a recipe's body is exactly
+// what the dump reports regardless of which just/*.just file declares it.
+func justRecipeBody(t *testing.T, recipe string) string {
 	t.Helper()
-	lines := strings.Split(justfile, "\n")
-	start := -1
-	for i, line := range lines {
-		if strings.HasPrefix(line, recipe+":") || strings.HasPrefix(line, recipe+" ") {
-			start = i
-			break
-		}
-	}
-	if start < 0 {
-		t.Fatalf("Justfile has no %q recipe", recipe)
-	}
-	var out []string
-	for _, line := range lines[start:] {
-		if len(out) > 0 && strings.TrimSpace(line) != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			break
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
+	return justDump(t).recipe(t, recipe).bodyText(t)
 }
 
 // justRecipeBodyWithDeps returns a recipe's own body followed by the bodies of
@@ -778,8 +744,15 @@ func justRecipeBody(t *testing.T, justfile, recipe string) string {
 // ones. `test` is exactly that shape: `test: test-unit vet-tagged`, so CI can
 // run the two halves as concurrent jobs while `just test` stays one command
 // locally.
-func justRecipeBodyWithDeps(t *testing.T, justfile, recipe string) string {
+//
+// Walks justDump()'s own `dependencies` array rather than parsing a header
+// line — a dependency chain that now crosses just/*.just file boundaries
+// (`test` in just/test.just depending on recipes in the same file, or a
+// future split moving one of them elsewhere) is exactly what the dump
+// resolves into one flat map already.
+func justRecipeBodyWithDeps(t *testing.T, recipe string) string {
 	t.Helper()
+	d := justDump(t)
 	seen := map[string]bool{}
 	var walk func(string) []string
 	walk = func(name string) []string {
@@ -787,27 +760,14 @@ func justRecipeBodyWithDeps(t *testing.T, justfile, recipe string) string {
 			return nil
 		}
 		seen[name] = true
-		body := justRecipeBody(t, justfile, name)
-		out := []string{body}
-		for _, dep := range justRecipeDeps(body) {
+		r := d.recipe(t, name)
+		out := []string{r.bodyText(t)}
+		for _, dep := range r.dependencyNames() {
 			out = append(out, walk(dep)...)
 		}
 		return out
 	}
 	return strings.Join(walk(recipe), "\n")
-}
-
-// justRecipeDeps returns the dependency names declared on a recipe's header
-// line — the whitespace-separated tokens after the colon that closes the
-// header. The split is on the LAST colon rather than the first, because a
-// parameter default may legitimately contain one (`recipe p="a:b": dep`).
-func justRecipeDeps(body string) []string {
-	header, _, _ := strings.Cut(body, "\n")
-	i := strings.LastIndex(header, ":")
-	if i < 0 {
-		return nil
-	}
-	return strings.Fields(header[i+1:])
 }
 
 // The seeder half of the Tier-1 substrate. These pins are pure file reads over
@@ -1627,13 +1587,7 @@ func assertTier1TargetVanishedHotspot(
 func TestMigrationTier1SeedRecipe(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	body := string(buf)
-
-	recipe := justRecipeBody(t, body, "migration-tier1-seed")
+	recipe := justRecipeBody(t, "migration-tier1-seed")
 	for _, want := range []string{
 		tier1SeedCmdPath,
 		tier1ArchetypeFixtureDir,
@@ -1647,30 +1601,13 @@ func TestMigrationTier1SeedRecipe(t *testing.T) {
 
 	// The recipe's empty-archetype default must seed every archetype the
 	// @tier1 scenario set needs, not just one — see tier1RequiredArchetypes.
-	archetypesLine := tier1JustVarLine(t, body, tier1ArchetypesVarName)
+	archetypesValue := justDump(t).assignment(t, tier1ArchetypesVarName).stringValue(t)
 	for _, archetype := range tier1RequiredArchetypes {
-		if !strings.Contains(archetypesLine, archetype) {
-			t.Fatalf("Justfile's %s does not list archetype %q, so migration-tier1-seed's default would not seed it: %s",
-				tier1ArchetypesVarName, archetype, archetypesLine)
+		if !strings.Contains(archetypesValue, archetype) {
+			t.Fatalf("%s does not list archetype %q, so migration-tier1-seed's default would not seed it: %s",
+				tier1ArchetypesVarName, archetype, archetypesValue)
 		}
 	}
-}
-
-// tier1JustVarLine returns the single Justfile line declaring a top-level
-// `NAME := "..."` variable, failing the test if the variable is not declared
-// exactly once.
-func tier1JustVarLine(t *testing.T, justfile, name string) string {
-	t.Helper()
-	var found []string
-	for _, line := range strings.Split(justfile, "\n") {
-		if strings.HasPrefix(line, name+" :=") || strings.HasPrefix(line, name+":=") {
-			found = append(found, line)
-		}
-	}
-	if len(found) != 1 {
-		t.Fatalf("Justfile declares %q %d time(s), want exactly 1", name, len(found))
-	}
-	return found[0]
 }
 
 // TestMigrationTier1SampleBudgetIsPinned holds the tier-1 stack's per-query
@@ -1783,12 +1720,7 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	// The same tag lives in three files. Hold them equal, or a `just` run and a
 	// compose run would disagree about which image "locally built" means and
 	// the stack would fail to resolve one.
-	justfile, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	body := string(justfile)
-	justTag := justVariableList(t, body, migrationLocalImageVar)
+	justTag := justVariableList(t, migrationLocalImageVar)
 	if len(justTag) != 1 || justTag[0] != localTag {
 		t.Fatalf("Justfile's %s is %v but %s defaults to %q; `just %s` would build one tag while "+
 			"compose looked for another", migrationLocalImageVar, justTag, tier1ComposePath, localTag,
@@ -1806,7 +1738,7 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	// The up recipes must acquire the image through the one recipe that knows
 	// the build-or-pull decision, and must not carry --build.
 	for _, recipe := range []string{"migration-tier1-up", "migration-tier2-up"} {
-		recipeBody := justRecipeBody(t, body, recipe)
+		recipeBody := justRecipeBody(t, recipe)
 		if !strings.Contains(recipeBody, "just "+migrationImageRecipe) {
 			t.Fatalf("Justfile recipe %s does not invoke `just %s`, so nothing puts the image in the "+
 				"daemon and `up` (pull_policy: %s) cannot resolve it. Body:\n%s",
@@ -1822,7 +1754,7 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	// The acquisition recipe itself must be able to do BOTH halves: build the
 	// local tag from Dockerfile.local, and pull anything else — the pull going
 	// through the retry helper rather than a single-attempt `docker pull`.
-	acquire := justRecipeBody(t, body, migrationImageRecipe)
+	acquire := justRecipeBody(t, migrationImageRecipe)
 	for _, want := range []string{"docker build", "Dockerfile.local", pullRetryRecipe, lib.ImageEnv} {
 		if !strings.Contains(acquire, want) {
 			t.Fatalf("Justfile recipe %s does not reference %q; it must build the local tag from "+

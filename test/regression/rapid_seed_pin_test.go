@@ -152,47 +152,20 @@ func TestRapidSeedPinCoversEveryRapidBinary(t *testing.T) {
 func TestRapidSeedPinIsWiredIntoTheCoverageLanes(t *testing.T) {
 	t.Parallel()
 
-	src, err := os.ReadFile(filepath.Join(rapidTreeRoot, "Justfile"))
-	if err != nil {
-		t.Fatalf("reading Justfile: %v", err)
-	}
-	text := string(src)
-
-	if !strings.Contains(text, "COVERAGE_RAPID_SEED := ") {
+	// #3093: via justDump() rather than a hardcoded `../../Justfile` read —
+	// `import` merges every just/*.just file's assignments and recipes into
+	// one flat map, so this no longer needs to know which physical file
+	// declares COVERAGE_RAPID_SEED or the two coverage recipes.
+	d := justDump(t)
+	if _, ok := d.Assignments["COVERAGE_RAPID_SEED"]; !ok {
 		t.Fatal("the Justfile no longer defines COVERAGE_RAPID_SEED, so nothing pins the seed the " +
 			"coverage lanes measure with")
 	}
-	for _, recipe := range []string{"coverage-default:", "coverage-chdb:"} {
-		body := recipeBody(t, text, recipe)
+	for _, recipe := range []string{"coverage-default", "coverage-chdb"} {
+		body := d.recipe(t, recipe).bodyText(t)
 		if !strings.Contains(body, rapidSeedEnvVar+"={{COVERAGE_RAPID_SEED}}") {
 			t.Errorf("recipe %s does not export %s={{COVERAGE_RAPID_SEED}}, so its half of the "+
 				"merged profile is still drawn from a random seed", recipe, rapidSeedEnvVar)
 		}
 	}
-}
-
-// recipeBody returns the lines of a Justfile recipe: everything from its
-// header to the next line that starts in column zero.
-func recipeBody(t *testing.T, justfile, header string) string {
-	t.Helper()
-
-	lines := strings.Split(justfile, "\n")
-	start := -1
-	for i, line := range lines {
-		if line == header {
-			start = i + 1
-			break
-		}
-	}
-	if start == -1 {
-		t.Fatalf("recipe %q not found in the Justfile", header)
-	}
-	var body []string
-	for _, line := range lines[start:] {
-		if line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			break
-		}
-		body = append(body, line)
-	}
-	return strings.Join(body, "\n")
 }

@@ -68,11 +68,13 @@ var shellInvocation = regexp.MustCompile(`([A-Za-z0-9_./$${}-]*[a-z0-9-]+\.sh)`)
 func pullingRecipes(t *testing.T) map[string]bool {
 	t.Helper()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
+	// #3093: via justDump() rather than a hardcoded `../../Justfile` read —
+	// `import` merges every just/*.just file's recipes into one flat map.
+	d := justDump(t)
+	recipes := make(map[string]string, len(d.Recipes))
+	for name, r := range d.Recipes {
+		recipes[name] = r.bodyText(t)
 	}
-	recipes := justRecipes(t, string(buf))
 
 	pulls := map[string]bool{}
 	for name, body := range recipes {

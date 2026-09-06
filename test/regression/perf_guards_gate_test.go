@@ -158,7 +158,7 @@ func TestPerfGuardsLaneRunsTheRatchet(t *testing.T) {
 		}
 	}
 
-	recipe := justRecipeBody(t, readFileString(t, justfilePath), perfGuardsRecipe)
+	recipe := justRecipeBody(t, perfGuardsRecipe)
 	if !strings.Contains(recipe, perfPackageGlob) {
 		t.Errorf("%s recipe %q no longer runs %s. Narrowing the recipe (a `-run` filter, a single test "+
 			"file) leaves the required check green while the cardinality ratchet stops executing — the "+

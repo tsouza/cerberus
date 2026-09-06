@@ -104,23 +104,20 @@ func manifestImages(t *testing.T) map[string][]string {
 	return all
 }
 
-// justfilePins reads every `NAME := "a b c"` pin out of the Justfile as a set of
-// space-separated refs, which is the shape the pre-pull lists use.
+// justfilePins reads every top-level `NAME := "a b c"` pin, via justDump()
+// (#3093), as a set of space-separated refs — the shape the pre-pull lists
+// use. `import` merges every just/*.just file's assignments into one flat
+// map, so this no longer needs a hardcoded `../../Justfile` read.
 func justfilePins(t *testing.T) map[string]map[string]bool {
 	t.Helper()
 
-	src, err := os.ReadFile(justfilePath)
-	if err != nil {
-		t.Fatalf("read %s: %v", justfilePath, err)
-	}
-
 	pins := map[string]map[string]bool{}
-	for _, m := range justAssignment.FindAllStringSubmatch(string(src), -1) {
+	for name, value := range justDump(t).resolvedStringAssignments() {
 		set := map[string]bool{}
-		for _, ref := range strings.Fields(m[2]) {
+		for _, ref := range strings.Fields(value) {
 			set[ref] = true
 		}
-		pins[m[1]] = set
+		pins[name] = set
 	}
 	return pins
 }

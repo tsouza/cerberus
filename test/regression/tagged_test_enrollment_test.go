@@ -389,13 +389,16 @@ func isTaggedAssertionSymbol(name string) bool {
 func discoverTaggedTestInvocations(t *testing.T, root string) ([]taggedTestInvocation, []string) {
 	t.Helper()
 	workflows := readTaggedWorkflows(t, root)
-	justfileBytes, err := os.ReadFile(filepath.Join(root, "Justfile"))
+	// `set shell := [...]` is a per-invocation `just` SETTING, not a recipe —
+	// it can only be declared once, in the root Justfile itself (#3093 kept
+	// it there deliberately), so this one check alone still reads that one
+	// file directly rather than through justDump().
+	rootJustfileBytes, err := os.ReadFile(filepath.Join(root, "Justfile"))
 	if err != nil {
 		t.Fatalf("read Justfile: %v", err)
 	}
-	justfile := string(justfileBytes)
-	recipeNames := taggedJustRecipeNames(justfile)
-	justPipelineSafe := taggedJustPipelineIsFailClosed(justfile)
+	recipeNames := justDump(t).recipeNames()
+	justPipelineSafe := taggedJustPipelineIsFailClosed(string(rootJustfileBytes))
 	migrationRuns, migrationErr := readMigrationTaggedRuns(root)
 
 	var (
@@ -491,7 +494,7 @@ func discoverTaggedTestInvocations(t *testing.T, root string) ([]taggedTestInvoc
 							problems = append(problems, fmt.Sprintf("%s: Justfile has no statically invoked recipe %q", where, recipe))
 							continue
 						}
-						body := justRecipeBodyWithDeps(t, justfile, recipe)
+						body := justRecipeBodyWithDeps(t, recipe)
 						coverageJoin := taggedCoverageRecipeJoinIsFailClosed(recipe, body)
 						recipeInvocations, recipeProblems := taggedGoTestsInRecipe(body, workflowPath, jobID, recipe)
 						for _, invocation := range recipeInvocations {
@@ -581,21 +584,6 @@ func readTaggedWorkflows(t *testing.T, root string) map[string]taggedWorkflow {
 		t.Fatal("tagged-test enrollment parsed no workflow files")
 	}
 	return workflows
-}
-
-var taggedJustRecipeHeader = regexp.MustCompile(`^(_?[a-z0-9][a-z0-9_-]*)(?:\s+[^:]*)?:`)
-
-func taggedJustRecipeNames(justfile string) map[string]bool {
-	names := map[string]bool{}
-	for _, line := range strings.Split(justfile, "\n") {
-		if line == "" || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if match := taggedJustRecipeHeader.FindStringSubmatch(line); match != nil {
-			names[match[1]] = true
-		}
-	}
-	return names
 }
 
 func taggedGoTestsInRecipe(body, workflow, job, recipe string) ([]taggedTestInvocation, []string) {

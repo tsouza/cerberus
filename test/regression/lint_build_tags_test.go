@@ -142,16 +142,11 @@ func configuredBuildTags(t *testing.T) []string {
 	return doc.Run.BuildTags
 }
 
-// justVariable reads a `NAME := "value"` assignment out of the Justfile.
+// justVariable reads a top-level `NAME := "value"` assignment, via
+// justDump() (#3093) rather than a hardcoded `../../Justfile` read.
 func justVariable(t *testing.T, name string) string {
 	t.Helper()
-
-	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\s*:=\s*"([^"]*)"`)
-	m := re.FindStringSubmatch(readFileString(t, repoRoot+"/Justfile"))
-	if m == nil {
-		t.Fatalf("Justfile declares no %s variable", name)
-	}
-	return m[1]
+	return justDump(t).assignment(t, name).stringValue(t)
 }
 
 // TestEveryBuildConstraintIsASingleTerm establishes the premise the two-pass
@@ -248,7 +243,7 @@ func TestEveryLintSiteRunsBothBuildConfigurations(t *testing.T) {
 
 	// The `lint` recipe is the definition of "run the lint gate", so it is the
 	// one site that has to spell both passes out.
-	recipe := justRecipeBody(t, readFileString(t, repoRoot+"/Justfile"), "lint")
+	recipe := justRecipeBody(t, "lint")
 	runs := golangciRunLine.FindAllStringSubmatch(recipe, -1)
 	if len(runs) != 2 {
 		t.Fatalf("the Justfile `lint` recipe invokes golangci-lint %d time(s); it needs exactly two — "+

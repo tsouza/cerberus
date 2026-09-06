@@ -275,19 +275,24 @@ func TestDeGatedLanesAreDocumentedWithAReason(t *testing.T) {
 func TestNoJustfileRecipePushesAReleaseTag(t *testing.T) {
 	t.Parallel()
 
-	recipes := justRecipes(t, readFileString(t, "../../Justfile"))
-	if len(recipes) == 0 {
-		t.Fatal("parsed no recipes out of the Justfile")
+	// #3093: via justDump() rather than a hardcoded `../../Justfile` read —
+	// `import` merges every just/*.just file's recipes into one flat map, so
+	// this scan still covers every recipe regardless of which physical file
+	// declares it. The `.mjs`-scanning half of this pin (once release
+	// scripts are extracted there) is sub-issue #3100's job, not this one's.
+	d := justDump(t)
+	if len(d.Recipes) == 0 {
+		t.Fatal("parsed no recipes via `just --dump`")
 	}
 	const consequence = "Tags are created BY release.yml after it publishes. A hand-made tag makes " +
 		"the version gate see the version as already released, so the release is " +
 		"skipped in silence — every job green, nothing shipped."
-	for name, body := range recipes {
+	for name, r := range d.Recipes {
 		if strings.HasPrefix(name, releaseTagRecipePrefix) {
 			t.Errorf("Justfile declares recipe %q. There is deliberately no tag-cutting recipe: "+
 				consequence, name)
 		}
-		for _, line := range strings.Split(body, "\n") {
+		for _, line := range strings.Split(r.bodyText(t), "\n") {
 			if why := tagCuttingCommand(line); why != "" {
 				t.Errorf("Justfile recipe %q %s:\n\t%s\n"+consequence,
 					name, why, strings.TrimSpace(line))

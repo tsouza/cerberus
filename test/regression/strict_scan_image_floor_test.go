@@ -33,13 +33,7 @@ const strictScanImageVar = "CH_STRICT_SCAN_IMAGE"
 func TestStrictScanImageClearsChoptFloors(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	justfile := string(buf)
-
-	pinned := justVariableList(t, justfile, strictScanImageVar)
+	pinned := justVariableList(t, strictScanImageVar)
 	if len(pinned) != 1 {
 		t.Fatalf("%s pins %d images (%v); the strict-scan lane starts exactly one server", strictScanImageVar, len(pinned), pinned)
 	}

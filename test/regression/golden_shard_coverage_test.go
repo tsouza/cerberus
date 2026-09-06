@@ -153,14 +153,16 @@ func TestUpdateGoldenRefusesAnUncoveredShardSet(t *testing.T) {
 func TestUpdateGoldenHasNoDefaultShard(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile(justfilePath)
-	if err != nil {
-		t.Fatalf("read %s: %v", justfilePath, err)
-	}
-	if !strings.Contains(string(buf), updateGoldenRecipeHeader) {
-		t.Errorf("%s has no %q recipe header. The shard argument must stay a recipe parameter; "+
-			"a bare `update-golden:` header restores a default nobody stated.",
-			justfilePath, updateGoldenRecipeHeader)
+	// #3093: a structural parameter check via justDump() rather than a
+	// `strings.Contains` scan of a hardcoded `../../Justfile` read — the
+	// real thing `updateGoldenRecipeHeader` names ("a variadic `*shards`
+	// parameter with no default") is exactly what justDump() exposes
+	// directly, and more precisely than a text match on the header spelling.
+	params := justDump(t).recipe(t, "update-golden").Parameters
+	if len(params) != 1 || params[0].Kind != "star" || params[0].Default != nil {
+		t.Errorf("the %q recipe's parameter list is %v, want exactly one variadic `*shards` parameter "+
+			"with no default (%q). A header without one would silently restore a default, which is the "+
+			"one thing #1898's design forbids.", "update-golden", params, updateGoldenRecipeHeader)
 	}
 
 	out, code := checkGoldenShardCoverage(t, "", "")
