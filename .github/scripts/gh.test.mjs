@@ -14,11 +14,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { assertSafeArg, capture, lsFiles } from './lib/gh.mjs';
+import { assertSafeArg, capture, createFreshFileFd, lsFiles, writeFreshFile } from './lib/gh.mjs';
 
 test('capture forwards the options it documents', () => {
   const res = capture('sh', ['-c', 'printf "%s" "$MARKER"'], {
@@ -76,6 +76,67 @@ test('assertSafeArg rejects a value that could be parsed as a flag', () => {
 
 test('assertSafeArg ignores non-string values (the common `undefined` no-override case)', () => {
   assert.equal(assertSafeArg(undefined, 'REV'), undefined);
+});
+
+// createFreshFileFd() / writeFreshFile() — CWE-377/378 (CodeQL
+// js/insecure-temporary-file): a file created at a fixed, well-known path
+// must be owner-only (0o600) and must never silently write through a
+// pre-existing file or SYMLINK left at that path.
+test('createFreshFileFd creates the file mode 0o600 and its content is readable back', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gh-freshfile-'));
+  const path = join(dir, 'x.log');
+  const fd = createFreshFileFd(path);
+  writeSync(fd, 'hello\n');
+  closeSync(fd);
+  assert.equal(readFileSync(path, 'utf8'), 'hello\n');
+  assert.equal(lstatSync(path).mode & 0o777, 0o600);
+});
+
+test('createFreshFileFd removes a pre-existing SYMLINK at the path rather than writing through it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gh-freshfile-'));
+  const target = join(dir, 'attacker-target.txt');
+  writeFileSync(target, 'do not touch\n');
+  const path = join(dir, 'x.log');
+  symlinkSync(target, path);
+  const fd = createFreshFileFd(path);
+  writeSync(fd, 'victim wrote here\n');
+  closeSync(fd);
+  // The symlink is gone, replaced by a real file at the same path...
+  assert.equal(lstatSync(path).isSymbolicLink(), false);
+  // ...and the attacker's target file was never touched.
+  assert.equal(readFileSync(target, 'utf8'), 'do not touch\n');
+  assert.equal(readFileSync(path, 'utf8'), 'victim wrote here\n');
+});
+
+test('createFreshFileFd overwrites a stale plain file left by a previous run', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gh-freshfile-'));
+  const path = join(dir, 'x.log');
+  writeFileSync(path, 'stale content from a previous run\n');
+  const fd = createFreshFileFd(path);
+  writeSync(fd, 'fresh\n');
+  closeSync(fd);
+  assert.equal(readFileSync(path, 'utf8'), 'fresh\n');
+});
+
+test('writeFreshFile writes mode 0o600 and never writes through a pre-existing symlink', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gh-freshfile-'));
+  const target = join(dir, 'attacker-target.pid');
+  writeFileSync(target, 'do not touch\n');
+  const path = join(dir, 'x.pid');
+  symlinkSync(target, path);
+  writeFreshFile(path, '12345\n');
+  assert.equal(lstatSync(path).isSymbolicLink(), false);
+  assert.equal(readFileSync(target, 'utf8'), 'do not touch\n');
+  assert.equal(readFileSync(path, 'utf8'), '12345\n');
+  assert.equal(lstatSync(path).mode & 0o777, 0o600);
+});
+
+test('writeFreshFile is fine when nothing exists at the path yet', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gh-freshfile-'));
+  const path = join(dir, 'fresh.pid');
+  assert.equal(existsSync(path), false);
+  writeFreshFile(path, '42\n');
+  assert.equal(readFileSync(path, 'utf8'), '42\n');
 });
 
 // lsFiles() — issue #1938. A plain `git ls-files` reads the INDEX only, so a

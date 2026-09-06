@@ -11,7 +11,6 @@ import test from 'node:test';
 import { waitForPort } from './e2e-seed.mjs';
 
 test('waitForPort returns true immediately once the port is open', async () => {
-  const sleeps = [];
   const ok = await waitForPort(19000, {
     attempts: 10,
     intervalMs: 1000,

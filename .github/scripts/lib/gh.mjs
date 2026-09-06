@@ -15,9 +15,12 @@
 //   - appendStepSummary(): append markdown to $GITHUB_STEP_SUMMARY.
 //   - setOutput(): append `name=value` to $GITHUB_OUTPUT.
 //   - exportEnv(): append `NAME=value` to $GITHUB_ENV.
+//   - createFreshFileFd() / writeFreshFile(): CWE-377/378-safe creation of a
+//     file at a FIXED, well-known path (a log or PID file another script or
+//     workflow step finds by that same literal path afterward).
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, openSync, rmSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 
 // GitHub escapes `%`, `\r`, `\n` in workflow-command *data* (the message
@@ -226,4 +229,43 @@ export function exportEnv(entries) {
     return;
   }
   appendFileSync(file, `${block}\n`);
+}
+
+// createFreshFileFd() / writeFreshFile() — CWE-377/378-safe creation of a
+// file at a FIXED, well-known path (CodeQL's js/insecure-temporary-file:
+// "Creating a temporary file that is accessible by other users can lead to
+// information disclosure and sometimes remote code execution"). The
+// library's own recommended fix (an unpredictable name via the `tmp`
+// package) is not available here: e2e-seed.mjs / e2e-seed-rolling.mjs's log
+// and PID files under /tmp/cerberus-e2e-*.{log,pid} are looked up by that
+// SAME literal path from a separate `just` recipe invocation
+// (e2e-seed-stop.mjs) and from e2e.yml's own diagnostic `tail` steps, so an
+// unpredictable path would break the cross-process contract those depend
+// on. What actually satisfies CWE-377/378's two concerns without giving up
+// the fixed path:
+//   1. "accessible by other users" — the created file is `0o600` (owner
+//      read/write only), never the default `0o644`+umask a plain
+//      `writeFileSync`/`openSync('w')` leaves world-readable.
+//   2. "the file does not already exist" — any stale file OR SYMLINK left at
+//      the path (a previous run's leftover, or one planted by another user
+//      sharing a multi-tenant /tmp) is removed first, then the real file is
+//      created with `O_EXCL` (the `x` in the `wx` flag) — which fails
+//      loudly instead of silently writing through a symlink if anything
+//      reappears at that path between the removal and the open.
+export function createFreshFileFd(path, mode = 0o600) {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Best-effort pre-clean; the O_EXCL open below is the real guard.
+  }
+  return openSync(path, 'wx', mode);
+}
+
+export function writeFreshFile(path, data, mode = 0o600) {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Best-effort pre-clean; the O_EXCL flag below is the real guard.
+  }
+  writeFileSync(path, data, { mode, flag: 'wx' });
 }

@@ -39,11 +39,11 @@
 // within its own wait budget.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { error, log, notice } from './lib/gh.mjs';
+import { createFreshFileFd, error, log, notice, writeFreshFile } from './lib/gh.mjs';
 import { waitForPort } from './e2e-seed.mjs';
 
 const NAMESPACE = process.env.NAMESPACE || 'cerberus';
@@ -63,10 +63,10 @@ const initialSeedWaitIntervalMs = 2000;
 const reseedIntervalFlag = '--re-seed-interval=30s';
 
 function spawnDetached(cmd, args, logPath, pidPath) {
-  const fd = openSync(logPath, 'w');
+  const fd = createFreshFileFd(logPath);
   const child = spawn(cmd, args, { detached: true, stdio: ['ignore', fd, fd] });
   child.unref();
-  writeFileSync(pidPath, `${child.pid}\n`);
+  writeFreshFile(pidPath, `${child.pid}\n`);
   return child.pid;
 }
 
@@ -105,7 +105,7 @@ async function main() {
   }
 
   log('    4) launching the seeder in the background with the rolling flag');
-  const fd = openSync(ROLLING_LOG, 'w');
+  const fd = createFreshFileFd(ROLLING_LOG);
   const seeder = spawn(SEEDER_BIN, [reseedIntervalFlag], {
     detached: true,
     stdio: ['ignore', fd, fd],
@@ -118,7 +118,7 @@ async function main() {
     },
   });
   seeder.unref();
-  writeFileSync(ROLLING_PID, `${seeder.pid}\n`);
+  writeFreshFile(ROLLING_PID, `${seeder.pid}\n`);
 
   log(`==> rolling seeder pid=${seeder.pid} pf-pid=${readFileSync(PF_PID, 'utf8').trim()}`);
   log("    initial seed runs synchronously inside the seeder before the loop starts —");

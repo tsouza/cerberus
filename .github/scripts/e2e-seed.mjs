@@ -28,12 +28,11 @@
 // accepts a connection within the wait budget.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
 import { connect } from 'node:net';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { error, log } from './lib/gh.mjs';
+import { createFreshFileFd, error, log } from './lib/gh.mjs';
 
 const NAMESPACE = process.env.NAMESPACE || 'cerberus';
 const PORT = Number(process.env.PORT || '19000');
@@ -65,9 +64,9 @@ export async function waitForPort(port, { attempts = portWaitAttempts, intervalM
 }
 
 async function main() {
-  const logStream = createWriteStream(LOG_PATH);
+  const logFd = createFreshFileFd(LOG_PATH);
   const pf = spawn('kubectl', ['-n', NAMESPACE, 'port-forward', 'svc/clickhouse', `${PORT}:9000`], {
-    stdio: ['ignore', logStream, logStream],
+    stdio: ['ignore', logFd, logFd],
   });
 
   let cleanedUp = false;
