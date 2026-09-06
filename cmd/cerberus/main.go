@@ -2206,6 +2206,18 @@ func buildSolver(
 		"data_shard_count", cfg.DataShardCount,
 		"data_shard_fanout_cap", client.DataShardFanoutCap(),
 	)
+	// DataShardCount > 1 only survives config.FromEnv behind the explicit
+	// CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE opt-in, so reaching here on a
+	// multi-shard topology means the operator chose the experimental path
+	// deliberately — say so loudly at boot, every time, with the one
+	// limitation that matters most for a production reader.
+	if cfg.DataShardCount > 1 {
+		logger.Warn(
+			"EXPERIMENTAL: ClickHouse Distributed-table multi-shard routing is enabled; it is not production-supported, and its admission-control ceiling is per cerberus process, not cluster-wide (cerberus issue #3128)",
+			"data_shard_count", cfg.DataShardCount,
+			"opt_in", "CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true",
+		)
+	}
 	return s, nil
 }
 

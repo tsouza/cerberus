@@ -75,12 +75,24 @@ export const NIGHTLY_TRACKING_LABELS = ['automated', 'area/ci'];
  * refreshing the one that already tracks the incident. */
 export const NIGHTLY_TRACKING_TITLE = 'nightly e2e run did not reach a clean pass';
 
-export function buildFailureBody({ failed, runUrl, runId }) {
-  return libBuildFailureBody({ laneLabel: 'e2e', failed, runUrl, runId, issueRef: 'tsouza/cerberus#1861' });
+/** The EXPERIMENTAL lanes: both exercise cerberus epic #3074's Distributed-
+ * table multi-shard path, which is off by default and not production-
+ * supported (docs/operations.md, "ClickHouse cluster DATA-shard topology").
+ * Their results are still REPORTED in every tracking-issue body under an
+ * advisory heading, and their jobs stay red in the run, but they never count
+ * toward whether the nightly reached a clean pass — a supported lane's
+ * regression files/refreshes the issue exactly as before, and an
+ * experimental lane's known gap can neither mask that nor keep an issue open
+ * on its own. Declared here, once, next to the job map it scopes; the
+ * workflow's `needs:` list still carries both (see the .test.mjs pin). */
+export const EXPERIMENTAL_LANES = ['datashard', 'datashard-replica-affinity'];
+
+export function buildFailureBody({ failed, experimentalFailed = [], runUrl, runId }) {
+  return libBuildFailureBody({ laneLabel: 'e2e', failed, experimentalFailed, runUrl, runId, issueRef: 'tsouza/cerberus#1861' });
 }
 
-export function buildRecoveryBody({ runUrl, runId }) {
-  return libBuildRecoveryBody({ laneLabel: 'e2e', runUrl, runId });
+export function buildRecoveryBody({ experimentalFailed = [], runUrl, runId }) {
+  return libBuildRecoveryBody({ laneLabel: 'e2e', experimentalFailed, runUrl, runId });
 }
 
 function readJobResults(env) {
@@ -109,6 +121,7 @@ function main() {
     issueRef: 'tsouza/cerberus#1861',
     contextTitle: 'nightly-health-notify',
     failureNoticeTitle: 'nightly e2e run failed',
+    experimentalLanes: EXPERIMENTAL_LANES,
   });
 }
 

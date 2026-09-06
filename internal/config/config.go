@@ -45,6 +45,16 @@ type Config struct {
 	// "shard" disambiguation this repo needs.
 	ClusterTopology chopt.ClusterTopology
 
+	// ExperimentalDistributedMode is CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE
+	// (default false): the explicit opt-in that gates
+	// ClusterTopology.DataShardCount > 1. ClickHouse Distributed-table
+	// multi-shard routing (epic #3074) is EXPERIMENTAL and off by default —
+	// FromEnv refuses to boot with CERBERUS_CH_DATA_SHARDS > 1 unless this is
+	// true, so the shard count alone can never land a deployment on the
+	// experimental path. The default single-data-shard path and the
+	// replication path (`clickhouse.bundled.replicas`) never consult it.
+	ExperimentalDistributedMode bool
+
 	// DebugPProf, when true, mounts the net/http/pprof debug handlers
 	// (/debug/pprof/…) on the main HTTP listener. Default false — the
 	// profiling surface stays OFF in production so it is never reachable
@@ -1017,6 +1027,7 @@ const (
 	envSchemaTraceMaterializedAttrsEnabled = "CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED"
 	envRequirementsCheck                   = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid                  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
+	envExperimentalDistributedMode         = "CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE"
 	envLogCommentShape                     = "CERBERUS_LOG_COMMENT_SHAPE"
 	envResultCacheIngestLag                = "CERBERUS_RESULT_CACHE_INGEST_LAG"
 	envResultCacheTTL                      = "CERBERUS_RESULT_CACHE_TTL"
@@ -1208,7 +1219,7 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	topology, err := clusterTopologyFromEnv(v)
+	topology, experimentalDistributed, err := clusterTopologyFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1345,6 +1356,7 @@ func FromEnv() (Config, error) {
 		RangeBucketGridNativeMaxDensityUnits: rbgnMaxDensityUnits,
 		ClickHouse:                           chCfg,
 		ClusterTopology:                      topology,
+		ExperimentalDistributedMode:          experimentalDistributed,
 		// Resolved through the file-aware lookup rather than os.Getenv so the
 		// read-side schema shape obeys a cerberus.yaml exactly as the rest of
 		// the surface does — internal/schema owns these defaults, so they never
@@ -1457,6 +1469,7 @@ var allEnvKeys = []string{
 	envSchemaTraceMaterializedAttrsEnabled,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
+	envExperimentalDistributedMode,
 	envLogCommentShape,
 	envResultCacheIngestLag,
 	envResultCacheTTL,
@@ -1622,6 +1635,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envSchemaTraceMaterializedAttrsEnabled, defaultSchemaTraceMaterializedAttrsEnabled)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
+	v.SetDefault(envExperimentalDistributedMode, defaultExperimentalDistributedMode)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
 	// Grouped for the same reason setDeltaPrefixAndRBGNDefaults is: keeping
 	// newDefaults under golangci-lint's funlen cap. The two result-cache
@@ -1741,7 +1755,12 @@ const (
 	defaultDeltaPrefixReadEnabled = false
 	defaultRequirementsCheck      = true
 	defaultExperimentalTSGrid     = false
-	defaultLogCommentShape        = false
+	// defaultExperimentalDistributedMode keeps ClickHouse Distributed-table
+	// multi-shard routing OFF: an experimental path must be opted into
+	// explicitly, never reached by setting the shard count alone — see
+	// Config.ExperimentalDistributedMode's doc.
+	defaultExperimentalDistributedMode = false
+	defaultLogCommentShape             = false
 	// defaultResultCacheIngestLag / defaultResultCacheTTL back
 	// Config.ResultCacheIngestLag / Config.ResultCacheTTL — see their own doc
 	// comments for the reasoning behind each five-minute default.
@@ -2920,18 +2939,32 @@ func resultCacheDurationsFromEnv(v *viper.Viper) (ingestLag, ttl time.Duration, 
 }
 
 // clusterTopologyFromEnv parses CERBERUS_CH_DATA_SHARDS (cerberus issue
-// #3081, epic #3074): the number of ClickHouse data shards behind this
-// deployment's `Distributed` tables. getPositiveInt enforces >= 1 — the same
-// floor chopt.ClusterTopology's own doc and solver.Config.Validate both
-// apply. Extracted from FromEnv so the single parse does not itself push
-// FromEnv over its statement-count budget, the same reason
-// resultCacheDurationsFromEnv above is its own function.
-func clusterTopologyFromEnv(v *viper.Viper) (chopt.ClusterTopology, error) {
+// #3081, epic #3074) — the number of ClickHouse data shards behind this
+// deployment's `Distributed` tables — together with the EXPERIMENTAL opt-in
+// that gates it, CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE. getPositiveInt
+// enforces >= 1 — the same floor chopt.ClusterTopology's own doc and
+// solver.Config.Validate both apply. A count above 1 without the opt-in is
+// refused at boot: multi-shard Distributed-table routing is experimental and
+// off by default, so the shard count alone must never be enough to land on
+// it. Extracted from FromEnv so the parse does not itself push FromEnv over
+// its statement-count budget, the same reason resultCacheDurationsFromEnv
+// above is its own function.
+func clusterTopologyFromEnv(v *viper.Viper) (topology chopt.ClusterTopology, experimental bool, err error) {
 	dataShardCount, err := getPositiveInt(v, envCHDataShards)
 	if err != nil {
-		return chopt.ClusterTopology{}, err
+		return chopt.ClusterTopology{}, false, err
 	}
-	return chopt.ClusterTopology{DataShardCount: dataShardCount}, nil
+	experimental, err = getBool(v, envExperimentalDistributedMode)
+	if err != nil {
+		return chopt.ClusterTopology{}, false, err
+	}
+	if dataShardCount > 1 && !experimental {
+		return chopt.ClusterTopology{}, false, fmt.Errorf(
+			"%s=%d: ClickHouse Distributed-table multi-shard routing is EXPERIMENTAL and off by default; set %s=true to opt in (cerberus epic #3074; see issue #3128)",
+			envCHDataShards, dataShardCount, envExperimentalDistributedMode,
+		)
+	}
+	return chopt.ClusterTopology{DataShardCount: dataShardCount}, experimental, nil
 }
 
 // chOptCorpusFromEnv parses the CERBERUS_CH_OPT_CORPUS_* knobs into a
