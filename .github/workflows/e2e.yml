@@ -1960,14 +1960,23 @@ jobs:
         run: |
           echo "=== disk usage (DiskPressure self-diagnosis) ==="
           df -h || true
-          echo "=== pods ==="
-          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
-          echo "=== events (last 50) ==="
-          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
+          echo "=== node capacity/allocatable + conditions ==="
+          kubectl describe nodes 2>&1 | tee /tmp/cluster-nodes.log || true
+          echo "=== pods (all namespaces, for scheduling contention) ==="
+          kubectl get pods -A -o wide | tee /tmp/cluster-state.log || true
+          echo "=== events (last 100) ==="
+          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -100 || true
+          echo "=== describe pods (Pending/CrashLoop reasons, resource requests) ==="
+          kubectl -n cerberus describe pods 2>&1 | tee /tmp/cluster-describe.log || true
           echo "=== cerberus logs ==="
           kubectl -n cerberus logs deploy/cerberus --tail 200 || true
           echo "=== data-shard clickhouse pods ==="
           for p in $(kubectl -n cerberus get pod -l app.kubernetes.io/component=clickhouse -o jsonpath='{.items[*].metadata.name}'); do \
+            echo "--- $p ---"; \
+            kubectl -n cerberus logs "$p" --tail 100 || true; \
+          done
+          echo "=== keeper pods ==="
+          for p in $(kubectl -n cerberus get pod -l app.kubernetes.io/component=clickhouse-keeper -o jsonpath='{.items[*].metadata.name}'); do \
             echo "--- $p ---"; \
             kubectl -n cerberus logs "$p" --tail 100 || true; \
           done
@@ -1976,6 +1985,9 @@ jobs:
           if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
              || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
             echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
+          if grep -qiE 'Insufficient (cpu|memory)|OOMKilled|FailedScheduling' /tmp/cluster-describe.log /tmp/cluster-state.log 2>/dev/null; then
+            echo "::notice::resource: pod(s) reported insufficient cpu/memory, FailedScheduling, or OOMKilled — see the describe-pods dump above"
           fi
 
       - name: Tear down
