@@ -1970,6 +1970,17 @@ jobs:
           kubectl -n cerberus describe pods 2>&1 | tee /tmp/cluster-describe.log || true
           echo "=== cerberus logs ==="
           kubectl -n cerberus logs deploy/cerberus --tail 200 || true
+          # TEMPORARY (cerberus issue #3128 residual-gap round 3): the tail
+          # above is far too short to catch the gate acquire/release
+          # diagnostic (internal/chclient/fanout_gate.go's
+          # logDataShardFanoutEvent) — a full-burst dispatch volume runs into
+          # the thousands of lines, all displaced out of a 200-line tail by
+          # ordinary request logging. --since bounds the volume instead of a
+          # line count, so every diagnostic line from the whole job (bring-up
+          # through this dump) survives regardless of how much other log
+          # volume sits in between.
+          echo "=== cerberus data-shard fanout gate diagnostic (issue #3128, temporary) ==="
+          kubectl -n cerberus logs deploy/cerberus --since=30m | grep 'data-shard fanout gate diagnostic' || true
           echo "=== data-shard clickhouse pods ==="
           for p in $(kubectl -n cerberus get pod -l app.kubernetes.io/component=clickhouse -o jsonpath='{.items[*].metadata.name}'); do \
             echo "--- $p ---"; \
