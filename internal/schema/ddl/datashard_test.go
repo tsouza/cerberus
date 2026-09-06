@@ -118,7 +118,7 @@ func TestDataShardCount_Metrics(t *testing.T) {
 
 	// The first 5 statements are the LOCAL CREATE TABLEs.
 	for i, base := range originals {
-		want := base + dataShardLocalSuffix
+		want := base + DataShardLocalSuffix
 		if !strings.Contains(stmts[i], "CREATE TABLE") || !strings.Contains(stmts[i], want) {
 			t.Errorf("metrics[%d]: expected local CREATE TABLE for %s, got:\n%s", i, want, stmts[i])
 		}
@@ -133,10 +133,10 @@ func TestDataShardCount_Metrics(t *testing.T) {
 		if strings.HasPrefix(s, "ALTER TABLE") {
 			foundLocal := false
 			for _, base := range originals {
-				if strings.Contains(s, base+dataShardLocalSuffix) {
+				if strings.Contains(s, base+DataShardLocalSuffix) {
 					foundLocal = true
 				}
-				if strings.Contains(s, "`"+base+"`") && !strings.Contains(s, base+dataShardLocalSuffix) {
+				if strings.Contains(s, "`"+base+"`") && !strings.Contains(s, base+DataShardLocalSuffix) {
 					t.Errorf("ALTER targets the ORIGINAL (non-local) table name, want local: %s", s)
 				}
 			}
@@ -155,11 +155,11 @@ func TestDataShardCount_Metrics(t *testing.T) {
 	}
 	for i, base := range originals {
 		s := wrapperStmts[i]
-		wantCreate := "CREATE TABLE IF NOT EXISTS otel." + base + " ON CLUSTER `bwc_cluster` AS otel." + base + dataShardLocalSuffix
+		wantCreate := "CREATE TABLE IF NOT EXISTS otel." + base + " ON CLUSTER `bwc_cluster` AS otel." + base + DataShardLocalSuffix
 		if !strings.HasPrefix(s, wantCreate) {
 			t.Errorf("wrapper[%d] = %q; want prefix %q", i, s, wantCreate)
 		}
-		wantEngine := "ENGINE = Distributed('bwc_cluster', 'otel', '" + base + dataShardLocalSuffix + "', rand())"
+		wantEngine := "ENGINE = Distributed('bwc_cluster', 'otel', '" + base + DataShardLocalSuffix + "', rand())"
 		if !strings.HasSuffix(s, wantEngine) {
 			t.Errorf("wrapper[%d] = %q; want suffix %q", i, s, wantEngine)
 		}
@@ -179,7 +179,7 @@ func TestDataShardCount_Logs(t *testing.T) {
 	if len(stmts) != 3 {
 		t.Fatalf("got %d statements, want 3 (local CREATE + codec ALTER + Distributed wrapper): %v", len(stmts), stmts)
 	}
-	local := defaultLogsTable + dataShardLocalSuffix
+	local := defaultLogsTable + DataShardLocalSuffix
 	if !strings.Contains(stmts[0], local) {
 		t.Errorf("logs[0] (CREATE) does not target the local table: %s", stmts[0])
 	}
@@ -211,7 +211,7 @@ func TestDataShardCount_Traces(t *testing.T) {
 	if len(stmts) != 6 {
 		t.Fatalf("got %d statements, want 6: %v", len(stmts), stmts)
 	}
-	localSpans := defaultTracesTable + dataShardLocalSuffix
+	localSpans := defaultTracesTable + DataShardLocalSuffix
 	localTs := localSpans + traceIDTsTableSuffix
 	if !strings.Contains(stmts[0], localSpans) {
 		t.Errorf("traces[0] (spans) does not target %s: %s", localSpans, stmts[0])

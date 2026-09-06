@@ -78,7 +78,14 @@ config:
   # never reaches.
   CERBERUS_SHARD_MIN_FANOUT: "1"
   CERBERUS_SHARD_MIN_ANCHOR_PAIRS: "1"
-  CERBERUS_SHARD_MIN_ANCHORS_PER_SLICE: "1"
+  # internal/solver/config.go's Validate() rejects anything below 2 (the
+  # smallest a slice can be and still mean anything) — cerberus#3105:
+  # this lane pinned "1" here and crash-looped on every start
+  # ("configure solver: solver: MinAnchorsPerSlice must be >= 2, got 1"),
+  # which is what the `helm --wait` timeout this issue chased was actually
+  # masking. 2 is the loosest legal value and still collapses the
+  # production-scale calibration floor for this dataset's row count.
+  CERBERUS_SHARD_MIN_ANCHORS_PER_SLICE: "2"
   # Explicit, not just the default, so a future change to defaultMaxK
   # (internal/solver/config.go's own doc: it has moved 8 -> 32 -> 8 already)
   # cannot silently change this lane's own expected kEff ceiling.

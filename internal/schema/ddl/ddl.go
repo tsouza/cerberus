@@ -532,14 +532,21 @@ const (
 	defaultDeltaPrefixBucketColumn = "BucketStart"
 	defaultDeltaPrefixSumColumn    = "PartialSum"
 
-	// dataShardLocalSuffix names the per-DATA-shard LOCAL table DataShardCount
+	// DataShardLocalSuffix names the per-DATA-shard LOCAL table DataShardCount
 	// > 1 renders underneath a Distributed wrapper (cerberus issue #3077 —
 	// see Config.DataShardCount's own doc for the terminology
 	// disambiguation). Matches the upstream traces_id_ts_lookup_table.sql
 	// template's own hard-coded "_trace_id_ts" suffix convention: a fixed
 	// string suffix on the caller-supplied base table name, never a
 	// separately-configurable field.
-	dataShardLocalSuffix = "_local"
+	//
+	// Exported (unlike its sibling constants in this block) so that
+	// test/e2e/seed/cmd/seed's stale-row DELETEs (issue #3105) can resolve a
+	// Distributed wrapper's public table name to its mutable LOCAL table
+	// without hand-duplicating this literal — ClickHouse's Distributed
+	// engine rejects every mutation, so the seeder must redirect DELETEs at
+	// this exact suffix, straight from the one place that defines it.
+	DataShardLocalSuffix = "_local"
 
 	// traceIDTsTableSuffix mirrors the upstream
 	// traces_id_ts_lookup_table.sql / traces_id_ts_lookup_mv.sql templates'
@@ -957,7 +964,7 @@ type dataShardTablePair struct {
 }
 
 // dataShardLocalConfig returns a copy of c with signal s's BASE table
-// name(s) suffixed dataShardLocalSuffix (and DataShardCount cleared, so a
+// name(s) suffixed DataShardLocalSuffix (and DataShardCount cleared, so a
 // recursive renderSignal call against the returned config takes the normal,
 // non-sharded switch below instead of recursing into renderDataShardedSignal
 // again), plus the (original, local) name pairs renderDataShardedSignal wraps in
@@ -975,7 +982,7 @@ type dataShardTablePair struct {
 // to touch — traceIDTsTableSuffix only lets this method compute the
 // ORIGINAL (unsuffixed) name to wrap.
 func (c Config) dataShardLocalConfig(s Signal) (Config, []dataShardTablePair) {
-	local := func(name string) string { return name + dataShardLocalSuffix }
+	local := func(name string) string { return name + DataShardLocalSuffix }
 	var pairs []dataShardTablePair
 	switch s {
 	case Metrics:

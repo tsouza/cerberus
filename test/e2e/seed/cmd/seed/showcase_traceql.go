@@ -140,11 +140,31 @@ VALUES
 // briefly see two copies of a span — the recursive-closure per-level
 // DISTINCT (#762) collapses dupes, and showcase contracts assert
 // nonempty/error classes, never exact values (#757).
-const deleteStaleShowcaseTracesSQL = `DELETE FROM otel_traces
+//
+// Carries two occurrences of the literal text "@@MUTATION_TABLE@@"
+// (mutationTablePlaceholder's value, sharded_mutation.go) marking the
+// table to target — substituted at call time via
+// mutationTableSQL/resolveMutationTarget rather than baked in as a
+// literal. Under the datashard lane (issue #3105) otel_traces is a
+// Distributed wrapper that rejects DELETE FROM outright ("Table engine
+// Distributed doesn't support mutations", code 48); the resolved name
+// redirects to the underlying "_local" table instead. Both occurrences —
+// the outer DELETE FROM and the inner max(...) subquery's FROM — must name
+// the SAME physical table.
+//
+// The placeholder is typed directly into this single backtick string
+// (never built by concatenating separate backtick-quoted segments around
+// mutationTablePlaceholder) — see stale.go's matching doc comment for why:
+// it keeps this const a single unbroken backtick literal for
+// test/regression/seed_test.go's extractBacktickConst, and it keeps the
+// LIKE 'b00...%' wildcard below byte-identical to what it was before this
+// const learned to target a resolved table name (no fmt.Sprintf
+// %%-escaping).
+const deleteStaleShowcaseTracesSQLTemplate = `DELETE FROM @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@
 WHERE TraceId LIKE 'b00000000000000000000000000000%'
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL 20 SECOND
-    FROM otel_traces
+    FROM @@MUTATION_TABLE@@
     WHERE TraceId LIKE 'b00000000000000000000000000000%'
   )`
 
@@ -152,13 +172,17 @@ WHERE TraceId LIKE 'b00000000000000000000000000000%'
 // inside seedAll so each rolling re-seed tick re-anchors the spans on
 // the current wall clock. INSERT strictly precedes the stale-row
 // DELETE so readers never observe an empty (or partially-deleted)
-// showcase range — see deleteStaleShowcaseTracesSQL for the full
+// showcase range — see deleteStaleShowcaseTracesSQLTemplate for the full
 // race analysis.
 func insertShowcaseTraces(ctx context.Context, conn driver.Conn) error {
 	if err := conn.Exec(ctx, insertShowcaseTracesSQL); err != nil {
 		return fmt.Errorf("showcase traces: %w", err)
 	}
-	if err := conn.Exec(ctx, deleteStaleShowcaseTracesSQL); err != nil {
+	target, err := resolveMutationTarget(ctx, conn, tracesTable)
+	if err != nil {
+		return fmt.Errorf("showcase traces stale delete: %w", err)
+	}
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleShowcaseTracesSQLTemplate, target.table, tracesTable, target.onCluster)); err != nil {
 		return fmt.Errorf("showcase traces stale delete: %w", err)
 	}
 	return nil
