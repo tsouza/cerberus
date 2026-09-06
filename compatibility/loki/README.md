@@ -32,8 +32,6 @@ compatibility/loki/
   cmd/
     seed/                         deterministic OTel-shape log seeder
     loki-compliance-tester/       cerberus-owned diff driver
-  scripts/
-    run-loki-compatibility.sh     compose + seed + diff + tear-down
   upstream/
     loki-bench/                   vendored grafana/loki:pkg/logql/bench snapshot
       LICENSE                     AGPL-3.0, copied verbatim from grafana/loki
@@ -53,6 +51,12 @@ compatibility/loki/
         regression/*.yaml         regression slice
         exhaustive/*.yaml         exhaustive slice
 ```
+
+The harness entry point (`node .github/scripts/run-loki-compatibility.mjs`,
+invoked by `just compat-logql`) lives at the repo root alongside the
+prometheus and tempo harnesses and their shared
+`.github/scripts/lib/compat-compose-lifecycle.mjs`, not under this
+directory's own `scripts/`.
 
 ## Upstream corpus
 

@@ -22,7 +22,7 @@
 #                        Replaced by PRs 3-4 with the real seeder + differ.
 #
 # Usage:
-#   ./scripts/run-tempo-compatibility.sh
+#   node .github/scripts/run-tempo-compatibility.mjs
 # or:
 #   docker compose up --wait
 #   docker compose run --rm tempo-compat-driver
@@ -132,7 +132,7 @@ services:
       retries: 30
 
   tempo-compat-driver:
-    # The script (run-tempo-compatibility.sh) runs the seeder and differ
+    # The script (.github/scripts/run-tempo-compatibility.mjs) runs the seeder and differ
     # as Go binaries on the host, connecting to Docker-published ports
     # on localhost. This avoids Docker DNS resolution failures on CI
     # runners (see the script header for details).

@@ -68,9 +68,9 @@
 //     `demo_*` family — see compatibility/prometheus/cmd/seed).
 //   - The driver queries INSIDE the seeded window. The promql lane's
 //     fixture is anchored at a fixed historical timestamp, so
-//     run-prometheus-compatibility.sh passes `-at "$END_TIME"`; the
-//     loki and tempo lanes seed relative to wall-clock and use the
-//     driver's default anchor.
+//     .github/scripts/run-prometheus-compatibility.mjs passes
+//     `-eval-time "$END_TIME"`; the loki and tempo lanes seed relative
+//     to wall-clock and use the driver's default anchor.
 //
 // # The three classes
 //

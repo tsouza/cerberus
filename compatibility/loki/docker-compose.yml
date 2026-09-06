@@ -9,7 +9,7 @@
 #                 test-cerberus.yml when that lands in PR 2)
 #
 # Seeding is invoked by `go run ./compatibility/loki/cmd/seed/`
-# from scripts/run-loki-compatibility.sh — it pushes the same
+# from .github/scripts/run-loki-compatibility.mjs — it pushes the same
 # deterministic log streams to both Loki (/loki/api/v1/push) and the CH
 # `otel_logs` table.
 #
@@ -19,7 +19,7 @@
 #   compatibility/loki        CH 28000/28223, loki :23100, cerberus :29092
 #
 # Usage:
-#   ./scripts/run-loki-compatibility.sh
+#   node .github/scripts/run-loki-compatibility.mjs
 # or:
 #   docker compose up --wait
 #   go run ./compatibility/loki/cmd/seed/

@@ -58,9 +58,10 @@ const (
 	rateLimitAttempts  = 1
 
 	// Floor for the class scan. The wrapped set is currently 13 (5 Justfile,
-	// 4 compatibility harness, 2 e2e.yml, 2 bench); the floor guards against a
-	// refactor that leaves the guard scanning for a shape nothing matches, so
-	// it sits just below the real count rather than tracking it exactly.
+	// 4 compatibility harness — now .mjs argv-array calls since issue #3090,
+	// 2 e2e.yml, 2 bench); the floor guards against a refactor that leaves
+	// the guard scanning for a shape nothing matches, so it sits just below
+	// the real count rather than tracking it exactly.
 	minWrappedBuildSites = 10
 )
 
@@ -70,6 +71,18 @@ const (
 var (
 	dockerBuildCommand   = regexp.MustCompile(`\bdocker\s+(?:buildx\s+)?build\b`)
 	dockerComposeCommand = regexp.MustCompile(`\bdocker\s+compose\b.*\b(?:up|build)\b`)
+
+	// dockerBuildArgvCall / dockerComposeArgvCall are the same two command
+	// classes above, spelled as a spawnSync(...)/execFileSync(...) argv
+	// array — cerberus issue #3090's .mjs compatibility harnesses call
+	// docker this way, e.g. `['docker', 'compose', 'up', '-d', '--build',
+	// ...]`, often split one element per line. (?s) so `.` spans the
+	// newlines a real multi-line array literal has; dockerComposeArgvCall is
+	// bounded to 4 intervening quoted elements (flags like -d/--build/--wait)
+	// so it can't run away across an unrelated later docker invocation in
+	// the same file.
+	dockerBuildArgvCall   = regexp.MustCompile(`(?s)['"]docker['"]\s*,\s*['"](?:buildx['"]\s*,\s*['"])?build['"]`)
+	dockerComposeArgvCall = regexp.MustCompile(`(?s)['"]docker['"]\s*,\s*['"]compose['"]\s*,(?:\s*['"][^'"]*['"]\s*,){0,4}\s*['"](?:up|build)['"]`)
 )
 
 // prosePrefixes are the line shapes that mention a docker command without
@@ -110,8 +123,12 @@ func logicalLines(src string) []string {
 	return out
 }
 
-// buildScanFiles walks the repo for the file kinds that can invoke a builder:
-// the Justfile, every shell script, and every workflow / composite-action YAML.
+// buildScanFiles walks the repo for the file kinds whose docker invocations
+// are one shell command per logical line: the Justfile, every shell script,
+// and every workflow / composite-action YAML. `.mjs` modules spell the same
+// commands as a spawnSync(...) argv array, routinely split one element per
+// line — buildMjsScanFiles below scans those separately, as whole-file text
+// rather than line by line.
 func buildScanFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -153,6 +170,40 @@ func buildScanFiles(t *testing.T) []string {
 	return files
 }
 
+// buildMjsScanFiles walks `.github/scripts/` (and its `lib/` subdir) for
+// every `.mjs` module — the same scope
+// TestCiScriptModulesAcquireImagesThroughTheSharedPolicy already reads,
+// duplicated rather than shared because that test intentionally excludes
+// policyModule (registry.mjs, where the raw `docker pull` legitimately
+// lives) and this one has no such exclusion.
+func buildMjsScanFiles(t *testing.T) []string {
+	t.Helper()
+
+	const scriptsDir = "../../.github/scripts"
+	var files []string
+	for _, dir := range []string{scriptsDir, filepath.Join(scriptsDir, "lib")} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, e := range entries {
+			// *.test.mjs files exercise another module's BEHAVIOR through
+			// mocks/fixtures/variables (quickstart-canary.test.mjs's own
+			// ["docker", "compose", "up", ...] fixture asserts what a
+			// DIFFERENT file already wraps, via a variable, not a literal
+			// invocation this guard should itself judge) — not real dispatch
+			// sites, so they are out of this guard's scope entirely.
+			if !e.IsDir() && filepath.Ext(e.Name()) == ".mjs" && !strings.HasSuffix(e.Name(), ".test.mjs") {
+				files = append(files, filepath.Join(dir, e.Name()))
+			}
+		}
+	}
+	if len(files) == 0 {
+		t.Fatal("no .mjs module under " + scriptsDir + " found — the guard is scanning for a shape that no longer exists")
+	}
+	return files
+}
+
 // TestImageBuildingCommandsGoThroughTheRetryWrapper pins the class fix: every
 // command that makes a builder resolve a base image runs through the wrapper.
 // A new lane that shells out to `docker build` directly reintroduces exactly
@@ -183,6 +234,33 @@ func TestImageBuildingCommandsGoThroughTheRetryWrapper(t *testing.T) {
 				"outright. Run it through `node .github/scripts/%s <command>`, which retries registry/network "+
 				"faults only.", file, strings.TrimSpace(line), buildRetryWrapper)
 		}
+	}
+
+	// `.mjs` modules spell the same commands as a spawnSync(...) argv array
+	// (dockerBuildArgvCall / dockerComposeArgvCall's own doc), routinely
+	// split one element per line — matched against the whole file rather
+	// than logicalLines' one-shell-line-per-command model, mirroring
+	// TestCiScriptModulesAcquireImagesThroughTheSharedPolicy's own approach
+	// to the same file kind for the pull/run/create verbs.
+	for _, file := range buildMjsScanFiles(t) {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		text := string(src)
+		matches := append(dockerBuildArgvCall.FindAllStringIndex(text, -1), dockerComposeArgvCall.FindAllStringIndex(text, -1)...)
+		if len(matches) == 0 {
+			continue
+		}
+		if !strings.Contains(text, buildRetryWrapper) {
+			call := strings.TrimSpace(lineContaining(text, matches[0][0]))
+			t.Errorf("%s invokes a builder without the retry wrapper:\n    %s\n"+
+				"Base images are resolved from Docker Hub during the build, and a 429 there fails the lane "+
+				"outright. Run it through `node .github/scripts/%s <command>`, which retries registry/network "+
+				"faults only.", file, call, buildRetryWrapper)
+			continue
+		}
+		wrapped += len(matches)
 	}
 
 	if wrapped < minWrappedBuildSites {

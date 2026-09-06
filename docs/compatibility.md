@@ -416,7 +416,7 @@ what #503 was protecting.
 
 The `compatibility/prometheus-forced-route` lane additionally
 **hard-fails on any parity diff** (`FAIL_ON_DIFF=1` in
-`run-prometheus-compatibility.sh`) as the corpus-wide proof that the sharded solver
+`.github/scripts/run-prometheus-compatibility.mjs`) as the corpus-wide proof that the sharded solver
 route is byte-identical to reference Prometheus; under the same release-gate
 posture, every push / schedule / dispatch / `release/*` PR run is gated on
 the full forced-route corpus.

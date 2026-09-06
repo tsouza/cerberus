@@ -6,11 +6,11 @@
 
 # Run the PromQL compatibility suite end-to-end. Slow; expect minutes.
 compat-promql:
-    ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
+    node .github/scripts/run-prometheus-compatibility.mjs
 
 # Keep the compatibility stack running after the tester finishes (for debugging).
 compat-promql-keep:
-    COMPOSE_KEEP=1 ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
+    COMPOSE_KEEP=1 node .github/scripts/run-prometheus-compatibility.mjs
 
 # Tear down the compatibility stack manually.
 compat-promql-down:
@@ -26,21 +26,21 @@ compat-promql-down:
 
 # Run the LogQL compatibility harness end-to-end. Slow; expect minutes.
 compat-logql:
-    ./compatibility/loki/scripts/run-loki-compatibility.sh
+    node .github/scripts/run-loki-compatibility.mjs
 
 # Run the smoke (compose + seed + /labels assertion) without the diff
 # driver. Useful when the seeder is the bisect target.
 
 # Run the LogQL compose + seed + /labels smoke without the diff driver.
 compat-logql-smoke:
-    DRIVER_SKIP=1 ./compatibility/loki/scripts/run-loki-compatibility.sh
+    DRIVER_SKIP=1 node .github/scripts/run-loki-compatibility.mjs
 
 # Keep the Loki compatibility stack running after the run finishes
 # (for debugging /loki/api/v1/* + ClickHouse manually).
 
 # Keep the Loki compatibility stack running after the run finishes (for debugging).
 compat-logql-keep:
-    COMPOSE_KEEP=1 ./compatibility/loki/scripts/run-loki-compatibility.sh
+    COMPOSE_KEEP=1 node .github/scripts/run-loki-compatibility.mjs
 
 # Tear down the Loki compatibility stack manually.
 compat-logql-down:
@@ -55,11 +55,11 @@ compat-logql-down:
 
 # Run the Tempo / TraceQL compatibility harness end-to-end. Slow; expect minutes.
 compat-traceql:
-    ./compatibility/tempo/scripts/run-tempo-compatibility.sh
+    node .github/scripts/run-tempo-compatibility.mjs
 
 # Keep the tempo-compatibility stack running after the driver finishes (for debugging).
 compat-traceql-keep:
-    COMPOSE_KEEP=1 ./compatibility/tempo/scripts/run-tempo-compatibility.sh
+    COMPOSE_KEEP=1 node .github/scripts/run-tempo-compatibility.mjs
 
 # Tear down the tempo-compatibility stack manually.
 compat-traceql-down:
