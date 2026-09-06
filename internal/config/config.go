@@ -1228,12 +1228,9 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	connMaxLifetime, err := getDuration(v, envCHConnMaxLifetime)
+	connMaxLifetime, err := connMaxLifetimeFromEnv(v)
 	if err != nil {
 		return Config{}, err
-	}
-	if connMaxLifetime <= 0 {
-		return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHConnMaxLifetime, connMaxLifetime)
 	}
 	keepAlive, err := keepAliveFromEnv(v)
 	if err != nil {
@@ -1276,12 +1273,9 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	queryTimeout, err := getDuration(v, envQueryTimeout)
+	queryTimeout, err := queryTimeoutFromEnv(v)
 	if err != nil {
 		return Config{}, err
-	}
-	if queryTimeout < 0 {
-		return Config{}, fmt.Errorf("%s: must be >= 0, got %s", envQueryTimeout, queryTimeout)
 	}
 	breaker, err := breakerFromEnv(v)
 	if err != nil {
@@ -2095,6 +2089,34 @@ func rbgnDensityUnitsForMemory(chQueryMaxMemory int64) int64 {
 		return rbgnDensityUnitsFloor
 	}
 	return units
+}
+
+// connMaxLifetimeFromEnv reads the ClickHouse connection max-lifetime knob
+// and rejects a non-positive value. Factored out of FromEnv purely to keep
+// that function under golangci-lint's funlen cap.
+func connMaxLifetimeFromEnv(v *viper.Viper) (time.Duration, error) {
+	connMaxLifetime, err := getDuration(v, envCHConnMaxLifetime)
+	if err != nil {
+		return 0, err
+	}
+	if connMaxLifetime <= 0 {
+		return 0, fmt.Errorf("%s: must be > 0, got %s", envCHConnMaxLifetime, connMaxLifetime)
+	}
+	return connMaxLifetime, nil
+}
+
+// queryTimeoutFromEnv reads the query execution timeout knob and rejects a
+// negative value (zero means "no timeout"). Factored out of FromEnv purely
+// to keep that function under golangci-lint's funlen cap.
+func queryTimeoutFromEnv(v *viper.Viper) (time.Duration, error) {
+	queryTimeout, err := getDuration(v, envQueryTimeout)
+	if err != nil {
+		return 0, err
+	}
+	if queryTimeout < 0 {
+		return 0, fmt.Errorf("%s: must be >= 0, got %s", envQueryTimeout, queryTimeout)
+	}
+	return queryTimeout, nil
 }
 
 // dataShardFanoutCapOverrideFromEnv reads CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP,
