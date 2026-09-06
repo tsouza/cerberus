@@ -100,10 +100,11 @@ func TestMemoryLimitError_NoCapConfigured(t *testing.T) {
 // distributedPinCount is the number of settings distributed_query_settings.go
 // pins UNCONDITIONALLY on every querySettings() call (cerberus issue #3078:
 // skip_unavailable_shards + fallback_to_stale_replicas_for_distributed_queries;
-// cerberus issue #3086: load_balancing + load_balancing_first_offset).
+// cerberus issue #3086: load_balancing + load_balancing_first_offset;
+// cerberus issue #3118: distributed_product_mode).
 // Every exact-entry-count assertion in this file adds this in, so a future
-// fifth unconditional pin only needs updating here.
-const distributedPinCount = 4
+// sixth unconditional pin only needs updating here.
+const distributedPinCount = 5
 
 // TestQuerySettings_MaxMemoryUsage — the per-query settings map carries
 // max_memory_usage with the configured byte value, and carries ONLY the
