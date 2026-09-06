@@ -143,6 +143,25 @@ on:
           - k3d
           - compose
           - both
+      datashard_only:
+        description: >-
+          Skip every OTHER job in this workflow and run only `datashard`
+          (both matrix legs) plus `datashard-replica-affinity` — for a
+          focused, fast-turnaround dispatch while investigating the
+          DataShardFanoutGate admission-control lane (cerberus issue #3128)
+          without competing with compose-smoke/dashboard/chaos/bwc-minio for
+          shared runner capacity on every iteration. `datashard` itself has
+          no `needs:` dependency on any other job in this workflow, so this
+          is a pure skip of unrelated work, not a reordering. Every other
+          job's own `if:` gains `&& !inputs.datashard_only` (or, for the
+          handful of root jobs a whole pipeline cascades from, a new
+          standalone `if:`) so a plain `false` here (every non-dispatch
+          trigger, and a dispatch that leaves it unset) is a complete no-op —
+          byte-identical to this workflow's behaviour before this input
+          existed.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -189,6 +208,12 @@ jobs:
   # nothing on an ordinary pull request.
   compose-smoke-scope:
     name: compose-smoke-scope
+    # See workflow_dispatch.inputs.datashard_only's own doc: a focused
+    # datashard-only dispatch skips this job (and, by cascade, every other
+    # job this one roots — compose-smoke-setup/-shard/-shard-info/
+    # -crawl-merge and the compose-smoke/crawl-terminal aggregators below,
+    # which need their own explicit skip since they run under `always()`).
+    if: ${{ !inputs.datashard_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -741,7 +766,12 @@ jobs:
     # branch-protection context, but release.yml's preflight reads it by name on
     # the merge commit, so it must always exist and always be honest about what
     # ran.
-    if: always()
+    #
+    # datashard_only also skips this aggregator explicitly, not just its
+    # compose-smoke-scope root — always() would otherwise still fire it, and
+    # its own script below treats a datashard_only-caused scope skip as "the
+    # lane never decided", a hard failure rather than a clean no-op.
+    if: always() && !inputs.datashard_only
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -813,7 +843,12 @@ jobs:
     needs: [compose-smoke-scope, compose-smoke-setup, compose-smoke-shard-info]
     # always() so a cancelled/skipped crawl matrix still reaches this reader —
     # a plain `needs:` would skip it in exactly the case it exists to catch.
-    if: always()
+    #
+    # datashard_only also skips this reader explicitly — assert-crawl-
+    # terminal.mjs treats a skipped compose-smoke-scope (SCOPE_RESULT !=
+    # 'success') as "the lane never decided", a hard failure, not a
+    # datashard_only-aware no-op.
+    if: always() && !inputs.datashard_only
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -878,9 +913,15 @@ jobs:
     # `on:` block). The crawl shard is the ~50min long pole and is dispatched
     # only on schedule + manual dispatch + release/* PRs (INCLUDE_CRAWL below),
     # so a merge-commit run still gets the fast smoke-only matrix.
+    #
+    # datashard_only skips this root too — dashboard's own aggregator script
+    # already treats a skipped dashboard-setup as "nothing to aggregate" and
+    # exits 0, so nothing downstream of this job needs its own explicit
+    # datashard_only check.
     if: >-
-      github.event_name != 'pull_request' ||
-      startsWith(github.head_ref, 'release/')
+      !inputs.datashard_only &&
+      (github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'release/'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -1437,7 +1478,7 @@ jobs:
     # stays on `check` + `lint` + `compose-smoke`. Runs on push-to-main +
     # nightly + manual dispatch alongside the dashboard job.
     name: startup-bench
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !inputs.datashard_only
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -1530,7 +1571,7 @@ jobs:
     # nightly + manual dispatch ONLY, never on pull_request, and is NOT a
     # branch-protection required check. A regression is caught at
     # merge-to-main time and reverted from main, not blocked pre-merge.
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !inputs.datashard_only
     runs-on: ubuntu-latest
     # 40 to match the dashboard budget. Shared bring-up (e2e-up +
     # seed-rolling + wait-otel) is ~10-15 min; the phase-1 fault scenarios
@@ -1722,7 +1763,7 @@ jobs:
   # matrices — it is a separate single-cluster lane, not a Playwright shard.
   bwc-minio:
     name: bwc-minio (${{ matrix.scenario }})
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !inputs.datashard_only
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
