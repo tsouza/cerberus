@@ -47,6 +47,47 @@ import (
 // and every single-data-shard deployment) leaves dataShardFanoutGate nil —
 // this file's ENTIRE mechanism is structurally unreached, matching the
 // pre-#3081 behaviour bit-for-bit.
+//
+// KNOWN LIMITATION (cerberus issue #3128's post-move investigation, real e2e
+// dispatch runs 34032272914's second attempt: N=2 peak concurrent 10 > cap 8,
+// N=4 peak concurrent 24 > cap 8; every run's own client-side accounting
+// stayed within cap the whole time, ruled out with a temporary held-weight
+// counter that never once observed an over-cap acquisition): this gate
+// bounds client-BELIEVED concurrent dispatch weight, not ClickHouse's own
+// real concurrent per-shard statement count, and the two are not the same
+// thing under cancellation. acquireDataShardFanout's release fires the
+// instant queryOpen/queryCursorColumnar's underlying c.conn.Query / pool.Do
+// call RETURNS — but when that call returns because ctx was cancelled
+// (internal/solver/executor.go's errgroup.WithContext cancels every sibling
+// shard's ctx the instant ANY one of a routed query's kEff concurrently-
+// admitted shards errors, and an HTTP client disconnect/timeout cancels
+// r.Context() the same way), clickhouse-go v2's own connect.cancel()
+// (conn_process.go, both process() and firstBlock()) sends a single
+// ClientCancel packet and closes the LOCAL connection immediately — it does
+// NOT wait for ClickHouse to confirm the (possibly still-running, possibly
+// Distributed-fanned-out) statement has actually stopped. This package
+// therefore releases that dispatch's weight the instant the LOCAL socket
+// closes, while the REAL per-shard ClickHouse statement(s) it dispatched may
+// keep running server-side for an uncontrolled further interval — during
+// which this gate believes that capacity is free and admits a new dispatch
+// on top of it. The observed overshoot magnitude is consistent with exactly
+// this: on both real runs above, (peak concurrent - cap) is an integer
+// multiple of DataShardCount (16 = 4x4 on N=4, 2 = 1x2 on N=2) — i.e. a
+// small, plausible number of premature-cancellation releases, not a
+// diffuse accounting error.
+//
+// A durable fix needs this package to distinguish "the local dispatch
+// finished" from "ClickHouse actually stopped executing it" on the
+// cancellation path specifically — e.g. issuing `KILL QUERY WHERE query_id
+// = ? SYNC` (ShardQueryIDs/mintQueryID already mint one for every dispatch)
+// on a fresh, uncancelled connection before releasing weight acquired by a
+// dispatch that is unwinding via ctx cancellation rather than a normal
+// server-side finish — and has not been implemented or validated against a
+// real cluster yet. Route A's admission gap this file closes is still a
+// genuine improvement over the pre-move state (Route A was completely
+// ungated before), but the gate is not yet a hard ceiling on ClickHouse's
+// own concurrent per-shard statement count under cancellation. Tracked on
+// issue #3128 until the cancellation path is fixed for real.
 
 // ErrDataShardFanoutGateBusy is the sentinel wrapped into the error
 // [Client.acquireDataShardFanout] returns when the request's own ctx
@@ -113,19 +154,10 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 	if aerr := c.dataShardFanoutGate.Acquire(ctx, weight); aerr != nil {
 		return nil, fmt.Errorf("chclient: data-shard fanout gate acquire: %w: %w", ErrDataShardFanoutGateBusy, aerr)
 	}
-	// TEMPORARY diagnostic for cerberus issue #3128's real-CI regression
-	// investigation (see dataShardFanoutHeld's own doc). Logging held/cap
-	// on every over-cap observation, not just the first, since a real
-	// accounting bug's shape (transient vs. sustained) is itself diagnostic.
-	if held := c.dataShardFanoutHeld.Add(weight); held > c.dataShardFanoutCap {
-		breakerLogger().Warn("chclient: data-shard fanout gate held weight exceeds cap",
-			"held", held, "cap", c.dataShardFanoutCap, "weight", weight)
-	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			c.dataShardFanoutGate.Release(weight)
-			c.dataShardFanoutHeld.Add(-weight)
 		})
 	}, nil
 }
