@@ -35,16 +35,13 @@
 //
 // argv `--self-test` runs the in-process assertion suite and exits.
 import { readFileSync, writeFileSync, appendFileSync } from 'node:fs'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import process from 'node:process'
-import { pullImageWithRetry } from './lib/registry.mjs'
+import { renderHelmDocs } from './lib/helm-docs.mjs'
 
 const CHART = 'deploy/helm/cerberus/Chart.yaml'
 const CHANGELOG = 'CHANGELOG.md'
 const IMAGE = 'ghcr.io/tsouza/cerberus'
-const HELM_CHART_SEARCH_ROOT = 'deploy/helm'
-const HELM_DOCS_IMAGE = 'jnorwood/helm-docs:v1.14.2'
-const HELM_DOCS_TEMPLATE = 'README.md.gotmpl'
 // maintenanceBranchGlob mirrors the shell glob `release/*.x` the replaced
 // `case` statement matched: the `release/` prefix, then any (possibly empty)
 // run of characters, then the literal `.x` suffix.
@@ -243,44 +240,6 @@ export function releaseBranchName(appVersion, chartVersion) {
 // tip-of-main flow's PR title — the two were always the same literal string.
 export function releaseCommitMessage(appVersion, chartVersion) {
   return `chore(release): cerberus v${appVersion} / chart ${chartVersion}`
-}
-
-// renderHelmDocs regenerates the chart README via the same containerized
-// helm-docs both `just release-prep` and `just release-prep-backport` ran
-// inline, against the Chart.yaml this file has already rewritten. `cwd`
-// (default `process.cwd()`, i.e. the repo root every caller runs this script
-// from) is the volume mount source, matching the replaced recipes' own
-// `$PWD/deploy/helm`.
-//
-// `docker run` pulls a missing image itself, single-attempt, so a Docker Hub
-// blip or a quota refusal would have surfaced here as an opaque container
-// start failure — the same class of fault issue #1562 fixed everywhere else
-// a script drives docker directly (promql-surface-gate.mjs's reference
-// Prometheus, migration-artifact.mjs's release image). `pullImageWithRetry`
-// acquires the image through the shared transport-retry / rate-limit-fails-
-// fast policy first, so this site is judged the identical way.
-export function renderHelmDocs(cwd = process.cwd()) {
-  if (!pullImageWithRetry(HELM_DOCS_IMAGE, { consequence: 'the chart README cannot be regenerated' })) {
-    throw new Error(`could not acquire the helm-docs image ${HELM_DOCS_IMAGE}`)
-  }
-
-  const res = spawnSync(
-    'docker',
-    [
-      'run',
-      '--rm',
-      '-v',
-      `${cwd}/${HELM_CHART_SEARCH_ROOT}:/helm-docs`,
-      '-u',
-      String(process.getuid()),
-      HELM_DOCS_IMAGE,
-      '--chart-search-root=/helm-docs',
-      `--template-files=${HELM_DOCS_TEMPLATE}`,
-    ],
-    { stdio: 'inherit' },
-  )
-  if (res.error) throw res.error
-  if (res.status !== 0) throw new Error(`helm-docs exited ${res.status}`)
 }
 
 function main() {

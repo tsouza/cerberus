@@ -91,6 +91,32 @@ jobs:
           LABEL_NAME: ${{ github.event.label.name }}
         run: node .github/scripts/resolve-release-trigger.mjs
 
+      # lib/helm-docs.mjs's renderHelmDocs() (RENDER_HELM_DOCS=1, invoked by
+      # the next step) acquires jnorwood/helm-docs through the shared
+      # transport-retry / rate-limit-fails-fast policy — same two-login
+      # idiom every other Docker-pulling job in this repo runs, GHCR first
+      # (assert-image-jobs-authenticate.mjs's R5).
+      - name: Log in to GHCR
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
+      # Gated on the secret being present so a fork run degrades to anonymous
+      # rather than erroring on an empty password.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+        run: node .github/scripts/registry-login.mjs
+
+      # RENDER_HELM_DOCS=1 folds the chart-README regeneration in here, right
+      # after the Chart.yaml edit it depends on (#3100) — previously a
+      # separate `uses: docker://jnorwood/helm-docs:...` step that duplicated
+      # `just release-prep`'s own inline invocation and ran unauthenticated.
       - name: stage release files
         id: prep
         env:
@@ -98,14 +124,8 @@ jobs:
           BUMP: ${{ steps.trigger.outputs.bump }}
           CHART_BUMP: ${{ steps.trigger.outputs.chart_bump }}
           PR_BODY_FILE: release-pr-body.md
+          RENDER_HELM_DOCS: '1'
         run: node .github/scripts/prepare-release.mjs
-
-      # Keep the chart README in sync; the chart-ci drift gate uses the same
-      # helm-docs version (jnorwood/helm-docs:v1.14.2) so the opened PR is green.
-      - name: regenerate chart README
-        uses: docker://jnorwood/helm-docs:v1.14.2
-        with:
-          args: --chart-search-root=deploy/helm --template-files=README.md.gotmpl
 
       - name: create release PR
         id: pr

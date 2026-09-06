@@ -1414,11 +1414,19 @@ what actually runs.
     the `docker run … jnorwood/helm-docs …` README regeneration were duplicated
     verbatim across both recipe bodies, and this file already computes
     `chartVersion` in-process — re-reading it from the file it had just written
-    was pure duplication, not merely duplicated text. `renderHelmDocs()`
+    was pure duplication, not merely duplicated text. `RENDER_HELM_DOCS=1`
+    calls `renderHelmDocs()` from `./lib/helm-docs.mjs` — split out of this
+    file rather than kept inline, so `verify-changelog-fresh.mjs` (which
+    imports this file's changelog helpers only) is not read as an
+    image-acquiring script by `assert-image-jobs-authenticate.mjs`, which
+    follows every relative import a module has, transitively. `renderHelmDocs`
     acquires the pinned `jnorwood/helm-docs:v1.14.2` image through
     `pullImageWithRetry` (`./lib/registry.mjs`) before running it, the same
     transport-retry / rate-limit-fails-fast policy every other docker-driving
-    script in this directory uses (issue #1562). `release-prep-backport`'s
+    script in this directory uses (issue #1562); `prepare-release.yml`'s
+    `prepare` job logs in to ghcr.io + Docker Hub ahead of it (folding in the
+    workflow's own separate `uses: docker://jnorwood/helm-docs:…` step, which
+    ran this same regeneration unauthenticated). `release-prep-backport`'s
     branch-detection guard (a shell `case "$(git rev-parse --abbrev-ref HEAD)"
     in release/*.x) …esac`) moves the same way, checked BEFORE any file is
     touched. `release_branch` / `commit_message` are additionally emitted so

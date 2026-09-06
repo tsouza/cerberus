@@ -74,6 +74,24 @@ jobs:
         if: startsWith(github.head_ref, 'release/')
         run: node --test .github/scripts/verify-changelog-fresh.test.mjs
 
+      # verify-changelog-fresh.mjs imports its changelog helpers from
+      # prepare-release.mjs (cerberus#2739), which also imports
+      # lib/helm-docs.mjs's shared-policy image acquisition for an unrelated
+      # caller (#3100) — assert-image-jobs-authenticate.mjs follows every
+      # relative import rather than only the one a given caller actually
+      # uses (deliberately, to avoid under-approximating a real anonymous
+      # pull elsewhere), so this job reads as an image acquirer even though
+      # this step never runs `renderHelmDocs()`. A GHCR login costs nothing
+      # real here and satisfies the gate the same way every other job in
+      # this repo does.
+      - name: Log in to GHCR
+        if: startsWith(github.head_ref, 'release/')
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
       - name: CHANGELOG.md accounts for every commit since the last tag
         if: startsWith(github.head_ref, 'release/')
         run: node .github/scripts/verify-changelog-fresh.mjs
