@@ -48,9 +48,9 @@ func TestEmitSibling_GateRequiresRootReachability(t *testing.T) {
 			}
 			for _, want := range []string{
 				"WITH RECURSIVE _struct_rooted_",
-				"WHERE `ParentSpanId` = '' AND `TraceId` IN",
+				"WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN",
 				"t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId`",
-				"WHERE (`TraceId`, `SpanId`) IN (WITH RECURSIVE _struct_rooted_",
+				"WHERE (`TraceId`, `SpanId`) GLOBAL IN (WITH RECURSIVE _struct_rooted_",
 			} {
 				if !strings.Contains(sql, want) {
 					t.Errorf("%s: rooted sibling gate missing %q.\nSQL: %s", op, want, sql)
@@ -71,7 +71,7 @@ func TestEmitSibling_RootedWalkIsTraceScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if !strings.Contains(sql, "FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` IN (SELECT `TraceId` FROM") {
+	if !strings.Contains(sql, "FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM") {
 		t.Fatalf("rooted walk must be scoped to the L side's traces:\n%s", sql)
 	}
 }

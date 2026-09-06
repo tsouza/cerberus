@@ -45,7 +45,10 @@ import (
 // at-most-TraceLimit trace ids as a temporary table with the outer drain
 // (DataShardCount more), two sequential phases of DataShardCount each. On a
 // single-node deployment GLOBAL IN behaves exactly as IN. The broadcast
-// payload is the LIMIT-bounded id set, never the scan.
+// payload is the LIMIT-bounded id set, never the scan. The GLOBAL is not
+// spelled here: InSubquery writes it for every subquery that renders a
+// physical table scan (its own doc), the rule this shape was the first
+// proven instance of and every other self-referencing emitter shares.
 //
 // ponytail: the input subquery is emitted twice (outer drain + inner
 // ranking). The window predicate keeps each scan cheap; lift to a single
@@ -81,6 +84,6 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 	sb := NewQuery().
 		Select(verbatim("s.*")).
 		From(aliasedFrag(outerSub, "s")).
-		Where(GlobalInSubquery(Col(n.TraceIDColumn), topN))
+		Where(InSubquery(Col(n.TraceIDColumn), topN))
 	return e.emitSelect(sb)
 }
