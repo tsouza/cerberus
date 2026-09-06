@@ -396,7 +396,7 @@ async function main() {
     initiatorPod,
     `SELECT toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us, query_duration_ms * 1000 AS dur_us,
             query_kind, initial_query_id,
-            replaceRegexpAll(substring(query, 1, 120), '[\\t\\n\\r]+', ' ') AS query_snippet
+            replaceRegexpAll(substring(query, 1, 4000), '[\\t\\n\\r]+', ' ') AS query_snippet
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
      WHERE is_initial_query = 0 AND type = 'QueryFinish'
        AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
@@ -473,7 +473,12 @@ async function main() {
     // gate-hold interval and whether its release ran the
     // cancellation/KILL-QUERY path.
     const live = peakOverlapRows(selectRows, selectPeakAtUs);
-    log(`Select-only peak overlap detail at t=${selectPeakAtUs}us (${live.length} live query_ids): ${live.map((r) => `${r.qid}[start=${r.startUs},dur=${r.durUs}] query=${r.snippet}`).join(' || ')}`);
+    // Truncated further here (peakOverlapSnippetChars) — the full-length
+    // snippet already surfaces via the over-width-group sample above; this
+    // line only needs enough to eyeball the query SHAPE per live row
+    // without the log line growing unboundedly with the live-row count.
+    const peakOverlapSnippetChars = 150;
+    log(`Select-only peak overlap detail at t=${selectPeakAtUs}us (${live.length} live query_ids): ${live.map((r) => `${r.qid}[start=${r.startUs},dur=${r.durUs}] query=${r.snippet.slice(0, peakOverlapSnippetChars)}`).join(' || ')}`);
   }
 
   if (peakConcurrentSelectOnly > DATA_SHARD_FANOUT_CAP) {
