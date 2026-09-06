@@ -313,10 +313,11 @@ import (
 // observations (12-31) against whatever replicaCount those earlier dispatch
 // runs happened to run.
 //
-// NOT fixed here. A correct fix needs the resolved per-pod
-// DataShardFanoutCap to know its own share of the operator's INTENDED
-// cluster-wide budget — e.g. dividing by replicaCount at the Helm chart /
-// config layer — and doing that correctly also has to account for
+// NOT fixed here — cerberus issue #3128 stays OPEN for this second cause. A
+// correct fix needs the resolved per-pod DataShardFanoutCap to know its own
+// share of the operator's INTENDED cluster-wide budget — e.g. dividing by
+// replicaCount at the Helm chart / config layer — and doing that correctly
+// also has to account for
 // docs/project_per_head_split's per-head split mode (each head can run a
 // DIFFERENT replicaCount under `split.<head>.replicaCount`, and each such
 // pod would need its OWN correctly-apportioned share) and the
