@@ -825,6 +825,16 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 //     see distributed_query_settings.go for the full citation and its
 //     documented read-concentration trade-off); likewise a no-op against a
 //     single-shard/non-Distributed deployment.
+//   - `distributed_product_mode=global` — UNCONDITIONAL, version-safe pin
+//     that rewrites any self-referencing JOIN/IN subquery against the SAME
+//     Distributed table (TraceQL's structural-child/sibling/descendant
+//     operators, `select(nestedSet*)`, `| compare(...)`) into a GLOBAL
+//     JOIN/IN instead of erroring with CH code 288 ("Double-distributed
+//     IN/JOIN subqueries is denied") — cerberus issue #3118. See
+//     distributed_query_settings.go for the full citation and why `global`,
+//     not `local` or `allow`, is the only remedy that stays correct under
+//     cerberus's default (`rand()`) data-shard sharding key; likewise a
+//     no-op against a single-shard/non-Distributed deployment.
 //   - `max_memory_usage` — ClickHouse's per-query memory cap, from
 //     Config.MaxQueryMemoryBytes (when > 0).
 //   - `max_execution_time` + `timeout_overflow_mode=throw` — the
@@ -851,8 +861,9 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	timeout := c.effectiveQueryTimeout(ctx)
 	blockSize := maxBlockSizeFromContext(ctx)
 	// skip_unavailable_shards=0, fallback_to_stale_replicas_for_distributed_queries=0,
-	// load_balancing=first_or_random and load_balancing_first_offset=0 are
-	// all pinned UNCONDITIONALLY (cerberus issues #3078 and #3086 — see
+	// load_balancing=first_or_random, load_balancing_first_offset=0 and
+	// distributed_product_mode=global are all pinned UNCONDITIONALLY
+	// (cerberus issues #3078, #3086 and #3118 — see
 	// distributed_query_settings.go for the full citation of each
 	// setting's documented behavior and why its stamped value is correct
 	// for a correctness-focused gateway), so this map is never empty and
@@ -863,6 +874,7 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 		settingFallbackToStaleReplicasForDistributedQueries: 0,
 		settingLoadBalancing:                                loadBalancingFirstOrRandom,
 		settingLoadBalancingFirstOffset:                     0,
+		settingDistributedProductMode:                       distributedProductModeGlobal,
 	}
 	if c.maxMemory > 0 {
 		s["max_memory_usage"] = c.maxMemory
