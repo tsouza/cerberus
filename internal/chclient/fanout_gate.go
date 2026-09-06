@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"golang.org/x/sync/semaphore"
@@ -48,16 +49,14 @@ import (
 // this file's ENTIRE mechanism is structurally unreached, matching the
 // pre-#3081 behaviour bit-for-bit.
 //
-// KNOWN LIMITATION (cerberus issue #3128's post-move investigation, real e2e
+// CANCELLATION FIX (cerberus issue #3128's post-move investigation, real e2e
 // dispatch runs 34032272914's second attempt: N=2 peak concurrent 10 > cap 8,
 // N=4 peak concurrent 24 > cap 8; every run's own client-side accounting
 // stayed within cap the whole time, ruled out with a temporary held-weight
-// counter that never once observed an over-cap acquisition): this gate
-// bounds client-BELIEVED concurrent dispatch weight, not ClickHouse's own
-// real concurrent per-shard statement count, and the two are not the same
-// thing under cancellation. acquireDataShardFanout's release fires the
-// instant queryOpen/queryCursorColumnar's underlying c.conn.Query / pool.Do
-// call RETURNS — but when that call returns because ctx was cancelled
+// counter that never once observed an over-cap acquisition). The root cause:
+// acquireDataShardFanout's release used to fire the instant
+// queryOpen/queryCursorColumnar's underlying c.conn.Query / pool.Do call
+// RETURNED — but when that call returns because ctx was cancelled
 // (internal/solver/executor.go's errgroup.WithContext cancels every sibling
 // shard's ctx the instant ANY one of a routed query's kEff concurrently-
 // admitted shards errors, and an HTTP client disconnect/timeout cancels
@@ -65,29 +64,48 @@ import (
 // (conn_process.go, both process() and firstBlock()) sends a single
 // ClientCancel packet and closes the LOCAL connection immediately — it does
 // NOT wait for ClickHouse to confirm the (possibly still-running, possibly
-// Distributed-fanned-out) statement has actually stopped. This package
-// therefore releases that dispatch's weight the instant the LOCAL socket
-// closes, while the REAL per-shard ClickHouse statement(s) it dispatched may
-// keep running server-side for an uncontrolled further interval — during
-// which this gate believes that capacity is free and admits a new dispatch
-// on top of it. The observed overshoot magnitude is consistent with exactly
-// this: on both real runs above, (peak concurrent - cap) is an integer
-// multiple of DataShardCount (16 = 4x4 on N=4, 2 = 1x2 on N=2) — i.e. a
-// small, plausible number of premature-cancellation releases, not a
-// diffuse accounting error.
+// Distributed-fanned-out) statement has actually stopped. Releasing the
+// gate weight right there let a new dispatch admit on top of ClickHouse-side
+// work that had not actually stopped yet. The observed overshoot magnitude
+// was consistent with exactly this: on both real runs above, (peak
+// concurrent - cap) was an integer multiple of DataShardCount (16 = 4x4 on
+// N=4, 2 = 1x2 on N=2) — i.e. a small, plausible number of
+// premature-cancellation releases, not a diffuse accounting error.
 //
-// A durable fix needs this package to distinguish "the local dispatch
-// finished" from "ClickHouse actually stopped executing it" on the
-// cancellation path specifically — e.g. issuing `KILL QUERY WHERE query_id
-// = ? SYNC` (ShardQueryIDs/mintQueryID already mint one for every dispatch)
-// on a fresh, uncancelled connection before releasing weight acquired by a
-// dispatch that is unwinding via ctx cancellation rather than a normal
-// server-side finish — and has not been implemented or validated against a
-// real cluster yet. Route A's admission gap this file closes is still a
-// genuine improvement over the pre-move state (Route A was completely
-// ungated before), but the gate is not yet a hard ceiling on ClickHouse's
-// own concurrent per-shard statement count under cancellation. Tracked on
-// issue #3128 until the cancellation path is fixed for real.
+// The fix: acquireDataShardFanout's release closure now checks ctx.Err() at
+// the instant it runs (not the error the underlying call returned — a typed
+// *clickhouse.Exception means CH already finished the statement on its own
+// and needs no help). A non-nil ctx.Err() means THIS dispatch's own ctx was
+// cancelled or hit its deadline — the reason the call returned, not a normal
+// server-side finish — so before releasing the weight, killDataShardQuery
+// issues `KILL QUERY WHERE query_id = ? SYNC` for this dispatch's own
+// query_id (queryIDFromContext, stamped by queryContext before the gate is
+// ever acquired) on a FRESH, uncancelled, short-lived connection/context —
+// never the dispatch's own already-cancelled one. SYNC blocks until
+// ClickHouse itself confirms the statement is dead (or was already gone,
+// the common race-free-outcome when the statement finished naturally in the
+// tiny window between local cancellation and this call landing), so the
+// gate weight only releases once ClickHouse agrees the capacity is
+// genuinely free. A failed or slow KILL QUERY (network error reaching CH,
+// bounded by killDataShardQueryTimeout) is logged, never fatal — the weight
+// still releases unconditionally afterward, so a KILL QUERY failure can
+// never leak gate capacity, only (rarely) fail to close this specific race.
+//
+// The normal, non-cancelled finish path is untouched: ctx.Err() is nil, the
+// check is a cheap single field read, and no extra round-trip is ever made
+// for the overwhelming majority of dispatches that simply finish.
+//
+// Residual risk: the KILL QUERY round-trip itself can only be as reliable as
+// reaching ClickHouse on a fresh connection within killDataShardQueryTimeout
+// — if THAT call also fails to confirm (CH itself unreachable, or the
+// dispatch's ctx carried no query_id because no trace was present), the gate
+// weight still releases (never leaked) but without the extra confirmation,
+// so the pre-fix race can in principle still occur in that narrow,
+// already-degraded scenario. Route A's admission gap this file closes
+// (Route A was completely ungated before #3128's move) plus this
+// cancellation fix together make the gate a hard ceiling on ClickHouse's own
+// concurrent per-shard statement count under the overwhelming majority of
+// real cancellation scenarios; only the doubly-degraded case above remains.
 
 // ErrDataShardFanoutGateBusy is the sentinel wrapped into the error
 // [Client.acquireDataShardFanout] returns when the request's own ctx
@@ -140,6 +158,13 @@ func NewDataShardFanoutGate(cfg Config) (gate *semaphore.Weighted, cap int64) {
 // ties it directly to its own synchronous pool.Do call, since that call
 // already blocks until the statement is fully drained).
 //
+// The returned release closure closes over ctx (the SAME context the
+// caller's dispatch runs under, already stamped with the per-dispatch
+// query_id by queryContext — see the callers' own doc for why that
+// ordering matters) so it can distinguish, at the instant it actually
+// runs, a normal server-side finish from a cancellation-driven unwind: see
+// this file's own "CANCELLATION FIX" doc above.
+//
 // A nil c.dataShardFanoutGate (DataShardCount <= 1, see
 // NewDataShardFanoutGate) returns a no-op release and a nil error
 // immediately — the pre-#3081 behaviour, unconditionally.
@@ -157,9 +182,73 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			// ctx.Err() != nil means THIS dispatch's own ctx — the one
+			// Acquire was just called with above — was cancelled or hit its
+			// deadline: that is why the caller's underlying c.conn.Query /
+			// pool.Do call returned, not a normal server-side finish (which
+			// leaves ctx.Err() nil even when the call itself errored with a
+			// typed *clickhouse.Exception). Only the cancellation-unwind
+			// path pays for the extra KILL QUERY round-trip; a normal finish
+			// falls straight through to Release below, unconditionally.
+			if ctx.Err() != nil {
+				if queryID := queryIDFromContext(ctx); queryID != "" {
+					c.killDataShardQuery(queryID)
+				}
+			}
 			c.dataShardFanoutGate.Release(weight)
 		})
 	}, nil
+}
+
+// killDataShardQueryTimeout bounds how long killDataShardQuery waits for
+// KILL QUERY ... SYNC to confirm a cancelled dispatch's ClickHouse-side
+// statement has genuinely stopped (or was already gone) before giving up.
+// acquireDataShardFanout's release always frees the gate weight afterward
+// regardless of the outcome — this bound only caps how long that release
+// can be delayed by an unresponsive ClickHouse, so a hung KILL QUERY can
+// never leak gate capacity, merely delay its release by at most this long.
+// Named so the bound is never a bare literal (invariant 13).
+const killDataShardQueryTimeout = 5 * time.Second
+
+// killDataShardQuerySQL targets a single per-dispatch query_id. SYNC blocks
+// until ClickHouse confirms the query is actually dead — or reports nothing
+// to kill, the common case when the statement had already finished on its
+// own in the small race window between local cancellation and this call
+// landing — rather than merely accepting the request. Raw SQL text is fine
+// here (unlike internal/chsql's plan-emission layer, invariant 10): this is
+// an administrative statement against ClickHouse's own process table, not
+// emitted query plan SQL.
+const killDataShardQuerySQL = `KILL QUERY WHERE query_id = ? SYNC`
+
+// killDataShardQuery issues killDataShardQuerySQL for queryID on a FRESH,
+// uncancelled, short-lived context — deliberately NOT derived from the
+// dispatch's own (already-cancelled) ctx, which would make the KILL request
+// itself fail the exact same way before ever reaching ClickHouse. It calls
+// c.conn.Exec directly rather than c.queryOpen or the public Client.Exec:
+// this administrative statement is not itself a shard dispatch, so it must
+// never recursively acquire c.dataShardFanoutGate (queryOpen's seam), and
+// its outcome is not a signal about ClickHouse's general health, so it must
+// never touch the circuit breaker (Client.Exec's gating) in either
+// direction. clickhouse-go/v2's connection pool hands this call a fresh
+// pooled connection even while the dispatch's own connection is mid-cancel,
+// since that pooled connection was already evicted by connect.cancel()
+// (this file's own "CANCELLATION FIX" doc) rather than being handed out
+// again.
+//
+// Every non-nil outcome is logged at WARN for observability (the same
+// breakerLogger() package-level accessor breaker.go's own transition logs
+// use) but never treated as fatal: acquireDataShardFanout's release always
+// frees the gate weight once this returns, regardless of whether it
+// succeeded, timed out, or found no matching query to kill.
+func (c *Client) killDataShardQuery(queryID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), killDataShardQueryTimeout)
+	defer cancel()
+	if err := c.conn.Exec(ctx, killDataShardQuerySQL, queryID); err != nil {
+		breakerLogger().Warn(
+			"chclient: data-shard fanout gate: KILL QUERY on a cancelled dispatch did not confirm the statement stopped",
+			"query_id", queryID, "error", err,
+		)
+	}
 }
 
 // gatedRows decorates a driver.Rows so its Close() also releases the

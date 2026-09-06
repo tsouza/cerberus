@@ -257,6 +257,15 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 		return nil, false, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 
+	// queryContext must run BEFORE the fan-out gate acquire below, unlike the
+	// pre-#3128-cancellation-fix ordering: acquireDataShardFanout's release
+	// closure reads this dispatch's query_id off ctx (queryIDFromContext) to
+	// target a cancellation-driven KILL QUERY at the right statement, and it
+	// can only see whatever ctx was captured at Acquire time — a query_id
+	// stamped AFTER the acquire would never be visible to that closure.
+	ctx = c.queryContext(ctx)
+	queryID := queryIDFromContext(ctx)
+
 	// Data-shard fan-out admission (cerberus issues #3081, #3128) — the
 	// columnar dial's own equivalent of queryOpen's acquire. Unlike the row
 	// path (whose ClickHouse-side statement stays open for as long as the
@@ -274,8 +283,6 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 		return nil, true, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 
-	ctx = c.queryContext(ctx)
-	queryID := queryIDFromContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 
 	dec := &columnarCursor{
