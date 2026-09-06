@@ -122,7 +122,105 @@ package chclient
 // replica-selection stack. See docs/helm-clickhouse.md's multi-replica
 // consistency section for the full decision record.
 //
-// All four settings are stamped UNCONDITIONALLY on every data-plane read-path
+// settingDistributedProductMode (cerberus issue #3118, epic #3074) closes a
+// THIRD gap DataShardCount > 1 opens: several of cerberus's own query shapes
+// self-reference the `otel_traces` Distributed wrapper table twice in one
+// query — a JOIN or an IN-subquery where BOTH sides eventually scan the
+// SAME Distributed table. Concretely (all confirmed against ClickHouse
+// 25.8, dispatch run 34017639602):
+//
+//   - TraceQL's structural-child/parent/sibling operators (`>` / `<` / `~`)
+//     — internal/chsql/structural_join.go's emitStructuralDirectJoin/
+//     emitStructuralSiblingJoin — INNER-JOIN an L subquery against an R
+//     subquery, both ultimately Scan(s.SpansTable).
+//   - TraceQL's descendant/ancestor operators (`>>` / `<<`) — emitStructuralRecursive
+//     — additionally run a `WITH RECURSIVE` closure whose step arm
+//     self-joins `otel_traces` against the growing CTE.
+//   - EVERY structural operator's L side is first gated through
+//     rootedStructuralLeftSub, itself a `WITH RECURSIVE … SELECT * FROM (<L>)
+//     WHERE (TraceId, SpanId) IN (<recursive closure over otel_traces>)` — the
+//     literal "RecursiveCTESource" the CH error names.
+//   - `select(nestedSetLeft, nestedSetParent, nestedSetRight)` —
+//     internal/chsql/nested_set_annotate.go's emitNestedSetAnnotate — LEFT
+//     JOINs the search result against its own `WITH RECURSIVE` nested-set
+//     numbering, again built from a bare `otel_traces` Scan.
+//   - `| compare(...)` — internal/traceql/metrics_compare.go's
+//     compareRootLookup — LEFT JOINs the metric pipeline's own Scan against
+//     a second, independent Scan(s.SpansTable) that resolves each trace's
+//     root span.
+//
+// On a single-shard/non-Distributed deployment `otel_traces` is a plain
+// MergeTree table, so none of these ever double-references a Distributed
+// table and the shape is unremarkable. Once epic #3074 wraps it in
+// `Distributed(cluster, db, otel_traces_local, <shardingKey>)`
+// (internal/schema/ddl.renderDistributedWrapper), every one of the shapes
+// above becomes exactly the pattern ClickHouse's `distributed_product_mode`
+// guard exists to catch, and the SERVER's own default (`deny`) rejects it
+// outright with code 288.
+//
+// Three remedies exist server-side (docs/reference/operations/settings/
+// settings.md, "distributed_product_mode"), and only one is safe for
+// cerberus to apply BLANKET, unconditionally, at the transport layer:
+//
+//   - `local` rewrites the subquery to read its OWN shard's local table —
+//     REJECTED. It is only correct when the two self-joined sides are
+//     guaranteed to be CO-LOCATED on the same physical shard (e.g. both
+//     keyed by TraceId under a TraceId-based sharding key), and cerberus
+//     makes no such guarantee: Config.DataShardingKey defaults to `rand()`
+//     (ddl.go's dataShardingKey, "an unweighted default is correctness-
+//     neutral for read queries" — true for a plain fan-out scan, false the
+//     moment a query joins across shards). Under the default key a trace's
+//     spans land on shards independently at random, so a `local` rewrite
+//     would silently drop every structural match / root-span lookup whose
+//     two sides happen to land on different shards — a wrong ANSWER, not a
+//     loud error. Worse than the `deny` this issue is fixing.
+//   - `allow` merely lifts the guard and executes the JOIN/IN exactly as
+//     written against each shard's LOCAL data independently (ClickHouse's
+//     own docs: "responsibility for the correctness of this query lies on
+//     the user") — REJECTED for the identical reason `local` is: same
+//     silent-data-loss failure mode under cerberus's random default
+//     sharding key, just reached without even the rewrite's explicitness.
+//   - `global` rewrites every non-GLOBAL IN/JOIN in the query to GLOBAL
+//     IN/GLOBAL JOIN — ACCEPTED. The inner (right-hand / L) side is
+//     computed ONCE at the query initiator and broadcast as a temporary
+//     table to every shard, so each shard's local execution sees the FULL
+//     cross-shard result regardless of where any given span or trace
+//     physically landed. This is correct under ANY sharding key, including
+//     the default `rand()` — the same posture cerberus already takes with
+//     skip_unavailable_shards/fallback_to_stale_replicas_for_distributed_queries
+//     above: correctness over throughput, chosen outright rather than left
+//     to an operator's per-deployment sharding-key discipline.
+//
+// TRADE-OFF, DOCUMENTED NOT HIDDEN: `global` mode broadcasts the inner
+// subquery's FULL materialized result to every shard on every query it
+// rewrites, rather than letting each shard prune independently. Every
+// self-join shape above already bounds that inner side before it ever
+// reaches this point — the structural closures cap recursion depth
+// (defaultStructuralRecursionDepth), phase B restricts to a top-N trace-id
+// set (traceIDRestrictionFrag), and compareRootLookup groups down to one
+// row per trace — so the broadcast payload is the same small, already-
+// bounded working set these queries were designed to keep small, not an
+// unbounded table scan. A future query shape that self-joins an
+// UNBOUNDED side would pay a real broadcast cost under this pin; no such
+// shape exists in cerberus today (see this issue's PR body for the sweep).
+//
+// Stamped UNCONDITIONALLY (see the four pins above and Client.querySettings)
+// rather than gated on DataShardCount, for the same reason those are: a
+// single-shard/non-Distributed deployment has no Distributed table for the
+// setting to act on, so ClickHouse accepts and simply never consults it —
+// a harmless no-op — and pinning it once, at the transport layer, covers
+// every query shape above PLUS any future one with the identical self-join-
+// over-Distributed shape, without cerberus's query-emission code needing to
+// know it is running under DataShardCount > 1 at all.
+const settingDistributedProductMode = "distributed_product_mode"
+
+// distributedProductModeGlobal is settingDistributedProductMode's stamped
+// value — see this file's own doc for why `global`, not `local` or `allow`,
+// is the only one of ClickHouse's three non-`deny` remedies that stays
+// correct under cerberus's default (`rand()`) data-shard sharding key.
+const distributedProductModeGlobal = "global"
+
+// All five settings are stamped UNCONDITIONALLY on every data-plane read-path
 // query (see Client.querySettings), mirroring how settingTimeoutOverflowMode
 // is pinned outright rather than exposed as an operator knob: they are
 // harmless, version-safe no-ops against a single-shard/non-Distributed
@@ -131,7 +229,7 @@ package chclient
 // touches no Distributed-engine table — so pinning them unconditionally
 // costs nothing on the common case and only changes behavior once
 // internal/chopt.ClusterTopology.DataShardCount > 1 (cerberus issues #3077,
-// #3086).
+// #3086, #3118).
 const (
 	settingSkipUnavailableShards                        = "skip_unavailable_shards"
 	settingFallbackToStaleReplicasForDistributedQueries = "fallback_to_stale_replicas_for_distributed_queries"
