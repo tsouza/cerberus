@@ -402,15 +402,13 @@ func (x *Executor) Execute(
 		if dataShardCount < 1 {
 			dataShardCount = 1
 		}
-		perShardMemoryBytes = cap / (int64(kEff) * int64(dataShardCount))
-		if perShardMemoryBytes < 1 {
-			// Only reachable if cap < kEff*DataShardCount — an unrealistic
-			// (byte-scale cap, or an extreme DataShardCount) configuration.
-			// Guards against stamping a literal 0, which ClickHouse's
-			// max_memory_usage setting treats as UNLIMITED — the opposite of
-			// what "apportion the cap" means.
-			perShardMemoryBytes = 1
-		}
+		// chclient.ApportionMemoryBytes is the SAME formula (divide + floor
+		// to 1) chclient.Client.querySettings applies to route A's own base
+		// cap by DataShardCount alone (cerberus issue #3122) — sharing it
+		// here means the two apportionment sites can never independently
+		// drift. This call site's divisor additionally folds in kEff, the
+		// piece unique to a genuine K-shard fan-out.
+		perShardMemoryBytes = chclient.ApportionMemoryBytes(cap, int64(kEff)*int64(dataShardCount))
 	}
 
 	// 4. WALL-CLOCK DEADLINE — a dedicated cancel cause so a solver-timeout

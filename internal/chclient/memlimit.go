@@ -87,3 +87,40 @@ func wrapMemoryLimit(err error, limit int64) error {
 	}
 	return err
 }
+
+// ApportionMemoryBytes divides a configured `max_memory_usage` cap by
+// divisor, clamped to a minimum of 1 — ClickHouse treats a literal 0 as
+// UNLIMITED, the exact opposite of "apportion the cap". A divisor below 1
+// (an unset field, or a construction path that never sets one) is treated
+// as 1, an exact no-op divide, rather than dividing by zero.
+//
+// This is the ONE apportionment formula cerberus's per-shard admission
+// control uses, shared by both sites a `Distributed`-engine read needs it
+// (cerberus issues #3081, #3122) so they can never independently drift:
+//
+//   - Client.querySettings (this package) apportions the client-wide
+//     MaxQueryMemoryBytes cap by Config.DataShardCount ALONE, for every
+//     data-plane query the solver never split ("route A" —
+//     internal/solver/executor.go's terminology). A single logical
+//     statement still fans out across every data shard once
+//     DataShardCount > 1, so it needs apportioning even with no solver
+//     split at all (kEff == 1, in the solver's own vocabulary).
+//   - internal/solver/executor.go's Execute apportions the SAME cap
+//     (read back via MaxQueryMemoryBytes) by kEff x DataShardCount for a
+//     genuine K-shard fan-out, so total cluster-wide exposure across every
+//     concurrently-running shard never exceeds route A's own single-
+//     statement total.
+func ApportionMemoryBytes(cap, divisor int64) int64 {
+	if divisor < 1 {
+		divisor = 1
+	}
+	v := cap / divisor
+	if v < 1 {
+		// Only reachable if cap < divisor — an unrealistic (byte-scale cap,
+		// or an extreme shard/fan-out count) configuration. Guards against
+		// stamping a literal 0, which ClickHouse's max_memory_usage setting
+		// treats as UNLIMITED.
+		v = 1
+	}
+	return v
+}

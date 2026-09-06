@@ -1263,6 +1263,19 @@ exactly the amplification `perShardMemoryBytes` exists to divide back out.
 Live-load confirmation that the formula holds under real concurrent
 multi-shard traffic is issue #3079's job, not this one's.
 
+The formula's `kEff` term only covers a genuine solver K-shard fan-out.
+"Route A" — every data-plane query the solver never splits, `kEff == 1` in
+the vocabulary above — still reaches the SAME `Distributed` table and fans
+out across the SAME `DataShardCount` nodes; ClickHouse decides that fan-out
+inside the `Distributed` engine, not cerberus's own solver, so it happens
+regardless of whether anything upstream decided to shard. Cerberus issue #3122
+(found live on dispatch run 34020019580: every route-A statement's
+`system.query_log` row recorded the RAW, unapportioned cap) closed this gap
+by apportioning route A's own base cap by `DataShardCount` ALONE, in
+`chclient.Client.querySettings` — the exact `kEff=1` case of the same
+formula, sharing its divide-and-floor arithmetic with `executor.go` via
+`chclient.ApportionMemoryBytes` so the two sites cannot independently drift.
+
 #### `skip_unavailable_shards` / `fallback_to_stale_replicas_for_distributed_queries` policy
 
 Both are pinned to the fail-loud value in `internal/chclient/

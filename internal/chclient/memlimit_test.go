@@ -97,6 +97,37 @@ func TestMemoryLimitError_NoCapConfigured(t *testing.T) {
 	}
 }
 
+// TestApportionMemoryBytes pins the shared divide-and-floor formula both
+// Client.querySettings (route A, divisor = DataShardCount alone) and
+// internal/solver/executor.go (a K-shard fan-out, divisor = kEff x
+// DataShardCount) apply to a configured max_memory_usage cap (cerberus
+// issues #3081, #3122).
+func TestApportionMemoryBytes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		cap     int64
+		divisor int64
+		want    int64
+	}{
+		{"no-op divisor 1", 1 << 30, 1, 1 << 30},
+		{"even split", 1 << 30, 2, (1 << 30) / 2},
+		{"kEff x DataShardCount split", 1_073_741_824, 6, 178956970},
+		{"divisor 0 treated as 1 (no-op)", 1 << 30, 0, 1 << 30},
+		{"negative divisor treated as 1 (no-op)", 1 << 30, -3, 1 << 30},
+		{"cap smaller than divisor floors to 1, never 0", 5, 10, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ApportionMemoryBytes(c.cap, c.divisor); got != c.want {
+				t.Errorf("ApportionMemoryBytes(%d, %d) = %d; want %d", c.cap, c.divisor, got, c.want)
+			}
+		})
+	}
+}
+
 // distributedPinCount is the number of settings distributed_query_settings.go
 // pins UNCONDITIONALLY on every querySettings() call (cerberus issue #3078:
 // skip_unavailable_shards + fallback_to_stale_replicas_for_distributed_queries;
@@ -138,6 +169,66 @@ func TestQuerySettings_MaxMemoryUsage(t *testing.T) {
 	if len(s) != distributedPinCount {
 		t.Errorf("querySettings() with cap 0 carries %d entries (%v); want exactly the %d unconditional distributed pins",
 			len(s), s, distributedPinCount)
+	}
+}
+
+// TestQuerySettings_MaxMemoryUsage_DataShardApportionment — cerberus issue
+// #3122: a Distributed-engine read fans a SINGLE statement this Client
+// dispatches ("route A" — no solver K-shard split) out across every one of
+// Config.DataShardCount's data-shard nodes, each enforcing max_memory_usage
+// against its own local working set. Before this fix, querySettings stamped
+// the RAW configured cap unconditionally regardless of DataShardCount — the
+// exact gap e2e-datashard-verify.mjs's point-4 assertion caught on a real
+// multi-data-shard cluster (dispatch run 34020019580: every route-A
+// statement observed max_memory_usage == the unapportioned raw cap). This
+// pins the fix: the stamped value must be the cap divided by DataShardCount
+// alone (kEff=1 in the solver's own vocabulary, matching
+// perShardMemoryBytes' formula for an unsplit statement).
+func TestQuerySettings_MaxMemoryUsage_DataShardApportionment(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name           string
+		dataShardCount int64
+		want           int64
+	}{
+		{"DataShardCount unset (0) is a no-op", 0, 1 << 30},
+		{"DataShardCount 1 is a no-op", 1, 1 << 30},
+		{"DataShardCount 2 halves the cap", 2, (1 << 30) / 2},
+		{"DataShardCount 4 quarters the cap", 4, (1 << 30) / 4},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			client := &Client{maxMemory: 1 << 30, dataShardCount: c.dataShardCount}
+			settings := client.querySettings(context.Background())
+			got, ok := settings["max_memory_usage"]
+			if !ok {
+				t.Fatalf("settings %v missing max_memory_usage", settings)
+			}
+			if got != c.want {
+				t.Errorf("max_memory_usage = %v; want %d (cap=%d, DataShardCount=%d)",
+					got, c.want, int64(1<<30), c.dataShardCount)
+			}
+		})
+	}
+
+	// The 0/unset case must carry EXACTLY max_memory_usage plus the
+	// unconditional distributed pins (no accidental extra entries), mirroring
+	// TestQuerySettings_MaxMemoryUsage's own exact-count assertion.
+	bare := &Client{maxMemory: 1 << 30}
+	if got := bare.querySettings(context.Background()); len(got) != 1+distributedPinCount {
+		t.Errorf("settings carries %d entries (%v); want exactly max_memory_usage plus the %d distributed pins",
+			len(got), got, distributedPinCount)
+	}
+
+	// A route-A statement with NO configured cap (MaxQueryMemoryBytes()==0)
+	// must never have DataShardCount invent one — 0 stays 0/absent
+	// regardless of DataShardCount, matching TestExecute_MemoryApportion_
+	// UnconfiguredCapLeftUnapportioned's identical rule on the solver side.
+	uncapped := &Client{dataShardCount: 4}
+	if s := uncapped.querySettings(context.Background()); s["max_memory_usage"] != nil {
+		t.Errorf("querySettings() with cap 0 = %v; want max_memory_usage absent regardless of DataShardCount", s)
 	}
 }
 

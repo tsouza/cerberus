@@ -589,9 +589,14 @@ in `internal/routememo/concurrency_bound_test.go`).
 ### Mandatory per-shard memory apportionment
 
 Route A's single statement runs under the client's configured
-`max_memory_usage` cap. A naive `K`-shard fan-out running every shard under
-that SAME full cap would let total server-side memory exposure reach up to
-`K` times route A's — exactly backwards from the mechanism's premise that
+`max_memory_usage` cap — itself apportioned by `DataShardCount` alone
+(`chclient.Client.querySettings`, cerberus issue #3122): a `Distributed`-engine
+read fans that ONE statement out across every data shard regardless of
+whether the solver split anything, so route A needs the `kEff=1` case of
+this same formula, not the raw configured value. A naive `K`-shard fan-out
+running every shard under that SAME full cap would let total server-side
+memory exposure reach up to `K` times route A's — exactly backwards from
+the mechanism's premise that
 sharding reduces resource use. `internal/solver/executor.go`'s `Execute`
 therefore divides the cap by the shard count it actually dispatches, times
 `DataShardCount` (cerberus issue #3081) —
