@@ -1141,7 +1141,8 @@ exceeded` bringing up the multi-shard ClickHouse StatefulSets within the
 job's 420s timeout — before any of the correctness/admission-control
 assertions described below ever ran. Nothing in this document should be
 read as that lane having passed; `count > 1` remains unproven under real
-concurrent multi-shard load until it does.
+concurrent multi-shard load until it does. Tracked as
+[#3105](https://github.com/tsouza/cerberus/issues/3105).
 
 ### ClickHouse Distributed-query settings, error taxonomy, and known risks (cerberus issue #3078)
 
