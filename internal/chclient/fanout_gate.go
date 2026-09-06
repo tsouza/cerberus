@@ -362,6 +362,18 @@ func WithDataShardFanoutMultiplier(ctx context.Context, multiplier int) context.
 	return context.WithValue(ctx, dataShardFanoutMultiplierKey, multiplier)
 }
 
+// DataShardFanoutMultiplierFromContext returns the multiplier
+// WithDataShardFanoutMultiplier installed, and whether one was installed at
+// all — the QueryTimeoutFromContext pattern (timeout.go's own doc: "so the
+// layer that installs the carrier can prove it did"), exported so
+// internal/engine's own execContext tests can assert the stamp fires on
+// exactly the plan shapes it should, without duplicating
+// dataShardFanoutMultiplierFromContext's default-fallback logic.
+func DataShardFanoutMultiplierFromContext(ctx context.Context) (int, bool) {
+	n, ok := ctx.Value(dataShardFanoutMultiplierKey).(int)
+	return n, ok
+}
+
 // dataShardFanoutMultiplierFromContext returns the multiplier
 // WithDataShardFanoutMultiplier installed, or defaultDataShardFanoutMultiplier
 // (1) when none was set or the stored value is non-positive.
