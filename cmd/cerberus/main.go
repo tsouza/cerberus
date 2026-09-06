@@ -2142,10 +2142,11 @@ func attachQueryObserver(corpus *optcorpus.Reconciler, engines ...*engine.Engine
 // topology carries chopt.ClusterTopology.DataShardCount (CERBERUS_CH_DATA_SHARDS,
 // cerberus issue #3081) — this is the ONE place it is copied into
 // solver.Config.DataShardCount, keeping internal/solver's own import
-// surface free of chopt (see solver.Config.DataShardCount's own doc). It
-// also sizes the SECOND, independent DataShardFanoutGate semaphore
-// alongside the pre-existing Gate: nil (never allocated) whenever
-// DataShardCount <= 1 — see solver.NewDataShardFanoutGate's own doc.
+// surface free of chopt (see solver.Config.DataShardCount's own doc). The
+// data-shard fan-out admission gate itself no longer lives on the Executor
+// this builds (cerberus issue #3128 moved it to internal/chclient, wired at
+// Client construction so it covers route A too — see
+// chclient.NewDataShardFanoutGate); client already carries it.
 func buildSolver(
 	logger *slog.Logger,
 	chCfg chclient.Config,
@@ -2178,24 +2179,16 @@ func buildSolver(
 	}
 	gate := semaphore.NewWeighted(gateCap)
 
-	// SECOND, independent global semaphore bounding aggregate ClickHouse-side
-	// data-shard fan-out (cerberus issue #3081) — nil/dataShardFanoutCap==gateCap
-	// whenever cfg.DataShardCount <= 1, an EXACT no-op for every deployment
-	// that predates this field. See solver.NewDataShardFanoutGate's own doc.
-	dataShardFanoutGate, dataShardFanoutCap := solver.NewDataShardFanoutGate(cfg, gateCap)
-
 	// The admit top-up is only meaningful when admission control is enabled.
 	// A nil *admit.Limiter (CERBERUS_ADMIT_DISABLED=true) leaves ExecDeps.Admit
 	// nil, which the Executor treats as "no cap" (it runs at full P). Passing
 	// the typed-nil *admit.Limiter directly would defeat the Executor's
 	// nil-interface guard, so gate the assignment on a non-nil limiter.
 	deps := solver.ExecDeps{
-		Client:              client,
-		Gate:                gate,
-		GateCap:             gateCap,
-		DataShardFanoutGate: dataShardFanoutGate,
-		DataShardFanoutCap:  dataShardFanoutCap,
-		Breaker:             client,
+		Client:  client,
+		Gate:    gate,
+		GateCap: gateCap,
+		Breaker: client,
 	}
 	if promLimiter != nil {
 		deps.Admit = promLimiter
@@ -2211,7 +2204,7 @@ func buildSolver(
 		"min_fanout", cfg.MinFanout,
 		"min_anchor_pairs", cfg.MinAnchorPairs,
 		"data_shard_count", cfg.DataShardCount,
-		"data_shard_fanout_cap", dataShardFanoutCap,
+		"data_shard_fanout_cap", client.DataShardFanoutCap(),
 	)
 	return s, nil
 }

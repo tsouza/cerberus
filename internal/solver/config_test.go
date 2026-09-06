@@ -22,15 +22,13 @@ func TestDefaultConfig_Valid(t *testing.T) {
 		t.Fatalf("default Timeout = %s, want 60s", c.Timeout)
 	}
 	// cerberus issue #3081: DataShardCount defaults to 1 (a single logical
-	// dataset), the value that makes DataShardFanoutGate/DataShardFanoutCap
-	// a structural no-op. DataShardFanoutCapOverride stays nil and
-	// DisableSplitOnMultiDataShard stays false — neither has a default
-	// worth setting explicitly.
+	// dataset), the value that makes internal/chclient's data-shard fanout
+	// gate a structural no-op (cerberus issue #3128 moved that mechanism
+	// out of this package; see chclient.NewDataShardFanoutGate).
+	// DisableSplitOnMultiDataShard stays false — it has no default worth
+	// setting explicitly.
 	if c.DataShardCount != 1 {
 		t.Fatalf("default DataShardCount = %d, want 1", c.DataShardCount)
-	}
-	if c.DataShardFanoutCapOverride != nil {
-		t.Fatalf("default DataShardFanoutCapOverride = %v, want nil", c.DataShardFanoutCapOverride)
 	}
 	if c.DisableSplitOnMultiDataShard {
 		t.Fatalf("default DisableSplitOnMultiDataShard = true, want false")
@@ -51,10 +49,6 @@ func TestConfigValidate_FailFast(t *testing.T) {
 		{"MaxOutputRows <= 0", func(c *Config) { c.MaxOutputRows = 0 }},
 		{"Timeout <= 0", func(c *Config) { c.Timeout = 0 }},
 		{"DataShardCount < 1", func(c *Config) { c.DataShardCount = 0 }},
-		{"DataShardFanoutCapOverride <= 0", func(c *Config) {
-			zero := int64(0)
-			c.DataShardFanoutCapOverride = &zero
-		}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -70,15 +64,13 @@ func TestConfigValidate_FailFast(t *testing.T) {
 }
 
 // TestConfigValidate_DataShardFieldsAcceptLegalValues (cerberus issue #3081)
-// pins the positive side of the two new checks above: a multi-data-shard
-// count and a positive fanout-cap override both validate cleanly.
+// pins the positive side of the check above: a multi-data-shard count
+// validates cleanly.
 func TestConfigValidate_DataShardFieldsAcceptLegalValues(t *testing.T) {
 	t.Parallel()
 	c := DefaultConfig()
 	c.DataShardCount = 4
-	override := int64(64)
-	c.DataShardFanoutCapOverride = &override
 	if err := c.Validate(); err != nil {
-		t.Fatalf("DataShardCount=4, DataShardFanoutCapOverride=64 must validate, got %v", err)
+		t.Fatalf("DataShardCount=4 must validate, got %v", err)
 	}
 }

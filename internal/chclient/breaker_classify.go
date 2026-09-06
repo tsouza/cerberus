@@ -277,6 +277,17 @@ func classifyBreakerOutcome(err error) breakerOutcome {
 		return breakerOutcome{Scope: breakerScopeClient, Code: chCodeNoServerAnswer}
 	}
 
+	// The data-shard fan-out gate (cerberus issues #3081, #3128) is a SECOND,
+	// independent LOCAL admission-control semaphore, exactly like the pool
+	// acquire timeout above: a denial means this dispatch's own ctx expired
+	// or was cancelled waiting for aggregate ClickHouse-side per-shard
+	// statement budget, before the call ever reached ClickHouse. It says
+	// nothing about whether ClickHouse is alive, so it is scoped identically
+	// — a cerberus-side admission-control signal, not a server-health one.
+	if errors.Is(err, ErrDataShardFanoutGateBusy) {
+		return breakerOutcome{Scope: breakerScopeClient, Code: chCodeNoServerAnswer}
+	}
+
 	// The columnar sample-budget sentinel is cerberus's OWN stop signal: the
 	// decoder latched a *TooManySamplesError and returned errBudgetExceeded
 	// purely to unwind ch-go's pool.Do. ClickHouse was mid-answer and

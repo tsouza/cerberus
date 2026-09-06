@@ -144,10 +144,30 @@ func withTransportRetry[T any](ctx context.Context, call func() (T, error)) (T, 
 // them. The DRAIN side (rows.Err()) is deliberately NOT retried — once rows
 // have started flowing a mid-stream drop can't be replayed without
 // double-reading.
+//
+// Being the single shared open-time seam also makes this the data-shard
+// fan-out admission point (cerberus issues #3081, #3128): every dispatch
+// this package makes — route A's single statement AND every one of route
+// B's per-shard dispatches, since the sharded solver's Executor reaches
+// ClickHouse through this same Client — acquires its DataShardCount-weighted
+// share of the gate HERE, before the retry loop ever touches c.conn.Query,
+// and holds it for exactly as long as the caller keeps the returned rows
+// open (gatedRows.Close releases it). A denied acquire returns before any
+// retry attempt and before any CH connection is opened — breaker-neutral,
+// see ErrDataShardFanoutGateBusy's own doc.
 func (c *Client) queryOpen(ctx context.Context, sql string, args ...any) (driver.Rows, error) {
-	return withTransportRetry(ctx, func() (driver.Rows, error) {
+	release, err := c.acquireDataShardFanout(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := withTransportRetry(ctx, func() (driver.Rows, error) {
 		return c.conn.Query(ctx, sql, args...)
 	})
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return &gatedRows{Rows: rows, release: release}, nil
 }
 
 // pingOpen pings the pool with broken-conn retry so a stale pooled conn does

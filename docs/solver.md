@@ -319,26 +319,36 @@ returned to the handler:
    least two routed requests can always make progress. A gate-acquire denial
    honours the request ctx (timeout / client cancel) and is breaker-neutral —
    no CH connection was opened.
-5. **Data-shard fanout gate** (cerberus issue #3081, epic #3074). Once
-   ClickHouse becomes a `Distributed` table over `DataShardCount` real data
-   shards, every admitted connection above fans out `DataShardCount`-ways
+5. **Data-shard fanout gate** (cerberus issues #3081, #3128, epic #3074).
+   Once ClickHouse becomes a `Distributed` table over `DataShardCount` real
+   data shards, every dispatched connection fans out `DataShardCount`-ways
    *inside* ClickHouse — invisible to the gate arithmetic above, and because
    `Gate` is shared across every concurrently-routed request, shrinking one
-   request's own `K_eff` cannot shrink the process-wide total. A SECOND,
-   independent global semaphore, `DataShardFanoutGate` — nil (never
-   allocated) whenever `DataShardCount <= 1`, which is every deployment that
-   predates this mechanism — is acquired immediately after the Gate acquire
-   above succeeds, with weight `K_eff x DataShardCount`, and released
-   BEFORE `Gate`'s own release (a fixed ordering, not a correctness
-   requirement — the two bound independent resources). This enforces
-   `Σ(K_eff_i x DataShardCount) <= DataShardFanoutCap` across every
-   concurrently-admitted request, process-wide — an exact, unconditional
-   ceiling with no floor-division degeneracy as `DataShardCount` grows,
-   unlike a naive per-request `P_eff / DataShardCount` divide (which floors
-   to 0, clamped to 1, for every `DataShardCount >= defaultParallel + 1`).
-   `DataShardFanoutCap` defaults to `Gate`'s own size, independently
-   overridable. `DataShardCount` is sourced once, at startup, from
-   `internal/chopt.ClusterTopology` (`CERBERUS_CH_DATA_SHARDS`, default 1).
+   request's own `K_eff` cannot shrink the process-wide total. This gate
+   lives in `internal/chclient` (`DataShardFanoutGate`, nil whenever
+   `DataShardCount <= 1`, which is every deployment that predates this
+   mechanism), NOT on this Executor — issue #3128 found that an
+   Executor-only gate covered only route B (this solver's own K-shard
+   splits), leaving route A (the ordinary, non-split query path — the vast
+   majority of real traffic) completely unbounded, since route A dispatches
+   straight through `internal/chclient` with no Executor involvement at all
+   and fans out identically once `DataShardCount > 1`. The gate is instead
+   acquired once per ACTUAL ClickHouse dispatch, weight `DataShardCount`,
+   at the one seam every dispatch this package makes shares
+   (`chclient`'s `queryOpen` / `queryCursorColumnar`) — so this Executor's
+   own `K_eff` per-shard dispatches each acquire it independently, summing
+   to the same `Σ(K_eff_i x DataShardCount) <= DataShardFanoutCap` ceiling
+   the mechanism enforced when it lived here, with no floor-division
+   degeneracy as `DataShardCount` grows (unlike a naive per-request
+   `P_eff / DataShardCount` divide, which floors to 0, clamped to 1, for
+   every `DataShardCount >= defaultParallel + 1`) — and route A's own
+   single-statement dispatches are now bounded by the identical mechanism.
+   `DataShardFanoutCap` defaults to the chclient connection pool's own size
+   (`CERBERUS_CH_MAX_OPEN_CONNS`), independently overridable
+   (`CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`, the historical name kept for
+   backward compatibility). `DataShardCount` is sourced once, at startup,
+   from `internal/chopt.ClusterTopology` (`CERBERUS_CH_DATA_SHARDS`,
+   default 1).
 6. **Wall-clock deadline.** A dedicated cancel cause bounds the routed request
    end-to-end (`Config.Timeout`). The distinct cause makes a solver timeout
    breaker-neutral and distinguishable from a real `DeadlineExceeded`; it maps

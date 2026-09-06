@@ -257,6 +257,23 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 		return nil, false, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 
+	// Data-shard fan-out admission (cerberus issues #3081, #3128) — the
+	// columnar dial's own equivalent of queryOpen's acquire. Unlike the row
+	// path (whose ClickHouse-side statement stays open for as long as the
+	// caller keeps its Cursor open), pool.Do below is fully SYNCHRONOUS: it
+	// drains the whole result set before returning, so the weight this
+	// acquires is released immediately after pool.Do returns, in every
+	// branch — a shape-mismatch or decode-limitation bail-out still means a
+	// real statement ran to completion against ClickHouse; only the LOCAL
+	// decode declined to use the result, and the row-path fallback that
+	// follows dispatches (and gates) a SEPARATE physical execution of its
+	// own via queryOpen.
+	release, err := c.acquireDataShardFanout(ctx)
+	if err != nil {
+		c.br.record(ctx, err)
+		return nil, true, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
+	}
+
 	ctx = c.queryContext(ctx)
 	queryID := queryIDFromContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -285,6 +302,10 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	}
 
 	runErr := pool.Do(ctx, q)
+	// pool.Do is synchronous — the ClickHouse-side statement is fully done
+	// (answered, errored, or mismatched-shape) the instant it returns, so the
+	// fan-out weight releases here unconditionally, before any branch below.
+	release()
 	// Record the open-call outcome against the breaker exactly once — the same
 	// contract the row path keeps: a shape-mismatch (matrixMismatchErr) or a
 	// budget rejection is NOT a CH failure, a transport/server error is.

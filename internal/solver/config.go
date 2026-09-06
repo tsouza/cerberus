@@ -199,8 +199,10 @@ type Config struct {
 	// see Validate) means a single logical dataset: unreplicated, or
 	// replicated N ways onto identical copies, exactly like every
 	// deployment before this field existed. At 1, every mechanism this
-	// field feeds is a structural no-op: Executor.DataShardFanoutGate stays
-	// nil (see NewDataShardFanoutGate) and Execute's perShardMemoryBytes
+	// field feeds is a structural no-op: internal/chclient's data-shard
+	// fanout gate stays nil (see chclient.NewDataShardFanoutGate; cerberus
+	// issue #3128 moved this mechanism out of this package — it used to be
+	// Executor.DataShardFanoutGate) and Execute's perShardMemoryBytes
 	// apportionment is bit-identical to the pre-#3081 formula.
 	//
 	// DISAMBIGUATION — this package already uses bare `Shard`-prefixed
@@ -214,24 +216,18 @@ type Config struct {
 	// issue introduces therefore uses the DataShard-prefixed compound form.
 	DataShardCount int
 
-	// DataShardFanoutCapOverride, when non-nil, replaces GateCap as
-	// Executor.DataShardFanoutCap's sizing cap
-	// (CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP). Nil (the default) means "the
-	// same size as the pre-existing connection Gate" — reusing GateCap as
-	// the natural, symmetric default rather than inventing a new bare
-	// constant (invariant 13).
-	DataShardFanoutCapOverride *int64
-
 	// DisableSplitOnMultiDataShard
 	// (CERBERUS_SOLVER_DISABLE_SPLIT_ON_MULTI_DATA_SHARD) is an
 	// operator-facing escape hatch, false by default. It is a config
 	// surface only: nothing in this package's admission-control path
 	// branches on it today. The always-on, unconditional behavior is that
-	// DataShardFanoutGate (executor.go) already bounds the combined
-	// ClickHouse-side cost of this solver's own K-way query-time-range
-	// split running against a multi-data-shard cluster's own fan-out on the
-	// SAME request, which is why composing the two needs no separate
-	// serialization mode to stay safe.
+	// internal/chclient's data-shard fanout gate (cerberus issues #3081,
+	// #3128) already bounds the combined ClickHouse-side cost of this
+	// solver's own K-way query-time-range split running against a
+	// multi-data-shard cluster's own fan-out on the SAME request — every
+	// one of the K shards this solver dispatches reaches ClickHouse
+	// through that same gate — which is why composing the two needs no
+	// separate serialization mode to stay safe.
 	DisableSplitOnMultiDataShard bool
 }
 
@@ -395,9 +391,6 @@ func (c Config) Validate() error {
 	}
 	if c.DataShardCount < 1 {
 		return fmt.Errorf("solver: DataShardCount must be >= 1, got %d", c.DataShardCount)
-	}
-	if c.DataShardFanoutCapOverride != nil && *c.DataShardFanoutCapOverride <= 0 {
-		return fmt.Errorf("solver: DataShardFanoutCapOverride must be > 0 when set, got %d", *c.DataShardFanoutCapOverride)
 	}
 	return nil
 }
