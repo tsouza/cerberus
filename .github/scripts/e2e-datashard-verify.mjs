@@ -395,14 +395,18 @@ async function main() {
   const shardStmtRows = chQueryTSV(
     initiatorPod,
     `SELECT toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us, query_duration_ms * 1000 AS dur_us,
-            query_kind, initial_query_id
+            query_kind, initial_query_id,
+            replaceRegexpAll(substring(query, 1, 120), '[\\t\\n\\r]+', ' ') AS query_snippet
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
      WHERE is_initial_query = 0 AND type = 'QueryFinish'
        AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
   );
   const shardStmts = shardStmtRows.map((r) => {
-    const [s, d, kind, qid] = r.split('\t');
-    return { startUs: Number(s), durUs: Number(d), kind, qid };
+    // TSVRaw does not escape tabs/newlines in a value, so query_snippet is
+    // flattened to single spaces (above) BEFORE this split ever runs —
+    // otherwise an embedded newline would masquerade as a row break here.
+    const [s, d, kind, qid, snippet] = r.split('\t');
+    return { startUs: Number(s), durUs: Number(d), kind, qid, snippet };
   });
   const intervals = shardStmts.map((r) => [r.startUs, r.durUs]);
   const peakConcurrentShardStatements = maxConcurrent(intervals);
@@ -427,15 +431,49 @@ async function main() {
   const selectIntervals = selectRows.map((r) => [r.startUs, r.durUs]);
   const { max: peakConcurrentSelectOnly, atUs: selectPeakAtUs } = maxConcurrentAt(selectIntervals);
   log(`Select-only per-shard statements observed: ${selectIntervals.length}; peak concurrent (Select-only)=${peakConcurrentSelectOnly}`);
+
+  // DIAGNOSTIC (round 3): DataShardFanoutGate charges exactly weight
+  // DataShardCount for every dispatch (acquireDataShardFanout), on the
+  // assumption that ONE cerberus-side dispatch produces EXACTLY
+  // DataShardCount real per-shard children. A query shape that
+  // self-references a Distributed table more than once — TraceQL's
+  // structural operators, nested-set-annotate, `compare` (all rewritten
+  // under distributed_product_mode=global, cerberus issue #3118 —
+  // .github/../distributed_query_settings.go's own doc lists every such
+  // shape) — computes its GLOBAL-rewritten side as an INDEPENDENT
+  // Distributed-wide fan-out, producing its OWN DataShardCount children on
+  // top of the outer query's own, so ONE gate acquisition can legitimately
+  // correspond to MORE than DataShardCount real concurrent per-shard
+  // statements. Grouping every Select child by its own initial_query_id
+  // (the coordinator's own query_id, so every child of ONE dispatch groups
+  // together regardless of timing) surfaces this directly: any group whose
+  // COUNT exceeds DataShardCount is real, independent evidence of
+  // under-charged weight for that dispatch, distinct from both candidate
+  // explanations this file's own gate doc previously listed.
+  const childrenByQid = new Map();
+  for (const r of selectRows) {
+    if (!childrenByQid.has(r.qid)) childrenByQid.set(r.qid, []);
+    childrenByQid.get(r.qid).push(r);
+  }
+  const overWidthGroups = [...childrenByQid.entries()].filter(([, rows]) => rows.length > DATA_SHARD_COUNT);
+  // Cap how many over-width groups get their own log line — the point is a
+  // representative sample for manual correlation, not an exhaustive dump
+  // that could run to hundreds of lines on a bad run.
+  const overWidthSampleLimit = 10;
+  log(`dispatches (by initial_query_id) whose own child count exceeds DataShardCount=${DATA_SHARD_COUNT}: ${overWidthGroups.length} of ${childrenByQid.size} total`);
+  for (const [qid, rows] of overWidthGroups.slice(0, overWidthSampleLimit)) {
+    log(`  over-width dispatch ${qid}: ${rows.length} children (expected <= ${DATA_SHARD_COUNT}); sample query: ${rows[0].snippet}`);
+  }
+
   if (peakConcurrentSelectOnly > DATA_SHARD_FANOUT_CAP) {
-    // DIAGNOSTIC (round 3): dump exactly which query_ids were live at the
-    // peak instant, so this run's cerberus pod log (this same investigation
-    // round's acquire/release diagnostic, captured in the workflow's
-    // failure-dump step) can be greped for these EXACT ids to see each
-    // one's own real gate-hold interval and whether its release ran the
+    // Dump exactly which query_ids were live at the peak instant, so this
+    // run's cerberus pod log (this same investigation round's
+    // acquire/release diagnostic, captured in the workflow's failure-dump
+    // step) can be greped for these EXACT ids to see each one's own real
+    // gate-hold interval and whether its release ran the
     // cancellation/KILL-QUERY path.
     const live = peakOverlapRows(selectRows, selectPeakAtUs);
-    log(`Select-only peak overlap detail at t=${selectPeakAtUs}us (${live.length} live query_ids): ${live.map((r) => `${r.qid}[start=${r.startUs},dur=${r.durUs}]`).join(', ')}`);
+    log(`Select-only peak overlap detail at t=${selectPeakAtUs}us (${live.length} live query_ids): ${live.map((r) => `${r.qid}[start=${r.startUs},dur=${r.durUs}] query=${r.snippet}`).join(' || ')}`);
   }
 
   if (peakConcurrentSelectOnly > DATA_SHARD_FANOUT_CAP) {
