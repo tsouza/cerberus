@@ -14,30 +14,49 @@ import (
 // tsouza/cerberus#2634 split the old single `coverage` recipe's two `go test`
 // pipelines into their own `coverage-default` / `coverage-chdb` recipes (so
 // CI can shard them across parallel jobs); `coverage-merge` folds the two
-// profiles and `coverage` chains all three for local use. The isolated span
-// below covers exactly those three recipes, by name, rather than the chaining
-// `coverage:` recipe, which contains no `go test` invocation itself.
+// profiles and `coverage` chains all three for local use.
 //
-// Reads via justDump() (#3093) for the three recipe bodies — they live in
-// just/test.just now, not the root Justfile — but the pipefail check stays a
-// direct root-Justfile read: `set shell := [...]` is a per-invocation `just`
-// SETTING, which can only be declared once, in the root file itself.
+// tsouza/cerberus#3113 then extracted the chdb-tagged `go test` invocation
+// itself out of the coverage-chdb recipe body into coverage-chdb.mjs's own
+// source (mirroring coverage-merge's own #3095 extraction) — so the
+// evidence for that HALF of this test moved from `just --dump`'s recipe-body
+// text to the script's source: it still must declare an explicit -timeout
+// and must not tolerate a failed run. The default-tag lane's `go test`
+// invocation is unchanged and is still read via justDump() (#3093); the
+// pipefail check stays a direct root-Justfile read: `set shell := [...]` is
+// a per-invocation `just` SETTING, which can only be declared once, in the
+// root file itself.
 func TestCoverageRecipeFailsClosedOnGoTestFailure(t *testing.T) {
 	t.Parallel()
 
 	d := justDump(t)
 	var recipe strings.Builder
-	for _, name := range []string{"coverage-default", "coverage-chdb", "coverage-merge"} {
+	for _, name := range []string{"coverage-default", "coverage-merge"} {
 		recipe.WriteString(d.recipe(t, name).bodyText(t))
 		recipe.WriteString("\n")
 	}
 	body := recipe.String()
 
-	if got := strings.Count(body, "go test -timeout"); got != 2 {
-		t.Fatalf("coverage recipes carry %d go test runs, want default and chdb-tagged runs", got)
+	if got := strings.Count(body, "go test -timeout"); got != 1 {
+		t.Fatalf("coverage-default/coverage-merge recipes carry %d literal go test run(s), want exactly the default-tag lane's", got)
 	}
 	if strings.Contains(body, "|| true") {
 		t.Fatalf("coverage recipes tolerate a failed command with `|| true`; a partial profile is not valid evidence")
+	}
+
+	scriptSource, err := os.ReadFile("../../.github/scripts/coverage-chdb.mjs")
+	if err != nil {
+		t.Fatalf("read coverage-chdb.mjs: %v", err)
+	}
+	script := string(scriptSource)
+	if !strings.Contains(script, "'-timeout', `${MAIN_SWEEP_TIMEOUT_MINUTES}m`,") {
+		t.Fatal("coverage-chdb.mjs's main sweep no longer declares an explicit go test -timeout")
+	}
+	if strings.Contains(script, "|| true") || strings.Contains(script, ".catch(") {
+		t.Fatal("coverage-chdb.mjs tolerates a failed command; a partial profile is not valid evidence")
+	}
+	if !strings.Contains(script, "if (code !== 0) return code;") {
+		t.Fatal("coverage-chdb.mjs no longer propagates its go test sweep's exit code")
 	}
 
 	rootJustfile, err := os.ReadFile("../../Justfile")
