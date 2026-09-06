@@ -49,7 +49,7 @@
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
-import { makeKubectl, clickhousePodName } from './lib/bwc-k8s.mjs';
+import { makeKubectl, clickhousePodName } from './lib/k8s.mjs';
 
 const NS = process.env.NAMESPACE || 'cerberus';
 const POLL_SECONDS = Number(process.env.POLL_SECONDS || '180');
@@ -60,8 +60,8 @@ const EXPECTED_POLICY = process.env.EXPECTED_POLICY || 'bwc_object_store';
 const pollIntervalMs = 5000;
 
 // Same namespaced kubectl runner + pod lookup e2e-bwc-verify-placement.mjs
-// uses, factored into lib/bwc-k8s.mjs so the two scripts share one source of
-// truth instead of two copies drifting apart.
+// (and e2e-datashard-verify.mjs) use, factored into lib/k8s.mjs so no two
+// copies drift apart.
 const kubectl = makeKubectl(capture, NS);
 
 // The exact class of failure #3075/#3076 promises: ClickHouse's own
