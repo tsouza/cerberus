@@ -20,6 +20,7 @@ import {
   buildFailureBody,
   buildRecoveryBody,
   NIGHTLY_TRACKING_TITLE,
+  EXPERIMENTAL_LANES,
 } from './notify-nightly-failure.mjs';
 
 const allGreen = {
@@ -68,6 +69,53 @@ test('multiple simultaneous non-successes are all named', () => {
   const v = classifyNightlyHealth({ ...allGreen, dashboard: 'failure', chaos: 'cancelled' });
   assert.equal(v.ok, false);
   assert.equal(v.failed.length, 2);
+});
+
+// EXPERIMENTAL lanes (epic #3074's off-by-default Distributed-table path):
+// advisory, reported, never decisive. Both directions pinned — a lane that
+// only ever passed would be satisfied by dropping the lane from the map.
+test('an EXPERIMENTAL lane failing alone is advisory: the night is still clean, and the lane is still named', () => {
+  const v = classifyNightlyHealth({ ...allGreen, datashard: 'failure' }, { experimentalLanes: EXPERIMENTAL_LANES });
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.failed, []);
+  assert.deepEqual(v.experimentalFailed, ['datashard: failure']);
+});
+
+test('a supported-lane failure next to an experimental one is still caught, each named under its own list', () => {
+  const v = classifyNightlyHealth(
+    { ...allGreen, dashboard: 'failure', 'datashard-replica-affinity': 'cancelled' },
+    { experimentalLanes: EXPERIMENTAL_LANES },
+  );
+  assert.equal(v.ok, false);
+  assert.deepEqual(v.failed, ['dashboard: failure']);
+  assert.deepEqual(v.experimentalFailed, ['datashard-replica-affinity: cancelled']);
+});
+
+test('without an experimental set every lane is decisive — the pre-existing contract is the default', () => {
+  const v = classifyNightlyHealth({ ...allGreen, datashard: 'failure' });
+  assert.equal(v.ok, false);
+  assert.deepEqual(v.failed, ['datashard: failure']);
+  assert.deepEqual(v.experimentalFailed, []);
+});
+
+test('buildFailureBody lists experimental lanes under their own advisory heading, apart from the decisive list', () => {
+  const body = buildFailureBody({ failed: ['dashboard: failure'], experimentalFailed: ['datashard: failure'], runUrl: 'u', runId: '1' });
+  assert.match(body, /EXPERIMENTAL lanes \(advisory only/);
+  assert.match(body, /- `dashboard: failure`/);
+  assert.match(body, /- `datashard: failure`/);
+  assert.ok(body.indexOf('- `dashboard: failure`') < body.indexOf('EXPERIMENTAL lanes'), 'decisive list comes first');
+});
+
+test('a body with no experimental non-successes carries no advisory section at all', () => {
+  const body = buildFailureBody({ failed: ['dashboard: failure'], runUrl: 'u', runId: '1' });
+  assert.doesNotMatch(body, /EXPERIMENTAL/);
+});
+
+test('buildRecoveryBody still surfaces experimental non-successes on an otherwise clean night', () => {
+  const body = buildRecoveryBody({ experimentalFailed: ['datashard: failure'], runUrl: 'u', runId: '1' });
+  assert.match(body, /reached a clean pass/);
+  assert.match(body, /EXPERIMENTAL lanes \(advisory only/);
+  assert.match(body, /- `datashard: failure`/);
 });
 
 test('findTrackingIssue matches the exact stable title only', () => {
@@ -148,4 +196,14 @@ test('nightly-health-notify has issues: write and invokes the script', () => {
 
 test('the self-test runs on the PR path via ci.yml', () => {
   assert.match(ciWorkflow, /node --test \.github\/scripts\/notify-nightly-failure\.test\.mjs/);
+});
+
+test('every EXPERIMENTAL lane is a real terminal job the notify step still needs (advisory != dropped)', () => {
+  const needs = e2eWorkflow.match(/nightly-health-notify:\n    name: nightly-health-notify\n    needs:\n {6}\[([^\]]+)\]/);
+  assert.ok(needs, 'nightly-health-notify needs: list found');
+  const jobs = needs[1].split(',').map((s) => s.trim());
+  for (const lane of EXPERIMENTAL_LANES) {
+    assert.ok(jobs.includes(lane), `experimental lane "${lane}" is still in nightly-health-notify's needs: — it must keep running and reporting, only its verdict is advisory`);
+    assert.ok(allGreen[lane] !== undefined, `experimental lane "${lane}" is in the job map`);
+  }
 });

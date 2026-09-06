@@ -34,7 +34,16 @@ range, no rename, nothing new evaluated. Input is the root context.
 */}}
 {{- define "cerberus.clickhouse.dataShardCount" -}}
 {{- if .Values.clickhouse.bundled.enabled -}}
-{{- .Values.clickhouse.bundled.dataShards.count | default 1 -}}
+{{- $n := int (.Values.clickhouse.bundled.dataShards.count | default 1) -}}
+{{- /* EXPERIMENTAL gate (epic #3074): multi-shard routing is off by default
+       and must be opted into at the values level. This helper is the ONE
+       place every per-shard template reads the count from, so failing here
+       covers every render path — no template can reach a count > 1 layout
+       without the consent. */ -}}
+{{- if and (gt $n 1) (not .Values.clickhouse.bundled.experimentalDistributedMode) -}}
+{{- fail "clickhouse.bundled.dataShards.count > 1 is EXPERIMENTAL and off by default: set clickhouse.bundled.experimentalDistributedMode=true to opt in (cerberus epic #3074; see issue #3128 for the known admission-control limitation). The default single-data-shard path and plain replication (clickhouse.bundled.replicas) do not need it." -}}
+{{- end -}}
+{{- $n -}}
 {{- else -}}
 1
 {{- end -}}
@@ -610,6 +619,15 @@ is disabled, so non-bundled renders are byte-identical.
 {{- end -}}
 {{- if not (hasKey .Values.config "CERBERUS_CH_DATA_SHARDS") -}}
 {{- $_ := set .Values.config "CERBERUS_CH_DATA_SHARDS" (toString $dataShardCount) -}}
+{{- end -}}
+{{- /* The binary's own EXPERIMENTAL opt-in (internal/config refuses to boot
+       with CERBERUS_CH_DATA_SHARDS > 1 without it). $dataShardCount > 1 only
+       renders at all once experimentalDistributedMode is true — the
+       cerberus.clickhouse.dataShardCount helper fails the render otherwise —
+       so this is the chart forwarding the SAME consent to the binary, never a
+       second way onto the experimental path. */ -}}
+{{- if not (hasKey .Values.config "CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE") -}}
+{{- $_ := set .Values.config "CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE" "true" -}}
 {{- end -}}
 {{- if and (gt (int $b.replicas) 1) (not .Values.schema.replicated.enabled) (not .Values.schema.TABLE_ENGINE) -}}
 {{- $_ := set .Values.schema "TABLE_ENGINE" "ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')" -}}

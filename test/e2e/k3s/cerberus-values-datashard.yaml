@@ -24,6 +24,13 @@
 clickhouse:
   bundled:
     enabled: true
+    # EXPERIMENTAL opt-in (epic #3074): the chart refuses to render
+    # dataShards.count > 1 without it, and forwards it to cerberus as
+    # CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true so the binary's own
+    # boot-time gate (internal/config) agrees. This lane exists precisely to
+    # exercise the experimental path; it is informational, never a PR or
+    # release gate, and its results are advisory in the nightly roll-up.
+    experimentalDistributedMode: true
     # 26.3 — same tag test/e2e/k3s/cerberus-values-bwc.yaml already pins
     # (gotcha #1's dedicated non-`default`-user ConfigMap applies
     # regardless of dataShards.count), so `just e2e-datashard-up` needs no
