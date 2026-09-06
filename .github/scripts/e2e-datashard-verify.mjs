@@ -598,10 +598,33 @@ async function main() {
   // something the gate was never built to bound. The real assertion is
   // scoped to query_kind='Select' — the only kind chclient's queryOpen /
   // queryCursorColumnar (this gate's one seam) ever dispatches.
-  const selectRows = shardStmts.filter((r) => r.kind === 'Select');
+  //
+  // The same seeder also issues Selects: its stale-row pruning resolves a
+  // cutoff with a `SELECT max(<time>)` over the Distributed tables
+  // (test/e2e/seed/cmd/seed/sharded_mutation.go's resolveStaleCutoff) from
+  // the runner host, and Distributed fans those out to per-shard Select
+  // children too. query_kind cannot tell them apart from cerberus's own;
+  // the initiator's client_hostname can (real run 34055887965: 31 such
+  // children, host = the GitHub runner VM, peak 1). So the population the
+  // gate assertions run over is: query_kind='Select' AND issued by a
+  // cerberus pod. Foreign-host Selects are reported, never counted; an
+  // EMPTY host means the attribution itself failed and is an error — that
+  // is the one shape that would let a real over-cap dispatch hide.
+  const allSelectRows = shardStmts.filter((r) => r.kind === 'Select');
+  const unattributedSelectRows = allSelectRows.filter((r) => !r.host);
+  const foreignSelectRows = allSelectRows.filter((r) => r.host && !cerberusPods.includes(r.host));
+  const selectRows = allSelectRows.filter((r) => cerberusPods.includes(r.host));
   const selectIntervals = selectRows.map((r) => [r.startUs, r.durUs]);
   const peakConcurrentSelectOnly = maxConcurrent(selectIntervals);
-  log(`Select-only per-shard statements observed: ${selectIntervals.length}; peak concurrent (Select-only)=${peakConcurrentSelectOnly}`);
+  log(`Select-only per-shard statements observed: ${allSelectRows.length} total; issued by cerberus pods: ${selectRows.length} (peak concurrent=${peakConcurrentSelectOnly}); issued by other hosts (direct native-protocol clients such as the rolling seeder — never gate-bound, informational only): ${foreignSelectRows.length}${foreignSelectRows.length ? ` from ${[...new Set(foreignSelectRows.map((r) => r.host))].join(',')} (peak concurrent=${maxConcurrent(foreignSelectRows.map((r) => [r.startUs, r.durUs]))})` : ''}`);
+  if (unattributedSelectRows.length > 0) {
+    error(`${unattributedSelectRows.length} Select per-shard statement(s) carry no client hostname at all (neither on their initiator row nor on themselves) — per-process attribution via query_log.client_hostname failed for them, so the per-pod ceiling cannot be trusted; sample initial_query_id: ${unattributedSelectRows[0].qid}`);
+    failures++;
+  }
+  if (selectRows.length === 0) {
+    error('no per-shard Select statement was attributed to any cerberus pod during the burst — the assertions below would be vacuous');
+    failures++;
+  }
 
   // Over-width dispatches: grouped by initial_query_id (see the point-2
   // query's own doc above for why this is a safe, exact join key). Kept as
@@ -718,20 +741,14 @@ async function main() {
     }
   }
 
-  // Per-process contract: every Select child attributed to its cerberus
-  // pod, each pod's own peak overlap within the per-process cap the chart
-  // rendered. A child whose host is not a cerberus pod is a failure in its
-  // own right — it means the attribution (and so every number below) is not
-  // trustworthy, which must never pass quietly.
+  // Per-process contract: every cerberus-issued Select child attributed to
+  // its pod (selectRows is already scoped to cerberus pods — see its own
+  // doc above), each pod's own peak overlap within the per-process cap the
+  // chart rendered.
   const selectByHost = new Map();
   for (const r of selectRows) {
     if (!selectByHost.has(r.host)) selectByHost.set(r.host, []);
     selectByHost.get(r.host).push([r.startUs, r.durUs]);
-  }
-  const unknownHosts = [...selectByHost.keys()].filter((h) => !cerberusPods.includes(h));
-  if (unknownHosts.length > 0) {
-    error(`${unknownHosts.length} Select child host(s) are not cerberus pods (${unknownHosts.map((h) => JSON.stringify(h)).join(', ')}; cerberus pods: ${cerberusPods.join(',')}) — per-process attribution via query_log.client_hostname failed, so the per-pod ceiling cannot be trusted`);
-    failures++;
   }
   for (const [host, hostIntervals] of selectByHost) {
     const hostPeak = maxConcurrent(hostIntervals);
