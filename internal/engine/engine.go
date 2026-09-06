@@ -312,6 +312,17 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
+	// SearchTraceLimit-shaped plans only (cerberus issue #3128 round 4): tell
+	// chclient's data-shard fan-out gate this ONE dispatch makes roughly
+	// TWICE the real per-shard Distributed statements a plain dispatch does
+	// — internal/chsql/search_trace_limit.go's own doc: "the input subquery
+	// is emitted twice (outer drain + inner ranking)", both scanning the
+	// SAME Distributed table under distributed_product_mode=global. A no-op
+	// on a DataShardCount<=1 deployment (acquireDataShardFanout never reads
+	// this ctx value when its gate is nil) and on every OTHER plan shape.
+	if planHasSearchTraceLimit(plan) {
+		ctx = chclient.WithDataShardFanoutMultiplier(ctx, searchTraceLimitFanoutMultiplier)
+	}
 	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
 	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
 	memCap := e.queryMemoryCap()
@@ -798,6 +809,41 @@ func planHasTSGridNative(plan chplan.Node) bool {
 				found = true
 				return false
 			}
+		}
+		return true
+	})
+	return found
+}
+
+// searchTraceLimitFanoutMultiplier is the WithDataShardFanoutMultiplier
+// value execContext stamps for a SearchTraceLimit-shaped plan (cerberus
+// issue #3128 round 4): internal/chsql/search_trace_limit.go's
+// emitSearchTraceLimit emits its own row source EXACTLY twice (an outer
+// drain query plus an inner top-N trace-ranking subquery, both scanning the
+// same Distributed table under distributed_product_mode=global), so 2 is a
+// structural fact about that ONE emitter, not a measured/tuned constant.
+// Named so the multiplier is never a bare literal (invariant 13).
+const searchTraceLimitFanoutMultiplier = 2
+
+// planHasSearchTraceLimit reports whether plan contains a
+// chplan.SearchTraceLimit node — internal/chsql/search_trace_limit.go's
+// emitSearchTraceLimit emits this shape's row source twice (see that
+// emitter's own doc), so a dispatch carrying one makes roughly twice the
+// real per-shard Distributed statements a plain dispatch does once
+// DataShardCount > 1 (cerberus issue #3128 round 4).
+//
+// chplan.WalkDeep, not chplan.Walk, for the same reason
+// planHasTSGridNative uses it: stampSearchTraceLimit only ever wraps a
+// plain Scan/Filter(Scan) row source directly (search_limit.go's
+// plainSearchSource), so a SearchTraceLimit node is not expected to hang
+// off an Expr slot Walk would miss today — but WalkDeep costs nothing extra
+// here and stays correct if a future lowering ever nests one there.
+func planHasSearchTraceLimit(plan chplan.Node) bool {
+	found := false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		if _, ok := n.(*chplan.SearchTraceLimit); ok {
+			found = true
+			return false
 		}
 		return true
 	})
