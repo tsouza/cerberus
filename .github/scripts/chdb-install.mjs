@@ -38,10 +38,22 @@
 // platform or any curl/tar/install failure.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
+
+// isRegularFile — true only when `path` exists and is a regular file, never
+// a directory or other entry. Matches the replaced bash's `[ -f "$path" ]`
+// exactly (unlike a bare existence check, which `[ -f ]` deliberately is
+// not).
+export function isRegularFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
 
 // assetNameFor — map a (platform, arch) pair to the chdb-core release asset
 // filename. Unknown/x86_64 arches fall back to the x86_64 asset for that OS,
@@ -90,10 +102,10 @@ function main() {
   }
 
   // Idempotency short-circuit: skip the download entirely once the shared
-  // library is already on disk. Override CHDB_VERSION at the recipe call
-  // (`just chdb-install CHDB_VERSION=v26.5.0`) — deleting the install path is
-  // still what actually forces a reinstall.
-  if (existsSync(installPath)) {
+  // library is already on disk. Deleting the install path is what forces a
+  // reinstall (see just/chdb.just for how to override CHDB_VERSION at the
+  // same time).
+  if (isRegularFile(installPath)) {
     console.log(`==> libchdb already present at ${installPath} (delete to reinstall)`);
     process.exit(0);
   }

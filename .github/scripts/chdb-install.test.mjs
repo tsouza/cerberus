@@ -1,13 +1,17 @@
 // chdb-install.test.mjs — node:test guard for chdb-install.mjs's pure
-// platform-to-asset mapping. This is the exact logic the replaced Justfile
-// `case "$os"` / `case "$arch"` recipe body encoded inline where nothing
-// could unit-test it; pinning it here is the whole point of the extraction
-// (CLAUDE.md invariant 15, issue #3094).
+// platform-to-asset mapping and its `[ -f ]`-equivalent idempotency check.
+// This is the exact logic the replaced Justfile `case "$os"` / `case "$arch"`
+// recipe body encoded inline where nothing could unit-test it; pinning it
+// here is the whole point of the extraction (CLAUDE.md invariant 15, issue
+// #3094).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { assetNameFor, downloadUrlFor } from './chdb-install.mjs';
+import { assetNameFor, downloadUrlFor, isRegularFile } from './chdb-install.mjs';
 
 test('linux x64 maps to the linux-x86_64 asset', () => {
   assert.equal(assetNameFor('linux', 'x64'), 'linux-x86_64-libchdb.tar.gz');
@@ -42,4 +46,33 @@ test('downloadUrlFor builds the chdb-core release asset URL', () => {
     downloadUrlFor('v26.5.0', 'linux-x86_64-libchdb.tar.gz'),
     'https://github.com/chdb-io/chdb-core/releases/download/v26.5.0/linux-x86_64-libchdb.tar.gz',
   );
+});
+
+test('isRegularFile is false for a path that does not exist', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chdb-install-test-'));
+  try {
+    assert.equal(isRegularFile(join(dir, 'missing.so')), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('isRegularFile is true for an actual regular file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chdb-install-test-'));
+  try {
+    const file = join(dir, 'libchdb.so');
+    writeFileSync(file, '');
+    assert.equal(isRegularFile(file), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('isRegularFile is false for a directory — matches bash `[ -f ]`, not a bare existence check', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chdb-install-test-'));
+  try {
+    assert.equal(isRegularFile(dir), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

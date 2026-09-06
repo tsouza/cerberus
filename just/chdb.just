@@ -19,8 +19,11 @@ CHDB_INSTALL_PATH := "/usr/local/lib/libchdb.so"
 # while staying below the 26.7 aggregate-state serialization change.
 # Mirror update_libchdb.sh shipped inside chdb-go.
 #
-# Idempotent: skips download if the install path already exists. Override
-# CHDB_VERSION at the recipe call (`just chdb-install CHDB_VERSION=v26.5.0`).
+# Idempotent: skips download if the install path already exists as a regular
+# file. Override CHDB_VERSION as a `just` variable assignment before the
+# recipe name (`just CHDB_VERSION=v26.5.0 chdb-install`) — a recipe-call-style
+# `just chdb-install CHDB_VERSION=v26.5.0` is not valid `just` syntax and
+# fails with "does not contain recipe 'CHDB_VERSION=v26.5.0'".
 #
 # The platform-detection (case "$os"/case "$arch"), URL construction,
 # curl/tar/sudo install, and idempotency short-circuit all live in
