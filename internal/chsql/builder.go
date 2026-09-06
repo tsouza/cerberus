@@ -2904,6 +2904,33 @@ func InSubquery(left, sub Frag) Frag {
 	}
 }
 
+// GlobalInSubquery is InSubquery with an explicit GLOBAL modifier:
+// `<left> GLOBAL IN (SELECT …)`. Semantically identical to IN on any
+// deployment; the difference is WHERE ClickHouse evaluates the subquery once
+// the table behind it is a `Distributed` wrapper. A plain IN whose subquery
+// reads the Distributed table is executed again on EVERY shard the outer
+// query fans out to — and each of those executions fans out itself, so one
+// dispatch costs DataShardCount² per-shard statements instead of
+// DataShardCount. `distributed_product_mode=global` (pinned by
+// internal/chclient) rewrites that shape to GLOBAL automatically, but only
+// when the subquery's FROM is the Distributed table DIRECTLY; a subquery
+// that reads it through a derived table (`FROM (SELECT … FROM otel_traces …)`)
+// is left as written — real-cluster evidence in
+// internal/chsql/search_trace_limit.go's doc. GLOBAL written explicitly is
+// honoured regardless of nesting: the initiator evaluates the subquery once
+// and broadcasts its (bounded) result as a temporary table to every shard.
+// On a single-node/non-Distributed deployment ClickHouse treats GLOBAL IN
+// exactly as IN. Emitters whose IN subquery reads the same Distributed table
+// as the outer query through any derived table MUST use this rather than
+// InSubquery.
+func GlobalInSubquery(left, sub Frag) Frag {
+	return func(b *Builder) {
+		left(b)
+		b.sb.WriteString(" GLOBAL IN ")
+		sub(b)
+	}
+}
+
 // NotInSubquery returns a Frag rendering "<left> NOT IN (<sub>)" — the
 // anti-set membership predicate where the right-hand side is a single
 // subquery rather than an element list. `sub` is rendered inside one

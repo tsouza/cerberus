@@ -271,6 +271,29 @@ import (
 // against the unchanged cap, exactly the kind of real fix the issue asks
 // for.
 //
+// ROUND 5 — the round-4 reading above was INCOMPLETE (cerberus issue #3128,
+// real e2e dispatch runs 34055025272 and 34055887965, the first runs to
+// attribute every per-shard statement to the cerberus pod that dispatched
+// it via query_log.client_hostname). "Roughly twice" was wrong: a
+// SearchTraceLimit dispatch produced DataShardCount²-1 per-shard Select
+// statements — 3 at N=2, 15 at N=4 — with up to 10 of them CONCURRENT at
+// N=4, so a single dispatch charged 2 x 4 = 8 still overshot the 8-wide
+// cap on its own, and each pod peaked at 13-14. The `global` rewrite the
+// round-4 text relied on never applied: distributed_product_mode=global
+// rewrites an IN to GLOBAL only when the subquery's FROM is the
+// Distributed table DIRECTLY, and emitSearchTraceLimit's ranking subquery
+// reads it through a derived table (`FROM (<input>)`), so every shard the
+// outer drain fanned out to re-executed the ranking subquery as a
+// distributed query of its own (N x N). THE FIX is at the source:
+// emitSearchTraceLimit now writes GLOBAL IN explicitly
+// (chsql.GlobalInSubquery), which the initiator honours regardless of
+// nesting — the ranking subquery runs once (N children), its LIMIT-bounded
+// id set is broadcast, and the drain fans out once more (N children), two
+// sequential phases the 2x multiplier above now covers exactly rather than
+// approximately. The multiplier stays: see engine.go's
+// searchTraceLimitFanoutMultiplier doc for why 2, not 1, remains the
+// honest charge for two sequential phases.
+//
 // ROUND 4 — a SECOND, real, still-open contributing cause: this gate's
 // admission ceiling is PER-PROCESS, but a real deployment runs multiple
 // cerberus PODS. Re-verifying the SearchTraceLimit fix above against a real

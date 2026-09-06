@@ -160,6 +160,19 @@ package chclient
 //     evidence and the fix) — a gap the four shapes above may share too,
 //     tracked by cerberus issue #3141 rather than assumed fixed here.
 //
+// LIMIT OF THE `global` REWRITE (cerberus issue #3128, real-cluster
+// evidence in internal/chsql/search_trace_limit.go's doc): the server
+// rewrites an IN/JOIN to GLOBAL only when the subquery's FROM is the
+// Distributed table DIRECTLY. A subquery that reads it through a derived
+// table — `IN (SELECT … FROM (SELECT … FROM otel_traces …))`, which is what
+// every emitter that renders a plan subtree as `(<input>)` produces — is
+// executed as written on every shard, each execution fanning out again
+// (DataShardCount² statements per dispatch). This pin therefore covers the
+// direct shapes; an emitter nesting the reference through a derived table
+// must write GLOBAL itself (chsql.GlobalInSubquery — emitSearchTraceLimit
+// does). The four shapes above are audited for exactly this under issue
+// #3141.
+//
 // On a single-shard/non-Distributed deployment `otel_traces` is a plain
 // MergeTree table, so none of these ever double-references a Distributed
 // table and the shape is unremarkable. Once epic #3074 wraps it in

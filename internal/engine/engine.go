@@ -817,12 +817,18 @@ func planHasTSGridNative(plan chplan.Node) bool {
 
 // searchTraceLimitFanoutMultiplier is the WithDataShardFanoutMultiplier
 // value execContext stamps for a SearchTraceLimit-shaped plan (cerberus
-// issue #3128 round 4): internal/chsql/search_trace_limit.go's
-// emitSearchTraceLimit emits its own row source EXACTLY twice (an outer
-// drain query plus an inner top-N trace-ranking subquery, both scanning the
-// same Distributed table under distributed_product_mode=global), so 2 is a
-// structural fact about that ONE emitter, not a measured/tuned constant.
-// Named so the multiplier is never a bare literal (invariant 13).
+// issue #3128): internal/chsql/search_trace_limit.go's
+// emitSearchTraceLimit emits its own row source EXACTLY twice — an inner
+// top-N trace-ranking subquery the initiator evaluates first (explicit
+// GLOBAL IN, DataShardCount per-shard statements) and the outer drain it
+// then broadcasts the ids to (DataShardCount more). The two phases are
+// sequential on the initiator, but a shard-side statement of the first
+// phase is only retired from ClickHouse's own accounting at its QueryFinish,
+// which can trail the initiator's receipt of its last block — so 2 covers
+// the whole dispatch's statements rather than only the phase the initiator
+// currently believes it is in. A structural fact about that ONE emitter,
+// not a measured/tuned constant. Named so the multiplier is never a bare
+// literal (invariant 13).
 const searchTraceLimitFanoutMultiplier = 2
 
 // planHasSearchTraceLimit reports whether plan contains a
