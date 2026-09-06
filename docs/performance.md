@@ -265,6 +265,26 @@ wide net for the unknown shapes; the real-ClickHouse memory sentinels run for
 real on every PR through the required `strict-scan` job, since they measure
 against a real server rather than chDB.
 
+**Blind spot: this whole assurance framework is EXPLAIN-blind under a
+ClickHouse DATA-shard topology.** Layers 1-4 profile via chDB `EXPLAIN`
+(single-node, no cluster concept at all); layer 5's real-ClickHouse
+sentinels boot a single testcontainers-go instance, not a `Distributed`
+table. None of the five observes real per-shard execution once
+`clickhouse.bundled.dataShards.count > 1` (epic
+[#3074](https://github.com/tsouza/cerberus/issues/3074)'s ClickHouse
+cluster data-PARTITION sense — a different "shard" than the sharded-pushdown
+solver this document's own [fan-out section](#the-thing-we-optimize-for-compute-fan-out)
+describes; see `internal/chopt/topology.go`'s terminology table for the full
+three-way disambiguation). This is permanent and structural, not something
+a later change is expected to close — `EXPLAIN` against a `Distributed`
+table shows only the initiator's own dispatch, never a remote shard's
+actual execution plan. The one place this repository collects real
+per-DATA-shard evidence is
+`system.query_log`, read directly by the `datashard` e2e leg described in
+[`operations.md`'s DATA-shard topology section](operations.md#clickhouse-cluster-data-shard-topology-distributed-tables-cerberus-issue-3077) —
+a runtime correctness/admission-control check, not a perf-harness one; a
+shard-aware EXPLAIN/perf-introspection path remains unbuilt.
+
 **The ratchet is sharded across runner processes.** It profiles every executable
 fixture one at a time, so its runtime is a straight line in corpus size — and
 the corpus is meant to grow. It cannot be parallelised inside the process:
@@ -586,4 +606,9 @@ before the 14 ms scan vs ~98%-arithmetic split was measured.
 - [`test-strategy.md`](test-strategy.md) — the full test-layer map the perf
   lanes sit inside.
 - [`operations.md`](operations.md) — runtime memory, admission control, and
-  scaling contract.
+  scaling contract; its
+  [DATA-shard topology section](operations.md#clickhouse-cluster-data-shard-topology-distributed-tables-cerberus-issue-3077)
+  covers the ClickHouse cluster data-PARTITION sense of "shard" (epic
+  [#3074](https://github.com/tsouza/cerberus/issues/3074)) this document's
+  fan-out "shard" is unrelated to, and this framework's own blind spot
+  under it (see above).
