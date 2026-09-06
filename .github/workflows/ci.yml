@@ -683,6 +683,19 @@ jobs:
           node --test .github/scripts/e2e-seed-rolling.test.mjs
           node --test .github/scripts/e2e-seed-stop.test.mjs
           node --test .github/scripts/e2e-chaos-overlay.test.mjs
+      # Migration-lane extraction (#3099, epic #3091): the pure helpers behind
+      # the .mjs replacements for migration-cerberus-image's build-vs-pull
+      # decision, migration-tier1-seed/migration-tier2-seed's shared
+      # tier-parameterized archetype loop, and migration-tier1-logs/
+      # migration-tier2-logs's shared tier-parameterized compose-log loop.
+      # Self-test only here, same rationale as the e2e-up family above — the
+      # real Docker build/pull and the real compose stack are what the real
+      # migration-e2e.yml CI job exercises these against.
+      - name: Self-test the migration-lane .mjs helpers
+        run: |
+          node --test .github/scripts/migration-cerberus-image.test.mjs
+          node --test .github/scripts/migration-tier-seed.test.mjs
+          node --test .github/scripts/migration-tier-logs.test.mjs
       # The updater itself is workflow_dispatch-only. Its controller remains
       # ordinary repository code, so its pure unit/round-trip contract belongs
       # on the existing PR policy lane without exposing the updater to PR events.
