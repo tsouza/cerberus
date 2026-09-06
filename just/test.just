@@ -692,84 +692,26 @@ coverage-default:
 # (rather than failing) when the library is absent, so a bare local `just
 # coverage` without chDB installed still produces a default-tag-only profile,
 # same as before this recipe was split out of `coverage`. CI's caller sets
-# COVERAGE_REQUIRE_LANES=default+chdb (below), which turns that same skip
-# into a hard failure: test/regression/tagged_test_enrollment_test.go's
-# static evidence scanner treats the chdb-tagged `go test` here as proven
-# execution only because of that unconditional tail check, the same
-# fail-closed contract `coverage-merge`'s COVERAGE_LANES join to
-# coverage-summary.mjs enforces for the merged profile.
+# COVERAGE_REQUIRE_LANES=default+chdb, which turns that same skip into a hard
+# failure — enforced inside the script below now, not this recipe body.
+#
+# Extracted to .github/scripts/coverage-chdb.mjs (tsouza/cerberus#3113,
+# following coverage-merge's own extraction in #3095/#3091): the libchdb.so
+# check, the `go list`-derived -coverpkg, the go test invocation and its
+# streaming output filter, the SKIP_RATCHET_FANOUT branch, and the
+# COVERAGE_REQUIRE_LANES fail-closed tail all live there now — see that
+# module's header for the full behaviour and for exactly what
+# test/regression/tagged_test_enrollment_test.go,
+# coverage_recipe_fail_closed_test.go, rapid_seed_pin_test.go, and
+# perf-coverage-fanout.test.mjs each now read as execution evidence in its
+# place. CERBERUS_RAPID_SEED stays a literal env assignment HERE rather than
+# moving into the script: rapid_seed_pin_test.go's static scanner looks for
+# CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} in the RECIPE body, the same
+# place it has always looked for both coverage lanes.
 
 # Run the chdb-tagged coverage lane into cover-chdb.out. Skips itself without libchdb.so.
 coverage-chdb:
-    @if [ -e "{{CHDB_INSTALL_PATH}}" ]; then \
-        echo "==> chdb-tagged coverage"; \
-        COVERPKG="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)"; \
-        CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 60m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
-        if [ "${SKIP_RATCHET_FANOUT:-}" != "1" ]; then \
-            CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
-        else \
-            echo "==> SKIP_RATCHET_FANOUT=1: shards 2..PERF_SHARD_COUNT run on their own coverage-chdb-ratchet CI matrix legs, not here"; \
-        fi; \
-    else \
-        echo "==> libchdb.so not found, skipping chdb lane"; \
-    fi
-    # Bumped from 40m to 60m on 2026-08-26: the first real push-to-main run
-    # after coverage.yml split into parallel coverage-default/coverage-chdb
-    # jobs (#2639) hit coverage-chdb's job-level 50-minute wrapper exactly
-    # ("The job has exceeded the maximum execution time of 50m0s") — the same
-    # fixture/corpus growth already documented below, regrown past the
-    # PERF_SHARD_COUNT=3 split's own headroom. The job-level timeout in
-    # coverage.yml moved with it (50m -> 75m) so the wrapper still has real
-    # margin over this internal hang detector, not just a matching ceiling.
-    #
-    # This lane's `go test` used to sweep ./... with no shard env, timed out
-    # at 40m, the same shape as the default-tag lane above. It stopped
-    # fitting that budget once TestCardinalityRatchet's corpus walk
-    # (test/perf, straight-line runtime in test/spec/**'s TXTAR count) grew
-    # past what 40 minutes covers: every push-to-main `coverage` run panicked
-    # with "test timed out after 40m0s", and per the goroutine dump, every
-    # t.Parallel() TestBaselineShards* sibling in the SAME test/perf binary
-    # sat blocked for the whole 40 minutes too, never reaching its own body.
-    # Unlike perf-guards-shard in chdb.yml (which shards the same test across
-    # 8 separate CI matrix legs), this WAS one job. The sweep below is
-    # otherwise UNCHANGED — same flags, same ./... package list, no `-skip`.
-    # `-skip` is deliberately avoided: test/regression/tagged_test_enrollment_
-    # test.go's static evidence scanner (parseTaggedGoTestArgs) discards a go
-    # test invocation OUTRIGHT the moment it sees `-skip`, since it cannot
-    # certify what was excluded — and this sweep is the SOLE CI evidence for
-    # a long tail of other chdb-tagged packages, so a `-skip` here would
-    # silently drop their enrollment evidence too. Instead the sweep only
-    # gains PERF_SHARD_INDEX=1 / PERF_SHARD_COUNT: TestCardinalityRatchet
-    # still runs here, still asserting, just over 1/PERF_SHARD_COUNT of the
-    # corpus.
-    #
-    # The other PERF_SHARD_COUNT-1 shards (tsouza/cerberus#2645): locally,
-    # perf-coverage-fanout.mjs still runs them itself, concurrently with each
-    # other on this same machine — the process fan-out technique
-    # property-fanout.mjs already established for the identical failure
-    # shape in test/property (see that script's own header for why
-    # t.Parallel() inside one process is not a safe alternative: chdb-go's
-    # shared globalSession). In CI, coverage.yml's `coverage-chdb` job sets
-    # SKIP_RATCHET_FANOUT=1 and those shards instead run on their OWN
-    # runners in the `coverage-chdb-ratchet` matrix — this used to be a
-    # serial tail on THIS job's own runner, and was the direct cause of two
-    # consecutive real timeouts on this lane. Either way, those extra shards
-    # do not need to be Justfile-visible themselves: TestCardinalityRatchet
-    # already has independent enrollment evidence via the perf-chdb recipe.
-    # The shard count (3) is perf-coverage-fanout.mjs's own RATCHET_FANOUT
-    # constant, restated here because Just recipes cannot import a JS
-    # constant; perf-coverage-fanout.test.mjs pins the two back together.
-    #
-    # Unconditional (outside the `if` block above, so it runs whether or not
-    # libchdb.so was found): a bare local `just coverage-chdb` stays a graceful
-    # skip, but a caller that opts in via COVERAGE_REQUIRE_LANES=default+chdb
-    # is asserting the chdb lane MUST have produced real evidence — CI sets
-    # this so an install that silently no-ops fails the job here instead of
-    # only surfacing three steps later as a narrower merged profile.
-    @if [ "${COVERAGE_REQUIRE_LANES:-}" = "default+chdb" ] && [ ! -s cover-chdb.out ]; then \
-        echo "error: COVERAGE_REQUIRE_LANES=default+chdb but cover-chdb.out was not produced (libchdb.so missing?)" >&2; \
-        exit 1; \
-    fi
+    @CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} node .github/scripts/coverage-chdb.mjs
 
 # Merge cover.out (default-tag lane, required) with cover-chdb.out
 # (chdb-tagged lane, optional) into cover-merged.out and run the floor gate.

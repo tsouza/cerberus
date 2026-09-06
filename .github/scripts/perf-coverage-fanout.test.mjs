@@ -2,12 +2,14 @@
 // chDB-tagged TestCardinalityRatchet fan-out: an explicit per-process go
 // test -timeout that stays below the coverage-chdb-ratchet job's cap
 // (tsouza/cerberus#2645), the extra shards (2..RATCHET_FANOUT) sharded
-// without dropping or duplicating a corpus slice, the Justfile's own
-// PERF_SHARD_COUNT literal pinned to the same RATCHET_FANOUT this script
-// uses, the coverage recipe still carrying the main sweep WITHOUT `-skip`
-// (so test/regression/tagged_test_enrollment_test.go's static evidence
-// scanner keeps crediting it), and LEG_INDEX mode (the CI matrix leg path)
-// selecting exactly one leg's command.
+// without dropping or duplicating a corpus slice, coverage-chdb.mjs's own
+// PERF_SHARD_COUNT pinned to the same RATCHET_FANOUT this script uses (an
+// import, not a restated literal, since tsouza/cerberus#3113 moved the main
+// sweep from the Justfile — which cannot import a JS constant — into a
+// script that can), coverage-chdb.mjs's main sweep still carrying it WITHOUT
+// `-skip` (so test/regression/tagged_test_enrollment_test.go's static
+// evidence scanner keeps crediting it), and LEG_INDEX mode (the CI matrix
+// leg path) selecting exactly one leg's command.
 //
 // Runs on the cheap `check` lane (`node --test`), so a regression here fails
 // in milliseconds rather than 40+ minutes into a coverage job.
@@ -19,29 +21,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { RATCHET_TEST, RATCHET_RUN_PATTERN, RATCHET_FANOUT, RATCHET_TIMEOUT_MINUTES, legCommands, selectLeg } from './perf-coverage-fanout.mjs';
+import { CHDB_TAGS, mainSweepArgv } from './coverage-chdb.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-// coverage-default / coverage-chdb / coverage-merge / coverage all live
-// together in just/test.just, not the root Justfile (#3093's just/*.just
-// split) — reading that one file directly, rather than the root file,
-// keeps this scan's plain-text recipe-boundary slicing working without
-// pulling in a `just --dump` dependency for this cheap check-lane script.
-// coverage-merge's OWN logic moved out of that recipe body entirely (issue
-// #3095, epic #3091, coverage-merge.mjs) — the assertions that used to slice
-// its Justfile text now read that module's source instead; see
-// coverageMergeScriptSource() below.
-const justfile = readFileSync(path.join(here, '..', '..', 'just', 'test.just'), 'utf8');
 const coverageWorkflow = readFileSync(path.join(here, '..', 'workflows', 'coverage.yml'), 'utf8');
 const TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
 const COVERPKG = 'github.com/tsouza/cerberus/internal/promql,github.com/tsouza/cerberus/test/perf';
-
-/** The coverage-chdb recipe body — the main sweep and its SKIP_RATCHET_FANOUT gate. */
-function coverageChdbRecipeBody() {
-  const start = justfile.indexOf('\ncoverage-chdb:\n');
-  const end = justfile.indexOf('\ncoverage-merge:');
-  assert.ok(start >= 0 && end >= 0 && end > start, 'Justfile: cannot isolate the coverage-chdb recipe');
-  return justfile.slice(start, end);
-}
 
 /**
  * coverage-merge's own logic — where the ratchet shard fold now lives
@@ -53,6 +38,19 @@ function coverageChdbRecipeBody() {
  */
 function coverageMergeScriptSource() {
   return readFileSync(path.join(here, 'coverage-merge.mjs'), 'utf8');
+}
+
+/**
+ * coverage-chdb's own main-sweep logic, extracted the same way
+ * (tsouza/cerberus#3113): the assertions below that used to slice the
+ * `coverage-chdb` Justfile recipe body as text now either import
+ * mainSweepArgv()/CHDB_TAGS directly (the structural checks legCommands()
+ * above already gets, rather than a text scan) or read this file's own
+ * source for the SKIP_RATCHET_FANOUT / PERF_SHARD_INDEX shape a plain
+ * argv array cannot express.
+ */
+function coverageChdbScriptSource() {
+  return readFileSync(path.join(here, 'coverage-chdb.mjs'), 'utf8');
 }
 
 /** The `timeout-minutes:` of a named coverage.yml job. */
@@ -139,44 +137,42 @@ test('the build tags reach every go command verbatim', () => {
   }
 });
 
-test('the coverage-chdb recipe still invokes the fan-out script locally, gated behind SKIP_RATCHET_FANOUT', () => {
-  const body = coverageChdbRecipeBody();
-  assert.match(body, /node \.github\/scripts\/perf-coverage-fanout\.mjs/);
-  assert.match(body, /TAGS=chdb,agpl_oracle,chdb_agpl_oracle/);
+test('coverage-chdb.mjs still invokes the fan-out script locally, gated behind SKIP_RATCHET_FANOUT', () => {
+  const src = coverageChdbScriptSource();
+  assert.match(src, /new URL\('\.\/perf-coverage-fanout\.mjs', import\.meta\.url\)/);
+  assert.match(src, /TAGS:\s*CHDB_TAGS/);
   assert.match(
-    body,
+    src,
     /SKIP_RATCHET_FANOUT/,
-    'coverage-chdb must gate its own (local-mode) fan-out call behind SKIP_RATCHET_FANOUT, or CI (which sets it) ' +
+    "coverage-chdb.mjs must gate its own (local-mode) fan-out call behind SKIP_RATCHET_FANOUT, or CI (which sets it) " +
       'would double-run the extra shards: once via coverage-chdb-ratchet, once inline here',
   );
 });
 
-test('the coverage-chdb recipe main sweep carries PERF_SHARD_INDEX=1 and a PERF_SHARD_COUNT matching RATCHET_FANOUT — the two constants must not drift apart', () => {
-  const body = coverageChdbRecipeBody();
-  const sweepLine = body.split('\n').find((l) => l.includes('PERF_SHARD_INDEX=1') && l.includes('go test'));
-  assert.ok(sweepLine, 'Justfile: could not find the main sweep line');
-  assert.ok(sweepLine.includes('-tags chdb,agpl_oracle,chdb_agpl_oracle'), 'main sweep: missing composite tag set');
-  assert.ok(sweepLine.includes('-coverprofile=cover-chdb.out'), 'main sweep: missing -coverprofile=cover-chdb.out');
-  assert.ok(sweepLine.includes('./...'), 'main sweep: must target the whole tree');
-  const m = /PERF_SHARD_COUNT=(\d+)/.exec(sweepLine);
-  assert.ok(m, 'Justfile: main sweep declares no PERF_SHARD_COUNT');
-  assert.equal(
-    Number(m[1]),
-    RATCHET_FANOUT,
-    `Justfile's PERF_SHARD_COUNT=${m[1]} on the main sweep must equal perf-coverage-fanout.mjs's own RATCHET_FANOUT=${RATCHET_FANOUT}`,
+test('coverage-chdb.mjs main sweep carries PERF_SHARD_INDEX=1 and a PERF_SHARD_COUNT matching RATCHET_FANOUT — the two constants must not drift apart', () => {
+  const src = coverageChdbScriptSource();
+  assert.match(src, /const PERF_SHARD_INDEX = 1;/, 'coverage-chdb.mjs: main sweep must declare PERF_SHARD_INDEX=1');
+  assert.match(
+    src,
+    /PERF_SHARD_COUNT:\s*String\(RATCHET_FANOUT\)/,
+    "coverage-chdb.mjs's main sweep must pass PERF_SHARD_COUNT from the imported RATCHET_FANOUT, not a restated " +
+      'literal — the whole point of moving the sweep into a script is that it CAN import the constant Just recipes ' +
+      'could not',
   );
+
+  const argv = mainSweepArgv(COVERPKG);
+  assert.equal(argv[argv.indexOf('-tags') + 1], CHDB_TAGS, 'main sweep: missing composite tag set');
+  assert.equal(argv[argv.indexOf('-coverprofile') + 1], 'cover-chdb.out', 'main sweep: missing -coverprofile=cover-chdb.out');
+  assert.ok(argv.includes('./...'), 'main sweep: must target the whole tree');
+  assert.equal(CHDB_TAGS, TAGS, "coverage-chdb.mjs's CHDB_TAGS must match this suite's own composite tag fixture");
 });
 
-test('the coverage-chdb recipe main sweep never carries -skip — it is the sole CI evidence for other chdb-tagged packages', () => {
-  const body = coverageChdbRecipeBody();
-  const sweepLine = body
-    .split('\n')
-    .find((l) => l.includes('PERF_SHARD_INDEX=1') && l.includes('go test'));
-  assert.ok(sweepLine, 'Justfile: could not find the main sweep line');
+test('coverage-chdb.mjs main sweep never carries -skip — it is the sole CI evidence for other chdb-tagged packages', () => {
+  const argv = mainSweepArgv(COVERPKG);
   assert.ok(
-    !sweepLine.includes('-skip'),
+    !argv.includes('-skip'),
     'the main sweep must not use -skip: test/regression/tagged_test_enrollment_test.go discards a go test ' +
-      'invocation outright the moment it sees -skip, dropping this sweep\'s enrollment evidence for every ' +
+      "invocation outright the moment it sees -skip, dropping this sweep's enrollment evidence for every " +
       'other chdb-tagged package it is the sole CI evidence for',
   );
 });

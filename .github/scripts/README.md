@@ -1158,9 +1158,33 @@ what actually runs.
     floor and for any claim/evidence disagreement. `NOT MEASURED` is a GREEN
     outcome on purpose — the verdict makes the skip legible, it does not turn
     every ordinary pull request into a blocked merge.
-- **`perf-coverage-fanout.mjs`** — `just coverage-chdb`'s
+- **`coverage-chdb.mjs`** — `just/test.just`'s `coverage-chdb` recipe
+  (tsouza/cerberus#3113, following `coverage-merge`'s own #3095/#3091
+  extraction). The chdb-tagged coverage lane: the `CHDB_INSTALL_PATH`/
+  libchdb.so existence check (graceful skip, not a failure, when absent),
+  the `go list`-derived `-coverpkg`, the composite-tag `go test` invocation
+  with its streamed `-coverpkg`-echo line filter, the local
+  `SKIP_RATCHET_FANOUT` branch into `perf-coverage-fanout.mjs`, and the
+  unconditional `COVERAGE_REQUIRE_LANES=default+chdb` fail-closed tail
+  (reached whether or not the libchdb.so branch ran). Moving this out of the
+  Justfile recipe body required teaching the scanners that used to parse its
+  exact bash text to read this file's source instead:
+  `test/regression/tagged_test_enrollment_test.go`'s `readCoverageChdbTaggedRun`/
+  `taggedCoverageChdbLaneIsFailClosed`, `coverage_recipe_fail_closed_test.go`,
+  and `perf-coverage-fanout.test.mjs` (its `mainSweepArgv()`/`CHDB_TAGS`
+  imports). `coverage-chdb.test.mjs` is the `node --test` guard, exercising
+  the full flow (skip, fail-closed tail, the main sweep, and the real
+  fan-out call) against a fake `go` executable — no chDB needed.
+  - Env: `CHDB_INSTALL_PATH` (required — the recipe always passes it),
+    `CERBERUS_RAPID_SEED` (required once the libchdb.so branch runs),
+    `SKIP_RATCHET_FANOUT`, `COVERAGE_REQUIRE_LANES`, `GO` (default `go`,
+    test seam).
+  - Exit: `0` on a graceful skip or a successful run; `1` on a failed
+    `go test`, a failed fan-out, or `COVERAGE_REQUIRE_LANES=default+chdb`
+    with no `cover-chdb.out` produced.
+- **`perf-coverage-fanout.mjs`** — `coverage-chdb.mjs`'s
   `TestCardinalityRatchet` fan-out (shards 2..`RATCHET_FANOUT` of the corpus
-  walk; shard 1 is the Justfile's own main sweep). Two modes: local (no
+  walk; shard 1 is that script's own main sweep). Two modes: local (no
   `LEG_INDEX`) runs every remaining shard CONCURRENTLY as sibling processes
   on one machine, the same technique `property-fanout.mjs` established for
   the identical timeout shape in `test/property`; CI matrix mode
@@ -1184,13 +1208,10 @@ what actually runs.
   cover.out alone when no chdb-tagged profile was produced, deciding the
   `COVERAGE_LANES` value (`default+chdb` or `default`) it passes to
   `coverage-summary.mjs`. Both folds go through `lib/coverage-fold.mjs`'s
-  `foldProfile()`/`writeFoldedProfile()`. Deliberately does NOT touch
-  `coverage-chdb`'s own recipe body: `test/regression/tagged_test_enrollment_test.go`
-  statically parses that exact bash as chdb-tagged test execution evidence,
-  and extracting it too needs enrollment-scanner changes tracked separately
-  as tsouza/cerberus#3113. `coverage-merge.test.mjs` is the `node --test`
-  guard, exercising the merge/fold mechanics with synthetic profiles (no
-  chDB needed).
+  `foldProfile()`/`writeFoldedProfile()`. Shares `isNonEmptyFile()` (the
+  `test -s <file>` check) with `coverage-chdb.mjs` via `lib/gh.mjs`.
+  `coverage-merge.test.mjs` is the `node --test` guard, exercising the
+  merge/fold mechanics with synthetic profiles (no chDB needed).
   - Env: none of its own; forwards the caller's environment plus a computed
     `COVERAGE_LANES` to the `coverage-summary.mjs` subprocess it spawns.
   - Exit: `1` if cover.out is missing/empty or a ratchet shard has no

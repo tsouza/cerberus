@@ -18,9 +18,12 @@
 //   - createFreshFileFd() / writeFreshFile(): CWE-377/378-safe creation of a
 //     file at a FIXED, well-known path (a log or PID file another script or
 //     workflow step finds by that same literal path afterward).
+//   - isNonEmptyFile(): `test -s <file>`-equivalent existence+size check,
+//     shared by every coverage-lane script that gates on a profile a prior
+//     step should have written.
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, openSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, openSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 
 // GitHub escapes `%`, `\r`, `\n` in workflow-command *data* (the message
@@ -73,6 +76,20 @@ export function group(title, fn) {
 // Plain stdout line (no annotation). Kept here so scripts import one module.
 export function log(line = '') {
   process.stdout.write(`${line}\n`);
+}
+
+// isNonEmptyFile — true when `path` exists and is a real, non-empty file.
+// Shared by coverage-merge.mjs and coverage-chdb.mjs, both of which gate a
+// step on whether a coverage profile a PRIOR step should have written is
+// actually there — the same `test -s <file>` check the bash they were
+// extracted from used. Never throws: a missing path or a permission error
+// both mean "not there", not a crash.
+export function isNonEmptyFile(path) {
+  try {
+    return existsSync(path) && statSync(path).size > 0;
+  } catch {
+    return false;
+  }
 }
 
 // The spawnSync options capture()/exec() forward. Anything outside this set is

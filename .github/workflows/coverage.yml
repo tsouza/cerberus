@@ -269,6 +269,7 @@ jobs:
           node --test .github/scripts/perf-coverage-fanout.test.mjs
           node --test .github/scripts/lib/coverage-fold.test.mjs
           node --test .github/scripts/coverage-merge.test.mjs
+          node --test .github/scripts/coverage-chdb.test.mjs
 
       # Computed as a step output rather than a static job-level `env:` GHA
       # expression: a `push` event needs a network call (resolve the source PR
