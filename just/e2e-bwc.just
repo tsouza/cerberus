@@ -280,21 +280,17 @@ e2e-datashard-verify count="2":
 # Tear the multi-data-shard lane down.
 e2e-datashard-down: e2e-down
 
-# Run the compose-stack Grafana catch-net spec locally. Assumes the
-# quickstart compose stack is already up (`docker compose up --wait`).
-# Drives Grafana through every provisioned dashboard and asserts every
-# /api/ds/query + /api/dashboards/* response is 2xx with no tunneled
-# per-target error. Mirrors the Playwright step the compose-smoke CI
-# job runs.
+# Assumes the quickstart compose stack is already up (`docker compose up
+# --wait`). Drives Grafana through every provisioned dashboard and asserts
+# every /api/ds/query + /api/dashboards/* response is 2xx with no tunneled
+# per-target error. Mirrors the Playwright step the compose-smoke CI job
+# runs. Logic lives in compose-grafana-smoke.mjs (CLAUDE.md invariant 15,
+# issue #3098) — in particular the npm-install decision, which treats a
+# `npm ci` failure against an existing lockfile as fatal rather than falling
+# back to `npm install` (the bug the old inline `&&`/`||` idiom had).
 
-# Run the compose-stack Grafana catch-net spec. Assumes the compose stack is already up.
+# Run the compose-stack Grafana catch-net spec.
 compose-grafana-smoke:
     @echo "==> compose-grafana-smoke playwright catch-net"
-    cd test/e2e/playwright && \
-        ( [ -f package-lock.json ] && npm ci || npm install --no-audit --no-fund ) && \
-        npx playwright install --with-deps chromium && \
-        GRAFANA_BASE_URL=http://localhost:3000 \
-        GRAFANA_URL=http://localhost:3000 \
-        CERBERUS_URL=http://localhost:8080 \
-        npx playwright test compose_grafana_smoke.spec.ts --reporter=list
+    node .github/scripts/compose-grafana-smoke.mjs
 
