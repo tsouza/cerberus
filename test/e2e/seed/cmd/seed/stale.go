@@ -290,7 +290,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("gauge-shaped metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, gaugeTarget.table, gaugeTarget.onCluster),
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, gaugeTarget.table, metricsGaugeTable, gaugeTarget.onCluster),
 		clickhouse.Named("margin", marginSeconds(metricsNarrowStaleMargin))); err != nil {
 		return fmt.Errorf("gauge-shaped metrics stale delete: %w", err)
 	}
@@ -299,7 +299,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("sum metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsSumSQLTemplate, sumTarget.table, sumTarget.onCluster),
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsSumSQLTemplate, sumTarget.table, metricsSumTable, sumTarget.onCluster),
 		clickhouse.Named("margin", marginSeconds(metricsWideStaleMargin))); err != nil {
 		return fmt.Errorf("sum metrics stale delete: %w", err)
 	}
@@ -308,7 +308,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("histogram metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsHistogramSQLTemplate, histogramTarget.table, histogramTarget.onCluster),
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsHistogramSQLTemplate, histogramTarget.table, metricsHistogramTable, histogramTarget.onCluster),
 		clickhouse.Named("margin", marginSeconds(metricsWideStaleMargin))); err != nil {
 		return fmt.Errorf("histogram metrics stale delete: %w", err)
 	}
@@ -317,7 +317,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("exponential histogram metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsExpHistSQLTemplate, expHistTarget.table, expHistTarget.onCluster),
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsExpHistSQLTemplate, expHistTarget.table, metricsExpHistTable, expHistTarget.onCluster),
 		clickhouse.Named("margin", marginSeconds(metricsNarrowStaleMargin))); err != nil {
 		return fmt.Errorf("exponential histogram metrics stale delete: %w", err)
 	}
@@ -334,7 +334,7 @@ func deleteStaleLogs(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("logs stale delete: %w", err)
 	}
-	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleLogsSQLTemplate, target.table, target.onCluster),
+	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleLogsSQLTemplate, target.table, logsTable, target.onCluster),
 		clickhouse.Named("margin", marginSeconds(logsStaleMargin))); err != nil {
 		return fmt.Errorf("logs stale delete: %w", err)
 	}
@@ -351,7 +351,7 @@ func deleteStaleBaseTraces(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("base traces stale delete: %w", err)
 	}
-	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleBaseTracesSQLTemplate, target.table, target.onCluster),
+	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleBaseTracesSQLTemplate, target.table, tracesTable, target.onCluster),
 		clickhouse.Named("margin", marginSeconds(tracesStaleMargin))); err != nil {
 		return fmt.Errorf("base traces stale delete: %w", err)
 	}

@@ -79,8 +79,9 @@ func TestMutationTableSQLReplacesEveryTemplatePlaceholder(t *testing.T) {
 	t.Parallel()
 
 	const (
-		target    = "otel_metrics_gauge_local"
-		onCluster = onClusterMutationClause
+		target      = "otel_metrics_gauge_local"
+		publicTable = "otel_metrics_gauge"
+		onCluster   = onClusterMutationClause
 	)
 
 	for name, tpl := range map[string]string{
@@ -107,18 +108,38 @@ func TestMutationTableSQLReplacesEveryTemplatePlaceholder(t *testing.T) {
 					name, got, wantOnClusterOccurrences)
 			}
 
-			got := mutationTableSQL(tpl, target, onCluster)
+			got := mutationTableSQL(tpl, target, publicTable, onCluster)
 			if strings.Contains(got, mutationTablePlaceholder) {
 				t.Fatalf("%s: mutationTableSQL left an unsubstituted table placeholder behind: %q", name, got)
 			}
 			if strings.Contains(got, mutationOnClusterPlaceholder) {
 				t.Fatalf("%s: mutationTableSQL left an unsubstituted ON CLUSTER placeholder behind: %q", name, got)
 			}
-			if got2 := strings.Count(got, target); got2 != wantTableOccurrences {
-				t.Fatalf("%s: mutationTableSQL produced %d occurrences of %q, want %d", name, got2, target, wantTableOccurrences)
-			}
 			if got2 := strings.Count(got, onCluster); got2 != wantOnClusterOccurrences {
 				t.Fatalf("%s: mutationTableSQL produced %d occurrences of %q, want %d", name, got2, onCluster, wantOnClusterOccurrences)
+			}
+
+			// The outer statement gets `target` (the resolved local table),
+			// the inner max(...) subquery's FROM gets `publicTable` (the
+			// Distributed name, which aggregates correctly across every
+			// shard) — see sharded_mutation.go's package doc comment for
+			// why they must differ. `target` here is `publicTable + "_local"`
+			// (matching real usage), so `publicTable` is a PREFIX of
+			// `target`; search for it strictly after target's own span, not
+			// with a plain strings.Index that would just re-find target's
+			// own leading substring.
+			outerIdx := strings.Index(got, target)
+			if outerIdx == -1 {
+				t.Fatalf("%s: mutationTableSQL did not place the resolved target %q anywhere: %q", name, target, got)
+			}
+			rest := got[outerIdx+len(target):]
+			innerIdx := strings.Index(rest, publicTable)
+			if innerIdx == -1 {
+				t.Fatalf("%s: mutationTableSQL did not place the public table name %q AFTER the resolved target %q: %q",
+					name, publicTable, target, got)
+			}
+			if got2 := strings.Count(rest, publicTable); got2 != 1 {
+				t.Fatalf("%s: mutationTableSQL produced %d occurrences of the public table name %q after the outer target, want exactly 1", name, got2, publicTable)
 			}
 
 			// The ON CLUSTER clause must land on the OUTER statement, before
@@ -133,17 +154,21 @@ func TestMutationTableSQLReplacesEveryTemplatePlaceholder(t *testing.T) {
 }
 
 // resolveMutationTarget's caller-visible behavior when NOT sharded (empty
-// onCluster) must leave the DELETE unchanged in shape — mutationTableSQL
-// with an empty onCluster simply erases the placeholder rather than
-// leaving a stray space or empty ON CLUSTER token behind.
+// onCluster, target == publicTable) must leave the DELETE unchanged in
+// shape — mutationTableSQL with an empty onCluster simply erases the
+// placeholder rather than leaving a stray space or empty ON CLUSTER token
+// behind, and both placeholder occurrences resolve to the SAME table name.
 func TestMutationTableSQLEmptyOnClusterLeavesNoStrayToken(t *testing.T) {
 	t.Parallel()
 
-	got := mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, "otel_metrics_gauge", "")
+	got := mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, "otel_metrics_gauge", "otel_metrics_gauge", "")
 	if strings.Contains(got, "ON CLUSTER") {
 		t.Fatalf("empty onCluster left an ON CLUSTER token behind: %q", got)
 	}
 	if !strings.Contains(got, "ALTER TABLE otel_metrics_gauge DELETE") {
 		t.Fatalf("expected the unsharded ALTER TABLE shape to be preserved verbatim, got: %q", got)
+	}
+	if got2 := strings.Count(got, "otel_metrics_gauge"); got2 != 2 {
+		t.Fatalf("expected exactly 2 occurrences of otel_metrics_gauge (outer + inner, both unredirected), got %d: %q", got2, got)
 	}
 }

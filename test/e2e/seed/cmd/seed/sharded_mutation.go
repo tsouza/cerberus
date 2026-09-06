@@ -33,14 +33,20 @@ const mutationTablePlaceholder = "@@MUTATION_TABLE@@"
 // does not fix.
 const mutationOnClusterPlaceholder = "@@MUTATION_ON_CLUSTER@@"
 
-// mutationTableSQL substitutes every occurrence of mutationTablePlaceholder
-// in template with target, and mutationOnClusterPlaceholder with onCluster.
-// Each DELETE template carries mutationTablePlaceholder twice (the outer
-// ALTER TABLE/DELETE FROM and the inner max(...) subquery's FROM), and both
-// must resolve to the same table — see this file's package doc comment for
-// why the resolved name can differ from the table's public name.
-func mutationTableSQL(template, target, onCluster string) string {
-	s := strings.ReplaceAll(template, mutationTablePlaceholder, target)
+// mutationTableSQL fills in template's two mutationTablePlaceholder
+// occurrences DIFFERENTLY — the first (the outer ALTER TABLE/DELETE FROM)
+// with target, the second (the inner max(...) subquery's FROM) with
+// publicTable — and mutationOnClusterPlaceholder with onCluster. See this
+// file's package doc comment for why the two occurrences must NOT resolve
+// to the same name once the datashard lane is in play: the outer mutation
+// needs the "_local" table (Distributed doesn't support mutations at all),
+// but the inner max(...) needs the PUBLIC Distributed name, or a
+// low-row-count family whose fresh INSERTs happen not to land on every
+// shard every tick computes a per-shard max() that never advances past a
+// stale sentinel on the shard(s) that got skipped.
+func mutationTableSQL(template, target, publicTable, onCluster string) string {
+	s := strings.Replace(template, mutationTablePlaceholder, target, 1)
+	s = strings.ReplaceAll(s, mutationTablePlaceholder, publicTable)
 	return strings.ReplaceAll(s, mutationOnClusterPlaceholder, onCluster)
 }
 
@@ -75,6 +81,26 @@ func mutationTableSQL(template, target, onCluster string) string {
 // schema the seeder is already connected to, the same way waitForTables
 // (main.go) already reads system.tables to learn whether the external
 // schema writer has created a table yet.
+//
+// The redirect alone is not the whole fix. Each DELETE template's inner
+// max(<time column>) subquery anchors the cutoff to "how fresh is the data
+// that's actually here" — but a Distributed table's INSERT spreads rows
+// across shards essentially at random (Config.DataShardingKey, default
+// rand()), so a LOW-row-count family (base-traces' fixed 7-row fixture) can
+// have a tick where NONE of its fresh rows land on a given shard. If the
+// subquery ran against that shard's own "_local" table, its max() would
+// reflect only OLD rows (or nothing newer than the sentinel itself),
+// so the cutoff never advances past a stale/sentinel row on that shard —
+// confirmed live: TestReSeedRowCountStability/base-traces alone (the
+// lowest-row-count family; every higher-volume family's fresh rows are
+// near-certain to land on every shard every tick, masking the same bug)
+// failed on dispatch run 34016653322 after the local-table + ON CLUSTER
+// fix alone. mutationTableSQL therefore targets the subquery at the
+// PUBLIC name instead: a SELECT against a Distributed table (unlike a
+// mutation) is exactly what the engine is FOR, and ClickHouse fans it out
+// and aggregates the true cluster-wide max() regardless of which shard
+// node the ON CLUSTER broadcast happens to be executing this copy of the
+// statement on.
 
 // distributedEngine is the exact system.tables.engine value ClickHouse
 // reports for a Distributed-engine table — the one engine that rejects

@@ -182,7 +182,7 @@ func insertShowcaseTraces(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("showcase traces stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleShowcaseTracesSQLTemplate, target.table, target.onCluster)); err != nil {
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleShowcaseTracesSQLTemplate, target.table, tracesTable, target.onCluster)); err != nil {
 		return fmt.Errorf("showcase traces stale delete: %w", err)
 	}
 	return nil
