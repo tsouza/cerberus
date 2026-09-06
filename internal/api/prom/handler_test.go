@@ -217,6 +217,126 @@ func TestQuery_Vector(t *testing.T) {
 	}
 }
 
+// TestQuery_ScalarOfAggregate — cerberus issue #3119: a top-level
+// `scalar(<vector>)` whose argument depends on queried data (not a
+// compile-time constant like `1+1`, which promql.TryFoldScalar folds in
+// Go without touching the stub at all) must still report resultType
+// "scalar", matching reference Prometheus's parser-level Scalar type for
+// the expression — regardless of how many rows the underlying aggregate
+// happens to fan out into on the query-engine side. Pre-fix, handleQuery
+// classified this response's resultType purely on `expr.Type() ==
+// ValueTypeMatrix` vs. everything-else-is-"vector", so a data-dependent
+// scalar() fell into the vector branch and always answered "vector"
+// (reproduced live on both the single-shard AND the DataShardCount>1
+// legs of dispatch run 34017639602's TestPromQueryScalarOfVector).
+func TestQuery_ScalarOfAggregate(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	// The stub ignores the emitted SQL entirely and just answers this
+	// single row — exactly the one-row shape scalarValuePlan's
+	// `count()==1 ? value : NaN` no-GROUP-BY aggregate always produces,
+	// so this exercises handleQuery's resultType classification in
+	// isolation from the lowering/emit pipeline.
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{Timestamp: ts, Value: 42.0},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	query := url.QueryEscape("scalar(sum(http_server_request_duration_count))")
+	resp, err := http.Get(fmt.Sprintf("%s/api/v1/query?query=%s&time=%d", srv.URL, query, ts.Unix()))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q, want success; err=%s", parsed.Status, parsed.Error)
+	}
+	if parsed.Data.ResultType != "scalar" {
+		t.Fatalf("resultType: got %q, want scalar", parsed.Data.ResultType)
+	}
+
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var point [2]any
+	if err := json.Unmarshal(rawResult, &point); err != nil {
+		t.Fatalf("decode scalar: %v", err)
+	}
+	if got := point[1]; got != "42" {
+		t.Errorf("value: got %v, want \"42\"", got)
+	}
+}
+
+// TestQuery_ScalarOfTime — the sweep half of cerberus issue #3119: bare
+// top-level `time()` is the OTHER scalar-returning call promql.
+// TryFoldScalar cannot fold (it isn't a compile-time constant — its value
+// is the query's own eval timestamp), so it reaches handleQuery's
+// resultType classification exactly the same way `scalar(sum(...))`
+// does. The parser closes the scalar-typed expression space to exactly
+// `scalar(<vector>)`, `time()` and `pi()` (see internal/promql/
+// scalar_args.go's lowerScalarArg doc comment); `pi()` is always folded
+// by TryFoldScalar, so `scalar()` and `time()` are the only two shapes
+// that can reach the ValueTypeScalar branch un-folded — this test pins
+// the second one so the fix's dispatch on expr.Type() (rather than a
+// scalar()-specific special case) stays honest.
+func TestQuery_ScalarOfTime(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	// The stub ignores the emitted SQL and just answers this canned
+	// row — real `time()` lowering never reads a table (it materialises
+	// a synthetic one-row vector), but this test only exercises
+	// handleQuery's resultType classification, not the lowering itself.
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{Timestamp: ts, Value: float64(ts.Unix())},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(fmt.Sprintf("%s/api/v1/query?query=time()&time=%d", srv.URL, ts.Unix()))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q, want success; err=%s", parsed.Status, parsed.Error)
+	}
+	if parsed.Data.ResultType != "scalar" {
+		t.Fatalf("resultType: got %q, want scalar", parsed.Data.ResultType)
+	}
+
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var point [2]any
+	if err := json.Unmarshal(rawResult, &point); err != nil {
+		t.Fatalf("decode scalar: %v", err)
+	}
+	if got := point[1]; got != fmt.Sprint(ts.Unix()) {
+		t.Errorf("value: got %v, want %q", got, fmt.Sprint(ts.Unix()))
+	}
+}
+
 func TestQueryRange_Matrix(t *testing.T) {
 	t.Parallel()
 

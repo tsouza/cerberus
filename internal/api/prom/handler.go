@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"runtime"
 	"sort"
@@ -424,7 +425,8 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httperr.WriteEngineHeaders(w, hdr)
-	if expr.Type() == promparser.ValueTypeMatrix {
+	switch expr.Type() {
+	case promparser.ValueTypeMatrix:
 		// Top-level range-vector / subquery expression: resultType
 		// "matrix" with every returned sample at its own timestamp,
 		// grouped per series — the SQL window bound owns sample
@@ -434,12 +436,42 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 			Data:   &QueryData{ResultType: "matrix", Result: matrixFromSamples(samples)},
 		})
 		return
+	case promparser.ValueTypeScalar:
+		// Top-level `scalar(<vector>)` / `time()` / scalar arithmetic
+		// thereof that TryFoldScalar above couldn't fold at parse time
+		// because it depends on queried data (cerberus issue #3119).
+		// TryFoldScalar only folds compile-time-constant scalar
+		// expressions (literals, pi(), and arithmetic over those); a
+		// data-dependent scalar like `scalar(sum(m))` reaches here
+		// instead, and reference Prometheus still answers resultType
+		// "scalar" for it — the wire shape depends on the PARSED type,
+		// not on whether the value happened to be foldable in Go.
+		//
+		// lowerScalarTopLevel (internal/promql/scalar_args.go) always
+		// materialises exactly one row for an instant query: either
+		// scalarValuePlan's `count()==1 ? value : NaN` reduction (a
+		// no-GROUP-BY Aggregate with DropEmptyOnNoGroup=false always
+		// emits exactly one row, even over zero input rows) or
+		// syntheticScalarVector's single-row shape (`time()`, `pi()`).
+		// A defensive NaN fallback covers an engine short-circuit that
+		// legitimately returns zero rows (e.g. an empty result cached
+		// upstream of the plan) without asserting on row count here.
+		value := math.NaN()
+		if len(samples) > 0 {
+			value = samples[0].Value
+		}
+		writeJSON(w, http.StatusOK, Response{
+			Status: "success",
+			Data:   &QueryData{ResultType: "scalar", Result: scalarPoint(ts, value)},
+		})
+		return
+	default:
+		result := toVector(samples, ts)
+		writeJSON(w, http.StatusOK, Response{
+			Status: "success",
+			Data:   &QueryData{ResultType: "vector", Result: result},
+		})
 	}
-	result := toVector(samples, ts)
-	writeJSON(w, http.StatusOK, Response{
-		Status: "success",
-		Data:   &QueryData{ResultType: "vector", Result: result},
-	})
 }
 
 // tryStringLiteralExpr unwraps a (possibly parenthesised) top-level
