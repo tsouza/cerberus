@@ -92,8 +92,7 @@ K3D_EXTRA_ARGS := env_var_or_default("K3D_EXTRA_ARGS", "")
 # run verbatim (`e2e-datashard-up` too — see issue #3107, filed to bring it
 # onto this same shared recipe). Pulled out on its own so a future flag
 # change (a port, a k3s arg) never has to land in more than one place.
-# `e2e-up` calls this now; `e2e-bwc-up` moves onto it in sub-issue #3097,
-# never touched by this PR.
+# `e2e-up` and `e2e-bwc-up` (sub-issue #3097) both call this now.
 _e2e-k3d-cluster-create:
     @echo "==> pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
@@ -132,8 +131,8 @@ e2e-up: e2e-down
     @# spent. Logic lives in .github/scripts/k3d-image-import.mjs (cerberus
     @# issue #3096) — designed from day one with an IMAGE_IMPORT_EXCLUDE
     @# glob-pattern parameter and an arbitrary argv image list, so
-    @# `e2e-bwc-up` (sub-issue #3097) can reuse it unchanged by only
-    @# varying its own call site.
+    @# `e2e-bwc-up` (sub-issue #3097) reuses it unchanged, only varying its
+    @# own image list and exclusion filter at the call site.
     @K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}}
     @echo "==> applying fixture manifests (CH, Grafana, collector, sample apps)"
     kubectl apply -k test/e2e/k3s/

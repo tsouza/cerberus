@@ -18,15 +18,15 @@
 //      k3d's own exit code.
 //
 // Designed for reuse from day one (cerberus issue #3096's own scope note):
-// the `e2e-bwc-up` lane (sub-issue #3097, NOT wired to this script by this
-// PR) needs to import an EXTENDED image list while EXCLUDING the standalone
-// ClickHouse image (`clickhouse/clickhouse-server:*-alpine`) its
-// kustomization never applies — both an arbitrary image list and an
-// exclusion-filter are therefore first-class parameters here, not a
-// retrofit: `e2e-bwc-up` (and the multi-data-shard `e2e-datashard-up`,
-// which duplicates this exact loop today — tracked separately, see
-// cerberus issue #3107) will be able to reuse this script by changing only
-// their own image list + exclude patterns, never this script's interface.
+// the `e2e-bwc-up` lane (sub-issue #3097) imports an EXTENDED image list
+// while EXCLUDING the standalone ClickHouse image
+// (`clickhouse/clickhouse-server:*-alpine`) its kustomization never
+// applies — both an arbitrary image list and an exclusion-filter were
+// therefore first-class parameters here from the start, not a retrofit:
+// `e2e-bwc-up` reuses this script by changing only its own image list +
+// exclude pattern at the call site, never this script's interface. The
+// multi-data-shard `e2e-datashard-up` still duplicates this exact loop
+// today — tracked separately, see cerberus issue #3107.
 //
 // Usage:
 //   node .github/scripts/k3d-image-import.mjs <image>...

@@ -33,55 +33,28 @@
 
 # Boot the k3d stack with the chart's bundled ClickHouse for the given scenario.
 e2e-bwc-up scenario="object-storage": e2e-down
-    @echo "==> [bwc] pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
-    @just _pull-retry {{K3S_IMAGE}}
-    @echo "==> [bwc] creating k3d cluster {{K3D_CLUSTER}}"
-    k3d cluster create {{K3D_CLUSTER}} \
-        --image {{K3S_IMAGE}} \
-        --port "3000:30030@loadbalancer" \
-        --port "8080:30080@loadbalancer" \
-        --no-lb=false \
-        --k3s-arg "--disable=traefik@server:0" \
-        {{K3D_EXTRA_ARGS}} \
-        --wait
+    @just _e2e-k3d-cluster-create
     @echo "==> [bwc] building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
     node .github/scripts/build-with-registry-retry.mjs \
         docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
     @echo "==> [bwc] pre-pulling external + bwc images on host docker"
     @# The standalone-CH image (the *-alpine tag in E2E_EXTERNAL_IMAGES) backs
     @# test/e2e/k3s/clickhouse.yaml, which the bwc kustomization EXCLUDES — this
-    @# lane runs the chart's BUNDLED ClickHouse (the non-alpine tag in
-    @# E2E_BWC_IMAGES) instead, so skip importing the unused standalone image.
+    @# lane runs the chart-bundled ClickHouse (the non-alpine tag in
+    @# E2E_BWC_IMAGES) instead, so skip pulling the unused standalone image (it
+    @# is filtered from the k3d import step below via IMAGE_IMPORT_EXCLUDE too).
     @for img in {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}; do \
         case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
         just _pull-retry "$img"; \
     done
-    @# Import each image individually + VERIFY it landed in the node's
-    @# containerd (k3d image import can print success while the node import
-    @# silently failed -> ImagePullBackOff with pullPolicy:Never). Same robust
-    @# loop as `e2e-up`, extended with the bwc image set.
-    @for img in {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}; do \
-        case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
-        ref="$img"; \
-        case "$ref" in \
-            *.*/*|*:*/*) ;; \
-            */*) ref="docker.io/$ref" ;; \
-            *) ref="docker.io/library/$ref" ;; \
-        esac; \
-        landed=0; \
-        for attempt in 1 2 3 4 5; do \
-            k3d image import "$img" -c {{K3D_CLUSTER}} || true; \
-            if docker exec k3d-{{K3D_CLUSTER}}-server-0 ctr -n k8s.io images ls -q | grep -qF "$ref"; then \
-                landed=1; break; \
-            fi; \
-            echo "  import attempt $attempt: $ref not in containerd yet, retrying with backoff" >&2; \
-            sleep $((attempt * 2)); \
-        done; \
-        if [ "$landed" != "1" ]; then \
-            echo "ERROR: $ref missing from k3d node containerd after 5 import attempts" >&2; \
-            exit 1; \
-        fi; \
-    done
+    @echo "==> [bwc] importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
+    @# Same retry+verify loop `e2e-up` runs (cerberus issue #3096), reused
+    @# unchanged via .github/scripts/k3d-image-import.mjs — only the image list
+    @# (extended with E2E_BWC_IMAGES) and the exclusion filter (the standalone
+    @# *-alpine ClickHouse image the bwc kustomization never applies) differ.
+    @IMAGE_IMPORT_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
+    K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs \
+        {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}
     @echo "==> [bwc] phase 1: namespace + MinIO + bucket-create Job (before ClickHouse)"
     kubectl apply -f test/e2e/k3s/namespace.yaml
     kubectl apply -f test/e2e/k3s-bwc/minio.yaml -f test/e2e/k3s-bwc/bucket-job.yaml
@@ -307,21 +280,17 @@ e2e-datashard-verify count="2":
 # Tear the multi-data-shard lane down.
 e2e-datashard-down: e2e-down
 
-# Run the compose-stack Grafana catch-net spec locally. Assumes the
-# quickstart compose stack is already up (`docker compose up --wait`).
-# Drives Grafana through every provisioned dashboard and asserts every
-# /api/ds/query + /api/dashboards/* response is 2xx with no tunneled
-# per-target error. Mirrors the Playwright step the compose-smoke CI
-# job runs.
+# Assumes the quickstart compose stack is already up (`docker compose up
+# --wait`). Drives Grafana through every provisioned dashboard and asserts
+# every /api/ds/query + /api/dashboards/* response is 2xx with no tunneled
+# per-target error. Mirrors the Playwright step the compose-smoke CI job
+# runs. Logic lives in compose-grafana-smoke.mjs (CLAUDE.md invariant 15,
+# issue #3098) — in particular the npm-install decision, which treats a
+# `npm ci` failure against an existing lockfile as fatal rather than falling
+# back to `npm install` (the bug the old inline `&&`/`||` idiom had).
 
-# Run the compose-stack Grafana catch-net spec. Assumes the compose stack is already up.
+# Run the compose-stack Grafana catch-net spec.
 compose-grafana-smoke:
     @echo "==> compose-grafana-smoke playwright catch-net"
-    cd test/e2e/playwright && \
-        ( [ -f package-lock.json ] && npm ci || npm install --no-audit --no-fund ) && \
-        npx playwright install --with-deps chromium && \
-        GRAFANA_BASE_URL=http://localhost:3000 \
-        GRAFANA_URL=http://localhost:3000 \
-        CERBERUS_URL=http://localhost:8080 \
-        npx playwright test compose_grafana_smoke.spec.ts --reporter=list
+    node .github/scripts/compose-grafana-smoke.mjs
 

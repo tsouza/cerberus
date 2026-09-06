@@ -1588,14 +1588,20 @@ func TestMigrationTier1SeedRecipe(t *testing.T) {
 	t.Parallel()
 
 	recipe := justRecipeBody(t, "migration-tier1-seed")
+	script, err := os.ReadFile(migrationSeedScript)
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationSeedScript, err)
+	}
+	combined := recipe + "\n" + string(script)
 	for _, want := range []string{
 		tier1SeedCmdPath,
 		tier1ArchetypeFixtureDir,
 		tier1ArchetypeFixtureFile,
 		tier1ManifestOutput,
 	} {
-		if !strings.Contains(recipe, want) {
-			t.Fatalf("Justfile recipe migration-tier1-seed does not reference %q; body:\n%s", want, recipe)
+		if !strings.Contains(combined, want) {
+			t.Fatalf("neither Justfile recipe migration-tier1-seed nor %s references %q; recipe body:\n%s",
+				migrationSeedScript, want, recipe)
 		}
 	}
 
@@ -1665,6 +1671,13 @@ const (
 	// migrationImageRecipe is the SINGLE point at which the image enters the
 	// Docker daemon.
 	migrationImageRecipe = "migration-cerberus-image"
+	// migrationImageScript is where migrationImageRecipe's build-or-pull
+	// decision actually lives (#3099) — the recipe body itself is just a
+	// one-line delegation to it.
+	migrationImageScript = "../../.github/scripts/migration-cerberus-image.mjs"
+	// migrationSeedScript is where migration-tier1-seed's/migration-tier2-
+	// seed's fixture-path construction actually lives (#3099).
+	migrationSeedScript = "../../.github/scripts/migration-tier-seed.mjs"
 	// dockerfileLocalPath builds the image the stacks run when no released
 	// artifact is supplied; cerberusMainPath declares the source-build stamp.
 	dockerfileLocalPath = "../../Dockerfile.local"
@@ -1754,12 +1767,21 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	// The acquisition recipe itself must be able to do BOTH halves: build the
 	// local tag from Dockerfile.local, and pull anything else — the pull going
 	// through the retry helper rather than a single-attempt `docker pull`.
-	acquire := justRecipeBody(t, migrationImageRecipe)
-	for _, want := range []string{"docker build", "Dockerfile.local", pullRetryRecipe, lib.ImageEnv} {
+	acquireRecipe := justRecipeBody(t, migrationImageRecipe)
+	acquireScript, err := os.ReadFile(migrationImageScript)
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationImageScript, err)
+	}
+	acquire := acquireRecipe + "\n" + string(acquireScript)
+	// "docker build" is now two separate spawnSync argv elements rather than
+	// one literal string (#3099), so build-with-registry-retry.mjs — the
+	// script migration-cerberus-image.mjs delegates the build path to — is
+	// what actually proves a real `docker build` happens.
+	for _, want := range []string{"build-with-registry-retry.mjs", "Dockerfile.local", pullRetryRecipe, lib.ImageEnv} {
 		if !strings.Contains(acquire, want) {
-			t.Fatalf("Justfile recipe %s does not reference %q; it must build the local tag from "+
-				"Dockerfile.local and pull a released one (with retry), decided by %s alone. Body:\n%s",
-				migrationImageRecipe, want, lib.ImageEnv, acquire)
+			t.Fatalf("neither Justfile recipe %s nor %s references %q; it must build the local tag from "+
+				"Dockerfile.local and pull a released one (with retry), decided by %s alone. Recipe body:\n%s",
+				migrationImageRecipe, migrationImageScript, want, lib.ImageEnv, acquireRecipe)
 		}
 	}
 }

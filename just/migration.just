@@ -33,18 +33,14 @@ MIGRATION_LOCAL_IMAGE := "cerberus:migration-tier1${COMPOSE_PROJECT_SUFFIX:-}"
 # This exists because the compose up path deliberately cannot acquire the image
 # itself: `pull_policy: never` and no `--build` on the up recipes are what keep
 # a release run from recompiling the source tree over the released image.
+#
+# The build-vs-pull decision, the build command, and the pull command all live
+# in .github/scripts/migration-cerberus-image.mjs (CLAUDE.md invariant 15,
+# issue #3099) — this recipe is a thin env-passing wrapper around it.
 
 # Put the cerberus image the migration stacks run into the local Docker daemon.
 migration-cerberus-image:
-    @local_tag="{{MIGRATION_LOCAL_IMAGE}}"; \
-    img="${CERBERUS_IMAGE:-$local_tag}"; \
-    if [ "$img" = "$local_tag" ]; then \
-        echo "==> migration cerberus image: build $img from Dockerfile.local"; \
-        node .github/scripts/build-with-registry-retry.mjs docker build --build-arg GO_IMAGE -f Dockerfile.local -t "$img" .; \
-    else \
-        echo "==> migration cerberus image: pull $img"; \
-        just _pull-retry "$img"; \
-    fi
+    @MIGRATION_LOCAL_IMAGE="{{MIGRATION_LOCAL_IMAGE}}" node .github/scripts/migration-cerberus-image.mjs
 
 # Bring the Tier-1 stack up and wait for every healthcheck to pass. The cerberus
 # image is acquired first by migration-cerberus-image; there is deliberately no
@@ -124,19 +120,15 @@ MIGRATION_LOG_TAIL := "200"
 # canonical `just migration-tier1` composite (and the CI migration-tier1 job)
 # drives — the whole `@tier1` scenario set is green off one seed pass, not
 # just whichever archetype happened to be seeded last.
+#
+# The archetype loop, the default-list fallback, and the manifest-path
+# convention all live in .github/scripts/migration-tier-seed.mjs, folded
+# behind a tier parameter (MIGRATION_SEED_TIER) so migration-tier2-seed below
+# reuses the exact same implementation (CLAUDE.md invariant 15, issue #3099).
 
 # Seed the Tier-1 archetype fixtures into the running stack (all of them by default).
 migration-tier1-seed archetype="":
-    @archetypes="{{archetype}}"; \
-    [ -n "$archetypes" ] || archetypes="{{MIGRATION_TIER1_ARCHETYPES}}"; \
-    for a in $archetypes; do \
-        manifest="test/e2e/migration/.out/manifest.json"; \
-        [ "$a" = "three-signal" ] || manifest="test/e2e/migration/.out/manifest-$a.json"; \
-        echo "==> migration tier-1 seed ($a, manifest $manifest)"; \
-        go run ./test/e2e/migration/cmd/seed \
-            --fixture test/e2e/migration/archetypes/$a/seed/fixture.json \
-            --manifest "$manifest"; \
-    done
+    @MIGRATION_SEED_TIER=tier1 node .github/scripts/migration-tier-seed.mjs {{archetype}}
 
 # Assert the Tier-1 substrate contract against the seeded stack: the collector
 # provisioned the OTel schema, cerberus serves all three heads off it, each
@@ -165,18 +157,19 @@ migration-tier1-run:
 # The CI job runs this on failure BEFORE teardown, so a red run carries the
 # evidence instead of a bare assertion message; teardown then deletes the
 # containers this reads from, which is why that ordering matters. Every command
-# is `|| true`-guarded: a dump must never turn a lane red on its own, nor mask
-# the real failure with a container that has already exited.
+# runs the same way the replaced `|| true`-guarded bash did: a dump must never
+# turn a lane red on its own, nor mask the real failure with a container that
+# has already exited.
+#
+# The `docker compose ps` / per-service `logs` loop lives in
+# .github/scripts/migration-tier-logs.mjs, parameterized by tier + compose
+# file list + service list, so migration-tier2-logs below reuses the exact
+# same implementation instead of duplicating the loop shape (CLAUDE.md
+# invariant 15, issue #3099).
 
 # Dump the Tier-1 stack's container state and per-service log tail. Never fails on its own.
 migration-tier1-logs:
-    @echo "==> migration tier-1 compose state"; \
-    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml ps || true; \
-    for svc in {{MIGRATION_TIER1_SERVICES}}; do \
-        echo "==> migration tier-1 logs: $svc"; \
-        docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
-            logs --tail={{MIGRATION_LOG_TAIL}} "$svc" || true; \
-    done
+    @MIGRATION_LOG_TIER=tier1 MIGRATION_COMPOSE_FILES="test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml" MIGRATION_LOG_SERVICES="{{MIGRATION_TIER1_SERVICES}}" MIGRATION_LOG_TAIL="{{MIGRATION_LOG_TAIL}}" node .github/scripts/migration-tier-logs.mjs
 
 # Tear the Tier-1 stack down. `-v` is mandatory, not cosmetic: the reference
 # images declare their own VOLUMEs, and a surviving volume would carry one
@@ -224,13 +217,13 @@ migration-tier2-up:
 # Tier-2 runs against the same seeded window Tier-1 does — the ruler tier
 # adds Grafana-managed alerting on top of the SAME cerberus/ClickHouse pair,
 # not a second one — so this is the identical seed step, not a second corpus.
+# Reuses migration-tier1-seed's own .github/scripts/migration-tier-seed.mjs
+# (MIGRATION_SEED_TIER=tier2's default archetype list is three-signal alone —
+# see that script's own DEFAULT_ARCHETYPES).
 
 # Seed the Tier-2 stack — the same window Tier-1 uses, not a second corpus.
 migration-tier2-seed:
-    @echo "==> migration tier-2 seed"
-    go run ./test/e2e/migration/cmd/seed \
-        --fixture test/e2e/migration/archetypes/three-signal/seed/fixture.json \
-        --manifest test/e2e/migration/.out/manifest.json
+    @MIGRATION_SEED_TIER=tier2 node .github/scripts/migration-tier-seed.mjs
 
 # Assert the Tier-2 substrate contract: Grafana provisioned the rule fixture
 # (kube-prometheus-stack's recording rule + NodeCPUSaturation alert, plus the
@@ -261,19 +254,12 @@ migration-tier2-run:
 # Dump the Tier-2 stack's container state and per-service log tail — the ruler
 # leg included, since a Tier-2 failure is usually Grafana rejecting the rule
 # fixture or the write-back bridge dropping a sample. See
-# migration-tier1-logs' comment for the ordering-before-teardown rationale.
+# migration-tier1-logs' comment for the ordering-before-teardown rationale and
+# for where the loop itself now lives.
 
 # Dump the Tier-2 stack's container state and per-service log tail, ruler leg included.
 migration-tier2-logs:
-    @echo "==> migration tier-2 compose state"; \
-    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
-        -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml ps || true; \
-    for svc in {{MIGRATION_TIER2_SERVICES}}; do \
-        echo "==> migration tier-2 logs: $svc"; \
-        docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
-            -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
-            logs --tail={{MIGRATION_LOG_TAIL}} "$svc" || true; \
-    done
+    @MIGRATION_LOG_TIER=tier2 MIGRATION_COMPOSE_FILES="test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml" MIGRATION_LOG_SERVICES="{{MIGRATION_TIER2_SERVICES}}" MIGRATION_LOG_TAIL="{{MIGRATION_LOG_TAIL}}" node .github/scripts/migration-tier-logs.mjs
 
 # Tear the Tier-2 stack down. `-v` is mandatory — see migration-tier1-down's
 # comment; the same reference-image VOLUME concern applies here since this
