@@ -82,30 +82,60 @@ import (
 // query_id (queryIDFromContext, stamped by queryContext before the gate is
 // ever acquired) on a FRESH, uncancelled, short-lived connection/context —
 // never the dispatch's own already-cancelled one. SYNC blocks until
-// ClickHouse itself confirms the statement is dead (or was already gone,
-// the common race-free-outcome when the statement finished naturally in the
-// tiny window between local cancellation and this call landing), so the
-// gate weight only releases once ClickHouse agrees the capacity is
-// genuinely free. A failed or slow KILL QUERY (network error reaching CH,
-// bounded by killDataShardQueryTimeout) is logged, never fatal — the weight
-// still releases unconditionally afterward, so a KILL QUERY failure can
-// never leak gate capacity, only (rarely) fail to close this specific race.
+// ClickHouse itself confirms the COORDINATING statement is dead (or was
+// already gone, the common race-free outcome when it finished naturally in
+// the tiny window between local cancellation and this call landing) before
+// the gate weight releases — see this file's own "Residual gap" doc below
+// for why that confirmation, real and useful as it is, does not by itself
+// prove every downstream per-shard statement the coordinator had already
+// fanned out has also stopped. A failed or slow KILL QUERY (network error
+// reaching CH, bounded by killDataShardQueryTimeout) is logged, never
+// fatal — the weight still releases unconditionally afterward, so a KILL
+// QUERY failure can never leak gate capacity, only (rarely) fail to close
+// this specific race.
 //
 // The normal, non-cancelled finish path is untouched: ctx.Err() is nil, the
 // check is a cheap single field read, and no extra round-trip is ever made
 // for the overwhelming majority of dispatches that simply finish.
 //
-// Residual risk: the KILL QUERY round-trip itself can only be as reliable as
-// reaching ClickHouse on a fresh connection within killDataShardQueryTimeout
-// — if THAT call also fails to confirm (CH itself unreachable, or the
-// dispatch's ctx carried no query_id because no trace was present), the gate
-// weight still releases (never leaked) but without the extra confirmation,
-// so the pre-fix race can in principle still occur in that narrow,
-// already-degraded scenario. Route A's admission gap this file closes
-// (Route A was completely ungated before #3128's move) plus this
-// cancellation fix together make the gate a hard ceiling on ClickHouse's own
-// concurrent per-shard statement count under the overwhelming majority of
-// real cancellation scenarios; only the doubly-degraded case above remains.
+// Residual gap, CONFIRMED against a real cluster (cerberus issue #3128, e2e
+// dispatch run 34040395235, AFTER this fix landed): `datashard (N=2)` and
+// `(N=4)` both still show a real, if smaller, point-2 overshoot —
+// N=2: peak concurrent 9 > cap 8 (down from the pre-fix 10); N=4: peak
+// concurrent 23 > cap 8 (down from the pre-fix 24). This fix closes the ONE
+// mechanism it was written for (cerberus's own premature client-side
+// release racing clickhouse-go's fire-and-forget ClientCancel — proven by
+// this file's own unit tests) and measurably shrinks the real overshoot,
+// but does NOT make e2e-datashard-verify.mjs's point 2 assertion pass on
+// either leg. Two candidate explanations for the remainder, NEITHER
+// confirmed nor ruled out yet (both need direct instrumentation against a
+// real cluster, correlating cerberus's own gate-hold intervals against
+// system.query_log's wall-clock windows, to disambiguate):
+//
+//  1. `KILL QUERY ... SYNC` run against the COORDINATOR's own query_id (the
+//     is_initial_query=1 statement cerberus dispatched) confirms only that
+//     the coordinator's own local execution stopped. Point 2 measures
+//     is_initial_query=0 rows — the CHILD statements ClickHouse's own
+//     Distributed table engine fans out internally to the real data-shard
+//     nodes — and nothing in this file's mechanism proves ClickHouse
+//     propagates that cancellation down to those children synchronously
+//     with the coordinator's own SYNC confirmation; a child already
+//     dispatched before the KILL lands could keep running to a natural
+//     QueryFinish on its own node.
+//  2. The pre-existing alternate hypothesis this issue was filed with
+//     (still open, never disambiguated from (1) above): a query_log child
+//     row's `query_start_time_microseconds` + `query_duration_ms` window
+//     may include time the statement spent QUEUED inside ClickHouse before
+//     cerberus's own gate-held admission window began, inflating measured
+//     overlap beyond anything the gate ever actually admitted concurrently
+//     — independent of cancellation entirely, and more exposed at higher
+//     DataShardCount (more child statements contending for the same
+//     server-side thread pool per logical dispatch).
+//
+// Route A's admission gap this file closes (Route A was completely
+// ungated before #3128's move) is a genuine, confirmed improvement over the
+// pre-move state regardless. Tracked on issue #3128, still open, until the
+// point-2 assertion passes cleanly on both legs.
 
 // ErrDataShardFanoutGateBusy is the sentinel wrapped into the error
 // [Client.acquireDataShardFanout] returns when the request's own ctx
