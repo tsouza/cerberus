@@ -330,19 +330,61 @@ async function main() {
   }
 
   // ---- point 2: real concurrent per-shard statement count stays within cap ----
+  //
+  // DIAGNOSTIC EXTENSION (cerberus issue #3128 residual-gap round 3): also
+  // pull query_kind and initial_query_id for every is_initial_query=0 row.
+  // Neither was needed for the original point-2 bound itself, but both are
+  // needed to disambiguate why the real overlap still exceeds the cap after
+  // the cancellation fix (PR #3137):
+  //   - query_kind distinguishes a real DataShardFanoutGate-bound dispatch
+  //     (query_kind='Select', reaching ClickHouse through
+  //     internal/chclient's queryOpen/queryCursorColumnar, the ONLY seam
+  //     this gate wraps) from an is_initial_query=0 row that was never
+  //     subject to the gate AT ALL: `just e2e-seed-rolling`'s rolling
+  //     seeder (test/e2e/seed/cmd/seed) connects to ClickHouse DIRECTLY
+  //     over the native protocol (bypassing cerberus, and so
+  //     acquireDataShardFanout, entirely) and keeps INSERTing into the same
+  //     public `Distributed`-engine tables (otel_logs, otel_traces,
+  //     otel_metrics_*) every 30s for the lane's whole lifetime, INCLUDING
+  //     during this script's own burst window (`e2e-seed-stop` is not
+  //     called until `just e2e-datashard-down`, well after this script
+  //     returns). Each such INSERT fans out to DataShardCount
+  //     is_initial_query=0 query_kind='Insert' children exactly like a
+  //     Select does, and the original query with no query_kind filter
+  //     counts them identically — inflating measured overlap with
+  //     statements the gate was never designed to bound.
+  //   - initial_query_id lets an over-cap Select-only overlap (if any
+  //     remains after excluding Insert rows) be joined back to
+  //     kEffByTrace/the coordinator's own trace, and — via cerberus's own
+  //     TEMPORARY acquire/release diagnostic log
+  //     (internal/chclient/fanout_gate.go's logDataShardFanoutEvent, this
+  //     same investigation round) — back to the exact gate-hold interval
+  //     cerberus itself believed it held for that dispatch.
   const shardStmtRows = chQueryTSV(
     initiatorPod,
-    `SELECT toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us, query_duration_ms * 1000 AS dur_us
+    `SELECT toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us, query_duration_ms * 1000 AS dur_us,
+            query_kind, substring(initial_query_id, 1, 32) AS trace
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
      WHERE is_initial_query = 0 AND type = 'QueryFinish'
        AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
   );
-  const intervals = shardStmtRows.map((r) => {
-    const [s, d] = r.split('\t').map(Number);
-    return [s, d];
+  const shardStmts = shardStmtRows.map((r) => {
+    const [s, d, kind, trace] = r.split('\t');
+    return { startUs: Number(s), durUs: Number(d), kind, trace };
   });
+  const intervals = shardStmts.map((r) => [r.startUs, r.durUs]);
   const peakConcurrentShardStatements = maxConcurrent(intervals);
-  log(`real per-shard statements observed: ${intervals.length}; peak concurrent=${peakConcurrentShardStatements}`);
+  const kindCounts = {};
+  for (const r of shardStmts) kindCounts[r.kind] = (kindCounts[r.kind] || 0) + 1;
+  log(`real per-shard statements observed: ${intervals.length}; peak concurrent=${peakConcurrentShardStatements}; by query_kind: ${JSON.stringify(kindCounts)}`);
+
+  // Select-only overlap: what DataShardFanoutGate could ever have been
+  // responsible for bounding, excluding the rolling seeder's direct-CH
+  // Insert traffic entirely.
+  const selectIntervals = shardStmts.filter((r) => r.kind === 'Select').map((r) => [r.startUs, r.durUs]);
+  const peakConcurrentSelectOnly = maxConcurrent(selectIntervals);
+  log(`Select-only per-shard statements observed: ${selectIntervals.length}; peak concurrent (Select-only)=${peakConcurrentSelectOnly}`);
+
   if (peakConcurrentShardStatements > DATA_SHARD_FANOUT_CAP) {
     error(`peak concurrent per-shard ClickHouse statement count ${peakConcurrentShardStatements} exceeded DataShardFanoutCap=${DATA_SHARD_FANOUT_CAP} — the admission-control ceiling did not hold under real load`);
     failures++;

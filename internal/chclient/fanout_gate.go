@@ -209,6 +209,12 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 	if aerr := c.dataShardFanoutGate.Acquire(ctx, weight); aerr != nil {
 		return nil, fmt.Errorf("chclient: data-shard fanout gate acquire: %w: %w", ErrDataShardFanoutGateBusy, aerr)
 	}
+	// TEMPORARY diagnostic (cerberus issue #3128's residual-gap round 3) —
+	// see this file's own "Residual gap" doc above for what it disambiguates,
+	// and logDataShardFanoutEvent's own doc for why it is scoped to only the
+	// dispatches that can actually be joined back to system.query_log.
+	queryID := queryIDFromContext(ctx)
+	logDataShardFanoutEvent(queryID, "acquire", weight, false)
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -220,14 +226,50 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 			// typed *clickhouse.Exception). Only the cancellation-unwind
 			// path pays for the extra KILL QUERY round-trip; a normal finish
 			// falls straight through to Release below, unconditionally.
-			if ctx.Err() != nil {
-				if queryID := queryIDFromContext(ctx); queryID != "" {
+			cancelled := ctx.Err() != nil
+			if cancelled {
+				if queryID != "" {
 					c.killDataShardQuery(queryID)
 				}
 			}
+			logDataShardFanoutEvent(queryID, "release", weight, cancelled)
 			c.dataShardFanoutGate.Release(weight)
 		})
 	}, nil
+}
+
+// logDataShardFanoutEvent is the TEMPORARY diagnostic instrumentation for
+// cerberus issue #3128's residual-gap investigation, round 3 — added to
+// correlate cerberus's own gate-hold intervals (this log's wall-clock
+// timestamps, which slog stamps automatically) against
+// system.query_log's is_initial_query=0 child-row windows
+// (.github/scripts/e2e-datashard-verify.mjs's point-2 query), to
+// disambiguate the two candidate explanations fanout_gate.go's own
+// "Residual gap" doc lists for why the gate's admitted concurrency and the
+// real cluster-observed concurrency still diverge.
+//
+// Logged at INFO (not DEBUG) so it surfaces in the e2e lane's pod logs
+// without a log-level bump — CERBERUS_LOG_LEVEL defaults to "info"
+// (internal/config/config.go's defaultLogLevel) and neither
+// cerberus-values.yaml nor cerberus-values-datashard.yaml overrides it for
+// this lane.
+//
+// queryID is the dispatch's own per-query_id (queryIDFromContext) — empty
+// only for the no-trace case (ensureQueryID's own contract), which this
+// diagnostic skips entirely since an empty id can never be joined back to a
+// system.query_log row anyway.
+//
+// This function, and every call site above, is scoped for removal once the
+// investigation concludes — see the PR that introduces it for the decision
+// on whether any part of it graduates to permanent instrumentation.
+func logDataShardFanoutEvent(queryID, phase string, weight int64, cancelled bool) {
+	if queryID == "" {
+		return
+	}
+	breakerLogger().Info(
+		"chclient: data-shard fanout gate diagnostic (issue #3128 round 3, temporary)",
+		"phase", phase, "query_id", queryID, "weight", weight, "cancelled", cancelled,
+	)
 }
 
 // killDataShardQueryTimeout bounds how long killDataShardQuery waits for
