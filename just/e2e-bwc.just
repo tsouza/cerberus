@@ -204,30 +204,15 @@ e2e-datashard-up count="2" replicas="1": e2e-down
         case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
         just _pull-retry "$img"; \
     done
-    @# Import each image individually + VERIFY it landed (same robust loop as
-    @# e2e-up / e2e-bwc-up — see the comment on e2e-up for why).
-    @for img in {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_DATASHARD_IMAGES}}; do \
-        case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
-        ref="$img"; \
-        case "$ref" in \
-            *.*/*|*:*/*) ;; \
-            */*) ref="docker.io/$ref" ;; \
-            *) ref="docker.io/library/$ref" ;; \
-        esac; \
-        landed=0; \
-        for attempt in 1 2 3 4 5; do \
-            k3d image import "$img" -c {{K3D_CLUSTER}} || true; \
-            if docker exec k3d-{{K3D_CLUSTER}}-server-0 ctr -n k8s.io images ls -q | grep -qF "$ref"; then \
-                landed=1; break; \
-            fi; \
-            echo "  import attempt $attempt: $ref not in containerd yet, retrying with backoff" >&2; \
-            sleep $((attempt * 2)); \
-        done; \
-        if [ "$landed" != "1" ]; then \
-            echo "ERROR: $ref missing from k3d node containerd after 5 import attempts" >&2; \
-            exit 1; \
-        fi; \
-    done
+    @echo "==> [datashard] importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
+    @# Same retry+verify loop `e2e-up` runs (cerberus issue #3096), reused
+    @# unchanged via .github/scripts/k3d-image-import.mjs — only the image list
+    @# and the exclusion filter (the standalone *-alpine ClickHouse image the
+    @# datashard kustomization never applies) differ, same as `e2e-bwc-up`
+    @# (cerberus issue #3107).
+    @IMAGE_IMPORT_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
+    K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs \
+        {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_DATASHARD_IMAGES}}
     @echo "==> [datashard] phase 1: namespace"
     kubectl apply -f test/e2e/k3s/namespace.yaml
     @echo "==> [datashard] phase 2: installing cerberus + bundled ClickHouse (dataShards.count={{count}}, replicas={{replicas}}) via Helm"

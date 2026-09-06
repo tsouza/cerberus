@@ -122,8 +122,15 @@ async function fireOne(url) {
 // hostname `<sts-name>-<ordinal>`) into { shard, replica }, or null for a
 // hostname that does not match (never expected on this lane's own cluster,
 // but never silently misclassified as shard "0" either).
+//
+// `system.query_log.hostname` reports the pod's FULLY QUALIFIED domain name
+// on this cluster (e.g.
+// `cerberus-clickhouse-datashard-1-0.cerberus-clickhouse-headless-datashard-1
+// .cerberus.svc.cluster.local`), so the `-datashard-<shard>-<ordinal>`
+// segment is followed by the FQDN's own `.` domain separator, not
+// necessarily end-of-string — issue #3131.
 function hostnameShardReplica(hostname) {
-  const m = /-datashard-(\d+)-(\d+)$/.exec(hostname);
+  const m = /-datashard-(\d+)-(\d+)(?:\.|$)/.exec(hostname);
   if (!m) return null;
   return { shard: Number(m[1]), replica: Number(m[2]) };
 }

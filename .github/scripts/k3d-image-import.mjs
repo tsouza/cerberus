@@ -25,8 +25,8 @@
 // therefore first-class parameters here from the start, not a retrofit:
 // `e2e-bwc-up` reuses this script by changing only its own image list +
 // exclude pattern at the call site, never this script's interface. The
-// multi-data-shard `e2e-datashard-up` still duplicates this exact loop
-// today — tracked separately, see cerberus issue #3107.
+// multi-data-shard `e2e-datashard-up` reuses it the same way (cerberus
+// issue #3107).
 //
 // Usage:
 //   node .github/scripts/k3d-image-import.mjs <image>...
