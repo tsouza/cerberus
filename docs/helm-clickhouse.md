@@ -178,20 +178,20 @@ Backends and modes differ in how far they have been exercised. Treat anything
 below "runtime-proven" as needing a real-cloud validation pass against your
 own bucket/credentials before production use:
 
-| Configuration                                                                                    | Status                         | How it is validated                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Object-store mode, S3 / MinIO, single-node                                                       | **Runtime-proven**             | k3d e2e (`bwc-minio` lane, object-storage scenario): live MinIO, real read/write, placement asserted                                                                                                                                                                                                                                                                                                                                                                                     |
-| Hot-only mode, single-node                                                                       | **Runtime-proven**             | k3d e2e (`bwc-minio` lane, hot-only scenario): explicit `schema.ttl`, parts asserted on the local hot disk, no object-store disk/secret/env rendered                                                                                                                                                                                                                                                                                                                                     |
-| Hot/cold mode, S3 / MinIO, single-node                                                           | **Runtime-proven**             | k3d e2e (`bwc-minio` lane, hot-cold scenario): fresh rows land on `hot`; rows aged past `tierAfter` are asserted to move onto `cold`                                                                                                                                                                                                                                                                                                                                                     |
-| Mode-toggle migration safety (storage-policy rejection)                                          | Implemented, k3d run pending   | `bwc-minio` lane's new `mode-toggle` scenario (issue #3082): install-with-data → incompatible-mode `helm upgrade` → asserts ClickHouse startup failure is exactly `Unknown storage policy ... (UNKNOWN_POLICY)`. Mechanism manually reproduced against real ClickHouse + MinIO fed the chart's own rendered config; the scenario itself has not yet executed in CI (`bwc-minio` is push/nightly/dispatch-only, never a PR gate) — upgrade to **Runtime-proven** once it goes green there |
-| Object-store / hot/cold, S3 on real AWS                                                          | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-aws-values.yaml` renders; no live-AWS run                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Object-store / hot/cold, GCS (S3-compat HMAC)                                                    | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-gcs-values.yaml` renders; no live-GCS run                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Object-store / hot/cold, Azure Blob                                                              | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-azure-values.yaml` renders; no live-Azure run                                                                                                                                                                                                                                                                                                                                                                                                               |
-| IRSA / GKE / AKS workload identity                                                               | Render / kubeconform-validated | env / SA annotations render; no live cloud-identity run                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Multi-replica + Keeper (ReplicatedMergeTree)                                                     | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-replicated-values.yaml` renders; no live multi-node run                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Dedicated hot-volume PVC (`hotVolume.persistence`)                                               | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-hot-cold-values.yaml` renders a dedicated `hot` volumeClaimTemplate; no live multi-node run                                                                                                                                                                                                                                                                                                                                                                 |
-| `dataShards.count: 2` topology (manual k3d, single-replica-per-shard, S3/MinIO)                  | **Infrastructure-validated**   | Manual k3d run: `CREATE TABLE ... ON CLUSTER bwc_cluster` succeeded on both shards; a manual `cluster('bwc_cluster', ...)` query returned correctly merged rows from both. NOT a `just e2e` lane yet, and NOT query-correctness-supported under concurrent solver load — see [#3079](https://github.com/tsouza/cerberus/issues/3079)                                                                                                                                                     |
-| `dataShards.count > 1` + `replicas > 1` (multi-replica per shard, classic `ReplicatedMergeTree`) | Render / kubeconform-validated | `chart-render-assert.mjs`'s replicated+dataShards section renders; no live multi-shard-multi-replica run                                                                                                                                                                                                                                                                                                                                                                                 |
+| Configuration                                                                                    | Status                                                                          | How it is validated                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Object-store mode, S3 / MinIO, single-node                                                       | **Runtime-proven**                                                              | k3d e2e (`bwc-minio` lane, object-storage scenario): live MinIO, real read/write, placement asserted                                                                                                                                                                                                                                                                                                                                                                                     |
+| Hot-only mode, single-node                                                                       | **Runtime-proven**                                                              | k3d e2e (`bwc-minio` lane, hot-only scenario): explicit `schema.ttl`, parts asserted on the local hot disk, no object-store disk/secret/env rendered                                                                                                                                                                                                                                                                                                                                     |
+| Hot/cold mode, S3 / MinIO, single-node                                                           | **Runtime-proven**                                                              | k3d e2e (`bwc-minio` lane, hot-cold scenario): fresh rows land on `hot`; rows aged past `tierAfter` are asserted to move onto `cold`                                                                                                                                                                                                                                                                                                                                                     |
+| Mode-toggle migration safety (storage-policy rejection)                                          | Implemented, k3d run pending                                                    | `bwc-minio` lane's new `mode-toggle` scenario (issue #3082): install-with-data → incompatible-mode `helm upgrade` → asserts ClickHouse startup failure is exactly `Unknown storage policy ... (UNKNOWN_POLICY)`. Mechanism manually reproduced against real ClickHouse + MinIO fed the chart's own rendered config; the scenario itself has not yet executed in CI (`bwc-minio` is push/nightly/dispatch-only, never a PR gate) — upgrade to **Runtime-proven** once it goes green there |
+| Object-store / hot/cold, S3 on real AWS                                                          | Render / kubeconform-validated                                                  | `deploy/helm/cerberus/ci/bwc-aws-values.yaml` renders; no live-AWS run                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Object-store / hot/cold, GCS (S3-compat HMAC)                                                    | Render / kubeconform-validated                                                  | `deploy/helm/cerberus/ci/bwc-gcs-values.yaml` renders; no live-GCS run                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Object-store / hot/cold, Azure Blob                                                              | Render / kubeconform-validated                                                  | `deploy/helm/cerberus/ci/bwc-azure-values.yaml` renders; no live-Azure run                                                                                                                                                                                                                                                                                                                                                                                                               |
+| IRSA / GKE / AKS workload identity                                                               | Render / kubeconform-validated                                                  | env / SA annotations render; no live cloud-identity run                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Multi-replica + Keeper (ReplicatedMergeTree)                                                     | Render / kubeconform-validated                                                  | `deploy/helm/cerberus/ci/bwc-replicated-values.yaml` renders; no live multi-node run                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Dedicated hot-volume PVC (`hotVolume.persistence`)                                               | Render / kubeconform-validated                                                  | `deploy/helm/cerberus/ci/bwc-hot-cold-values.yaml` renders a dedicated `hot` volumeClaimTemplate; no live multi-node run                                                                                                                                                                                                                                                                                                                                                                 |
+| `dataShards.count: 2` topology (manual k3d, single-replica-per-shard, S3/MinIO)                  | **Infrastructure-validated**                                                    | Manual k3d run: `CREATE TABLE ... ON CLUSTER bwc_cluster` succeeded on both shards; a manual `cluster('bwc_cluster', ...)` query returned correctly merged rows from both. NOT a `just e2e` lane yet, and NOT query-correctness-supported under concurrent solver load — see [#3079](https://github.com/tsouza/cerberus/issues/3079)                                                                                                                                                     |
+| `dataShards.count > 1` + `replicas > 1` (multi-replica per shard, classic `ReplicatedMergeTree`) | Render / kubeconform-validated; cross-shard replica-affinity **runtime-proven** | `chart-render-assert.mjs`'s replicated+dataShards section renders; no live multi-shard-multi-replica run for general query correctness, but issue #3086's `datashard-replica-affinity` e2e leg (`dataShards.count=2`, `replicas=2`) proves the `load_balancing` pin's specific claim — see the [#3075 compatibility section](#3075-compatibility-object-disk-path-is-shard-agnostic-sessionaffinity-gains-a-new-gap) above                                                               |
 
 Only S3/MinIO single-node, in every one of the three storage modes, is proven
 end to end on the CI substrate today (the k3d e2e brings up real MinIO and a
@@ -383,9 +383,9 @@ assumed:
   local metadata database, never of the shared object-store namespace. So
   `objectStorage.path` stays a single, chart-wide value; nothing here needed
   a `-datashard-<i>` suffix.
-- **sessionAffinity's consistency guarantee gains a new gap once a
-  `Distributed` fan-out is in play — recorded as an explicit open follow-up,
-  not silently assumed solved.** `sessionAffinity: ClientIP` (see
+- **sessionAffinity's consistency guarantee gained a new gap once a
+  `Distributed` fan-out came into play — investigated and CLOSED by issue
+  #3086, not silently assumed solved.** `sessionAffinity: ClientIP` (see
   ["Multi-replica consistency"](#multi-replica-consistency) above) pins a
   cerberus pod's connection to ONE replica **within the shard that
   Service's selector reaches** — under `dataShards.count > 1` each per-shard
@@ -395,17 +395,64 @@ assumed:
   cross-replica-divergence property it always did. What sessionAffinity
   CANNOT reach: once that one pinned connection issues a query against the
   `Distributed` wrapper table, ClickHouse's OWN internal replica-selection
-  logic (`load_balancing`, default `round_robin` per query) picks which
-  replica of EVERY OTHER shard to read from — a decision made entirely
-  inside ClickHouse, invisible to and uncoordinated by any k8s Service.
-  Whether two separate statements in the same cerberus-issued multi-statement
-  request (e.g. a sharded-pushdown time-range fan-out, now composing with a
-  DATA-shard fan-out) can land on two DIFFERENT replicas of the SAME remote
-  shard — reopening exactly the divergence risk sessionAffinity exists to
-  close, just one level removed — is open. Tracked as
-  [#3086](https://github.com/tsouza/cerberus/issues/3086), scoped to the
-  settings-verification / e2e-hardening sub-issues (#3078/#3079) that can
-  actually observe real cross-shard replica selection under load.
+  logic (the `load_balancing` setting) picks which replica of EVERY OTHER
+  shard to read from — a decision made entirely inside ClickHouse, invisible
+  to and uncoordinated by any k8s Service. Whether two separate statements in
+  the same cerberus-issued multi-statement request (e.g. a sharded-pushdown
+  time-range fan-out, now composing with a DATA-shard fan-out) could land on
+  two DIFFERENT replicas of the SAME remote shard — reopening exactly the
+  divergence risk sessionAffinity exists to close, just one level removed —
+  was the open question issue #3086 set out to answer.
+
+  **Resolution: closed by an unconditional `internal/chclient` settings pin,
+  not merely documented as a residual risk.** ClickHouse's own default is
+  `load_balancing=random` (verified against `src/Core/Settings.cpp` at the
+  pinned `v25.8.1.5101-lts` tag — NOT `round_robin` as this issue's own
+  problem statement assumed before the source was actually read), which picks
+  arbitrarily among a shard's least-erroring replicas on EVERY call — the
+  DEFAULT itself is what reopens the divergence risk. Cerberus now stamps
+  `load_balancing=first_or_random` + `load_balancing_first_offset=0`
+  UNCONDITIONALLY on every data-plane query (`internal/chclient/
+  distributed_query_settings.go`, mirroring the #3078 `skip_unavailable_
+  shards` / `fallback_to_stale_replicas_for_distributed_queries` pins): per
+  `src/Common/GetPriorityForLoadBalancing.cpp` (same pinned tag),
+  `first_or_random` gives priority 0 to the replica at the configured offset
+  and priority 1 to every other replica, so — absent any recorded connection
+  errors — EVERY statement against a remote shard's `Distributed` connection
+  pool deterministically selects that ONE offset-0 replica (this chart's
+  `<replica>` list is rendered in StatefulSet-ordinal order with no
+  `<priority>` tag, so offset 0 always names that shard's own `-0` pod). The
+  selection state (`PoolWithFailoverBase::Pool::error_count`) lives on the
+  ClickHouse SERVER process cerberus's own sessionAffinity already pins to,
+  not on any per-client state, so the resulting guarantee is actually
+  STRONGER than sessionAffinity's own: every statement from every cerberus
+  pod converges on the same physical replica per remote shard, cluster-wide,
+  for as long as that replica stays healthy — not merely "for the lifetime of
+  one client's affinity window." See `internal/chclient/
+  distributed_query_settings.go`'s own doc comment for the full citation
+  chain (including why `first_or_random` was chosen over the equally
+  deterministic `in_order`) and
+  [`operations.md`'s per-query-setting table](operations.md#per-query-setting--distributed-behavior)
+  for the `Distributed`-forwarding analysis.
+
+  **Trade-off, documented not hidden — PERMANENT, not a bug to keep
+  chasing.** This pin concentrates every cerberus read against a remote
+  shard's `Distributed` connection on that shard's ONE offset-0 replica while
+  it stays healthy; the shard's other replicas serve durability/failover
+  only, not read-scaling, for as long as this pin stands. This is the same
+  correctness-over-throughput trade cerberus already makes for the #3078
+  pins, applied one level further down the replica-selection stack — an
+  operator who needs read-scaling across a shard's replicas can override
+  `load_balancing` via a server-side settings profile (cerberus's own default
+  never silently reverts to unpredictable divergence risk instead). Verified
+  empirically on a real multi-replica-per-shard k3d cluster by the
+  `datashard-replica-affinity` e2e leg
+  (`.github/workflows/e2e.yml`, `.github/scripts/
+  e2e-datashard-replica-affinity-verify.mjs`): every remote-shard child
+  statement within a genuinely solver-split (`kEff > 1`) trace is asserted
+  to land on the SAME `system.query_log.hostname` — and specifically on each
+  shard's own ordinal-0 pod, confirming the mechanism, not just its
+  consequence.
 
 ## What's out of scope
 

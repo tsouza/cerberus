@@ -810,15 +810,21 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 }
 
 // querySettings returns the per-query ClickHouse settings map applied
-// to every data-plane query. It always carries at least the two
-// distributed-query pins below (cerberus issue #3078), so it is never nil.
-// It carries:
+// to every data-plane query. It always carries at least the four
+// distributed-query pins below (cerberus issues #3078, #3086), so it is
+// never nil. It carries:
 //
 //   - `skip_unavailable_shards=0` +
 //     `fallback_to_stale_replicas_for_distributed_queries=0` —
 //     UNCONDITIONAL, version-safe, fail-loud pins for Distributed-engine
 //     queries (see distributed_query_settings.go for the full citation);
 //     harmless no-ops against a single-shard/non-Distributed deployment.
+//   - `load_balancing=first_or_random` + `load_balancing_first_offset=0` —
+//     UNCONDITIONAL, version-safe pins that make ClickHouse's own
+//     remote-shard replica selection deterministic (cerberus issue #3086 —
+//     see distributed_query_settings.go for the full citation and its
+//     documented read-concentration trade-off); likewise a no-op against a
+//     single-shard/non-Distributed deployment.
 //   - `max_memory_usage` — ClickHouse's per-query memory cap, from
 //     Config.MaxQueryMemoryBytes (when > 0).
 //   - `max_execution_time` + `timeout_overflow_mode=throw` — the
@@ -844,17 +850,19 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	perQuery := querySettingsFromContext(ctx)
 	timeout := c.effectiveQueryTimeout(ctx)
 	blockSize := maxBlockSizeFromContext(ctx)
-	// skip_unavailable_shards=0 and
-	// fallback_to_stale_replicas_for_distributed_queries=0 are pinned
-	// UNCONDITIONALLY (cerberus issue #3078 — see
-	// distributed_query_settings.go for the full citation of both
-	// settings' documented behavior and why 0 is the correct value for a
-	// correctness-focused gateway), so this map is never empty and the
-	// old "nothing configured, return nil" short-circuit no longer
+	// skip_unavailable_shards=0, fallback_to_stale_replicas_for_distributed_queries=0,
+	// load_balancing=first_or_random and load_balancing_first_offset=0 are
+	// all pinned UNCONDITIONALLY (cerberus issues #3078 and #3086 — see
+	// distributed_query_settings.go for the full citation of each
+	// setting's documented behavior and why its stamped value is correct
+	// for a correctness-focused gateway), so this map is never empty and
+	// the old "nothing configured, return nil" short-circuit no longer
 	// applies.
 	s := clickhouse.Settings{
 		settingSkipUnavailableShards:                        0,
 		settingFallbackToStaleReplicasForDistributedQueries: 0,
+		settingLoadBalancing:                                loadBalancingFirstOrRandom,
+		settingLoadBalancingFirstOffset:                     0,
 	}
 	if c.maxMemory > 0 {
 		s["max_memory_usage"] = c.maxMemory
@@ -929,10 +937,10 @@ var queryIDCounter atomic.Uint64
 // Exec (DDL / DML) deliberately does NOT go through this — see
 // Config.MaxQueryMemoryBytes.
 func (c *Client) queryContext(ctx context.Context) context.Context {
-	// querySettings always returns a non-nil, non-empty map (cerberus issue
-	// #3078's two distributed-query pins ride on EVERY data-plane query —
-	// see its own doc), so unlike queryID below there is no "nothing to
-	// apply" case left to short-circuit here.
+	// querySettings always returns a non-nil, non-empty map (cerberus issues
+	// #3078 and #3086's unconditional distributed-query pins ride on EVERY
+	// data-plane query — see its own doc), so unlike queryID below there is
+	// no "nothing to apply" case left to short-circuit here.
 	s := c.querySettings(ctx)
 	queryID, ctx := ensureQueryID(ctx)
 	ctx = hiddenDeadlineContext(ctx)

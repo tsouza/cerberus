@@ -2034,6 +2034,31 @@ what actually runs.
     (default `120`).
   - Exit: `0` on success, `1` on an unreadable overlay file or any kubectl
     failure.
+- **`e2e-datashard-replica-affinity-verify.mjs`** — `e2e.yml`, the
+  `datashard-replica-affinity` job (cerberus issue #3086, epic #3074),
+  invoked via `just e2e-datashard-replica-affinity-verify <count> <replicas>`
+  against a cluster where every data shard has MORE than one replica (the
+  `datashard` job's own lane runs `replicas: 1`, so it has no replica
+  diversity to observe at all). Proves that ClickHouse's OWN remote-shard
+  replica-selection logic — not any k8s Service — is deterministic across
+  the several statements one solver-split (sharded-pushdown) request fans
+  out: reads `system.clusters` first to confirm the topology genuinely has
+  `REPLICAS` distinct replicas per shard (never vacuously passing against a
+  degenerate render), fires a few sequential solver-splitting
+  `query_range` requests, then reads `system.query_log.hostname` for every
+  remote-shard child statement of each real `kEff > 1` trace and asserts
+  every child touching the SAME data shard within that trace landed on the
+  SAME physical replica — and specifically that shard's own ordinal-0 pod,
+  confirming the `load_balancing=first_or_random` +
+  `load_balancing_first_offset=0` mechanism
+  (`internal/chclient/distributed_query_settings.go`), not just its
+  consequence. INFORMATIONAL — never a PR gate.
+  - Env: `NAMESPACE` (default `cerberus`), `CERBERUS_URL` (default
+    `http://localhost:8080`), `DB` (default `otel`), `CH_USER`/`CH_PASSWORD`
+    (default `cerberus`/`cerberus`), `CH_CLUSTER` (default `bwc_cluster`),
+    `DATA_SHARD_COUNT` (required, `>= 2`), `REPLICAS` (required, `>= 2`),
+    `REQUEST_COUNT` (default `3`), `FLUSH_WAIT_SECONDS` (default `10`).
+  - Exit: `0` all assertions passed, `1` on any failure.
 - **`e2e-datashard-verify.mjs`** — `e2e.yml`, the `datashard` job (multi-data-shard
   lane, cerberus issue #3079), invoked via `just e2e-datashard-verify <count>`
   after a concurrent PromQL/LogQL/TraceQL burst has run against the

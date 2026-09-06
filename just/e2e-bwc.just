@@ -175,8 +175,16 @@ e2e-bwc-down: e2e-down
 # shard before anything else can race it), THEN the otel collector / grafana
 # / sample-app fixtures.
 
+# `replicas` (cerberus issue #3086) selects `clickhouse.bundled.replicas` on
+# top of the base topology above — "1" (default) reproduces the existing
+# single-replica-per-shard lane byte-for-byte (the values file already pins
+# `replicas: 1`, so this default `--set` is a redundant no-op); ">1" gives
+# every data shard its own multi-replica pool, the topology the
+# `datashard-replica-affinity` e2e leg needs to observe real cross-replica
+# selection (docs/helm-clickhouse.md's "#3075 compatibility" section).
+
 # Boot the k3d stack with the chart's bundled ClickHouse at the given data-shard count.
-e2e-datashard-up count="2": e2e-down
+e2e-datashard-up count="2" replicas="1": e2e-down
     @echo "==> [datashard] pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
     @echo "==> [datashard] creating k3d cluster {{K3D_CLUSTER}}"
@@ -222,12 +230,13 @@ e2e-datashard-up count="2": e2e-down
     done
     @echo "==> [datashard] phase 1: namespace"
     kubectl apply -f test/e2e/k3s/namespace.yaml
-    @echo "==> [datashard] phase 2: installing cerberus + bundled ClickHouse (dataShards.count={{count}}) via Helm"
+    @echo "==> [datashard] phase 2: installing cerberus + bundled ClickHouse (dataShards.count={{count}}, replicas={{replicas}}) via Helm"
     helm upgrade --install cerberus deploy/helm/cerberus \
         --namespace cerberus \
         --values test/e2e/k3s/cerberus-values.yaml \
         --values test/e2e/k3s/cerberus-values-datashard.yaml \
         --set clickhouse.bundled.dataShards.count={{count}} \
+        --set clickhouse.bundled.replicas={{replicas}} \
         --wait --timeout 420s
     @echo "==> [datashard] waiting for every data-shard StatefulSet + cerberus"
     @i=0; while [ "$i" -lt "{{count}}" ]; do \
@@ -239,7 +248,7 @@ e2e-datashard-up count="2": e2e-down
     kubectl kustomize --load-restrictor=LoadRestrictionsNone test/e2e/k3s-datashard | kubectl apply -f -
     @echo "==> [datashard] waiting for grafana"
     kubectl -n cerberus rollout status deployment/grafana --timeout=180s
-    @echo "==> e2e-datashard-up done (dataShards.count={{count}})"
+    @echo "==> e2e-datashard-up done (dataShards.count={{count}}, replicas={{replicas}})"
 
 # Fires representative concurrent PromQL/LogQL/TraceQL load through the
 # solver's sharded-pushdown path against the `Distributed` target, then
@@ -273,6 +282,27 @@ e2e-datashard-verify count="2":
     DATA_SHARD_COUNT="{{count}}" \
     DATA_SHARD_FANOUT_CAP="8" \
         node .github/scripts/e2e-datashard-verify.mjs
+
+# Cerberus issue #3086: asserts that ClickHouse's OWN remote-shard
+# replica-selection logic — not any k8s Service — is DETERMINISTIC across
+# the several statements one solver-split (sharded-pushdown) request fans
+# out, on a cluster where each data shard genuinely has more than one
+# replica (`e2e-datashard-up count replicas>1` — see that recipe's own
+# doc). Reads `system.query_log.hostname` for every remote-shard child
+# statement of a real kEff>1 trace and asserts every child touching the
+# SAME data shard within that trace landed on the SAME physical replica —
+# closing (or, if it fails, catching a regression in) the exact gap
+# `docs/helm-clickhouse.md`'s "#3075 compatibility" section documents.
+# Run AFTER `just e2e-seed-rolling` (needs real rows to split over). Logic
+# lives in the env-driven Node module per the CLAUDE.md "non-trivial step
+# logic in .github/scripts/*.mjs" rule.
+
+# Assert ClickHouse's remote-shard replica selection is deterministic across a solver-split request's statements (cerberus issue #3086).
+e2e-datashard-replica-affinity-verify count="2" replicas="2":
+    @echo "==> [datashard] verifying cross-statement replica affinity (count={{count}}, replicas={{replicas}})"
+    DATA_SHARD_COUNT="{{count}}" \
+    REPLICAS="{{replicas}}" \
+        node .github/scripts/e2e-datashard-replica-affinity-verify.mjs
 
 # Tear down the datashard lane. Same cluster name + rolling seeder as the
 # standard lane, so the standard teardown covers it exactly.
