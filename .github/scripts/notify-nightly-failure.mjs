@@ -41,7 +41,7 @@
 //   RUN_ID / RUN_URL            identify the run in the issue body.
 //   RESULT_COMPOSE_SMOKE, RESULT_CRAWL_TERMINAL, RESULT_DASHBOARD,
 //   RESULT_DASHBOARD_CRAWL_TERMINAL, RESULT_STARTUP_BENCH, RESULT_CHAOS,
-//   RESULT_BWC_MINIO, RESULT_DATASHARD
+//   RESULT_BWC_MINIO, RESULT_DATASHARD, RESULT_DATASHARD_REPLICA_AFFINITY
 //                                `needs.<job>.result` for every terminal job
 //                                the nightly run fans out to (e2e.yml's job
 //                                graph — see the `nightly-health-notify` job).
@@ -93,6 +93,7 @@ function readJobResults(env) {
     chaos: env.RESULT_CHAOS ?? '',
     'bwc-minio': env.RESULT_BWC_MINIO ?? '',
     datashard: env.RESULT_DATASHARD ?? '',
+    'datashard-replica-affinity': env.RESULT_DATASHARD_REPLICA_AFFINITY ?? '',
   };
 }
 

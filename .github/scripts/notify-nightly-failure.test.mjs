@@ -31,6 +31,7 @@ const allGreen = {
   chaos: 'success',
   'bwc-minio': 'success',
   datashard: 'success',
+  'datashard-replica-affinity': 'success',
 };
 
 test('every job success is a clean night', () => {
@@ -136,12 +137,12 @@ const ciWorkflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
 test('nightly-health-notify needs every terminal job and runs on schedule only', () => {
   assert.match(
     e2eWorkflow,
-    /nightly-health-notify:\n    name: nightly-health-notify\n    needs:\n {6}\[compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard\]\n {4}if: always\(\) && github\.event_name == 'schedule'/,
+    /nightly-health-notify:\n    name: nightly-health-notify\n    needs:\n {6}\[compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard, datashard-replica-affinity\]\n {4}if: always\(\) && github\.event_name == 'schedule'/,
   );
 });
 
 test('nightly-health-notify has issues: write and invokes the script', () => {
-  assert.match(e2eWorkflow, /nightly-health-notify[\s\S]{0,400}issues: write/);
+  assert.match(e2eWorkflow, /nightly-health-notify[\s\S]{0,600}issues: write/);
   assert.match(e2eWorkflow, /run: node \.github\/scripts\/notify-nightly-failure\.mjs/);
 });
 

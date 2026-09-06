@@ -1982,6 +1982,113 @@ jobs:
         if: always()
         run: just e2e-datashard-down
 
+  # datashard-replica-affinity — cerberus issue #3086, epic #3074. A SIBLING
+  # of `datashard` above, not a variant of it: `datashard`'s own lane runs
+  # `replicas: 1`, so it has NO replica diversity to observe at all, and
+  # this leg exists specifically to stand up the one topology no other e2e
+  # lane does — `dataShards.count > 1` WITH `replicas > 1` on every shard —
+  # and prove ClickHouse's OWN remote-shard replica-selection logic is
+  # deterministic across the several statements one solver-split
+  # (sharded-pushdown) request fans out. Background: `sessionAffinity:
+  # ClientIP` (issue #3075) pins a cerberus pod's connection to one replica
+  # of the ONE shard it dials directly, but a `Distributed`-table fan-out to
+  # every OTHER shard is decided entirely inside ClickHouse, invisible to any
+  # k8s Service — see docs/helm-clickhouse.md's "#3075 compatibility"
+  # section for the full investigation and the `load_balancing=
+  # first_or_random` + `load_balancing_first_offset=0` fix
+  # (`internal/chclient/distributed_query_settings.go`).
+  #
+  # Deliberately LIGHTER than `datashard`: fixed at count=2/replicas=2 (no
+  # matrix — this leg's axis is replica count, not shard count, which
+  # `datashard` already covers), and does NOT run the full Go e2e suite
+  # (`just e2e-run`) — general multi-shard query correctness is that OTHER
+  # lane's job; this one is scoped to the ONE claim `.github/scripts/
+  # e2e-datashard-replica-affinity-verify.mjs` checks, so it never competes
+  # with `datashard`'s own bring-up/timeout budget.
+  #
+  # INFORMATIONAL, never a PR gate — SAME trigger posture as `datashard`:
+  # push-to-main + nightly + manual dispatch ONLY. Own concurrency + timeout;
+  # a separate single-cluster lane.
+  datashard-replica-affinity:
+    name: datashard-replica-affinity
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: e2e-datashard-replica-affinity-${{ github.run_id }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      # ---- free runner disk BEFORE k3d + the stack boot (infra-flake fix) ----
+      # 2 shards x 2 replicas = 4 ClickHouse pods + a 3-node Keeper ensemble
+      # (dataShards.count>1 auto-enables Keeper) + cerberus + the collector +
+      # Grafana + 3 sample apps on ONE k3d node — same pod count `datashard`'s
+      # own N=4/replicas=1 leg already runs reliably.
+      - uses: ./.github/actions/free-disk-space
+
+      - uses: ./.github/actions/setup-go
+
+      # node for .github/scripts/e2e-datashard-replica-affinity-verify.mjs
+      # (node: builtins only — no npm install).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
+        with:
+          tool: just
+
+      # cerberus + the bundled ClickHouse data tier are deployed via the Helm
+      # chart in `just e2e-datashard-up` (dogfooding the chart, same as
+      # `datashard`), so the runner needs helm.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
+        with:
+          version: v3.21.1
+
+      - name: Install k3d
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Bring up k3d + bundled-ClickHouse stack (dataShards.count=2, replicas=2)
+        run: just e2e-datashard-up 2 2
+
+      - name: Seed OTel data (deterministic synthetic rows; rolling)
+        run: just e2e-seed-rolling
+
+      - name: Verify cross-statement replica affinity under real multi-replica-per-shard ClickHouse
+        run: just e2e-datashard-replica-affinity-verify 2 2
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h || true
+          echo "=== pods ==="
+          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
+          echo "=== events (last 50) ==="
+          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
+          echo "=== cerberus logs ==="
+          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
+          echo "=== data-shard clickhouse pods ==="
+          for p in $(kubectl -n cerberus get pod -l app.kubernetes.io/component=clickhouse -o jsonpath='{.items[*].metadata.name}'); do \
+            echo "--- $p ---"; \
+            kubectl -n cerberus logs "$p" --tail 100 || true; \
+          done
+          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
+             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
+            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
+
+      - name: Tear down
+        if: always()
+        run: just e2e-datashard-down
+
   # #1861 acceptance criterion #2. Reaching a real terminal `failure` instead
   # of `cancelled` (crawl-terminal / dashboard-crawl-terminal, above) is not
   # the same as anyone SEEING that failure: the `schedule` trigger has no PR,
@@ -2001,13 +2108,13 @@ jobs:
   # never rot into a permanent false alarm. `needs` lists every job whose
   # result actually matters for "did the nightly pass": the two required
   # aggregates (`compose-smoke`, `dashboard`), the two crawl-terminality
-  # readers, and the four informational-but-schedule-run leaf jobs. `always()`
+  # readers, and the five informational-but-schedule-run leaf jobs. `always()`
   # so it still runs (and can still notify) when an upstream job failed rather
   # than being skipped by GitHub's default `success()` gate.
   nightly-health-notify:
     name: nightly-health-notify
     needs:
-      [compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard]
+      [compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard, datashard-replica-affinity]
     if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -2034,4 +2141,5 @@ jobs:
           RESULT_CHAOS: ${{ needs.chaos.result }}
           RESULT_BWC_MINIO: ${{ needs.bwc-minio.result }}
           RESULT_DATASHARD: ${{ needs.datashard.result }}
+          RESULT_DATASHARD_REPLICA_AFFINITY: ${{ needs.datashard-replica-affinity.result }}
         run: node .github/scripts/notify-nightly-failure.mjs

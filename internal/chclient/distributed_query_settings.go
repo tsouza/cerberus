@@ -36,16 +36,109 @@ package chclient
 //     override this via a server-side settings profile; cerberus's own
 //     default never chooses that trade-off silently.
 //
-// Both settings are stamped UNCONDITIONALLY on every data-plane read-path
+// settingLoadBalancing / settingLoadBalancingFirstOffset (cerberus issue
+// #3086, epic #3074) close the SECOND consistency gap issue #3086 opened:
+// `sessionAffinity: ClientIP` (issue #3075) pins a cerberus pod's own
+// connection to one replica of the ONE shard it dials directly, but once
+// that connection issues a query against a `Distributed` wrapper table,
+// ClickHouse's OWN replica-selection logic — NOT any k8s Service — picks
+// which replica of EVERY OTHER shard answers, independently per statement.
+// Two statements from the SAME cerberus multi-statement request (e.g. the
+// sharded-pushdown solver's own time-range fan-out) could therefore land on
+// two DIFFERENT replicas of the SAME remote shard, reopening the exact
+// cross-replica divergence risk sessionAffinity exists to close, one level
+// removed.
+//
+//   - load_balancing=first_or_random — ClickHouse's default is `random`
+//     (verified against `src/Core/Settings.cpp` at the pinned
+//     `v25.8.1.5101-lts` tag: `DECLARE(LoadBalancing, load_balancing,
+//     LoadBalancing::RANDOM, ...)` — NOT `round_robin`, contrary to this
+//     issue's own initial "default round_robin" text, which this citation
+//     corrects). `random` picks arbitrarily among the least-erroring
+//     replicas on EVERY call (`GetPriorityForLoadBalancing::getPriorityFunc`
+//     leaves `get_priority` unset for the RANDOM case, so
+//     `PoolWithFailoverBase`'s ordering tuple falls through to its trailing
+//     `random` tie-breaker), so it can and will pick a different replica of
+//     the same remote shard on every fan-out statement — the DEFAULT itself
+//     is the bug this pin closes.
+//
+//     `first_or_random` (`src/Common/GetPriorityForLoadBalancing.cpp`,
+//     confirmed at the pinned tag) assigns priority 0 to the replica at
+//     index `load_balancing_first_offset` (default 0) and priority 1 to
+//     every other replica, so — absent any recorded connection errors —
+//     EVERY query against the SAME `Distributed` table's remote-shard
+//     connection pool deterministically selects that ONE offset-0 replica.
+//     Selection state (`PoolWithFailoverBase::Pool::error_count`) lives on
+//     the ClickHouse SERVER process (the shard-0 initiator this cerberus
+//     pod's own sessionAffinity pins to), not on any per-client or
+//     per-session state, so the guarantee is actually STRONGER than
+//     sessionAffinity's own: every statement from every cerberus pod,
+//     across every request, converges on the SAME physical replica per
+//     remote shard for as long as it stays healthy — not merely "the same
+//     replica for the lifetime of one client's affinity window."
+//     `deploy/helm/cerberus/templates/clickhouse/configmap-config.yaml`
+//     lists each shard's `<replica>` entries in StatefulSet-ordinal order
+//     (`until (int $b.replicas)`, no `<priority>` tag), so offset 0 always
+//     names that shard's own `-0` pod.
+//
+//     `first_or_random` is chosen over the plainer `in_order` (same
+//     steady-state determinism — `IN_ORDER`'s priority function is also a
+//     pure, error-count-independent function of config index, per the same
+//     source file) because ClickHouse's own docs
+//     (docs/reference/operations/settings/settings.md, "First or random"
+//     section, same pinned tag) name `in_order`'s failure mode explicitly:
+//     "if one replica goes down, the next one gets a double load" — a
+//     doubled-load failover is a worse trade than `first_or_random`'s
+//     "evenly distributed among replicas that are still available", and
+//     both give the IDENTICAL steady-state guarantee this issue needs.
+//
+//   - load_balancing_first_offset=0 — already ClickHouse's own default
+//     (`DECLARE(UInt64, load_balancing_first_offset, 0, ...)`, same pinned
+//     Settings.cpp), stamped explicitly for the same reason
+//     skip_unavailable_shards=0 is stamped explicitly above: the pin
+//     changes no behavior today, but survives a future ClickHouse default
+//     change rather than leaving the "which replica is offset 0" choice to
+//     chance.
+//
+//   - `updateSettingsAndClientInfoForCluster`
+//     (src/Interpreters/ClusterProxy/executeQuery.cpp, same pinned tag)
+//     force-overrides `load_balancing` to `ROUND_ROBIN` ONLY when
+//     `context->canUseParallelReplicasCustomKeyForCluster(cluster)` is true
+//     AND the query left `load_balancing` unchanged
+//     (`!settings[Setting::load_balancing].changed`). Cerberus stamps
+//     `load_balancing` on every query (marking it `.changed`), so this
+//     override never fires against a cerberus-issued query even if a future
+//     operator config were to enable a parallel-replicas custom key —
+//     verified directly against that function's source at the pinned tag.
+//
+// TRADE-OFF, DOCUMENTED NOT HIDDEN: pinning `first_or_random` (or
+// `in_order`) means EVERY cerberus read against a remote shard's Distributed
+// connection concentrates on that shard's ONE offset-0 replica while it
+// stays healthy — the other replicas exist for durability/failover, not
+// read-scaling, for as long as this pin stands. Cerberus already makes this
+// exact trade (correctness/consistency over throughput) for
+// skip_unavailable_shards and fallback_to_stale_replicas_for_distributed_queries
+// above; this is the same posture applied one level further down the
+// replica-selection stack. See docs/helm-clickhouse.md's multi-replica
+// consistency section for the full decision record.
+//
+// All four settings are stamped UNCONDITIONALLY on every data-plane read-path
 // query (see Client.querySettings), mirroring how settingTimeoutOverflowMode
 // is pinned outright rather than exposed as an operator knob: they are
 // harmless, version-safe no-ops against a single-shard/non-Distributed
 // deployment (cerberus's default, and every deployment before epic #3074) —
-// ClickHouse accepts and simply never consults either setting on a query
-// that touches no Distributed-engine table — so pinning them unconditionally
+// ClickHouse accepts and simply never consults any of them on a query that
+// touches no Distributed-engine table — so pinning them unconditionally
 // costs nothing on the common case and only changes behavior once
-// internal/chopt.ClusterTopology.DataShardCount > 1 (cerberus issue #3077).
+// internal/chopt.ClusterTopology.DataShardCount > 1 (cerberus issues #3077,
+// #3086).
 const (
 	settingSkipUnavailableShards                        = "skip_unavailable_shards"
 	settingFallbackToStaleReplicasForDistributedQueries = "fallback_to_stale_replicas_for_distributed_queries"
+	settingLoadBalancing                                = "load_balancing"
+	settingLoadBalancingFirstOffset                     = "load_balancing_first_offset"
+
+	// loadBalancingFirstOrRandom is settingLoadBalancing's stamped value —
+	// see this file's own doc for why it, not in_order, is the pick.
+	loadBalancingFirstOrRandom = "first_or_random"
 )
