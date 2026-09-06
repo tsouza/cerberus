@@ -1985,6 +1985,11 @@ what actually runs.
   478) — never merely a non-ready/crash-looping pod, a plain non-zero `helm`
   exit, a timeout, or a silent success — by polling `kubectl logs` (both the
   current and `--previous` container instance) for that exact signature.
+  Pins the pod's `metadata.uid` before polling and only trusts a "still
+  Ready" reading once a pod with a DIFFERENT uid has appeared (cerberus issue
+  #3109) — `helm upgrade` returns long before the StatefulSet controller
+  actually replaces the pod, so an immediate readiness read would otherwise
+  just observe the pre-toggle pod and falsely call the hazard unreproduced.
   Requires `clickhouse.bundled.configOverrides` to have turned on
   `<logger><console>1</console></logger>`
   (`cerberus-values-bwc-mode-toggle.yaml`), the only reason the exception
