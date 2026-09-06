@@ -173,15 +173,6 @@ func (d justDumpDoc) transitiveDependencyNames(t *testing.T, recipe string) map[
 	return seen
 }
 
-// doc returns the recipe's single-line description (the `just --list`
-// summary), or "" if it has none.
-func (r justRecipeDump) doc() string {
-	if r.Doc == nil {
-		return ""
-	}
-	return *r.Doc
-}
-
 // stringValue resolves an assignment to a plain string, recursively
 // evaluating a `concatenate` of literals (`MIGRATION_TIER2_SERVICES`'s
 // shape) the same way `just` itself would. Fails loudly on a value that
