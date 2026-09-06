@@ -259,13 +259,10 @@ e2e-datashard-up count="2" replicas="1": e2e-down
 # Assert the real cluster's admission-control + memory-bound behavior (see e2e_datashard_subquery_test.go for #29332).
 e2e-datashard-verify count="2":
     @echo "==> [datashard] verifying admission control + memory bound (count={{count}})"
-    # "8" here must stay equal to CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP in
-    # test/e2e/k3s/cerberus-values-datashard.yaml (see that file's own
-    # comment for why it's pinned rather than derived) -- there is no
-    # runtime endpoint to read it back from, so the two literals are kept
-    # in sync by hand; a future edit to one MUST update the other.
+    # The per-process DataShardFanoutCap and the cerberus replica count are
+    # read back from the live cluster (the chart's env ConfigMap and
+    # deployment/cerberus .spec.replicas) -- no hand-synced literal.
     DATA_SHARD_COUNT="{{count}}" \
-    DATA_SHARD_FANOUT_CAP="8" \
         node .github/scripts/e2e-datashard-verify.mjs
 
 # Cerberus issue #3086: asserts that ClickHouse's OWN remote-shard

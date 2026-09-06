@@ -505,3 +505,30 @@ declared; every other affinity field the operator sets is preserved verbatim
 {{ toYaml $affinity }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+cerberus.effectiveReplicas — the MAXIMUM number of cerberus processes this
+render can have running against the ClickHouse data tier at once, which is
+the divisor any CLUSTER-WIDE per-process budget has to be apportioned by
+(clickhouse.bundled.dataShards.fanoutCap is the one consumer today —
+cerberus issue #3128: DataShardFanoutGate is a per-process semaphore, so the
+real cluster-wide ceiling is replicas x per-process cap, and only the chart
+knows the replica count). Monolith: the HPA's maxReplicas when autoscaling
+is on (the pod count can reach it at any moment), else replicaCount. Split:
+the sum of every enabled head's resolved replicaCount (hpa.yaml is
+monolith-only, so per-head counts are fixed). Returns a bare integer.
+*/}}
+{{- define "cerberus.effectiveReplicas" -}}
+{{- if eq .Values.mode "split" -}}
+{{- $total := 0 -}}
+{{- range (include "cerberus.heads" . | fromYamlArray) -}}
+{{- $hv := include "cerberus.headValues" (dict "ctx" $ "svc" .svc) | fromYaml -}}
+{{- if $hv.enabled -}}{{- $total = add $total (int $hv.replicaCount) -}}{{- end -}}
+{{- end -}}
+{{- $total -}}
+{{- else if .Values.autoscaling.enabled -}}
+{{- int .Values.autoscaling.maxReplicas -}}
+{{- else -}}
+{{- int .Values.replicaCount -}}
+{{- end -}}
+{{- end }}

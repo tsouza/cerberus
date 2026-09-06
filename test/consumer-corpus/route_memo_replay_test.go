@@ -55,8 +55,8 @@ const (
 // ignores it entirely and answers from canned state.
 type routeMemoRetryEmitter struct{}
 
-func (routeMemoRetryEmitter) Emit(context.Context, chplan.Node) (string, []any, error) {
-	return "SELECT 1", nil, nil
+func (routeMemoRetryEmitter) Emit(context.Context, chplan.Node) (string, []any, int, error) {
+	return "SELECT 1", nil, 1, nil
 }
 
 // routeMemoRetryCursor yields its canned samples, then terminates —

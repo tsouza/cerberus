@@ -97,8 +97,8 @@ type ChsqlEmitter struct{}
 // Emit lowers a re-anchored shard plan to parameterised ClickHouse SQL,
 // delegating verbatim to chsql.Emit so a shard's SQL is byte-identical to
 // what route A would emit for the same (sub-grid) plan.
-func (ChsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, error) {
-	return chsql.Emit(ctx, plan)
+func (ChsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, int, error) {
+	return chsql.EmitCounted(ctx, plan)
 }
 
 // spansTabler is implemented by a Lang whose plans scan a spans table (the
@@ -190,7 +190,7 @@ func emitForHead(
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
 	bounds ResourceBoundOverrides,
 	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
-) (string, []any, error) {
+) (sql string, args []any, physicalScans int, err error) {
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
 	}
@@ -208,7 +208,7 @@ func emitForHead(
 	ctx = applyResourceBoundOverrides(ctx, bounds)
 	ctx = chsql.WithRangeBucketGridNativeMaxRows(ctx, rangeBucketGridNativeMaxRows)
 	ctx = chsql.WithRangeBucketGridNativeMaxDensityUnits(ctx, rangeBucketGridNativeMaxDensityUnits)
-	return chsql.Emit(ctx, plan)
+	return chsql.EmitCounted(ctx, plan)
 }
 
 // applyResourceBoundOverrides threads onto ctx only the CERBERUS_CH_*
@@ -312,17 +312,11 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
-	// SearchTraceLimit-shaped plans only (cerberus issue #3128 round 4): tell
-	// chclient's data-shard fan-out gate this ONE dispatch makes roughly
-	// TWICE the real per-shard Distributed statements a plain dispatch does
-	// — internal/chsql/search_trace_limit.go's own doc: "the input subquery
-	// is emitted twice (outer drain + inner ranking)", both scanning the
-	// SAME Distributed table under distributed_product_mode=global. A no-op
-	// on a DataShardCount<=1 deployment (acquireDataShardFanout never reads
-	// this ctx value when its gate is nil) and on every OTHER plan shape.
-	if planHasSearchTraceLimit(plan) {
-		ctx = chclient.WithDataShardFanoutMultiplier(ctx, searchTraceLimitFanoutMultiplier)
-	}
+	// The data-shard fan-out multiplier (chclient.WithDataShardFanoutMultiplier,
+	// cerberus issue #3128) is NOT stamped here: it is the physical-table scan
+	// count of the EMITTED statement (chsql.EmitCounted), which only exists
+	// once emitForHead has rendered the SQL, so every dispatch site stamps it
+	// onto the ctx this function returns, right after the emit.
 	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
 	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
 	memCap := e.queryMemoryCap()
@@ -809,41 +803,6 @@ func planHasTSGridNative(plan chplan.Node) bool {
 				found = true
 				return false
 			}
-		}
-		return true
-	})
-	return found
-}
-
-// searchTraceLimitFanoutMultiplier is the WithDataShardFanoutMultiplier
-// value execContext stamps for a SearchTraceLimit-shaped plan (cerberus
-// issue #3128 round 4): internal/chsql/search_trace_limit.go's
-// emitSearchTraceLimit emits its own row source EXACTLY twice (an outer
-// drain query plus an inner top-N trace-ranking subquery, both scanning the
-// same Distributed table under distributed_product_mode=global), so 2 is a
-// structural fact about that ONE emitter, not a measured/tuned constant.
-// Named so the multiplier is never a bare literal (invariant 13).
-const searchTraceLimitFanoutMultiplier = 2
-
-// planHasSearchTraceLimit reports whether plan contains a
-// chplan.SearchTraceLimit node — internal/chsql/search_trace_limit.go's
-// emitSearchTraceLimit emits this shape's row source twice (see that
-// emitter's own doc), so a dispatch carrying one makes roughly twice the
-// real per-shard Distributed statements a plain dispatch does once
-// DataShardCount > 1 (cerberus issue #3128 round 4).
-//
-// chplan.WalkDeep, not chplan.Walk, for the same reason
-// planHasTSGridNative uses it: stampSearchTraceLimit only ever wraps a
-// plain Scan/Filter(Scan) row source directly (search_limit.go's
-// plainSearchSource), so a SearchTraceLimit node is not expected to hang
-// off an Expr slot Walk would miss today — but WalkDeep costs nothing extra
-// here and stays correct if a future lowering ever nests one there.
-func planHasSearchTraceLimit(plan chplan.Node) bool {
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		if _, ok := n.(*chplan.SearchTraceLimit); ok {
-			found = true
-			return false
 		}
 		return true
 	})
@@ -1395,10 +1354,11 @@ func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 			return err
 		}
 		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
-		sql, args, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
+		sql, args, physicalScans, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
 		}
+		guardCtx = chclient.WithDataShardFanoutMultiplier(guardCtx, physicalScans)
 		samples, err := e.Client.Query(chclient.WithProgressFor(guardCtx, lang.Name()), sql, args...)
 		if err != nil {
 			return fmt.Errorf("engine: execute: guard %s: %w", g.Name, err)
@@ -1533,7 +1493,7 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 		return dr, err
 	}
 
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
+	sql, args, _, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	if err != nil {
 		return dr, fmt.Errorf("engine: emit: %w", err)
 	}
@@ -1611,7 +1571,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 
 	// Emit.
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
+	sql, args, physicalScans, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	emitT.Done(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("engine: emit: %w", err)
@@ -1623,6 +1583,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	execCtx = chclient.WithDataShardFanoutMultiplier(execCtx, physicalScans)
 	samples, err := e.Client.Query(execCtx, sql, args...)
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
@@ -1713,12 +1674,13 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 		baseline, _ := e.Solver.Classify(plan, rm)
 		if e.ScanEstimateAdvisor != nil {
 			emit := func(ctx context.Context, lang Lang, plan chplan.Node) (string, []any, error) {
-				return emitForHead(
+				sql, args, _, err := emitForHead(
 					ctx, lang, plan,
 					e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 					e.resourceBoundOverrides(),
 					e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits,
 				)
+				return sql, args, err
 			}
 			rm.Estimate = e.ScanEstimateAdvisor.Advise(ctx, e.RouteMemo, plan, lang, baseline, emit)
 		}
@@ -2277,7 +2239,7 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
+	sql, args, physicalScans, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	emitT.Done(ctx)
 	if err != nil {
 		return routeACursorAttempt{}, fmt.Errorf("engine: emit: %w", err)
@@ -2285,6 +2247,7 @@ func (e *Engine) dispatchRouteACursor(
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	execCtx = chclient.WithDataShardFanoutMultiplier(execCtx, physicalScans)
 	// Thread the adapter's declared response shape onto the execute ctx so
 	// chclient's columnar matrix decode can confirm (defense-in-depth, on top
 	// of its own structural name/type check) that this query really is the

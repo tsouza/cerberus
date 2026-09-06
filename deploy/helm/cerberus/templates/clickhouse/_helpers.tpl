@@ -613,12 +613,46 @@ is disabled, so non-bundled renders are byte-identical.
        acceptance criteria calls out: the SAME macro slot serves both this
        classic form and the single-data-shard Replicated-database form
        above, whichever mechanism a given deployment picks. */ -}}
+{{- $fanoutCap := .Values.clickhouse.bundled.dataShards.fanoutCap -}}
+{{- if and (not (kindIs "invalid" $fanoutCap)) (le $dataShardCount 1) -}}
+{{- fail "clickhouse.bundled.dataShards.fanoutCap is set but dataShards.count is 1: the data-shard fan-out gate only exists for count > 1, so this budget would silently do nothing. Remove fanoutCap or set dataShards.count > 1." -}}
+{{- end -}}
 {{- if gt $dataShardCount 1 -}}
 {{- if not .Values.schema.CLUSTER -}}
 {{- $_ := set .Values.schema "CLUSTER" "bwc_cluster" -}}
 {{- end -}}
 {{- if not (hasKey .Values.config "CERBERUS_CH_DATA_SHARDS") -}}
 {{- $_ := set .Values.config "CERBERUS_CH_DATA_SHARDS" (toString $dataShardCount) -}}
+{{- end -}}
+{{- /* dataShards.fanoutCap is a CLUSTER-WIDE budget (cerberus issue #3128):
+       DataShardFanoutGate is a per-PROCESS semaphore, so the ceiling the
+       cluster actually sees is (cerberus replicas) x (per-process cap).
+       Only the chart knows the replica count, so it is the chart that
+       apportions the budget: per-process cap = floor(fanoutCap /
+       cerberus.effectiveReplicas), surfaced as the binary's own
+       CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP. Every dispatch charges the gate
+       its full shard width, and a semaphore never admits a weight above its
+       size, so a share below dataShards.count could admit nothing — that
+       shape is refused here (and, independently, by config.FromEnv), never
+       rendered. An explicit config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP
+       that DIFFERS from the apportioned share is a contradiction
+       (per-process vs cluster-wide for the same knob), refused rather than
+       silently resolved. Equality is what this helper's own earlier pass
+       left behind — nonSecretEnv includes it once per consumer (env
+       ConfigMap, Deployment checksum), and .Values is mutated in place, so
+       the check has to be idempotent exactly like the hasKey guards above
+       it. */ -}}
+{{- if not (kindIs "invalid" $fanoutCap) -}}
+{{- $cerberusReplicas := include "cerberus.effectiveReplicas" . | int -}}
+{{- $perProcessCap := div (int $fanoutCap) $cerberusReplicas -}}
+{{- if lt $perProcessCap $dataShardCount -}}
+{{- fail (printf "clickhouse.bundled.dataShards.fanoutCap=%d apportioned across %d cerberus replica(s) gives %d per process, below dataShards.count=%d: every dispatch charges the data-shard fan-out gate its full shard width, so such a share could never admit a single query. Raise fanoutCap to at least %d (replicas x dataShards.count) or lower the replica count." (int $fanoutCap) $cerberusReplicas $perProcessCap $dataShardCount (mul $cerberusReplicas $dataShardCount)) -}}
+{{- end -}}
+{{- $explicit := get .Values.config "CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP" -}}
+{{- if and (hasKey .Values.config "CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP") (ne (toString $explicit) (toString $perProcessCap)) -}}
+{{- fail (printf "clickhouse.bundled.dataShards.fanoutCap=%d (cluster-wide, apportioned to %d per cerberus replica) and config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=%s (per-process, verbatim) both set and disagree: they configure the same DataShardFanoutGate cap. Keep exactly one." (int $fanoutCap) $perProcessCap (toString $explicit)) -}}
+{{- end -}}
+{{- $_ := set .Values.config "CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP" (toString $perProcessCap) -}}
 {{- end -}}
 {{- /* The binary's own EXPERIMENTAL opt-in (internal/config refuses to boot
        with CERBERUS_CH_DATA_SHARDS > 1 without it). $dataShardCount > 1 only

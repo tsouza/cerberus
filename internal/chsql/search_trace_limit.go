@@ -13,7 +13,7 @@ import (
 // Rendered shape:
 //
 //	SELECT s.* FROM (<input>) AS s
-//	WHERE `TraceId` IN (
+//	WHERE `TraceId` GLOBAL IN (
 //	  SELECT `TraceId` FROM (<input>)
 //	  GROUP BY `TraceId`
 //	  ORDER BY min(`Timestamp`) DESC, `TraceId` ASC
@@ -27,6 +27,25 @@ import (
 // matchers ride inside it, so the inner GROUP BY is bounded to the window
 // (never the whole table) and the outer drain returns only matching spans,
 // keeping the per-spanset Matched total correct.
+//
+// GLOBAL IN, not IN (cerberus issue #3128, real multi-data-shard evidence):
+// once `otel_traces` is a `Distributed` wrapper (epic #3074), both arms
+// read it through a DERIVED table — `(<input>)` — and ClickHouse's
+// `distributed_product_mode=global` rewrite (pinned by internal/chclient)
+// does not reach an IN whose subquery reads the Distributed table that way;
+// it only rewrites a subquery whose FROM is the Distributed table directly.
+// Left as a plain IN, every shard the outer drain fans out to re-executed
+// the ranking subquery as a distributed query of its own: one dispatch
+// produced DataShardCount²-1 per-shard Select statements, up to
+// DataShardCount²/2 of them concurrent — 3 children at N=2 and 15 at N=4
+// (internal peaks 6-10 against a 4-wide shard set) in e2e runs 34055887965
+// / 34055025272 — which no per-dispatch admission weight could bound. An
+// explicit GLOBAL is honoured regardless of nesting: the initiator runs the
+// ranking subquery once (DataShardCount children), then broadcasts the
+// at-most-TraceLimit trace ids as a temporary table with the outer drain
+// (DataShardCount more), two sequential phases of DataShardCount each. On a
+// single-node deployment GLOBAL IN behaves exactly as IN. The broadcast
+// payload is the LIMIT-bounded id set, never the scan.
 //
 // ponytail: the input subquery is emitted twice (outer drain + inner
 // ranking). The window predicate keeps each scan cheap; lift to a single
@@ -62,6 +81,6 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 	sb := NewQuery().
 		Select(verbatim("s.*")).
 		From(aliasedFrag(outerSub, "s")).
-		Where(InSubquery(Col(n.TraceIDColumn), topN))
+		Where(GlobalInSubquery(Col(n.TraceIDColumn), topN))
 	return e.emitSelect(sb)
 }

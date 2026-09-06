@@ -53,6 +53,52 @@ type Builder struct {
 	// QueryBuilder.Build) surfaces err, and Subquery/Spliced propagate a
 	// nested QueryBuilder's err into the outer Builder they splice into.
 	err error
+
+	// physicalScans counts how many physical (schema) table references this
+	// Builder has rendered — every FROM/JOIN of a real table, counted at
+	// RENDER time by countPhysicalScans, plus the counts carried by every
+	// pre-rendered subquery spliced in (PreRenderedSQL.PhysicalScans, a
+	// nested QueryBuilder's own render). On a multi-data-shard deployment
+	// every such reference is a `Distributed` wrapper that fans out
+	// DataShardCount per-shard statements, so this number x DataShardCount
+	// is exactly the ClickHouse-side statement count one dispatch of the
+	// rendered SQL produces — the weight chclient's DataShardFanoutGate must
+	// charge (cerberus issue #3128). Counted where the text is written, not
+	// derived from the plan: an emitter renders one Scan node several times
+	// (SearchTraceLimit's two arms, rate()'s three window scans), and only
+	// the render knows how many.
+	physicalScans int
+}
+
+// PhysicalScans reports how many physical table references have been
+// rendered into this Builder so far — see the field's own doc.
+func (b *Builder) PhysicalScans() int { return b.physicalScans }
+
+// countPhysicalScans wraps inner so that rendering it also records n
+// physical table scans on the receiving Builder. Every emitter site that
+// renders a real schema table's name into a FROM/JOIN goes through this
+// (scanTableFrag, physicalTableFrag); a synthetic source (`system.one`) or
+// a native-protocol external temporary table does not — neither is a
+// Distributed wrapper, so neither fans out.
+func countPhysicalScans(n int, inner Frag) Frag {
+	return func(b *Builder) {
+		b.physicalScans += n
+		inner(b)
+	}
+}
+
+// physicalTableFrag renders a bare physical table identifier as a counted
+// scan — the one-table form of countPhysicalScans for the emitter sites
+// that reference a schema table by name outside a chplan.Scan
+// (nestedSetAnnotate's spans scope, exemplars, compare's root lookup).
+func physicalTableFrag(table string) Frag { return countPhysicalScans(1, Col(table)) }
+
+// physicalScanCounter is implemented by every Subqueryable so the scan
+// count of a spliced sub-statement reaches the Builder it is spliced into
+// (Subquery / Spliced), whether the sub-statement is pre-rendered text or a
+// nested QueryBuilder rendered on the spot.
+type physicalScanCounter interface {
+	physicalScans() int
 }
 
 // NewBuilder returns an empty Builder. Equivalent to &Builder{}.
@@ -2515,6 +2561,7 @@ func IfNonZero(num, denom Frag) Frag {
 // reaching outside this package.
 type Subqueryable interface {
 	subquerySQL() (string, []any, error)
+	physicalScanCounter
 }
 
 // Subquery returns a Frag rendering "(<rendered s>)" — wraps a
@@ -2537,6 +2584,7 @@ func Subquery(s Subqueryable) Frag {
 		b.sb.WriteString(sql)
 		b.sb.WriteByte(')')
 		b.args = append(b.args, args...)
+		b.physicalScans += s.physicalScans()
 	}
 }
 
@@ -2557,6 +2605,7 @@ func Spliced(s Subqueryable) Frag {
 		}
 		b.sb.WriteString(sql)
 		b.args = append(b.args, args...)
+		b.physicalScans += s.physicalScans()
 	}
 }
 
@@ -2573,12 +2622,20 @@ func Spliced(s Subqueryable) Frag {
 type PreRenderedSQL struct {
 	SQL  string
 	Args []any
+	// PhysicalScans is how many physical table references SQL contains, as
+	// counted by the render that produced it (emitter.renderNode). It is
+	// added to the receiving Builder each time this text is spliced, so a
+	// pre-rendered sub-statement embedded twice counts twice — exactly what
+	// ClickHouse will execute. Zero for text that scans no schema table.
+	PhysicalScans int
 }
 
 // subquerySQL satisfies Subqueryable. p.SQL is always already-rendered
 // text (from the legacy string emitter), so it never carries a render
 // error.
 func (p PreRenderedSQL) subquerySQL() (string, []any, error) { return p.SQL, p.Args, nil }
+
+func (p PreRenderedSQL) physicalScans() int { return p.PhysicalScans }
 
 // writeFragList emits Frags comma-separated (with ", " between
 // subsequent parts) into the builder. Shared helper for the function-
@@ -2904,6 +2961,33 @@ func InSubquery(left, sub Frag) Frag {
 	}
 }
 
+// GlobalInSubquery is InSubquery with an explicit GLOBAL modifier:
+// `<left> GLOBAL IN (SELECT …)`. Semantically identical to IN on any
+// deployment; the difference is WHERE ClickHouse evaluates the subquery once
+// the table behind it is a `Distributed` wrapper. A plain IN whose subquery
+// reads the Distributed table is executed again on EVERY shard the outer
+// query fans out to — and each of those executions fans out itself, so one
+// dispatch costs DataShardCount² per-shard statements instead of
+// DataShardCount. `distributed_product_mode=global` (pinned by
+// internal/chclient) rewrites that shape to GLOBAL automatically, but only
+// when the subquery's FROM is the Distributed table DIRECTLY; a subquery
+// that reads it through a derived table (`FROM (SELECT … FROM otel_traces …)`)
+// is left as written — real-cluster evidence in
+// internal/chsql/search_trace_limit.go's doc. GLOBAL written explicitly is
+// honoured regardless of nesting: the initiator evaluates the subquery once
+// and broadcasts its (bounded) result as a temporary table to every shard.
+// On a single-node/non-Distributed deployment ClickHouse treats GLOBAL IN
+// exactly as IN. Emitters whose IN subquery reads the same Distributed table
+// as the outer query through any derived table MUST use this rather than
+// InSubquery.
+func GlobalInSubquery(left, sub Frag) Frag {
+	return func(b *Builder) {
+		left(b)
+		b.sb.WriteString(" GLOBAL IN ")
+		sub(b)
+	}
+}
+
 // NotInSubquery returns a Frag rendering "<left> NOT IN (<sub>)" — the
 // anti-set membership predicate where the right-hand side is a single
 // subquery rather than an element list. `sub` is rendered inside one
@@ -3019,6 +3103,10 @@ type cteClause struct {
 //
 // The zero value is ready to use; NewQuery is provided for clarity.
 type QueryBuilder struct {
+	// lastPhysicalScans is the physical-table scan count of the most recent
+	// subquerySQL render — see physicalScans.
+	lastPhysicalScans int
+
 	ctes       []cteClause
 	selectList []Frag
 	from       Frag
@@ -3336,8 +3424,16 @@ func (s *QueryBuilder) Build() (string, []any) {
 func (s *QueryBuilder) subquerySQL() (string, []any, error) {
 	b := NewBuilderWithAttrStrategies(s.attrStrategies)
 	s.writeInto(b)
+	s.lastPhysicalScans = b.physicalScans
 	return b.Build()
 }
+
+// physicalScans reports the physical table references the most recent
+// subquerySQL render of this statement contained — valid right after that
+// render, which is exactly when Subquery/Spliced/emitSelect read it. (The
+// Frag() path writes straight into the parent Builder, so its scans are
+// counted there directly and never pass through here.)
+func (s *QueryBuilder) physicalScans() int { return s.lastPhysicalScans }
 
 // writeCTEs renders the `WITH [RECURSIVE] <name> AS (...)` head ahead
 // of the SELECT keyword. Split out of writeInto to keep the latter's

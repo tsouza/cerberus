@@ -87,7 +87,8 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "count": { "type": "integer", "minimum": 1 }
+                "count": { "type": "integer", "minimum": 1 },
+                "fanoutCap": { "type": ["integer", "null"], "minimum": 1 }
               }
             },
             "storagePolicyName": { "type": "string" },

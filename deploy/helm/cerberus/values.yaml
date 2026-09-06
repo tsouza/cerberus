@@ -317,6 +317,25 @@ clickhouse:
       # see the manual runbook in docs/helm-clickhouse.md before changing
       # this on a live deployment.
       count: 1
+      # -- CLUSTER-WIDE budget for `DataShardFanoutCap`, the data-shard
+      # fan-out admission ceiling (docs/solver.md, cerberus issue #3128).
+      # The gate itself is a per-PROCESS semaphore, so the ceiling the
+      # ClickHouse cluster actually experiences is `cerberus replicas x
+      # per-process cap` — and only the chart knows the replica count. Set
+      # this and the chart apportions it: per-process cap = floor(fanoutCap
+      # / effective replicas) — `autoscaling.maxReplicas` when the HPA is on,
+      # else `replicaCount`; in `mode: split` the sum of every enabled head's
+      # `replicaCount` — surfaced to the binary as
+      # `CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`. Must yield a share of at
+      # least `count` (every dispatch charges its full shard width; a
+      # smaller share could admit nothing) — the render fails otherwise, as
+      # it does when this is set together with a DIFFERENT explicit
+      # `config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP` (same knob, two
+      # contradicting scopes) or with `count: 1` (no gate exists to budget).
+      # `null` (default) leaves the per-process cap to the binary's own
+      # default (`CERBERUS_CH_MAX_OPEN_CONNS`) or an explicit
+      # `config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`, both per process.
+      fanoutCap: null
     # -- Name of the MergeTree `storage_policy` the chart wires (object disk ->
     # cache disk -> single-volume policy). cerberus's `schema.storagePolicy`
     # defaults to this so every auto-created table lands on object storage.

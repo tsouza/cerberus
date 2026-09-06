@@ -1476,8 +1476,15 @@ concurrent PromQL/LogQL/TraceQL load burst.
 `.github/scripts/e2e-datashard-verify.mjs` asserts, directly from
 `system.query_log` rather than from cerberus's own HTTP responses: a genuine
 solver-split (`kEff > 1`) query reached the `Distributed` target; the real,
-concurrent, cluster-wide per-shard statement count never exceeded
-`DataShardFanoutCap` — `DataShardFanoutGate`'s own unconditional ceiling,
+concurrent per-shard statement count never exceeded `DataShardFanoutCap` —
+`DataShardFanoutGate`'s own unconditional ceiling — in BOTH of its scopes
+(cerberus issue [#3128](https://github.com/tsouza/cerberus/issues/3128)):
+per cerberus *process*, with every statement attributed to the pod whose
+gate admitted it via `query_log.client_hostname` (clickhouse-go sends
+`os.Hostname()` on every query), and cluster-wide, as `replicas x
+per-process cap` — the chart's `clickhouse.bundled.dataShards.fanoutCap`
+budget apportioned across the pinned replica count, both numbers read back
+from the live Deployment and env ConfigMap rather than from a literal;
 observed under load rather than merely asserted by the admission-control
 unit tests; every per-shard statement's `max_memory_usage` setting sits
 within the `perShardMemoryBytes` formula's predicted ceiling, confirming

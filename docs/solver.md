@@ -346,7 +346,26 @@ returned to the handler:
    `DataShardFanoutCap` defaults to the chclient connection pool's own size
    (`CERBERUS_CH_MAX_OPEN_CONNS`), independently overridable
    (`CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`, the historical name kept for
-   backward compatibility). `DataShardCount` is sourced once, at startup,
+   backward compatibility). Whichever source wins must be at least
+   `DataShardCount`: every dispatch charges its full width, and a
+   semaphore never admits a weight above its size, so a smaller cap would
+   park every query until its deadline — `config.FromEnv` refuses the
+   shape at boot. A dispatch's width is `DataShardCount x` the number of
+   physical table references in its emitted SQL (`chsql.EmitCounted`,
+   counted at render time — `SearchTraceLimit` renders its input twice,
+   `rate()` renders its window arms three times), because each reference
+   is a `Distributed` fan-out of its own; a statement wider than the whole
+   cap is admitted alone, with the cap as its weight, so the cap bounds
+   concurrent dispatches but never shrinks one statement below its inherent
+   width — size it at or above the widest statement shape a deployment
+   serves. The gate is a **per-process** semaphore: with `R`
+   cerberus replicas the ceiling the ClickHouse cluster actually sees is
+   `R x DataShardFanoutCap`. Only the deployment layer knows `R`, so the
+   Helm chart carries the cluster-wide knob —
+   `clickhouse.bundled.dataShards.fanoutCap`, apportioned as
+   `floor(fanoutCap / effective replicas)` (HPA `maxReplicas` when
+   autoscaling, else `replicaCount`; the per-head sum in split mode) into
+   this per-process value. `DataShardCount` is sourced once, at startup,
    from `internal/chopt.ClusterTopology` (`CERBERUS_CH_DATA_SHARDS`,
    default 1).
 6. **Wall-clock deadline.** A dedicated cancel cause bounds the routed request

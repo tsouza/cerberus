@@ -205,11 +205,11 @@ func (e *emitter) compareRootLeg(m *chplan.MetricsCompare, bound *compareScanBou
 	if m.TraceIDColumn == "" {
 		return nil, fmt.Errorf("%w: MetricsCompare.RootLookup set but TraceIDColumn empty", ErrUnsupported)
 	}
-	sql, args, err := e.renderNode(m.RootLookup)
+	sql, args, scans, err := e.renderNode(m.RootLookup)
 	if err != nil {
 		return nil, err
 	}
-	var leg Subqueryable = PreRenderedSQL{SQL: sql, Args: args}
+	var leg Subqueryable = PreRenderedSQL{SQL: sql, Args: args, PhysicalScans: scans}
 	if bound == nil {
 		return leg, nil
 	}
@@ -445,7 +445,7 @@ func rootLookupTraceIDTsBounds(
 			Call("min", Col(m.RootLookupTraceIDTsStartColumn)),
 			Call("max", Col(m.RootLookupTraceIDTsEndColumn)),
 		)).
-		From(Col(m.RootLookupTraceIDTsTable)).
+		From(physicalTableFrag(m.RootLookupTraceIDTsTable)).
 		Where(func(b *Builder) { _ = b.Expr(cohortPred) })
 	lo, hi = chplan.TraceIDTsEnvelopeBounds(chplan.TraceIDTsEnvelopeAlias, timestampColumn)
 	return lo, hi, envelope
