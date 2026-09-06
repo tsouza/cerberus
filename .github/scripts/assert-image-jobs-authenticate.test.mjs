@@ -80,13 +80,14 @@ function scanWith(file, edit) {
 // the resolver actually reads, and leaves a real, untouched copy of the
 // calling workflow to resolve `uses:` into it.
 //
-// root mirrors just the pieces the resolver reads (Justfile, .github/scripts,
-// .github/actions), with the target action doctored; workflowDir is a temp
+// root mirrors just the pieces the resolver reads (Justfile, just/*.just,
+// .github/scripts, .github/actions), with the target action doctored; workflowDir is a temp
 // copy of the ONE untouched calling workflow, matching scanWith's shape of
 // scanning a single file rather than the whole tree.
 function scanWithAction(actionRelPath, workflowFile, edit) {
   const root = mkdtempSync(join(tmpdir(), 'image-auth-gate-root-'));
   cpSync(join(repoRoot, 'Justfile'), join(root, 'Justfile'));
+  cpSync(join(repoRoot, 'just'), join(root, 'just'), { recursive: true });
   cpSync(join(repoRoot, '.github/scripts'), join(root, '.github/scripts'), { recursive: true });
   cpSync(join(repoRoot, '.github/actions'), join(root, '.github/actions'), { recursive: true });
 

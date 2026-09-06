@@ -435,8 +435,13 @@ export function matchesGlob(path, glob) {
   return globRegExp(glob).test(path);
 }
 
-function justRecipeCommands(root) {
-  const text = readFileSync(join(root, "Justfile"), "utf8");
+// justRecipeCommandsFromText parses ONE file's text into recipe name ->
+// command-line list. Shared by justRecipeCommands across the root Justfile
+// and every file it `import`s (#3093): `import` merges each file into one
+// flat recipe namespace, and a recipe header never spans a file boundary, so
+// parsing each file's text independently and merging the resulting maps is
+// exactly equivalent to parsing one concatenated text would have been.
+function justRecipeCommandsFromText(text) {
   const recipes = new Map();
   let current = null;
   for (const line of text.split("\n")) {
@@ -458,6 +463,24 @@ function justRecipeCommands(root) {
       continue;
     }
     if (line.trim() !== "" && !line.trim().startsWith("#")) current = null;
+  }
+  return recipes;
+}
+
+// justRecipeCommands returns every recipe's command-line list, root Justfile
+// plus every file it `import`s (#3093's `just/*.just` split) — a bare
+// `readFileSync(Justfile)` alone stopped seeing the ~110 recipes the split
+// moved out of the root file, which is exactly the class of bug #3093 itself
+// requires this repo's regression tests to have migrated away from.
+function justRecipeCommands(root) {
+  const rootText = readFileSync(join(root, "Justfile"), "utf8");
+  const recipes = justRecipeCommandsFromText(rootText);
+  const importRE = /^import\s+"([^"]+)"\s*$/gm;
+  for (const match of rootText.matchAll(importRE)) {
+    const importedText = readFileSync(join(root, match[1]), "utf8");
+    for (const [name, commands] of justRecipeCommandsFromText(importedText)) {
+      recipes.set(name, commands);
+    }
   }
   return recipes;
 }

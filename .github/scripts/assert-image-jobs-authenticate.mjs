@@ -691,11 +691,25 @@ class Resolver {
     return this.sourceCache.get(abs);
   }
 
+  // justfile() merges the root Justfile with every file it `import`s
+  // (#3093's just/*.just split) into one flat { vars, recipes } — `import`
+  // itself merges them into one namespace, and a var or recipe header never
+  // spans a file boundary, so parsing each file independently and merging
+  // the results is exactly equivalent to parsing one concatenated text.
   justfile() {
     if (this.just === null) {
       const text = this.read('Justfile');
       if (text === null) throw new Error('Justfile not found — `just` recipes cannot be resolved');
-      this.just = parseJustfile(text);
+      const merged = parseJustfile(text);
+      const importRE = /^import\s+"([^"]+)"\s*$/gm;
+      for (const m of text.matchAll(importRE)) {
+        const importedText = this.read(m[1]);
+        if (importedText === null) throw new Error(`Justfile imports "${m[1]}", which does not exist`);
+        const imported = parseJustfile(importedText);
+        Object.assign(merged.vars, imported.vars);
+        for (const [name, recipe] of imported.recipes) merged.recipes.set(name, recipe);
+      }
+      this.just = merged;
     }
     return this.just;
   }
