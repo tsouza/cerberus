@@ -221,6 +221,13 @@ const minDataShardFanoutCap = 1
 // (gate, cap) pair need not repeat the check. Exported so a regression test
 // can assert the DataShardCount <= 1 case never allocates a semaphore
 // without duplicating this arithmetic.
+//
+// The resolved cap must be >= cfg.DataShardCount whenever the gate exists:
+// acquireDataShardFanout charges weight DataShardCount, and
+// semaphore.Weighted never admits a weight above its size (it parks the
+// caller until ctx is done). config.FromEnv refuses that shape at boot for
+// both cap sources; this constructor trusts it rather than clamping —
+// silently widening a cap the operator set is worse than a boot error.
 func NewDataShardFanoutGate(cfg Config) (gate *semaphore.Weighted, cap int64) {
 	cap = int64(cfg.MaxOpenConns)
 	if cfg.DataShardFanoutCapOverride != nil {

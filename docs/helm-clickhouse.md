@@ -259,6 +259,24 @@ it, every per-shard StatefulSet would share an IDENTICAL, overlapping pod
 selector, and multiple StatefulSet controllers reconciling the same
 selector would fight over pod ownership.
 
+**`dataShards.fanoutCap` — the cluster-wide admission budget.** cerberus's
+`DataShardFanoutGate` (`docs/solver.md`, point 5) bounds how many per-shard
+ClickHouse statements one cerberus **process** has in flight, so with `R`
+cerberus replicas the ceiling the cluster experiences is `R x per-process
+cap` (cerberus issue [#3128](https://github.com/tsouza/cerberus/issues/3128)).
+Only the chart knows `R`, so `clickhouse.bundled.dataShards.fanoutCap` is a
+cluster-wide budget the chart apportions: per-process cap =
+`floor(fanoutCap / effective replicas)`, where effective replicas is
+`autoscaling.maxReplicas` when the HPA is on, else `replicaCount`, and in
+`mode: split` the sum of every enabled head's `replicaCount` — rendered
+into `CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`. The render fails when the
+share would drop below `count` (every dispatch charges its full width, so
+such a share could admit nothing — `config.FromEnv` refuses the same shape
+independently), when a different explicit `config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`
+is set alongside it (one knob, two contradicting scopes), or when `count`
+is 1 (no gate exists to budget). Leaving it `null` keeps the per-process
+default (`CERBERUS_CH_MAX_OPEN_CONNS`).
+
 `CERBERUS_CH_ADDR` defaults to **shard 0's own** per-shard ClusterIP Service
 once `count > 1` (the unsuffixed Service no longer exists). A single
 connection landing on any one shard's replica is sufficient: the

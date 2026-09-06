@@ -1265,7 +1265,7 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	dataShardFanoutCapOverride, err := dataShardFanoutCapOverrideFromEnv(v)
+	dataShardFanoutCapOverride, err := dataShardFanoutCapOverrideFromEnv(v, topology.DataShardCount, maxOpenConns)
 	if err != nil {
 		return Config{}, err
 	}
@@ -2125,13 +2125,34 @@ func queryTimeoutFromEnv(v *viper.Viper) (time.Duration, error) {
 // Client's own MaxOpenConns", resolved inside chclient.NewDataShardFanoutGate,
 // not here. Factored out of FromEnv purely to keep that function under
 // golangci-lint's funlen cap.
-func dataShardFanoutCapOverrideFromEnv(v *viper.Viper) (*int64, error) {
+//
+// The EFFECTIVE cap (the override when set, else maxOpenConns — the same
+// resolution chclient.NewDataShardFanoutGate performs) must be at least
+// dataShardCount whenever dataShardCount > 1: every dispatch acquires the
+// gate with weight dataShardCount, and semaphore.Weighted never admits a
+// weight larger than its size — it parks the caller until the request
+// context expires — so a cap below the width would make EVERY query time
+// out, with nothing in the logs naming the cause. Refused here, at the one
+// boundary where both numbers are known, instead of surfacing as a fleet of
+// deadline errors after boot.
+func dataShardFanoutCapOverrideFromEnv(v *viper.Viper, dataShardCount, maxOpenConns int) (*int64, error) {
 	override, err := getOptionalInt64(v, envCHDataShardFanoutCapOverride)
 	if err != nil {
 		return nil, err
 	}
 	if override != nil && *override <= 0 {
 		return nil, fmt.Errorf("%s: must be > 0 when set, got %d", envCHDataShardFanoutCapOverride, *override)
+	}
+	if dataShardCount <= 1 {
+		return override, nil
+	}
+	effective, source := int64(maxOpenConns), envCHMaxOpenConns
+	if override != nil {
+		effective, source = *override, envCHDataShardFanoutCapOverride
+	}
+	if effective < int64(dataShardCount) {
+		return nil, fmt.Errorf("%s=%d is below %s=%d: every ClickHouse dispatch charges the data-shard fan-out gate its full shard width, so a cap below the width can never admit a single query (each would block until its deadline); raise %s to at least %d",
+			source, effective, envCHDataShards, dataShardCount, source, dataShardCount)
 	}
 	return override, nil
 }

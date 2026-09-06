@@ -51,6 +51,28 @@ clickhouse:
       size: 3Gi
     cache:
       size: 1Gi
+    dataShards:
+      # CLUSTER-WIDE DataShardFanoutCap budget (cerberus issue #3128). The
+      # gate is per cerberus PROCESS, so the chart apportions this across the
+      # fixed replicaCount below: 16 / 2 = 8 per process, for BOTH the N=2
+      # and N=4 legs (`count` itself arrives via --set). Deliberately a
+      # chart-level budget rather than a per-process literal under `config:`
+      # — this lane dogfoods the apportionment, and
+      # e2e-datashard-verify.mjs asserts BOTH contracts: each cerberus pod's
+      # own per-shard concurrency stays within the per-process cap the chart
+      # rendered (read back from the env ConfigMap), and the cluster-wide
+      # total stays within replicas x that cap.
+      fanoutCap: 16
+
+# The base overlay enables the HPA (2..4 replicas). This lane pins a FIXED
+# cerberus replica count instead: the admission-control assertion is about a
+# per-process gate, so the number of processes must be a known constant the
+# verify script can read back (`deployment/cerberus` .spec.replicas), not a
+# value the autoscaler may move mid-burst — a burst that scaled 2 -> 3
+# would widen the real ceiling while the assertion still expected 2 x cap.
+autoscaling:
+  enabled: false
+replicaCount: 2
 
 # schema.ttl is REQUIRED in hot-only mode (chart-render-time fail otherwise)
 # — see cerberus-values-bwc-hot-only.yaml's own doc. 7d matches that overlay
@@ -90,11 +112,8 @@ config:
   # (internal/solver/config.go's own doc: it has moved 8 -> 32 -> 8 already)
   # cannot silently change this lane's own expected kEff ceiling.
   CERBERUS_SHARD_MAX_K: "8"
-  # DataShardFanoutCap: explicit, not left to derive from
-  # CERBERUS_CH_MAX_OPEN_CONNS (10) minus cmd/cerberus's solverGateReserve
-  # (2) — pinning it here means e2e-datashard-verify.mjs's assertion stays
-  # correct even if either of those two unrelated defaults ever changes.
-  # Independent of DataShardCount by design (that is the fix's whole
-  # point — see docs/solver.md's admission-control section): the SAME
-  # value is correct for both the N=2 and N=4 legs.
-  CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: "8"
+  # DataShardFanoutCap is NOT pinned here: it is rendered by the chart from
+  # clickhouse.bundled.dataShards.fanoutCap above (cluster-wide budget /
+  # replicaCount), which the verify script reads back from the env ConfigMap
+  # — a per-process literal here would contradict that budget (the chart
+  # refuses the pair).

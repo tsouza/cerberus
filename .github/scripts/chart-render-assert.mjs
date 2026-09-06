@@ -458,6 +458,34 @@ function count(haystack, needle) {
   const keeperOffNoShards = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.keeper.enabled=false'])
   check(!keeperOffNoShards.includes('kind: StatefulSet\nmetadata:\n  name: rn-cerberus-keeper'), 'keeper.enabled=false + dataShards.count<=1: still renders (no Keeper StatefulSet), unaffected by the new guard')
 
+  // dataShards.fanoutCap (cerberus issue #3128): a CLUSTER-WIDE budget the
+  // chart apportions across the effective cerberus replica count into the
+  // binary's per-process CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP. Every
+  // divisor source is pinned (replicaCount, HPA maxReplicas, split-mode
+  // head sum), plus every refused shape.
+  const shardBase = ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2']
+  const capEnv = (n) => `CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: "${n}"`
+  const capReplicaCount = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
+  check(capReplicaCount.includes(capEnv(4)), 'dataShards.fanoutCap=16 / replicaCount=4 (HPA off): per-process CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=4')
+  const capHpa = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=1', '--set', 'autoscaling.enabled=true', '--set', 'autoscaling.maxReplicas=8'])
+  check(capHpa.includes(capEnv(2)), 'dataShards.fanoutCap=16 with the HPA on: apportioned by autoscaling.maxReplicas=8 (not replicaCount) -> 2 per process')
+  const capSplit = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'mode=split', '--set', 'replicaCount=1', '--set', 'split.tempo.replicaCount=2', '--set', 'autoscaling.enabled=true', '--set', 'autoscaling.maxReplicas=99'])
+  check(capSplit.includes(capEnv(4)), 'dataShards.fanoutCap=16 in mode=split: apportioned by the SUM of every enabled head replicaCount (1+1+2=4, HPA ignored) -> 4 per process')
+  const capSplitDisabledHead = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'mode=split', '--set', 'replicaCount=1', '--set', 'split.loki.enabled=false', '--set', 'autoscaling.enabled=false'])
+  check(capSplitDisabledHead.includes(capEnv(8)), 'dataShards.fanoutCap=16 in mode=split with a head disabled: that head is left out of the divisor (1+1=2) -> 8 per process')
+  const capFloor = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=17', '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
+  check(capFloor.includes(capEnv(4)), 'dataShards.fanoutCap=17 / 4 replicas floors to 4 per process (never rounds the budget UP)')
+  const capBelowWidth = tplFail([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=8', '--set', 'replicaCount=8', '--set', 'autoscaling.enabled=false'])
+  check(capBelowWidth !== null && /fanoutCap=8/.test(capBelowWidth) && /below dataShards.count=2/.test(capBelowWidth), 'dataShards.fanoutCap=8 / 8 replicas = 1 per process < dataShards.count=2: render FAILS naming the arithmetic')
+  const capWithExplicit = tplFail([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=2', '--set', 'autoscaling.enabled=false', '--set', 'config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=5'])
+  check(capWithExplicit !== null && /both set and disagree/.test(capWithExplicit), 'dataShards.fanoutCap + a DIFFERENT explicit config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: render FAILS (contradicting scopes for one knob)')
+  const capRenderedTwice = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=2', '--set', 'autoscaling.enabled=false'])
+  check((capRenderedTwice.match(/CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: "8"/g) || []).length === 1, 'dataShards.fanoutCap apportionment is idempotent across the several nonSecretEnv passes one render makes (one env line, value 8, no self-contradiction)')
+  const capSingleShard = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.fanoutCap=16'])
+  check(capSingleShard !== null && /dataShards.count is 1/.test(capSingleShard), 'dataShards.fanoutCap at dataShards.count=1: render FAILS (no gate exists to budget)')
+  const noCap = tpl([...shardBase, '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
+  check(!noCap.includes('CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP'), 'dataShards.fanoutCap unset (default null): no CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP emitted — the per-process default stays the binary\'s own')
+
   // Every per-shard PodDisruptionBudget scopes minAvailable to ITS OWN
   // shard's pods, not a single bare-selector PDB spanning every shard (a
   // single shared-selector PDB would let minAvailable be satisfied by ANY

@@ -68,7 +68,8 @@
 //   CH_USER / CH_PASSWORD   ClickHouse credentials             (default cerberus/cerberus)
 //   CH_CLUSTER              ClickHouse cluster name             (default bwc_cluster)
 //   DATA_SHARD_COUNT        expected DataShardCount             (required)
-//   DATA_SHARD_FANOUT_CAP   expected DataShardFanoutCap         (required)
+//   CERBERUS_DEPLOYMENT     cerberus Deployment name            (default cerberus)
+//   CERBERUS_ENV_CONFIGMAP  the chart's env ConfigMap name      (default cerberus-env)
 //   BURST_SECONDS           sustained concurrent-load duration  (default 20)
 //   BURST_CONCURRENCY       concurrent requests in flight       (default 6)
 //   FLUSH_WAIT_SECONDS      settle time before SYSTEM FLUSH LOGS (default 10)
@@ -87,7 +88,8 @@ const CH_USER = process.env.CH_USER || 'cerberus';
 const CH_PASSWORD = process.env.CH_PASSWORD || 'cerberus';
 const CH_CLUSTER = process.env.CH_CLUSTER || 'bwc_cluster';
 const DATA_SHARD_COUNT = Number(process.env.DATA_SHARD_COUNT || '0');
-const DATA_SHARD_FANOUT_CAP = Number(process.env.DATA_SHARD_FANOUT_CAP || '0');
+const CERBERUS_DEPLOYMENT = process.env.CERBERUS_DEPLOYMENT || 'cerberus';
+const CERBERUS_ENV_CONFIGMAP = process.env.CERBERUS_ENV_CONFIGMAP || 'cerberus-env';
 const BURST_SECONDS = Number(process.env.BURST_SECONDS || '20');
 const BURST_CONCURRENCY = Number(process.env.BURST_CONCURRENCY || '6');
 const FLUSH_WAIT_SECONDS = Number(process.env.FLUSH_WAIT_SECONDS || '10');
@@ -96,12 +98,54 @@ if (!DATA_SHARD_COUNT || DATA_SHARD_COUNT < 2) {
   error(`DATA_SHARD_COUNT must be a real data-shard count (>= 2), got ${process.env.DATA_SHARD_COUNT}`);
   process.exit(1);
 }
-if (!DATA_SHARD_FANOUT_CAP || DATA_SHARD_FANOUT_CAP < 1) {
-  error(`DATA_SHARD_FANOUT_CAP must be a positive int, got ${process.env.DATA_SHARD_FANOUT_CAP}`);
-  process.exit(1);
-}
 
 const kubectl = makeKubectl(capture, NS);
+
+// The admission-control contract has TWO halves (cerberus issue #3128):
+// DataShardFanoutGate is a per-PROCESS semaphore, so each cerberus pod's own
+// per-shard concurrency is bounded by the per-process cap, and the cluster
+// as a whole by (replicas x per-process cap) — the chart's
+// clickhouse.bundled.dataShards.fanoutCap budget apportioned across the
+// replica count. Both numbers are read back from the LIVE deployment, not
+// from a literal this script would have to keep in sync by hand: the
+// per-process cap from the env ConfigMap the chart rendered, the replica
+// count from the Deployment. A cap the chart did not render (unset key)
+// is an error, not a default — the assertion below would otherwise be
+// comparing against a number nothing in the cluster enforces.
+function livePerProcessFanoutCap() {
+  const res = kubectl(['get', 'configmap', CERBERUS_ENV_CONFIGMAP, '-o', 'jsonpath={.data.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP}']);
+  const raw = res.stdout.trim();
+  const cap = Number(raw);
+  if (res.status !== 0 || !raw || !Number.isInteger(cap) || cap < 1) {
+    error(`could not read CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP from configmap/${CERBERUS_ENV_CONFIGMAP} in ${NS} (got ${JSON.stringify(raw)}): ${res.stderr.trim()}`);
+    process.exit(1);
+  }
+  return cap;
+}
+
+function liveCerberusReplicas() {
+  const res = kubectl(['get', 'deployment', CERBERUS_DEPLOYMENT, '-o', 'jsonpath={.spec.replicas}']);
+  const replicas = Number(res.stdout.trim());
+  if (res.status !== 0 || !Number.isInteger(replicas) || replicas < 1) {
+    error(`could not read deployment/${CERBERUS_DEPLOYMENT} .spec.replicas in ${NS}: ${res.stderr.trim()}`);
+    process.exit(1);
+  }
+  return replicas;
+}
+
+// Every cerberus pod name — the set query_log's client_hostname must fall
+// in for a Select child to count as a gate-bound dispatch at all.
+// clickhouse-go sends os.Hostname() as the client hostname on every query
+// (lib/proto/query.go), and a pod's hostname is its own name.
+function cerberusPodNames() {
+  const res = kubectl(['get', 'pod', '-l', 'app.kubernetes.io/name=cerberus', '-o', 'jsonpath={.items[*].metadata.name}']);
+  const names = res.stdout.trim().split(/\s+/).filter(Boolean);
+  if (res.status !== 0 || names.length === 0) {
+    error(`could not list cerberus pods in namespace ${NS}: ${res.stderr.trim()}`);
+    process.exit(1);
+  }
+  return names;
+}
 
 // Any one shard's own ClickHouse pod can run the cluster-wide
 // clusterAllReplicas() queries below — the Distributed wrapper + the named
@@ -249,8 +293,16 @@ function maxConcurrent(intervals) {
 async function main() {
   const initiatorPod = anyClickhousePodName();
   const allPods = allClickhousePodNames();
-  log(`datashard verify: namespace=${NS} db=${DB} cluster=${CH_CLUSTER} dataShardCount=${DATA_SHARD_COUNT} fanoutCap=${DATA_SHARD_FANOUT_CAP} pods=${allPods.join(',')}`);
+  const perProcessCap = livePerProcessFanoutCap();
+  const cerberusReplicas = liveCerberusReplicas();
+  const cerberusPods = cerberusPodNames();
+  const clusterCap = perProcessCap * cerberusReplicas;
+  log(`datashard verify: namespace=${NS} db=${DB} cluster=${CH_CLUSTER} dataShardCount=${DATA_SHARD_COUNT} perProcessFanoutCap=${perProcessCap} cerberusReplicas=${cerberusReplicas} clusterFanoutCap=${clusterCap} chPods=${allPods.join(',')} cerberusPods=${cerberusPods.join(',')}`);
   let failures = 0;
+  if (cerberusPods.length > cerberusReplicas) {
+    error(`${cerberusPods.length} cerberus pods present but deployment/${CERBERUS_DEPLOYMENT} declares ${cerberusReplicas} replicas — the cluster-wide ceiling (replicas x per-process cap) would be measured against a smaller process count than actually ran`);
+    failures++;
+  }
 
   const restartsBefore = restartCounts(allPods);
 
@@ -374,21 +426,42 @@ async function main() {
   //     A short query snippet is kept alongside each sample so a future
   //     occurrence can be matched against a known query SHAPE without
   //     needing a fresh full-text capture.
+  //   - cerberus_host attributes every child to the cerberus PROCESS whose
+  //     gate admitted it (cerberus issue #3128's per-process finding: the
+  //     gate is one semaphore per pod, so the contract is per pod first and
+  //     replicas x cap cluster-wide second). The initiator row carries the
+  //     client's hostname — clickhouse-go sends os.Hostname() on every
+  //     query (lib/proto/query.go), which inside a pod is the pod name —
+  //     joined back over initial_query_id (GLOBAL, so the initiator-side
+  //     subquery is computed once and shipped to every replica the
+  //     clusterAllReplicas scan runs on, instead of being re-issued as a
+  //     double-distributed subquery ClickHouse rejects). The child's own
+  //     client_hostname is the fallback should an initiator row fall
+  //     outside the window; an unresolvable host is an assertion failure
+  //     below, never a silent drop.
   const shardStmtRows = chQueryTSV(
     initiatorPod,
-    `SELECT toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us, query_duration_ms * 1000 AS dur_us,
-            query_kind, initial_query_id,
-            replaceRegexpAll(substring(query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
-     FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
-     WHERE is_initial_query = 0 AND type = 'QueryFinish'
-       AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
+    `SELECT toUnixTimestamp64Micro(c.query_start_time_microseconds) AS start_us, c.query_duration_ms * 1000 AS dur_us,
+            c.query_kind, c.initial_query_id,
+            if(i.client_hostname != '', i.client_hostname, c.client_hostname) AS cerberus_host,
+            replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
+     FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log) AS c
+     GLOBAL LEFT JOIN (
+       SELECT query_id, any(client_hostname) AS client_hostname
+       FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
+       WHERE is_initial_query = 1 AND type = 'QueryFinish'
+         AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
+       GROUP BY query_id
+     ) AS i ON c.initial_query_id = i.query_id
+     WHERE c.is_initial_query = 0 AND c.type = 'QueryFinish'
+       AND c.event_time >= toDateTime(${windowStart}) AND c.event_time <= toDateTime(${windowEnd})`,
   );
   const shardStmts = shardStmtRows.map((r) => {
     // TSVRaw does not escape tabs/newlines in a value, so query_snippet is
     // flattened to single spaces (above) BEFORE this split ever runs —
     // otherwise an embedded newline would masquerade as a row break here.
-    const [s, d, kind, qid, snippet] = r.split('\t');
-    return { startUs: Number(s), durUs: Number(d), kind, qid, snippet };
+    const [s, d, kind, qid, host, snippet] = r.split('\t');
+    return { startUs: Number(s), durUs: Number(d), kind, qid, host, snippet };
   });
   const intervals = shardStmts.map((r) => [r.startUs, r.durUs]);
   const peakConcurrentShardStatements = maxConcurrent(intervals);
@@ -446,8 +519,33 @@ async function main() {
     log(`  over-width dispatch ${qid}: ${rows.length} children (expected <= ${DATA_SHARD_COUNT}), own internal peak concurrency=${selfMaxConcurrent}; sample query: ${rows[0].snippet}`);
   }
 
-  if (peakConcurrentSelectOnly > DATA_SHARD_FANOUT_CAP) {
-    error(`peak concurrent per-shard ClickHouse Select statement count ${peakConcurrentSelectOnly} exceeded DataShardFanoutCap=${DATA_SHARD_FANOUT_CAP} — the admission-control ceiling did not hold under real load`);
+  // Per-process contract: every Select child attributed to its cerberus
+  // pod, each pod's own peak overlap within the per-process cap the chart
+  // rendered. A child whose host is not a cerberus pod is a failure in its
+  // own right — it means the attribution (and so every number below) is not
+  // trustworthy, which must never pass quietly.
+  const selectByHost = new Map();
+  for (const r of selectRows) {
+    if (!selectByHost.has(r.host)) selectByHost.set(r.host, []);
+    selectByHost.get(r.host).push([r.startUs, r.durUs]);
+  }
+  const unknownHosts = [...selectByHost.keys()].filter((h) => !cerberusPods.includes(h));
+  if (unknownHosts.length > 0) {
+    error(`${unknownHosts.length} Select child host(s) are not cerberus pods (${unknownHosts.map((h) => JSON.stringify(h)).join(', ')}; cerberus pods: ${cerberusPods.join(',')}) — per-process attribution via query_log.client_hostname failed, so the per-pod ceiling cannot be trusted`);
+    failures++;
+  }
+  for (const [host, hostIntervals] of selectByHost) {
+    const hostPeak = maxConcurrent(hostIntervals);
+    log(`  cerberus pod ${host}: ${hostIntervals.length} Select per-shard statements, peak concurrent=${hostPeak} (per-process cap ${perProcessCap})`);
+    if (hostPeak > perProcessCap) {
+      error(`cerberus pod ${host}: peak concurrent per-shard Select statement count ${hostPeak} exceeded its own per-process DataShardFanoutCap=${perProcessCap} — the gate did not hold inside one process`);
+      failures++;
+    }
+  }
+  // Cluster-wide contract: replicas x per-process cap, the budget the chart
+  // apportioned (clickhouse.bundled.dataShards.fanoutCap).
+  if (peakConcurrentSelectOnly > clusterCap) {
+    error(`cluster-wide peak concurrent per-shard ClickHouse Select statement count ${peakConcurrentSelectOnly} exceeded replicas(${cerberusReplicas}) x per-process DataShardFanoutCap(${perProcessCap}) = ${clusterCap} — the admission-control ceiling did not hold under real load`);
     failures++;
   }
   if (peakConcurrentSelectOnly <= DATA_SHARD_COUNT) {
@@ -522,7 +620,7 @@ async function main() {
     error(`e2e-datashard-verify: ${failures} assertion(s) failed`);
     process.exit(1);
   }
-  notice(`e2e-datashard-verify: all assertions passed (dataShardCount=${DATA_SHARD_COUNT}, fanoutCap=${DATA_SHARD_FANOUT_CAP}, peakConcurrentSelectOnly=${peakConcurrentSelectOnly}, peakConcurrentAllQueryKinds=${peakConcurrentShardStatements}, maxKEffObserved=${maxKEffObserved})`);
+  notice(`e2e-datashard-verify: all assertions passed (dataShardCount=${DATA_SHARD_COUNT}, perProcessFanoutCap=${perProcessCap}, cerberusReplicas=${cerberusReplicas}, clusterFanoutCap=${clusterCap}, peakConcurrentSelectOnly=${peakConcurrentSelectOnly}, peakConcurrentAllQueryKinds=${peakConcurrentShardStatements}, maxKEffObserved=${maxKEffObserved})`);
 }
 
 main().catch((e) => {
