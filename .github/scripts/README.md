@@ -196,6 +196,25 @@ caps from `crawlShardTimeoutMinutes(depth)` here, and
 `parseSpecBudgetsFromSource()` lets the guard test read the real spec file so
 the pinned numbers cannot drift away from what the crawl actually asks for.
 
+`lib/coverage-fold.mjs` (issue #3095, epic #3091) holds the `mode: set`
+union fold every coverage-lane profile merge needs: `foldProfile()` keeps one
+row per coverage block, the widest execution count seen for it anywhere,
+sorted — exactly what `-coverpkg`'s multiply-instrumented raw profiles
+require, since every linked test binary emits a row for every block it
+links. `just/test.just`'s `_coverage-fold` recipe (a single-file, in-place
+fold) and `coverage-merge.mjs`'s two folds (the ratchet-shard fold and the
+cover.out+cover-chdb.out merge) all call `writeFoldedProfile()` here instead
+of each hand-copying the same three-line awk pipeline.
+
+`lib/regen-diff.mjs` (issue #3095, epic #3091) is `printDiffStat(paths,
+label)` — the "review this diff before committing" banner every
+`update-*-baseline` recipe (plus `gen-config-docs`, `bench-report`, and
+`migration-golden`) prints after regenerating a committed artefact. Replaces
+twelve copies of `@echo` / `@echo "Diff of regenerated <thing>:"` /
+`@git --no-pager diff --stat <path...> || true` with one call each; an
+absent `label` prints the bare diff-stat with no banner, matching
+`update-parity-enrolment-baseline`'s one exception to the pattern.
+
 ## CI lane registry
 
 `.github/ci-lanes.json` is the machine-readable inventory of Cerberus's test
@@ -1155,6 +1174,28 @@ what actually runs.
     mode only), `GO` (default `go`, test seam).
   - Exit: `0` when every shard this invocation is responsible for passes,
     `1` on a failed shard, an out-of-range `LEG_INDEX`, or missing env.
+- **`coverage-merge.mjs`** — `just/test.just`'s `coverage-merge` recipe
+  (issue #3095, epic #3091). Merges cover.out (default-tag lane, required)
+  with cover-chdb.out (chdb-tagged lane, optional) into cover-merged.out and
+  hands off to `coverage-summary.mjs`'s floor gate. Folds any
+  `cover-chdb-ratchet-*.out` sibling shard profiles (tsouza/cerberus#2645)
+  into cover-chdb.out first — erroring if shards exist with no cover-chdb.out
+  to fold into — then folds cover.out + cover-chdb.out together, or copies
+  cover.out alone when no chdb-tagged profile was produced, deciding the
+  `COVERAGE_LANES` value (`default+chdb` or `default`) it passes to
+  `coverage-summary.mjs`. Both folds go through `lib/coverage-fold.mjs`'s
+  `foldProfile()`/`writeFoldedProfile()`. Deliberately does NOT touch
+  `coverage-chdb`'s own recipe body: `test/regression/tagged_test_enrollment_test.go`
+  statically parses that exact bash as chdb-tagged test execution evidence,
+  and extracting it too needs enrollment-scanner changes tracked separately
+  as tsouza/cerberus#3113. `coverage-merge.test.mjs` is the `node --test`
+  guard, exercising the merge/fold mechanics with synthetic profiles (no
+  chDB needed).
+  - Env: none of its own; forwards the caller's environment plus a computed
+    `COVERAGE_LANES` to the `coverage-summary.mjs` subprocess it spawns.
+  - Exit: `1` if cover.out is missing/empty or a ratchet shard has no
+    cover-chdb.out to fold into; otherwise `coverage-summary.mjs`'s own exit
+    status.
 - **`coverage-summary.mjs`** — `coverage.yml`, invoked at the end of the `just
   coverage` recipe rather than as its own workflow step (so a local run gets the
   same verdict CI does). Renders the per-package coverage table into the step

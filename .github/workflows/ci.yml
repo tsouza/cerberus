@@ -674,6 +674,13 @@ jobs:
           node --test .github/scripts/e2e-seed-rolling.test.mjs
           node --test .github/scripts/e2e-seed-stop.test.mjs
           node --test .github/scripts/e2e-chaos-overlay.test.mjs
+      # Baseline diff-stat helper extraction (#3095, epic #3091): the
+      # shared `git --no-pager diff --stat` banner every update-*-baseline /
+      # gen-config-docs / bench-report / migration-golden recipe now calls
+      # instead of repeating it. Self-test only here — the 12 recipes
+      # themselves are what a real regeneration run exercises this against.
+      - name: Self-test the regen-diff helper
+        run: node --test .github/scripts/lib/regen-diff.test.mjs
       # The updater itself is workflow_dispatch-only. Its controller remains
       # ordinary repository code, so its pure unit/round-trip contract belongs
       # on the existing PR policy lane without exposing the updater to PR events.

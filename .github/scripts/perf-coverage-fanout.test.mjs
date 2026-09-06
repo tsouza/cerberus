@@ -26,6 +26,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // split) — reading that one file directly, rather than the root file,
 // keeps this scan's plain-text recipe-boundary slicing working without
 // pulling in a `just --dump` dependency for this cheap check-lane script.
+// coverage-merge's OWN logic moved out of that recipe body entirely (issue
+// #3095, epic #3091, coverage-merge.mjs) — the assertions that used to slice
+// its Justfile text now read that module's source instead; see
+// coverageMergeScriptSource() below.
 const justfile = readFileSync(path.join(here, '..', '..', 'just', 'test.just'), 'utf8');
 const coverageWorkflow = readFileSync(path.join(here, '..', 'workflows', 'coverage.yml'), 'utf8');
 const TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
@@ -39,12 +43,16 @@ function coverageChdbRecipeBody() {
   return justfile.slice(start, end);
 }
 
-/** The coverage-merge recipe body — where the ratchet shard fold now lives (tsouza/cerberus#2645). */
-function coverageMergeRecipeBody() {
-  const start = justfile.indexOf('\ncoverage-merge:\n');
-  const end = justfile.indexOf('\ncoverage:', start + 1);
-  assert.ok(start >= 0 && end >= 0 && end > start, 'Justfile: cannot isolate the coverage-merge recipe');
-  return justfile.slice(start, end);
+/**
+ * coverage-merge's own logic — where the ratchet shard fold now lives
+ * (tsouza/cerberus#2645). Issue #3095 (epic #3091) extracted the
+ * `coverage-merge` Justfile recipe body into coverage-merge.mjs, so this
+ * now reads that module's source directly rather than slicing just/test.just
+ * (whose `coverage-merge:` recipe is a one-line `node coverage-merge.mjs`
+ * call and carries none of this logic itself any more).
+ */
+function coverageMergeScriptSource() {
+  return readFileSync(path.join(here, 'coverage-merge.mjs'), 'utf8');
 }
 
 /** The `timeout-minutes:` of a named coverage.yml job. */
@@ -173,13 +181,18 @@ test('the coverage-chdb recipe main sweep never carries -skip — it is the sole
   );
 });
 
-test('the coverage-merge recipe folds cover-chdb.out together with every extra shard profile before merging with cover.out', () => {
-  const body = coverageMergeRecipeBody();
-  assert.match(body, /cover-chdb\.out "\$\{RATCHET_FILES\[@\]\}"/);
+test('coverage-merge.mjs folds cover-chdb.out together with every extra shard profile before merging with cover.out', () => {
+  const src = coverageMergeScriptSource();
   assert.match(
-    body,
-    /RATCHET_FILES=\(cover-chdb-ratchet-\*\.out\)/,
-    'coverage-merge must look for the ratchet shard profiles wherever they landed — coverage-chdb no longer ' +
+    src,
+    /writeFoldedProfile\(p\('cover-chdb\.out'\), \[p\('cover-chdb\.out'\), \.\.\.ratchetFiles\.map\(p\)\]\)/,
+    'coverage-merge.mjs must fold cover-chdb.out together with the ratchet shard files it found, in place, ' +
+      'before the cover.out+cover-chdb.out merge below it',
+  );
+  assert.match(
+    src,
+    /RATCHET_SHARD_PATTERN = \/\^cover-chdb-ratchet-\.\*\\\.out\$\//,
+    'coverage-merge.mjs must look for the ratchet shard profiles wherever they landed — coverage-chdb no longer ' +
       'always shares a directory with them (tsouza/cerberus#2645)',
   );
 });
