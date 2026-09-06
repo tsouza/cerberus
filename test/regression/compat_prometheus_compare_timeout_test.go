@@ -9,7 +9,7 @@ import (
 
 // compatHarnessScriptPath drives the prometheus differential harness for
 // every lane (compatibility/prometheus, -forced-route, -floor).
-const compatHarnessScriptPath = "../../compatibility/prometheus/scripts/run-prometheus-compatibility.sh"
+const compatHarnessScriptPath = "../../.github/scripts/run-prometheus-compatibility.mjs"
 
 // compatComparerRelPath is the vendored upstream file the harness build-time
 // patches before compiling promql-compliance-tester.
@@ -22,7 +22,7 @@ const compatComparerRelPath = "upstream/promql/comparer/comparer.go"
 // (which file, and that the replacement second count exceeds 10) still can.
 const (
 	compatComparerTimeoutOriginal = "10*time.Second"
-	compatComparerPatchMarker     = `COMPARER="$ROOT_DIR/upstream/promql/comparer/comparer.go"`
+	compatComparerPatchMarker     = "${ROOT_DIR}/upstream/promql/comparer/comparer.go"
 )
 
 // TestPrometheusCompatHarnessWidensCompareTimeout (#2707) pins the fix for
@@ -71,8 +71,8 @@ func TestPrometheusCompatHarnessWidensCompareTimeout(t *testing.T) {
 	body := string(script)
 
 	if !strings.Contains(body, compatComparerPatchMarker) {
-		t.Fatalf("%s no longer resolves COMPARER to %s; the compare-timeout patch below "+
-			"targets that variable, so this pin can't tell whether it still hits the right file",
+		t.Fatalf("%s no longer names %s; the compare-timeout patch below "+
+			"targets that file, so this pin can't tell whether it still hits the right one",
 			compatHarnessScriptPath, compatComparerRelPath)
 	}
 
@@ -99,22 +99,22 @@ func TestPrometheusCompatHarnessWidensCompareTimeout(t *testing.T) {
 }
 
 // findReplacementTimeoutSeconds extracts the N in "N*time.Second" from the
-// script's own COMPAT_COMPARE_TIMEOUT_SECONDS assignment, so this test fails
-// loudly — rather than silently passing on a stale marker — if that
-// assignment is ever renamed or removed without updating this pin.
+// script's own `const COMPARER_TIMEOUT_SECONDS = N;` declaration, so this
+// test fails loudly — rather than silently passing on a stale marker — if
+// that declaration is ever renamed or removed without updating this pin.
 func findReplacementTimeoutSeconds(t *testing.T, scriptBody string) int {
 	t.Helper()
 
-	const assignPrefix = "COMPAT_COMPARE_TIMEOUT_SECONDS="
+	const assignPrefix = "const COMPARER_TIMEOUT_SECONDS = "
 	idx := strings.Index(scriptBody, assignPrefix)
 	if idx < 0 {
-		t.Fatalf("%s no longer assigns %s; the compare-timeout patch this test pins reads its "+
-			"replacement value from that variable", compatHarnessScriptPath, assignPrefix)
+		t.Fatalf("%s no longer declares %s; the compare-timeout patch this test pins reads its "+
+			"replacement value from that constant", compatHarnessScriptPath, assignPrefix)
 	}
 	rest := scriptBody[idx+len(assignPrefix):]
-	end := strings.IndexByte(rest, '\n')
+	end := strings.IndexByte(rest, ';')
 	if end < 0 {
-		t.Fatalf("%s: %s assignment runs off the end of the file", compatHarnessScriptPath, assignPrefix)
+		t.Fatalf("%s: %s declaration runs off the end of the file", compatHarnessScriptPath, assignPrefix)
 	}
 	value := strings.TrimSpace(rest[:end])
 

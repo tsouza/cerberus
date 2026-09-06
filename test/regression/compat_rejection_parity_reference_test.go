@@ -35,9 +35,13 @@ import (
 //
 // The three tests below pin one condition each.
 const (
-	compatComposePath     = "../../compatibility/prometheus/docker-compose.yml"
-	compatDriverScript    = "../../compatibility/prometheus/scripts/run-prometheus-compatibility.sh"
-	rejectionCatalogueDir = "../../test/rejection-parity/catalogue"
+	compatComposePath  = "../../compatibility/prometheus/docker-compose.yml"
+	compatDriverScript = "../../.github/scripts/run-prometheus-compatibility.mjs"
+	// compatComposeLifecycleLib is the shared module the harness's
+	// rejection-parity call routes through — see runRejectionParityDriver()
+	// in .github/scripts/lib/compat-compose-lifecycle.mjs.
+	compatComposeLifecycleLib = "../../.github/scripts/lib/compat-compose-lifecycle.mjs"
+	rejectionCatalogueDir     = "../../test/rejection-parity/catalogue"
 
 	// promExperimentalFunctionsFlag is the reference-Prometheus flag that
 	// admits the experimental PromQL surface (limitk, limit_ratio,
@@ -50,10 +54,15 @@ const (
 	// package path in their `go run` invocation.
 	rejectionDriverPath = "./compatibility/cmd/rejection-parity"
 
-	// rejectionDriverEvalTimeArg pins the driver onto the same instant the
-	// upstream compliance tester uses, which the seeder places inside the
-	// fixture window.
-	rejectionDriverEvalTimeArg = `-eval-time "$END_TIME"`
+	// rejectionDriverCallSiteEvalTime pins the promql harness's call into the
+	// shared driver onto a non-empty eval time: this is what places the
+	// driver at the same instant the upstream compliance tester uses.
+	rejectionDriverCallSiteEvalTime = "evalTime: END_TIME,"
+
+	// rejectionDriverLibEvalTimeFlag pins the shared driver actually
+	// forwarding that value as `-eval-time` to the `go run` invocation when
+	// given, rather than the call-site plumbing being a no-op.
+	rejectionDriverLibEvalTimeFlag = "args.push('-eval-time', evalTime);"
 
 	promHead = "promql"
 )
@@ -109,6 +118,13 @@ func TestCompatReferencePrometheusEnablesExperimentalFunctions(t *testing.T) {
 // driver left at wall-clock `now` reads empty selectors on both sides, and
 // upstream's eval-time per-series validation (double_exponential_smoothing's
 // smoothing/trend-factor bounds, for one) never executes.
+//
+// The promql harness routes its rejection-parity invocation through the
+// shared runRejectionParityDriver() (lib/compat-compose-lifecycle.mjs), so
+// this pin has two load-bearing halves: the harness's own call site must
+// pass a non-empty eval time, AND the shared driver must actually forward it
+// as `-eval-time` rather than the plumbing being a no-op. Both have to hold
+// for the flag to reach the `go run` invocation at all.
 func TestRejectionParityDriverEvaluatesInsideFixtureWindow(t *testing.T) {
 	t.Parallel()
 
@@ -118,27 +134,44 @@ func TestRejectionParityDriverEvaluatesInsideFixtureWindow(t *testing.T) {
 	}
 	script := string(raw)
 
-	start := strings.Index(script, rejectionDriverPath)
-	if start < 0 {
-		t.Fatalf("%s never invokes %s; this test would compare nothing",
-			compatDriverScript, rejectionDriverPath)
+	libRaw, err := os.ReadFile(compatComposeLifecycleLib)
+	if err != nil {
+		t.Fatalf("read %s: %v", compatComposeLifecycleLib, err)
 	}
-	// The invocation is a parenthesised subshell whose arguments are
-	// backslash-continued; the first unescaped `)` after the package path
-	// closes it.
-	rest := script[start:]
-	end := strings.Index(rest, ")")
-	if end < 0 {
-		t.Fatalf("%s: the %s invocation is never closed", compatDriverScript, rejectionDriverPath)
-	}
-	invocation := rest[:end]
+	lib := string(libRaw)
 
-	if !strings.Contains(invocation, rejectionDriverEvalTimeArg) {
-		t.Errorf("%s invokes %s without %s:\n%s\n"+
+	// The `-head, './compatibility/cmd/rejection-parity'` literal lives in
+	// the shared lib's runRejectionParityDriver — every harness delegates to
+	// it rather than spawning the driver itself — so this proves the driver
+	// is wired up at all before drilling into the harness's own call-site
+	// object literal below.
+	if !strings.Contains(lib, rejectionDriverPath) {
+		t.Fatalf("%s never mentions %s; this test would compare nothing",
+			compatComposeLifecycleLib, rejectionDriverPath)
+	}
+	callSiteStart := strings.Index(script, "runRejectionParityDriver({")
+	if callSiteStart < 0 {
+		t.Fatalf("%s never calls runRejectionParityDriver(...); this test would compare nothing", compatDriverScript)
+	}
+	rest := script[callSiteStart:]
+	end := strings.Index(rest, "});")
+	if end < 0 {
+		t.Fatalf("%s: the runRejectionParityDriver({ … }) call is never closed", compatDriverScript)
+	}
+	callSite := rest[:end]
+
+	if !strings.Contains(callSite, rejectionDriverCallSiteEvalTime) {
+		t.Errorf("%s calls runRejectionParityDriver without %q:\n%s\n"+
 			"The fixture lives in a fixed past window, so a driver evaluating at "+
 			"wall-clock now reads empty selectors from BOTH backends and no "+
 			"data-dependent reference guard fires.",
-			compatDriverScript, rejectionDriverPath, rejectionDriverEvalTimeArg, invocation)
+			compatDriverScript, rejectionDriverCallSiteEvalTime, callSite)
+	}
+
+	if !strings.Contains(lib, rejectionDriverLibEvalTimeFlag) {
+		t.Errorf("%s no longer forwards evalTime as %q to the rejection-parity `go run` invocation; "+
+			"the promql harness's own call-site eval time (pinned above) would then never reach the driver",
+			compatComposeLifecycleLib, rejectionDriverLibEvalTimeFlag)
 	}
 }
 
