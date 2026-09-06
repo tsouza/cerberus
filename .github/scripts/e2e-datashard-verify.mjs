@@ -153,6 +153,27 @@ function chQueryTSV(pod, sql) {
   return res.stdout.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0);
 }
 
+// chQuerySingleRaw returns a single scalar/row result as ONE trimmed raw
+// string, unlike chQueryTSV which splits stdout on '\n' into rows — that
+// split is wrong for a query whose OWN result value could itself contain an
+// embedded newline (e.g. reading back a full query TEXT verbatim, as the
+// round-4 isolated-re-run diagnostic below does), which would otherwise
+// masquerade as more than one row. Returns '' (never exits) when the query
+// legitimately produced no result — a diagnostic-only lookup, so a miss is
+// informational, not fatal.
+function chQuerySingleRaw(pod, sql) {
+  const res = kubectl([
+    'exec', pod, '--',
+    'clickhouse-client',
+    '--user', CH_USER,
+    '--password', CH_PASSWORD,
+    '--database', DB,
+    '--format', 'TSVRaw',
+    '--query', sql,
+  ]);
+  return res.status === 0 ? res.stdout.trim() : '';
+}
+
 function chExec(pod, sql) {
   const res = kubectl(['exec', pod, '--', 'clickhouse-client', '--user', CH_USER, '--password', CH_PASSWORD, '--query', sql]);
   if (res.status !== 0) {
@@ -246,11 +267,81 @@ function maxConcurrent(intervals) {
   return max;
 }
 
+// ---- diagnostic (informational only, cerberus issue #3128 round 4) ----
+// fanout_gate.go's own "Residual gap, round 3 findings" doc leaves finding 3
+// ("real ClickHouse-side multiplication independent of cerberus's own
+// dispatch code") open and names two concrete next steps: a resource-
+// pressure / retry-event check, and getting ClickHouse's own planner
+// (EXPLAIN PIPELINE / an isolated re-run) to say whether the extra per-shard
+// children are load-dependent or structural. Everything below gathers
+// evidence for that; NOTHING in this section ever increments `failures` —
+// finding 3 is not yet proven, so nothing here asserts a threshold on it.
+
+// retryPressureEvents — ClickHouse system.events counters that a connection-
+// level retry or transport failure under load would increment (ClickHouse's
+// own src/Common/ProfileEvents.cpp names each). Diffed before/after the
+// burst per pod so a genuine increase (not a cumulative since-boot count) is
+// what gets reported.
+const retryPressureEvents = [
+  'DistributedConnectionFailTry',
+  'DistributedConnectionFailAtAll',
+  'DistributedConnectionMissingTable',
+  'DistributedConnectionStaleReplica',
+  'NetworkErrors',
+  'NetworkSendErrors',
+  'NetworkReceiveErrors',
+  'ReadBufferFromFileDescriptorReadFailed',
+  'ZooKeeperHardwareExceptions',
+];
+
+function eventsSnapshot(pods, names) {
+  const inList = names.map((n) => `'${n}'`).join(', ');
+  const snap = {};
+  for (const pod of pods) {
+    const rows = chQueryTSV(pod, `SELECT event, value FROM system.events WHERE event IN (${inList})`);
+    const perPod = {};
+    for (const row of rows) {
+      const [event, value] = row.split('\t');
+      perPod[event] = Number(value);
+    }
+    snap[pod] = perPod;
+  }
+  return snap;
+}
+
+function logEventDiffs(before, after, pods, names) {
+  for (const pod of pods) {
+    const deltas = names
+      .map((n) => [n, (after[pod]?.[n] || 0) - (before[pod]?.[n] || 0)])
+      .filter(([, d]) => d > 0);
+    log(
+      deltas.length > 0
+        ? `  ${pod}: ${deltas.map(([n, d]) => `${n}=+${d}`).join(', ')}`
+        : `  ${pod}: no retry/pressure event increase`,
+    );
+  }
+}
+
+// diagnosticSettleSeconds bounds the grace period between an isolated
+// diagnostic re-run's clickhouse-client call returning and this script's own
+// SYSTEM FLUSH LOGS — the re-run's own query_log row is enqueued at query
+// finish (before the client call returns) but the internal system-log
+// buffer flush that makes it durably queryable is asynchronous, so a bare
+// zero-wait FLUSH LOGS could race it. Named so the grace period is never a
+// bare literal (invariant 13).
+const diagnosticSettleSeconds = 2;
+
+// roundFourDiagQueryIDPrefix tags the isolated re-run's own query_id so it
+// can never collide with a real dispatch's mintQueryID-derived id (which is
+// always exactly 32 hex chars + "-" + more hex, never this literal prefix).
+const roundFourDiagQueryIDPrefix = 'issue3128-round4-diag';
+
 async function main() {
   const initiatorPod = anyClickhousePodName();
   const allPods = allClickhousePodNames();
   log(`datashard verify: namespace=${NS} db=${DB} cluster=${CH_CLUSTER} dataShardCount=${DATA_SHARD_COUNT} fanoutCap=${DATA_SHARD_FANOUT_CAP} pods=${allPods.join(',')}`);
   let failures = 0;
+  const eventsBefore = eventsSnapshot(allPods, retryPressureEvents);
 
   const restartsBefore = restartCounts(allPods);
 
@@ -273,6 +364,27 @@ async function main() {
 
   const windowStart = Math.floor(burstStartMs / 1000) - 5;
   const windowEnd = Math.floor(burstEndMs / 1000) + FLUSH_WAIT_SECONDS + 10;
+
+  // ---- diagnostic: retry/pressure events + CPU/memory pressure during the burst ----
+  // See this file's "diagnostic (informational only, cerberus issue #3128
+  // round 4)" section above — never gates the run.
+  log('diagnostic: retry/connection-failure event deltas during the burst, per ClickHouse pod:');
+  const eventsAfter = eventsSnapshot(allPods, retryPressureEvents);
+  logEventDiffs(eventsBefore, eventsAfter, allPods, retryPressureEvents);
+
+  const pressureMetricRows = chQueryTSV(
+    initiatorPod,
+    `SELECT hostName() AS host, metric, max(value) AS peak
+     FROM clusterAllReplicas('${CH_CLUSTER}', system.asynchronous_metric_log)
+     WHERE event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
+       AND (metric ILIKE '%CPU%' OR metric ILIKE '%Memory%' OR metric ILIKE '%Throttl%')
+     GROUP BY host, metric
+     ORDER BY host, metric`,
+  );
+  log(`diagnostic: peak CPU/Memory/Throttle asynchronous_metric_log values during the burst window (cross-reference against cerberus-values-datashard.yaml's "sized down" pod resources — requests.cpu=100m, limits.memory=1Gi, no cpu limit configured):`);
+  for (const row of pressureMetricRows) {
+    log(`  ${row}`);
+  }
 
   // ---- point 1: a genuine solver-split (kEff > 1) query happened ----
   // clusterAllReplicas (not a local query, and not scoped to `initiatorPod`
@@ -444,6 +556,89 @@ async function main() {
     // dispatch that structurally fans out wider than DataShardCount.
     const selfMaxConcurrent = maxConcurrent(rows.map((r) => [r.startUs, r.durUs]));
     log(`  over-width dispatch ${qid}: ${rows.length} children (expected <= ${DATA_SHARD_COUNT}), own internal peak concurrency=${selfMaxConcurrent}; sample query: ${rows[0].snippet}`);
+  }
+
+  // ---- diagnostic: is one over-width dispatch's own SQL over-width even in
+  // ISOLATION (no concurrent burst load)? ----
+  // If ClickHouse's own planner deterministically fans this SQL out wider
+  // than DataShardCount regardless of load, re-running it alone reproduces
+  // the same child count. If the extra children only appear under the
+  // burst's concurrent-connection pressure, the isolated re-run matches
+  // DataShardCount exactly — evidence FOR (not proof of) the
+  // resource-contention/retry hypothesis fanout_gate.go's own doc names as
+  // the untested next step. See this file's "diagnostic (informational
+  // only, cerberus issue #3128 round 4)" section above — never gates the run.
+  if (overWidthGroups.length > 0) {
+    const [sampleQid] = overWidthGroups[0];
+    // chQuerySingleRaw, not chQueryTSV — the query TEXT being read back is
+    // itself the result value here, and chQueryTSV's line-split would
+    // corrupt it if it ever contained an embedded newline (see that
+    // function's own doc).
+    const fullQuery = chQuerySingleRaw(
+      initiatorPod,
+      `SELECT query FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
+       WHERE query_id = '${sampleQid}' AND is_initial_query = 1 AND type = 'QueryFinish'
+       LIMIT 1`,
+    );
+    if (!fullQuery) {
+      log(`diagnostic: could not recover full query text for over-width dispatch ${sampleQid} (parent row fell outside the window) — skipping isolated re-run`);
+    } else {
+      log(`diagnostic: FULL query text for over-width dispatch ${sampleQid}:\n${fullQuery}`);
+
+      // parallel-replicas + table-engine + cluster-topology check: is the
+      // extra fan-out actually replica-level parallelism (a DIFFERENT
+      // mechanism from Distributed data-shard fan-out, invisible to
+      // DataShardFanoutGate either way) rather than a self-referencing
+      // subquery under distributed_product_mode=global?
+      log('diagnostic: parallel-replicas settings on the connection cerberus actually uses:');
+      log(chQuerySingleRaw(initiatorPod, `SELECT name, value, changed FROM system.settings WHERE name ILIKE '%parallel_replica%'`) || '(no rows)');
+      log('diagnostic: otel_traces_local table engine:');
+      log(chQuerySingleRaw(initiatorPod, `SELECT database, name, engine FROM system.tables WHERE name = 'otel_traces_local'`) || '(no rows)');
+      log('diagnostic: system.clusters topology (shard_num, replica_num, host_name):');
+      log(chQuerySingleRaw(initiatorPod, `SELECT cluster, shard_num, replica_num, host_name FROM system.clusters WHERE cluster = '${CH_CLUSTER}' ORDER BY shard_num, replica_num`) || '(no rows)');
+
+      const distributedSettingsArgs = [
+        '--skip_unavailable_shards=0',
+        '--fallback_to_stale_replicas_for_distributed_queries=0',
+        '--load_balancing=first_or_random',
+        '--distributed_product_mode=global',
+      ];
+      log(`diagnostic: EXPLAIN PIPELINE for over-width dispatch ${sampleQid}'s own SQL (DataShardCount=${DATA_SHARD_COUNT} expected fan-out width):`);
+      const explainRes = kubectl([
+        'exec', initiatorPod, '--',
+        'clickhouse-client', '--user', CH_USER, '--password', CH_PASSWORD, '--database', DB,
+        ...distributedSettingsArgs,
+        '--query', `EXPLAIN PIPELINE ${fullQuery}`,
+      ]);
+      log(explainRes.status === 0 ? explainRes.stdout.trim() || '(empty)' : `  (EXPLAIN PIPELINE failed, informational only: ${explainRes.stderr.trim()})`);
+
+      const diagQueryID = `${roundFourDiagQueryIDPrefix}-${Date.now()}`;
+      log(`diagnostic: re-running the SAME SQL in ISOLATION (query_id=${diagQueryID}, no concurrent burst load)`);
+      const rerunRes = kubectl([
+        'exec', initiatorPod, '--',
+        'clickhouse-client', '--user', CH_USER, '--password', CH_PASSWORD, '--database', DB,
+        ...distributedSettingsArgs,
+        '--query_id', diagQueryID,
+        '--query', fullQuery,
+      ]);
+      if (rerunRes.status !== 0) {
+        log(`diagnostic: isolated re-run failed, informational only: ${rerunRes.stderr.trim()}`);
+      } else {
+        await sleep(diagnosticSettleSeconds * 1000);
+        chExec(initiatorPod, `SYSTEM FLUSH LOGS ON CLUSTER ${CH_CLUSTER}`);
+        const isolatedChildRows = chQueryTSV(
+          initiatorPod,
+          `SELECT count() FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
+           WHERE initial_query_id = '${diagQueryID}' AND is_initial_query = 0
+             AND query_kind = 'Select' AND type = 'QueryFinish'`,
+        );
+        const isolatedChildCount = Number(isolatedChildRows[0] || '0');
+        const verdict = isolatedChildCount > DATA_SHARD_COUNT
+          ? 'STILL over-width even in isolation: the multiplication is NOT purely load-dependent — points at a structural planner/setting effect'
+          : 'matches DataShardCount exactly in isolation: the over-width shape needs concurrent load/connection pressure to reproduce, consistent with a real ClickHouse-side retry/contention effect';
+        log(`diagnostic: isolated re-run produced ${isolatedChildCount} per-shard Select children (DataShardCount=${DATA_SHARD_COUNT}) — ${verdict}`);
+      }
+    }
   }
 
   if (peakConcurrentSelectOnly > DATA_SHARD_FANOUT_CAP) {
