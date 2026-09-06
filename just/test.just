@@ -387,9 +387,7 @@ ts-grid-instant-memory-integration:
 update-nightly-perf-baseline:
     @just _pull-retry {{CH_TEST_IMAGE}}
     UPDATE_NIGHTLY_PERF_BASELINE=1 go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
-    @echo
-    @echo "Diff of regenerated baseline:"
-    @git --no-pager diff --stat test/perf/nightly-baseline.json || true
+    @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/nightly-baseline.json
 
 # Run #2437's periodic self-check: deliberately breaks two real
 # memory-bounding mechanisms (the #2429 fanout resource bound, the spill
@@ -651,9 +649,12 @@ COVERAGE_RAPID_SEED := "20260903"
 # repeats where the useful content is ~2 MB. One row per block, keeping the
 # widest count, is `mode: set`'s union and loses nothing — it is the same
 # fold `coverage-merge` does, just applied a step earlier, so the on-disk
-# file and the uploaded artifact stay the size they were.
+# file and the uploaded artifact stay the size they were. The fold itself is
+# `foldProfile()` in `.github/scripts/lib/coverage-fold.mjs` (issue #3095) —
+# the one implementation this recipe and `coverage-merge`'s own two folds
+# all share, rather than three hand-copies of the same awk.
 _coverage-fold FILE:
-    @{ echo "mode: set"; awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' {{FILE}} | sort; } > {{FILE}}.folded && mv {{FILE}}.folded {{FILE}}
+    @node .github/scripts/lib/coverage-fold.mjs {{FILE}} {{FILE}}
 
 # Default-tag coverage lane: writes cover.out. Split out of the chdb-tagged
 # lane (below) and the merge/gate step (`coverage-merge`) so CI can shard the
@@ -783,45 +784,17 @@ coverage-chdb:
 # own SHA-256. That record is the ONLY thing `update-coverage-floor` will accept
 # as proof that a profile carries both lanes — this recipe is the one step that
 # legitimately knows, because it is the step that decided.
+#
+# Extracted to .github/scripts/coverage-merge.mjs (issue #3095, epic #3091) —
+# see that module's header for the ratchet-shard fold and the merge-vs-copy
+# lane decision. `coverage-chdb`'s own recipe body stays untouched bash:
+# test/regression/tagged_test_enrollment_test.go statically parses its exact
+# shell text as chdb-tagged test execution evidence. Extracting it too is
+# tracked separately as tsouza/cerberus#3113.
 
 # Merge the two lane profiles into cover-merged.out and run the floor gate.
 coverage-merge:
-    @test -s cover.out || { echo "error: cover.out not found — run 'just coverage-default' first" >&2; exit 1; }
-    # Fold TestCardinalityRatchet's extra shard profiles (cover-chdb-ratchet-
-    # *.out) into cover-chdb.out first, BEFORE the cover.out+cover-chdb.out
-    # merge below. tsouza/cerberus#2645 moved these files' origin out of
-    # `coverage-chdb` itself (where this fold used to run immediately after
-    # writing them) into their own `coverage-chdb-ratchet` CI matrix job, so
-    # they no longer always share a directory with cover-chdb.out at the
-    # moment it is produced — a local `just coverage` still leaves them
-    # sitting right here, but in CI they only converge here, in the
-    # `coverage` aggregator job, after it downloads every lane's artifact
-    # into one directory. `shopt -s nullglob` (rather than a bare `-e` test)
-    # is what makes an unmatched `cover-chdb-ratchet-*.out` glob expand to
-    # NOTHING instead of the literal pattern string, which would otherwise
-    # hand awk a "file" it can never open.
-    @shopt -s nullglob; \
-    RATCHET_FILES=(cover-chdb-ratchet-*.out); \
-    if [ ${#RATCHET_FILES[@]} -gt 0 ]; then \
-        test -s cover-chdb.out || { echo "error: found ratchet shard profile(s) (${RATCHET_FILES[*]}) but no cover-chdb.out to fold them into" >&2; exit 1; }; \
-        echo "==> folding cover-chdb.out with the ratchet shard profile(s): ${RATCHET_FILES[*]}"; \
-        { echo "mode: set"; \
-          awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out "${RATCHET_FILES[@]}" | sort; \
-        } > cover-chdb.out.folded && mv cover-chdb.out.folded cover-chdb.out; \
-    fi
-    @if [ -s cover-chdb.out ]; then \
-        echo "==> merging profiles"; \
-        { echo "mode: set"; \
-          awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out cover-chdb.out | sort; \
-        } > cover-merged.out; \
-        LANES=default+chdb; \
-    else \
-        echo "==> no chdb-tagged profile found, merged profile is default-tag only"; \
-        cp cover.out cover-merged.out; \
-        LANES=default; \
-    fi; \
-    echo; \
-    COVERAGE_LANES="$LANES" node .github/scripts/coverage-summary.mjs
+    @node .github/scripts/coverage-merge.mjs
 
 # Generate the coverage profile and hold it to the committed per-package
 # floors, chaining the three recipes above: `coverage-default` writes
@@ -873,9 +846,7 @@ coverage: coverage-default coverage-chdb coverage-merge
 update-coverage-floor:
     @test -s cover-merged.out || { echo "error: cover-merged.out not found — run 'just coverage' first; the floors are derived from the profile it writes" >&2; exit 1; }
     @COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs
-    @echo
-    @echo "Diff of regenerated floors:"
-    @git --no-pager diff --stat test/coverage-floor/ || true
+    @node .github/scripts/lib/regen-diff.mjs --label floors test/coverage-floor/
 
 # Regenerate the exact per-head roster of TXTAR fixtures carrying a live
 # reference parity contract. The assertion mode never writes; this recipe is
@@ -884,7 +855,7 @@ update-coverage-floor:
 # Regenerate the per-head roster of fixtures carrying a live parity contract.
 update-parity-enrolment-baseline:
     UPDATE_PARITY_ENROLMENT_BASELINE=1 go test -count=1 -run '^TestParityEnrolmentBaseline$' ./test/regression
-    @git --no-pager diff --stat test/regression/parity-enrolment-baselines/ || true
+    @node .github/scripts/lib/regen-diff.mjs test/regression/parity-enrolment-baselines/
 
 # Regenerate the fixture-derived artefacts named by SHARD, one or more of:
 #
@@ -1016,9 +987,7 @@ update-golden *shards:
 # Regenerate the parser-surface and rejection parity ledgers.
 update-parity-ledgers: update-parity-enrolment-baseline
     CERBERUS_UPDATE_INVENTORY=1 go test -count=1 ./test/surface-parity/ ./test/rejection-parity/
-    @echo
-    @echo "Diff of regenerated parity ledgers:"
-    @git --no-pager diff --stat test/surface-parity/ test/rejection-parity/ || true
+    @node .github/scripts/lib/regen-diff.mjs --label "parity ledgers" test/surface-parity/ test/rejection-parity/
 
 CARDINALITY_BASELINE_TIMEOUT := "60m"
 
@@ -1043,9 +1012,7 @@ CARDINALITY_BASELINE_TIMEOUT := "60m"
 # Regenerate the cardinality / fan-factor ratchet baseline. Slow; needs libchdb.so.
 update-cardinality-baseline:
     @CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" CARDINALITY_BASELINE_TIMEOUT="{{CARDINALITY_BASELINE_TIMEOUT}}" node .github/scripts/cardinality-baseline-update.mjs
-    @echo
-    @echo "Diff of regenerated baseline:"
-    @git --no-pager diff --stat test/perf/cardinality-baseline/ || true
+    @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/cardinality-baseline/
 
 # Regenerate the routing-DECISION ratchet baseline (perf-assessment
 # Component D) from the current PromQL corpus. Parses every `-- query.promql --`
@@ -1066,9 +1033,7 @@ update-cardinality-baseline:
 # Regenerate the routing-decision ratchet baseline. Pure Go; review the diff.
 update-solver-decision-baseline:
     UPDATE_SOLVER_DECISION_BASELINE=1 go test -count=1 -run TestSolverDecisionRatchet ./test/perf/
-    @echo
-    @echo "Diff of regenerated baseline:"
-    @git --no-pager diff --stat test/perf/solver-decision-baseline/ || true
+    @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/solver-decision-baseline/
 
 # Regenerate the SCALE-WALL pin baseline — the perf guard for the wall /
 # scan-amplification regression classes the cardinality ratchet is blind to
@@ -1089,9 +1054,7 @@ update-solver-decision-baseline:
 update-scale-wall-baseline:
     @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; the scale-wall bounds are measured by an in-process chDB run" >&2; exit 1; }
     UPDATE_SCALE_WALL_BASELINE=1 go test -tags chdb -count=1 -run TestScaleWallPin ./test/perf/
-    @echo
-    @echo "Diff of regenerated baseline:"
-    @git --no-pager diff --stat test/perf/scale-wall-baseline.json || true
+    @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/scale-wall-baseline.json
 
 # Regenerate the PERF-SMOKE baseline (#2370 PR 1) — the committed per-sentinel
 # memory ceilings the real-ClickHouse sentinel differential asserts against.
@@ -1111,9 +1074,7 @@ update-perf-smoke-baseline:
     @# Second tier — see the perf-smoke-integration recipe for why.
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
     UPDATE_PERF_SMOKE_BASELINE=1 go test -timeout 20m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
-    @echo
-    @echo "Diff of regenerated baseline:"
-    @git --no-pager diff --stat test/perf/perf-smoke-baseline.json || true
+    @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/perf-smoke-baseline.json
 
 # Regenerate the METADATA QUERY-SIZE budget — the perf guard for the rendered
 # SIZE of the combined /api/v1/series query, the axis the cardinality and
@@ -1133,9 +1094,7 @@ update-perf-smoke-baseline:
 # Regenerate the metadata query-size budget. Pure Go; review the diff.
 update-metadata-query-size-baseline:
     UPDATE_METADATA_QUERY_SIZE_BASELINE=1 go test -count=1 -run TestMetadataQuerySizeRatchet ./test/perf/
-    @echo
-    @echo "Diff of regenerated baseline:"
-    @git --no-pager diff --stat test/perf/metadata-query-size-baseline.json || true
+    @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/metadata-query-size-baseline.json
 
 # Regenerate the publishable benchmark document (docs/benchmarks.md) from
 # LIVE measurements: optimizer before/after wins, per-construct scaling
@@ -1157,9 +1116,7 @@ update-metadata-query-size-baseline:
 bench-report:
     @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; the benchmark document is generated by an in-process chDB measurement pass" >&2; exit 1; }
     go run -tags chdb ./cmd/bench-report -out docs/benchmarks.md
-    @echo
-    @echo "Diff of regenerated benchmark document:"
-    @git --no-pager diff --stat docs/benchmarks.md || true
+    @node .github/scripts/lib/regen-diff.mjs --label "benchmark document" docs/benchmarks.md
 
 # Regenerate docs/configuration.md from the single source of truth in
 # internal/config: the CERBERUS_* env-key metadata (config.EnvDocs) and the
@@ -1172,7 +1129,5 @@ bench-report:
 # Regenerate docs/configuration.md from the internal/config env metadata and defaults.
 gen-config-docs:
     go run ./cmd/cerberus config-docs -out docs/configuration.md
-    @echo
-    @echo "Diff of regenerated configuration document:"
-    @git --no-pager diff --stat docs/configuration.md || true
+    @node .github/scripts/lib/regen-diff.mjs --label "configuration document" docs/configuration.md
 

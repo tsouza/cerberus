@@ -358,9 +358,7 @@ migration-scenarios out="build/migration-scenarios.json":
 migration-golden:
     @echo "==> regenerating the tier-0 migration goldens"
     MIGRATION_UPDATE_GOLDENS=1 go test -tags=migration ./test/e2e/migration/tiers/tier0-offline/... -count=1
-    @echo
-    @echo "Diff of regenerated goldens:"
-    @git --no-pager diff --stat test/e2e/migration/archetypes/ || true
+    @node .github/scripts/lib/regen-diff.mjs --label goldens test/e2e/migration/archetypes/
 
 # Run the startup-speed benchmark: spawn cerberus and measure wall-clock
 # time from process-start to first 200 OK on /healthz. Asserts < 2.5 s.
