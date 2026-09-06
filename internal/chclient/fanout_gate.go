@@ -113,9 +113,20 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 	if aerr := c.dataShardFanoutGate.Acquire(ctx, weight); aerr != nil {
 		return nil, fmt.Errorf("chclient: data-shard fanout gate acquire: %w: %w", ErrDataShardFanoutGateBusy, aerr)
 	}
+	// TEMPORARY diagnostic for cerberus issue #3128's real-CI regression
+	// investigation (see dataShardFanoutHeld's own doc). Logging held/cap
+	// on every over-cap observation, not just the first, since a real
+	// accounting bug's shape (transient vs. sustained) is itself diagnostic.
+	if held := c.dataShardFanoutHeld.Add(weight); held > c.dataShardFanoutCap {
+		breakerLogger().Warn("chclient: data-shard fanout gate held weight exceeds cap",
+			"held", held, "cap", c.dataShardFanoutCap, "weight", weight)
+	}
 	var once sync.Once
 	return func() {
-		once.Do(func() { c.dataShardFanoutGate.Release(weight) })
+		once.Do(func() {
+			c.dataShardFanoutGate.Release(weight)
+			c.dataShardFanoutHeld.Add(-weight)
+		})
 	}, nil
 }
 

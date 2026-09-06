@@ -487,6 +487,15 @@ type Client struct {
 	// per-head.
 	dataShardFanoutGate *semaphore.Weighted
 	dataShardFanoutCap  int64
+	// dataShardFanoutHeld is a TEMPORARY diagnostic counter for cerberus
+	// issue #3128's real-CI regression investigation (see fanout_gate.go's
+	// acquireDataShardFanout) — tracks the aggregate weight this Client's
+	// gate currently believes it holds, so a held-weight-exceeds-cap WARN
+	// can prove or refute an accounting bug independently of ClickHouse's
+	// own system.query_log measurement. Shared by pointer across every
+	// ForHead view, same as dataShardFanoutGate. Nil whenever
+	// dataShardFanoutGate is nil. Remove once #3128 is resolved for real.
+	dataShardFanoutHeld *atomic.Int64
 	// queryTimeout is Config.QueryTimeoutSeconds as a time.Duration —
 	// the per-query `max_execution_time` ClickHouse setting applied to
 	// every data-plane query via queryContext (overridable per-request,
@@ -820,6 +829,10 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 		newGlobalBreakerMetrics(),
 	)
 	dataShardFanoutGate, dataShardFanoutCap := NewDataShardFanoutGate(cfg)
+	var dataShardFanoutHeld *atomic.Int64
+	if dataShardFanoutGate != nil {
+		dataShardFanoutHeld = new(atomic.Int64)
+	}
 	c := &Client{
 		conn:                conn,
 		addr:                cfg.Addr,
@@ -830,6 +843,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 		dataShardCount:      int64(cfg.DataShardCount),
 		dataShardFanoutGate: dataShardFanoutGate,
 		dataShardFanoutCap:  dataShardFanoutCap,
+		dataShardFanoutHeld: dataShardFanoutHeld,
 		queryTimeout:        cfg.QueryTimeout,
 	}
 	// Resolve the cursor-decode strategy ONCE, here at construction. The
