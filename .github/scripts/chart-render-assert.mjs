@@ -374,7 +374,9 @@ function count(haystack, needle) {
   check(bareDefaultReplicated === explicitOneReplicated, 'dataShards.count=1 + replicas=2: still BYTE-IDENTICAL to the bare default')
   check(bareDefaultReplicated.includes('<shard>01</shard>'), 'dataShards.count=1: cluster.xml keeps the literal <shard>01</shard>')
 
-  const n2 = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2'])
+  // Every count>1 render below opts into the EXPERIMENTAL path explicitly —
+  // the gate itself is asserted at the end of this block.
+  const n2 = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true'])
   check(count(n2, 'kind: StatefulSet') === 3, 'dataShards.count=2 at replicas=1: Keeper + 2 per-shard ClickHouse StatefulSets')
   for (const i of [0, 1]) {
     check(n2.includes(`name: rn-cerberus-clickhouse-datashard-${i}\n`), `dataShards.count=2: StatefulSet name for shard ${i} carries -datashard-${i} (INCLUDING index 0)`)
@@ -405,7 +407,7 @@ function count(haystack, needle) {
   // string, still sharing the same {shard}/{replica} macro slot.
   const replicatedPlusShards = tpl([
     '-f', `${CHART_DIR}/ci/bwc-replicated-values.yaml`,
-    '--set', 'clickhouse.bundled.dataShards.count=2',
+    '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true',
   ])
   check(!replicatedPlusShards.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED'), 'replicated+dataShards: the plain Replicated-DATABASE env is NOT wired (mutually exclusive with ON CLUSTER)')
   check(replicatedPlusShards.includes("CERBERUS_SCHEMA_TABLE_ENGINE: \"ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')\""), 'replicated+dataShards: classic explicit ReplicatedMergeTree engine defaulted instead')
@@ -419,7 +421,7 @@ function count(haystack, needle) {
   // proves renders correctly) is respected, not silently overridden.
   const operatorChoosesReplicatedDB = tpl([
     '--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false',
-    '--set', 'clickhouse.bundled.replicas=2', '--set', 'clickhouse.bundled.dataShards.count=2',
+    '--set', 'clickhouse.bundled.replicas=2', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true',
     '--set', 'schema.replicated.enabled=true', '--set', 'schema.replicated.zookeeperPath=/clickhouse/databases/otel',
   ])
   check(operatorChoosesReplicatedDB.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED: "true"'), 'operator-forced schema.replicated.enabled=true wins even under dataShards.count>1')
@@ -448,7 +450,7 @@ function count(haystack, needle) {
   // ContainerCreating with no render-time signal at all).
   const keeperOffWithShards = tplFail([
     '--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false',
-    '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.keeper.enabled=false',
+    '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true', '--set', 'clickhouse.bundled.keeper.enabled=false',
   ])
   check(keeperOffWithShards !== null, 'keeper.enabled=false + dataShards.count=2: render FAILS')
   check(keeperOffWithShards && /keeper\.enabled/.test(keeperOffWithShards) && /dataShards\.count/.test(keeperOffWithShards), 'the keeper-off-with-shards failure names BOTH keeper.enabled and dataShards.count')
@@ -463,7 +465,7 @@ function count(haystack, needle) {
   // binary's per-process CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP. Every
   // divisor source is pinned (replicaCount, HPA maxReplicas, split-mode
   // head sum), plus every refused shape.
-  const shardBase = ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2']
+  const shardBase = ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true']
   const capEnv = (n) => `CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: "${n}"`
   const capReplicaCount = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
   check(capReplicaCount.includes(capEnv(4)), 'dataShards.fanoutCap=16 / replicaCount=4 (HPA off): per-process CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=4')
@@ -486,12 +488,27 @@ function count(haystack, needle) {
   const noCap = tpl([...shardBase, '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
   check(!noCap.includes('CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP'), 'dataShards.fanoutCap unset (default null): no CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP emitted — the per-process default stays the binary\'s own')
 
+  // EXPERIMENTAL gate (epic #3074): dataShards.count>1 is off by default and
+  // refuses to render without the explicit values-level opt-in; the opt-in is
+  // forwarded to the binary as CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE so
+  // internal/config's own boot-time gate makes the same decision; and the
+  // opt-in alone (count<=1) changes nothing at all.
+  const shardsWithoutOptIn = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2'])
+  check(shardsWithoutOptIn !== null, 'dataShards.count=2 WITHOUT experimentalDistributedMode: render FAILS (experimental, off by default)')
+  check(shardsWithoutOptIn && /experimentalDistributedMode/.test(shardsWithoutOptIn) && /EXPERIMENTAL/.test(shardsWithoutOptIn), 'the missing-opt-in failure names experimentalDistributedMode and says EXPERIMENTAL')
+  const shardsOptInFalse = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=false'])
+  check(shardsOptInFalse !== null, 'dataShards.count=2 + experimentalDistributedMode=false (explicit): render FAILS')
+  check(n2.includes('CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE: "true"'), 'dataShards.count=2 + opt-in: CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE forwarded to the binary')
+  check(!bareDefault.includes('CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE'), 'dataShards.count=1: CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE never emitted')
+  const optInAlone = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.experimentalDistributedMode=true'])
+  check(optInAlone === bareDefault, 'experimentalDistributedMode=true at dataShards.count=1 renders BYTE-IDENTICAL to the bare default (the opt-in alone changes nothing)')
+
   // Every per-shard PodDisruptionBudget scopes minAvailable to ITS OWN
   // shard's pods, not a single bare-selector PDB spanning every shard (a
   // single shared-selector PDB would let minAvailable be satisfied by ANY
   // shard's surviving pods, so an eviction could legally drain an entire
   // OTHER shard at once).
-  const n2Pdb = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
+  const n2Pdb = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true', '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
   check(count(n2Pdb, 'kind: PodDisruptionBudget') === 2, 'dataShards.count=2 + podDisruptionBudget.enabled: ONE PodDisruptionBudget PER shard, not a single shared one')
   for (const i of [0, 1]) {
     check(n2Pdb.includes(`name: rn-cerberus-clickhouse-datashard-${i}\n`), `dataShards.count=2: PodDisruptionBudget name for shard ${i} carries -datashard-${i}`)

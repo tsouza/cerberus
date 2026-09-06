@@ -100,6 +100,11 @@ func TestFromEnv_CHDataShardCount_ThreadsIntoClickHouseConfig(t *testing.T) {
 			if tc.env != "" {
 				t.Setenv("CERBERUS_CH_DATA_SHARDS", tc.env)
 			}
+			// Multi-shard routing is EXPERIMENTAL and off by default: a count
+			// above 1 only boots with the explicit opt-in (pinned by
+			// experimental_distributed_mode_test.go). This test is about the
+			// threading, not the gate, so opt in unconditionally.
+			t.Setenv("CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE", "true")
 			cfg, err := FromEnv()
 			if err != nil {
 				t.Fatalf("FromEnv: %v", err)

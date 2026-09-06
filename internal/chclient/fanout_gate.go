@@ -188,9 +188,149 @@ import (
 // Route A's admission gap this file closes (Route A was completely
 // ungated before #3128's move) is a genuine, confirmed improvement over the
 // pre-move state regardless, and the seeder-contamination fix (1 above) is a
-// genuine, confirmed improvement over the pre-round-3 measurement. Tracked
-// on issue #3128, still open, until finding 3's real cause is located and
-// point 2 passes cleanly on both legs.
+// genuine, confirmed improvement over the pre-round-3 measurement.
+//
+// ROUND 4 — finding 3's root cause, LOCATED (cerberus issue #3128, real e2e
+// dispatch runs 34050971889 and 34051673070). Direct ClickHouse-side
+// introspection this investigation's prior tooling could not reach — an
+// EXPLAIN PIPELINE against a real over-width dispatch's own SQL, and an
+// ISOLATED re-run of that exact SQL with zero concurrent burst load —
+// settled the question round 3 left open:
+//
+//   - The isolated re-run (query_id tagged, no concurrent load at all)
+//     reproduced the SAME over-width child count as the live burst
+//     (N=2: 3 children for a DataShardCount=2 dispatch; N=4: 15 children
+//     for a DataShardCount=4 dispatch) — PROOF the multiplication is
+//     deterministic and structural, not a load/retry/connection-pressure
+//     effect. This REFUTES the "connection-level retries under concurrent
+//     pressure" hypothesis this doc's round-3 text floated as the likely
+//     next step, and separately REFUTES a ClickHouse parallel-replicas
+//     mechanism (a real candidate given the EXPLAIN PIPELINE shape below):
+//     `system.settings` read back from the SAME connection showed
+//     enable_parallel_replicas=0 (changed=0 — ClickHouse's own default,
+//     never touched by cerberus or the chart) on this ClickHouse 26.3
+//     server, where enable_parallel_replicas is the master gate the
+//     legacy max_parallel_replicas=1000 default cannot bypass on its own.
+//   - The full, untruncated SQL text of the over-width dispatch (recovered
+//     from its own is_initial_query=1 system.query_log row) is the plain,
+//     non-structural TraceQL search shape round 3's finding 2 already
+//     examined — WITH the /api/search trace-limit restriction round 3's
+//     trace happened not to carry:
+//
+//       SELECT s.* FROM (SELECT * FROM otel_traces WHERE <window> AND
+//         match(...)) AS s
+//       WHERE TraceId IN (
+//         SELECT TraceId FROM (SELECT * FROM otel_traces WHERE <window>
+//           AND match(...)) GROUP BY TraceId
+//         ORDER BY min(Timestamp) DESC, TraceId LIMIT 20)
+//
+//     internal/chsql/search_trace_limit.go's emitSearchTraceLimit renders
+//     EXACTLY this shape, and its own doc already names the mechanism in
+//     plain words: "the input subquery is emitted twice (outer drain +
+//     inner ranking)". Both arms scan the SAME otel_traces Distributed
+//     table. Round 3's finding 2 examined a query shape without an active
+//     /api/search trace limit and correctly found no self-reference for
+//     THAT shape — round 3 did not generalise to the (far more common in
+//     practice) limited-search shape, which is what this round's sampled
+//     dispatch happened to be.
+//   - distributedProductMode=global (cerberus issue #3118, pinned
+//     UNCONDITIONALLY on every query — see distributed_query_settings.go)
+//     rewrites the inner `TraceId IN (subquery)` into a GLOBAL IN: the
+//     subquery is materialised ONCE by fanning the SAME Distributed table
+//     out across the cluster (the EXPLAIN PIPELINE this round captured
+//     shows exactly this — a CreatingSets node wrapping a Union of
+//     ReadFromMergeTree, the local shard's direct read under
+//     prefer_localhost_replica, and ReadFromRemote, the other shards),
+//     ON TOP OF the outer query's own independent Distributed fan-out for
+//     the drain. One SearchTraceLimit-shaped dispatch therefore makes
+//     ClickHouse execute the SAME Distributed scan roughly twice over —
+//     genuinely more real per-shard Select statements than the
+//     DataShardCount-wide weight acquireDataShardFanout charges it, a real
+//     gap in the gate's charging model, not a measurement artefact.
+//
+// THE FIX: acquireDataShardFanout now multiplies its charged weight by a
+// per-request fan-out multiplier (WithDataShardFanoutMultiplier, default 1)
+// that internal/engine.Engine.execContext stamps to
+// searchTraceLimitFanoutMultiplier (2) whenever the plan being dispatched
+// contains a chplan.SearchTraceLimit node — the ONE shape this round
+// directly proved against a real cluster. distributed_query_settings.go's
+// own doc already named three OTHER shapes that self-reference a
+// Distributed table under distributed_product_mode=global (TraceQL
+// structural operators, `select(nestedSet*)`, `| compare(...)`) that this
+// round's e2e burst never exercises (it fires only a bare, non-structural
+// TraceQL attribute search, a PromQL range query, and a LogQL range query)
+// and this fix does NOT audit or multiplier-charge — cerberus issue #3141
+// tracks auditing and, where warranted, extending the SAME multiplier
+// mechanism to those shapes with their own real-cluster evidence, the same
+// rigor this round applied to SearchTraceLimit, rather than a guessed
+// blanket multiplier applied without verification.
+//
+// Cerberus issue #3128's own filing text explicitly forbids a raised
+// DataShardFanoutCap as the resolution; this fix does not touch the cap —
+// it corrects the WEIGHT one specific, proven dispatch shape charges
+// against the unchanged cap, exactly the kind of real fix the issue asks
+// for.
+//
+// ROUND 4 — a SECOND, real, still-open contributing cause: this gate's
+// admission ceiling is PER-PROCESS, but a real deployment runs multiple
+// cerberus PODS. Re-verifying the SearchTraceLimit fix above against a real
+// e2e dispatch (run 34052929455) confirmed it is a genuine, measurable
+// improvement — `datashard (N=4)`'s Select-only peak concurrent dropped from
+// 15-16 (pre-fix) to 14 (post-fix) — but 14 still exceeds
+// DataShardFanoutCap=8. Direct inspection of the SAME run's own cluster
+// state (its kubectl describe/get-pods dump) found the reason: this e2e
+// lane's cerberus Deployment runs TWO pods (`cerberus-6f8d687c45-7pqdl` and
+// `cerberus-6f8d687c45-zp4wp`, both Running, both serving traffic behind the
+// SAME k8s Service) — deploy/helm/cerberus/values.yaml's own top-level
+// `replicaCount` defaults to 2, and neither test/e2e/k3s/cerberus-values.yaml
+// nor cerberus-values-datashard.yaml overrides it down to 1 for this lane.
+//
+// c.dataShardFanoutGate (this file) is a field on *Client, constructed ONCE
+// per process by assembleClientFromConn — a bare in-memory
+// *semaphore.Weighted with no cross-process visibility whatsoever. Each of
+// the two pods therefore runs its OWN independent copy of this gate, each
+// independently admitting up to DataShardFanoutCap (8) units of weight. A k8s
+// Service round-robins (or randomly load-balances) the burst's concurrent
+// HTTP requests across both pods, so the REAL aggregate ceiling ClickHouse
+// can see across the whole Deployment is up to `replicaCount x
+// DataShardFanoutCap` (up to 16 here), not DataShardFanoutCap alone — this
+// gate's own doc and docs/solver.md's sibling "one process-wide dispatch-
+// token semaphore" section have always described the MECHANISM as
+// process-wide (matching NewDataShardFanoutGate's own doc: cap "mirrors how
+// the pre-move mechanism defaulted to the solver's own connection Gate's
+// size", itself an inherently per-process MaxOpenConns pool), but neither
+// this file nor docs/solver.md had previously connected that scope to what
+// it means once replicaCount > 1: DataShardFanoutCap stops being a real
+// cluster-wide ceiling on ClickHouse's own concurrent per-shard exposure —
+// the exact resource-safety property #3081/#3128 exist to guarantee — and
+// silently becomes `replicaCount` times looser instead. 14 (measured, two
+// pods, post-SearchTraceLimit-fix) sits comfortably under 16 (the two-pod
+// theoretical ceiling this explains) and clearly above 8 (the single-pod cap
+// the test asserts against), which is exactly the signature this cause
+// predicts — not proof beyond doubt (no per-pod query_log breakdown was
+// captured this round), but a coherent, evidenced explanation consistent
+// with every number gathered so far, including round 3's own higher
+// observations (12-31) against whatever replicaCount those earlier dispatch
+// runs happened to run.
+//
+// NOT fixed here — cerberus issue #3128 stays OPEN for this second cause. A
+// correct fix needs the resolved per-pod DataShardFanoutCap to know its own
+// share of the operator's INTENDED cluster-wide budget — e.g. dividing by
+// replicaCount at the Helm chart / config layer — and doing that correctly
+// also has to account for
+// docs/project_per_head_split's per-head split mode (each head can run a
+// DIFFERENT replicaCount under `split.<head>.replicaCount`, and each such
+// pod would need its OWN correctly-apportioned share) and the
+// `autoscaling.enabled` HPA case (values.yaml: "When true, replicaCount is
+// ignored" — the real pod count becomes dynamic, which a value baked in at
+// Helm render time cannot track). Getting either wrong without real
+// multi-pod e2e coverage of split mode would risk trading a real,
+// evidenced bug for a guessed, unverified one — exactly what this
+// investigation's own discipline (round 3's "REFUTED" entry above) exists
+// to avoid. Cerberus issue #3128 stays open for this: the concrete next
+// step is a replica-count-aware cap (or a genuine cross-pod coordination
+// mechanism) with its own dedicated multi-replica e2e verification, not a
+// guess landed alongside this round's unrelated SearchTraceLimit fix.
 
 // ErrDataShardFanoutGateBusy is the sentinel wrapped into the error
 // [Client.acquireDataShardFanout] returns when the request's own ctx
@@ -242,8 +382,80 @@ func NewDataShardFanoutGate(cfg Config) (gate *semaphore.Weighted, cap int64) {
 	return semaphore.NewWeighted(cap), cap
 }
 
+// dataShardFanoutMultiplierKeyType/dataShardFanoutMultiplierKey carry the
+// per-request data-shard fan-out multiplier WithDataShardFanoutMultiplier
+// installs — see that function's own doc for why this exists (cerberus
+// issue #3128 round 4).
+type dataShardFanoutMultiplierKeyType struct{}
+
+var dataShardFanoutMultiplierKey = dataShardFanoutMultiplierKeyType{}
+
+// defaultDataShardFanoutMultiplier is what acquireDataShardFanout charges
+// absent a WithDataShardFanoutMultiplier override — the pre-round-4
+// behaviour, unconditionally: weight = DataShardCount exactly, matching
+// every plan shape that makes exactly one real per-shard Distributed
+// statement per dispatch. Named so the multiplier is never a bare literal
+// (invariant 13).
+const defaultDataShardFanoutMultiplier = 1
+
+// WithDataShardFanoutMultiplier returns a ctx that scales
+// acquireDataShardFanout's charged weight by multiplier x DataShardCount
+// instead of the default DataShardCount alone (cerberus issue #3128 round
+// 4 — see this file's own "ROUND 4" doc above for the real-cluster evidence
+// that motivated this).
+//
+// This exists because acquireDataShardFanout charges a FIXED weight per
+// dispatch on the assumption that one chclient dispatch makes exactly one
+// real Distributed-table fan-out. That assumption is false for a plan shape
+// that references the SAME Distributed table more than once WITHIN one
+// physical SQL statement — internal/chsql/search_trace_limit.go's
+// emitSearchTraceLimit is the first PROVEN instance (its own doc: "the
+// input subquery is emitted twice"), and distributed_query_settings.go
+// separately documents three OTHER shapes with the same self-reference
+// property (TraceQL structural operators, nestedSet annotate, compare) that
+// have not been round-4-verified against a real cluster and so do NOT set
+// this yet (cerberus issue #3141 tracks that audit). A shape that has not
+// been proven to over-fan-out must never claim it has — this carrier
+// exists precisely so that claim is made per-shape, with evidence, not
+// guessed globally.
+//
+// multiplier <= 0 is treated as defaultDataShardFanoutMultiplier (1) — a
+// caller bug should never UNDER-charge the gate below what the pre-round-4
+// mechanism already charged.
+//
+// A context value, not a Client field, so it is per-request: two concurrent
+// dispatches, one SearchTraceLimit-shaped and one not, never
+// cross-contaminate each other's charged weight.
+func WithDataShardFanoutMultiplier(ctx context.Context, multiplier int) context.Context {
+	return context.WithValue(ctx, dataShardFanoutMultiplierKey, multiplier)
+}
+
+// DataShardFanoutMultiplierFromContext returns the multiplier
+// WithDataShardFanoutMultiplier installed, and whether one was installed at
+// all — the QueryTimeoutFromContext pattern (timeout.go's own doc: "so the
+// layer that installs the carrier can prove it did"), exported so
+// internal/engine's own execContext tests can assert the stamp fires on
+// exactly the plan shapes it should, without duplicating
+// dataShardFanoutMultiplierFromContext's default-fallback logic.
+func DataShardFanoutMultiplierFromContext(ctx context.Context) (int, bool) {
+	n, ok := ctx.Value(dataShardFanoutMultiplierKey).(int)
+	return n, ok
+}
+
+// dataShardFanoutMultiplierFromContext returns the multiplier
+// WithDataShardFanoutMultiplier installed, or defaultDataShardFanoutMultiplier
+// (1) when none was set or the stored value is non-positive.
+func dataShardFanoutMultiplierFromContext(ctx context.Context) int {
+	if n, ok := ctx.Value(dataShardFanoutMultiplierKey).(int); ok && n > 0 {
+		return n
+	}
+	return defaultDataShardFanoutMultiplier
+}
+
 // acquireDataShardFanout acquires this dispatch's share of the aggregate
-// data-shard fan-out budget — weight c.dataShardCount, floored to 1 — and
+// data-shard fan-out budget — weight c.dataShardCount x the per-request
+// multiplier WithDataShardFanoutMultiplier installs (default 1, see that
+// function's own doc — cerberus issue #3128 round 4), floored to 1 — and
 // returns the idempotent release closure the caller MUST invoke exactly
 // once the dispatch's ClickHouse-side work has finished (queryOpen ties it
 // to the returned driver.Rows' Close via gatedRows; queryCursorColumnar
@@ -264,7 +476,7 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(), er
 	if c.dataShardFanoutGate == nil {
 		return func() {}, nil
 	}
-	weight := c.dataShardCount
+	weight := c.dataShardCount * int64(dataShardFanoutMultiplierFromContext(ctx))
 	if weight < 1 {
 		weight = 1
 	}

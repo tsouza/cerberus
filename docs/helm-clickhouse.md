@@ -219,6 +219,19 @@ but the cloud round-trip has not been exercised in CI.
 
 ## ClickHouse cluster DATA-shard topology (`dataShards.count`)
 
+> **EXPERIMENTAL — off by default, not production-supported.**
+> `dataShards.count > 1` renders only with
+> `clickhouse.bundled.experimentalDistributedMode: true` (the chart fails the
+> render otherwise, naming the key), and that opt-in is forwarded to cerberus
+> as `CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true` so the binary's own
+> boot-time gate makes the same decision — there is no way onto this path
+> without explicit values-level consent. Known limitation: the data-shard
+> fan-out admission ceiling is enforced per cerberus process, so at
+> `replicaCount > 1` the real cluster-wide ceiling is
+> `replicaCount x DataShardFanoutCap`
+> ([#3128](https://github.com/tsouza/cerberus/issues/3128)). Plain
+> replication (`replicas > 1`, above) is supported and needs none of this.
+
 `clickhouse.bundled.dataShards.count` (cerberus issue
 [#3077](https://github.com/tsouza/cerberus/issues/3077), part of epic
 [#3074](https://github.com/tsouza/cerberus/issues/3074)) is a **different**
@@ -323,7 +336,7 @@ provisioned `count: N` release), not a manifest change. Do not bump
 `dataShards.count` on a live, populated deployment without such a plan; a
 fresh install at the target `count` has no such hazard.
 
-### Infrastructure-validated only, not yet query-correctness-supported
+### Validation status: experimental, exercised by an informational e2e lane
 
 `count > 1` has been proven at the render/kubeconform layer (every
 `ci/*.yaml` fixture plus the dedicated dataShards assertions in
@@ -361,16 +374,18 @@ building issue #3077 — not merely a hypothetical plan:
 
 The cluster was torn down (`k3d cluster delete`) after the run; nothing from
 it persists. This proves the ClickHouse-side DDL/query mechanics genuinely
-work on a real multi-node cluster. It does **not** prove cerberus's own
-compiled binary running this path end-to-end inside the cluster (that needs
-a built cerberus image, which is the heavier `just e2e`-style lane), it has
-**not** been validated under concurrent solver-driven load, and every
-compat/e2e harness in this repository remains single-shard-only (by
-permanent, stated design for the three differential compat harnesses and
-`cerberus migrate` — see
+work on a real multi-node cluster. Since then the `datashard` e2e lane (next
+paragraph) has taken over as the standing proof: a built cerberus image
+inside the cluster, the full Go e2e correctness suite, and a real concurrent
+PromQL/LogQL/TraceQL burst through the sharded-pushdown path, at both
+`count: 2` and `count: 4`. What that lane shows today is the reason the
+feature is EXPERIMENTAL rather than supported: correctness and memory
+apportionment pass, but the admission-control ceiling does not hold
+cluster-wide because it is enforced per cerberus process
+([#3128](https://github.com/tsouza/cerberus/issues/3128)). Every
+compat/migration harness in this repository remains single-shard-only by
+permanent, stated design (see
 [`operations.md`'s scoping section](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard-cerberus-issue-3079)).
-Do not run `count > 1` in production until the e2e-hardening sub-issue
-([#3079](https://github.com/tsouza/cerberus/issues/3079)) closes.
 
 Issue #3079 adds the `datashard` e2e leg (`.github/workflows/e2e.yml`) that
 runs exactly this combination — a built cerberus image, a real concurrent

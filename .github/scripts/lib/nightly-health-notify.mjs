@@ -29,12 +29,38 @@ const TRACKING_ISSUE_LIST_LIMIT = 30;
  * than `success` — a real `failure`, a `cancelled` kill, or an unexpected
  * `skipped` — counts against a clean night, mirroring each lane's own
  * terminal-aggregator rule.
+ *
+ * `experimentalLanes` names jobs that exercise an EXPERIMENTAL, off-by-
+ * default feature (cerberus epic #3074's Distributed-table multi-shard path
+ * today): their non-successes are still REPORTED — `experimentalFailed`
+ * carries them, and every body builder prints them under their own advisory
+ * heading — but never decide `ok`. A supported lane regressing is exactly as
+ * loud as before; an experimental lane's known gap cannot mask it, and
+ * cannot keep a tracking issue open on its own. This is scoping by feature
+ * maturity, declared once per lane in code, not a tolerance file: the set is
+ * exported, the workflow's `needs:` list still carries every lane, and the
+ * lane's own job stays red in the run.
  */
-export function classifyNightlyHealth(jobResults) {
-  const failed = Object.entries(jobResults)
-    .filter(([, result]) => result !== 'success')
-    .map(([name, result]) => `${name}: ${result || '(missing)'}`);
-  return { ok: failed.length === 0, failed };
+export function classifyNightlyHealth(jobResults, { experimentalLanes = [] } = {}) {
+  const experimental = new Set(experimentalLanes);
+  const describe = ([name, result]) => `${name}: ${result || '(missing)'}`;
+  const nonSuccess = Object.entries(jobResults).filter(([, result]) => result !== 'success');
+  const failed = nonSuccess.filter(([name]) => !experimental.has(name)).map(describe);
+  const experimentalFailed = nonSuccess.filter(([name]) => experimental.has(name)).map(describe);
+  return { ok: failed.length === 0, failed, experimentalFailed };
+}
+
+/** The advisory section every body appends when an EXPERIMENTAL lane did
+ * not succeed — see classifyNightlyHealth. Empty when there is nothing to
+ * report so a body without experimental lanes is byte-identical to before. */
+function experimentalSection(experimentalFailed) {
+  if (!experimentalFailed || experimentalFailed.length === 0) return [];
+  return [
+    '',
+    'EXPERIMENTAL lanes (advisory only — these exercise an off-by-default feature and never',
+    'count toward a clean pass; see docs/operations.md, "ClickHouse cluster DATA-shard topology"):',
+    experimentalFailed.map((f) => `- \`${f}\``).join('\n'),
+  ];
 }
 
 /** Find the open tracking issue, if any, by its exact stable title. Pure so
@@ -61,7 +87,7 @@ export function decideNotifyAction({ ok, existingIssueNumber }) {
  * issueRef is the design-rationale issue/PR this mechanism traces back to
  * for THIS lane (not necessarily #1861 — a lane adopting this mechanism
  * later should cite its own adoption issue). */
-export function buildFailureBody({ laneLabel, failed, runUrl, runId, issueRef }) {
+export function buildFailureBody({ laneLabel, failed, experimentalFailed = [], runUrl, runId, issueRef }) {
   const list = failed.map((f) => `- \`${f}\``).join('\n');
   return [
     `The nightly \`${laneLabel}\` schedule run did not reach a clean pass.`,
@@ -71,6 +97,7 @@ export function buildFailureBody({ laneLabel, failed, runUrl, runId, issueRef })
     'Non-success jobs (anything but `success` — a real failure, a `cancelled`',
     'kill, or an unexpected `skipped`):',
     list,
+    ...experimentalSection(experimentalFailed),
     '',
     `Filed/updated automatically by this lane's notify script — see ${issueRef} for why this mechanism` +
       ' exists: a nightly that reports red into a place nobody looks is as silent as one that never' +
@@ -78,11 +105,12 @@ export function buildFailureBody({ laneLabel, failed, runUrl, runId, issueRef })
   ].join('\n');
 }
 
-export function buildRecoveryBody({ laneLabel, runUrl, runId }) {
+export function buildRecoveryBody({ laneLabel, experimentalFailed = [], runUrl, runId }) {
   return [
     `The nightly \`${laneLabel}\` schedule run reached a clean pass.`,
     '',
     `Run: ${runUrl} (id ${runId})`,
+    ...experimentalSection(experimentalFailed),
     '',
     'Closing automatically.',
   ].join('\n');
@@ -146,10 +174,14 @@ export function runNotifyMain({
   issueRef,
   contextTitle,
   failureNoticeTitle,
+  experimentalLanes = [],
   captureImpl = capture,
   exit = process.exit,
 }) {
-  const health = classifyNightlyHealth(jobResults);
+  const health = classifyNightlyHealth(jobResults, { experimentalLanes });
+  if (health.experimentalFailed.length > 0) {
+    notice(`nightly ${laneLabel} run: EXPERIMENTAL lane(s) did not succeed (advisory, never counted toward a clean pass): ${health.experimentalFailed.join('; ')}`);
+  }
 
   const labelArgs = trackingLabels.flatMap((l) => ['--label', l]);
   const listOut = ghOrDie(
@@ -184,7 +216,7 @@ export function runNotifyMain({
 
   switch (decision.action) {
     case 'create': {
-      const body = buildFailureBody({ laneLabel, failed: health.failed, runUrl, runId, issueRef });
+      const body = buildFailureBody({ laneLabel, failed: health.failed, experimentalFailed: health.experimentalFailed, runUrl, runId, issueRef });
       const out = ghOrDie(
         ['issue', 'create', '--repo', repo, '--title', trackingTitle, '--body', body, ...labelArgs],
         'gh issue create failed',
@@ -199,7 +231,7 @@ export function runNotifyMain({
       break;
     }
     case 'comment': {
-      const body = buildFailureBody({ laneLabel, failed: health.failed, runUrl, runId, issueRef });
+      const body = buildFailureBody({ laneLabel, failed: health.failed, experimentalFailed: health.experimentalFailed, runUrl, runId, issueRef });
       ghOrDie(
         ['issue', 'comment', String(decision.number), '--repo', repo, '--body', body],
         'gh issue comment failed',
@@ -215,7 +247,7 @@ export function runNotifyMain({
       break;
     }
     case 'close': {
-      const body = buildRecoveryBody({ laneLabel, runUrl, runId });
+      const body = buildRecoveryBody({ laneLabel, experimentalFailed: health.experimentalFailed, runUrl, runId });
       ghOrDie(
         ['issue', 'close', String(decision.number), '--repo', repo, '--comment', body],
         'gh issue close failed',

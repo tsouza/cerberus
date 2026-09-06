@@ -82,6 +82,7 @@
             "enabled": { "type": "boolean" },
             "image": { "type": "string" },
             "replicas": { "type": "integer", "minimum": 1 },
+            "experimentalDistributedMode": { "type": "boolean" },
             "dataShards": {
               "type": "object",
               "additionalProperties": false,

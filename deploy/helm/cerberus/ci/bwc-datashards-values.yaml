@@ -17,6 +17,9 @@ clickhouse:
     replicas: 2
     hotVolume:
       enabled: false
+    # dataShards.count > 1 is EXPERIMENTAL and off by default (epic #3074);
+    # the chart refuses to render it without this opt-in.
+    experimentalDistributedMode: true
     dataShards:
       count: 2
     objectStorage:

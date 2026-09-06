@@ -519,6 +519,114 @@ func TestAcquireDataShardFanout_CancelledDispatch_NoQueryID_SkipsKillQuery(t *te
 	}
 }
 
+// --- WithDataShardFanoutMultiplier (cerberus issue #3128 round 4) -----------
+
+// TestAcquireDataShardFanout_DefaultMultiplier_ChargesDataShardCountExactly
+// pins the unchanged pre-round-4 behavior: a ctx with no
+// WithDataShardFanoutMultiplier charges exactly dataShardCount, neither more
+// (a cap sized to exactly dataShardCount still saturates) nor less (the full
+// dataShardCount is available again once released).
+func TestAcquireDataShardFanout_DefaultMultiplier_ChargesDataShardCountExactly(t *testing.T) {
+	t.Parallel()
+	const dataShardCount = 3
+	conn := &execRecordingConn{}
+	m, _ := newTestConnMetrics(t)
+	cfg := Config{DataShardCount: dataShardCount, MaxOpenConns: dataShardCount}
+	c := assembleClientFromConn(cfg, conn, m)
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release, err := c.acquireDataShardFanout(ctx)
+	if err != nil {
+		t.Fatalf("acquireDataShardFanout: %v", err)
+	}
+	if c.dataShardFanoutGate.TryAcquire(1) {
+		t.Fatal("gate admitted an extra unit of weight — default multiplier charged less than dataShardCount")
+	}
+	release()
+	if !c.dataShardFanoutGate.TryAcquire(dataShardCount) {
+		t.Fatal("gate did not release the full dataShardCount weight — default multiplier charged more than dataShardCount")
+	}
+}
+
+// TestAcquireDataShardFanout_WithMultiplier_ScalesChargedWeight is the direct
+// regression test for the round-4 fix: WithDataShardFanoutMultiplier(ctx, 2)
+// must charge exactly 2*dataShardCount, not dataShardCount — the gap that let
+// a SearchTraceLimit-shaped dispatch (internal/chsql/search_trace_limit.go's
+// own double-scan) under-charge the gate for its real ClickHouse-side
+// fan-out width.
+func TestAcquireDataShardFanout_WithMultiplier_ScalesChargedWeight(t *testing.T) {
+	t.Parallel()
+	const (
+		dataShardCount = 3
+		multiplier     = 2
+	)
+	conn := &execRecordingConn{}
+	m, _ := newTestConnMetrics(t)
+	cfg := Config{DataShardCount: dataShardCount, MaxOpenConns: dataShardCount * multiplier}
+	c := assembleClientFromConn(cfg, conn, m)
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = WithDataShardFanoutMultiplier(ctx, multiplier)
+
+	release, err := c.acquireDataShardFanout(ctx)
+	if err != nil {
+		t.Fatalf("acquireDataShardFanout: %v", err)
+	}
+	// The gate must be saturated at 2*dataShardCount, not dataShardCount: one
+	// more unit must be denied...
+	if c.dataShardFanoutGate.TryAcquire(1) {
+		t.Fatal("gate admitted an extra unit of weight — multiplier was not applied")
+	}
+	release()
+	// ...and releasing must free the FULL 2*dataShardCount, not merely
+	// dataShardCount (which would prove the multiplier was charged on acquire
+	// but silently dropped on release, leaking capacity).
+	if !c.dataShardFanoutGate.TryAcquire(dataShardCount * multiplier) {
+		t.Fatal("gate did not release the full multiplier*dataShardCount weight")
+	}
+}
+
+// TestAcquireDataShardFanout_NonPositiveMultiplier_FallsBackToDefault confirms
+// dataShardFanoutMultiplierFromContext's own documented guard: a caller bug
+// that installs a zero or negative multiplier must never UNDER-charge the
+// gate below the pre-round-4 dataShardCount baseline.
+func TestAcquireDataShardFanout_NonPositiveMultiplier_FallsBackToDefault(t *testing.T) {
+	t.Parallel()
+	for _, multiplier := range []int{0, -1} {
+		multiplier := multiplier
+		t.Run(fmt.Sprintf("multiplier=%d", multiplier), func(t *testing.T) {
+			t.Parallel()
+			const dataShardCount = 2
+			conn := &execRecordingConn{}
+			m, _ := newTestConnMetrics(t)
+			cfg := Config{DataShardCount: dataShardCount, MaxOpenConns: dataShardCount}
+			c := assembleClientFromConn(cfg, conn, m)
+			t.Cleanup(func() { _ = c.Close() })
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx = WithDataShardFanoutMultiplier(ctx, multiplier)
+
+			release, err := c.acquireDataShardFanout(ctx)
+			if err != nil {
+				t.Fatalf("acquireDataShardFanout: %v", err)
+			}
+			if c.dataShardFanoutGate.TryAcquire(1) {
+				t.Fatalf("multiplier=%d: gate admitted an extra unit — charged less than the dataShardCount floor", multiplier)
+			}
+			release()
+			if !c.dataShardFanoutGate.TryAcquire(dataShardCount) {
+				t.Fatalf("multiplier=%d: gate did not release the full dataShardCount weight", multiplier)
+			}
+		})
+	}
+}
+
 // TestAcquireDataShardFanout_ReleaseIsIdempotent_KillsOnlyOnce confirms the
 // sync.Once wrapping the release body also guards killDataShardQuery: a
 // caller that invokes the returned release closure more than once (gatedRows

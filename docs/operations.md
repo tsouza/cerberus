@@ -1053,6 +1053,24 @@ consistently rather than silently diverging onto the upstream defaults.
 
 ### ClickHouse cluster DATA-shard topology (`Distributed` tables, cerberus issue #3077)
 
+> **EXPERIMENTAL — off by default, not production-supported.** Everything in
+> this section and the two that follow describes an experimental path (epic
+> [#3074](https://github.com/tsouza/cerberus/issues/3074)). It is gated
+> twice, and both gates default off: cerberus refuses to boot with
+> `CERBERUS_CH_DATA_SHARDS > 1` unless `CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true`,
+> and the bundled chart refuses to render `clickhouse.bundled.dataShards.count > 1`
+> unless `clickhouse.bundled.experimentalDistributedMode: true` (which then
+> sets the env var for you). When enabled, cerberus logs an `EXPERIMENTAL`
+> warning at boot, every time. Known limitation: the data-shard fan-out
+> admission ceiling (`DataShardFanoutCap`) is enforced per cerberus
+> *process*, so at more than one cerberus replica the real cluster-wide
+> ceiling is `replicas x DataShardFanoutCap`, not the cap alone — tracked on
+> [#3128](https://github.com/tsouza/cerberus/issues/3128). The `datashard`
+> e2e lane below is informational: its results are reported as advisory in
+> the nightly health roll-up and never gate a PR or release. Plain
+> **replication** (`clickhouse.bundled.replicas > 1`, the section above) is
+> a supported path and needs none of this.
+
 Everything above is about **replication** — N identical copies of the same
 dataset. `CERBERUS_CH_DATA_SHARDS` (`internal/chopt.ClusterTopology.
 DataShardCount`, epic [#3074](https://github.com/tsouza/cerberus/issues/3074))
@@ -1478,11 +1496,20 @@ that script's own header comment for the full query_id-trace-grouping
 mechanism this relies on. `datashard`, like `bwc-minio`, is INFORMATIONAL —
 never a PR gate.
 
-**This describes what the lane is built to check, not a result it has
-produced.** As the topology-status note above says, the lane's only run to
-date failed bringing the cluster up, before `e2e-datashard-verify.mjs` ever
-executed — none of the `query_log` assertions in this section have actually
-observed a pass yet.
+**Current status (experimental lane, advisory only).** The lane now brings
+the multi-shard cluster up, seeds it, runs the full Go e2e correctness suite
+and the concurrent burst, and reaches every `query_log` assertion above on
+both legs. The memory-apportionment assertion passes; the solver-split
+assertion passes; the admission-ceiling assertion still fails on both legs
+for the per-process reason the EXPERIMENTAL note at the top of the DATA-shard
+topology section names (tracked on
+[#3128](https://github.com/tsouza/cerberus/issues/3128) with the real
+per-run numbers). Because the feature is experimental, this lane's verdict is
+reported under an advisory heading by `.github/scripts/notify-nightly-failure.mjs`
+(`EXPERIMENTAL_LANES`) and never counts toward the nightly's clean-pass
+decision — a supported lane regressing is exactly as loud as it always was.
+`workflow_dispatch` with `datashard_only=true` runs just this lane for a
+fast, focused iteration.
 
 ### Compat and migration-lane scope: single ClickHouse data shard (cerberus issue #3079)
 
