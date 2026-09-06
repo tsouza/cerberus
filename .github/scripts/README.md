@@ -2564,6 +2564,56 @@ what actually runs.
     daemon happens to hold is exactly the substitution this module exists to
     prevent.
 
+- **`migration-cerberus-image.mjs`** — `just/migration.just`'s
+  `migration-cerberus-image` recipe, extracted from its inline `if [ "$img" =
+  "$local_tag" ]` body (issue #3099). The build-vs-pull decision `just
+  migration-tier1-up` / `migration-tier2-up` call as a sub-invocation before
+  every stack `up`: `CERBERUS_IMAGE` unset resolves to `MIGRATION_LOCAL_IMAGE`
+  and builds it from `Dockerfile.local` through `build-with-registry-retry.mjs`
+  (the one retry wrapper every image build in the tree goes through);
+  `CERBERUS_IMAGE` set to anything else pulls that ref through `just
+  _pull-retry`. `migration-cerberus-image.test.mjs` pins the decision,
+  including the edge case of `CERBERUS_IMAGE` set to exactly the local tag
+  (still the build path — a string-equality test, not an is-it-set check).
+  - Env: `MIGRATION_LOCAL_IMAGE` (required), `CERBERUS_IMAGE` (optional).
+  - Exit: the build or pull command's own status; `1` if `MIGRATION_LOCAL_IMAGE`
+    is unset.
+
+- **`migration-tier-seed.mjs`** — `just/migration.just`'s
+  `migration-tier1-seed` / `migration-tier2-seed` recipes, folded into one
+  tier-parameterized script (issue #3099) so Tier-2 reuses Tier-1's own
+  default-archetype-list handling instead of a near-duplicate recipe. An
+  explicit archetype argument seeds only that one; the empty default seeds
+  every archetype `DEFAULT_ARCHETYPES[tier]` lists (Tier-1: `three-signal` +
+  `kube-prometheus-stack`; Tier-2: `three-signal` alone, matching what
+  `migration-tier2-seed` always hardcoded before this extraction). Manifest
+  paths follow the existing convention every scenario reader hardcodes:
+  `three-signal` writes the unsuffixed `manifest.json`, every other archetype
+  writes `manifest-<archetype>.json`. `migration-tier-seed.test.mjs` pins the
+  tier-to-defaults mapping, the manifest-path convention, and the `go run`
+  argv construction.
+  - Usage: `node .github/scripts/migration-tier-seed.mjs [archetype]`.
+  - Env: `MIGRATION_SEED_TIER` (required; `tier1` | `tier2`).
+  - Exit: the first failing seeder's own status; `1` for an unrecognised tier.
+
+- **`migration-tier-logs.mjs`** — `just/migration.just`'s
+  `migration-tier1-logs` / `migration-tier2-logs` recipes, folded into one
+  tier-parameterized script (issue #3099) so Tier-2 reuses Tier-1's own
+  `docker compose ps` + per-service `logs --tail` loop instead of duplicating
+  its shape over a second compose file and a longer service list. Never fails
+  on its own — every `docker` invocation runs the same way the replaced
+  `|| true`-guarded bash did, since the CI job runs this on FAILURE, before
+  teardown deletes the containers it reads from, and a dump must never itself
+  turn a lane red or mask the real failure. `migration-tier-logs.test.mjs`
+  pins the tier-label mapping, the whitespace-list parsing, and the
+  `docker compose` argv construction (repeated `-f` per file, `--tail=N` per
+  service).
+  - Usage: `node .github/scripts/migration-tier-logs.mjs`.
+  - Env: `MIGRATION_LOG_TIER`, `MIGRATION_COMPOSE_FILES` (whitespace-separated
+    `-f` targets, in order), `MIGRATION_LOG_SERVICES` (whitespace-separated
+    service names, in order), `MIGRATION_LOG_TAIL` — all required.
+  - Exit: always `0`.
+
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the
   `dashboard` (k3d) lane fans its Playwright spec set across a MODEST matrix
