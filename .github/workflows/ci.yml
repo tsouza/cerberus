@@ -657,6 +657,15 @@ jobs:
       # branch, not a standing gate on every unrelated PR.
       - name: Self-test the verify-just-invocations CLI
         run: node --test .github/scripts/verify-just-invocations.test.mjs
+      # compose-grafana-smoke extraction (#3098, epic #3091): pure unit
+      # coverage for the install-command decision, in particular the
+      # regression fix — a failed `npm ci` against an existing lockfile is
+      # now fatal with no `npm install` fallback, unlike the replaced bash
+      # idiom's `&&`/`||` chain. Self-test only here, same rationale as
+      # verify-just-invocations — a real compose + Grafana stack is what the
+      # real e2e CI job exercises the full script against.
+      - name: Self-test the compose-grafana-smoke .mjs helper
+        run: node --test .github/scripts/compose-grafana-smoke.test.mjs
       # e2e-up family extraction (#3096, epic #3091 phase 5): the pure
       # helpers behind the .mjs replacements for e2e-up's inline
       # bash/awk — kubectl/ClickHouse lookups, image-ref filtering, the
