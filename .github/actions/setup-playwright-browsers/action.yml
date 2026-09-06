@@ -75,11 +75,61 @@ runs:
     # image bump just falls back to a normal fetch rather than corrupting
     # anything - a cache miss here costs nothing beyond what today already
     # pays.
+    #
+    # The path is a staging dir under $HOME, NOT /var/cache/apt/archives
+    # itself, because actions/cache's restore step runs as the unprivileged
+    # runner user. Observed directly on a real job (dashboard-shard
+    # shard-smoke-a-monolith, run
+    # https://github.com/tsouza/cerberus/actions/runs/34047093904/job/101524009418):
+    # every restore hits
+    #   tar: .../var/cache/apt/archives/fonts-freefont-ttf_...: Cannot open: Permission denied
+    # for the same ~9 packages every time (fonts-freefont-ttf,
+    # fonts-ipafont-gothic, fonts-tlwg-loma-otf, fonts-unifont,
+    # fonts-wqy-zenhei, xfonts-cyrillic, xfonts-encodings, xfonts-scalable,
+    # xfonts-utils - confirmed 100% reproducible across every sampled
+    # compose-smoke-shard and dashboard-shard job, on both ubuntu-latest
+    # `monolith` and `split` shards, across runs a day apart). These are
+    # genuine chromium OS deps (Playwright's own `install-deps chromium`
+    # pulls in exactly this font set for script-rendering support), but
+    # ubuntu-latest ships them ALREADY fetched and root-owned at these exact
+    # paths (most likely a side effect of the pre-installed Google Chrome on
+    # the runner image sharing the same font dependencies), so the
+    # unprivileged tar extraction can never overwrite them - this cache has
+    # never once restored cleanly. The failure is silently non-fatal (a cache
+    # restore/save failure only ever produces a `::warning::`, never fails
+    # the job - see actions/cache's own documented read-only/failure
+    # behaviour), which is exactly why nobody noticed: every job still goes
+    # green, just having quietly paid a full apt re-fetch on every single
+    # run instead of the one-fetch-per-Playwright-version this cache exists
+    # to buy. Caching a staging dir under $HOME sidesteps the collision
+    # entirely - nothing on the image ever pre-populates it - and the two
+    # steps below bridge it to and from /var/cache/apt/archives with
+    # best-effort, no-clobber copies.
+    # `v2` in the key (not just the path change above) is load-bearing:
+    # actions/cache bakes the ABSOLUTE paths it archived into the saved
+    # blob, so restoring under the OLD key with the NEW `path:` would still
+    # extract straight back to /var/cache/apt/archives - the exact
+    # permission collision this fix exists to avoid - because the stale
+    # blob under the old key was saved with those old paths, not these new
+    # ones. Bumping the key forces a clean cache under the new staging
+    # scheme instead of ever touching that stale blob.
     - name: Cache apt archives for chromium OS deps
       uses: actions/cache@v5
       with:
-        path: /var/cache/apt/archives/*.deb
-        key: playwright-chromium-apt-${{ runner.os }}-${{ steps.pw.outputs.version }}
+        path: ~/.cache/apt-archives-chromium/*.deb
+        key: playwright-chromium-apt-v2-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+    # Bridge INTO apt's own cache dir: `-n` (no-clobber) means this can never
+    # fail to overwrite a root-owned file the way the direct-path cache used
+    # to - it just skips any name apt already has, and apt re-fetches
+    # anything it still can't reuse (harmless, per the checksum-verification
+    # note above). Best-effort: an empty/missing staging dir (cache miss) is
+    # a silent no-op, not an error.
+    - name: Merge staged apt archives into apt's cache dir
+      shell: bash
+      run: |
+        mkdir -p ~/.cache/apt-archives-chromium
+        sudo cp -n ~/.cache/apt-archives-chromium/*.deb /var/cache/apt/archives/ 2>/dev/null || true
 
     # apt's defaults are patient with a degraded mirror (long per-request
     # timeout, several internal retries per source) - fine when the mirror is
@@ -189,3 +239,19 @@ runs:
           echo "Playwright browser cache miss - downloading chromium + OS deps."
           install_with_retry 1200 2 npx playwright install --with-deps chromium
         fi
+
+    # Bridge back OUT of apt's cache dir, so the staging directory holds
+    # whatever apt-get freshly fetched above and actions/cache's own
+    # (automatic, end-of-job) save step - which also runs unprivileged - can
+    # read and archive it. `sudo cp -n` first (apt's fetched .debs are
+    # root-owned) then `chown` the staging copies to the runner user;
+    # `-n` here means a .deb this job already had staged (from a prior
+    # partial restore) is left alone rather than re-copied and re-chowned
+    # pointlessly. Best-effort: nothing to copy on an apt-op-free run is a
+    # silent no-op, not an error.
+    - name: Copy freshly-fetched apt archives back into the staging directory
+      shell: bash
+      run: |
+        mkdir -p ~/.cache/apt-archives-chromium
+        sudo cp -n /var/cache/apt/archives/*.deb ~/.cache/apt-archives-chromium/ 2>/dev/null || true
+        sudo chown "$(id -u):$(id -g)" ~/.cache/apt-archives-chromium/*.deb 2>/dev/null || true
