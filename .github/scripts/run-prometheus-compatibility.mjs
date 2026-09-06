@@ -89,7 +89,7 @@
 // report.json, scorer failure) or, under FAIL_ON_DIFF, on any parity drift.
 
 import { spawnSync } from 'node:child_process';
-import { closeSync, mkdtempSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -303,8 +303,15 @@ async function main() {
   const testerArgs = ['-config-file', `${ROOT_DIR}/test-cerberus.yml`, '-config-file', queries, '-config-file', overlayPath, '-output-format', 'json'];
   if (process.env.TESTER_QUERY_PARALLELISM) testerArgs.push('-query-parallelism', process.env.TESTER_QUERY_PARALLELISM);
 
-  const outFd = openSync(OUTPUT, 'w');
+  // Read the report back through the SAME fd the tester wrote it through
+  // (fstatSync + readSync at position 0) rather than reopening OUTPUT by
+  // path — reopening by path is a TOCTOU (js/file-system-race): nothing
+  // guarantees the path still refers to the same file bytes between the
+  // write-side close and a path-based re-open. One open, one file
+  // description, no race.
+  const outFd = openSync(OUTPUT, 'w+'); // 'w+', not 'w' -- the read-back below needs the fd open for reading too
   let testerRc;
+  let rawReport = '';
   try {
     const testerRes = spawnSync(TESTER_BIN, testerArgs, { stdio: ['ignore', outFd, 'inherit'] });
     if (testerRes.error) {
@@ -312,6 +319,10 @@ async function main() {
       process.exit(1);
     }
     testerRc = testerRes.status ?? 1;
+    const size = fstatSync(outFd).size;
+    const buf = Buffer.alloc(size);
+    readSync(outFd, buf, 0, size, 0); // explicit position 0 -- outFd's cursor is at EOF after the subprocess wrote through it
+    rawReport = buf.toString('utf8');
   } finally {
     closeSync(outFd);
   }
@@ -320,7 +331,7 @@ async function main() {
   log('==> summary:');
   let report;
   try {
-    report = JSON.parse(readFileSync(OUTPUT, 'utf8'));
+    report = JSON.parse(rawReport);
   } catch (e) {
     error(`report not parseable as JSON: ${e.message}`);
     report = null;
