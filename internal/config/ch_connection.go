@@ -112,20 +112,21 @@ func keepAliveFromEnv(v *viper.Viper) (keepAliveInputs, error) {
 // chclient.Config is a single helper call rather than a long inline literal
 // that pushes FromEnv past the statement-count linter.
 type chConfigInputs struct {
-	database        string
-	username        string
-	password        string
-	dial            time.Duration
-	maxOpen         int
-	maxIdle         int
-	connMaxLifetime time.Duration
-	keepAlive       keepAliveInputs
-	maxSamples      int64
-	maxMemory       int64
-	dataShardCount  int
-	queryTimeout    time.Duration
-	breaker         breakerConfig
-	extra           chExtra
+	database                   string
+	username                   string
+	password                   string
+	dial                       time.Duration
+	maxOpen                    int
+	maxIdle                    int
+	connMaxLifetime            time.Duration
+	keepAlive                  keepAliveInputs
+	maxSamples                 int64
+	maxMemory                  int64
+	dataShardCount             int
+	dataShardFanoutCapOverride *int64
+	queryTimeout               time.Duration
+	breaker                    breakerConfig
+	extra                      chExtra
 }
 
 // assembleCHConfig builds the chclient.Config from the parsed scalars and
@@ -133,25 +134,26 @@ type chConfigInputs struct {
 // place the driver config is assembled; FromEnv hands it the validated inputs.
 func assembleCHConfig(in chConfigInputs) chclient.Config {
 	cc := chclient.Config{
-		Database:            in.database,
-		Username:            in.username,
-		Password:            in.password,
-		DialTimeout:         in.dial,
-		MaxOpenConns:        in.maxOpen,
-		MaxIdleConns:        in.maxIdle,
-		ConnMaxLifetime:     in.connMaxLifetime,
-		KeepAliveEnabled:    in.keepAlive.enabled,
-		KeepAliveIdle:       in.keepAlive.idle,
-		KeepAliveInterval:   in.keepAlive.interval,
-		KeepAliveProbes:     in.keepAlive.probes,
-		MaxQuerySamples:     in.maxSamples,
-		MaxQueryMemoryBytes: in.maxMemory,
-		DataShardCount:      in.dataShardCount,
-		QueryTimeout:        in.queryTimeout,
-		BreakerThreshold:    in.breaker.Threshold,
-		BreakerWindow:       in.breaker.Window,
-		BreakerOpenInterval: in.breaker.OpenInterval,
-		BreakerDisabled:     in.breaker.Disabled,
+		Database:                   in.database,
+		Username:                   in.username,
+		Password:                   in.password,
+		DialTimeout:                in.dial,
+		MaxOpenConns:               in.maxOpen,
+		MaxIdleConns:               in.maxIdle,
+		ConnMaxLifetime:            in.connMaxLifetime,
+		KeepAliveEnabled:           in.keepAlive.enabled,
+		KeepAliveIdle:              in.keepAlive.idle,
+		KeepAliveInterval:          in.keepAlive.interval,
+		KeepAliveProbes:            in.keepAlive.probes,
+		MaxQuerySamples:            in.maxSamples,
+		MaxQueryMemoryBytes:        in.maxMemory,
+		DataShardCount:             in.dataShardCount,
+		DataShardFanoutCapOverride: in.dataShardFanoutCapOverride,
+		QueryTimeout:               in.queryTimeout,
+		BreakerThreshold:           in.breaker.Threshold,
+		BreakerWindow:              in.breaker.Window,
+		BreakerOpenInterval:        in.breaker.OpenInterval,
+		BreakerDisabled:            in.breaker.Disabled,
 	}
 	applyCHExtra(&cc, in.extra)
 	return cc

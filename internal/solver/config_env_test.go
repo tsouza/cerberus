@@ -254,27 +254,6 @@ func TestConfigFromEnv_RouteMemoReValidationFractionExplicitSet(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_DataShardFanoutCapOverrideDefaultsNil pins the zero-value
-// contract (cerberus issue #3081), mirroring
-// TestConfigFromEnv_RouteMemoEntryTTLDefaultsUnset: an unset
-// CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP must resolve to nil, never a
-// duplicated copy of GateCap — Executor.DataShardFanoutCap's own "defaults to
-// GateCap" behavior lives in NewDataShardFanoutGate, not here.
-func TestConfigFromEnv_DataShardFanoutCapOverrideDefaultsNil(t *testing.T) {
-	t.Setenv(EnvDataShardFanoutCapOverride, "")
-
-	cfg, err := ConfigFromEnv()
-	if err != nil {
-		t.Fatalf("ConfigFromEnv() error = %v", err)
-	}
-	if cfg.DataShardFanoutCapOverride != nil {
-		t.Errorf("DataShardFanoutCapOverride = %v, want nil (unset means \"use GateCap\")", cfg.DataShardFanoutCapOverride)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("default config failed Validate: %v", err)
-	}
-}
-
 // TestConfigFromEnv_DisableSplitOnMultiDataShardDefaultsFalse pins the
 // off-by-default escape hatch (cerberus issue #3081).
 func TestConfigFromEnv_DisableSplitOnMultiDataShardDefaultsFalse(t *testing.T) {
@@ -318,7 +297,6 @@ func TestConfigFromEnv_EveryKnobReachesItsOwnField(t *testing.T) {
 	t.Setenv(EnvMaxKWithEstimate, "21")
 	t.Setenv(EnvEstimateMinRowsPerAdditionalShard, "22")
 	t.Setenv(EnvDisableSplitOnMultiDataShard, "true")
-	t.Setenv(EnvDataShardFanoutCapOverride, "23")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
@@ -361,16 +339,6 @@ func TestConfigFromEnv_EveryKnobReachesItsOwnField(t *testing.T) {
 		}
 	}
 
-	// DataShardFanoutCapOverride is a *int64, not directly comparable via the
-	// generic `any` equality above (two distinct pointers to equal values
-	// compare unequal) — checked separately by dereferencing.
-	if cfg.DataShardFanoutCapOverride == nil || *cfg.DataShardFanoutCapOverride != 23 {
-		t.Errorf("%s: DataShardFanoutCapOverride = %v; want a pointer to 23", EnvDataShardFanoutCapOverride, cfg.DataShardFanoutCapOverride)
-	}
-	if def.DataShardFanoutCapOverride != nil {
-		t.Errorf("DefaultConfig().DataShardFanoutCapOverride = %v; want nil so this test can discriminate", def.DataShardFanoutCapOverride)
-	}
-
 	// DataShardCount is deliberately NOT part of this package's env surface
 	// (cerberus issue #3081): it is sourced from internal/chopt.ClusterTopology
 	// by cmd/cerberus, not ConfigFromEnv. Nothing set here should perturb it.
@@ -409,7 +377,6 @@ func TestConfigFromEnv_MalformedKnobFailsFast(t *testing.T) {
 		{EnvMaxKWithEstimate, "some"},
 		{EnvEstimateMinRowsPerAdditionalShard, "9_000"},
 		{EnvDisableSplitOnMultiDataShard, "sideways"},
-		{EnvDataShardFanoutCapOverride, "not-a-number"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.env, func(t *testing.T) {

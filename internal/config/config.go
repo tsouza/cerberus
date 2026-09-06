@@ -926,82 +926,90 @@ type OTLPConfig struct {
 // strings — the CERBERUS_* contract is load-bearing (docs + surface
 // tests pin these names).
 const (
-	envHTTPAddr                 = "CERBERUS_HTTP_ADDR"
-	envCHAddr                   = "CERBERUS_CH_ADDR"
-	envCHDataShards             = "CERBERUS_CH_DATA_SHARDS"
-	envCHDatabase               = "CERBERUS_CH_DATABASE"
-	envCHUsername               = "CERBERUS_CH_USERNAME"
-	envCHPassword               = "CERBERUS_CH_PASSWORD"
-	envCHDialTimeout            = "CERBERUS_CH_DIAL_TIMEOUT"
-	envCHMaxOpenConns           = "CERBERUS_CH_MAX_OPEN_CONNS"
-	envCHMaxIdleConns           = "CERBERUS_CH_MAX_IDLE_CONNS"
-	envCHConnMaxLifetime        = "CERBERUS_CH_CONN_MAX_LIFETIME"
-	envCHKeepAliveEnabled       = "CERBERUS_CH_KEEPALIVE_ENABLED"
-	envCHKeepAliveIdle          = "CERBERUS_CH_KEEPALIVE_IDLE"
-	envCHKeepAliveInterval      = "CERBERUS_CH_KEEPALIVE_INTERVAL"
-	envCHKeepAliveCount         = "CERBERUS_CH_KEEPALIVE_COUNT"
-	envQueryMaxSamples          = "CERBERUS_QUERY_MAX_SAMPLES"
-	envQueryTimeout             = "CERBERUS_QUERY_TIMEOUT"
-	envCHQueryMaxMemory         = "CERBERUS_CH_QUERY_MAX_MEMORY"
-	envCHBreakerEnabled         = "CERBERUS_CH_BREAKER_ENABLED"
-	envCHBreakerThreshold       = "CERBERUS_CH_BREAKER_THRESHOLD"
-	envCHBreakerWindow          = "CERBERUS_CH_BREAKER_WINDOW"
-	envCHBreakerOpenIntrvl      = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
-	envCHProtocol               = "CERBERUS_CH_PROTOCOL"
-	envCHConnOpenStrategy       = "CERBERUS_CH_CONN_OPEN_STRATEGY"
-	envCHReadTimeout            = "CERBERUS_CH_READ_TIMEOUT"
-	envCHCompression            = "CERBERUS_CH_COMPRESSION"
-	envCHCompressionLevel       = "CERBERUS_CH_COMPRESSION_LEVEL"
-	envCHBlockBufferSize        = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
-	envCHMaxComprBuffer         = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
-	envCHFreeBufOnRelease       = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
-	envCHDebug                  = "CERBERUS_CH_DEBUG"
-	envCHTLSEnabled             = "CERBERUS_CH_TLS_ENABLED"
-	envCHTLSCAFile              = "CERBERUS_CH_TLS_CA_FILE"
-	envCHTLSCertFile            = "CERBERUS_CH_TLS_CERT_FILE"
-	envCHTLSKeyFile             = "CERBERUS_CH_TLS_KEY_FILE"
-	envCHTLSServerName          = "CERBERUS_CH_TLS_SERVER_NAME"
-	envCHTLSSkipVerify          = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
-	envCHHTTPHeaders            = "CERBERUS_CH_HTTP_HEADERS"
-	envCHHTTPURLPath            = "CERBERUS_CH_HTTP_URL_PATH"
-	envCHHTTPMaxConns           = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
-	envCHHTTPProxyURL           = "CERBERUS_CH_HTTP_PROXY_URL"
-	envHTTPReadTimeout          = "CERBERUS_HTTP_READ_TIMEOUT"
-	envHTTPReadHdrTimeout       = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
-	envHTTPWriteTimeout         = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
-	envHTTPIdleTimeout          = "CERBERUS_HTTP_IDLE_TIMEOUT"
-	envHTTPMaxHeaderBytes       = "CERBERUS_HTTP_MAX_HEADER_BYTES"
-	envHTTPMaxBodyBytes         = "CERBERUS_HTTP_MAX_BODY_BYTES"
-	envLokiTailWriteTO          = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
-	envPromMetadataLookback     = "CERBERUS_PROM_METADATA_LOOKBACK"
-	envDeltaPrefixLookback      = "CERBERUS_DELTA_PREFIX_LOOKBACK"
-	envDeltaPrefixReadEnabled   = "CERBERUS_DELTA_PREFIX_READ_ENABLED"
-	envRBGNMaxRows              = "CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS"
-	envRBGNMaxDensityUnits      = "CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS"
-	envDebugPProf               = "CERBERUS_DEBUG_PPROF"
-	envTempoStructuralTwoPhase  = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
-	envAutoCreateSchema         = "CERBERUS_AUTO_CREATE_SCHEMA"
-	envAutoCreateDatabase       = "CERBERUS_AUTO_CREATE_DATABASE"
-	envSchemaCluster            = "CERBERUS_SCHEMA_CLUSTER"
-	envSchemaTableEngine        = "CERBERUS_SCHEMA_TABLE_ENGINE"
-	envSchemaTTL                = "CERBERUS_SCHEMA_TTL"
-	envSchemaTTLMetrics         = "CERBERUS_SCHEMA_TTL_METRICS"
-	envSchemaTTLLogs            = "CERBERUS_SCHEMA_TTL_LOGS"
-	envSchemaTTLTraces          = "CERBERUS_SCHEMA_TTL_TRACES"
-	envSchemaLogsBodyTTL        = "CERBERUS_SCHEMA_LOGS_BODY_TTL"
-	envSchemaTracesEvLinksTTL   = "CERBERUS_SCHEMA_TRACES_EVENTS_LINKS_TTL"
-	envSchemaDBReplicated       = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
-	envSchemaDBReplPath         = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
-	envSchemaDBReplShard        = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
-	envSchemaDBReplReplica      = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
-	envSchemaStoragePolicy      = "CERBERUS_SCHEMA_STORAGE_POLICY"
-	envSchemaTierVolume         = "CERBERUS_SCHEMA_TIER_VOLUME"
-	envSchemaTierAfter          = "CERBERUS_SCHEMA_TIER_AFTER"
-	envSchemaTierAfterMetrics   = "CERBERUS_SCHEMA_TIER_AFTER_METRICS"
-	envSchemaTierAfterLogs      = "CERBERUS_SCHEMA_TIER_AFTER_LOGS"
-	envSchemaTierAfterTraces    = "CERBERUS_SCHEMA_TIER_AFTER_TRACES"
-	envSchemaSettings           = "CERBERUS_SCHEMA_SETTINGS"
-	envSchemaDeltaPrefixEnabled = "CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED"
+	envHTTPAddr     = "CERBERUS_HTTP_ADDR"
+	envCHAddr       = "CERBERUS_CH_ADDR"
+	envCHDataShards = "CERBERUS_CH_DATA_SHARDS"
+	// envCHDataShardFanoutCapOverride overrides chclient's data-shard
+	// fan-out admission gate's resolved cap (cerberus issues #3081, #3128).
+	// The historical name (CERBERUS_SOLVER_*) is kept unchanged even though
+	// the mechanism itself moved from internal/solver to internal/chclient
+	// (issue #3128) — an operator who already set it must not have it
+	// silently stop applying on an upgrade that only relocated the
+	// enforcement point.
+	envCHDataShardFanoutCapOverride = "CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP"
+	envCHDatabase                   = "CERBERUS_CH_DATABASE"
+	envCHUsername                   = "CERBERUS_CH_USERNAME"
+	envCHPassword                   = "CERBERUS_CH_PASSWORD"
+	envCHDialTimeout                = "CERBERUS_CH_DIAL_TIMEOUT"
+	envCHMaxOpenConns               = "CERBERUS_CH_MAX_OPEN_CONNS"
+	envCHMaxIdleConns               = "CERBERUS_CH_MAX_IDLE_CONNS"
+	envCHConnMaxLifetime            = "CERBERUS_CH_CONN_MAX_LIFETIME"
+	envCHKeepAliveEnabled           = "CERBERUS_CH_KEEPALIVE_ENABLED"
+	envCHKeepAliveIdle              = "CERBERUS_CH_KEEPALIVE_IDLE"
+	envCHKeepAliveInterval          = "CERBERUS_CH_KEEPALIVE_INTERVAL"
+	envCHKeepAliveCount             = "CERBERUS_CH_KEEPALIVE_COUNT"
+	envQueryMaxSamples              = "CERBERUS_QUERY_MAX_SAMPLES"
+	envQueryTimeout                 = "CERBERUS_QUERY_TIMEOUT"
+	envCHQueryMaxMemory             = "CERBERUS_CH_QUERY_MAX_MEMORY"
+	envCHBreakerEnabled             = "CERBERUS_CH_BREAKER_ENABLED"
+	envCHBreakerThreshold           = "CERBERUS_CH_BREAKER_THRESHOLD"
+	envCHBreakerWindow              = "CERBERUS_CH_BREAKER_WINDOW"
+	envCHBreakerOpenIntrvl          = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
+	envCHProtocol                   = "CERBERUS_CH_PROTOCOL"
+	envCHConnOpenStrategy           = "CERBERUS_CH_CONN_OPEN_STRATEGY"
+	envCHReadTimeout                = "CERBERUS_CH_READ_TIMEOUT"
+	envCHCompression                = "CERBERUS_CH_COMPRESSION"
+	envCHCompressionLevel           = "CERBERUS_CH_COMPRESSION_LEVEL"
+	envCHBlockBufferSize            = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
+	envCHMaxComprBuffer             = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
+	envCHFreeBufOnRelease           = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
+	envCHDebug                      = "CERBERUS_CH_DEBUG"
+	envCHTLSEnabled                 = "CERBERUS_CH_TLS_ENABLED"
+	envCHTLSCAFile                  = "CERBERUS_CH_TLS_CA_FILE"
+	envCHTLSCertFile                = "CERBERUS_CH_TLS_CERT_FILE"
+	envCHTLSKeyFile                 = "CERBERUS_CH_TLS_KEY_FILE"
+	envCHTLSServerName              = "CERBERUS_CH_TLS_SERVER_NAME"
+	envCHTLSSkipVerify              = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
+	envCHHTTPHeaders                = "CERBERUS_CH_HTTP_HEADERS"
+	envCHHTTPURLPath                = "CERBERUS_CH_HTTP_URL_PATH"
+	envCHHTTPMaxConns               = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
+	envCHHTTPProxyURL               = "CERBERUS_CH_HTTP_PROXY_URL"
+	envHTTPReadTimeout              = "CERBERUS_HTTP_READ_TIMEOUT"
+	envHTTPReadHdrTimeout           = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
+	envHTTPWriteTimeout             = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
+	envHTTPIdleTimeout              = "CERBERUS_HTTP_IDLE_TIMEOUT"
+	envHTTPMaxHeaderBytes           = "CERBERUS_HTTP_MAX_HEADER_BYTES"
+	envHTTPMaxBodyBytes             = "CERBERUS_HTTP_MAX_BODY_BYTES"
+	envLokiTailWriteTO              = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
+	envPromMetadataLookback         = "CERBERUS_PROM_METADATA_LOOKBACK"
+	envDeltaPrefixLookback          = "CERBERUS_DELTA_PREFIX_LOOKBACK"
+	envDeltaPrefixReadEnabled       = "CERBERUS_DELTA_PREFIX_READ_ENABLED"
+	envRBGNMaxRows                  = "CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS"
+	envRBGNMaxDensityUnits          = "CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS"
+	envDebugPProf                   = "CERBERUS_DEBUG_PPROF"
+	envTempoStructuralTwoPhase      = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
+	envAutoCreateSchema             = "CERBERUS_AUTO_CREATE_SCHEMA"
+	envAutoCreateDatabase           = "CERBERUS_AUTO_CREATE_DATABASE"
+	envSchemaCluster                = "CERBERUS_SCHEMA_CLUSTER"
+	envSchemaTableEngine            = "CERBERUS_SCHEMA_TABLE_ENGINE"
+	envSchemaTTL                    = "CERBERUS_SCHEMA_TTL"
+	envSchemaTTLMetrics             = "CERBERUS_SCHEMA_TTL_METRICS"
+	envSchemaTTLLogs                = "CERBERUS_SCHEMA_TTL_LOGS"
+	envSchemaTTLTraces              = "CERBERUS_SCHEMA_TTL_TRACES"
+	envSchemaLogsBodyTTL            = "CERBERUS_SCHEMA_LOGS_BODY_TTL"
+	envSchemaTracesEvLinksTTL       = "CERBERUS_SCHEMA_TRACES_EVENTS_LINKS_TTL"
+	envSchemaDBReplicated           = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
+	envSchemaDBReplPath             = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
+	envSchemaDBReplShard            = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
+	envSchemaDBReplReplica          = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
+	envSchemaStoragePolicy          = "CERBERUS_SCHEMA_STORAGE_POLICY"
+	envSchemaTierVolume             = "CERBERUS_SCHEMA_TIER_VOLUME"
+	envSchemaTierAfter              = "CERBERUS_SCHEMA_TIER_AFTER"
+	envSchemaTierAfterMetrics       = "CERBERUS_SCHEMA_TIER_AFTER_METRICS"
+	envSchemaTierAfterLogs          = "CERBERUS_SCHEMA_TIER_AFTER_LOGS"
+	envSchemaTierAfterTraces        = "CERBERUS_SCHEMA_TIER_AFTER_TRACES"
+	envSchemaSettings               = "CERBERUS_SCHEMA_SETTINGS"
+	envSchemaDeltaPrefixEnabled     = "CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED"
 	// envSchemaTraceMaterializedAttrsEnabled is the SAME literal name
 	// schema.EnvTracesMaterializedAttrsEnabled uses — see that constant's
 	// doc for why internal/config reads it independently rather than
@@ -1260,6 +1268,17 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP overrides chclient's data-shard
+	// fan-out admission gate's resolved cap (cerberus issues #3081, #3128).
+	// Optional — unset means "default to this Client's own MaxOpenConns",
+	// resolved inside chclient.NewDataShardFanoutGate, not here.
+	dataShardFanoutCapOverride, err := getOptionalInt64(v, envCHDataShardFanoutCapOverride)
+	if err != nil {
+		return Config{}, err
+	}
+	if dataShardFanoutCapOverride != nil && *dataShardFanoutCapOverride <= 0 {
+		return Config{}, fmt.Errorf("%s: must be > 0 when set, got %d", envCHDataShardFanoutCapOverride, *dataShardFanoutCapOverride)
+	}
 	rbgnMaxRows, rbgnMaxDensityUnits, err := rbgnBoundsFromEnv(v, maxMemory)
 	if err != nil {
 		return Config{}, err
@@ -1312,20 +1331,21 @@ func FromEnv() (Config, error) {
 		return Config{}, err
 	}
 	chCfg := assembleCHConfig(chConfigInputs{
-		database:        getString(v, envCHDatabase),
-		username:        getString(v, envCHUsername),
-		password:        v.GetString(envCHPassword),
-		dial:            dial,
-		maxOpen:         maxOpenConns,
-		maxIdle:         maxIdleConns,
-		connMaxLifetime: connMaxLifetime,
-		keepAlive:       keepAlive,
-		maxSamples:      maxSamples,
-		maxMemory:       maxMemory,
-		dataShardCount:  topology.DataShardCount,
-		queryTimeout:    queryTimeout,
-		breaker:         breaker,
-		extra:           surface.ch,
+		database:                   getString(v, envCHDatabase),
+		username:                   getString(v, envCHUsername),
+		password:                   v.GetString(envCHPassword),
+		dial:                       dial,
+		maxOpen:                    maxOpenConns,
+		maxIdle:                    maxIdleConns,
+		connMaxLifetime:            connMaxLifetime,
+		keepAlive:                  keepAlive,
+		maxSamples:                 maxSamples,
+		maxMemory:                  maxMemory,
+		dataShardCount:             topology.DataShardCount,
+		dataShardFanoutCapOverride: dataShardFanoutCapOverride,
+		queryTimeout:               queryTimeout,
+		breaker:                    breaker,
+		extra:                      surface.ch,
 	})
 	return Config{
 		HTTPAddr:                             getString(v, envHTTPAddr),
@@ -1373,6 +1393,7 @@ var allEnvKeys = []string{
 	envHTTPAddr,
 	envCHAddr,
 	envCHDataShards,
+	envCHDataShardFanoutCapOverride,
 	envCHDatabase,
 	envCHUsername,
 	envCHPassword,
@@ -2540,6 +2561,23 @@ func getInt64(v *viper.Viper, key string) (int64, error) {
 		return 0, fmt.Errorf("%s: invalid integer %q: %w", key, raw, err)
 	}
 	return n, nil
+}
+
+// getOptionalInt64 resolves an OPTIONAL base-10 int64 knob that carries no
+// SetDefault: unset (no env var, no config-file key) returns (nil, nil)
+// rather than the "missing value" error getInt64 raises, since for this
+// shape "unset" IS the valid default, not a caller mistake. A malformed
+// non-empty value still fails fast, naming the offending key.
+func getOptionalInt64(v *viper.Viper, key string) (*int64, error) {
+	raw := getString(v, key)
+	if raw == "" {
+		return nil, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("%s: invalid integer %q: %w", key, raw, err)
+	}
+	return &n, nil
 }
 
 // parseBool is the single shared boolean parser for every CERBERUS_*

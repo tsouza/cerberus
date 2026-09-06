@@ -115,3 +115,55 @@ func TestFromEnv_CHDataShardCount_ThreadsIntoClickHouseConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestFromEnv_DataShardFanoutCapOverride_DefaultsNil — cerberus issue #3128
+// moved the data-shard fan-out admission gate's cap-override knob from
+// internal/solver's own env parsing to this package (chclient.Config now
+// carries it, resolved by chclient.NewDataShardFanoutGate). The historical
+// env var name (CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP) is unset by default,
+// which must resolve to a nil override, never a duplicated copy of
+// MaxOpenConns — that "defaults to MaxOpenConns" behavior lives in
+// chclient.NewDataShardFanoutGate, not here.
+func TestFromEnv_DataShardFanoutCapOverride_DefaultsNil(t *testing.T) {
+	t.Setenv("CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP", "")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.ClickHouse.DataShardFanoutCapOverride != nil {
+		t.Errorf("DataShardFanoutCapOverride = %v, want nil (unset means \"use MaxOpenConns\")",
+			cfg.ClickHouse.DataShardFanoutCapOverride)
+	}
+}
+
+// TestFromEnv_DataShardFanoutCapOverride_Threads confirms an explicit
+// CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP threads through to
+// chclient.Config.DataShardFanoutCapOverride verbatim.
+func TestFromEnv_DataShardFanoutCapOverride_Threads(t *testing.T) {
+	t.Setenv("CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP", "23")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.ClickHouse.DataShardFanoutCapOverride == nil || *cfg.ClickHouse.DataShardFanoutCapOverride != 23 {
+		t.Errorf("DataShardFanoutCapOverride = %v; want a pointer to 23", cfg.ClickHouse.DataShardFanoutCapOverride)
+	}
+}
+
+// TestFromEnv_DataShardFanoutCapOverride_Invalid confirms a non-integer or
+// non-positive override fails fast at startup rather than silently
+// defaulting or wiring a permanently-empty semaphore.
+func TestFromEnv_DataShardFanoutCapOverride_Invalid(t *testing.T) {
+	for _, val := range []string{"not-a-number", "0", "-1"} {
+		t.Run(val, func(t *testing.T) {
+			t.Setenv("CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP", val)
+			_, err := FromEnv()
+			if err == nil {
+				t.Fatalf("FromEnv accepted %q; want error", val)
+			}
+			if !strings.Contains(err.Error(), "CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP") {
+				t.Errorf("error %q does not name the env var", err)
+			}
+		})
+	}
+}

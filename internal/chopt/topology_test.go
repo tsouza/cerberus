@@ -4,8 +4,8 @@ import "testing"
 
 // TestDefaultClusterTopology_SingleShard pins the zero-risk default every
 // deployment gets unless CERBERUS_CH_DATA_SHARDS is set: DataShardCount == 1,
-// the value that makes internal/solver's DataShardFanoutGate mechanism a
-// structural no-op (cerberus issue #3081).
+// the value that makes internal/chclient's DataShardFanoutGate mechanism a
+// structural no-op (cerberus issues #3081, #3128).
 func TestDefaultClusterTopology_SingleShard(t *testing.T) {
 	t.Parallel()
 	got := DefaultClusterTopology()

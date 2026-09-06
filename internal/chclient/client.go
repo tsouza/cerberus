@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 )
@@ -352,6 +353,14 @@ type Config struct {
 	// chclient.ApportionMemoryBytes).
 	DataShardCount int
 
+	// DataShardFanoutCapOverride, when non-nil, replaces MaxOpenConns as
+	// NewDataShardFanoutGate's resolved cap (cerberus issues #3081, #3128).
+	// Nil (the default) means "the same size as this Client's own
+	// connection pool" — reusing MaxOpenConns as the natural default rather
+	// than inventing a new bare constant (invariant 13). See
+	// NewDataShardFanoutGate's own doc for the full derivation.
+	DataShardFanoutCapOverride *int64
+
 	// QueryTimeoutSeconds caps the server-side wall-clock duration of a
 	// single data-plane query: it is stamped as the per-query
 	// `max_execution_time` setting (with `timeout_overflow_mode=throw`)
@@ -465,6 +474,19 @@ type Client struct {
 	// distributed-query pins in distributed_query_settings.go) is
 	// unconditional and does not need the integer value itself.
 	dataShardCount int64
+	// dataShardFanoutGate / dataShardFanoutCap are the data-shard fan-out
+	// admission gate (cerberus issues #3081, #3128, epic #3074) and its
+	// resolved size — see fanout_gate.go's own package doc for the full
+	// history and rationale. dataShardFanoutGate is nil (structurally
+	// inert) whenever Config.DataShardCount <= 1, matching every
+	// deployment that predates this mechanism. Shared, by pointer, across
+	// every ForHead view of this Client (the shallow copy in ForHead
+	// copies the pointer, not the semaphore), so the SAME budget bounds
+	// every head's dispatches together — the resource it bounds
+	// (ClickHouse's own per-shard statement count) is cluster-wide, not
+	// per-head.
+	dataShardFanoutGate *semaphore.Weighted
+	dataShardFanoutCap  int64
 	// queryTimeout is Config.QueryTimeoutSeconds as a time.Duration —
 	// the per-query `max_execution_time` ClickHouse setting applied to
 	// every data-plane query via queryContext (overridable per-request,
@@ -797,15 +819,18 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 		cfg.BreakerOpenInterval,
 		newGlobalBreakerMetrics(),
 	)
+	dataShardFanoutGate, dataShardFanoutCap := NewDataShardFanoutGate(cfg)
 	c := &Client{
-		conn:           conn,
-		addr:           cfg.Addr,
-		br:             def,
-		breakers:       registry,
-		maxSamples:     cfg.MaxQuerySamples,
-		maxMemory:      cfg.MaxQueryMemoryBytes,
-		dataShardCount: int64(cfg.DataShardCount),
-		queryTimeout:   cfg.QueryTimeout,
+		conn:                conn,
+		addr:                cfg.Addr,
+		br:                  def,
+		breakers:            registry,
+		maxSamples:          cfg.MaxQuerySamples,
+		maxMemory:           cfg.MaxQueryMemoryBytes,
+		dataShardCount:      int64(cfg.DataShardCount),
+		dataShardFanoutGate: dataShardFanoutGate,
+		dataShardFanoutCap:  dataShardFanoutCap,
+		queryTimeout:        cfg.QueryTimeout,
 	}
 	// Resolve the cursor-decode strategy ONCE, here at construction. The
 	// default is the concrete row path; when Config.ColumnarMatrixDecode is set
@@ -1419,6 +1444,16 @@ func (c *Client) MaxQueryMemoryBytes() int64 {
 // anchor grid alone would exceed it before any SQL is sent. 0 = unlimited.
 func (c *Client) MaxQuerySamples() int64 {
 	return c.maxSamples
+}
+
+// DataShardFanoutCap returns the resolved size of this Client's data-shard
+// fan-out admission gate (cerberus issues #3081, #3128) — NewDataShardFanoutGate's
+// resolved cap, regardless of whether the gate itself was allocated
+// (DataShardCount <= 1 leaves the gate nil but the cap is still resolved and
+// reported, e.g. for startup logging). Exported so cmd/cerberus can log the
+// value it wired without duplicating NewDataShardFanoutGate's own arithmetic.
+func (c *Client) DataShardFanoutCap() int64 {
+	return c.dataShardFanoutCap
 }
 
 // Exec runs sql with positional args against ClickHouse and returns any
