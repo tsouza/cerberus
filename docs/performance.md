@@ -275,9 +275,10 @@ table. None of the five observes real per-shard execution once
 cluster data-PARTITION sense — a different "shard" than the sharded-pushdown
 solver this document's own [fan-out section](#the-thing-we-optimize-for-compute-fan-out)
 describes; see `internal/chopt/topology.go`'s terminology table for the full
-three-way disambiguation). This is permanent and structural, not a
-scheduled follow-up: `EXPLAIN` against a `Distributed` table shows only the
-initiator's own dispatch, never a remote shard's actual execution plan. The
+three-way disambiguation). This is permanent and structural, not something
+a later change is expected to close — `EXPLAIN` against a `Distributed`
+table shows only the initiator's own dispatch, never a remote shard's
+actual execution plan. The
 one place this repository collects real per-DATA-shard evidence is
 `system.query_log`, read directly by the `datashard` e2e leg described in
 [`operations.md`'s DATA-shard topology section](operations.md#clickhouse-cluster-data-shard-topology-distributed-tables-cerberus-issue-3077) —
