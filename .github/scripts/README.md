@@ -25,12 +25,18 @@ files. `setOutput` and `exportEnv` differ by consumer, not by mechanism: a step
 output has to be named by whoever reads it, while `$GITHUB_ENV` carries a
 decision that changes how the REST of the job behaves and has no single reader.
 
-`lib/bwc-k8s.mjs` holds the two k8s lookups `e2e-bwc-verify-placement.mjs`
-and `e2e-bwc-verify-mode-toggle.mjs` both need — a namespaced `kubectl`
-runner (`makeKubectl`) and the bundled-ClickHouse pod lookup
-(`clickhousePodName`), by the chart's immutable
-`app.kubernetes.io/component=clickhouse` selector label. One source of
-truth so a third `bwc` verify script never has to re-copy them.
+`lib/k8s.mjs` (started as `lib/bwc-k8s.mjs`, promoted and renamed once a
+third consumer outside the bwc lane showed up — cerberus issue #3096) holds
+the k8s + in-cluster-ClickHouse lookups the e2e Node scripts share: a namespaced
+`kubectl` runner (`makeKubectl`), the bundled-ClickHouse pod lookup
+(`clickhousePodName`, by the chart's immutable
+`app.kubernetes.io/component=clickhouse` selector label), and a `kubectl exec
+... clickhouse-client` query runner in both a never-exits `chQueryRaw` form
+(a poll loop treats a not-yet-queryable ClickHouse as "no data yet", not a
+hard failure) and an exits-on-failure `chQuery` form. Used by
+`e2e-bwc-verify-placement.mjs`, `e2e-bwc-verify-mode-toggle.mjs`,
+`e2e-datashard-verify.mjs`, and `e2e-wait-otel.mjs`. One source of truth so
+a new e2e verify/wait script never has to re-copy them.
 
 `lib/shard-coverage.mjs` holds the Playwright spec-partition rules the two
 e2e shard-matrix modules share — `discoverSpecs()` (the tracked spec
@@ -1939,6 +1945,20 @@ what actually runs.
   - Env: `NAMESPACE` (default `cerberus`), `PPROF_OUT_DIR` (default `/tmp`).
   - Exit: `0` when restarts == 0 (or unreadable), `1` when restarts > 0
     (after dumping evidence).
+- **`e2e-chaos-overlay.mjs`** — the Justfile (`e2e-chaos-overlay`, `e2e.yml`'s
+  `chaos` job), extracted from the recipe's inline bash (cerberus issue
+  #3096). Parses `test/e2e/chaos/manifests/chaos-overlay.env` (one
+  `KEY=VALUE` per non-blank, non-comment line) into `kubectl set env`
+  arguments, patches the running `cerberus` Deployment's pod env in one
+  rollout, then waits for the rollout so every pod carries the overlay
+  before fault injection starts. Idempotent — re-applying the same values is
+  a no-op rollout.
+  - Env: `NAMESPACE` (default `cerberus`), `DEPLOYMENT` (default
+    `cerberus`), `OVERLAY_ENV_FILE` (default
+    `test/e2e/chaos/manifests/chaos-overlay.env`), `ROLLOUT_TIMEOUT_SECONDS`
+    (default `120`).
+  - Exit: `0` on success, `1` on an unreadable overlay file or any kubectl
+    failure.
 - **`e2e-datashard-verify.mjs`** — `e2e.yml`, the `datashard` job (multi-data-shard
   lane, cerberus issue #3079), invoked via `just e2e-datashard-verify <count>`
   after a concurrent PromQL/LogQL/TraceQL burst has run against the
@@ -1965,6 +1985,103 @@ what actually runs.
     (default `20`), `BURST_CONCURRENCY` (default `6`), `FLUSH_WAIT_SECONDS`
     (default `10`).
   - Exit: `0` all assertions passed, `1` on any failure.
+- **`e2e-datasource-sync.mjs`** — the Justfile (`e2e-up`'s split-mode block),
+  extracted from its inline `awk` + poll loop (cerberus issue #3096). In
+  `E2E_MODE=split` the chart-managed datasource hostnames change (each head
+  gets its own bare-named Service), so the kustomize-applied Grafana
+  datasource ConfigMap (which still points every type at the monolith
+  `http://cerberus:8080`) has to be rewritten per-type — but Grafana
+  provisions datasources into its DB ONCE at boot from the mounted file, and
+  the kubelet's ConfigMap->volume sync lags a pod's startup, so updating the
+  ConfigMap object alone does nothing until the corrected content has
+  actually synced onto disk. Rewrites the ConfigMap (`rewriteDatasourceUrls`
+  — the same `type:`-tracking state machine the extracted `awk` one-liner
+  ran), applies it, BLOCKS until `kubectl exec`ing into the Grafana pod
+  proves the new `url:` line landed, then restarts Grafana so it
+  re-provisions from the corrected file. This is the v1.4.0 split-mode
+  dashboard-lane breakage's fix.
+  - Env: `NAMESPACE` (default `cerberus`), `CONFIGMAP` (default
+    `grafana-datasources`), `GRAFANA_DEPLOYMENT` (default `grafana`),
+    `ROLLOUT_TIMEOUT_SECONDS` (default `120`), `SYNC_POLL_ATTEMPTS` (default
+    `60`), `SYNC_POLL_INTERVAL_SECONDS` (default `2`).
+  - Exit: `0` on success, `1` if the per-head URLs never sync within the
+    poll budget, or any kubectl step fails.
+- **`e2e-seed.mjs`** — the Justfile (`e2e-seed`, `e2e-reseed`), extracted
+  from the two recipes' near-identical inline bash and parameterized by
+  `PORT`/`LOG_PATH` so one script backs both (cerberus issue #3096): the
+  initial seed (port `19000`) and the chaos lane's one-shot re-anchor after
+  a CH-recreating scenario (port `19001` — distinct so it never races
+  `e2e-seed-rolling`'s own long-lived forward). Opens a throwaway `kubectl
+  port-forward svc/clickhouse <PORT>:9000`, waits for it to accept a
+  connection, runs the Go seeder (`test/e2e/seed/cmd/seed`) against it, and
+  tears the forward down on every exit path.
+  - Env: `NAMESPACE` (default `cerberus`), `PORT` (default `19000`),
+    `LOG_PATH` (default `/tmp/cerberus-e2e-seed-pf.log`).
+  - Exit: the Go seeder's own exit status; `1` if the port-forward never
+    accepts a connection within its wait budget.
+- **`e2e-seed-rolling.mjs`** — the Justfile (`e2e-seed-rolling`), extracted
+  from the recipe's inline bash (cerberus issue #3096). Launches the
+  reconnecting port-forward supervisor
+  (`test/e2e/seed/port_forward_supervisor.sh`) under `setsid` (its own
+  session/process-group leader, so `e2e-seed-stop.mjs` can signal the whole
+  group), waits for the forward, builds the seeder binary once, launches it
+  detached under `--re-seed-interval=30s`, then blocks until the seeder's
+  own log reports the initial seed landed — so the caller
+  (`e2e-wait-otel`/`e2e-run`) sees a populated database. Replaces the
+  static-window arms-race that widened the seed envelope to ±15 min in PRs
+  #590/#615/#617/#693 just to survive Playwright suite drift.
+  - Env: `NAMESPACE` (default `cerberus`), `PORT` (default `19000`).
+  - Exit: `0` once the initial seed lands; `1` if the port-forward never
+    opens, or the initial seed does not land within its own wait budget.
+- **`e2e-seed-stop.mjs`** — the Justfile (`e2e-seed-stop`, also called from
+  `e2e-down`), extracted from the recipe's inline bash (cerberus issue
+  #3096). Idempotent teardown of the rolling seeder + its port-forward
+  supervisor: SIGTERMs the seeder's plain PID, and signals the supervisor by
+  PROCESS GROUP (a negative PID — it is its own `setsid` group leader) so
+  the supervisor AND its live `kubectl port-forward` child both die in one
+  syscall, falling back to a plain-PID signal only if the group form itself
+  is rejected. A missing PID file, or a PID that no longer exists, is a
+  silent no-op — called unconditionally from `e2e-down` and must never fail
+  a teardown that has nothing left to stop.
+  - Exit: always `0`.
+- **`e2e-wait-otel.mjs`** — the Justfile (`e2e-wait-otel`), extracted from
+  the recipe's inline bash (cerberus issue #3096). Polls ClickHouse (via
+  `kubectl exec` against `deploy/clickhouse`, `lib/k8s.mjs`'s `chQueryRaw` —
+  no host-side port-forward needed) until every OTel signal table (logs,
+  the `clickhouse` service's own log stream, traces, one of the metrics
+  tables) has data AND the metric stream (whichever of `otel_metrics_sum` /
+  `otel_metrics_gauge` is live) plus its histogram companion
+  (`otel_metrics_histogram` for `HISTOGRAM_METRIC`) each carry
+  `MIN_HISTORY_SECONDS` of `TimeUnix` spread — the span `rate(x[1m])`-shaped
+  windowed queries need before they return a vector. A poll iteration where
+  ClickHouse briefly refuses a query is "no data yet", never a hard failure.
+  - Env: `NAMESPACE` (default `cerberus`), `CLICKHOUSE_TARGET` (default
+    `deploy/clickhouse`), `DATABASE` (default `otel`),
+    `CH_USER`/`CH_PASSWORD` (default `cerberus`/`cerberus`),
+    `HISTOGRAM_METRIC` (default `http_server_request_duration`),
+    `POLL_SECONDS` (default `180`), `POLL_INTERVAL_SECONDS` (default `5`),
+    `MIN_HISTORY_SECONDS` (default `60`).
+  - Exit: `0` once every signal clears the floor; `1` on timeout.
+- **`k3d-image-import.mjs`** — the Justfile (`e2e-up`), extracted from its
+  image-import-and-verify retry loop (cerberus issue #3096). k3d bundles
+  every image into one tarball and runs `ctr image import` inside a
+  transient tools node — the bundled tarball intermittently vanishes
+  mid-import (importing one image at a time shrinks the race), and `k3d
+  image import` reports success even on a silent node-level failure (so
+  landing is VERIFIED against the node's own containerd, never trusted from
+  k3d's exit code). Designed from day one for reuse by `e2e-bwc-up`
+  (sub-issue #3097, not wired to this script by #3096) and the
+  multi-data-shard `e2e-datashard-up` (issue #3107): an arbitrary argv image
+  list plus an `IMAGE_IMPORT_EXCLUDE` glob-pattern parameter (`e2e-bwc-up`
+  needs to skip the standalone `clickhouse/clickhouse-server:*-alpine` image
+  its kustomization never applies) are first-class from the start, not a
+  retrofit.
+  - Usage: `node .github/scripts/k3d-image-import.mjs <image>...`.
+  - Env: `K3D_CLUSTER` (required), `IMAGE_IMPORT_EXCLUDE` (optional,
+    whitespace-separated globs), `IMAGE_IMPORT_ATTEMPTS` (default `5`),
+    `IMAGE_IMPORT_BACKOFF_SECONDS` (default `2`).
+  - Exit: `0` once every non-excluded image verifies in containerd; `1` as
+    soon as one exhausts its import attempts.
 - **`promql-surface-gate.mjs`** — `compatibility.yml`, the
   `compatibility/promql-surface` job (reference-backed full-surface PromQL
   rejection-completeness gate, #106). Stands up a flag-enabled reference

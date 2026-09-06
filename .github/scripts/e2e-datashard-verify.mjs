@@ -71,7 +71,7 @@
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
-import { makeKubectl } from './lib/bwc-k8s.mjs';
+import { makeKubectl } from './lib/k8s.mjs';
 
 const NS = process.env.NAMESPACE || 'cerberus';
 const CERBERUS_URL = process.env.CERBERUS_URL || 'http://localhost:8080';

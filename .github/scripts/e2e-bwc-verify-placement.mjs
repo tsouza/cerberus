@@ -52,7 +52,7 @@
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
-import { makeKubectl, clickhousePodName } from './lib/bwc-k8s.mjs';
+import { makeKubectl, clickhousePodName, chQuery as chQueryShared } from './lib/k8s.mjs';
 
 const SCENARIO = process.env.SCENARIO || 'object-storage';
 const NS = process.env.NAMESPACE || 'cerberus';
@@ -111,25 +111,13 @@ const CANONICAL_TABLES = new Set([
 ]);
 
 // Namespaced kubectl runner + pod lookup, shared with
-// e2e-bwc-verify-mode-toggle.mjs via lib/bwc-k8s.mjs.
+// e2e-bwc-verify-mode-toggle.mjs and e2e-datashard-verify.mjs via lib/k8s.mjs.
 const kubectl = makeKubectl(capture, NS);
 const clickhousePod = () => clickhousePodName(kubectl, NS);
 
 // Run a ClickHouse query inside the CH pod as the dedicated cerberus user.
 function chQuery(pod, sql) {
-  const res = kubectl([
-    'exec', pod, '--',
-    'clickhouse-client',
-    '--user', CH_USER,
-    '--password', CH_PASSWORD,
-    '--database', DB,
-    '--query', sql,
-  ]);
-  if (res.status !== 0) {
-    error(`clickhouse query failed: ${sql}\n${res.stderr.trim()}`);
-    process.exit(1);
-  }
-  return res.stdout.trim();
+  return chQueryShared(kubectl, pod, { database: DB, user: CH_USER, password: CH_PASSWORD }, sql);
 }
 
 function lines(s) {

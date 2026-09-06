@@ -87,8 +87,14 @@ K3D_EXTRA_ARGS := env_var_or_default("K3D_EXTRA_ARGS", "")
 # The k3d loadbalancer publishes on 0.0.0.0, so both ports are reachable on
 # every host interface (LAN IP included), not just localhost.
 
-# Boot the k3d cluster, build and import the cerberus image, apply manifests, wait for pods.
-e2e-up: e2e-down
+# Shared k3d cluster-create step (cerberus issue #3096, epic #3091 phase 5):
+# the exact `k3d cluster create` invocation `e2e-up` and `e2e-bwc-up` both
+# run verbatim (`e2e-datashard-up` too — see issue #3107, filed to bring it
+# onto this same shared recipe). Pulled out on its own so a future flag
+# change (a port, a k3s arg) never has to land in more than one place.
+# `e2e-up` calls this now; `e2e-bwc-up` moves onto it in sub-issue #3097,
+# never touched by this PR.
+_e2e-k3d-cluster-create:
     @echo "==> pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
     @echo "==> creating k3d cluster {{K3D_CLUSTER}}"
@@ -100,6 +106,10 @@ e2e-up: e2e-down
         --k3s-arg "--disable=traefik@server:0" \
         {{K3D_EXTRA_ARGS}} \
         --wait
+
+# Boot the k3d cluster, build and import the cerberus image, apply manifests, wait for pods.
+e2e-up: e2e-down
+    @just _e2e-k3d-cluster-create
     @echo "==> building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
     node .github/scripts/build-with-registry-retry.mjs \
         docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
@@ -119,74 +129,24 @@ e2e-up: e2e-down
     @#      VERIFIED against the node's containerd, not trusted.
     @# So: import each image on its own, then verify it actually landed,
     @# retrying the import until it's present or the attempt budget is
-    @# spent. Normalise short names the way containerd stores them
-    @# (docker.io/ + library/ prefixes).
-    @for img in {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}}; do \
-        ref="$img"; \
-        case "$ref" in \
-            *.*/*|*:*/*) ;; \
-            */*) ref="docker.io/$ref" ;; \
-            *)   ref="docker.io/library/$ref" ;; \
-        esac; \
-        landed=0; \
-        for attempt in 1 2 3 4 5; do \
-            k3d image import "$img" -c {{K3D_CLUSTER}} || true; \
-            if docker exec k3d-{{K3D_CLUSTER}}-server-0 ctr -n k8s.io images ls -q | grep -qF "$ref"; then \
-                landed=1; break; \
-            fi; \
-            echo "    import attempt $attempt: $ref not in containerd yet, retrying after backoff" >&2; \
-            sleep $((attempt * 2)); \
-        done; \
-        if [ "$landed" != "1" ]; then \
-            echo "ERROR: $ref missing from k3d node containerd after 5 import attempts" >&2; \
-            exit 1; \
-        fi; \
-        echo "    ok $ref"; \
-    done
+    @# spent. Logic lives in .github/scripts/k3d-image-import.mjs (cerberus
+    @# issue #3096) — designed from day one with an IMAGE_IMPORT_EXCLUDE
+    @# glob-pattern parameter and an arbitrary argv image list, so
+    @# `e2e-bwc-up` (sub-issue #3097) can reuse it unchanged by only
+    @# varying its own call site.
+    @K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}}
     @echo "==> applying fixture manifests (CH, Grafana, collector, sample apps)"
     kubectl apply -k test/e2e/k3s/
     @# In split mode the chart-managed datasource hostnames change (each head
     @# gets its own bare-named Service), so rewrite the Grafana datasource
     @# ConfigMap to point each datasource type at its head Service. In monolith
     @# mode the kustomize-applied ConfigMap (url: http://cerberus:8080) is
-    @# already correct.
-    @#
-    @# Grafana provisions datasources into its DB ONCE, at boot, from the
-    @# mounted ConfigMap file — and the kubelet's ConfigMap→volume sync lags a
-    @# pod's startup by tens of seconds. So updating the ConfigMap object after
-    @# `apply -k` has already created the Grafana Deployment does NOT change what
-    @# Grafana provisioned: it boots from the original `http://cerberus:8080`
-    @# and never re-reads. In split that URL resolves to the NodePort-alias
-    @# Service, which selects ONLY the prometheus head, so loki/tempo datasource
-    @# queries hit the prometheus process (no /loki/* or /api/* routes) and 404
-    @# — the v1.4.0 split-mode dashboard-lane breakage.
-    @#
-    @# Fix: after updating the ConfigMap, BLOCK until the kubelet has synced the
-    @# per-head URLs into the running Grafana pod's mounted file, THEN restart
-    @# Grafana so it re-provisions from the corrected file. Polling the mounted
-    @# file (not a fixed sleep) makes the restart race-free: Grafana only
-    @# re-reads once the new content is actually on disk.
+    @# already correct. Logic (the awk-shaped rewrite, the kubelet-sync poll,
+    @# the Grafana rollout-restart — see that script's own header for the full
+    @# race this closes) lives in .github/scripts/e2e-datasource-sync.mjs
+    @# (cerberus issue #3096).
     @if [ "{{E2E_MODE}}" = "split" ]; then \
-        echo "==> [split] rewriting Grafana datasource URLs to per-head Services"; \
-        kubectl -n cerberus get configmap grafana-datasources -o jsonpath='{.data.datasources\.yaml}' \
-            | awk '/type: prometheus/{t="prometheus"} /type: loki/{t="loki"} /type: tempo/{t="tempo"} \
-                   /url: http:\/\/cerberus:8080/{sub(/cerberus/, t)} {print}' > /tmp/cerberus-e2e-ds-split.yaml; \
-        kubectl -n cerberus create configmap grafana-datasources \
-            --from-file=datasources.yaml=/tmp/cerberus-e2e-ds-split.yaml \
-            --dry-run=client -o yaml | kubectl apply -f -; \
-        echo "==> [split] waiting for the per-head datasource URLs to sync into the Grafana pod"; \
-        kubectl -n cerberus rollout status deployment/grafana --timeout=120s; \
-        synced=0; \
-        for attempt in $(seq 1 60); do \
-            if kubectl -n cerberus exec deploy/grafana -- grep -q 'url: http://loki:8080' /etc/grafana/provisioning/datasources/datasources.yaml 2>/dev/null; then \
-                synced=1; break; \
-            fi; \
-            sleep 2; \
-        done; \
-        [ "$synced" = "1" ] || { echo "ERROR: per-head datasource URLs never synced into the Grafana pod after 120s" >&2; exit 1; }; \
-        echo "==> [split] restarting Grafana so it re-provisions datasources from the corrected file"; \
-        kubectl -n cerberus rollout restart deployment/grafana; \
-        kubectl -n cerberus rollout status deployment/grafana --timeout=120s; \
+        node .github/scripts/e2e-datasource-sync.mjs; \
     fi
     @# cerberus is deployed via its OWN Helm chart so the e2e cluster dogfoods
     @# the published chart (deploy/helm/cerberus) — a chart bug now fails the
@@ -243,22 +203,15 @@ e2e-up: e2e-down
 # Both share the same `otel.*` tables (schema cannot drift — both write
 # via the upstream sqltemplates).
 
+# Logic (the throwaway port-forward, the wait-for-port poll, the Go seeder
+# invocation, and the always-run teardown) lives in
+# .github/scripts/e2e-seed.mjs (cerberus issue #3096), parameterized by
+# PORT/LOG_PATH so the same script backs `e2e-reseed` below on a distinct
+# port + log.
+
 # Seed deterministic OTel fixture rows into the cluster's ClickHouse.
 e2e-seed:
-    @echo "==> seeding OTel data via Go seeder"
-    @kubectl -n cerberus port-forward svc/clickhouse 19000:9000 > /tmp/cerberus-e2e-seed-pf.log 2>&1 & \
-        pf_pid=$!; \
-        trap "kill $pf_pid 2>/dev/null || true" EXIT; \
-        for i in 1 2 3 4 5 6 7 8 9 10; do \
-            if nc -z 127.0.0.1 19000 2>/dev/null; then break; fi; \
-            sleep 1; \
-        done; \
-        CH_ADDR=127.0.0.1:19000 \
-        CH_DATABASE=otel \
-        CH_USERNAME=cerberus \
-        CH_PASSWORD=cerberus \
-            go run ./test/e2e/seed/cmd/seed
-    @echo "==> seed done"
+    @PORT=19000 LOG_PATH=/tmp/cerberus-e2e-seed-pf.log node .github/scripts/e2e-seed.mjs
 
 # One-shot RE-seed through a fresh, self-contained port-forward — used by the
 # chaos lane's heal step after a CH-recreating scenario kills + recreates the
@@ -278,22 +231,13 @@ e2e-seed:
 # EXISTS and the INSERTs re-anchor on now64(9), so running it against either an
 # empty or an already-populated CH is safe.
 
+# Same .github/scripts/e2e-seed.mjs as `e2e-seed` above, on a DISTINCT port
+# (19001) + log so it never races e2e-seed-rolling's own long-lived forward
+# on 19000.
+
 # Re-anchor the seeded window through a one-shot, fresh port-forward. Idempotent.
 e2e-reseed:
-    @echo "==> re-seeding OTel data (one-shot, fresh port-forward) after CH recreation"
-    @kubectl -n cerberus port-forward svc/clickhouse 19001:9000 > /tmp/cerberus-e2e-reseed-pf.log 2>&1 & \
-        pf_pid=$!; \
-        trap "kill $pf_pid 2>/dev/null || true" EXIT; \
-        for i in 1 2 3 4 5 6 7 8 9 10; do \
-            if nc -z 127.0.0.1 19001 2>/dev/null; then break; fi; \
-            sleep 1; \
-        done; \
-        CH_ADDR=127.0.0.1:19001 \
-        CH_DATABASE=otel \
-        CH_USERNAME=cerberus \
-        CH_PASSWORD=cerberus \
-            go run ./test/e2e/seed/cmd/seed
-    @echo "==> re-seed done"
+    @PORT=19001 LOG_PATH=/tmp/cerberus-e2e-reseed-pf.log node .github/scripts/e2e-seed.mjs
 
 # Rolling seeder. Performs the same INSERTs as `e2e-seed` and then stays
 # alive, re-anchoring the metric/log windows on now64(9) every 30 s until
@@ -326,47 +270,13 @@ e2e-reseed:
 # immediately, the supervised rolling feed keeps data anchored at wall-clock now
 # for the time-windowed assertions of the scenarios that follow.
 
+# Logic (the setsid supervisor launch, the port-wait, the `go build`, the
+# detached nohup-equivalent seeder launch, and the initial-seed-landed poll)
+# lives in .github/scripts/e2e-seed-rolling.mjs (cerberus issue #3096).
+
 # Seed, then keep re-anchoring the window every 30s in the background until e2e-seed-stop.
 e2e-seed-rolling:
-    @echo "==> launching rolling seeder (30s tick) in background"
-    @# 1) start the reconnecting port-forward supervisor in its own process
-    @#    group (setsid) and stash its PGID (== leader PID under setsid) so
-    @#    teardown can signal the whole group.
-    @setsid bash test/e2e/seed/port_forward_supervisor.sh \
-        cerberus svc/clickhouse 19000:9000 > /tmp/cerberus-e2e-seed-pf.log 2>&1 & \
-        echo $! > /tmp/cerberus-e2e-seed-pf.pid
-    @# 2) wait for the forward to come up.
-    @for i in 1 2 3 4 5 6 7 8 9 10; do \
-        if nc -z 127.0.0.1 19000 2>/dev/null; then break; fi; \
-        sleep 1; \
-    done
-    @# 3) build the seeder once so `nohup` launches a real binary
-    @#    (a stray `go run` keeps the toolchain attached to the shell that
-    @#    spawned it; harder to detach cleanly across CI step boundaries).
-    @go build -o /tmp/cerberus-e2e-seeder ./test/e2e/seed/cmd/seed
-    @# 4) launch the seeder under nohup with the rolling flag.
-    @CH_ADDR=127.0.0.1:19000 \
-        CH_DATABASE=otel \
-        CH_USERNAME=cerberus \
-        CH_PASSWORD=cerberus \
-        nohup /tmp/cerberus-e2e-seeder --re-seed-interval=30s \
-            > /tmp/cerberus-e2e-seed-rolling.log 2>&1 & \
-        echo $! > /tmp/cerberus-e2e-seed-rolling.pid
-    @echo "==> rolling seeder pid=$(cat /tmp/cerberus-e2e-seed-rolling.pid) pf-pid=$(cat /tmp/cerberus-e2e-seed-pf.pid)"
-    @echo "    initial seed runs synchronously inside the seeder before the loop starts —"
-    @echo "    tail /tmp/cerberus-e2e-seed-rolling.log to confirm 'seed: done' lands."
-    @# 5) wait for the initial seed to land before returning, so the next
-    @#    CI step (e2e-wait-otel / e2e-run) sees a populated database.
-    @for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
-        if grep -q '^.*seed: done' /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null; then \
-            echo "==> initial seed landed"; \
-            exit 0; \
-        fi; \
-        sleep 2; \
-    done; \
-        echo "==> ERROR: initial seed did not complete within 30s. log:"; \
-        cat /tmp/cerberus-e2e-seed-rolling.log; \
-        exit 1
+    @node .github/scripts/e2e-seed-rolling.mjs
 
 # Stop the rolling seeder + its port-forward supervisor (idempotent).
 # Called from CI teardown so the dashboard job tears down cleanly even when
@@ -375,21 +285,12 @@ e2e-seed-rolling:
 # state to flush. The port-forward PID file holds the supervisor's setsid
 # leader PID (== its PGID), so `kill -TERM -<pid>` signals the whole group —
 # the supervisor AND its current kubectl child — instead of orphaning the
-# kubectl child while the supervisor respawns it.
+# kubectl child while the supervisor respawns it. Logic lives in
+# .github/scripts/e2e-seed-stop.mjs (cerberus issue #3096).
 
 # Stop the rolling seeder and its port-forward supervisor. Idempotent.
 e2e-seed-stop:
-    @echo "==> stopping rolling seeder"
-    @if [ -f /tmp/cerberus-e2e-seed-rolling.pid ]; then \
-        pid=$(cat /tmp/cerberus-e2e-seed-rolling.pid); \
-        kill -TERM "$pid" 2>/dev/null || true; \
-        rm -f /tmp/cerberus-e2e-seed-rolling.pid; \
-    fi
-    @if [ -f /tmp/cerberus-e2e-seed-pf.pid ]; then \
-        pid=$(cat /tmp/cerberus-e2e-seed-pf.pid); \
-        kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; \
-        rm -f /tmp/cerberus-e2e-seed-pf.pid; \
-    fi
+    @node .github/scripts/e2e-seed-stop.mjs
 
 # Wait until the OTel collector has populated real data in every signal
 # table (logs / traces / one of the metrics tables) AND the metric table
@@ -404,54 +305,13 @@ e2e-seed-stop:
 # host-side port-forward. Spread is asserted on whichever metric table
 # (sum or gauge) carries non-zero rows first.
 
+# Logic (the per-signal count/spread queries, the success predicate, and the
+# poll loop) lives in .github/scripts/e2e-wait-otel.mjs (cerberus issue
+# #3096), via lib/k8s.mjs's chQueryRaw.
+
 # Block until the OTel collector has populated every signal table with >=60s of history.
 e2e-wait-otel:
-    @echo "==> waiting for real OTel data (incl. clickhouse query_log stream) + ≥60s metric history in ClickHouse"
-    @deadline=$(($(date +%s) + 180)); \
-        while [ $(date +%s) -lt $deadline ]; do \
-            logs=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                --user cerberus --password cerberus --database otel \
-                --query "SELECT count() FROM otel_logs" 2>/dev/null || echo 0); \
-            chlogs=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                --user cerberus --password cerberus --database otel \
-                --query "SELECT count() FROM otel_logs WHERE ServiceName = 'clickhouse'" 2>/dev/null || echo 0); \
-            traces=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                --user cerberus --password cerberus --database otel \
-                --query "SELECT count() FROM otel_traces" 2>/dev/null || echo 0); \
-            sum=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                --user cerberus --password cerberus --database otel \
-                --query "SELECT count() FROM otel_metrics_sum" 2>/dev/null || echo 0); \
-            gauge=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                --user cerberus --password cerberus --database otel \
-                --query "SELECT count() FROM otel_metrics_gauge" 2>/dev/null || echo 0); \
-            histogram=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                --user cerberus --password cerberus --database otel \
-                --query "SELECT count() FROM otel_metrics_histogram WHERE MetricName = 'http_server_request_duration'" 2>/dev/null || echo 0); \
-            hist_spread=0; \
-            if [ "$histogram" -gt 0 ]; then \
-                hist_spread=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                    --user cerberus --password cerberus --database otel \
-                    --query "SELECT toUInt64(dateDiff('second', min(TimeUnix), max(TimeUnix))) FROM otel_metrics_histogram WHERE MetricName = 'http_server_request_duration'" 2>/dev/null || echo 0); \
-            fi; \
-            spread=0; \
-            if [ "$sum" -gt 0 ]; then \
-                spread=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                    --user cerberus --password cerberus --database otel \
-                    --query "SELECT toUInt64(dateDiff('second', min(TimeUnix), max(TimeUnix))) FROM otel_metrics_sum" 2>/dev/null || echo 0); \
-            elif [ "$gauge" -gt 0 ]; then \
-                spread=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
-                    --user cerberus --password cerberus --database otel \
-                    --query "SELECT toUInt64(dateDiff('second', min(TimeUnix), max(TimeUnix))) FROM otel_metrics_gauge" 2>/dev/null || echo 0); \
-            fi; \
-            echo "    logs=$logs chlogs=$chlogs traces=$traces metrics_sum=$sum metrics_gauge=$gauge metrics_histogram=$histogram spread=${spread}s hist_spread=${hist_spread}s"; \
-            if [ "$logs" -gt 0 ] && [ "$chlogs" -gt 0 ] && [ "$traces" -gt 0 ] && { [ "$sum" -gt 0 ] || [ "$gauge" -gt 0 ]; } && [ "$spread" -ge 60 ] && [ "$histogram" -gt 0 ] && [ "$hist_spread" -ge 60 ]; then \
-                echo "==> OTel pipeline is live with ≥60s of metric history (incl. histogram companion + clickhouse query_log stream)"; \
-                exit 0; \
-            fi; \
-            sleep 5; \
-        done; \
-        echo "==> timeout waiting for OTel data / metric history span"; \
-        exit 1
+    @node .github/scripts/e2e-wait-otel.mjs
 
 # Run Go E2E HTTP tests against the deployed stack. CH_ADDR/CH_DATABASE/
 # CH_USERNAME/CH_PASSWORD point at the same port-forward `e2e-seed-rolling`
@@ -533,20 +393,12 @@ e2e-playwright:
 # within budget. Patches the Deployment's pod env via `kubectl set env`
 # (one rollout), then waits for it to roll out so every cerberus pod
 # carries the overlay before fault injection. Idempotent — re-applying
-# the same env values is a no-op rollout.
+# the same env values is a no-op rollout. Logic lives in
+# .github/scripts/e2e-chaos-overlay.mjs (cerberus issue #3096).
 
 # Apply the chaos resilience knobs to the running cerberus Deployment.
 e2e-chaos-overlay:
-    @echo "==> applying chaos overlay (resilience knobs) to deploy/cerberus"
-    @env_args=""; \
-        while IFS= read -r line; do \
-            case "$line" in ''|\#*) continue ;; esac; \
-            env_args="$env_args $line"; \
-        done < test/e2e/chaos/manifests/chaos-overlay.env; \
-        echo "    kubectl set env deploy/cerberus$env_args"; \
-        kubectl -n cerberus set env deployment/cerberus $env_args
-    @echo "==> waiting for the overlay rollout"
-    kubectl -n cerberus rollout status deployment/cerberus --timeout=120s
+    @node .github/scripts/e2e-chaos-overlay.mjs
 
 # Run the live-stack chaos lane: fault-inject against the running k3d
 # stack and assert the gateway's resilience contracts (circuit breaker,
