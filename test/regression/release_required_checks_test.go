@@ -278,8 +278,18 @@ func TestNoJustfileRecipePushesAReleaseTag(t *testing.T) {
 	// #3093: via justDump() rather than a hardcoded `../../Justfile` read —
 	// `import` merges every just/*.just file's recipes into one flat map, so
 	// this scan still covers every recipe regardless of which physical file
-	// declares it. The `.mjs`-scanning half of this pin (once release
-	// scripts are extracted there) is sub-issue #3100's job, not this one's.
+	// declares it.
+	//
+	// #3100: a recipe body scan alone went blind the moment `release-prep` /
+	// `release-prep-backport` started delegating their chart-version,
+	// helm-docs and branch-handling logic to `.github/scripts/prepare-release.mjs`
+	// (CLAUDE.md invariant 15) — the recipe body itself is now just a
+	// `node ...` line, and any tag-cutting logic could hide in the script it
+	// names instead. So every `node .github/scripts/<name>.mjs` delegate a
+	// recipe's body invokes is resolved and its OWN source scanned too, via
+	// mjsGitInvocationLines()+tagCuttingCommand() — the same predicate the
+	// shell-line scan below uses, so "cuts a tag" cannot mean one thing for a
+	// Justfile line and a looser thing for the script it calls out to.
 	d := justDump(t)
 	if len(d.Recipes) == 0 {
 		t.Fatal("parsed no recipes via `just --dump`")
@@ -287,18 +297,125 @@ func TestNoJustfileRecipePushesAReleaseTag(t *testing.T) {
 	const consequence = "Tags are created BY release.yml after it publishes. A hand-made tag makes " +
 		"the version gate see the version as already released, so the release is " +
 		"skipped in silence — every job green, nothing shipped."
+	scannedScripts := map[string]bool{}
 	for name, r := range d.Recipes {
 		if strings.HasPrefix(name, releaseTagRecipePrefix) {
 			t.Errorf("Justfile declares recipe %q. There is deliberately no tag-cutting recipe: "+
 				consequence, name)
 		}
-		for _, line := range strings.Split(r.bodyText(t), "\n") {
+		body := r.bodyText(t)
+		for _, line := range strings.Split(body, "\n") {
 			if why := tagCuttingCommand(line); why != "" {
 				t.Errorf("Justfile recipe %q %s:\n\t%s\n"+consequence,
 					name, why, strings.TrimSpace(line))
 			}
 		}
+		for _, rel := range mjsScriptsInvokedBy(body) {
+			if scannedScripts[rel] {
+				continue // multiple recipes commonly delegate to the same script
+			}
+			scannedScripts[rel] = true
+			path := filepath.Join("../..", rel)
+			src, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("recipe %q delegates to %q via `node`, but it does not exist: %v", name, rel, err)
+			}
+			for _, line := range mjsGitInvocationLines(string(src)) {
+				if why := tagCuttingCommand(line); why != "" {
+					t.Errorf("%s (delegate of Justfile recipe %q) %s:\n\t%s\n"+consequence,
+						rel, name, why, line)
+				}
+			}
+		}
 	}
+}
+
+// nodeScriptInvocationRE matches a `node .github/scripts/<name>.mjs` delegate
+// call inside a recipe body — the shape every extraction under CLAUDE.md
+// invariant 15 uses (see just/chdb.just's `chdb-install`, just/release.just's
+// `release-prep*`).
+var nodeScriptInvocationRE = regexp.MustCompile(`\bnode\s+(\.github/scripts/\S+\.mjs)\b`)
+
+// mjsScriptsInvokedBy returns every distinct `.github/scripts/*.mjs` path a
+// recipe body's `node ...` lines name, in first-seen order.
+func mjsScriptsInvokedBy(body string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range nodeScriptInvocationRE.FindAllStringSubmatch(body, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// jsGitOrGhCallRE finds the start of a child-process call whose command is
+// the literal `git` or `gh` — `execFileSync('git', …)`, `spawnSync("gh", …)`,
+// and the like. Node's child_process API always takes the command as the
+// call's first argument, so anchoring there (rather than guessing at a
+// wrapper's argument order) is exact.
+var jsGitOrGhCallRE = regexp.MustCompile("\\b(?:execFileSync|execFile|spawnSync|spawn|execSync|exec)\\(\\s*['\"`](git|gh)['\"`]")
+
+// jsStringLiteralRE matches one single- or double-quoted JS string literal.
+// No call site in this repository spells a git/gh argument as a template
+// literal, so that form is deliberately unmodelled.
+var jsStringLiteralRE = regexp.MustCompile(`'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)"`)
+
+// extractBalancedCall returns src[start:end] for the parenthesized argument
+// list beginning at the first `(` at or after `from`, matched by paren depth
+// rather than by a regex (Go's RE2 cannot express recursive nesting) — so an
+// argument list containing its own nested calls or object literals with
+// parens is still captured whole.
+func extractBalancedCall(src string, from int) (string, bool) {
+	open := strings.IndexByte(src[from:], '(')
+	if open == -1 {
+		return "", false
+	}
+	start := from + open
+	depth := 0
+	for i := start; i < len(src); i++ {
+		switch src[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return src[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// mjsGitInvocationLines renders every git/gh child-process call in an .mjs
+// script's source as one synthetic shell-command-line string (e.g.
+// `git tag v1.2.3`, joining every string-literal argument in call order), so
+// tagCuttingCommand — written for a shell recipe line — can judge a script's
+// argv-array invocation too. A non-literal argument (a variable, a template
+// literal) contributes nothing, same limitation the shell-line scan already
+// accepts for a value built from a shell variable: this catches an obvious,
+// literally-spelled tag cut, not every possible obfuscation of one.
+func mjsGitInvocationLines(source string) []string {
+	var out []string
+	for _, loc := range jsGitOrGhCallRE.FindAllStringIndex(source, -1) {
+		call, ok := extractBalancedCall(source, loc[0])
+		if !ok {
+			continue
+		}
+		var words []string
+		for _, m := range jsStringLiteralRE.FindAllStringSubmatch(call, -1) {
+			lit := m[1]
+			if lit == "" {
+				lit = m[2]
+			}
+			words = append(words, lit)
+		}
+		if len(words) > 0 {
+			out = append(out, strings.Join(words, " "))
+		}
+	}
+	return out
 }
 
 // releaseTagRecipePrefix is the recipe name (and any variant of it) that must

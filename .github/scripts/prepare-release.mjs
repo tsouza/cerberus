@@ -5,20 +5,47 @@
 // last `v*` tag. The `prepare-release.yml` workflow runs it, regenerates the
 // chart README via helm-docs, then opens the PR.
 //
+// `just release-prep` / `just release-prep-backport` (just/release.just) run
+// the SAME staging logic for a controlled local cut. Both used to duplicate,
+// verbatim, the `awk '/^version:/{print $2; exit}'` chart-version read and
+// the `docker run … jnorwood/helm-docs …` README regeneration in their own
+// recipe bodies (CLAUDE.md invariant 15, issue #3100, epic #3091) — this file
+// already computes `chartVersion` in-process, so the awk re-read of the file
+// it had just written was pure duplication, not merely duplicated TEXT.
+// `RENDER_HELM_DOCS=1` folds the docker invocation in here right after the
+// Chart.yaml edit it depends on, and `release_branch` / `commit_message` are
+// now emitted as outputs so neither recipe re-derives the branch name or the
+// commit/PR-title string by hand. `release-prep-backport`'s branch-detection
+// guard (`case "$(git rev-parse --abbrev-ref HEAD)" in release/*.x) …esac`)
+// moves in the same way, behind `REQUIRE_MAINTENANCE_BRANCH=1`, so it runs
+// before any file is touched exactly like the shell `case` it replaces.
+//
 // Env:
 //   VERSION     explicit target appVersion (e.g. "1.2.0"); overrides BUMP
 //   BUMP        patch | minor | major — used when VERSION is empty
 //   CHART_BUMP  patch | minor | major — chart `version:` bump (default patch)
 //   GITHUB_OUTPUT  runner file for step outputs (optional)
 //   PR_BODY_FILE   path to write the generated PR body (default release-pr-body.md)
+//   RENDER_HELM_DOCS          "1" to regenerate the chart README via helm-docs
+//                             after the Chart.yaml edit (default: skip)
+//   REQUIRE_MAINTENANCE_BRANCH  "1" to fail fast, before touching any file,
+//                             unless HEAD is on a `release/*.x` maintenance
+//                             branch (default: no check — the tip-of-main
+//                             flow branches off `origin/main` instead)
 //
 // argv `--self-test` runs the in-process assertion suite and exits.
 import { readFileSync, writeFileSync, appendFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import process from 'node:process'
+import { renderHelmDocs } from './lib/helm-docs.mjs'
 
 const CHART = 'deploy/helm/cerberus/Chart.yaml'
 const CHANGELOG = 'CHANGELOG.md'
 const IMAGE = 'ghcr.io/tsouza/cerberus'
+// maintenanceBranchGlob mirrors the shell glob `release/*.x` the replaced
+// `case` statement matched: the `release/` prefix, then any (possibly empty)
+// run of characters, then the literal `.x` suffix.
+const maintenanceBranchGlob = /^release\/.*\.x$/
 
 // --- semver -----------------------------------------------------------------
 
@@ -189,7 +216,43 @@ function setOutput(k, v) {
   console.log(`${k}=${v}`)
 }
 
+// --- branch / commit-message helpers (just/release.just's shared logic) ----
+
+// currentBranch shells out for the checked-out branch name, exactly what the
+// replaced `case "$(git rev-parse --abbrev-ref HEAD)" in …esac` read.
+export function currentBranch() {
+  return git(['rev-parse', '--abbrev-ref', 'HEAD']).trim()
+}
+
+// isMaintenanceBranch reports whether `branch` matches the `release/*.x`
+// maintenance-line glob `release-prep-backport` requires HEAD to be on.
+export function isMaintenanceBranch(branch) {
+  return maintenanceBranchGlob.test(branch)
+}
+
+// releaseBranchName is the canonical tip-of-main staging branch name once the
+// chart version is known — `release-prep`'s `git branch -m` target and PR head.
+export function releaseBranchName(appVersion, chartVersion) {
+  return `release/v${appVersion}-chart-${chartVersion}`
+}
+
+// releaseCommitMessage doubles as both the staging commit's `-m` text and the
+// tip-of-main flow's PR title — the two were always the same literal string.
+export function releaseCommitMessage(appVersion, chartVersion) {
+  return `chore(release): cerberus v${appVersion} / chart ${chartVersion}`
+}
+
 function main() {
+  if ((process.env.REQUIRE_MAINTENANCE_BRANCH || '').trim() === '1') {
+    const branch = currentBranch()
+    if (!isMaintenanceBranch(branch)) {
+      console.error(
+        `prepare-release: not on a release/X.Y.x maintenance branch (currently on "${branch}")`,
+      )
+      process.exit(1)
+    }
+  }
+
   const chartText = readFileSync(CHART, 'utf8')
   const curChart = /^version:\s*(.+)$/m.exec(chartText)[1].trim()
   const curApp = /^appVersion:\s*"?([^"\n]+)"?$/m.exec(chartText)[1].trim()
@@ -223,8 +286,14 @@ function main() {
   ].join('\n')
   writeFileSync(process.env.PR_BODY_FILE || 'release-pr-body.md', prBody + '\n')
 
+  if ((process.env.RENDER_HELM_DOCS || '').trim() === '1') {
+    renderHelmDocs()
+  }
+
   setOutput('new_version', appVersion)
   setOutput('chart_version', chartVersion)
+  setOutput('release_branch', releaseBranchName(appVersion, chartVersion))
+  setOutput('commit_message', releaseCommitMessage(appVersion, chartVersion))
 }
 
 // --- self-test --------------------------------------------------------------
@@ -289,6 +358,16 @@ function selfTest() {
   assert((ecl.match(/## \[v1\.1\.0\]/g) || []).length === 1, 'single v1.1.0 header')
   // [Unreleased] is left empty (header immediately followed by the release).
   assert(/## \[Unreleased\]\n\n## \[v1\.1\.0\]/.test(ecl), 'empty [Unreleased] header retained')
+
+  assert(releaseBranchName('1.1.0', '0.4.0') === 'release/v1.1.0-chart-0.4.0', 'releaseBranchName')
+  assert(
+    releaseCommitMessage('1.1.0', '0.4.0') === 'chore(release): cerberus v1.1.0 / chart 0.4.0',
+    'releaseCommitMessage',
+  )
+  assert(isMaintenanceBranch('release/1.3.x'), 'isMaintenanceBranch accepts release/X.Y.x')
+  assert(isMaintenanceBranch('release/1.3.4.x'), 'isMaintenanceBranch is glob-shaped, not 2-part-only')
+  assert(!isMaintenanceBranch('release/v1.3.0-chart-0.4.0'), 'isMaintenanceBranch rejects a staging branch')
+  assert(!isMaintenanceBranch('main'), 'isMaintenanceBranch rejects main')
 
   console.log('::notice::prepare-release --self-test: all assertions passed')
 }

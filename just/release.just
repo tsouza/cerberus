@@ -21,19 +21,18 @@ release-prep version chart_bump="patch":
     set -euo pipefail
     git fetch origin main
     git switch -c "release/v{{version}}-staging" origin/main
+    outputs="$(mktemp)"
+    trap 'rm -f "$outputs"' EXIT
     VERSION="{{version}}" CHART_BUMP="{{chart_bump}}" PR_BODY_FILE=release-pr-body.md \
+        RENDER_HELM_DOCS=1 GITHUB_OUTPUT="$outputs" \
         node .github/scripts/prepare-release.mjs
-    chart="$(awk '/^version:/{print $2; exit}' deploy/helm/cerberus/Chart.yaml)"
-    docker run --rm -v "$PWD/deploy/helm:/helm-docs" -u "$(id -u)" \
-        jnorwood/helm-docs:v1.14.2 --chart-search-root=/helm-docs --template-files=README.md.gotmpl
-    branch="release/v{{version}}-chart-${chart}"
+    branch="$(grep '^release_branch=' "$outputs" | cut -d= -f2-)"
+    msg="$(grep '^commit_message=' "$outputs" | cut -d= -f2-)"
     git branch -m "$branch"
     git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
-    git commit -m "chore(release): cerberus v{{version}} / chart ${chart}"
+    git commit -m "$msg"
     git push -u origin "$branch"
-    gh pr create --base main --head "$branch" \
-        --title "chore(release): cerberus v{{version}} / chart ${chart}" \
-        --body-file release-pr-body.md
+    gh pr create --base main --head "$branch" --title "$msg" --body-file release-pr-body.md
     echo "Opened release PR on $branch. MERGING it publishes — release.yml runs on push-to-main, gates on the staged version bumps, and creates v{{version}} itself. Do not tag by hand."
 
 # Create/switch to the release/<major>.<minor>.x maintenance line off the
@@ -61,14 +60,14 @@ backport-line minor:
 release-prep-backport version chart_bump="patch":
     #!/usr/bin/env bash
     set -euo pipefail
-    case "$(git rev-parse --abbrev-ref HEAD)" in release/*.x) ;; *) echo "not on a release/X.Y.x maintenance branch"; exit 1;; esac
+    outputs="$(mktemp)"
+    trap 'rm -f "$outputs"' EXIT
     VERSION="{{version}}" CHART_BUMP="{{chart_bump}}" PR_BODY_FILE=release-pr-body.md \
+        RENDER_HELM_DOCS=1 REQUIRE_MAINTENANCE_BRANCH=1 GITHUB_OUTPUT="$outputs" \
         node .github/scripts/prepare-release.mjs
-    chart="$(awk '/^version:/{print $2; exit}' deploy/helm/cerberus/Chart.yaml)"
-    docker run --rm -v "$PWD/deploy/helm:/helm-docs" -u "$(id -u)" \
-        jnorwood/helm-docs:v1.14.2 --chart-search-root=/helm-docs --template-files=README.md.gotmpl
+    msg="$(grep '^commit_message=' "$outputs" | cut -d= -f2-)"
     git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
-    git commit -m "chore(release): cerberus v{{version}} / chart ${chart}"
+    git commit -m "$msg"
     git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
     echo "Pushed v{{version}} to $(git rev-parse --abbrev-ref HEAD) — that push IS the trigger; release.yml builds, publishes, and tags. Do not tag by hand."
 
