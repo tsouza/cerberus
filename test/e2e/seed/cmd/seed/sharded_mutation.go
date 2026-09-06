@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -11,42 +12,51 @@ import (
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// mutationTablePlaceholder marks the table name in the DELETE templates
-// declared in stale.go and showcase_traceql.go — substituted for the
-// resolved mutation target (resolveMutationTarget) via mutationTableSQL
-// below. A dedicated token rather than a fmt.Sprintf %s verb: every one of
-// those templates' TraceId/predicate clauses already contains literal '%'
-// LIKE wildcards, which a %s verb would force into confusing (and
-// regression-test-breaking — see test/regression/seed_test.go's
-// TestShowcaseTraceStaleDeleteIsDataAnchored, which scans the raw source
-// text for a single '%') '%%' escaping. Chosen to be a string no seeded
-// table name, SQL keyword, or LIKE pattern in this package could ever
-// collide with.
+// mutationTablePlaceholder marks the table name in a mutation-family SQL
+// template declared in stale.go/showcase_traceql.go — substituted for the
+// resolved table name via mutationTableSQL below. A dedicated token rather
+// than a fmt.Sprintf %s verb: every one of those templates' TraceId/
+// predicate clauses already contains literal '%' LIKE wildcards, which a
+// %s verb would force into confusing (and regression-test-breaking — see
+// test/regression/seed_test.go's TestShowcaseTraceStaleDeleteIsDataAnchored,
+// which scans the raw source text for a single '%') '%%' escaping. Chosen
+// to be a string no seeded table name, SQL keyword, or LIKE pattern in this
+// package could ever collide with.
+//
+// Each template — the step-A cutoff SELECT and the step-B literal-cutoff
+// ALTER/DELETE alike (see this file's package doc comment for the two-step
+// design, issue #3124) — carries exactly ONE occurrence of this token: a
+// step-A template substitutes it for the PUBLIC table name, a step-B
+// template substitutes it for the resolved mutation target (the "_local"
+// table under the datashard lane). The two statements are substituted
+// independently by two separate mutationTableSQL calls; nothing here ties
+// one template's substitution to the other's the way the old single-
+// statement subquery design once did.
 const mutationTablePlaceholder = "@@MUTATION_TABLE@@"
 
 // mutationOnClusterPlaceholder marks the optional " ON CLUSTER '{cluster}'"
-// clause on the OUTER `ALTER TABLE` line only (never the inner max(...)
-// subquery, which is a plain per-node SELECT) — substituted by
-// resolveMutationTarget's onCluster return value via mutationTableSQL.
-// Empty on every lane except the datashard one; see this file's package
-// doc comment for why ON CLUSTER is what the local-table redirect alone
-// does not fix.
+// clause on a step-B ALTER TABLE/DELETE FROM template — substituted by
+// resolveMutationTarget's onCluster return value via mutationTableSQL. Empty
+// on every lane except the datashard one; see this file's package doc
+// comment for why ON CLUSTER is what the local-table redirect alone does not
+// fix. Never appears in a step-A cutoff SELECT template: that statement is a
+// plain per-node SELECT (mutationTableSQL still erases the token if a
+// template doesn't carry it, so passing onCluster="" for a step-A
+// substitution is always safe).
 const mutationOnClusterPlaceholder = "@@MUTATION_ON_CLUSTER@@"
 
-// mutationTableSQL fills in template's two mutationTablePlaceholder
-// occurrences DIFFERENTLY — the first (the outer ALTER TABLE/DELETE FROM)
-// with target, the second (the inner max(...) subquery's FROM) with
-// publicTable — and mutationOnClusterPlaceholder with onCluster. See this
-// file's package doc comment for why the two occurrences must NOT resolve
-// to the same name once the datashard lane is in play: the outer mutation
-// needs the "_local" table (Distributed doesn't support mutations at all),
-// but the inner max(...) needs the PUBLIC Distributed name, or a
-// low-row-count family whose fresh INSERTs happen not to land on every
-// shard every tick computes a per-shard max() that never advances past a
-// stale sentinel on the shard(s) that got skipped.
-func mutationTableSQL(template, target, publicTable, onCluster string) string {
-	s := strings.Replace(template, mutationTablePlaceholder, target, 1)
-	s = strings.ReplaceAll(s, mutationTablePlaceholder, publicTable)
+// mutationTableSQL fills in template's mutationTablePlaceholder occurrence
+// with table and its mutationOnClusterPlaceholder occurrence (if any) with
+// onCluster. Used for BOTH halves of the two-step literal-cutoff design
+// (issue #3124): once per family for the step-A cutoff SELECT (table =
+// the PUBLIC name, onCluster = "" — a SELECT needs no cluster broadcast),
+// and once per family for the step-B ALTER/DELETE (table = the resolved
+// mutation target, onCluster = resolveMutationTarget's own return value).
+// Earlier revisions of this function filled the (then two-occurrence)
+// placeholder differently for the outer statement vs. the inner max(...)
+// subquery it now replaces; that split is gone along with the subquery.
+func mutationTableSQL(template, table, onCluster string) string {
+	s := strings.ReplaceAll(template, mutationTablePlaceholder, table)
 	return strings.ReplaceAll(s, mutationOnClusterPlaceholder, onCluster)
 }
 
@@ -82,25 +92,47 @@ func mutationTableSQL(template, target, publicTable, onCluster string) string {
 // (main.go) already reads system.tables to learn whether the external
 // schema writer has created a table yet.
 //
-// The redirect alone is not the whole fix. Each DELETE template's inner
-// max(<time column>) subquery anchors the cutoff to "how fresh is the data
-// that's actually here" — but a Distributed table's INSERT spreads rows
-// across shards essentially at random (Config.DataShardingKey, default
-// rand()), so a LOW-row-count family (base-traces' fixed 7-row fixture) can
-// have a tick where NONE of its fresh rows land on a given shard. If the
-// subquery ran against that shard's own "_local" table, its max() would
-// reflect only OLD rows (or nothing newer than the sentinel itself),
-// so the cutoff never advances past a stale/sentinel row on that shard —
-// confirmed live: TestReSeedRowCountStability/base-traces alone (the
-// lowest-row-count family; every higher-volume family's fresh rows are
-// near-certain to land on every shard every tick, masking the same bug)
-// failed on dispatch run 34016653322 after the local-table + ON CLUSTER
-// fix alone. mutationTableSQL therefore targets the subquery at the
-// PUBLIC name instead: a SELECT against a Distributed table (unlike a
-// mutation) is exactly what the engine is FOR, and ClickHouse fans it out
-// and aggregates the true cluster-wide max() regardless of which shard
-// node the ON CLUSTER broadcast happens to be executing this copy of the
-// statement on.
+// The redirect alone is not the whole fix. Every stale-row cutoff — "how
+// fresh is the data that's actually here" — is computed by a
+// max(<time column>) SELECT (resolveStaleCutoff below), and that SELECT
+// must run against the PUBLIC name, never a shard's own "_local" table: a
+// SELECT against a Distributed table (unlike a mutation) is exactly what
+// the engine is FOR, and ClickHouse fans it out and aggregates the true
+// cluster-wide max() regardless of which shard node happens to run it.
+// Anchoring the read at a shard's own "_local" table instead breaks on a
+// LOW-row-count family (base-traces' fixed 7-row fixture): a Distributed
+// table's INSERT spreads rows across shards essentially at random
+// (Config.DataShardingKey, default rand()), so a tick can land NONE of its
+// fresh rows on a given shard, and that shard's own max() would reflect
+// only OLD rows (or nothing newer than the sentinel itself) — confirmed
+// live: TestReSeedRowCountStability/base-traces alone (the lowest-row-count
+// family; every higher-volume family's fresh rows are near-certain to land
+// on every shard every tick, masking the same bug) failed on dispatch run
+// 34016653322 after the local-table + ON CLUSTER fix alone. resolveStaleCutoff
+// therefore always reads the PUBLIC name.
+//
+// Reading the cutoff is now (issue #3124) a SEPARATE statement from the
+// DELETE that consumes it, not a subquery nested inside the mutation.
+// Issue #3105's original design — a live `max(...)` subquery embedded
+// directly in the `ALTER ... DELETE`/`DELETE FROM` — worked against a
+// single, non-replicated "_local" table per shard, but the
+// `datashard-replica-affinity` lane (issue #3086) runs MULTIPLE REPLICAS per
+// data shard, whose "_local" tables are ReplicatedMergeTree-family; ClickHouse
+// rejects a subquery-bearing mutation against a replicated table outright
+// ("ALTER UPDATE/ALTER DELETE statement with subquery may be nondeterministic",
+// code 36) because an `ON CLUSTER` broadcast has every replica of every shard
+// independently re-evaluate the subquery, and two replicas evaluating
+// `max(...)` at slightly different wall-clock moments could disagree on which
+// rows to delete and silently diverge their data. resolveStaleCutoff
+// (this file) runs the `max(...)` SELECT once, client-side, and its caller
+// binds the resulting time.Time as a literal `{cutoff:DateTime64(9)}`
+// parameter on the DELETE — every replica's own copy of the mutation then
+// compares against the exact same fixed value, so no subquery (and no
+// per-replica re-evaluation) survives inside the mutation at all. This
+// removes the nondeterminism ClickHouse's guard rejects by construction,
+// rather than by disabling the guard via allow_nondeterministic_mutations —
+// the guard's own reasoning (real, not a false positive) is left intact for
+// any future mutation that still needs it.
 
 // distributedEngine is the exact system.tables.engine value ClickHouse
 // reports for a Distributed-engine table — the one engine that rejects
@@ -199,4 +231,27 @@ func resolveMutationTarget(ctx context.Context, conn driver.Conn, table string) 
 	target := mutationTargetForEngine(table, engine)
 	shardMutationTargets[table] = target
 	return target, nil
+}
+
+// resolveStaleCutoff runs selectTemplate — a step-A "SELECT max(<time
+// column>) - INTERVAL ... FROM @@MUTATION_TABLE@@ WHERE ..." query, with
+// exactly one mutationTablePlaceholder occurrence and no
+// mutationOnClusterPlaceholder — against publicTable and scans the single
+// resulting value into a time.Time. That value is the literal cutoff every
+// replica of the caller's own step-B ALTER/DELETE compares against (see
+// this file's package doc comment for why resolving it client-side, once,
+// before the mutation is issued removes issue #3124's nondeterminism
+// hazard by construction). Always queries the PUBLIC Distributed name,
+// never the resolved mutation target — see the package doc comment for why
+// a Distributed SELECT is what correctly aggregates the cluster-wide
+// max() regardless of which shard node runs it. selectArgs are forwarded
+// to conn.QueryRow verbatim (most callers bind a {margin:UInt64} parameter
+// alongside the query text).
+func resolveStaleCutoff(ctx context.Context, conn driver.Conn, selectTemplate, publicTable string, selectArgs ...any) (time.Time, error) {
+	sql := mutationTableSQL(selectTemplate, publicTable, "")
+	var cutoff time.Time
+	if err := conn.QueryRow(ctx, sql, selectArgs...).Scan(&cutoff); err != nil {
+		return time.Time{}, fmt.Errorf("resolve stale cutoff: %w", err)
+	}
+	return cutoff, nil
 }

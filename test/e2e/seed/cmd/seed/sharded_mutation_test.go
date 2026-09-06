@@ -64,17 +64,19 @@ func TestMutationTargetForEngineRequiresExactMatch(t *testing.T) {
 	}
 }
 
-// mutationTableSQL is the substitution half of the fix: every DELETE
-// template must carry the placeholder EXACTLY twice (the outer
-// ALTER/DELETE and the inner max(...) subquery's FROM, both pinned to the
-// same resolved table), and mutationTableSQL must replace every
-// occurrence, leaving none of the placeholder text behind. stale.go and
-// showcase_traceql.go type "@@MUTATION_TABLE@@" directly into each
-// template rather than referencing mutationTablePlaceholder by name (see
+// mutationTableSQL is the substitution half of the fix: every step-A
+// cutoff SELECT template must carry the table placeholder EXACTLY once and
+// carry NO ON CLUSTER placeholder (a plain SELECT is never DDL/mutation
+// syntax), and every step-B ALTER/DELETE template must carry the table
+// placeholder EXACTLY once plus the ON CLUSTER placeholder EXACTLY once —
+// mutationTableSQL must replace every occurrence, leaving none of the
+// placeholder text behind. stale.go and showcase_traceql.go type
+// "@@MUTATION_TABLE@@"/"@@MUTATION_ON_CLUSTER@@" directly into each
+// template rather than referencing the placeholder consts by name (see
 // those files' doc comments for why — keeping each const a single
 // unbroken backtick literal for test/regression/seed_test.go's
-// extractBacktickConst), so this test is what actually pins the two
-// literals against each other: it fails the moment either side drifts.
+// extractBacktickConst), so this test is what actually pins the literals
+// against each other: it fails the moment either side drifts.
 func TestMutationTableSQLReplacesEveryTemplatePlaceholder(t *testing.T) {
 	t.Parallel()
 
@@ -84,7 +86,39 @@ func TestMutationTableSQLReplacesEveryTemplatePlaceholder(t *testing.T) {
 		onCluster   = onClusterMutationClause
 	)
 
-	for name, tpl := range map[string]string{
+	selectTemplates := map[string]string{
+		"selectStaleMetricsGaugeCutoffSQLTemplate":     selectStaleMetricsGaugeCutoffSQLTemplate,
+		"selectStaleMetricsSumCutoffSQLTemplate":       selectStaleMetricsSumCutoffSQLTemplate,
+		"selectStaleMetricsHistogramCutoffSQLTemplate": selectStaleMetricsHistogramCutoffSQLTemplate,
+		"selectStaleMetricsExpHistCutoffSQLTemplate":   selectStaleMetricsExpHistCutoffSQLTemplate,
+		"selectStaleLogsCutoffSQLTemplate":             selectStaleLogsCutoffSQLTemplate,
+		"selectStaleBaseTracesCutoffSQLTemplate":       selectStaleBaseTracesCutoffSQLTemplate,
+		"selectStaleShowcaseTracesCutoffSQLTemplate":   selectStaleShowcaseTracesCutoffSQLTemplate,
+	}
+	for name, tpl := range selectTemplates {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			const wantTableOccurrences = 1
+			if got := strings.Count(tpl, mutationTablePlaceholder); got != wantTableOccurrences {
+				t.Fatalf("%s contains %d occurrences of the table placeholder, want %d (a step-A cutoff SELECT substitutes it once, for the PUBLIC table)",
+					name, got, wantTableOccurrences)
+			}
+			if strings.Contains(tpl, mutationOnClusterPlaceholder) {
+				t.Fatalf("%s contains the ON CLUSTER placeholder, want none — a step-A cutoff SELECT is a plain per-node query, never DDL/mutation syntax", name)
+			}
+
+			got := mutationTableSQL(tpl, publicTable, "")
+			if strings.Contains(got, mutationTablePlaceholder) {
+				t.Fatalf("%s: mutationTableSQL left an unsubstituted table placeholder behind: %q", name, got)
+			}
+			if got2 := strings.Count(got, publicTable); got2 != wantTableOccurrences {
+				t.Fatalf("%s: mutationTableSQL produced %d occurrences of %q, want %d", name, got2, publicTable, wantTableOccurrences)
+			}
+		})
+	}
+
+	deleteTemplates := map[string]string{
 		"deleteStaleMetricsGaugeSQLTemplate":     deleteStaleMetricsGaugeSQLTemplate,
 		"deleteStaleMetricsSumSQLTemplate":       deleteStaleMetricsSumSQLTemplate,
 		"deleteStaleMetricsHistogramSQLTemplate": deleteStaleMetricsHistogramSQLTemplate,
@@ -92,83 +126,65 @@ func TestMutationTableSQLReplacesEveryTemplatePlaceholder(t *testing.T) {
 		"deleteStaleLogsSQLTemplate":             deleteStaleLogsSQLTemplate,
 		"deleteStaleBaseTracesSQLTemplate":       deleteStaleBaseTracesSQLTemplate,
 		"deleteStaleShowcaseTracesSQLTemplate":   deleteStaleShowcaseTracesSQLTemplate,
-	} {
+	}
+	for name, tpl := range deleteTemplates {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			const wantTableOccurrences = 2
+			const wantTableOccurrences = 1
 			if got := strings.Count(tpl, mutationTablePlaceholder); got != wantTableOccurrences {
-				t.Fatalf("%s contains %d occurrences of the table placeholder, want %d (one for the outer statement, one for the inner max(...) subquery's FROM)",
+				t.Fatalf("%s contains %d occurrences of the table placeholder, want %d (a step-B ALTER/DELETE substitutes it once, for the resolved mutation target)",
 					name, got, wantTableOccurrences)
 			}
 
 			const wantOnClusterOccurrences = 1
 			if got := strings.Count(tpl, mutationOnClusterPlaceholder); got != wantOnClusterOccurrences {
-				t.Fatalf("%s contains %d occurrences of the ON CLUSTER placeholder, want %d (the outer statement only — the inner max(...) subquery is a plain per-node SELECT)",
-					name, got, wantOnClusterOccurrences)
+				t.Fatalf("%s contains %d occurrences of the ON CLUSTER placeholder, want %d", name, got, wantOnClusterOccurrences)
 			}
 
-			got := mutationTableSQL(tpl, target, publicTable, onCluster)
+			const cutoffBind = "{cutoff:DateTime64(9)}"
+			if !strings.Contains(tpl, cutoffBind) {
+				t.Fatalf("%s: step-B template must bind the literal cutoff as %s — no subquery may survive inside the mutation (issue #3124)", name, cutoffBind)
+			}
+			if strings.Contains(tpl, "SELECT") {
+				t.Fatalf("%s: step-B template must carry no SELECT of its own — the cutoff is resolved by a separate step-A query, never a subquery nested in the mutation (issue #3124)", name)
+			}
+
+			got := mutationTableSQL(tpl, target, onCluster)
 			if strings.Contains(got, mutationTablePlaceholder) {
 				t.Fatalf("%s: mutationTableSQL left an unsubstituted table placeholder behind: %q", name, got)
 			}
 			if strings.Contains(got, mutationOnClusterPlaceholder) {
 				t.Fatalf("%s: mutationTableSQL left an unsubstituted ON CLUSTER placeholder behind: %q", name, got)
 			}
+			if got2 := strings.Count(got, target); got2 != wantTableOccurrences {
+				t.Fatalf("%s: mutationTableSQL produced %d occurrences of %q, want %d", name, got2, target, wantTableOccurrences)
+			}
 			if got2 := strings.Count(got, onCluster); got2 != wantOnClusterOccurrences {
 				t.Fatalf("%s: mutationTableSQL produced %d occurrences of %q, want %d", name, got2, onCluster, wantOnClusterOccurrences)
-			}
-
-			// The outer statement gets `target` (the resolved local table),
-			// the inner max(...) subquery's FROM gets `publicTable` (the
-			// Distributed name, which aggregates correctly across every
-			// shard) — see sharded_mutation.go's package doc comment for
-			// why they must differ. `target` here is `publicTable + "_local"`
-			// (matching real usage), so `publicTable` is a PREFIX of
-			// `target`; search for it strictly after target's own span, not
-			// with a plain strings.Index that would just re-find target's
-			// own leading substring.
-			outerIdx := strings.Index(got, target)
-			if outerIdx == -1 {
-				t.Fatalf("%s: mutationTableSQL did not place the resolved target %q anywhere: %q", name, target, got)
-			}
-			rest := got[outerIdx+len(target):]
-			innerIdx := strings.Index(rest, publicTable)
-			if innerIdx == -1 {
-				t.Fatalf("%s: mutationTableSQL did not place the public table name %q AFTER the resolved target %q: %q",
-					name, publicTable, target, got)
-			}
-			if got2 := strings.Count(rest, publicTable); got2 != 1 {
-				t.Fatalf("%s: mutationTableSQL produced %d occurrences of the public table name %q after the outer target, want exactly 1", name, got2, publicTable)
-			}
-
-			// The ON CLUSTER clause must land on the OUTER statement, before
-			// the inner subquery's FROM — never inside the subquery, which
-			// would be invalid SQL (ON CLUSTER is DDL/mutation syntax, not
-			// valid on a plain SELECT).
-			if idx := strings.Index(got, onCluster); idx == -1 || idx > strings.Index(got, "SELECT") {
-				t.Fatalf("%s: ON CLUSTER clause did not land before the inner SELECT: %q", name, got)
 			}
 		})
 	}
 }
 
 // resolveMutationTarget's caller-visible behavior when NOT sharded (empty
-// onCluster, target == publicTable) must leave the DELETE unchanged in
-// shape — mutationTableSQL with an empty onCluster simply erases the
-// placeholder rather than leaving a stray space or empty ON CLUSTER token
-// behind, and both placeholder occurrences resolve to the SAME table name.
+// onCluster) must leave the DELETE unchanged in shape — mutationTableSQL
+// with an empty onCluster simply erases the placeholder rather than
+// leaving a stray space or empty ON CLUSTER token behind.
 func TestMutationTableSQLEmptyOnClusterLeavesNoStrayToken(t *testing.T) {
 	t.Parallel()
 
-	got := mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, "otel_metrics_gauge", "otel_metrics_gauge", "")
+	got := mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, "otel_metrics_gauge", "")
 	if strings.Contains(got, "ON CLUSTER") {
 		t.Fatalf("empty onCluster left an ON CLUSTER token behind: %q", got)
 	}
 	if !strings.Contains(got, "ALTER TABLE otel_metrics_gauge DELETE") {
 		t.Fatalf("expected the unsharded ALTER TABLE shape to be preserved verbatim, got: %q", got)
 	}
-	if got2 := strings.Count(got, "otel_metrics_gauge"); got2 != 2 {
-		t.Fatalf("expected exactly 2 occurrences of otel_metrics_gauge (outer + inner, both unredirected), got %d: %q", got2, got)
+	if got2 := strings.Count(got, "otel_metrics_gauge"); got2 != 1 {
+		t.Fatalf("expected exactly 1 occurrence of otel_metrics_gauge (the outer target; no inner subquery survives post-#3124), got %d: %q", got2, got)
+	}
+	if !strings.Contains(got, "{cutoff:DateTime64(9)}") {
+		t.Fatalf("expected the literal cutoff bind parameter to survive mutationTableSQL untouched: %q", got)
 	}
 }

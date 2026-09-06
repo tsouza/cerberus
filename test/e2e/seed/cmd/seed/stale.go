@@ -117,7 +117,7 @@ var (
 )
 
 // Stale-row DELETEs, one per table these fixtures write to. Each scopes
-// both the outer DELETE and the max(<time column>) subquery to the
+// both the step-A cutoff SELECT and the step-B DELETE to the
 // MetricName/ServiceName/TraceId set this seeder owns in that table —
 // the time column itself is NOT uniform across tables: the OTel-CH
 // exporter's schema names it `TimeUnix` on every otel_metrics_* table
@@ -128,11 +128,15 @@ var (
 // use TimeUnix; the logs/base-traces DELETEs after them use Timestamp —
 // unscoped would either eat rows the dogfood self-telemetry pipeline
 // wrote into the same table (see showcase_traceql.go / showcase_logql.go
-// doc comments) or anchor the cutoff on foreign rows. The margin is a
-// bound query parameter (`{margin:UInt64}`), not a literal, so it stays
-// in lockstep with the Go-side staleMargin() computation above — the
-// same `{name:Type}` parameter binding already used by
-// compatibility/prometheus/cmd/seed/main.go.
+// doc comments) or anchor the cutoff on foreign rows. Both DateTime64(9)
+// columns (see internal/schema/ddl/ddl.go's column-codec comments) accept
+// a Go time.Time directly via clickhouse-go v2's native driver — the type
+// resolveStaleCutoff (sharded_mutation.go) scans the SELECT's result into,
+// and every step-B template below binds back as {cutoff:DateTime64(9)}.
+// The margin is a bound query parameter on the step-A SELECT
+// (`{margin:UInt64}`), not a literal, so it stays in lockstep with the
+// Go-side staleMargin() computation above — the same `{name:Type}`
+// parameter binding already used by compatibility/prometheus/cmd/seed/main.go.
 // Public table names the DELETEs below target. Declared once so
 // deleteStaleMetrics/-Logs/-BaseTraces (which call resolveMutationTarget
 // against exactly these names) and showcase_traceql.go's own
@@ -146,23 +150,32 @@ const (
 	tracesTable           = "otel_traces"
 )
 
-// Every template below carries exactly two occurrences of the literal
-// text "@@MUTATION_TABLE@@" (mutationTablePlaceholder's value,
-// sharded_mutation.go) marking the table to mutate — the outer ALTER
-// TABLE and the inner max(...) subquery's FROM — substituted at call time
-// via mutationTableSQL/resolveMutationTarget rather than baked in as a
-// literal table name. Both occurrences must name the SAME physical table:
-// under the datashard lane (issue #3105) the resolved name is the
-// "_local" table, never the Distributed public name, which rejects every
-// mutation (see sharded_mutation.go's package doc comment). A single
-// further occurrence of "@@MUTATION_ON_CLUSTER@@" sits directly after the
-// FIRST @@MUTATION_TABLE@@ (the outer statement only, never the inner
-// SELECT) — empty outside the datashard lane, " ON CLUSTER '{cluster}'"
-// within it, needed because a "_local" table's mutation must reach every
-// shard's own copy, not just the node the seeder is connected to.
+// Every family below is two separate templates (issue #3124's two-step
+// literal-cutoff split — see sharded_mutation.go's package doc comment for
+// the full replica-divergence hazard this avoids): a step-A cutoff SELECT
+// run once against the PUBLIC table to resolve `max(<time column>) -
+// margin` to a literal time.Time (resolveStaleCutoff, sharded_mutation.go),
+// and a step-B ALTER TABLE ... DELETE that binds that literal as
+// `{cutoff:DateTime64(9)}` — no subquery survives inside the mutation, so
+// every replica's own copy of the ALTER compares against the exact same
+// fixed value.
+//
+// Each template carries exactly ONE occurrence of the literal text
+// "@@MUTATION_TABLE@@" (mutationTablePlaceholder's value,
+// sharded_mutation.go): a step-A template substitutes it for the PUBLIC
+// table name (a SELECT against a Distributed table aggregates cluster-wide
+// regardless of which node runs it — see sharded_mutation.go), a step-B
+// template substitutes it for the resolved mutation target (the "_local"
+// table under the datashard lane, since a Distributed table rejects every
+// mutation outright). A step-B template also carries one occurrence of
+// "@@MUTATION_ON_CLUSTER@@" — empty outside the datashard lane, "
+// ON CLUSTER '{cluster}'" within it, needed because a "_local" table's
+// mutation must reach every shard's own copy, not just the node the seeder
+// is connected to; a step-A template carries no such placeholder, since a
+// plain SELECT needs no cluster broadcast.
 //
 // The placeholder is typed directly into each backtick string rather than
-// built by concatenating three separate backtick-quoted segments around
+// built by concatenating separate backtick-quoted segments around
 // mutationTablePlaceholder, for two reasons: it keeps each const a single
 // unbroken backtick literal (test/regression/seed_test.go's
 // extractBacktickConst scans exactly one backtick-delimited span per const
@@ -172,53 +185,53 @@ const (
 // (deleteStaleBaseTracesSQLTemplate below, deleteStaleShowcaseTracesSQLTemplate
 // in showcase_traceql.go).
 const (
+	selectStaleMetricsGaugeCutoffSQLTemplate = `SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
+FROM @@MUTATION_TABLE@@
+WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')`
+
 	deleteStaleMetricsGaugeSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')
-  AND TimeUnix < (
-    SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
-    FROM @@MUTATION_TABLE@@
-    WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')
-  )`
+  AND TimeUnix < {cutoff:DateTime64(9)}`
+
+	selectStaleMetricsSumCutoffSQLTemplate = `SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
+FROM @@MUTATION_TABLE@@
+WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')`
 
 	deleteStaleMetricsSumSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')
-  AND TimeUnix < (
-    SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
-    FROM @@MUTATION_TABLE@@
-    WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')
-  )`
+  AND TimeUnix < {cutoff:DateTime64(9)}`
+
+	selectStaleMetricsHistogramCutoffSQLTemplate = `SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
+FROM @@MUTATION_TABLE@@
+WHERE MetricName = 'http_server_request_duration'`
 
 	deleteStaleMetricsHistogramSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE MetricName = 'http_server_request_duration'
-  AND TimeUnix < (
-    SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
-    FROM @@MUTATION_TABLE@@
-    WHERE MetricName = 'http_server_request_duration'
-  )`
+  AND TimeUnix < {cutoff:DateTime64(9)}`
+
+	selectStaleMetricsExpHistCutoffSQLTemplate = `SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
+FROM @@MUTATION_TABLE@@
+WHERE MetricName = 'showcase_latency_exp_hist'`
 
 	deleteStaleMetricsExpHistSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE MetricName = 'showcase_latency_exp_hist'
-  AND TimeUnix < (
-    SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
-    FROM @@MUTATION_TABLE@@
-    WHERE MetricName = 'showcase_latency_exp_hist'
-  )`
+  AND TimeUnix < {cutoff:DateTime64(9)}`
+
+	selectStaleLogsCutoffSQLTemplate = `SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
+FROM @@MUTATION_TABLE@@
+WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'painter', 'packer')`
 
 	deleteStaleLogsSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'painter', 'packer')
-  AND Timestamp < (
-    SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
-    FROM @@MUTATION_TABLE@@
-    WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'painter', 'packer')
-  )`
+  AND Timestamp < {cutoff:DateTime64(9)}`
+
+	selectStaleBaseTracesCutoffSQLTemplate = `SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
+FROM @@MUTATION_TABLE@@
+WHERE TraceId LIKE 'a00000000000000000000000000000%'`
 
 	deleteStaleBaseTracesSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE TraceId LIKE 'a00000000000000000000000000000%'
-  AND Timestamp < (
-    SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
-    FROM @@MUTATION_TABLE@@
-    WHERE TraceId LIKE 'a00000000000000000000000000000%'
-  )`
+  AND Timestamp < {cutoff:DateTime64(9)}`
 )
 
 // Every DELETE below is written as `ALTER TABLE ... DELETE WHERE ...` (a
@@ -273,52 +286,44 @@ func staleDeleteContext(ctx context.Context) context.Context {
 	}))
 }
 
+// deleteStaleFamily runs one fixture family's two-step literal-cutoff
+// stale-row DELETE (issue #3124): step A calls resolveStaleCutoff
+// (sharded_mutation.go) with selectTemplate against publicTable, binding
+// margin as selectTemplate's {margin:UInt64} parameter, to resolve the
+// cutoff to a literal time.Time; step B execs deleteTemplate — with that
+// time.Time bound as {cutoff:DateTime64(9)} — against the resolved
+// mutation target (resolveMutationTarget), wrapped in staleDeleteContext
+// so the DELETE stays synchronous. Under the datashard lane (issue #3105)
+// publicTable's resolved mutation target is the underlying "_local" table,
+// since the Distributed public name itself rejects every mutation.
+func deleteStaleFamily(ctx context.Context, conn driver.Conn, publicTable, selectTemplate, deleteTemplate string, margin time.Duration) error {
+	target, err := resolveMutationTarget(ctx, conn, publicTable)
+	if err != nil {
+		return err
+	}
+	cutoff, err := resolveStaleCutoff(ctx, conn, selectTemplate, publicTable, clickhouse.Named("margin", marginSeconds(margin)))
+	if err != nil {
+		return err
+	}
+	sql := mutationTableSQL(deleteTemplate, target.table, target.onCluster)
+	return conn.Exec(staleDeleteContext(ctx), sql, clickhouse.Named("cutoff", cutoff))
+}
+
 // deleteStaleMetrics prunes previous-tick rows from every metrics table
 // insertMetrics writes to. Called after all of insertMetrics' INSERTs
 // have landed, so — like deleteStaleShowcaseTracesSQL — readers never
 // observe an empty or partially-deleted window.
-//
-// Each DELETE resolves its actual mutation target via
-// resolveMutationTarget (sharded_mutation.go) before formatting the
-// template: under the datashard lane (issue #3105) the public table name
-// is a Distributed wrapper that rejects every mutation, and the resolved
-// name is the underlying "_local" table instead.
 func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
-	ctx = staleDeleteContext(ctx)
-
-	gaugeTarget, err := resolveMutationTarget(ctx, conn, metricsGaugeTable)
-	if err != nil {
+	if err := deleteStaleFamily(ctx, conn, metricsGaugeTable, selectStaleMetricsGaugeCutoffSQLTemplate, deleteStaleMetricsGaugeSQLTemplate, metricsNarrowStaleMargin); err != nil {
 		return fmt.Errorf("gauge-shaped metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, gaugeTarget.table, metricsGaugeTable, gaugeTarget.onCluster),
-		clickhouse.Named("margin", marginSeconds(metricsNarrowStaleMargin))); err != nil {
-		return fmt.Errorf("gauge-shaped metrics stale delete: %w", err)
-	}
-
-	sumTarget, err := resolveMutationTarget(ctx, conn, metricsSumTable)
-	if err != nil {
+	if err := deleteStaleFamily(ctx, conn, metricsSumTable, selectStaleMetricsSumCutoffSQLTemplate, deleteStaleMetricsSumSQLTemplate, metricsWideStaleMargin); err != nil {
 		return fmt.Errorf("sum metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsSumSQLTemplate, sumTarget.table, metricsSumTable, sumTarget.onCluster),
-		clickhouse.Named("margin", marginSeconds(metricsWideStaleMargin))); err != nil {
-		return fmt.Errorf("sum metrics stale delete: %w", err)
-	}
-
-	histogramTarget, err := resolveMutationTarget(ctx, conn, metricsHistogramTable)
-	if err != nil {
+	if err := deleteStaleFamily(ctx, conn, metricsHistogramTable, selectStaleMetricsHistogramCutoffSQLTemplate, deleteStaleMetricsHistogramSQLTemplate, metricsWideStaleMargin); err != nil {
 		return fmt.Errorf("histogram metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsHistogramSQLTemplate, histogramTarget.table, metricsHistogramTable, histogramTarget.onCluster),
-		clickhouse.Named("margin", marginSeconds(metricsWideStaleMargin))); err != nil {
-		return fmt.Errorf("histogram metrics stale delete: %w", err)
-	}
-
-	expHistTarget, err := resolveMutationTarget(ctx, conn, metricsExpHistTable)
-	if err != nil {
-		return fmt.Errorf("exponential histogram metrics stale delete: %w", err)
-	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsExpHistSQLTemplate, expHistTarget.table, metricsExpHistTable, expHistTarget.onCluster),
-		clickhouse.Named("margin", marginSeconds(metricsNarrowStaleMargin))); err != nil {
+	if err := deleteStaleFamily(ctx, conn, metricsExpHistTable, selectStaleMetricsExpHistCutoffSQLTemplate, deleteStaleMetricsExpHistSQLTemplate, metricsNarrowStaleMargin); err != nil {
 		return fmt.Errorf("exponential histogram metrics stale delete: %w", err)
 	}
 	return nil
@@ -330,12 +335,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 // them). Called after both insertLogsSQL and insertShowcaseLogQLLogs
 // have landed.
 func deleteStaleLogs(ctx context.Context, conn driver.Conn) error {
-	target, err := resolveMutationTarget(ctx, conn, logsTable)
-	if err != nil {
-		return fmt.Errorf("logs stale delete: %w", err)
-	}
-	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleLogsSQLTemplate, target.table, logsTable, target.onCluster),
-		clickhouse.Named("margin", marginSeconds(logsStaleMargin))); err != nil {
+	if err := deleteStaleFamily(ctx, conn, logsTable, selectStaleLogsCutoffSQLTemplate, deleteStaleLogsSQLTemplate, logsStaleMargin); err != nil {
 		return fmt.Errorf("logs stale delete: %w", err)
 	}
 	return nil
@@ -347,12 +347,7 @@ func deleteStaleLogs(ctx context.Context, conn driver.Conn) error {
 // scoped separately so the two margins, sized for very different
 // windows, never interact).
 func deleteStaleBaseTraces(ctx context.Context, conn driver.Conn) error {
-	target, err := resolveMutationTarget(ctx, conn, tracesTable)
-	if err != nil {
-		return fmt.Errorf("base traces stale delete: %w", err)
-	}
-	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleBaseTracesSQLTemplate, target.table, tracesTable, target.onCluster),
-		clickhouse.Named("margin", marginSeconds(tracesStaleMargin))); err != nil {
+	if err := deleteStaleFamily(ctx, conn, tracesTable, selectStaleBaseTracesCutoffSQLTemplate, deleteStaleBaseTracesSQLTemplate, tracesStaleMargin); err != nil {
 		return fmt.Errorf("base traces stale delete: %w", err)
 	}
 	return nil
