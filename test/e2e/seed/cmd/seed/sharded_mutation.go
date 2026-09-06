@@ -24,14 +24,24 @@ import (
 // collide with.
 const mutationTablePlaceholder = "@@MUTATION_TABLE@@"
 
+// mutationOnClusterPlaceholder marks the optional " ON CLUSTER '{cluster}'"
+// clause on the OUTER `ALTER TABLE` line only (never the inner max(...)
+// subquery, which is a plain per-node SELECT) — substituted by
+// resolveMutationTarget's onCluster return value via mutationTableSQL.
+// Empty on every lane except the datashard one; see this file's package
+// doc comment for why ON CLUSTER is what the local-table redirect alone
+// does not fix.
+const mutationOnClusterPlaceholder = "@@MUTATION_ON_CLUSTER@@"
+
 // mutationTableSQL substitutes every occurrence of mutationTablePlaceholder
-// in template with target. Each DELETE template carries the placeholder
-// twice (the outer ALTER TABLE/DELETE FROM and the inner max(...)
-// subquery's FROM), and both must resolve to the same table — see this
-// file's package doc comment for why the resolved name can differ from the
-// table's public name.
-func mutationTableSQL(template, target string) string {
-	return strings.ReplaceAll(template, mutationTablePlaceholder, target)
+// in template with target, and mutationOnClusterPlaceholder with onCluster.
+// Each DELETE template carries mutationTablePlaceholder twice (the outer
+// ALTER TABLE/DELETE FROM and the inner max(...) subquery's FROM), and both
+// must resolve to the same table — see this file's package doc comment for
+// why the resolved name can differ from the table's public name.
+func mutationTableSQL(template, target, onCluster string) string {
+	s := strings.ReplaceAll(template, mutationTablePlaceholder, target)
+	return strings.ReplaceAll(s, mutationOnClusterPlaceholder, onCluster)
 }
 
 // Mutation-target resolution for the DATA-shard topology (issue #3077).
@@ -71,6 +81,35 @@ func mutationTableSQL(template, target string) string {
 // every mutation the DELETEs in this package issue.
 const distributedEngine = "Distributed"
 
+// onClusterMacro is ClickHouse's own `{cluster}` macro, expanded
+// server-side from system.macros — the same self-discovery mechanism
+// internal/schema/ddl's own ON CLUSTER DDL and the chart's macros ConfigMap
+// (deploy/helm/cerberus/templates/clickhouse/configmap-config.yaml,
+// `<macros><cluster>bwc_cluster</cluster></macros>`) already rely on. Using
+// the macro rather than a literal cluster name means this file needs no new
+// knowledge of what the datashard lane's cluster is actually called, and
+// stays correct if that name ever changes.
+//
+// A "_local" table is created ON CLUSTER (ddl.go's dataShardLocalConfig /
+// renderDataShardedSignal) so it exists, identically named, on every shard
+// node — an ALTER ... DELETE issued only against the ONE node the seeder is
+// connected to would silently mutate just that node's own fraction of the
+// sharded data, leaving stale rows on every OTHER shard (confirmed live:
+// TestReSeedRowCountStability failed for exactly the tables whose insert
+// path spreads rows across shards, on dispatch run 34015811450 — the local-
+// table redirect alone got the mutation to succeed, but only partially).
+// ON CLUSTER broadcasts the ALTER to every node via ClickHouse's own
+// distributed-DDL queue, each executing it against its own local data.
+const onClusterMutationClause = " ON CLUSTER '{cluster}'"
+
+// shardMutationTarget is what resolveMutationTarget resolves a public table
+// name to: the table to actually mutate, plus the ON CLUSTER clause (empty
+// outside the datashard lane) needed to reach every shard's copy of it.
+type shardMutationTarget struct {
+	table     string
+	onCluster string
+}
+
 // shardMutationTargets memoizes resolveMutationTarget's system.tables
 // lookups for the life of one seeder process. Whether a given public table
 // name is a Distributed wrapper is fixed by Config.DataShardCount at
@@ -85,21 +124,22 @@ const distributedEngine = "Distributed"
 // from a single goroutine, never concurrently, so a bare map needs no
 // lock. A future caller that drives seedAll from multiple goroutines would
 // need to add one.
-var shardMutationTargets = make(map[string]string)
+var shardMutationTargets = make(map[string]shardMutationTarget)
 
-// mutationTargetForEngine returns the table name a DELETE against table
-// should actually target, given engine — table's system.tables.engine
-// value. A Distributed wrapper redirects to its ddl.DataShardLocalSuffix
-// companion; every other engine (MergeTree, ReplicatedMergeTree,
-// ReplacingMergeTree, ...) is already the real storage table and is
-// returned unchanged. Pure and independent of any live connection, so it
-// is unit-testable directly against fabricated engine strings (see
-// sharded_mutation_test.go).
-func mutationTargetForEngine(table, engine string) string {
+// mutationTargetForEngine returns the table (and ON CLUSTER clause, if any)
+// a DELETE against table should actually target, given engine — table's
+// system.tables.engine value. A Distributed wrapper redirects to its
+// ddl.DataShardLocalSuffix companion and needs ON CLUSTER to reach every
+// shard's copy of it; every other engine (MergeTree, ReplicatedMergeTree,
+// ReplacingMergeTree, ...) is already the real, single-node storage table
+// and is returned unchanged with no ON CLUSTER clause. Pure and independent
+// of any live connection, so it is unit-testable directly against
+// fabricated engine strings (see sharded_mutation_test.go).
+func mutationTargetForEngine(table, engine string) shardMutationTarget {
 	if engine == distributedEngine {
-		return table + ddl.DataShardLocalSuffix
+		return shardMutationTarget{table: table + ddl.DataShardLocalSuffix, onCluster: onClusterMutationClause}
 	}
-	return table
+	return shardMutationTarget{table: table}
 }
 
 // tableEngine looks up table's engine in system.tables. Scoped to
@@ -117,18 +157,18 @@ func tableEngine(ctx context.Context, conn driver.Conn, table string) (string, e
 	return engine, nil
 }
 
-// resolveMutationTarget returns the table name a stale-row DELETE against
-// the public table name `table` should actually target — see this file's
-// package doc comment for the Distributed/local mechanism. Memoized in
-// shardMutationTargets so only the first call per table name on a given
-// process ever queries system.tables.
-func resolveMutationTarget(ctx context.Context, conn driver.Conn, table string) (string, error) {
+// resolveMutationTarget returns the table (and ON CLUSTER clause, if any) a
+// stale-row DELETE against the public table name `table` should actually
+// target — see this file's package doc comment for the Distributed/local/
+// ON CLUSTER mechanism. Memoized in shardMutationTargets so only the first
+// call per table name on a given process ever queries system.tables.
+func resolveMutationTarget(ctx context.Context, conn driver.Conn, table string) (shardMutationTarget, error) {
 	if target, ok := shardMutationTargets[table]; ok {
 		return target, nil
 	}
 	engine, err := tableEngine(ctx, conn, table)
 	if err != nil {
-		return "", err
+		return shardMutationTarget{}, err
 	}
 	target := mutationTargetForEngine(table, engine)
 	shardMutationTargets[table] = target

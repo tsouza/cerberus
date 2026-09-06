@@ -154,7 +154,12 @@ const (
 // literal table name. Both occurrences must name the SAME physical table:
 // under the datashard lane (issue #3105) the resolved name is the
 // "_local" table, never the Distributed public name, which rejects every
-// mutation (see sharded_mutation.go's package doc comment).
+// mutation (see sharded_mutation.go's package doc comment). A single
+// further occurrence of "@@MUTATION_ON_CLUSTER@@" sits directly after the
+// FIRST @@MUTATION_TABLE@@ (the outer statement only, never the inner
+// SELECT) — empty outside the datashard lane, " ON CLUSTER '{cluster}'"
+// within it, needed because a "_local" table's mutation must reach every
+// shard's own copy, not just the node the seeder is connected to.
 //
 // The placeholder is typed directly into each backtick string rather than
 // built by concatenating three separate backtick-quoted segments around
@@ -167,7 +172,7 @@ const (
 // (deleteStaleBaseTracesSQLTemplate below, deleteStaleShowcaseTracesSQLTemplate
 // in showcase_traceql.go).
 const (
-	deleteStaleMetricsGaugeSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@ DELETE
+	deleteStaleMetricsGaugeSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')
   AND TimeUnix < (
     SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
@@ -175,7 +180,7 @@ WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multila
     WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')
   )`
 
-	deleteStaleMetricsSumSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@ DELETE
+	deleteStaleMetricsSumSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')
   AND TimeUnix < (
     SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
@@ -183,7 +188,7 @@ WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_
     WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')
   )`
 
-	deleteStaleMetricsHistogramSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@ DELETE
+	deleteStaleMetricsHistogramSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE MetricName = 'http_server_request_duration'
   AND TimeUnix < (
     SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
@@ -191,7 +196,7 @@ WHERE MetricName = 'http_server_request_duration'
     WHERE MetricName = 'http_server_request_duration'
   )`
 
-	deleteStaleMetricsExpHistSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@ DELETE
+	deleteStaleMetricsExpHistSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE MetricName = 'showcase_latency_exp_hist'
   AND TimeUnix < (
     SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
@@ -199,7 +204,7 @@ WHERE MetricName = 'showcase_latency_exp_hist'
     WHERE MetricName = 'showcase_latency_exp_hist'
   )`
 
-	deleteStaleLogsSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@ DELETE
+	deleteStaleLogsSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'painter', 'packer')
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
@@ -207,7 +212,7 @@ WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'pain
     WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'painter', 'packer')
   )`
 
-	deleteStaleBaseTracesSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@ DELETE
+	deleteStaleBaseTracesSQLTemplate = `ALTER TABLE @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@ DELETE
 WHERE TraceId LIKE 'a00000000000000000000000000000%'
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
@@ -285,7 +290,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("gauge-shaped metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, gaugeTarget),
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, gaugeTarget.table, gaugeTarget.onCluster),
 		clickhouse.Named("margin", marginSeconds(metricsNarrowStaleMargin))); err != nil {
 		return fmt.Errorf("gauge-shaped metrics stale delete: %w", err)
 	}
@@ -294,7 +299,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("sum metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsSumSQLTemplate, sumTarget),
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsSumSQLTemplate, sumTarget.table, sumTarget.onCluster),
 		clickhouse.Named("margin", marginSeconds(metricsWideStaleMargin))); err != nil {
 		return fmt.Errorf("sum metrics stale delete: %w", err)
 	}
@@ -303,7 +308,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("histogram metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsHistogramSQLTemplate, histogramTarget),
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsHistogramSQLTemplate, histogramTarget.table, histogramTarget.onCluster),
 		clickhouse.Named("margin", marginSeconds(metricsWideStaleMargin))); err != nil {
 		return fmt.Errorf("histogram metrics stale delete: %w", err)
 	}
@@ -312,7 +317,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("exponential histogram metrics stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsExpHistSQLTemplate, expHistTarget),
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleMetricsExpHistSQLTemplate, expHistTarget.table, expHistTarget.onCluster),
 		clickhouse.Named("margin", marginSeconds(metricsNarrowStaleMargin))); err != nil {
 		return fmt.Errorf("exponential histogram metrics stale delete: %w", err)
 	}
@@ -329,7 +334,7 @@ func deleteStaleLogs(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("logs stale delete: %w", err)
 	}
-	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleLogsSQLTemplate, target),
+	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleLogsSQLTemplate, target.table, target.onCluster),
 		clickhouse.Named("margin", marginSeconds(logsStaleMargin))); err != nil {
 		return fmt.Errorf("logs stale delete: %w", err)
 	}
@@ -346,7 +351,7 @@ func deleteStaleBaseTraces(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("base traces stale delete: %w", err)
 	}
-	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleBaseTracesSQLTemplate, target),
+	if err := conn.Exec(staleDeleteContext(ctx), mutationTableSQL(deleteStaleBaseTracesSQLTemplate, target.table, target.onCluster),
 		clickhouse.Named("margin", marginSeconds(tracesStaleMargin))); err != nil {
 		return fmt.Errorf("base traces stale delete: %w", err)
 	}

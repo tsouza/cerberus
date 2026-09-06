@@ -160,7 +160,7 @@ VALUES
 // LIKE 'b00...%' wildcard below byte-identical to what it was before this
 // const learned to target a resolved table name (no fmt.Sprintf
 // %%-escaping).
-const deleteStaleShowcaseTracesSQLTemplate = `DELETE FROM @@MUTATION_TABLE@@
+const deleteStaleShowcaseTracesSQLTemplate = `DELETE FROM @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@
 WHERE TraceId LIKE 'b00000000000000000000000000000%'
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL 20 SECOND
@@ -182,7 +182,7 @@ func insertShowcaseTraces(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("showcase traces stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleShowcaseTracesSQLTemplate, target)); err != nil {
+	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleShowcaseTracesSQLTemplate, target.table, target.onCluster)); err != nil {
 		return fmt.Errorf("showcase traces stale delete: %w", err)
 	}
 	return nil

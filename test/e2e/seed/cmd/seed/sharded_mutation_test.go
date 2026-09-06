@@ -21,20 +21,25 @@ func TestMutationTargetForEngine(t *testing.T) {
 	const table = "otel_metrics_gauge"
 
 	for _, tc := range []struct {
-		name   string
-		engine string
-		want   string
+		name          string
+		engine        string
+		wantTable     string
+		wantOnCluster string
 	}{
-		{"Distributed wrapper redirects to the local table", "Distributed", table + ddl.DataShardLocalSuffix},
-		{"MergeTree is already the storage table", "MergeTree", table},
-		{"ReplicatedMergeTree is already the storage table", "ReplicatedMergeTree", table},
-		{"ReplacingMergeTree is already the storage table", "ReplacingMergeTree", table},
-		{"ReplicatedReplacingMergeTree is already the storage table", "ReplicatedReplacingMergeTree", table},
+		{"Distributed wrapper redirects to the local table, ON CLUSTER", "Distributed", table + ddl.DataShardLocalSuffix, onClusterMutationClause},
+		{"MergeTree is already the storage table, no ON CLUSTER", "MergeTree", table, ""},
+		{"ReplicatedMergeTree is already the storage table, no ON CLUSTER", "ReplicatedMergeTree", table, ""},
+		{"ReplacingMergeTree is already the storage table, no ON CLUSTER", "ReplacingMergeTree", table, ""},
+		{"ReplicatedReplacingMergeTree is already the storage table, no ON CLUSTER", "ReplicatedReplacingMergeTree", table, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := mutationTargetForEngine(table, tc.engine); got != tc.want {
-				t.Fatalf("mutationTargetForEngine(%q, %q) = %q, want %q", table, tc.engine, got, tc.want)
+			got := mutationTargetForEngine(table, tc.engine)
+			if got.table != tc.wantTable {
+				t.Fatalf("mutationTargetForEngine(%q, %q).table = %q, want %q", table, tc.engine, got.table, tc.wantTable)
+			}
+			if got.onCluster != tc.wantOnCluster {
+				t.Fatalf("mutationTargetForEngine(%q, %q).onCluster = %q, want %q", table, tc.engine, got.onCluster, tc.wantOnCluster)
 			}
 		})
 	}
@@ -49,8 +54,12 @@ func TestMutationTargetForEngineRequiresExactMatch(t *testing.T) {
 
 	const table = "otel_logs"
 	for _, engine := range []string{"distributed", "DISTRIBUTED", "DistributedMergeTree", " Distributed", "Distributed "} {
-		if got := mutationTargetForEngine(table, engine); got != table {
-			t.Fatalf("mutationTargetForEngine(%q, %q) = %q, want the unredirected table name %q", table, engine, got, table)
+		got := mutationTargetForEngine(table, engine)
+		if got.table != table {
+			t.Fatalf("mutationTargetForEngine(%q, %q).table = %q, want the unredirected table name %q", table, engine, got.table, table)
+		}
+		if got.onCluster != "" {
+			t.Fatalf("mutationTargetForEngine(%q, %q).onCluster = %q, want empty", table, engine, got.onCluster)
 		}
 	}
 }
@@ -69,7 +78,10 @@ func TestMutationTargetForEngineRequiresExactMatch(t *testing.T) {
 func TestMutationTableSQLReplacesEveryTemplatePlaceholder(t *testing.T) {
 	t.Parallel()
 
-	const target = "otel_metrics_gauge_local"
+	const (
+		target    = "otel_metrics_gauge_local"
+		onCluster = onClusterMutationClause
+	)
 
 	for name, tpl := range map[string]string{
 		"deleteStaleMetricsGaugeSQLTemplate":     deleteStaleMetricsGaugeSQLTemplate,
@@ -83,19 +95,55 @@ func TestMutationTableSQLReplacesEveryTemplatePlaceholder(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			const wantOccurrences = 2
-			if got := strings.Count(tpl, mutationTablePlaceholder); got != wantOccurrences {
-				t.Fatalf("%s contains %d occurrences of the placeholder, want %d (one for the outer statement, one for the inner max(...) subquery's FROM)",
-					name, got, wantOccurrences)
+			const wantTableOccurrences = 2
+			if got := strings.Count(tpl, mutationTablePlaceholder); got != wantTableOccurrences {
+				t.Fatalf("%s contains %d occurrences of the table placeholder, want %d (one for the outer statement, one for the inner max(...) subquery's FROM)",
+					name, got, wantTableOccurrences)
 			}
 
-			got := mutationTableSQL(tpl, target)
-			if strings.Contains(got, mutationTablePlaceholder) {
-				t.Fatalf("%s: mutationTableSQL left an unsubstituted placeholder behind: %q", name, got)
+			const wantOnClusterOccurrences = 1
+			if got := strings.Count(tpl, mutationOnClusterPlaceholder); got != wantOnClusterOccurrences {
+				t.Fatalf("%s contains %d occurrences of the ON CLUSTER placeholder, want %d (the outer statement only — the inner max(...) subquery is a plain per-node SELECT)",
+					name, got, wantOnClusterOccurrences)
 			}
-			if got2 := strings.Count(got, target); got2 != wantOccurrences {
-				t.Fatalf("%s: mutationTableSQL produced %d occurrences of %q, want %d", name, got2, target, wantOccurrences)
+
+			got := mutationTableSQL(tpl, target, onCluster)
+			if strings.Contains(got, mutationTablePlaceholder) {
+				t.Fatalf("%s: mutationTableSQL left an unsubstituted table placeholder behind: %q", name, got)
+			}
+			if strings.Contains(got, mutationOnClusterPlaceholder) {
+				t.Fatalf("%s: mutationTableSQL left an unsubstituted ON CLUSTER placeholder behind: %q", name, got)
+			}
+			if got2 := strings.Count(got, target); got2 != wantTableOccurrences {
+				t.Fatalf("%s: mutationTableSQL produced %d occurrences of %q, want %d", name, got2, target, wantTableOccurrences)
+			}
+			if got2 := strings.Count(got, onCluster); got2 != wantOnClusterOccurrences {
+				t.Fatalf("%s: mutationTableSQL produced %d occurrences of %q, want %d", name, got2, onCluster, wantOnClusterOccurrences)
+			}
+
+			// The ON CLUSTER clause must land on the OUTER statement, before
+			// the inner subquery's FROM — never inside the subquery, which
+			// would be invalid SQL (ON CLUSTER is DDL/mutation syntax, not
+			// valid on a plain SELECT).
+			if idx := strings.Index(got, onCluster); idx == -1 || idx > strings.Index(got, "SELECT") {
+				t.Fatalf("%s: ON CLUSTER clause did not land before the inner SELECT: %q", name, got)
 			}
 		})
+	}
+}
+
+// resolveMutationTarget's caller-visible behavior when NOT sharded (empty
+// onCluster) must leave the DELETE unchanged in shape — mutationTableSQL
+// with an empty onCluster simply erases the placeholder rather than
+// leaving a stray space or empty ON CLUSTER token behind.
+func TestMutationTableSQLEmptyOnClusterLeavesNoStrayToken(t *testing.T) {
+	t.Parallel()
+
+	got := mutationTableSQL(deleteStaleMetricsGaugeSQLTemplate, "otel_metrics_gauge", "")
+	if strings.Contains(got, "ON CLUSTER") {
+		t.Fatalf("empty onCluster left an ON CLUSTER token behind: %q", got)
+	}
+	if !strings.Contains(got, "ALTER TABLE otel_metrics_gauge DELETE") {
+		t.Fatalf("expected the unsharded ALTER TABLE shape to be preserved verbatim, got: %q", got)
 	}
 }
