@@ -32,6 +32,14 @@ const (
 
 	migrationExecutionScript = ".github/scripts/migration-e2e.mjs"
 	migrationExecutionClaim  = "migration tier selection, execution, attestation, and aggregate"
+
+	// coverageChdbRecipe/coverageChdbExecutionScript: tsouza/cerberus#3113
+	// extracted the chdb-tagged `go test` sweep out of the coverage-chdb
+	// Justfile recipe body into this script — see readCoverageChdbTaggedRun
+	// and taggedCoverageChdbLaneIsFailClosed below for what is verified about
+	// its source, and coverage-chdb.mjs's own header for the full account.
+	coverageChdbRecipe          = "coverage-chdb"
+	coverageChdbExecutionScript = ".github/scripts/coverage-chdb.mjs"
 )
 
 type taggedTestSymbol struct {
@@ -400,6 +408,7 @@ func discoverTaggedTestInvocations(t *testing.T, root string) ([]taggedTestInvoc
 	recipeNames := justDump(t).recipeNames()
 	justPipelineSafe := taggedJustPipelineIsFailClosed(string(rootJustfileBytes))
 	migrationRuns, migrationErr := readMigrationTaggedRuns(root)
+	coverageChdbRun, coverageChdbErr := readCoverageChdbTaggedRun(root)
 
 	var (
 		invocations []taggedTestInvocation
@@ -511,6 +520,45 @@ func discoverTaggedTestInvocations(t *testing.T, root string) ([]taggedTestInvoc
 						}
 						for _, problem := range recipeProblems {
 							problems = append(problems, fmt.Sprintf("%s -> just %s: %s", where, recipe, problem))
+						}
+						// tsouza/cerberus#3113: coverage-chdb's own `go test`
+						// moved out of this recipe body into coverage-chdb.mjs,
+						// invoked here as a plain top-level `node` statement (no
+						// shell `if` wraps it any more — the libchdb.so check and
+						// the COVERAGE_REQUIRE_LANES tail both live in the script
+						// now), so taggedGoTestsInRecipe above finds no `go test`
+						// text here at all. readCoverageChdbTaggedRun already
+						// verified the script's own source carries the same
+						// composite tag set and fail-closed tail
+						// taggedCoverageChdbLaneIsFailClosed used to check
+						// directly against this recipe's bash.
+						if recipe != coverageChdbRecipe {
+							continue
+						}
+						scriptCommands, cmdErr := taggedStaticCommands(body)
+						if cmdErr != nil {
+							problems = append(problems, fmt.Sprintf("%s -> just %s: cannot parse recipe shell: %v", where, recipe, cmdErr))
+							continue
+						}
+						for _, scriptCommand := range scriptCommands {
+							if scriptCommand.Executable != "node" || !taggedCommandNamesScript(scriptCommand, coverageChdbExecutionScript) {
+								continue
+							}
+							if coverageChdbErr != nil {
+								problems = append(problems, fmt.Sprintf("%s -> just %s: %v", where, recipe, coverageChdbErr))
+								continue
+							}
+							if problem := taggedEvidenceContextProblem(scriptCommand, scriptCommand.Env, "", false); problem != "" {
+								problems = append(problems, fmt.Sprintf("%s -> just %s: script invocation %q cannot prove execution: %s", where, recipe, scriptCommand.Raw, problem))
+								continue
+							}
+							invocation := coverageChdbRun
+							invocation.Workflow = workflowPath
+							invocation.Job = jobID
+							invocation.Entrypoint = taggedEntrypointScript
+							invocation.EntryName = coverageChdbExecutionScript
+							invocation.Raw = scriptCommand.Raw
+							invocations = append(invocations, invocation)
 						}
 					case "node":
 						if !taggedCommandNamesScript(command, migrationExecutionScript) {
@@ -1206,6 +1254,49 @@ func readMigrationTaggedRuns(root string) (map[string]migrationTaggedRun, error)
 	return runs, nil
 }
 
+// readCoverageChdbTaggedRun mirrors readMigrationTaggedRuns for the
+// coverage-chdb lane (tsouza/cerberus#3113): the composite-tag `go test`
+// invocation the coverage-chdb Justfile recipe used to carry directly now
+// lives in coverage-chdb.mjs's own source, so this reads THAT file's text
+// for the same literal invariants instead of `just --dump`'s recipe body —
+// the composite build-tag set, the exact go-test argv shape (mainSweepArgv),
+// the full-tree "./..." package target with no -skip, and the
+// COVERAGE_REQUIRE_LANES fail-closed tail taggedCoverageChdbLaneIsFailClosed
+// checks below. Returns a template taggedTestInvocation (Tags/ExplicitTag/
+// Packages only — Workflow/Job/Entrypoint/EntryName/Raw are filled in by the
+// caller once for each recipe invocation it actually finds).
+func readCoverageChdbTaggedRun(root string) (taggedTestInvocation, error) {
+	path := filepath.Join(root, filepath.FromSlash(coverageChdbExecutionScript))
+	sourceBytes, err := os.ReadFile(path)
+	if err != nil {
+		return taggedTestInvocation{}, fmt.Errorf("read coverage-chdb execution adapter: %w", err)
+	}
+	source := string(sourceBytes)
+
+	if !strings.Contains(source, `CHDB_TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle'`) {
+		return taggedTestInvocation{}, fmt.Errorf("%s no longer declares the coverage-chdb composite build tag set", coverageChdbExecutionScript)
+	}
+	if !regexp.MustCompile(`'-tags',\s*CHDB_TAGS`).MatchString(source) {
+		return taggedTestInvocation{}, fmt.Errorf("%s no longer passes CHDB_TAGS to go test's -tags", coverageChdbExecutionScript)
+	}
+	if !strings.Contains(source, "'./...'") {
+		return taggedTestInvocation{}, fmt.Errorf("%s no longer targets the whole tree", coverageChdbExecutionScript)
+	}
+	if strings.Contains(source, "'-skip'") {
+		return taggedTestInvocation{}, fmt.Errorf("%s must not carry -skip — it is the sole CI evidence for other chdb-tagged packages", coverageChdbExecutionScript)
+	}
+	if !strings.Contains(source, "mainSweepArgv(coverpkg)") || !strings.Contains(source, "spawn(go, argv,") {
+		return taggedTestInvocation{}, fmt.Errorf("%s no longer executes its main sweep through go test", coverageChdbExecutionScript)
+	}
+	if !taggedCoverageChdbLaneIsFailClosed(source) {
+		return taggedTestInvocation{}, fmt.Errorf("%s no longer fails closed on COVERAGE_REQUIRE_LANES=default+chdb", coverageChdbExecutionScript)
+	}
+
+	invocation := newTaggedInvocation(map[string]bool{"chdb": true, "agpl_oracle": true, "chdb_agpl_oracle": true})
+	invocation.Packages = []string{"./..."}
+	return invocation, nil
+}
+
 func taggedCommandNamesScript(command taggedStaticCommand, script string) bool {
 	return len(command.Args) == 1 && !command.Args[0].Dynamic &&
 		filepath.ToSlash(strings.TrimPrefix(command.Args[0].Text, "./")) == strings.TrimPrefix(script, "./")
@@ -1380,33 +1471,37 @@ func taggedCoverageJoinIsFailClosed(body string) bool {
 }
 
 // taggedCoverageChdbLaneIsFailClosed mirrors taggedCoverageJoinIsFailClosed
-// for the coverage-chdb recipe tsouza/cerberus#2634 split out of the old
-// combined `coverage` recipe (so CI can run the default-tag and chdb-tagged
-// lanes as parallel jobs). The chdb-tagged `go test` still sits inside a
-// conditional (`if [ -e libchdb.so ]`) so a bare local `just coverage-chdb`
-// can gracefully skip it, but CI's caller sets
-// COVERAGE_REQUIRE_LANES=default+chdb, and the recipe's own unconditional
-// tail — reached whether or not that conditional ran — refuses to let that
-// combination pass without cover-chdb.out actually existing. That is the
-// same fail-closed shape taggedCoverageJoinIsFailClosed checks for the old
-// recipe's LANES/coverage-summary.mjs join, just anchored to a different,
-// self-contained guard instead of a downstream script call.
-func taggedCoverageChdbLaneIsFailClosed(body string) bool {
-	return strings.Contains(body, `"${COVERAGE_REQUIRE_LANES:-}" = "default+chdb"`) &&
-		strings.Contains(body, "! -s cover-chdb.out") &&
-		strings.Contains(body, "exit 1")
+// for the coverage-chdb lane, but reads coverage-chdb.mjs's own SOURCE
+// (tsouza/cerberus#3113 moved the chdb-tagged `go test` and its surrounding
+// control flow out of the Justfile recipe body and into that script — see
+// its header for the full account) rather than a Justfile recipe body. The
+// libchdb.so branch is unconditional Go/JS control flow inside the script
+// now, invisible to a shell-text scan either way; what still has to hold is
+// the script's own COVERAGE_REQUIRE_LANES tail — reached whether or not the
+// libchdb.so branch above it ran — which refuses to let
+// COVERAGE_REQUIRE_LANES=default+chdb pass without cover-chdb.out actually
+// existing. That is the same fail-closed shape taggedCoverageJoinIsFailClosed
+// checks for the old combined `coverage` recipe's LANES/coverage-summary.mjs
+// join, just anchored to a different, self-contained guard instead of a
+// downstream script call.
+func taggedCoverageChdbLaneIsFailClosed(source string) bool {
+	return strings.Contains(source, `env.COVERAGE_REQUIRE_LANES === 'default+chdb'`) &&
+		strings.Contains(source, "isNonEmptyFile(p(COVERAGE_PROFILE))") &&
+		strings.Contains(source, "return 1")
 }
 
 // taggedCoverageRecipeJoinIsFailClosed dispatches to the right fail-closed
 // check for a `just`-invoked recipe carrying a conditionally-executed
 // chdb-tagged coverage `go test`, or reports true (no check needed) for
-// every other recipe.
+// every other recipe. coverage-chdb no longer has an entry here: since
+// tsouza/cerberus#3113 its recipe body is a single unconditional `node`
+// statement with no shell control flow of its own to forgive — see
+// readCoverageChdbTaggedRun/taggedCoverageChdbLaneIsFailClosed, which check
+// the script it invokes directly instead.
 func taggedCoverageRecipeJoinIsFailClosed(recipe, body string) bool {
 	switch recipe {
 	case "coverage":
 		return taggedCoverageJoinIsFailClosed(body)
-	case "coverage-chdb":
-		return taggedCoverageChdbLaneIsFailClosed(body)
 	default:
 		return true
 	}
@@ -1485,14 +1580,16 @@ func taggedRecipeEvidenceProblem(
 	if contextProblem == "" {
 		return ""
 	}
-	// The measured coverage recipe(s) intentionally keep their chDB half
-	// optional for local use — both the combined `coverage` recipe and its
-	// split-out `coverage-chdb` half (tsouza/cerberus#2634). CI's caller
-	// turns that branch into fail-closed evidence either way: `coverage`
-	// via its LANES/coverage-summary.mjs join, `coverage-chdb` via its own
-	// unconditional COVERAGE_REQUIRE_LANES tail check — see
-	// taggedCoverageRecipeJoinIsFailClosed.
-	if (recipe == "coverage" || recipe == "coverage-chdb") && coverageJoin && environment["COVERAGE_REQUIRE_LANES"] == "default+chdb" &&
+	// The old combined `coverage` recipe intentionally kept its chDB half
+	// optional for local use (tsouza/cerberus#2634). CI's caller turns that
+	// branch into fail-closed evidence via its LANES/coverage-summary.mjs
+	// join — see taggedCoverageRecipeJoinIsFailClosed. coverage-chdb itself
+	// no longer takes this path at all: tsouza/cerberus#3113 replaced its
+	// recipe body with a single unconditional `node` statement (handled by
+	// its own script-invocation case in discoverTaggedTestInvocations), so
+	// it never raises an "unmodeled shell control flow" contextProblem here
+	// to forgive.
+	if recipe == "coverage" && coverageJoin && environment["COVERAGE_REQUIRE_LANES"] == "default+chdb" &&
 		strings.Contains(contextProblem, "unmodeled shell control flow") &&
 		invocation.ExplicitTag["chdb"] && invocation.ExplicitTag["agpl_oracle"] &&
 		invocation.ExplicitTag["chdb_agpl_oracle"] {
@@ -1559,9 +1656,21 @@ func taggedLaneOwnsInvocation(lane taggedLane, invocation taggedTestInvocation) 
 		}
 		return taggedLaneCommandClaimsDirect(lane.Command, invocation)
 	case taggedEntrypointScript:
-		return invocation.EntryName == migrationExecutionScript &&
-			lane.Owner.Workflow == ".github/workflows/migration-e2e.yml" &&
-			lane.Command == migrationExecutionClaim
+		switch invocation.EntryName {
+		case migrationExecutionScript:
+			return lane.Owner.Workflow == ".github/workflows/migration-e2e.yml" &&
+				lane.Command == migrationExecutionClaim
+		case coverageChdbExecutionScript:
+			// coverage-chdb.mjs is invoked FROM the coverage-chdb Justfile
+			// recipe (tsouza/cerberus#3113), so — unlike the migration
+			// script, which a workflow step calls directly — the claim it
+			// binds to is the same lane.Recipes membership
+			// taggedEntrypointRecipe checks above, just for a script
+			// entrypoint instead of a `go test` one.
+			return contains(lane.Recipes, coverageChdbRecipe)
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -1846,6 +1955,23 @@ func TestTaggedTestEnrollmentNegativeControls(t *testing.T) {
 		changed.Command = migrationExecutionClaim
 		assertCovered(t, candidate, taggedLaneRegistry{Lanes: []taggedLane{changed}})
 		changed.Command = "unrelated execution"
+		assertRejected(t, candidate, taggedLaneRegistry{Lanes: []taggedLane{changed}})
+	})
+	t.Run("coverage-chdb script claim", func(t *testing.T) {
+		// tsouza/cerberus#3113: coverage-chdb.mjs binds via lane.Recipes
+		// membership (it is invoked FROM the coverage-chdb Justfile recipe),
+		// not via lane.Command the way the migration script above does.
+		candidate := invocation
+		candidate.Workflow = ".github/workflows/coverage.yml"
+		candidate.Job = "coverage-chdb"
+		candidate.Entrypoint = taggedEntrypointScript
+		candidate.EntryName = coverageChdbExecutionScript
+		changed := lane
+		changed.Owner.Workflow = candidate.Workflow
+		changed.Owner.Jobs = []string{candidate.Job}
+		changed.Recipes = []string{coverageChdbRecipe}
+		assertCovered(t, candidate, taggedLaneRegistry{Lanes: []taggedLane{changed}})
+		changed.Recipes = []string{"other-recipe"}
 		assertRejected(t, candidate, taggedLaneRegistry{Lanes: []taggedLane{changed}})
 	})
 

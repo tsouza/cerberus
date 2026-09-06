@@ -32,39 +32,32 @@
 // lanes. This script is the one step that legitimately knows, because it is
 // the step that decided.
 //
-// Deliberately UNCHANGED by this extraction: `coverage-chdb`'s own
-// conditional `go test`/COVERAGE_REQUIRE_LANES gate stays literal Justfile
-// bash — test/regression/tagged_test_enrollment_test.go statically parses
-// that exact recipe body as execution evidence for the chdb-tagged test
-// tail, and test/regression/coverage_recipe_fail_closed_test.go counts its
-// `go test -timeout` invocations via `just --dump`. Moving that recipe's
-// control flow into a script would require rewriting both scanners — real,
-// separate work tracked as tsouza/cerberus#3113.
+// `coverage-chdb`'s own conditional `go test`/COVERAGE_REQUIRE_LANES gate
+// used to stay literal Justfile bash for the same reason this file's own
+// header explained above: test/regression/tagged_test_enrollment_test.go and
+// test/regression/coverage_recipe_fail_closed_test.go both statically parsed
+// that exact recipe body as execution evidence. tsouza/cerberus#3113
+// extracted that half too, into coverage-chdb.mjs (see that module's header
+// for the fuller account) — the two scripts share isNonEmptyFile() (the
+// `test -s <file>` check) via lib/gh.mjs rather than each defining its own
+// copy.
 //
 // Usage: node .github/scripts/coverage-merge.mjs
 // Exit: 1 if cover.out is missing/empty, or if ratchet shard files exist
 // with no cover-chdb.out to fold them into; otherwise the exit status of the
 // coverage-summary.mjs floor gate it hands off to.
 
-import { copyFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { copyFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
-import { error, log } from './lib/gh.mjs';
+import { error, isNonEmptyFile, log } from './lib/gh.mjs';
 import { writeFoldedProfile } from './lib/coverage-fold.mjs';
 
 const COVERAGE_SUMMARY_MJS = new URL('./coverage-summary.mjs', import.meta.url);
 const RATCHET_SHARD_PATTERN = /^cover-chdb-ratchet-.*\.out$/;
-
-function isNonEmptyFile(path) {
-  try {
-    return existsSync(path) && statSync(path).size > 0;
-  } catch {
-    return false;
-  }
-}
 
 // ratchetShardFiles — the cover-chdb-ratchet-*.out sibling shard profiles
 // among `names` (a directory listing), sorted. Mirrors the replaced bash's
