@@ -752,6 +752,14 @@ func taggedShellSegments(script string) ([]taggedShellSegment, error) {
 			comment = true
 			continue
 		}
+		// A `just` recipe's leading "@" is a quiet-execution marker, not a shell
+		// token, so "@#" at a command-start position is a comment start exactly
+		// like a bare "#" would be there.
+		if char == '@' && index+1 < len(script) && script[index+1] == '#' &&
+			(index == 0 || unicode.IsSpace(rune(script[index-1])) || strings.ContainsRune(";|&", rune(script[index-1]))) {
+			comment = true
+			continue
+		}
 		switch char {
 		case '\n':
 			flush("\n")
@@ -1920,6 +1928,28 @@ func TestTaggedTestEnrollmentNegativeControls(t *testing.T) {
 			if command.Executable == "go" || command.Executable == "just" {
 				t.Fatalf("prose counted as execution: %#v", command)
 			}
+		}
+	})
+
+	t.Run("@# quiet-recipe comment with an apostrophe is not an unterminated quote", func(t *testing.T) {
+		commands, err := taggedStaticCommands(strings.Join([]string{
+			"@# e2e-up's kubelet's pod's cache needs a moment to settle",
+			"go test -tags tagged ./internal/example/...",
+		}, "\n"))
+		if err != nil {
+			t.Fatalf("static command parse = %v, %v", commands, err)
+		}
+		found := false
+		for _, command := range commands {
+			if command.Executable == "@#" || command.Executable == "@" {
+				t.Fatalf("@#-comment counted as execution: %#v", command)
+			}
+			if command.Executable == "go" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("command following the @#-comment was not recognized: %#v", commands)
 		}
 	})
 	t.Run("dynamic Go subcommand fails closed", func(t *testing.T) {
