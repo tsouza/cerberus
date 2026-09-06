@@ -583,6 +583,20 @@ async function main() {
     if (!fullQuery) {
       log(`diagnostic: could not recover full query text for over-width dispatch ${sampleQid} (parent row fell outside the window) — skipping isolated re-run`);
     } else {
+      log(`diagnostic: FULL query text for over-width dispatch ${sampleQid}:\n${fullQuery}`);
+
+      // parallel-replicas + table-engine + cluster-topology check: is the
+      // extra fan-out actually replica-level parallelism (a DIFFERENT
+      // mechanism from Distributed data-shard fan-out, invisible to
+      // DataShardFanoutGate either way) rather than a self-referencing
+      // subquery under distributed_product_mode=global?
+      log('diagnostic: parallel-replicas settings on the connection cerberus actually uses:');
+      log(chQuerySingleRaw(initiatorPod, `SELECT name, value, changed FROM system.settings WHERE name ILIKE '%parallel_replica%'`) || '(no rows)');
+      log('diagnostic: otel_traces_local table engine:');
+      log(chQuerySingleRaw(initiatorPod, `SELECT database, name, engine FROM system.tables WHERE name = 'otel_traces_local'`) || '(no rows)');
+      log('diagnostic: system.clusters topology (shard_num, replica_num, host_name):');
+      log(chQuerySingleRaw(initiatorPod, `SELECT cluster, shard_num, replica_num, host_name FROM system.clusters WHERE cluster = '${CH_CLUSTER}' ORDER BY shard_num, replica_num`) || '(no rows)');
+
       const distributedSettingsArgs = [
         '--skip_unavailable_shards=0',
         '--fallback_to_stale_replicas_for_distributed_queries=0',
