@@ -1394,22 +1394,48 @@ what actually runs.
     unrecognised `release:` label or an unsupported event.
 - **`prepare-release.mjs`** — `prepare-release.yml`, the release-staging
     workflow (`workflow_dispatch` or an `issues: labeled` `release:*` trigger;
-    see `resolve-release-trigger.mjs`). Bumps the chart `version:` + `appVersion:`, the image tag, and the
-    Artifact Hub `changes` annotation, and rewrites the CHANGELOG `[Unreleased]`
-    section into a dated `## [vX.Y.Z]` one — deriving the change summary and the
-    PR body from the conventional commits since the last `v*` tag. The commit
-    history is the single source of truth: the generated section is always what
-    lands and any stale `[Unreleased]` content is discarded (maintainers enrich
-    the prose by editing the opened PR, not by hand-staging `[Unreleased]`). Pure
-    exported helpers (`bumpSemver`, `parseCommits`, `renderChangelogSection`,
-    `renderAhChanges`, `editChart`, `editChangelog`) + a `--self-test` flag the
-    workflow runs before it edits anything.
+    see `resolve-release-trigger.mjs`); also `just release-prep` /
+    `just release-prep-backport` (`just/release.just`), the same staging logic
+    run for a controlled local cut. Bumps the chart `version:` + `appVersion:`,
+    the image tag, and the Artifact Hub `changes` annotation, and rewrites the
+    CHANGELOG `[Unreleased]` section into a dated `## [vX.Y.Z]` one — deriving
+    the change summary and the PR body from the conventional commits since the
+    last `v*` tag. The commit history is the single source of truth: the
+    generated section is always what lands and any stale `[Unreleased]` content
+    is discarded (maintainers enrich the prose by editing the opened PR, not by
+    hand-staging `[Unreleased]`). Pure exported helpers (`bumpSemver`,
+    `parseCommits`, `renderChangelogSection`, `renderAhChanges`, `editChart`,
+    `editChangelog`, `releaseBranchName`, `releaseCommitMessage`,
+    `isMaintenanceBranch`) + a `--self-test` flag the workflow runs before it
+    edits anything.
+    `RENDER_HELM_DOCS=1` and `REQUIRE_MAINTENANCE_BRANCH=1` are the two Justfile
+    recipes' own logic folded in here (CLAUDE.md invariant 15, issue #3100,
+    epic #3091): the `awk '/^version:/{print $2; exit}'` chart-version read and
+    the `docker run … jnorwood/helm-docs …` README regeneration were duplicated
+    verbatim across both recipe bodies, and this file already computes
+    `chartVersion` in-process — re-reading it from the file it had just written
+    was pure duplication, not merely duplicated text. `renderHelmDocs()`
+    acquires the pinned `jnorwood/helm-docs:v1.14.2` image through
+    `pullImageWithRetry` (`./lib/registry.mjs`) before running it, the same
+    transport-retry / rate-limit-fails-fast policy every other docker-driving
+    script in this directory uses (issue #1562). `release-prep-backport`'s
+    branch-detection guard (a shell `case "$(git rev-parse --abbrev-ref HEAD)"
+    in release/*.x) …esac`) moves the same way, checked BEFORE any file is
+    touched. `release_branch` / `commit_message` are additionally emitted so
+    neither recipe re-derives the staging branch name or the commit/PR-title
+    string (the two were always the identical literal) by hand.
   - Env: `VERSION` (explicit target appVersion; overrides `BUMP`), `BUMP`
     (`patch`|`minor`|`major`, or the workflow's `none` placeholder),
     `CHART_BUMP` (default `patch`), `PR_BODY_FILE` (default `release-pr-body.md`),
-    `GITHUB_OUTPUT` (runner-provided; sets `new_version` / `chart_version`).
+    `RENDER_HELM_DOCS` (`1` to regenerate the chart README after the Chart.yaml
+    edit; default: skip — the workflow instead runs its own `helm-docs`
+    Actions step), `REQUIRE_MAINTENANCE_BRANCH` (`1` to fail before touching
+    any file unless HEAD is on a `release/*.x` branch; default: no check),
+    `GITHUB_OUTPUT` (runner-provided / a local temp file; sets `new_version` /
+    `chart_version` / `release_branch` / `commit_message`).
   - Exit: `0` after staging the files (or a green self-test), `1` on a bad /
-    missing version input or a malformed Chart.yaml / CHANGELOG.
+    missing version input, a malformed Chart.yaml / CHANGELOG, a failed
+    `REQUIRE_MAINTENANCE_BRANCH` check, or a failed helm-docs acquisition/run.
 - **`chart-publish.mjs`** — `release.yml`, the `chart-release` job. Three
   subcommands (argv[2]): `version-gate` compares the local Chart.yaml
   `version:` against the latest chart tag in the OCI registry and sets the
