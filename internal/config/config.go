@@ -1268,16 +1268,9 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP overrides chclient's data-shard
-	// fan-out admission gate's resolved cap (cerberus issues #3081, #3128).
-	// Optional — unset means "default to this Client's own MaxOpenConns",
-	// resolved inside chclient.NewDataShardFanoutGate, not here.
-	dataShardFanoutCapOverride, err := getOptionalInt64(v, envCHDataShardFanoutCapOverride)
+	dataShardFanoutCapOverride, err := dataShardFanoutCapOverrideFromEnv(v)
 	if err != nil {
 		return Config{}, err
-	}
-	if dataShardFanoutCapOverride != nil && *dataShardFanoutCapOverride <= 0 {
-		return Config{}, fmt.Errorf("%s: must be > 0 when set, got %d", envCHDataShardFanoutCapOverride, *dataShardFanoutCapOverride)
 	}
 	rbgnMaxRows, rbgnMaxDensityUnits, err := rbgnBoundsFromEnv(v, maxMemory)
 	if err != nil {
@@ -2102,6 +2095,23 @@ func rbgnDensityUnitsForMemory(chQueryMaxMemory int64) int64 {
 		return rbgnDensityUnitsFloor
 	}
 	return units
+}
+
+// dataShardFanoutCapOverrideFromEnv reads CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP,
+// which overrides chclient's data-shard fan-out admission gate's resolved cap
+// (cerberus issues #3081, #3128). Optional — unset means "default to this
+// Client's own MaxOpenConns", resolved inside chclient.NewDataShardFanoutGate,
+// not here. Factored out of FromEnv purely to keep that function under
+// golangci-lint's funlen cap.
+func dataShardFanoutCapOverrideFromEnv(v *viper.Viper) (*int64, error) {
+	override, err := getOptionalInt64(v, envCHDataShardFanoutCapOverride)
+	if err != nil {
+		return nil, err
+	}
+	if override != nil && *override <= 0 {
+		return nil, fmt.Errorf("%s: must be > 0 when set, got %d", envCHDataShardFanoutCapOverride, *override)
+	}
+	return override, nil
 }
 
 // rbgnBoundsFromEnv reads + resolves both RangeBucketGridNative override
