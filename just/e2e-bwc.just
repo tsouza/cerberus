@@ -40,7 +40,7 @@ e2e-bwc-up scenario="object-storage": e2e-down
     @echo "==> [bwc] pre-pulling external + bwc images on host docker"
     @# The standalone-CH image (the *-alpine tag in E2E_EXTERNAL_IMAGES) backs
     @# test/e2e/k3s/clickhouse.yaml, which the bwc kustomization EXCLUDES — this
-    @# lane runs the chart's BUNDLED ClickHouse (the non-alpine tag in
+    @# lane runs the chart-bundled ClickHouse (the non-alpine tag in
     @# E2E_BWC_IMAGES) instead, so skip pulling the unused standalone image (it
     @# is filtered from the k3d import step below via IMAGE_IMPORT_EXCLUDE too).
     @for img in {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}; do \
