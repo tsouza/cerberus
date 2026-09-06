@@ -270,6 +270,66 @@ import (
 // it corrects the WEIGHT one specific, proven dispatch shape charges
 // against the unchanged cap, exactly the kind of real fix the issue asks
 // for.
+//
+// ROUND 4 — a SECOND, real, still-open contributing cause: this gate's
+// admission ceiling is PER-PROCESS, but a real deployment runs multiple
+// cerberus PODS. Re-verifying the SearchTraceLimit fix above against a real
+// e2e dispatch (run 34052929455) confirmed it is a genuine, measurable
+// improvement — `datashard (N=4)`'s Select-only peak concurrent dropped from
+// 15-16 (pre-fix) to 14 (post-fix) — but 14 still exceeds
+// DataShardFanoutCap=8. Direct inspection of the SAME run's own cluster
+// state (its kubectl describe/get-pods dump) found the reason: this e2e
+// lane's cerberus Deployment runs TWO pods (`cerberus-6f8d687c45-7pqdl` and
+// `cerberus-6f8d687c45-zp4wp`, both Running, both serving traffic behind the
+// SAME k8s Service) — deploy/helm/cerberus/values.yaml's own top-level
+// `replicaCount` defaults to 2, and neither test/e2e/k3s/cerberus-values.yaml
+// nor cerberus-values-datashard.yaml overrides it down to 1 for this lane.
+//
+// c.dataShardFanoutGate (this file) is a field on *Client, constructed ONCE
+// per process by assembleClientFromConn — a bare in-memory
+// *semaphore.Weighted with no cross-process visibility whatsoever. Each of
+// the two pods therefore runs its OWN independent copy of this gate, each
+// independently admitting up to DataShardFanoutCap (8) units of weight. A k8s
+// Service round-robins (or randomly load-balances) the burst's concurrent
+// HTTP requests across both pods, so the REAL aggregate ceiling ClickHouse
+// can see across the whole Deployment is up to `replicaCount x
+// DataShardFanoutCap` (up to 16 here), not DataShardFanoutCap alone — this
+// gate's own doc and docs/solver.md's sibling "one process-wide dispatch-
+// token semaphore" section have always described the MECHANISM as
+// process-wide (matching NewDataShardFanoutGate's own doc: cap "mirrors how
+// the pre-move mechanism defaulted to the solver's own connection Gate's
+// size", itself an inherently per-process MaxOpenConns pool), but neither
+// this file nor docs/solver.md had previously connected that scope to what
+// it means once replicaCount > 1: DataShardFanoutCap stops being a real
+// cluster-wide ceiling on ClickHouse's own concurrent per-shard exposure —
+// the exact resource-safety property #3081/#3128 exist to guarantee — and
+// silently becomes `replicaCount` times looser instead. 14 (measured, two
+// pods, post-SearchTraceLimit-fix) sits comfortably under 16 (the two-pod
+// theoretical ceiling this explains) and clearly above 8 (the single-pod cap
+// the test asserts against), which is exactly the signature this cause
+// predicts — not proof beyond doubt (no per-pod query_log breakdown was
+// captured this round), but a coherent, evidenced explanation consistent
+// with every number gathered so far, including round 3's own higher
+// observations (12-31) against whatever replicaCount those earlier dispatch
+// runs happened to run.
+//
+// NOT fixed here. A correct fix needs the resolved per-pod
+// DataShardFanoutCap to know its own share of the operator's INTENDED
+// cluster-wide budget — e.g. dividing by replicaCount at the Helm chart /
+// config layer — and doing that correctly also has to account for
+// docs/project_per_head_split's per-head split mode (each head can run a
+// DIFFERENT replicaCount under `split.<head>.replicaCount`, and each such
+// pod would need its OWN correctly-apportioned share) and the
+// `autoscaling.enabled` HPA case (values.yaml: "When true, replicaCount is
+// ignored" — the real pod count becomes dynamic, which a value baked in at
+// Helm render time cannot track). Getting either wrong without real
+// multi-pod e2e coverage of split mode would risk trading a real,
+// evidenced bug for a guessed, unverified one — exactly what this
+// investigation's own discipline (round 3's "REFUTED" entry above) exists
+// to avoid. Cerberus issue #3128 stays open for this: the concrete next
+// step is a replica-count-aware cap (or a genuine cross-pod coordination
+// mechanism) with its own dedicated multi-replica e2e verification, not a
+// guess landed alongside this round's unrelated SearchTraceLimit fix.
 
 // ErrDataShardFanoutGateBusy is the sentinel wrapped into the error
 // [Client.acquireDataShardFanout] returns when the request's own ctx
