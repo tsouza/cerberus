@@ -115,8 +115,9 @@ func searchSQL(t *testing.T, query string) string {
 // matching row. GLOBAL is load-bearing, not cosmetic: the subquery reads
 // the traces table through a derived table, which ClickHouse's
 // distributed_product_mode=global rewrite never reaches, so a plain IN
-// re-fans the ranking out on every data shard (cerberus issue #3128 —
-// see chsql.GlobalInSubquery's doc).
+// re-fans the ranking out on every data shard (cerberus issues #3128 /
+// #3141 — chsql.InSubquery writes GLOBAL for every subquery that scans a
+// physical table; see its doc).
 func TestSearch_TraceLimitPushdown_SQLShape(t *testing.T) {
 	t.Parallel()
 	sql := searchSQL(t, "/api/search?q=%7B%7D&limit=3")

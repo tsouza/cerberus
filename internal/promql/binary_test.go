@@ -43,7 +43,7 @@ func TestLower_Binary_VectorSetOps(t *testing.T) {
 		{
 			name:      "unless default match",
 			query:     `up unless up`,
-			wantInSQL: []string{"mapSort(`Attributes`) NOT IN (", "DISTINCT mapSort(`Attributes`)"},
+			wantInSQL: []string{"mapSort(`Attributes`) GLOBAL NOT IN (", "DISTINCT mapSort(`Attributes`)"},
 		},
 		{
 			name:  "or default match",
@@ -68,7 +68,7 @@ func TestLower_Binary_VectorSetOps(t *testing.T) {
 		{
 			name:      "unless on",
 			query:     `up unless on(job) up`,
-			wantInSQL: []string{"mapSort(mapFilter((k, v) -> k IN (?), `Attributes`)) NOT IN ("},
+			wantInSQL: []string{"mapSort(mapFilter((k, v) -> k IN (?), `Attributes`)) GLOBAL NOT IN ("},
 		},
 	}
 	for _, tc := range cases {

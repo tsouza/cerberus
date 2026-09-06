@@ -168,10 +168,12 @@ package chclient
 // every emitter that renders a plan subtree as `(<input>)` produces — is
 // executed as written on every shard, each execution fanning out again
 // (DataShardCount² statements per dispatch). This pin therefore covers the
-// direct shapes; an emitter nesting the reference through a derived table
-// must write GLOBAL itself (chsql.GlobalInSubquery — emitSearchTraceLimit
-// does). The four shapes above are audited for exactly this under issue
-// #3141.
+// direct shapes; the nested ones are covered by chsql.InSubquery /
+// NotInSubquery themselves, which write GLOBAL for every subquery that
+// renders a physical table scan (issue #3141: measured on a real two-shard
+// cluster, the structural `>` / `>>` / `~` closures and `select(nestedSet*)`
+// each re-executed their scope / candidate / closure subqueries on every
+// shard until they did; `compare()` never nested and was clean).
 //
 // On a single-shard/non-Distributed deployment `otel_traces` is a plain
 // MergeTree table, so none of these ever double-references a Distributed

@@ -2951,42 +2951,33 @@ func In(left Frag, right ...Frag) Frag {
 // list-form In (which wraps a comma list in parens), this emits no
 // parens of its own, so a self-parenthesising subquery renders as the
 // CH-idiomatic `<left> IN (SELECT …)` with exactly one paren pair.
-// Sibling of NotInSubquery for the IN direction; used by the nested-set
-// annotate anchor's trace-id scope filter.
-func InSubquery(left, sub Frag) Frag {
-	return func(b *Builder) {
-		left(b)
-		b.sb.WriteString(" IN ")
-		sub(b)
-	}
-}
-
-// GlobalInSubquery is InSubquery with an explicit GLOBAL modifier:
-// `<left> GLOBAL IN (SELECT …)`. Semantically identical to IN on any
-// deployment; the difference is WHERE ClickHouse evaluates the subquery once
-// the table behind it is a `Distributed` wrapper. A plain IN whose subquery
-// reads the Distributed table is executed again on EVERY shard the outer
-// query fans out to — and each of those executions fans out itself, so one
-// dispatch costs DataShardCount² per-shard statements instead of
-// DataShardCount. `distributed_product_mode=global` (pinned by
-// internal/chclient) rewrites that shape to GLOBAL automatically, but only
-// when the subquery's FROM is the Distributed table DIRECTLY; a subquery
-// that reads it through a derived table (`FROM (SELECT … FROM otel_traces …)`)
-// is left as written — real-cluster evidence in
-// internal/chsql/search_trace_limit.go's doc. GLOBAL written explicitly is
-// honoured regardless of nesting: the initiator evaluates the subquery once
-// and broadcasts its (bounded) result as a temporary table to every shard.
-// On a single-node/non-Distributed deployment ClickHouse treats GLOBAL IN
-// exactly as IN. Emitters whose IN subquery reads the same Distributed table
-// as the outer query through any derived table MUST use this rather than
-// InSubquery.
-func GlobalInSubquery(left, sub Frag) Frag {
-	return func(b *Builder) {
-		left(b)
-		b.sb.WriteString(" GLOBAL IN ")
-		sub(b)
-	}
-}
+// Sibling of NotInSubquery for the IN direction.
+//
+// GLOBAL, decided at render time (cerberus issues #3128 / #3141): when the
+// subquery renders at least one physical table reference
+// (Builder.physicalScans), the predicate is written `<left> GLOBAL IN <sub>`.
+// Semantically identical to IN on every deployment; the difference is WHERE
+// ClickHouse evaluates the subquery once the table behind it is a
+// `Distributed` wrapper. Every emitter renders its plan subtrees as derived
+// tables, so an outer statement's main table is typically `FROM (SELECT …
+// FROM otel_traces …)`, and ClickHouse pushes such a statement down to every
+// shard WHOLE — the IN's subquery included. On each shard that subquery's
+// `otel_traces` is still the Distributed wrapper, so a plain IN is
+// re-executed there as a distributed query of its own: DataShardCount² (or,
+// inside a recursive closure, DataShardCount x iterations) per-shard
+// statements for one dispatch. `distributed_product_mode=global` (pinned by
+// internal/chclient) rewrites only an IN whose subquery's FROM is the
+// Distributed table DIRECTLY, never one reading it through a derived table.
+// GLOBAL written explicitly is honoured regardless of nesting: the initiator
+// evaluates the subquery once and broadcasts its result as a temporary table.
+// Measured against a real two-shard cluster with the real binary: plain IN
+// produced 12 children for a 5-reference `>` search and 15 for a
+// 6-reference `>>`; GLOBAL brings each back to refs x (N-1). A subquery that
+// scans no physical table — a native-protocol external temporary table
+// (inExternalTraceIDsFrag), a literal-only SELECT — stays a plain IN: there
+// is nothing to fan out and GLOBAL would only add a needless temp table. On
+// a single-node deployment GLOBAL IN behaves exactly as IN.
+func InSubquery(left, sub Frag) Frag { return subqueryMembership(left, sub, false) }
 
 // NotInSubquery returns a Frag rendering "<left> NOT IN (<sub>)" — the
 // anti-set membership predicate where the right-hand side is a single
@@ -2995,13 +2986,38 @@ func GlobalInSubquery(left, sub Frag) Frag {
 // itself, yielding the CH-idiomatic `NOT IN (SELECT …)`). The list-form
 // `In` constructor parenthesises a comma list; this is its subquery
 // sibling for the NOT-IN direction. Used by the range-mode
-// absent_over_time anti-join.
-func NotInSubquery(left, sub Frag) Frag {
+// absent_over_time anti-join. Renders `GLOBAL NOT IN` under exactly the
+// rule InSubquery documents — same mechanism, same evidence.
+func NotInSubquery(left, sub Frag) Frag { return subqueryMembership(left, sub, true) }
+
+// subqueryMembership is the shared body of InSubquery / NotInSubquery: it
+// renders sub into a scratch Builder first, so the GLOBAL decision can read
+// the subquery's own physical-scan count before the keyword is written,
+// then splices the scratch text, args, error and scan count into b exactly
+// as rendering sub in place would have. negate selects the NOT IN form,
+// which additionally parenthesises sub (NotInSubquery's historical shape).
+func subqueryMembership(left, sub Frag, negate bool) Frag {
 	return func(b *Builder) {
 		left(b)
-		b.sb.WriteString(" NOT IN (")
-		sub(b)
-		b.sb.WriteByte(')')
+		scratch := &Builder{attrStrategies: b.attrStrategies}
+		sub(scratch)
+		if scratch.err != nil && b.err == nil {
+			b.err = scratch.err
+		}
+		if scratch.physicalScans > 0 {
+			b.sb.WriteString(" GLOBAL")
+		}
+		if negate {
+			b.sb.WriteString(" NOT IN (")
+		} else {
+			b.sb.WriteString(" IN ")
+		}
+		b.sb.WriteString(scratch.sb.String())
+		if negate {
+			b.sb.WriteByte(')')
+		}
+		b.args = append(b.args, scratch.args...)
+		b.physicalScans += scratch.physicalScans
 	}
 }
 

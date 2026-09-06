@@ -60,8 +60,8 @@ func TestEmitVectorSetOp_StepAlignedMatchKey(t *testing.T) {
 		{
 			name:        "unless",
 			op:          chplan.VectorSetUnless,
-			stepAligned: "WHERE (mapSort(`Attributes`), `TimeUnix`) NOT IN ((SELECT DISTINCT mapSort(`Attributes`), `TimeUnix` FROM",
-			labelOnly:   "WHERE mapSort(`Attributes`) NOT IN ((SELECT DISTINCT mapSort(`Attributes`) FROM",
+			stepAligned: "WHERE (mapSort(`Attributes`), `TimeUnix`) GLOBAL NOT IN ((SELECT DISTINCT mapSort(`Attributes`), `TimeUnix` FROM",
+			labelOnly:   "WHERE mapSort(`Attributes`) GLOBAL NOT IN ((SELECT DISTINCT mapSort(`Attributes`) FROM",
 		},
 		{
 			name:        "or",

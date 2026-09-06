@@ -43,7 +43,7 @@ func TestEmitStructuralRecursive_AnchorCarriesCandidatePrefilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if !strings.Contains(sql, "AS _seed WHERE `TraceId` IN (SELECT DISTINCT `TraceId`") {
+	if !strings.Contains(sql, "AS _seed WHERE `TraceId` GLOBAL IN (SELECT DISTINCT `TraceId`") {
 		t.Fatalf("candidate prefilter subquery missing from the anchor seed:\n%s", sql)
 	}
 }

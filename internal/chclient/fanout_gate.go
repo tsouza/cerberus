@@ -276,12 +276,15 @@ import (
 // Distributed table DIRECTLY, and emitSearchTraceLimit's ranking subquery
 // reads it through a derived table (`FROM (<input>)`), so every shard the
 // outer drain fanned out to re-executed the ranking subquery as a
-// distributed query of its own (N x N). THE FIX is at the source:
-// emitSearchTraceLimit now writes GLOBAL IN explicitly
-// (chsql.GlobalInSubquery), which the initiator honours regardless of
-// nesting — the ranking subquery runs once (N children), its LIMIT-bounded
-// id set is broadcast, and the drain fans out once more (N children), two
-// sequential phases of DataShardCount statements each.
+// distributed query of its own (N x N). THE FIX is at the source: the
+// ranking subquery is written GLOBAL IN — chsql.InSubquery does so for
+// every subquery that renders a physical table scan (issue #3141 extended
+// the same rule to the structural closures and nestedSet annotate, which
+// measured 2.4x-2.5x over-fan-out on a real two-shard cluster until it
+// did) — which the initiator honours regardless of nesting: the ranking
+// subquery runs once (N children), its LIMIT-bounded id set is broadcast,
+// and the drain fans out once more (N children), two sequential phases of
+// DataShardCount statements each.
 //
 // The same run also retired the per-shape constant itself. With the trace
 // search fixed, the remaining over-width dispatches were PromQL rate()

@@ -343,7 +343,7 @@ func TestNestedSetAnnotate_TraceLimit_ZeroUnbounded(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	// The anchor scope is the bare UNION-ALL superset, no newest-N wrap.
-	wantUnbounded := "WHERE `ParentSpanId` = '' AND `TraceId` IN (((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) UNION ALL"
+	wantUnbounded := "WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) UNION ALL"
 	if !strings.Contains(sql, wantUnbounded) {
 		t.Errorf("unbounded anchor scope changed;\nwant substring: %s\ngot:\n%s", wantUnbounded, sql)
 	}

@@ -238,7 +238,7 @@ func TestScanResourceBound_NestedSetStructureBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nested-set emit: %v", err)
 	}
-	if strings.Count(sql, "`TraceId` IN") < 2 {
+	if strings.Count(sql, "`TraceId` GLOBAL IN") < 2 {
 		t.Errorf("nested-set anchor + step must both be trace-id scoped:\n%s", sql)
 	}
 	assertEverySpansFromBounded(t, sql)
