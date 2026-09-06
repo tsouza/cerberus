@@ -14,13 +14,20 @@
 //   1. A genuine solver-split (kEff > 1) query reached the Distributed
 //      target at all — otherwise the whole leg would be vacuous (it would
 //      "pass" whether or not DataShardFanoutGate does anything).
-//   2. The real, concurrent, cluster-wide per-shard statement count
-//      (system.query_log rows with is_initial_query=0, i.e. what
-//      `Distributed` actually dispatched to each data shard) never exceeded
+//   2. The real, concurrent, cluster-wide per-shard SELECT statement count
+//      (system.query_log rows with is_initial_query=0 AND
+//      query_kind='Select', i.e. what `Distributed` actually dispatched to
+//      each data shard for a query cerberus itself served) never exceeded
 //      DATA_SHARD_FANOUT_CAP at any instant during the burst —
 //      DataShardFanoutGate's own real, unconditional ceiling
 //      (Σ kEff_i × DataShardCount ≤ DataShardFanoutCap), not merely the
-//      trivially-safe N=2 case.
+//      trivially-safe N=2 case. Scoped to query_kind='Select' (cerberus
+//      issue #3128 residual-gap round 3) because is_initial_query=0 also
+//      counts Insert/Alter children from `just e2e-seed-rolling`'s rolling
+//      seeder, which writes directly to ClickHouse over the native
+//      protocol — bypassing cerberus, and so DataShardFanoutGate, entirely
+//      — throughout this script's own burst window; the unfiltered total is
+//      still logged for visibility but is informational only.
 //   3. No 5xx from cerberus during the burst — the admission-control path is
 //      "degrade parallelism, never reject" (docs/solver.md point 3); a 503
 //      here would mean that promise broke once a REAL data-shard fan-out
@@ -330,25 +337,121 @@ async function main() {
   }
 
   // ---- point 2: real concurrent per-shard statement count stays within cap ----
+  //
+  // query_kind and initial_query_id (cerberus issue #3128 residual-gap round
+  // 3) are pulled for every is_initial_query=0 row for two permanent reasons
+  // beyond the original point-2 bound:
+  //   - query_kind distinguishes a real DataShardFanoutGate-bound dispatch
+  //     (query_kind='Select', reaching ClickHouse through
+  //     internal/chclient's queryOpen/queryCursorColumnar, the ONLY seam
+  //     this gate wraps) from an is_initial_query=0 row that was never
+  //     subject to the gate AT ALL: `just e2e-seed-rolling`'s rolling
+  //     seeder (test/e2e/seed/cmd/seed) connects to ClickHouse DIRECTLY
+  //     over the native protocol (bypassing cerberus, and so
+  //     acquireDataShardFanout, entirely) and keeps INSERTing into the same
+  //     public `Distributed`-engine tables (otel_logs, otel_traces,
+  //     otel_metrics_*) every 30s for the lane's whole lifetime, INCLUDING
+  //     during this script's own burst window (`e2e-seed-stop` is not
+  //     called until `just e2e-datashard-down`, well after this script
+  //     returns). Each such INSERT fans out to DataShardCount
+  //     is_initial_query=0 query_kind='Insert' children exactly like a
+  //     Select does, and the original query with no query_kind filter
+  //     counts them identically — inflating measured overlap with
+  //     statements the gate was never designed to bound. CONFIRMED against
+  //     real dispatch run 34043234494 to fully explain at least one N=2
+  //     failure on its own (unfiltered peak 9 > cap 8; Select-only peak
+  //     7 <= cap 8).
+  //   - initial_query_id (the coordinator's own globally-unique
+  //     "<traceID>-<spanID>-<counter>" query_id — mintQueryID's process-wide
+  //     atomic counter makes two distinct dispatches sharing one id
+  //     structurally impossible) groups every child back to the ONE
+  //     dispatch that produced it, independent of timing. A group whose own
+  //     child count exceeds DataShardCount is real evidence that dispatch's
+  //     gate acquisition (a fixed weight of DataShardCount) under-charged
+  //     its real ClickHouse-side fan-out width — internal/chclient/
+  //     fanout_gate.go's own "Residual gap" doc has the full investigation
+  //     trail for what this has and has not been narrowed down to so far.
+  //     A short query snippet is kept alongside each sample so a future
+  //     occurrence can be matched against a known query SHAPE without
+  //     needing a fresh full-text capture.
   const shardStmtRows = chQueryTSV(
     initiatorPod,
-    `SELECT toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us, query_duration_ms * 1000 AS dur_us
+    `SELECT toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us, query_duration_ms * 1000 AS dur_us,
+            query_kind, initial_query_id,
+            replaceRegexpAll(substring(query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
      WHERE is_initial_query = 0 AND type = 'QueryFinish'
        AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
   );
-  const intervals = shardStmtRows.map((r) => {
-    const [s, d] = r.split('\t').map(Number);
-    return [s, d];
+  const shardStmts = shardStmtRows.map((r) => {
+    // TSVRaw does not escape tabs/newlines in a value, so query_snippet is
+    // flattened to single spaces (above) BEFORE this split ever runs —
+    // otherwise an embedded newline would masquerade as a row break here.
+    const [s, d, kind, qid, snippet] = r.split('\t');
+    return { startUs: Number(s), durUs: Number(d), kind, qid, snippet };
   });
+  const intervals = shardStmts.map((r) => [r.startUs, r.durUs]);
   const peakConcurrentShardStatements = maxConcurrent(intervals);
-  log(`real per-shard statements observed: ${intervals.length}; peak concurrent=${peakConcurrentShardStatements}`);
-  if (peakConcurrentShardStatements > DATA_SHARD_FANOUT_CAP) {
-    error(`peak concurrent per-shard ClickHouse statement count ${peakConcurrentShardStatements} exceeded DataShardFanoutCap=${DATA_SHARD_FANOUT_CAP} — the admission-control ceiling did not hold under real load`);
+  const kindCounts = {};
+  for (const r of shardStmts) kindCounts[r.kind] = (kindCounts[r.kind] || 0) + 1;
+  log(`real per-shard statements observed: ${intervals.length}; peak concurrent (ALL query_kind, informational only)=${peakConcurrentShardStatements}; by query_kind: ${JSON.stringify(kindCounts)}`);
+
+  // Select-only overlap is the ceiling DataShardFanoutGate actually bounds
+  // (cerberus issue #3128 residual-gap round 3, confirmed against real
+  // dispatch run 34043234494): `is_initial_query=0` also counts children of
+  // `just e2e-seed-rolling`'s rolling seeder (test/e2e/seed/cmd/seed),
+  // which connects to ClickHouse DIRECTLY over the native protocol —
+  // bypassing cerberus, and so acquireDataShardFanout, entirely — and keeps
+  // INSERTing into the same public `Distributed`-engine tables throughout
+  // this script's own burst window. Those Insert (and DDL/Alter, from the
+  // seeder's own stale-row-pruning mutations) children were never subject
+  // to the gate, so counting them against DataShardFanoutCap tests
+  // something the gate was never built to bound. The real assertion is
+  // scoped to query_kind='Select' — the only kind chclient's queryOpen /
+  // queryCursorColumnar (this gate's one seam) ever dispatches.
+  const selectRows = shardStmts.filter((r) => r.kind === 'Select');
+  const selectIntervals = selectRows.map((r) => [r.startUs, r.durUs]);
+  const peakConcurrentSelectOnly = maxConcurrent(selectIntervals);
+  log(`Select-only per-shard statements observed: ${selectIntervals.length}; peak concurrent (Select-only)=${peakConcurrentSelectOnly}`);
+
+  // Over-width dispatches: grouped by initial_query_id (see the point-2
+  // query's own doc above for why this is a safe, exact join key). Kept as
+  // a permanent, low-cost signal for cerberus issue #3128's still-open
+  // finding 3 (internal/chclient/fanout_gate.go's own "Residual gap" doc) —
+  // a real ClickHouse-side or transport-level effect, confirmed NOT caused
+  // by any cerberus dispatch-multiplication mechanism, that produces more
+  // real per-shard children than DataShardCount for some dispatches.
+  const childrenByQid = new Map();
+  for (const r of selectRows) {
+    if (!childrenByQid.has(r.qid)) childrenByQid.set(r.qid, []);
+    childrenByQid.get(r.qid).push(r);
+  }
+  const overWidthGroups = [...childrenByQid.entries()].filter(([, rows]) => rows.length > DATA_SHARD_COUNT);
+  // Cap how many over-width groups get their own log line — the point is a
+  // representative sample for manual correlation, not an exhaustive dump
+  // that could run to hundreds of lines on a bad run.
+  const overWidthSampleLimit = 10;
+  log(`dispatches (by initial_query_id) whose own child count exceeds DataShardCount=${DATA_SHARD_COUNT}: ${overWidthGroups.length} of ${childrenByQid.size} total`);
+  for (const [qid, rows] of overWidthGroups.slice(0, overWidthSampleLimit)) {
+    // selfMaxConcurrent — this ONE group's own children, swept in isolation.
+    // 1 means the group's own children never overlap EACH OTHER (a
+    // sequential-round-trip pattern: N separate ClickHouse statements, one
+    // after another, all sharing one query_id) — each already paid its own
+    // separate gate acquire/release, so the group itself is not what
+    // breaches the cap even though its own row COUNT exceeds DataShardCount.
+    // > 1 means this group's own children genuinely ran concurrently WITH
+    // EACH OTHER — real evidence of one gate acquisition under-charging a
+    // dispatch that structurally fans out wider than DataShardCount.
+    const selfMaxConcurrent = maxConcurrent(rows.map((r) => [r.startUs, r.durUs]));
+    log(`  over-width dispatch ${qid}: ${rows.length} children (expected <= ${DATA_SHARD_COUNT}), own internal peak concurrency=${selfMaxConcurrent}; sample query: ${rows[0].snippet}`);
+  }
+
+  if (peakConcurrentSelectOnly > DATA_SHARD_FANOUT_CAP) {
+    error(`peak concurrent per-shard ClickHouse Select statement count ${peakConcurrentSelectOnly} exceeded DataShardFanoutCap=${DATA_SHARD_FANOUT_CAP} — the admission-control ceiling did not hold under real load`);
     failures++;
   }
-  if (peakConcurrentShardStatements <= DATA_SHARD_COUNT) {
-    error(`peak concurrent per-shard statement count ${peakConcurrentShardStatements} never exceeded a single statement's own fan-out width (DataShardCount=${DATA_SHARD_COUNT}) — the burst never produced genuine CONCURRENT admitted requests, so DataShardFanoutGate's cross-request bound was never exercised`);
+  if (peakConcurrentSelectOnly <= DATA_SHARD_COUNT) {
+    error(`peak concurrent per-shard Select statement count ${peakConcurrentSelectOnly} never exceeded a single statement's own fan-out width (DataShardCount=${DATA_SHARD_COUNT}) — the burst never produced genuine CONCURRENT admitted requests, so DataShardFanoutGate's cross-request bound was never exercised`);
     failures++;
   }
 
@@ -419,7 +522,7 @@ async function main() {
     error(`e2e-datashard-verify: ${failures} assertion(s) failed`);
     process.exit(1);
   }
-  notice(`e2e-datashard-verify: all assertions passed (dataShardCount=${DATA_SHARD_COUNT}, fanoutCap=${DATA_SHARD_FANOUT_CAP}, peakConcurrentShardStatements=${peakConcurrentShardStatements}, maxKEffObserved=${maxKEffObserved})`);
+  notice(`e2e-datashard-verify: all assertions passed (dataShardCount=${DATA_SHARD_COUNT}, fanoutCap=${DATA_SHARD_FANOUT_CAP}, peakConcurrentSelectOnly=${peakConcurrentSelectOnly}, peakConcurrentAllQueryKinds=${peakConcurrentShardStatements}, maxKEffObserved=${maxKEffObserved})`);
 }
 
 main().catch((e) => {
