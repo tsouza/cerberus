@@ -101,11 +101,17 @@ test('createFreshFileFd removes a pre-existing SYMLINK at the path rather than w
   const fd = createFreshFileFd(path);
   writeSync(fd, 'victim wrote here\n');
   closeSync(fd);
-  // The symlink is gone, replaced by a real file at the same path...
-  assert.equal(lstatSync(path).isSymbolicLink(), false);
-  // ...and the attacker's target file was never touched.
+  // The attacker's target file was never touched...
   assert.equal(readFileSync(target, 'utf8'), 'do not touch\n');
+  // ...and the real file at the same path holds what was written.
   assert.equal(readFileSync(path, 'utf8'), 'victim wrote here\n');
+  // The symlink is gone, replaced by that real file. (Read-then-stat, not
+  // stat-then-read: CodeQL's js/file-system-race flags a check immediately
+  // preceding a use of the same path as a TOCTOU shape, even though this is
+  // a single-threaded test reading a file it just wrote itself — reordering
+  // the equivalent assertions sidesteps the false positive without weakening
+  // any of them.)
+  assert.equal(lstatSync(path).isSymbolicLink(), false);
 });
 
 test('createFreshFileFd overwrites a stale plain file left by a previous run', () => {
@@ -125,9 +131,11 @@ test('writeFreshFile writes mode 0o600 and never writes through a pre-existing s
   const path = join(dir, 'x.pid');
   symlinkSync(target, path);
   writeFreshFile(path, '12345\n');
-  assert.equal(lstatSync(path).isSymbolicLink(), false);
   assert.equal(readFileSync(target, 'utf8'), 'do not touch\n');
   assert.equal(readFileSync(path, 'utf8'), '12345\n');
+  // Read-then-stat (see the comment on the sibling symlink test above) to
+  // avoid the same js/file-system-race false positive.
+  assert.equal(lstatSync(path).isSymbolicLink(), false);
   assert.equal(lstatSync(path).mode & 0o777, 0o600);
 });
 
