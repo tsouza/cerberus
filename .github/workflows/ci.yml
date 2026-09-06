@@ -871,6 +871,16 @@ jobs:
       - name: Assert the chDB round-trip legs are bounded and diagnosable
         run: node --test .github/scripts/chdb-roundtrip.test.mjs
 
+      # `chdb-install` (just/chdb.just) delegates its platform-detection /
+      # URL-construction to this module (CLAUDE.md invariant 15, #3094). The
+      # asset-name mapping is the one part of it that used to be invisible to
+      # any linter, inline in a Justfile `case "$os"`/`case "$arch"` — pinned
+      # here rather than only exercised by an actual `just chdb-install` run
+      # on whatever runner OS/arch this CI happens to have. Pure in-process
+      # test, no network.
+      - name: chdb-install self-test (platform/arch asset mapping)
+        run: node --test .github/scripts/chdb-install.test.mjs
+
       # `roundtrip (promql)` (tsouza/cerberus#2629) is a REQUIRED context
       # posted by an aggregator job that runs no tests of its own — it exists
       # only to roll the sharded `roundtrip-promql-shard` matrix (separate

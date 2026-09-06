@@ -293,6 +293,22 @@ what actually runs.
     (optional; default `just`).
   - Exit: `0` when every extracted invocation dry-runs clean; `1` naming
     every broken one, with its originating file:line(s).
+- **`chdb-install.mjs`** — `just/chdb.just`'s `chdb-install` recipe (issue
+  #3094, epic #3091). Owns the platform-detection, chdb-core release URL
+  construction, `curl`/`tar`/`sudo install` sequence, and idempotency
+  short-circuit that recipe body used to encode inline as `case "$os"` /
+  `case "$arch"` bash. Deliberately self-contained (no `lib/gh.mjs` import,
+  no `::error::`/`::notice::` annotations) per the issue's own scope: its
+  two callers — a contributor's bare shell and the identical recipe running
+  inside CI — both want the exact plain stdout narration the replaced bash
+  printed, and adding workflow-command annotations here would be a behavior
+  change the issue's "identical to current behavior" acceptance criterion
+  doesn't ask for.
+  - Env: `CHDB_VERSION` / `CHDB_INSTALL_PATH` (both required, always passed
+    by `just/chdb.just`); `CHDB_PLATFORM` / `CHDB_ARCH` (optional test-only
+    overrides for `process.platform` / `process.arch`).
+  - Exit: `0` on a fresh install or the idempotent short-circuit; `1` on an
+    unsupported platform or any `curl`/`tar`/`sudo install` failure.
 - **`main-coalescing.mjs`** — `ci.yml` plus the enrolled deep-test workflows.
   Models the only replaceable event/ref pairs (main push and main schedule),
   binds their exact workflow-level concurrency expressions to the lane

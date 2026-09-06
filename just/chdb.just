@@ -19,37 +19,19 @@ CHDB_INSTALL_PATH := "/usr/local/lib/libchdb.so"
 # while staying below the 26.7 aggregate-state serialization change.
 # Mirror update_libchdb.sh shipped inside chdb-go.
 #
-# Idempotent: skips download if the install path already exists. Override
-# CHDB_VERSION at the recipe call (`just chdb-install CHDB_VERSION=v26.5.0`).
+# Idempotent: skips download if the install path already exists as a regular
+# file. Override CHDB_VERSION as a `just` variable assignment before the
+# recipe name (`just CHDB_VERSION=v26.5.0 chdb-install`) — a recipe-call-style
+# `just chdb-install CHDB_VERSION=v26.5.0` is not valid `just` syntax and
+# fails with "does not contain recipe 'CHDB_VERSION=v26.5.0'".
+#
+# The platform-detection (case "$os"/case "$arch"), URL construction,
+# curl/tar/sudo install, and idempotency short-circuit all live in
+# .github/scripts/chdb-install.mjs (CLAUDE.md invariant 15, issue #3094) —
+# self-contained, no shared lib/ dependency — so this recipe is a thin
+# env-passing wrapper around it.
 
 # Install libchdb.so, the in-process ClickHouse engine every chdb-tagged lane needs.
 chdb-install:
-    @if [ -f "{{CHDB_INSTALL_PATH}}" ]; then \
-        echo "==> libchdb already present at {{CHDB_INSTALL_PATH}} (delete to reinstall)"; \
-        exit 0; \
-    fi
-    @os="$(uname -s)"; \
-        arch="$(uname -m)"; \
-        case "$os" in \
-            Linux) \
-                case "$arch" in \
-                    aarch64|arm64) asset="linux-aarch64-libchdb.tar.gz" ;; \
-                    *)             asset="linux-x86_64-libchdb.tar.gz" ;; \
-                esac ;; \
-            Darwin) \
-                case "$arch" in \
-                    arm64) asset="macos-arm64-libchdb.tar.gz" ;; \
-                    *)     asset="macos-x86_64-libchdb.tar.gz" ;; \
-                esac ;; \
-            *) echo "unsupported platform: $os" >&2; exit 1 ;; \
-        esac; \
-        url="https://github.com/chdb-io/chdb-core/releases/download/{{CHDB_VERSION}}/$asset"; \
-        echo "==> downloading $url"; \
-        tmp="$(mktemp -d)"; \
-        curl -fsSL -o "$tmp/libchdb.tar.gz" "$url"; \
-        tar -C "$tmp" -xzf "$tmp/libchdb.tar.gz"; \
-        echo "==> installing to {{CHDB_INSTALL_PATH}} (sudo may prompt)"; \
-        sudo install -m 0755 "$tmp/libchdb.so" "{{CHDB_INSTALL_PATH}}"; \
-        rm -rf "$tmp"; \
-        echo "==> libchdb {{CHDB_VERSION}} installed"
+    @CHDB_VERSION="{{CHDB_VERSION}}" CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" node .github/scripts/chdb-install.mjs
 
