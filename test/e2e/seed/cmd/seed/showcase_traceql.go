@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
@@ -108,6 +109,33 @@ VALUES
    map('db.system', 'postgres', 'db.system.name', 'postgres', 'payload_bytes', '96'),
    40000000, 'Ok', '', [], [], [], [], [], [], [])`
 
+// selectStaleShowcaseTracesCutoffSQLTemplate resolves the stale-row cutoff
+// for the b0... showcase TraceId range (issue #3124's step A) — run once
+// against the PUBLIC otel_traces name (see sharded_mutation.go's package
+// doc comment for why a Distributed SELECT, unlike a mutation, correctly
+// aggregates cluster-wide regardless of which node runs it) and scanned
+// into a time.Time by resolveStaleCutoff. deleteStaleShowcaseTracesSQLTemplate
+// (step B) then binds that literal back as {cutoff:DateTime64(9)} — see its
+// own doc comment for the full margin/ordering analysis this split
+// preserves unchanged, and for why the cutoff must live in a separate
+// statement from the DELETE at all.
+//
+// Carries exactly ONE occurrence of the literal text "@@MUTATION_TABLE@@"
+// (mutationTablePlaceholder's value, sharded_mutation.go), substituted for
+// the PUBLIC table name via mutationTableSQL — never the resolved mutation
+// target, which under the datashard lane (issue #3105) is the "_local"
+// table a plain SELECT never needs to redirect to. Typed directly into this
+// single backtick string (never built by concatenating separate
+// backtick-quoted segments around mutationTablePlaceholder) — see
+// deleteStaleShowcaseTracesSQLTemplate's own doc comment for why: it keeps
+// this const a single unbroken backtick literal for
+// test/regression/seed_test.go's extractBacktickConst, and it keeps the
+// LIKE 'b00...%' wildcard byte-identical rather than forcing fmt.Sprintf
+// %%-escaping.
+const selectStaleShowcaseTracesCutoffSQLTemplate = `SELECT max(Timestamp) - INTERVAL 20 SECOND
+FROM @@MUTATION_TABLE@@
+WHERE TraceId LIKE 'b00000000000000000000000000000%'`
+
 // deleteStaleShowcaseTracesSQL drops the *previous* ticks' showcase
 // spans (the b0... TraceId range is exclusively this seeder's) AFTER
 // the re-anchored INSERT has landed. Without any delete every 30 s
@@ -141,16 +169,34 @@ VALUES
 // DISTINCT (#762) collapses dupes, and showcase contracts assert
 // nonempty/error classes, never exact values (#757).
 //
-// Carries two occurrences of the literal text "@@MUTATION_TABLE@@"
+// The cutoff (`max(showcase Timestamp) - 20s`) is resolved to a literal
+// time.Time BEFORE this statement runs — selectStaleShowcaseTracesCutoffSQLTemplate
+// above, via resolveStaleCutoff — rather than living as a subquery nested
+// inside this DELETE. issue #3105's original design nested it directly, and
+// that worked against a single non-replicated "_local" table per shard, but
+// the datashard-replica-affinity lane (issue #3086) runs multiple REPLICAS
+// per shard, and ClickHouse rejects a subquery-bearing mutation against a
+// replicated table outright ("...statement with subquery may be
+// nondeterministic", code 36): every replica of every shard would otherwise
+// re-evaluate the subquery independently, and two replicas evaluating
+// max(...) at slightly different wall-clock moments could disagree on which
+// rows to delete and silently diverge their data. Binding the literal
+// {cutoff:DateTime64(9)} instead means every replica's own copy of this
+// DELETE compares against the exact same fixed value — no subquery, and no
+// per-replica re-evaluation, survives inside the mutation at all.
+//
+// Carries exactly ONE occurrence of the literal text "@@MUTATION_TABLE@@"
 // (mutationTablePlaceholder's value, sharded_mutation.go) marking the
 // table to target — substituted at call time via
 // mutationTableSQL/resolveMutationTarget rather than baked in as a
 // literal. Under the datashard lane (issue #3105) otel_traces is a
 // Distributed wrapper that rejects DELETE FROM outright ("Table engine
 // Distributed doesn't support mutations", code 48); the resolved name
-// redirects to the underlying "_local" table instead. Both occurrences —
-// the outer DELETE FROM and the inner max(...) subquery's FROM — must name
-// the SAME physical table.
+// redirects to the underlying "_local" table instead. One occurrence of
+// "@@MUTATION_ON_CLUSTER@@" follows it — empty outside the datashard lane,
+// " ON CLUSTER '{cluster}'" within it, needed because a "_local" table's
+// mutation must reach every shard's own copy, not just the node the
+// seeder is connected to.
 //
 // The placeholder is typed directly into this single backtick string
 // (never built by concatenating separate backtick-quoted segments around
@@ -162,11 +208,7 @@ VALUES
 // %%-escaping).
 const deleteStaleShowcaseTracesSQLTemplate = `DELETE FROM @@MUTATION_TABLE@@@@MUTATION_ON_CLUSTER@@
 WHERE TraceId LIKE 'b00000000000000000000000000000%'
-  AND Timestamp < (
-    SELECT max(Timestamp) - INTERVAL 20 SECOND
-    FROM @@MUTATION_TABLE@@
-    WHERE TraceId LIKE 'b00000000000000000000000000000%'
-  )`
+  AND Timestamp < {cutoff:DateTime64(9)}`
 
 // insertShowcaseTraces re-seeds the two showcase trace topologies. Runs
 // inside seedAll so each rolling re-seed tick re-anchors the spans on
@@ -182,7 +224,12 @@ func insertShowcaseTraces(ctx context.Context, conn driver.Conn) error {
 	if err != nil {
 		return fmt.Errorf("showcase traces stale delete: %w", err)
 	}
-	if err := conn.Exec(ctx, mutationTableSQL(deleteStaleShowcaseTracesSQLTemplate, target.table, tracesTable, target.onCluster)); err != nil {
+	cutoff, err := resolveStaleCutoff(ctx, conn, selectStaleShowcaseTracesCutoffSQLTemplate, tracesTable)
+	if err != nil {
+		return fmt.Errorf("showcase traces stale delete: %w", err)
+	}
+	sql := mutationTableSQL(deleteStaleShowcaseTracesSQLTemplate, target.table, target.onCluster)
+	if err := conn.Exec(ctx, sql, clickhouse.Named("cutoff", cutoff)); err != nil {
 		return fmt.Errorf("showcase traces stale delete: %w", err)
 	}
 	return nil

@@ -283,7 +283,14 @@ func TestShowcaseTraceReseedInsertsBeforeDelete(t *testing.T) {
 //  2. the margin must exceed the INSERT's own timestamp spread (so the
 //     freshest tick's oldest row is always spared) and stay below the
 //     30 s re-seed interval (so the previous tick is always collected
-//     and duplication stays bounded at ≤2 copies).
+//     and duplication stays bounded at ≤2 copies);
+//  3. the DELETE itself must compare against a literal {cutoff:DateTime64(9)}
+//     resolved by a separate step-A SELECT, never a max(...) subquery nested
+//     inside the mutation — ClickHouse rejects a subquery-bearing mutation
+//     against a replicated table as nondeterministic under the
+//     datashard-replica-affinity lane's multi-replica-per-shard topology
+//     (issue #3124); resolving the cutoff client-side, once, before the
+//     mutation is issued removes that hazard by construction.
 //
 // The offsets are parsed from the SQL constants rather than hardcoded,
 // so editing the seed topology without rebalancing the margin fails
@@ -297,22 +304,33 @@ func TestShowcaseTraceStaleDeleteIsDataAnchored(t *testing.T) {
 	}
 	content := string(buf)
 
+	selectSQL := extractBacktickConst(t, content, "selectStaleShowcaseTracesCutoffSQL")
 	deleteSQL := extractBacktickConst(t, content, "deleteStaleShowcaseTracesSQL")
-	if !strings.Contains(deleteSQL, "max(Timestamp)") {
-		t.Errorf("%s: deleteStaleShowcaseTracesSQL must anchor its cutoff on max(Timestamp) over the showcase range (data-anchored), not the server clock", showcaseTraceSeedSource)
+
+	if !strings.Contains(selectSQL, "max(Timestamp)") {
+		t.Errorf("%s: selectStaleShowcaseTracesCutoffSQLTemplate must anchor its cutoff on max(Timestamp) over the showcase range (data-anchored), not the server clock", showcaseTraceSeedSource)
 	}
-	if got := strings.Count(deleteSQL, "TraceId LIKE 'b00000000000000000000000000000%'"); got != 2 {
-		t.Errorf("%s: deleteStaleShowcaseTracesSQL must scope BOTH the outer DELETE and the max(Timestamp) subquery to the b0... showcase range (got %d scoped predicates, want 2) — an unscoped subquery anchors the cutoff on foreign rows, an unscoped delete eats the base fixture", showcaseTraceSeedSource, got)
+	if got := strings.Count(selectSQL, "TraceId LIKE 'b00000000000000000000000000000%'"); got != 1 {
+		t.Errorf("%s: selectStaleShowcaseTracesCutoffSQLTemplate must scope its max(Timestamp) read to the b0... showcase range (got %d scoped predicates, want 1) — an unscoped read anchors the cutoff on foreign rows", showcaseTraceSeedSource, got)
+	}
+	if got := strings.Count(deleteSQL, "TraceId LIKE 'b00000000000000000000000000000%'"); got != 1 {
+		t.Errorf("%s: deleteStaleShowcaseTracesSQLTemplate must scope its DELETE to the b0... showcase range (got %d scoped predicates, want 1) — an unscoped delete eats the base fixture", showcaseTraceSeedSource, got)
+	}
+	if !strings.Contains(deleteSQL, "{cutoff:DateTime64(9)}") {
+		t.Errorf("%s: deleteStaleShowcaseTracesSQLTemplate must compare against the literal {cutoff:DateTime64(9)} resolved by selectStaleShowcaseTracesCutoffSQLTemplate, not a subquery nested in the mutation (issue #3124)", showcaseTraceSeedSource)
+	}
+	if strings.Contains(deleteSQL, "SELECT") {
+		t.Errorf("%s: deleteStaleShowcaseTracesSQLTemplate must carry no SELECT of its own — a subquery nested in the mutation is rejected as nondeterministic under the datashard-replica-affinity lane (issue #3124); the cutoff must come from a separate step-A query instead", showcaseTraceSeedSource)
 	}
 
 	intervalRE := regexp.MustCompile(`INTERVAL (\d+) SECOND`)
 
-	// Margin: the single INTERVAL in the DELETE's cutoff expression.
-	deleteIntervals := intervalRE.FindAllStringSubmatch(deleteSQL, -1)
-	if len(deleteIntervals) != 1 {
-		t.Fatalf("%s: expected exactly one `INTERVAL <n> SECOND` margin in deleteStaleShowcaseTracesSQL, got %d", showcaseTraceSeedSource, len(deleteIntervals))
+	// Margin: the single INTERVAL in the step-A cutoff SELECT.
+	selectIntervals := intervalRE.FindAllStringSubmatch(selectSQL, -1)
+	if len(selectIntervals) != 1 {
+		t.Fatalf("%s: expected exactly one `INTERVAL <n> SECOND` margin in selectStaleShowcaseTracesCutoffSQLTemplate, got %d", showcaseTraceSeedSource, len(selectIntervals))
 	}
-	margin, err := strconv.Atoi(deleteIntervals[0][1])
+	margin, err := strconv.Atoi(selectIntervals[0][1])
 	if err != nil {
 		t.Fatalf("parse margin: %v", err)
 	}
