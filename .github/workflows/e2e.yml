@@ -765,18 +765,23 @@ jobs:
     # green in seconds rather than going missing. It is no longer a
     # branch-protection context, but release.yml's preflight reads it by name on
     # the merge commit, so it must always exist and always be honest about what
-    # ran.
-    #
-    # datashard_only also skips this aggregator explicitly, not just its
-    # compose-smoke-scope root — always() would otherwise still fire it, and
-    # its own script below treats a datashard_only-caused scope skip as "the
-    # lane never decided", a hard failure rather than a clean no-op.
-    if: always() && !inputs.datashard_only
+    # ran. MUST stay a bare always() — test/regression/ci_lane_registry_test.go
+    # requires every aggregate registry lane's context job to use exactly
+    # always(), precisely so a failed or skipped producer can never prevent
+    # this context from reporting; a compound `always() && ...` condition
+    # fails that check (it could itself be skipped). datashard_only's own
+    # skip is therefore handled INSIDE the script below, as the first check,
+    # rather than in this job's own `if:`.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: gate on every required shard
         run: |
+          if [ "${{ inputs.datashard_only }}" = "true" ]; then
+            echo "datashard_only dispatch — compose-smoke-scope was intentionally skipped upstream, nothing to aggregate."
+            exit 0
+          fi
           echo "scope  = ${{ needs.compose-smoke-scope.result }} (in_scope=${{ needs.compose-smoke-scope.outputs.in_scope }})"
           echo "setup  = ${{ needs.compose-smoke-setup.result }}"
           echo "shards = ${{ needs.compose-smoke-shard.result }}"
@@ -843,17 +848,19 @@ jobs:
     needs: [compose-smoke-scope, compose-smoke-setup, compose-smoke-shard-info]
     # always() so a cancelled/skipped crawl matrix still reaches this reader —
     # a plain `needs:` would skip it in exactly the case it exists to catch.
-    #
-    # datashard_only also skips this reader explicitly — assert-crawl-
-    # terminal.mjs treats a skipped compose-smoke-scope (SCOPE_RESULT !=
-    # 'success') as "the lane never decided", a hard failure, not a
-    # datashard_only-aware no-op.
-    if: always() && !inputs.datashard_only
+    # MUST stay a bare always() — test/regression/ci_lane_registry_test.go
+    # requires every aggregate registry lane's context job to use exactly
+    # always(); a compound `always() && ...` condition fails that check.
+    # datashard_only's own skip is handled inside the step below instead
+    # (assert-crawl-terminal.mjs would otherwise treat a datashard_only-caused
+    # compose-smoke-scope skip as "the lane never decided", a hard failure).
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - name: assert the surface crawl reached a verdict
+        if: ${{ !inputs.datashard_only }}
         run: node .github/scripts/assert-crawl-terminal.mjs
         env:
           SCOPE_RESULT: ${{ needs.compose-smoke-scope.result }}
