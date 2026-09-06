@@ -274,25 +274,56 @@ async function main() {
   // the pod anyClickhousePodName() happened to resolve to. is_initial_query=1
   // rows exist only on the true entry node regardless of which pod runs the
   // query, so this is correct no matter which pod answers it.
+  //
+  // kEff per trace is the PEAK CONCURRENT overlap of that trace's own
+  // is_initial_query=1 statements, not a flat count of how many it
+  // dispatched in total (cerberus issue #3122's follow-up finding). The two
+  // differ whenever a request's structural shard count K exceeds the
+  // ADMISSION-CLAMPED effective concurrency kEff
+  // (internal/solver/executor.go's admitAndGate: kEff = min(K, pEff,
+  // gate/2)): launchShards still dispatches all K shards to ClickHouse —
+  // sequentially, in waves of at most kEff at a time — so a flat count
+  // measures K, while internal/solver/executor.go's own perShardMemoryBytes
+  // formula divides by kEff. admitAndGate's own final clamp
+  // (`if pEff > kEff { pEff = kEff }`) guarantees pEff == kEff always, and
+  // pEff is exactly the errgroup concurrency limit (`g.SetLimit(pEff)`)
+  // bounding how many of a trace's own shards can run AT ONCE — so the peak
+  // overlap of a trace's own statements is exactly the kEff the divisor
+  // used, which a flat count over the whole burst window is not whenever
+  // concurrent burst load (BURST_CONCURRENCY) clamps kEff below K. This
+  // was invisible before cerberus issue #3122's fix (every observed
+  // max_memory_usage was the flat unapportioned cap regardless of kEff, so
+  // getting kEff wrong never changed the verdict); it surfaced as a NEW,
+  // spurious point-4 failure once the fix started actually apportioning by
+  // kEff, confirmed by decoding several failures' own OBSERVED value back
+  // to an integer real-kEff (cap/observed/DataShardCount) strictly ≤ the
+  // flat count reported.
   // Full trace -> kEff map (every initiator trace, not just split ones):
   // point 4 below needs kEff for EVERY group, including kEff=1 (unsplit)
   // ones, to compute each observed statement's own perShardMemoryBytes
   // ceiling correctly.
-  const traceKRows = chQueryTSV(
+  const traceIntervalRows = chQueryTSV(
     initiatorPod,
-    `SELECT substring(query_id, 1, 32) AS trace, count() AS k
+    `SELECT substring(query_id, 1, 32) AS trace,
+            toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us,
+            query_duration_ms * 1000 AS dur_us
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
      WHERE is_initial_query = 1 AND type = 'QueryFinish'
-       AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
-     GROUP BY trace`,
+       AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
   );
-  const kEffByTrace = new Map(traceKRows.map((r) => {
-    const [trace, k] = r.split('\t');
-    return [trace, Number(k)];
-  }));
-  const splitRows = traceKRows.filter((r) => Number(r.split('\t')[1]) > 1);
-  const maxKEffObserved = splitRows.length > 0 ? Math.max(...splitRows.map((r) => Number(r.split('\t')[1]))) : 0;
-  log(`observed solver-split groups (kEff>1): ${splitRows.length}; max kEff observed=${maxKEffObserved}`);
+  const traceIntervals = new Map();
+  for (const row of traceIntervalRows) {
+    const [trace, startUs, durUs] = row.split('\t');
+    if (!traceIntervals.has(trace)) traceIntervals.set(trace, []);
+    traceIntervals.get(trace).push([Number(startUs), Number(durUs)]);
+  }
+  const kEffByTrace = new Map();
+  for (const [trace, intervals] of traceIntervals) {
+    kEffByTrace.set(trace, maxConcurrent(intervals));
+  }
+  const splitTraceCount = [...kEffByTrace.values()].filter((k) => k > 1).length;
+  const maxKEffObserved = Math.max(0, ...kEffByTrace.values());
+  log(`observed solver-split groups (kEff>1): ${splitTraceCount}; max kEff observed=${maxKEffObserved}`);
   if (maxKEffObserved <= 1) {
     error(`no solver-split (kEff > 1) query was observed in system.query_log during the burst — this leg is vacuous without one (docs/solver.md's admission-control path was never actually exercised)`);
     failures++;
@@ -345,7 +376,7 @@ async function main() {
   for (const row of memRows) {
     const [trace, v] = row.split('\t');
     const n = Number(v);
-    // A child row whose parent trace never showed up in traceKRows (e.g. it
+    // A child row whose parent trace never showed up in kEffByTrace (e.g. it
     // fell just outside the initiator-side window) is treated as kEff=1 —
     // the loosest, most conservative ceiling — rather than silently
     // skipped, so a real formula regression is never masked by a windowing
