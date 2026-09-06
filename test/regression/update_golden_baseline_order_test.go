@@ -8,7 +8,12 @@ import (
 	"testing"
 )
 
-// justfilePath is the canonical task runner; `update-golden` lives here.
+// justfilePath is the canonical task runner's entrypoint. It is a label for
+// error messages only, not a file this package reads directly any more:
+// since #3093 split recipe bodies across just/*.just, every check that
+// actually needs a recipe's content reads it via justDump() or
+// justfileSources() instead — see those files' doc comments for which one
+// fits a given need.
 const justfilePath = "../../Justfile"
 
 // prepareRoundTripPath holds the seam that decides WHICH SQL the cardinality

@@ -21,7 +21,12 @@ import { fileURLToPath } from 'node:url';
 import { RATCHET_TEST, RATCHET_RUN_PATTERN, RATCHET_FANOUT, RATCHET_TIMEOUT_MINUTES, legCommands, selectLeg } from './perf-coverage-fanout.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const justfile = readFileSync(path.join(here, '..', '..', 'Justfile'), 'utf8');
+// coverage-default / coverage-chdb / coverage-merge / coverage all live
+// together in just/test.just, not the root Justfile (#3093's just/*.just
+// split) — reading that one file directly, rather than the root file,
+// keeps this scan's plain-text recipe-boundary slicing working without
+// pulling in a `just --dump` dependency for this cheap check-lane script.
+const justfile = readFileSync(path.join(here, '..', '..', 'just', 'test.just'), 'utf8');
 const coverageWorkflow = readFileSync(path.join(here, '..', 'workflows', 'coverage.yml'), 'utf8');
 const TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
 const COVERPKG = 'github.com/tsouza/cerberus/internal/promql,github.com/tsouza/cerberus/test/perf';

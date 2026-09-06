@@ -15,31 +15,36 @@ import (
 // pipelines into their own `coverage-default` / `coverage-chdb` recipes (so
 // CI can shard them across parallel jobs); `coverage-merge` folds the two
 // profiles and `coverage` chains all three for local use. The isolated span
-// below now starts at `coverage-default:` — the first of the split recipes —
-// rather than the chaining `coverage:` recipe, which no longer contains
-// either `go test` invocation itself.
+// below covers exactly those three recipes, by name, rather than the chaining
+// `coverage:` recipe, which contains no `go test` invocation itself.
+//
+// Reads via justDump() (#3093) for the three recipe bodies — they live in
+// just/test.just now, not the root Justfile — but the pipefail check stays a
+// direct root-Justfile read: `set shell := [...]` is a per-invocation `just`
+// SETTING, which can only be declared once, in the root file itself.
 func TestCoverageRecipeFailsClosedOnGoTestFailure(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
+	d := justDump(t)
+	var recipe strings.Builder
+	for _, name := range []string{"coverage-default", "coverage-chdb", "coverage-merge"} {
+		recipe.WriteString(d.recipe(t, name).bodyText(t))
+		recipe.WriteString("\n")
+	}
+	body := recipe.String()
+
+	if got := strings.Count(body, "go test -timeout"); got != 2 {
+		t.Fatalf("coverage recipes carry %d go test runs, want default and chdb-tagged runs", got)
+	}
+	if strings.Contains(body, "|| true") {
+		t.Fatalf("coverage recipes tolerate a failed command with `|| true`; a partial profile is not valid evidence")
+	}
+
+	rootJustfile, err := os.ReadFile("../../Justfile")
 	if err != nil {
 		t.Fatalf("read Justfile: %v", err)
 	}
-	justfile := string(buf)
-	start := strings.Index(justfile, "\ncoverage-default:\n")
-	end := strings.Index(justfile, "\nupdate-coverage-floor:")
-	if start < 0 || end < 0 || end <= start {
-		t.Fatalf("cannot isolate the coverage recipes in Justfile")
-	}
-	recipe := justfile[start:end]
-
-	if got := strings.Count(recipe, "go test -timeout"); got != 2 {
-		t.Fatalf("coverage recipes carry %d go test runs, want default and chdb-tagged runs", got)
-	}
-	if strings.Contains(recipe, "|| true") {
-		t.Fatalf("coverage recipes tolerate a failed command with `|| true`; a partial profile is not valid evidence")
-	}
-	if !strings.Contains(justfile, `set shell := ["bash", "-eu", "-o", "pipefail", "-c"]`) {
+	if !strings.Contains(string(rootJustfile), `set shell := ["bash", "-eu", "-o", "pipefail", "-c"]`) {
 		t.Fatalf("Justfile shell does not enable pipefail; a failed go test before the output-filter pipe would be hidden")
 	}
 }

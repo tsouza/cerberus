@@ -124,14 +124,9 @@ func TestChSQLIsInTestChDBLane(t *testing.T) {
 
 	const wantPkg = "./internal/chsql/..."
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-
 	// The chdb.yml `Run handler tests (chDB)` step invokes this recipe by name,
 	// so justRecipeBody's own t.Fatal on a missing recipe is the right failure.
-	recipe := justRecipeBody(t, string(buf), "test-chdb")
+	recipe := justRecipeBody(t, "test-chdb")
 	if !strings.Contains(recipe, wantPkg) {
 		t.Errorf("Justfile `test-chdb` recipe does not run %s.\n"+
 			"internal/chsql's chDB round-trip suite is the only layer that executes emitted "+

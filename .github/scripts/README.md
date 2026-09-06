@@ -274,6 +274,25 @@ what actually runs.
 
 ## Modules
 
+- **`verify-just-invocations.mjs`** — the CI-safety gate for the Justfile
+  modularization epic (#3091, #3093). Scans every `.github/workflows/*.yml`
+  file, extracts ONLY the literal shell text of each step's `run:` value
+  (never a YAML comment or an echoed prose string), finds every `just
+  <recipe> [args...]` invocation inside it, and validates each with `just
+  --dry-run <exact invocation>` — catching both a missing recipe and an
+  arity mismatch (a plain `just --show` existence check is blind to the
+  latter) with zero side effects, since `--dry-run` never executes a recipe
+  body. Every quoted shell argument and `${{ … }}` expression is neutralized
+  to one opaque token first, so a real invocation's argument count survives
+  intact while prose that merely contains the word "just" inside a quoted
+  string can never be mistaken for one. This is the pre-merge check each
+  phase of the Justfile split runs against its own branch before proposing
+  that phase's PR — not a standing gate on every unrelated PR, which is why
+  only its own self-test is wired into `ci.yml`.
+  - Env: `REPO_ROOT` (optional; default `process.cwd()`), `JUST_BIN`
+    (optional; default `just`).
+  - Exit: `0` when every extracted invocation dry-runs clean; `1` naming
+    every broken one, with its originating file:line(s).
 - **`main-coalescing.mjs`** — `ci.yml` plus the enrolled deep-test workflows.
   Models the only replaceable event/ref pairs (main push and main schedule),
   binds their exact workflow-level concurrency expressions to the lane

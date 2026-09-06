@@ -72,18 +72,11 @@ var (
 	// as an invocation.
 	justInvocationRe = regexp.MustCompile(`\bjust\s+([a-z0-9][a-z0-9-]*)`)
 
-	// justRecipeHeaderRe matches a Justfile recipe header at column 0. A
-	// recipe may take parameters, so the name is followed by a space or the
-	// colon that closes the header.
-	justRecipeHeaderRe = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)(\s+[^:]*)?:`)
-
 	goTestRe = regexp.MustCompile(`\bgo test\b`)
 
 	// goTestTimeoutRe captures the argument of a `-timeout` flag, which is
 	// either a Go duration or a `{{VAR}}` reference to a Justfile variable.
 	goTestTimeoutRe = regexp.MustCompile(`-timeout[= ]+(\S+)`)
-
-	justVarRe = regexp.MustCompile(`^([A-Z0-9_]+)\s*:=\s*["']?([^"'\s#]+)`)
 )
 
 // workflowJob is one job's two relevant facts: how long the runner will wait,
@@ -110,14 +103,14 @@ type workflowJob struct {
 func TestGoTestTimeoutFitsItsJobBudget(t *testing.T) {
 	t.Parallel()
 
-	justfile := readFileString(t, justfilePath)
-	recipeNames := justRecipeNames(justfile)
-	justVars := justVariables(justfile)
+	d := justDump(t)
+	recipeNames := d.recipeNames()
+	justVars := d.resolvedStringAssignments()
 
 	var problems []string
 	for _, job := range workflowJobsRunningJust(t, recipeNames) {
 		for _, recipe := range job.recipes {
-			for _, cmd := range goTestCommands(t, justfile, recipe) {
+			for _, cmd := range goTestCommands(t, recipe) {
 				problems = append(problems,
 					checkGoTestCommand(t, job, recipe, cmd, justVars)...)
 			}
@@ -263,10 +256,10 @@ func jobsInWorkflow(workflow, filename string, recipeNames map[string]bool) []wo
 
 // goTestCommands returns the `go test` lines a recipe runs, its dependencies
 // included, with comment lines dropped.
-func goTestCommands(t *testing.T, justfile, recipe string) []string {
+func goTestCommands(t *testing.T, recipe string) []string {
 	t.Helper()
 	var out []string
-	for _, line := range strings.Split(justRecipeBodyWithDeps(t, justfile, recipe), "\n") {
+	for _, line := range strings.Split(justRecipeBodyWithDeps(t, recipe), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") || !goTestRe.MatchString(trimmed) {
 			continue
@@ -274,31 +267,4 @@ func goTestCommands(t *testing.T, justfile, recipe string) []string {
 		out = append(out, trimmed)
 	}
 	return out
-}
-
-// justRecipeNames returns every recipe the Justfile declares, so a `just` in
-// prose cannot be mistaken for an invocation.
-func justRecipeNames(justfile string) map[string]bool {
-	names := map[string]bool{}
-	for _, line := range strings.Split(justfile, "\n") {
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if header := justRecipeHeaderRe.FindStringSubmatch(line); header != nil {
-			names[header[1]] = true
-		}
-	}
-	return names
-}
-
-// justVariables returns the Justfile's top-level `NAME := value` assignments,
-// which is how a timeout long enough to deserve a name is written down.
-func justVariables(justfile string) map[string]string {
-	vars := map[string]string{}
-	for _, line := range strings.Split(justfile, "\n") {
-		if assignment := justVarRe.FindStringSubmatch(line); assignment != nil {
-			vars[assignment[1]] = assignment[2]
-		}
-	}
-	return vars
 }

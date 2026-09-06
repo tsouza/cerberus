@@ -98,7 +98,14 @@ func composeUpUnits(t *testing.T) map[string]string {
 			t.Fatalf("read %s: %v", file, err)
 		}
 		switch ext := filepath.Ext(file); {
-		case filepath.Base(file) == "Justfile":
+		case filepath.Base(file) == "Justfile" || ext == ".just":
+			// #3093: recipe bodies now also live under just/*.just. Splitting
+			// PER FILE (not per bare recipe name into one flat map) is what
+			// keeps two DIFFERENT files' recipes from being treated as one
+			// unit — a pre-pull marker in one recipe must never look like it
+			// covers a `docker compose up` in an unrelated sibling recipe
+			// just because justRecipes() happened to return them under the
+			// same map.
 			for name, body := range justRecipes(t, string(src)) {
 				units[file+":"+name] = body
 			}
@@ -237,15 +244,13 @@ func TestComposeUpAcquiresImagesOverTheAuthenticatedPullPath(t *testing.T) {
 func TestJustfileIntegrationLanesPrePullTestImages(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
+	d := justDump(t)
 
 	const integrationTag = "-tags=integration"
 
 	found := 0
-	for name, body := range justRecipes(t, string(buf)) {
+	for name, r := range d.Recipes {
+		body := r.bodyText(t)
 		if !strings.Contains(body, integrationTag) {
 			continue
 		}
@@ -268,15 +273,9 @@ func TestJustfileIntegrationLanesPrePullTestImages(t *testing.T) {
 func TestIntegrationImagePinsMatchTheJustfile(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	justfile := string(buf)
-
 	pinned := map[string]bool{}
 	for _, v := range []string{"CH_TEST_IMAGE", "CH_TEST_IMAGE_PRIOR", "CH_STRICT_SCAN_IMAGE", "CH_QUANTILE_PROM_HISTOGRAM_IMAGE", "CH_TAG_GROUPS_IMAGE"} {
-		for _, img := range justVariableList(t, justfile, v) {
+		for _, img := range justVariableList(t, v) {
 			pinned[img] = true
 		}
 	}
@@ -342,11 +341,7 @@ func TestIntegrationImagePinsMatchTheJustfile(t *testing.T) {
 func TestComposePrePullUsesTheAuthenticatedPullPath(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	body := composePrePullRecipe(t, string(buf))
+	body := composePrePullRecipe(t)
 
 	if !strings.Contains(body, composePullModule) {
 		t.Errorf("%s does not go through `%s`, which owns the model resolution and the shared retry policy.",
@@ -432,15 +427,9 @@ const (
 	composePullModule        = "compose-pull-images.mjs"
 )
 
-func composePrePullRecipe(t *testing.T, justfile string) string {
+func composePrePullRecipe(t *testing.T) string {
 	t.Helper()
-
-	body, ok := justRecipes(t, justfile)[composePrePullRecipeName]
-	if !ok {
-		t.Fatalf("no %q recipe in the Justfile — the guard is scanning for a shape that no longer exists",
-			composePrePullRecipeName)
-	}
-	return body
+	return justDump(t).recipe(t, composePrePullRecipeName).bodyText(t)
 }
 
 // mirrorRegistryPrefix is how a ref announces itself as the GHCR copy rather
@@ -589,18 +578,33 @@ func composeModelFromTree(t *testing.T, root string) (model []byte, fetchable, b
 func TestJustfileNoUnretriedDockerPull(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
+	d := justDump(t)
 
 	const retryRecipe = "_pull-retry"
 
-	for name, body := range justRecipes(t, string(buf)) {
+	// The candidate-set floor this test previously had none of: a recipe
+	// count collapsing (an import dropped, a dump-format change) would
+	// otherwise iterate over an empty or near-empty map and report a clean
+	// scan having asserted nothing — the exact silent-pass shape the split
+	// (#3093) risked for this test specifically, since every `docker pull`
+	// site it guards moved out of the root Justfile it used to read alone.
+	scanned := 0
+	for name := range d.Recipes {
 		if name == retryRecipe {
 			continue
 		}
-		for _, line := range strings.Split(body, "\n") {
+		scanned++
+	}
+	if scanned < minJustfileRecipes-1 {
+		t.Fatalf("only %d non-%s recipe(s) to scan (want at least %d) — the candidate set collapsed, "+
+			"so a `docker pull` reintroduced anywhere would go unnoticed", scanned, retryRecipe, minJustfileRecipes-1)
+	}
+
+	for name, r := range d.Recipes {
+		if name == retryRecipe {
+			continue
+		}
+		for _, line := range strings.Split(r.bodyText(t), "\n") {
 			if strings.Contains(line, "docker pull ") {
 				t.Errorf("Justfile recipe %q calls `docker pull` directly: %s\n"+
 					"Route it through `just %s <image>...` so a transient registry timeout retries "+

@@ -102,10 +102,11 @@ func TestUpdateGoldenChainsParityArtifacts(t *testing.T) {
 			parityShard, got, body, strings.Join(plan, "\n"))
 	}
 
-	justfile := readFileString(t, justfilePath)
-	parity := justRecipeBodyWithDeps(t, justfile, parityLedgerRecipeName)
+	d := justDump(t)
+	parity := justRecipeBodyWithDeps(t, parityLedgerRecipeName)
+	reached := d.transitiveDependencyNames(t, parityLedgerRecipeName)
 	for _, recipe := range []string{parityLedgerRecipeName, parityEnrolmentRecipeName} {
-		if !strings.Contains(parity, recipe+":") {
+		if !reached[recipe] {
 			t.Errorf("%s: the %q recipe does not reach %q.",
 				justfilePath, parityLedgerRecipeName, recipe)
 		}

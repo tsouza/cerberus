@@ -68,12 +68,11 @@ var imageRefContexts = []*regexp.Regexp{
 	regexp.MustCompile(`^\s*default:\s*([^"'\s]+)\s*$`),
 }
 
-// justAssignment / buildTagArgument together resolve what this repository BUILDS
-// rather than pulls. The build targets are all spelled `-t {{SOME_IMAGE}}`, so
-// the Justfile's own variable table is what turns the placeholder into the ref
+// buildTagArgument resolves what this repository BUILDS rather than pulls.
+// The build targets are all spelled `-t {{SOME_IMAGE}}`, so justDump()'s own
+// resolved assignment map (#3093) is what turns the placeholder into the ref
 // a `*_IMAGE :=` pin would otherwise contribute to the pulled set.
 var (
-	justAssignment   = regexp.MustCompile(`(?m)^([A-Z0-9_]+)\s*:=\s*"([^"]*)"`)
 	buildTagArgument = regexp.MustCompile(`(?:^|\s)(?:-t|--tag)\s+(\S+)`)
 	justPlaceholder  = regexp.MustCompile(`^\{\{\s*([A-Z0-9_]+)\s*\}\}$`)
 )
@@ -156,6 +155,7 @@ func mirrorScanFiles(t *testing.T) []string {
 		ext := filepath.Ext(name)
 		switch {
 		case name == "Justfile":
+		case ext == ".just": // #3093: recipe bodies (and *_IMAGE pins) now also live under just/*.just
 		case ext == ".sh":
 		case ext == ".yml" || ext == ".yaml":
 		case strings.HasPrefix(name, "Dockerfile"):
@@ -178,14 +178,9 @@ func mirrorScanFiles(t *testing.T) []string {
 func locallyBuiltRefs(t *testing.T, files []string) map[string]bool {
 	t.Helper()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	vars := map[string]string{}
-	for _, m := range justAssignment.FindAllStringSubmatch(string(buf), -1) {
-		vars[m[1]] = m[2]
-	}
+	// #3093: via justDump() rather than a hardcoded `../../Justfile` read —
+	// `import` merges every just/*.just file's assignments into one flat map.
+	vars := justDump(t).resolvedStringAssignments()
 
 	built := map[string]bool{}
 	for _, file := range files {

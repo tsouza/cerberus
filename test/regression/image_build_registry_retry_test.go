@@ -135,6 +135,7 @@ func buildScanFiles(t *testing.T) []string {
 		ext := filepath.Ext(name)
 		switch {
 		case name == "Justfile":
+		case ext == ".just": // #3093: recipe bodies now also live under just/*.just
 		case ext == ".sh":
 		case (ext == ".yml" || ext == ".yaml") && strings.Contains(filepath.ToSlash(path), "/.github/"):
 		default:

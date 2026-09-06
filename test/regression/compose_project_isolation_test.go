@@ -193,33 +193,36 @@ func TestComposeProjectNamesCarryTheCheckoutSuffix(t *testing.T) {
 func composeInvocations(t *testing.T, files []string) [][]string {
 	t.Helper()
 
-	buf, err := os.ReadFile(filepath.Join(repoRoot, "Justfile"))
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	joined := strings.ReplaceAll(string(buf), "\\\n", " ")
-
+	// #3093: scans every just/*.just file (via justfileSources()), not just
+	// a hardcoded `../../Justfile` — the compose invocations this pin cares
+	// about now live in just/e2e.just, just/e2e-bwc.just, just/compat.just
+	// and just/migration.just. Line continuations are joined WITHIN each
+	// file only; `just import` never merges two files' text into one
+	// physical line, so a continuation cannot cross that boundary either.
 	var out [][]string
-	for _, line := range strings.Split(joined, "\n") {
-		type mention struct {
-			at  int
-			rel string
-		}
-		var mentions []mention
-		for _, rel := range files {
-			if at := strings.Index(line, rel); at >= 0 {
-				mentions = append(mentions, mention{at: at, rel: rel})
+	for _, src := range justfileSources(t) {
+		joined := strings.ReplaceAll(src.Text, "\\\n", " ")
+		for _, line := range strings.Split(joined, "\n") {
+			type mention struct {
+				at  int
+				rel string
 			}
+			var mentions []mention
+			for _, rel := range files {
+				if at := strings.Index(line, rel); at >= 0 {
+					mentions = append(mentions, mention{at: at, rel: rel})
+				}
+			}
+			if len(mentions) == 0 {
+				continue
+			}
+			sort.Slice(mentions, func(i, j int) bool { return mentions[i].at < mentions[j].at })
+			ordered := make([]string, 0, len(mentions))
+			for _, m := range mentions {
+				ordered = append(ordered, m.rel)
+			}
+			out = append(out, ordered)
 		}
-		if len(mentions) == 0 {
-			continue
-		}
-		sort.Slice(mentions, func(i, j int) bool { return mentions[i].at < mentions[j].at })
-		ordered := make([]string, 0, len(mentions))
-		for _, m := range mentions {
-			ordered = append(ordered, m.rel)
-		}
-		out = append(out, ordered)
 	}
 	return out
 }

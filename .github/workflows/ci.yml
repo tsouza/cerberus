@@ -646,6 +646,17 @@ jobs:
         run: |
           node --test .github/scripts/ci-lane-contract.test.mjs
           MODE=registry node .github/scripts/ci-lane-contract.mjs
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
+        with:
+          tool: just
+      # verify-just-invocations.mjs (#3093) dry-runs every `just <recipe>
+      # [args...]` found inside a workflow run: step, catching a missing
+      # recipe AND an arity mismatch a plain `just --show` existence check
+      # would miss. Self-test only here — the CLI itself is the epic's own
+      # pre-merge check each Justfile-split phase runs against its own
+      # branch, not a standing gate on every unrelated PR.
+      - name: Self-test the verify-just-invocations CLI
+        run: node --test .github/scripts/verify-just-invocations.test.mjs
       # The updater itself is workflow_dispatch-only. Its controller remains
       # ordinary repository code, so its pure unit/round-trip contract belongs
       # on the existing PR policy lane without exposing the updater to PR events.

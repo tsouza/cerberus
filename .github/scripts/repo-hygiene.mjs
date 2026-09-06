@@ -145,6 +145,7 @@ export const ROOT_ALLOWLIST = [
   'docker-compose.yml',
   'go.mod',
   'go.sum',
+  'just',
   'lefthook.yml',
   'versions.yaml',
   // Source trees.

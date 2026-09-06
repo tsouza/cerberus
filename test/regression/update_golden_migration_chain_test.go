@@ -105,8 +105,7 @@ func TestUpdateGoldenChainsMigrationGolden(t *testing.T) {
 	// regenerates nothing: the lane would run the Tier-0 scenarios in ASSERT
 	// mode, pass on an in-sync corpus, and look identical to a working
 	// regeneration right up until a plan shape moves.
-	justfile := readFileString(t, justfilePath)
-	migration := justRecipeBody(t, justfile, migrationGoldenRecipeName)
+	migration := justRecipeBody(t, migrationGoldenRecipeName)
 	if !strings.Contains(migration, migrationGoldenEnv) {
 		t.Errorf("%s: the %q recipe no longer sets %s, so it asserts the goldens instead of "+
 			"rewriting them. The %q shard would then be inert — green on an in-sync corpus, "+

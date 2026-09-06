@@ -1,7 +1,6 @@
 package regression
 
 import (
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -16,50 +15,56 @@ import (
 // seed step tried to read SQL from a file named `12521f` that doesn't
 // exist.
 //
-// This test scans the Justfile for `$$` followed by a shell-variable
-// identifier (not by a digit, `?`, `!`, `$`, `*`, `@`, `#`, or `-` —
-// those are legitimate bash special parameters). If found, that's the
-// Make-style escape leaking through; should be a single `$`.
+// This test scans every just/*.just file (plus the root Justfile) for `$$`
+// followed by a shell-variable identifier (not by a digit, `?`, `!`, `$`,
+// `*`, `@`, `#`, or `-` — those are legitimate bash special parameters). If
+// found, that's the Make-style escape leaking through; should be a single
+// `$`. Reads via justfileSources() (#3093), not a single hardcoded
+// `../../Justfile`, since recipe bodies now live across 14 files — this scan
+// needs the raw source text (for a real file:line address), which
+// `just --dump` does not carry at all, so it cannot move to justDump().
 func TestJustfileNoDoubleDollarShellVar(t *testing.T) {
 	t.Parallel()
-
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
 
 	// `$$` followed by an alphabetic char or underscore = the bug.
 	// `$$` followed by `?`/`!`/`*`/`@`/`#`/`-`/`0`-`9` = legitimate
 	// bash special variable, leave alone.
 	doubleDollarVarRE := regexp.MustCompile(`\$\$[a-zA-Z_]`)
 
-	lines := strings.Split(string(buf), "\n")
-	for i, line := range lines {
-		// Strip strings inside quotes? Could be a false-positive in
-		// comments / docstrings; for now flag everything and let the
-		// author add an inline `//justfile-ignore-doubledollar` marker
-		// if a legitimate case shows up.
-		if strings.Contains(line, "justfile-ignore-doubledollar") {
-			continue
-		}
-		if doubleDollarVarRE.MatchString(line) {
-			t.Errorf("Justfile:%d: `$$` followed by a shell-variable identifier — Just does NOT escape $$; bash sees the literal $$ (PID). Use single `$` for shell vars: %s",
-				i+1, strings.TrimSpace(line))
+	for _, src := range justfileSources(t) {
+		lines := strings.Split(src.Text, "\n")
+		for i, line := range lines {
+			// Strip strings inside quotes? Could be a false-positive in
+			// comments / docstrings; for now flag everything and let the
+			// author add an inline `//justfile-ignore-doubledollar` marker
+			// if a legitimate case shows up.
+			if strings.Contains(line, "justfile-ignore-doubledollar") {
+				continue
+			}
+			if doubleDollarVarRE.MatchString(line) {
+				t.Errorf("%s:%d: `$$` followed by a shell-variable identifier — Just does NOT escape $$; bash sees the literal $$ (PID). Use single `$` for shell vars: %s",
+					src.File, i+1, strings.TrimSpace(line))
+			}
 		}
 	}
 }
 
+// TestJustfileTestRecipeIncludesChaosSleep pins that the `test` composite
+// recipe still chains test-unit, test-chaos-sleep and vet-tagged. Reads via
+// justDump() (#3093): a recipe's dependency list is exactly what the dump
+// exposes, regardless of which just/*.just file declares `test:` today.
 func TestJustfileTestRecipeIncludesChaosSleep(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
+	got := justDump(t).recipe(t, "test").dependencyNames()
+	want := []string{"test-unit", "test-chaos-sleep", "vet-tagged"}
+	if len(got) != len(want) {
+		t.Fatalf("the `test` recipe must compose exactly %v, got %v", want, got)
 	}
-
-	testRecipe := regexp.MustCompile(`(?m)^test:\s+test-unit\s+test-chaos-sleep\s+vet-tagged\s*$`)
-	if !testRecipe.Match(buf) {
-		t.Fatal("the test recipe must compose test-unit, test-chaos-sleep, and vet-tagged")
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("the `test` recipe must compose %v in order, got %v", want, got)
+		}
 	}
 }
 
@@ -102,59 +107,62 @@ const minJustfileRecipes = 100
 //
 // Private recipes (leading `_`) are exempt: `just --list` never shows them, so
 // their comment block has no renderer to satisfy.
+//
+// Reads via justfileSources() (#3093), one file at a time — a comment block's
+// height is a per-file, per-line-number question `just --dump` cannot answer
+// at all (it collapses any preceding comment down to a single `doc` string),
+// and a block must never be measured across a FILE boundary (the last line of
+// tools.just is not a comment above the first recipe of build.just).
 func TestJustfileRecipeDescriptionsAreSummaries(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-	lines := strings.Split(string(buf), "\n")
-
 	var listed int
-	for i, line := range lines {
-		m := justRecipeRE.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		// `NAME := value` / `NAME ::= value` are assignments, not recipes.
-		if rest := line[len(m[0]):]; strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, ":") {
-			continue
-		}
-		name := m[1]
-		if strings.HasPrefix(name, "_") {
-			continue // private: never rendered by `just --list`
-		}
-		listed++
+	for _, src := range justfileSources(t) {
+		lines := strings.Split(src.Text, "\n")
+		for i, line := range lines {
+			m := justRecipeRE.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			// `NAME := value` / `NAME ::= value` are assignments, not recipes.
+			if rest := line[len(m[0]):]; strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, ":") {
+				continue
+			}
+			name := m[1]
+			if strings.HasPrefix(name, "_") {
+				continue // private: never rendered by `just --list`
+			}
+			listed++
 
-		start := i
-		for start > 0 && strings.HasPrefix(lines[start-1], "#") {
-			start--
-		}
-		switch block := i - start; {
-		case block == 0:
-			t.Errorf("Justfile:%d: recipe %q has no comment above it, so `just --list` shows no description at all. Add one summary line directly above the recipe.",
-				i+1, name)
-			continue
-		case block > 1:
-			t.Errorf("Justfile:%d: recipe %q has a %d-line comment block, so `just --list` renders only its last line (%q) as the description. Keep the rationale, but put a blank line after it and one summary line directly above the recipe.",
-				i+1, name, block, strings.TrimPrefix(lines[i-1], "# "))
-			continue
-		}
+			start := i
+			for start > 0 && strings.HasPrefix(lines[start-1], "#") {
+				start--
+			}
+			switch block := i - start; {
+			case block == 0:
+				t.Errorf("%s:%d: recipe %q has no comment above it, so `just --list` shows no description at all. Add one summary line directly above the recipe.",
+					src.File, i+1, name)
+				continue
+			case block > 1:
+				t.Errorf("%s:%d: recipe %q has a %d-line comment block, so `just --list` renders only its last line (%q) as the description. Keep the rationale, but put a blank line after it and one summary line directly above the recipe.",
+					src.File, i+1, name, block, strings.TrimPrefix(lines[i-1], "# "))
+				continue
+			}
 
-		desc := strings.TrimSpace(strings.TrimPrefix(lines[i-1], "#"))
-		if desc == "" || !unicode.IsUpper([]rune(desc)[0]) {
-			t.Errorf("Justfile:%d: recipe %q's description %q does not open upper-case — that is the signature of a rationale tail rather than a written summary.",
-				i+1, name, desc)
-		}
-		if !strings.HasSuffix(desc, ".") {
-			t.Errorf("Justfile:%d: recipe %q's description %q does not end in a period; say what the recipe does in one complete sentence.",
-				i+1, name, desc)
+			desc := strings.TrimSpace(strings.TrimPrefix(lines[i-1], "#"))
+			if desc == "" || !unicode.IsUpper([]rune(desc)[0]) {
+				t.Errorf("%s:%d: recipe %q's description %q does not open upper-case — that is the signature of a rationale tail rather than a written summary.",
+					src.File, i+1, name, desc)
+			}
+			if !strings.HasSuffix(desc, ".") {
+				t.Errorf("%s:%d: recipe %q's description %q does not end in a period; say what the recipe does in one complete sentence.",
+					src.File, i+1, name, desc)
+			}
 		}
 	}
 
 	if listed < minJustfileRecipes {
-		t.Fatalf("parsed only %d listed recipes from the Justfile, below the %d floor — justRecipeRE has stopped matching recipe headers, so every assertion above ran over an empty set",
+		t.Fatalf("parsed only %d listed recipes across every just/*.just file, below the %d floor — justRecipeRE has stopped matching recipe headers, so every assertion above ran over an empty set",
 			listed, minJustfileRecipes)
 	}
 }

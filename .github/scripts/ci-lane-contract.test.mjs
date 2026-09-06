@@ -637,6 +637,67 @@ test("Just assignments are not accepted as recipes", () => {
   );
 });
 
+test("a recipe declared only in an imported just/*.just file is still recognised (#3093)", () => {
+  // Regression guard for the exact bug the real Justfile split hit in CI: a
+  // recipe moved out of the root Justfile into an `import`ed file must still
+  // resolve here, not be reported as "missing" by a validator that only ever
+  // read the root file's own text.
+  const splitRoot = mkdtempSync(join(tmpdir(), "cerberus-ci-lane-contract-split-"));
+  mkdirSync(join(splitRoot, ".github", "workflows"), { recursive: true });
+  mkdirSync(join(splitRoot, "just"), { recursive: true });
+  writeFileSync(
+    join(splitRoot, "Justfile"),
+    [
+      'import "just/test.just"',
+      "",
+      "reference-oracle:",
+      "  @./fixture-tools/reference-oracle",
+      "",
+      "e2e-down:",
+      "  @true",
+      "",
+      "e2e-up: e2e-down",
+      "  @true",
+      "",
+    ].join("\n"),
+  );
+  // The recipe every OTHER lane in registryFixture() names ("test") is
+  // declared ONLY here, never in the root file above — the exact shape that
+  // broke the production validator when #3093 moved ~110 recipes out of the
+  // root Justfile.
+  writeFileSync(
+    join(splitRoot, "just", "test.just"),
+    ["test:", "  @node fixture-tools/execution-oracle.mjs", ""].join("\n"),
+  );
+  for (const [name, contents] of Object.entries(workflowFixtures)) {
+    writeFileSync(join(splitRoot, ".github", "workflows", name), contents);
+  }
+  for (const directory of [
+    "always",
+    "docs",
+    "impact",
+    "oracle-property",
+    "oracle-reference",
+    "release",
+  ]) {
+    mkdirSync(join(splitRoot, directory), { recursive: true });
+  }
+  mkdirSync(join(splitRoot, "fixture-tools"), { recursive: true });
+  writeFileSync(join(splitRoot, "fixture-tools", "execution-oracle.mjs"), "");
+  writeFileSync(join(splitRoot, "fixture-tools", "reference-oracle"), "");
+  for (const parts of canonicalSourceFiles) {
+    mkdirSync(join(splitRoot, ...parts.slice(0, -1)), { recursive: true });
+    writeFileSync(join(splitRoot, ...parts), "oracle fixture\n");
+  }
+
+  try {
+    const document = registryFixture();
+    assert.equal(validateRegistry(document, { root: splitRoot }), document);
+  } finally {
+    rmSync(splitRoot, { recursive: true, force: true });
+  }
+});
+
 test("registry enforces merge and release qualification SLO ceilings", () => {
   assert.equal(MERGE_P95_SLO_MINUTES, 20);
   assert.equal(RELEASE_QUALIFICATION_SLO_MINUTES, 120);
