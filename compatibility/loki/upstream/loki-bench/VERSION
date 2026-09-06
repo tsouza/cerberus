@@ -45,7 +45,7 @@ vendored_paths:
   # remote_test.go transitively depends on (metadata loader, variable
   # resolver, test-case shape, conversion helpers, assertions). Without
   # them the `go test -tags=remote_correctness -c` build pulled by
-  # scripts/run-loki-compatibility.sh would fail with `undefined:
+  # .github/scripts/run-loki-compatibility.mjs would fail with `undefined:
   # TestCase / LoadMetadata / ConvertResult / assertResultNotEmpty / ...`.
   - pkg/logql/bench/metadata.go
   - pkg/logql/bench/metadata_resolver.go

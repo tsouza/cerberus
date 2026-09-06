@@ -33,8 +33,6 @@ compatibility/tempo/
   README.md             this file
   docker-compose.yml    tempo + cerberus + clickhouse + driver
   tempo-config.yaml     reference Tempo (local block storage)
-  scripts/
-    run-tempo-compatibility.sh  `docker compose up --wait` + seed + diff + teardown
   driver/                       cerberus-owned driver binary
     Dockerfile          repo-root context multi-stage build
     main.go             subcommand dispatcher (seed / diff)
@@ -51,6 +49,12 @@ compatibility/tempo/
     cmd/tempo-vulture/  long-running canary; reused as seeder pattern
     pkg/httpclient/     Tempo HTTP client; consumed by the driver
 ```
+
+The harness entry point (`node .github/scripts/run-tempo-compatibility.mjs`,
+invoked by `just compat-traceql`) lives at the repo root alongside the
+prometheus and loki harnesses and their shared
+`.github/scripts/lib/compat-compose-lifecycle.mjs`, not under this
+directory's own `scripts/`.
 
 ## Differ design
 

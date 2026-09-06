@@ -103,7 +103,7 @@ func runDiff(args []string) error {
 
 	// If --anchor is empty, recompute the rolling anchor here. The
 	// differ runs as a separate process from the seeder (see
-	// scripts/run-tempo-compatibility.sh) so each phase picks its own
+	// .github/scripts/run-tempo-compatibility.mjs) so each phase picks its own
 	// `now()` — the ±1h search window below absorbs the typically <60s
 	// drift between them. Pass --anchor explicitly only when re-running
 	// the differ standalone against a stack seeded earlier.
