@@ -2086,7 +2086,14 @@ what actually runs.
   confirming the `load_balancing=first_or_random` +
   `load_balancing_first_offset=0` mechanism
   (`internal/chclient/distributed_query_settings.go`), not just its
-  consequence. INFORMATIONAL — never a PR gate.
+  consequence. Before firing the burst, polls `system.clusters.errors_count`
+  to a clean state (bounded by `HEALTH_POLL_SECONDS`, default 60) — pod
+  readiness (`e2e-datashard-up`'s own gate) proves a container passed its
+  probe, not that every node can already reach every peer replica, and a
+  burst fired during that gap can observe a replica-selection decision still
+  influenced by the connection errors ClickHouse's own error-count decay
+  window has not yet cleared (cerberus issue #3148). INFORMATIONAL — never a
+  PR gate.
   - Env: `NAMESPACE` (default `cerberus`), `CERBERUS_URL` (default
     `http://localhost:8080`), `DB` (default `otel`), `CH_USER`/`CH_PASSWORD`
     (default `cerberus`/`cerberus`), `CH_CLUSTER` (default `bwc_cluster`),
