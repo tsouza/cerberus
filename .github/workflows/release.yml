@@ -317,12 +317,45 @@ jobs:
           # publish. Its real enforcement points are the merge gate and the
           # merge queue, both of which a change passes before it can reach a
           # release commit.
+          #
+          # `datashard-replica-affinity` is de-gated because sharding is
+          # EXPERIMENTAL and off by default (docs/operations.md); its own
+          # `.github/ci-lanes.json` entry (e2e.datashard-replica-affinity)
+          # already declares `release_posture: advisory`, and
+          # notify-nightly-failure.mjs's EXPERIMENTAL_LANES lists it
+          # alongside `datashard` for the same reason. A push-to-main preflight
+          # run has no `RELEASE_INFORMATIONAL_CHECKS` match for it today
+          # (found while shipping v1.20.0, cerberus #3155): it isn't in
+          # RELEASE_REQUIRED_CHECKS either, so it fell into the "gates by
+          # default" branch preflight's own test suite documents for exactly
+          # this situation (evaluate_test.go: "A gating check that is NOT in
+          # the informational list gates by default") — an unlisted lane
+          # blocks a release even though its own declared posture says it
+          # should not.
+          #
+          # `brew-migration` / `brew-verify` are de-gated for the same
+          # missing-entry reason, and for an additional one: both jobs'
+          # ci-lanes.json entries (release.brew-migration,
+          # release.brew-verify) declare `main_posture: never` and
+          # `release_posture: post_publish` — they verify an ALREADY-PUBLISHED
+          # cask/formula, so there is nothing meaningful for them to check
+          # pre-publish. `brew-verify.yml` runs on a `schedule`, independent of
+          # any push to main, and its check-run attaches to whatever main HEAD
+          # happens to be when the cron fires — the same "unlucky coincidence"
+          # `drought` above is already de-gated against. v1.20.0's own publish
+          # was blocked by exactly this: a nightly `brew-migration` cron run
+          # landed on the release merge commit by pure timing and reported a
+          # REAL, pre-existing Homebrew tap bug (tsouza/cerberus#3156) that has
+          # nothing to do with the commit being released.
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
             mutation
             gremlins
             drought
             update-golden-guard
+            datashard-replica-affinity
+            brew-migration
+            brew-verify
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
         # (the line is EOL, gets no hotfixes). See docs/operations.md "Release
