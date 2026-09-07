@@ -296,12 +296,23 @@ import (
 // reference, once per splice of a pre-rendered sub-statement, one per
 // merge() member) and stamped by every dispatch site: internal/engine's
 // route A, internal/solver's runShard for route B, and the API-layer
-// direct dispatches that bypass the engine (prom metadata, series and
-// exemplars; tempo structural phase A, root lookup and metrics exemplars),
-// each of which emits through chsql.EmitCounted or a counted emitter and
-// stamps WithDataShardFanoutMultiplier before it reaches the client. Every
-// other direct dispatch in internal/api renders exactly one physical table,
-// for which the unstamped default of 1 is the true weight. Per-shape
+// direct dispatches that bypass the engine — prom metadata, series and
+// exemplars; tempo structural phase A, root lookup, metrics exemplars and
+// tag values; loki label values — each of which emits through
+// chsql.EmitCounted or a counted QueryBuilder.BuildCounted render and
+// stamps WithDataShardFanoutMultiplier before it reaches the client.
+//
+// Those are exactly the API dispatches whose statement can carry MORE than
+// one scan: several render the same table once per UNION-ALL arm (one arm
+// per storage shape, per matcher variant, or per attribute scope), and each
+// arm is its own Distributed fan-out. Every remaining direct dispatch in
+// internal/api renders exactly one physical table, for which the unstamped
+// default of 1 is the true weight — a claim that holds only while those
+// builders stay single-FROM, which is why any of them that grows an arm
+// must move to a counted render too. A statement whose FROM names its table
+// with a bare chsql.Col rather than chsql.PhysicalTable counts ZERO and so
+// charges the default 1 no matter how wide it really is; PhysicalTable's
+// own doc explains why that constructor exists. Per-shape
 // auditing of the WEIGHT is thereby closed for every present and future emitter; issue
 // #3141's audit is about the other half — whether a shape's self-reference
 // nests through a derived table the way SearchTraceLimit's did, which is a

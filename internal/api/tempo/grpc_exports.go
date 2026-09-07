@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
@@ -153,17 +154,21 @@ func (h *Handler) FetchTagValues(
 		return nil, "", err
 	}
 	var (
-		sqlStr string
-		args   []any
+		sqlStr        string
+		args          []any
+		physicalScans int
 	)
 	if r.IsIntrinsic {
-		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, filter, start, end, h.AttrStrategies)
+		sqlStr, args, physicalScans = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, filter, start, end, h.AttrStrategies)
 		valueType = intrinsicType(r.IntrinsicName)
 	} else {
-		sqlStr, args = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, filter, start, end, h.AttrStrategies)
+		sqlStr, args, physicalScans = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, filter, start, end, h.AttrStrategies)
 		valueType = "string"
 	}
-	raw, err := h.Client.QueryStrings(ctx, sqlStr, args...)
+	// Engine bypass: stamp the data-shard fan-out weight from the emitted
+	// statement's own scan count, exactly as the HTTP tag-values path does
+	// (the auto-scope shape unions two arms over the same spans table).
+	raw, err := h.Client.QueryStrings(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sqlStr, args...)
 	if err != nil {
 		return nil, "", err
 	}

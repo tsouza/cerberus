@@ -96,6 +96,21 @@ func countPhysicalScans(n int, inner Frag) Frag {
 // (nestedSetAnnotate's spans scope, exemplars, compare's root lookup).
 func physicalTableFrag(table string) Frag { return countPhysicalScans(1, Col(table)) }
 
+// PhysicalTable names a physical (schema) table in FROM position and counts
+// it as ONE physical scan, so a statement built outside this package still
+// reports a truthful Builder.PhysicalScans / QueryBuilder.BuildCounted.
+//
+// It exists for the API-layer emitters that build their own statements
+// rather than going through chplan + Emit (the Prom metadata / catalog
+// endpoints' UNION-ALL arms): those dispatch to ClickHouse directly and must
+// stamp chclient.WithDataShardFanoutMultiplier themselves, and a bare
+// [Col] in FROM position renders identically but counts nothing — which
+// silently charges the data-shard fan-out gate ONE fan-out for a statement
+// that really scans every configured metric table (cerberus issue #3128).
+// Naming the table through this constructor is what makes the count correct
+// by construction instead of by a caller remembering to add it up.
+func PhysicalTable(table string) Frag { return physicalTableFrag(table) }
+
 // physicalScanCounter is implemented by every Subqueryable so the scan
 // count of a spliced sub-statement reaches the Builder it is spliced into
 // (Subquery / Spliced), whether the sub-statement is pre-rendered text or a

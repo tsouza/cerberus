@@ -631,7 +631,7 @@ func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start
 
 	sb := chsql.NewQuery().
 		Select(chsql.Col(nameCol), anyCall(descCol), anyCall(unitCol)).
-		From(chsql.Col(table)).
+		From(chsql.PhysicalTable(table)).
 		GroupBy(chsql.Col(nameCol))
 
 	if nowAnchored {
@@ -1628,7 +1628,7 @@ func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowA
 	for _, t := range tables {
 		arm := chsql.NewQuery().
 			Select(chsql.As(nameFrag, "name")).
-			From(chsql.Col(t))
+			From(chsql.PhysicalTable(t))
 		if nowAnchored {
 			arm = arm.GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol))
 			if !start.IsZero() {
@@ -1660,7 +1660,7 @@ func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Ti
 	for _, t := range tables {
 		arm := chsql.NewQuery().
 			Select(chsql.As(arrayJoinMapKeysFrag(resCol), "name")).
-			From(chsql.Col(t))
+			From(chsql.PhysicalTable(t))
 		if pred != nil {
 			arm = arm.Where(pred)
 		}
@@ -1748,7 +1748,7 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 		for _, t := range tables {
 			arm := chsql.NewQuery().
 				Select(chsql.As(chsql.Col(metricCol), "value")).
-				From(chsql.Col(t)).
+				From(chsql.PhysicalTable(t)).
 				GroupBy(chsql.Col(metricCol))
 			if !start.IsZero() {
 				arm = arm.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
@@ -1760,7 +1760,7 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 		for _, t := range tables {
 			arm := chsql.NewQuery().
 				Select(chsql.As(distinctIdent(metricCol), "value")).
-				From(chsql.Col(t))
+				From(chsql.PhysicalTable(t))
 			if pred != nil {
 				arm = arm.Where(pred)
 			}
@@ -1822,7 +1822,7 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 		if nowAnchored {
 			arm := chsql.NewQuery().
 				Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
-				From(chsql.Col(t)).
+				From(chsql.PhysicalTable(t)).
 				GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol)).
 				Having(mapAtNotEmptyFrag(attrsCol, k))
 			if !start.IsZero() {
@@ -1832,7 +1832,7 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 		}
 		return chsql.NewQuery().
 			Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
-			From(chsql.Col(t)).
+			From(chsql.PhysicalTable(t)).
 			Where(withWindow(mapAtNotEmptyFrag(attrsCol, k))).
 			Frag()
 	}
@@ -1851,7 +1851,7 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 			if resourceArm {
 				resArm := chsql.NewQuery().
 					Select(chsql.As(distinctMapAtFrag(resCol, k), "value")).
-					From(chsql.Col(t)).
+					From(chsql.PhysicalTable(t)).
 					Where(withWindow(mapAtNotEmptyFrag(resCol, k)))
 				parts = append(parts, resArm.Frag())
 			}

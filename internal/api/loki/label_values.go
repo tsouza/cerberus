@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -47,14 +48,20 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sqlStr, args, err := buildLabelValuesSQL(h.Schema, h.AttrStrategies, name, matchers, start, end)
+	sqlStr, args, physicalScans, err := buildLabelValuesSQL(h.Schema, h.AttrStrategies, name, matchers, start, end)
 	if err != nil {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
 	h.Logger.Debug("cerberus loki label values", "name", telemetry.SanitizeForLog(name), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
-	vals, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
+	// Engine bypass: stamp the data-shard fan-out weight from the emitted
+	// statement's own scan count. The fallback path UNION-ALLs one arm per
+	// storage shape over the SAME logs table, and each arm is its own
+	// Distributed fan-out on a multi-data-shard deployment — so the weight is
+	// the arm count, not one (chclient.WithDataShardFanoutMultiplier's doc).
+	ctx := chclient.WithDataShardFanoutMultiplier(r.Context(), physicalScans)
+	vals, err := h.Client.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki label values CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(w, classifyMetadataErr(err))
@@ -100,22 +107,22 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 // through that map key. The matcher lowering in
 // `internal/logql/lower.go::matcherToExpr` mirrors the same fallback so
 // the two endpoints agree on what counts as a row carrying the label.
-func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name string, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
+func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name string, matchers []*labels.Matcher, start, end time.Time) (string, []any, int, error) {
 	keys := labelValueLookupKeys(name)
 	topCol := labelValueTopLevelColumn(s, name)
 	if topCol == "" && len(keys) == 1 {
 		// Fast path: single map-key lookup, no top-level fallback.
 		sb := chsql.NewQuery().
 			Select(chsql.As(distinctMapAtFrag(s.ResourceAttributesColumn, keys[0]), "v")).
-			From(chsql.Col(s.LogsTable)).
+			From(chsql.PhysicalTable(s.LogsTable)).
 			WithAttrStrategies(strategies)
 		if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
-			return "", nil, err
+			return "", nil, 0, err
 		}
 		sb.Where(nonEmptyMapAtFrag(s.ResourceAttributesColumn, keys[0]))
 		sb.OrderBy(chsql.Col("v"), false)
-		sqlStr, args := sb.Build()
-		return sqlStr, args, nil
+		sqlStr, args, physicalScans := sb.BuildCounted()
+		return sqlStr, args, physicalScans, nil
 	}
 
 	// Fallback path: UNION ALL one arm per storage shape, wrap in an
@@ -124,10 +131,10 @@ func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name st
 	if topCol != "" {
 		arm := chsql.NewQuery().
 			Select(chsql.As(chsql.Col(topCol), "v")).
-			From(chsql.Col(s.LogsTable)).
+			From(chsql.PhysicalTable(s.LogsTable)).
 			WithAttrStrategies(strategies)
 		if err := applySelectorAndWindow(arm, s, matchers, start, end); err != nil {
-			return "", nil, err
+			return "", nil, 0, err
 		}
 		arm.Where(chsql.Neq(chsql.Col(topCol), chsql.Lit("")))
 		arms = append(arms, arm.Frag())
@@ -135,10 +142,10 @@ func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name st
 	for _, k := range keys {
 		arm := chsql.NewQuery().
 			Select(chsql.As(mapAtFrag(s.ResourceAttributesColumn, k), "v")).
-			From(chsql.Col(s.LogsTable)).
+			From(chsql.PhysicalTable(s.LogsTable)).
 			WithAttrStrategies(strategies)
 		if err := applySelectorAndWindow(arm, s, matchers, start, end); err != nil {
-			return "", nil, err
+			return "", nil, 0, err
 		}
 		arm.Where(nonEmptyMapAtFrag(s.ResourceAttributesColumn, k))
 		arms = append(arms, arm.Frag())
@@ -148,8 +155,8 @@ func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name st
 		Select(chsql.Distinct(chsql.Col("v"))).
 		From(chsql.Paren(unionAllQuery(arms))).
 		OrderBy(chsql.Col("v"), false)
-	sqlStr, args := outer.Build()
-	return sqlStr, args, nil
+	sqlStr, args, physicalScans := outer.BuildCounted()
+	return sqlStr, args, physicalScans, nil
 }
 
 // applySelectorAndWindow places the LogQL selector predicate and the

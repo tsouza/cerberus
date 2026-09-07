@@ -188,10 +188,10 @@ func TestBuildAutoScopeUnionAttributeValuesSQL_ChDB_MatchesUnroutedMapOnlyResult
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			unroutedSQL, unroutedArgs := tempo.BuildAttributeValuesSQLForTest(
+			unroutedSQL, unroutedArgs, _ := tempo.BuildAttributeValuesSQLForTest(
 				unroutedSchema, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, nil,
 			)
-			routedSQL, routedArgs := tempo.BuildAttributeValuesSQLForTest(
+			routedSQL, routedArgs, _ := tempo.BuildAttributeValuesSQLForTest(
 				routedSchema, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, nil,
 			)
 
