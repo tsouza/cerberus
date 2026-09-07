@@ -159,7 +159,7 @@ export function exec(cmd, args, opts = {}) {
 // reference) the caller intends it to be. Every current caller of this
 // guard reads an env var no workflow in this repo actually sets (a
 // developer-only manual override — see e.g. agpl-clean.mjs's
-// AGPL_CLEAN_PACKAGE, brew-upgrade-path.mjs's TAP_MIGRATION_LEGACY_REV), so
+// AGPL_CLEAN_PACKAGE, merge-risk.mjs's BASE_SHA), so
 // today's blast radius is "a developer's own shell env", but the guard
 // stays in place regardless: it is what makes it safe for a FUTURE change
 // to wire either one to real workflow input without a fresh audit.

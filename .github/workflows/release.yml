@@ -333,20 +333,20 @@ jobs:
           # blocks a release even though its own declared posture says it
           # should not.
           #
-          # `brew-migration` / `brew-verify` are de-gated for the same
-          # missing-entry reason, and for an additional one: both jobs'
-          # ci-lanes.json entries (release.brew-migration,
-          # release.brew-verify) declare `main_posture: never` and
-          # `release_posture: post_publish` — they verify an ALREADY-PUBLISHED
-          # cask/formula, so there is nothing meaningful for them to check
-          # pre-publish. `brew-verify.yml` runs on a `schedule`, independent of
-          # any push to main, and its check-run attaches to whatever main HEAD
-          # happens to be when the cron fires — the same "unlucky coincidence"
-          # `drought` above is already de-gated against. v1.20.0's own publish
-          # was blocked by exactly this: a nightly `brew-migration` cron run
-          # landed on the release merge commit by pure timing and reported a
-          # REAL, pre-existing Homebrew tap bug (tsouza/cerberus#3156) that has
-          # nothing to do with the commit being released.
+          # `brew-verify` is de-gated for the same missing-entry reason, and
+          # for an additional one: its ci-lanes.json entry
+          # (release.brew-verify) declares `main_posture: never` and
+          # `release_posture: post_publish` — it verifies an
+          # ALREADY-PUBLISHED cask, so there is nothing meaningful for it to
+          # check pre-publish. `brew-verify.yml` runs on a `schedule`,
+          # independent of any push to main, and its check-run attaches to
+          # whatever main HEAD happens to be when the cron fires — the same
+          # "unlucky coincidence" `drought` above is already de-gated
+          # against. v1.20.0's own publish was blocked by exactly this: a
+          # nightly `brew-migration` cron run (that job has since been
+          # removed — see cerberus#3156) landed on the release merge commit
+          # by pure timing and reported a Homebrew tap bug that had nothing
+          # to do with the commit being released.
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
             mutation
@@ -354,7 +354,6 @@ jobs:
             drought
             update-golden-guard
             datashard-replica-affinity
-            brew-migration
             brew-verify
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
