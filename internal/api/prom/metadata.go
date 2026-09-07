@@ -1836,25 +1836,25 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 			Where(withWindow(mapAtNotEmptyFrag(attrsCol, k))).
 			Frag()
 	}
-	parts := make([]chsql.Frag, 0, len(tables)*len(candidates)*2)
+	parts := make([]chsql.Frag, 0, len(tables)*(len(candidates)+1))
 	for _, t := range tables {
 		for _, k := range candidates {
 			parts = append(parts, attrsArm(t, k))
-			// Resource arm: read the same candidate key out of the
-			// ResourceAttributes map so a value stored only under a
-			// resource attribute (k8s.namespace.name, …) surfaces on
-			// /label/<name>/values. ResourceAttributes is absent from
-			// proj_series, so this arm cannot route onto the projection; it
-			// keeps the WHERE-bounded DISTINCT (partition-pruned by the
-			// now-anchored window). The arm is allowlist-gated and rare, so
-			// staying off the projection is by design, not a regression.
-			if resourceArm {
-				resArm := chsql.NewQuery().
-					Select(chsql.As(distinctMapAtFrag(resCol, k), "value")).
-					From(chsql.PhysicalTable(t)).
-					Where(withWindow(mapAtNotEmptyFrag(resCol, k)))
-				parts = append(parts, resArm.Frag())
-			}
+		}
+		// Resource arm: read the same candidate keys out of the
+		// ResourceAttributes map so a value stored only under a resource
+		// attribute (k8s.namespace.name, …) surfaces on
+		// /label/<name>/values. ResourceAttributes is absent from
+		// proj_series, so this arm cannot route onto the projection — by
+		// design, not a regression (it is allowlist-gated and rare). ONE
+		// scan per table covers every candidate (issue #3168): a per-candidate
+		// scan here, like the attrs arm above, multiplied a 7-spelling
+		// candidate powerset into 7 full unaccelerated table scans — the
+		// combination this arm's own "rare, one scan" design and
+		// PromLabelToOTelCandidates' own "cheap, it's a per-row coalesce"
+		// design each assumed the other wouldn't compound with.
+		if resourceArm {
+			parts = append(parts, resourceLabelValuesArmFrag(resCol, t, candidates, pred))
 		}
 	}
 	outer := chsql.NewQuery().
@@ -2022,12 +2022,18 @@ func distinctIdent(col string) chsql.Frag {
 	return chsql.Distinct(chsql.Col(col))
 }
 
+// mapAtFrag emits `<col>[?]`, binding key as a positional `?` argument —
+// the bare Map subscript distinctMapAtFrag, mapAtNotEmptyFrag, and
+// resourceLabelValuesArmFrag each build on.
+func mapAtFrag(col, key string) chsql.Frag {
+	return func(b *chsql.Builder) { b.MapAt(col, key) }
+}
+
 // distinctMapAtFrag emits `DISTINCT <col>[?]` and binds key as a
 // positional argument — the projection shape for "distinct values of
 // label <key> stored in the Attributes map".
 func distinctMapAtFrag(col, key string) chsql.Frag {
-	mapAt := chsql.Frag(func(b *chsql.Builder) { b.MapAt(col, key) })
-	return chsql.Distinct(mapAt)
+	return chsql.Distinct(mapAtFrag(col, key))
 }
 
 // mapAtNotEmptyFrag emits `<col>[?] != ?` and binds both the map key
@@ -2037,8 +2043,38 @@ func distinctMapAtFrag(col, key string) chsql.Frag {
 // the whole expression stays inside the typed Frag surface (the public
 // Raw / Concat escape hatches were retired).
 func mapAtNotEmptyFrag(col, key string) chsql.Frag {
-	mapAt := chsql.Frag(func(b *chsql.Builder) { b.MapAt(col, key) })
-	return chsql.Neq(mapAt, chsql.Lit(""))
+	return chsql.Neq(mapAtFrag(col, key), chsql.Lit(""))
+}
+
+// resourceLabelValuesArmFrag builds ONE scan of table t surfacing every
+// candidate spelling's ResourceAttributes values, replacing
+// unionLabelValuesSQL's historical one-full-scan-per-candidate shape
+// (cerberus issue #3168). It renders:
+//
+//	SELECT arrayJoin(arrayFilter(v -> v != '', [<col>[k0], <col>[k1], …])) AS value
+//	FROM t [WHERE pred]
+//
+// arrayFilter drops the empty-string sentinel CH returns for an absent Map
+// key BEFORE arrayJoin explodes the survivors into rows, so a row missing
+// every candidate contributes zero rows — arrayJoin on an empty array
+// yields none — with no separate not-empty predicate needed, unlike the
+// per-candidate mapAtNotEmptyFrag arm above. pred is the caller's window
+// bound alone (h.metadataWindowPred), not withWindow's row-content filter:
+// this arm's not-empty check already lives inside the SELECT.
+func resourceLabelValuesArmFrag(resCol, t string, candidates []string, pred chsql.Frag) chsql.Frag {
+	lookups := make([]chsql.Frag, len(candidates))
+	for i, k := range candidates {
+		lookups[i] = mapAtFrag(resCol, k)
+	}
+	notEmpty := chsql.Lambda1("v", chsql.Neq(chsql.BareIdent("v"), chsql.Lit("")))
+	values := chsql.Call("arrayJoin", chsql.Call("arrayFilter", notEmpty, chsql.Array(lookups...)))
+	q := chsql.NewQuery().
+		Select(chsql.As(values, "value")).
+		From(chsql.PhysicalTable(t))
+	if pred != nil {
+		q.Where(pred)
+	}
+	return q.Frag()
 }
 
 // matcherSubqueryFrag wraps the legacy chsql.Emit output (sql + args)

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -160,19 +161,23 @@ func TestLabelValues_Endpoint(t *testing.T) {
 	if !strings.Contains(q.lastSQL, "Attributes`[?]") {
 		t.Errorf("expected SQL to reference Attributes map access; got %q", q.lastSQL)
 	}
-	// Per UNION arm the bind order is:
-	//   <name (SELECT DISTINCT Attributes[?])>,
-	//   <name (WHERE Attributes[?] != ?)>,
-	//   <"" (WHERE empty-sentinel Lit)>.
-	// All `name` slots should be "job"; the empty-sentinel slots should be "".
-	for i, a := range q.lastArgs {
-		var want any = "job"
-		if i%3 == 2 {
-			want = ""
-		}
-		if a != want {
-			t.Errorf("arg[%d] = %v, want %v", i, a, want)
-		}
+	// Per metric table (gauge, sum, histogram) the bind order is now
+	// (issue #3168 collapsed the resource arm to one scan per table instead
+	// of one per candidate):
+	//   attrs arm:    <name (SELECT DISTINCT Attributes[?])>,
+	//                 <name (HAVING/WHERE Attributes[?] != ?)>,
+	//                 <"" (empty-sentinel Lit)>;
+	//   resource arm: <"" (arrayFilter's `v != ''` sentinel, bound before
+	//                 the array literal)>,
+	//                 <name (the one candidate's ResourceAttributes[?]
+	//                 array element)>.
+	perTable := []any{"job", "job", "", "", "job"}
+	wantArgs := make([]any, 0, len(perTable)*3)
+	for range 3 {
+		wantArgs = append(wantArgs, perTable...)
+	}
+	if !reflect.DeepEqual(q.lastArgs, wantArgs) {
+		t.Errorf("args = %#v, want %#v", q.lastArgs, wantArgs)
 	}
 }
 
