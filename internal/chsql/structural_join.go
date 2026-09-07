@@ -1071,8 +1071,10 @@ func inStringLiteralsFrag(col Frag, ids []string) Frag {
 // #2783); it carries no user data itself, so it is rendered as a plain
 // identifier via Col — deliberately NOT physicalTableFrag: an external
 // temporary table lives on the initiator and is no Distributed wrapper, so
-// it must not count as a scan and the IN over it must stay a plain IN. traceIDColumn names that external table's single column, which the
-// caller builds with the SAME name as the physical TraceId column
+// it must not count as a scan and the IN over it must stay a plain IN.
+//
+// traceIDColumn names that external table's single column, which the caller
+// builds with the SAME name as the physical TraceId column
 // (StructuralJoin.TraceIDColumn) so the two sides need no separate naming
 // contract.
 //

@@ -1847,9 +1847,13 @@ func routeBExecCtx(
 	// here they are sized from the PER-SHARD cap — the route-A cap
 	// apportioned by decision.K, the same never-looser-than-kEff argument
 	// the RangeBucketGridNative bounds at the bottom of this function rest
-	// on (a shard's real max_memory_usage is cap/(kEff x DataShardCount),
-	// and K >= kEff, so cap/K is at or above it: the threshold stays a real
-	// fraction of the shard's limit, never a value at or past it). Without
+	// on. A shard's real max_memory_usage is cap/(kEff x DataShardCount) and
+	// K >= kEff, so cap/K is at or BELOW it: the threshold can only end up a
+	// smaller fraction of the shard's real limit, never at or past it, which
+	// is the direction that keeps a spill firing before ClickHouse aborts.
+	// Under admission pressure (kEff < K) it fires earlier than route A's
+	// would — conservative, and the same trade the RangeBucketGridNative
+	// bounds already accept. Without
 	// this a shard ran under an apportioned max_memory_usage with NO spill
 	// threshold at all, so a heavy GROUP BY / sort / join that route A
 	// would have spilled-and-completed aborted the shard with
@@ -1881,14 +1885,25 @@ func routeBExecCtx(
 // apportionShardMemoryCap divides the route-A memory cap by k for one
 // route-B shard's spill sizing (routeBExecCtx). 0 is the no-cap sentinel
 // every spill helper reads as "use the absolute default threshold"
-// (spillThreshold's doc), so it must stay 0 rather than become the 1-byte
-// floor chclient.ApportionMemoryBytes clamps to — which is why this is
-// plain integer division and not that helper.
+// (spillThreshold's doc), so a no-cap input must stay 0 rather than become
+// the 1-byte floor chclient.ApportionMemoryBytes clamps to. A CONFIGURED cap
+// never returns 0 (see the floor below), so the sentinel means only what it
+// says: nobody configured a cap.
 func apportionShardMemoryCap(memCap, k int64) int64 {
 	if memCap <= 0 {
 		return 0
 	}
-	return memCap / k
+	// Floored at 1 rather than left to integer division: a configured cap
+	// below K bytes would divide to 0, which every spill helper reads back as
+	// the NO-CAP sentinel and answers with its absolute default threshold —
+	// a bound orders of magnitude above the limit the shard actually runs
+	// under, the exact inversion this apportionment exists to prevent. Only
+	// reachable from an absurd configuration, and 1 byte is the honest floor
+	// for one: it spills immediately rather than pretending there is no cap.
+	if v := memCap / k; v > 0 {
+		return v
+	}
+	return 1
 }
 
 // decisionK is decision.K, defensively floored to 1 — routeBExecCtx is only

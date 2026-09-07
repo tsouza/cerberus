@@ -62,8 +62,22 @@ func DeprecatedEnvWarnings() []string {
 			" is deprecated; use "+EnvAdaptiveEnabled+
 			" (the old name still applies, and the new name wins when both are set)")
 	}
+	if _, ok := os.LookupEnv(envRetiredDisableSplitOnMultiDataShard); ok {
+		warns = append(warns, envRetiredDisableSplitOnMultiDataShard+
+			" is retired and has no effect; the sharded-pushdown solver never splits"+
+			" a multi-data-shard deployment's dispatch on its own, so the knob"+
+			" duplicated CERBERUS_CH_DATA_SHARDS > 1 and is gone")
+	}
 	return warns
 }
+
+// envRetiredDisableSplitOnMultiDataShard is the RETIRED knob the release
+// audit removed. It is not in the Env* block above because nothing parses it
+// any more — it exists only so an operator whose manifest still carries it
+// gets the notice this facility exists to give, instead of the silence a
+// plain deletion would have left (retired keys are otherwise ignored, see
+// ConfigFromEnv's own doc).
+const envRetiredDisableSplitOnMultiDataShard = "CERBERUS_SOLVER_DISABLE_SPLIT_ON_MULTI_DATA_SHARD"
 
 // ConfigFromEnv builds a Config from the CERBERUS_* environment, starting
 // from DefaultConfig and overriding each field from its env var when set. It

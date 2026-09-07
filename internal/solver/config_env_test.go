@@ -166,15 +166,40 @@ func TestDeprecatedEnvWarnings_FiresOnLegacyName(t *testing.T) {
 	}
 }
 
+// TestDeprecatedEnvWarnings_FiresOnTheRetiredSplitKnob pins the same contract
+// for the knob the release audit REMOVED: a deployment whose manifest still
+// carries it must be told it is inert, not left to assume it still disables
+// something. Retired keys are otherwise ignored by ConfigFromEnv, which is
+// exactly why the notice has to be explicit.
+func TestDeprecatedEnvWarnings_FiresOnTheRetiredSplitKnob(t *testing.T) {
+	t.Setenv(envRetiredDisableSplitOnMultiDataShard, "true")
+
+	warns := DeprecatedEnvWarnings()
+	var found string
+	for _, w := range warns {
+		if strings.Contains(w, envRetiredDisableSplitOnMultiDataShard) {
+			found = w
+		}
+	}
+	if found == "" {
+		t.Fatalf("no notice for the retired knob; got %v", warns)
+	}
+	if !strings.Contains(found, "no effect") {
+		t.Errorf("notice %q must say the knob is inert", found)
+	}
+}
+
 // TestDeprecatedEnvWarnings_SilentWhenUnset: no warning when nobody set it.
 // The var is explicitly UNSET rather than left to the ambient environment —
 // DeprecatedEnvWarnings keys off LookupEnv, so a developer shell that happens
 // to export the legacy name would otherwise decide this test's outcome.
 // t.Setenv registers the restore; Unsetenv then removes the key entirely.
 func TestDeprecatedEnvWarnings_SilentWhenUnset(t *testing.T) {
-	t.Setenv(EnvLegacyRouteMemoEnabled, "")
-	if err := os.Unsetenv(EnvLegacyRouteMemoEnabled); err != nil {
-		t.Fatalf("unset %s: %v", EnvLegacyRouteMemoEnabled, err)
+	for _, key := range []string{EnvLegacyRouteMemoEnabled, envRetiredDisableSplitOnMultiDataShard} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
 	}
 	if w := DeprecatedEnvWarnings(); len(w) != 0 {
 		t.Errorf("unexpected deprecation warnings with nothing set: %v", w)
