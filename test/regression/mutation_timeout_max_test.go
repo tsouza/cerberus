@@ -88,7 +88,7 @@ const (
 //     Reverting to an earlier tag makes every report carry the undifferentiated
 //     status, and the gate FAILS on it rather than silently scoring the union:
 //     the closed status set there refuses to score a report it cannot read.
-const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-phase-timeout-consume"
+const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume"
 
 // TestMutationLaneCapsPerMutantTimeout (#1294) pins the one bound that keeps the
 // mutation lane from killing its own runner.

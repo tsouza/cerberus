@@ -134,7 +134,7 @@ installs the matching binary so that fast path is the default.
 `mutation.yml` installs the `tsouza/gremlins` fork rather than upstream `go-gremlins/gremlins@v0.6.0`:
 
 ```bash
-go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-phase-timeout-consume
+go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
 ```
 
 The fixes it carries defend one thing between them: that the number a run reports is a number the
@@ -253,14 +253,24 @@ in the suite rather than an artefact.
 `.gremlins.yaml`'s `exclude-files` paths are interpreted relative to the run's scope, not the repo
 root, and the matcher is RE2 with no lookahead. A path in the wrong form silently excludes nothing.
 
+**`workdir.CachedDealer` closes both copy handles.** Every worker's working-directory setup
+(`CachedDealer.Get`) walks the whole source tree once and copies every regular file, but `doCopy`
+never closed either the source or destination `os.File` it opened — two leaked file descriptors per
+copied file, for the process's lifetime, on every run. Invisible until a consuming repo's tree size,
+times concurrent workers, times two, crosses the runner's open-file ulimit: cerberus's own CI first
+hit `open ...: too many open files` panics after a release added ~2,300 files to its source tree
+(cerberus #3154). Fixed with `defer s.Close()` / `defer d.Close()` in `doCopy`.
+
 The fork ships two branches on purpose. `cerberus-sigterm-fix` at tag
-`v0.6.0-cerberus-run-phase-timeout` is the branch the upstream pull request is built from, and keeps
+`v0.6.0-cerberus-workdir-fd-leak` is the branch the upstream pull request is built from, and keeps
 the upstream module path `github.com/go-gremlins/gremlins` so the diff stays reviewable.
-`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-run-phase-timeout-consume` is the branch
+`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-workdir-fd-leak-consume` is the branch
 `mutation.yml` installs; it adds one commit renaming the `go.mod` module path to
 `github.com/tsouza/gremlins` and rewriting the internal imports, because `go install` otherwise
 rejects the module with `module declares its path as: github.com/go-gremlins/gremlins`. The fixes
-themselves are identical across the two.
+themselves are identical across the two. Both branches carry every fix documented above them in
+this section — each new fix fast-forwards both branches and gets its own pair of tags, so a tag name
+here always names the LATEST fix landed, not a snapshot frozen at that fix alone.
 
 Unlike the module forks, this one sits outside the Dependabot watch flow: it is a build-time tool
 rather than a Go module dependency.
