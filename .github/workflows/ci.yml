@@ -684,6 +684,7 @@ jobs:
           node --test .github/scripts/e2e-seed-stop.test.mjs
           node --test .github/scripts/e2e-chaos-overlay.test.mjs
           node --test .github/scripts/dump-cluster-state.test.mjs
+          node --test .github/scripts/e2e-datashard-verify.test.mjs
       # Baseline diff-stat helper extraction (#3095, epic #3091): the
       # shared `git --no-pager diff --stat` banner every update-*-baseline /
       # gen-config-docs / bench-report / migration-golden recipe now calls

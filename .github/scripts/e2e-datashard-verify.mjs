@@ -90,6 +90,7 @@
 // Exit 0 = every assertion passed; 1 = any failed (with ::error:: annotation).
 
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
 import { makeKubectl, clickhousePodName, chQuery } from './lib/k8s.mjs';
@@ -107,9 +108,17 @@ const BURST_SECONDS = Number(process.env.BURST_SECONDS || '20');
 const BURST_CONCURRENCY = Number(process.env.BURST_CONCURRENCY || '6');
 const FLUSH_WAIT_SECONDS = Number(process.env.FLUSH_WAIT_SECONDS || '10');
 
-if (!DATA_SHARD_COUNT || DATA_SHARD_COUNT < 2) {
-  error(`DATA_SHARD_COUNT must be a real data-shard count (>= 2), got ${process.env.DATA_SHARD_COUNT}`);
-  process.exit(1);
+// requireDataShardCount is called from main, NOT at import time: this module
+// is imported by its own test suite for the pure interval arithmetic below,
+// and a module that exits the process just for being imported cannot be
+// unit-tested at all — which is how peakOverlap shipped a false-failure with
+// no coverage. Running the script still fails just as loudly and just as
+// early, on the first line of main.
+function requireDataShardCount() {
+  if (!DATA_SHARD_COUNT || DATA_SHARD_COUNT < 2) {
+    error(`DATA_SHARD_COUNT must be a real data-shard count (>= 2), got ${process.env.DATA_SHARD_COUNT}`);
+    process.exit(1);
+  }
 }
 
 const kubectl = makeKubectl(capture, NS);
@@ -315,14 +324,24 @@ async function runBurst() {
 }
 
 // ---- sweep-line: max concurrently-overlapping [start, start+duration] intervals ----
-// Each interval is { startUs, durUs, qid? }. Returns the peak overlap and,
-// for the FIRST instant that peak is reached, how many distinct `qid`s
-// (initial_query_ids — i.e. distinct dispatches) were live at once: the
-// cross-request evidence point 2's "exercised" check needs, since one
-// dispatch alone already contributes scans × DataShardCount overlapping
-// children and a peak made of a single dispatch says nothing about the
-// gate's bound ACROSS admitted requests.
-function peakOverlap(intervals) {
+// Each interval is { startUs, durUs, qid? }. Returns the peak overlap and
+// `maxDistinctQidsLive`: the MOST distinct `qid`s (initial_query_ids — i.e.
+// distinct dispatches) that were ever live simultaneously. That second
+// number is the cross-request evidence point 2's "exercised" check needs,
+// since one dispatch alone already contributes scans × DataShardCount
+// overlapping children and an instant made of a single dispatch says
+// nothing about the gate's bound ACROSS admitted requests.
+//
+// Deliberately the max over EVERY instant rather than the count at the
+// instant the peak happens to be first reached: those are different
+// questions, and answering the second one gives a false negative whenever a
+// single wide dispatch reaches the peak first and two dispatches only
+// overlap later (at N=2 a rate() over the 3-member metrics merge union is
+// already 6 concurrent children from ONE dispatch, so that ordering is the
+// common case, not a corner). "Were two admitted requests ever in flight
+// together" is what the gate's cross-request bound needs, and it does not
+// depend on the peak instant at all.
+export function peakOverlap(intervals) {
   const events = [];
   for (const { startUs, durUs, qid } of intervals) {
     events.push([startUs, 1, qid]);
@@ -332,18 +351,16 @@ function peakOverlap(intervals) {
   const live = new Map();
   let cur = 0;
   let peak = 0;
-  let distinctQidsAtPeak = 0;
+  let maxDistinctQidsLive = 0;
   for (const [, delta, qid] of events) {
     cur += delta;
     const n = (live.get(qid) || 0) + delta;
     if (n > 0) live.set(qid, n);
     else live.delete(qid);
-    if (cur > peak) {
-      peak = cur;
-      distinctQidsAtPeak = live.size;
-    }
+    if (cur > peak) peak = cur;
+    if (live.size > maxDistinctQidsLive) maxDistinctQidsLive = live.size;
   }
-  return { peak, distinctQidsAtPeak };
+  return { peak, maxDistinctQidsLive };
 }
 
 function maxConcurrent(intervals) {
@@ -363,6 +380,7 @@ function durationUsExpr(alias) {
 }
 
 async function main() {
+  requireDataShardCount();
   const initiatorPod = clickhousePodName(kubectl, NS);
   const allPods = allClickhousePodNames();
   const perProcessCap = livePerProcessFanoutCap();
@@ -577,7 +595,7 @@ async function main() {
   const selectRows = allSelectRows.filter((r) => cerberusPods.includes(r.host));
   const selectPeak = peakOverlap(selectRows);
   const peakConcurrentSelectOnly = selectPeak.peak;
-  log(`Select-only per-shard statements observed: ${allSelectRows.length} total; issued by cerberus pods: ${selectRows.length} (peak concurrent=${peakConcurrentSelectOnly}, from ${selectPeak.distinctQidsAtPeak} distinct dispatch(es) at that instant); issued by other hosts (direct native-protocol clients such as the rolling seeder — never gate-bound, informational only): ${foreignSelectRows.length}${foreignSelectRows.length ? ` from ${[...new Set(foreignSelectRows.map((r) => r.host))].join(',')} (peak concurrent=${maxConcurrent(foreignSelectRows)})` : ''}`);
+  log(`Select-only per-shard statements observed: ${allSelectRows.length} total; issued by cerberus pods: ${selectRows.length} (peak concurrent=${peakConcurrentSelectOnly}, most dispatches ever in flight together=${selectPeak.maxDistinctQidsLive}); issued by other hosts (direct native-protocol clients such as the rolling seeder — never gate-bound, informational only): ${foreignSelectRows.length}${foreignSelectRows.length ? ` from ${[...new Set(foreignSelectRows.map((r) => r.host))].join(',')} (peak concurrent=${maxConcurrent(foreignSelectRows)})` : ''}`);
   if (unattributedSelectRows.length > 0) {
     error(`${unattributedSelectRows.length} Select per-shard statement(s) carry no client hostname at all (neither on their initiator row nor on themselves) — per-process attribution via query_log.client_hostname failed for them, so the per-pod ceiling cannot be trusted; sample initial_query_id: ${unattributedSelectRows[0].qid}`);
     failures++;
@@ -653,9 +671,9 @@ async function main() {
   // overlapping children (a rate() over the metrics merge() union is 3
   // scans, so 6 at N=2), which is why "peak > DataShardCount" proves
   // nothing — one admitted request clears it alone.
-  const minDistinctDispatchesAtPeak = 2;
-  if (selectRows.length > 0 && selectPeak.distinctQidsAtPeak < minDistinctDispatchesAtPeak) {
-    error(`the peak instant (${peakConcurrentSelectOnly} concurrent per-shard Select statements) held children of only ${selectPeak.distinctQidsAtPeak} distinct dispatch(es) — the burst never produced genuine CONCURRENT admitted requests, so DataShardFanoutGate's cross-request bound was never exercised`);
+  const minConcurrentDispatches = 2;
+  if (selectRows.length > 0 && selectPeak.maxDistinctQidsLive < minConcurrentDispatches) {
+    error(`at no instant were children of more than ${selectPeak.maxDistinctQidsLive} distinct dispatch(es) in flight together (peak was ${peakConcurrentSelectOnly} concurrent per-shard Select statements) — the burst never produced genuine CONCURRENT admitted requests, so DataShardFanoutGate's cross-request bound was never exercised`);
     failures++;
   }
 
@@ -734,10 +752,14 @@ async function main() {
     error(`e2e-datashard-verify: ${failures} assertion(s) failed`);
     process.exit(1);
   }
-  notice(`e2e-datashard-verify: all assertions passed (dataShardCount=${DATA_SHARD_COUNT}, perProcessFanoutCap=${perProcessCap}, cerberusReplicas=${cerberusReplicas}, clusterFanoutCap=${clusterCap}, queryMaxMemoryBytes=${queryMaxMemoryBytes}, peakConcurrentSelectOnly=${peakConcurrentSelectOnly}, distinctDispatchesAtPeak=${selectPeak.distinctQidsAtPeak}, maxScansObserved=${maxScansObserved}, peakConcurrentAllQueryKinds=${peakConcurrentShardStatements}, maxKEffObserved=${maxKEffObserved})`);
+  notice(`e2e-datashard-verify: all assertions passed (dataShardCount=${DATA_SHARD_COUNT}, perProcessFanoutCap=${perProcessCap}, cerberusReplicas=${cerberusReplicas}, clusterFanoutCap=${clusterCap}, queryMaxMemoryBytes=${queryMaxMemoryBytes}, peakConcurrentSelectOnly=${peakConcurrentSelectOnly}, maxConcurrentDispatches=${selectPeak.maxDistinctQidsLive}, maxScansObserved=${maxScansObserved}, peakConcurrentAllQueryKinds=${peakConcurrentShardStatements}, maxKEffObserved=${maxKEffObserved})`);
 }
 
-main().catch((e) => {
-  error(`unhandled error: ${e.stack || e}`);
-  process.exit(1);
-});
+// Run only as a script, never on import: the test suite imports this module
+// for its pure helpers and must not start a kubectl-driven verification run.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    error(`unhandled error: ${e.stack || e}`);
+    process.exit(1);
+  });
+}
