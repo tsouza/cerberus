@@ -85,3 +85,29 @@ func TestMarginSecondsIsExactForEveryDerivedMargin(t *testing.T) {
 		})
 	}
 }
+
+// TestMutationsSyncSetting_ONClusterWaitsOnEveryReplica pins the bug this
+// audit fixed: mutations_sync=1 (mutationsSyncLocal) waits only on the node
+// the seeder is connected to, but an ON CLUSTER stale-row DELETE is
+// broadcast to every shard's "_local" table — under the datashard lane a
+// Distributed table's INSERT spreads rows across shards essentially at
+// random, so a sentinel row can land on a shard the seeder never connects
+// to, and mutations_sync=1 would return before THAT shard's mutation is
+// done. mutations_sync=2 (mutationsSyncEveryReplica) is the ClickHouse
+// setting that actually waits for every replica.
+func TestMutationsSyncSetting_ONClusterWaitsOnEveryReplica(t *testing.T) {
+	t.Parallel()
+
+	if got := mutationsSyncSetting(true); got != mutationsSyncEveryReplica {
+		t.Fatalf("mutationsSyncSetting(onCluster=true) = %d, want mutationsSyncEveryReplica (%d)", got, mutationsSyncEveryReplica)
+	}
+	if got := mutationsSyncSetting(false); got != mutationsSyncLocal {
+		t.Fatalf("mutationsSyncSetting(onCluster=false) = %d, want mutationsSyncLocal (%d) — the single-node shape must not pay for the stronger wait", got, mutationsSyncLocal)
+	}
+	// The two constants must actually differ, or this whole fix stamps the
+	// same setting either way and TestReSeedRowCountStability/base-traces at
+	// N=2 stays exactly as broken as it was.
+	if mutationsSyncEveryReplica == mutationsSyncLocal {
+		t.Fatal("mutationsSyncEveryReplica must differ from mutationsSyncLocal, or the ON CLUSTER branch changes nothing")
+	}
+}

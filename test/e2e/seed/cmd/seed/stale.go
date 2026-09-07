@@ -275,15 +275,59 @@ WHERE TraceId LIKE 'a00000000000000000000000000000%'
 // race those callers already guard against).
 const mutationsSyncLocal = 1
 
-// staleDeleteContext scopes a stale-row ALTER TABLE ... DELETE to
-// mutationsSyncLocal. Applied uniformly to every DELETE in this file — not
-// just the three tables known to carry projections in the bundled/k3d
-// schema today — so this whole class of statement stays synchronous
-// regardless of which table a future fixture family adds a DELETE for.
-func staleDeleteContext(ctx context.Context) context.Context {
+// mutationsSyncEveryReplica (`mutations_sync=2`) waits for the mutation to
+// finish on EVERY replica, not just the node the seeder is connected to.
+//
+// It is what an ON CLUSTER stale-row DELETE needs, and mutationsSyncLocal is
+// not. Under the datashard lane a Distributed table's INSERT spreads rows
+// across shards essentially at random (Config.DataShardingKey, default
+// rand()), so a sentinel row lands on ONE shard — quite possibly not the one
+// the seeder is connected to. ON CLUSTER broadcasts the DELETE to every
+// node and the client waits for the DDL queue to accept it everywhere, but
+// with mutations_sync=1 each node then waits only for ITSELF: the connected
+// node's mutation is complete when Exec returns, while another shard's is
+// merely queued. A reader that counts rows immediately afterwards can still
+// see the row the DELETE was issued to reap — the exact "readers never
+// observe a partially-deleted window" guarantee the callers below are
+// written to rely on, holding on one shard and not the others.
+//
+// Only the low-row-count families expose it in practice (base-traces' fixed
+// 7-row fixture), because a high-volume family's next tick lands fresh rows
+// on every shard and re-runs the DELETE there anyway — which is why this
+// surfaces as an intermittent TestReSeedRowCountStability/base-traces
+// failure on the N=2 lane alone.
+const mutationsSyncEveryReplica = 2
+
+// staleDeleteContext scopes a stale-row ALTER TABLE ... DELETE to the
+// synchrony its target needs: every replica when the statement is broadcast
+// ON CLUSTER (the datashard lane's "_local" tables), the connected node
+// alone otherwise (the single-node monolith shape, where they are the same
+// thing and the stronger setting would only add a needless wait).
+//
+// Applied uniformly to every DELETE in this file — not just the three
+// tables known to carry projections in the bundled/k3d schema today — so
+// this whole class of statement stays synchronous regardless of which table
+// a future fixture family adds a DELETE for.
+func staleDeleteContext(ctx context.Context, onCluster bool) context.Context {
 	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"mutations_sync": mutationsSyncLocal,
+		"mutations_sync": mutationsSyncSetting(onCluster),
 	}))
+}
+
+// mutationsSyncSetting picks the `mutations_sync` value staleDeleteContext
+// stamps: mutationsSyncEveryReplica when the DELETE is broadcast ON CLUSTER
+// (so every replica of every shard is actually waited on before the caller
+// proceeds), mutationsSyncLocal otherwise (the monolith shape, where the
+// connected node and "every node the statement touched" are the same node,
+// so the stronger setting would only add a needless wait). Split out as its
+// own pure function so the ON-CLUSTER-picks-the-stronger-setting decision is
+// unit-testable without a live ClickHouse connection or reaching into
+// clickhouse-go's unexported query-options internals.
+func mutationsSyncSetting(onCluster bool) int {
+	if onCluster {
+		return mutationsSyncEveryReplica
+	}
+	return mutationsSyncLocal
 }
 
 // deleteStaleFamily runs one fixture family's two-step literal-cutoff
@@ -293,7 +337,7 @@ func staleDeleteContext(ctx context.Context) context.Context {
 // cutoff to a literal time.Time; step B execs deleteTemplate — with that
 // time.Time bound as {cutoff:DateTime64(9)} — against the resolved
 // mutation target (resolveMutationTarget), wrapped in staleDeleteContext
-// so the DELETE stays synchronous. Under the datashard lane (issue #3105)
+// so the DELETE stays synchronous on every node it was broadcast to. Under the datashard lane (issue #3105)
 // publicTable's resolved mutation target is the underlying "_local" table,
 // since the Distributed public name itself rejects every mutation.
 func deleteStaleFamily(ctx context.Context, conn driver.Conn, publicTable, selectTemplate, deleteTemplate string, margin time.Duration) error {
@@ -306,7 +350,7 @@ func deleteStaleFamily(ctx context.Context, conn driver.Conn, publicTable, selec
 		return err
 	}
 	sql := mutationTableSQL(deleteTemplate, target.table, target.onCluster)
-	return conn.Exec(staleDeleteContext(ctx), sql, clickhouse.Named("cutoff", cutoff))
+	return conn.Exec(staleDeleteContext(ctx, target.onCluster != ""), sql, clickhouse.Named("cutoff", cutoff))
 }
 
 // deleteStaleMetrics prunes previous-tick rows from every metrics table
