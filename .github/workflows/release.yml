@@ -428,11 +428,26 @@ jobs:
       # step.
       is_latest: ${{ steps.is_latest.outputs.is_latest }}
     steps:
+      # Token: RELEASE_PAT, for the SAME reason as `eol-retire` (see that job's
+      # own comment) plus one GitHub restricts unconditionally: the ephemeral
+      # `github.token` a checkout defaults to can NEVER carry OAuth `workflow`
+      # scope — not a repo setting, not something `permissions: contents:
+      # write` above grants — so `git push` later in this job (the tag-push
+      # step) is rejected outright whenever the merge commit being tagged
+      # itself touched a `.github/workflows/*` file: `! [remote rejected]
+      # v1.20.0 -> v1.20.0 (refusing to allow a GitHub App to create or update
+      # workflow ".github/workflows/release.yml" without `workflows`
+      # permission)`. First hit shipping v1.20.0 itself: the release-gate fix
+      # merged onto the tagged commit touched release.yml (cerberus #3157).
+      # RELEASE_PAT is an admin-owned PAT that does carry `workflow` scope; the
+      # `|| secrets.GITHUB_TOKEN` fallback is the same best-effort, unsupported
+      # path as `eol-retire`'s.
       - uses: actions/checkout@v7
         with:
           # fetch-depth: 0 so goreleaser's changelog + the `:latest` highest-
           # stable computation below see the full tag history.
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
       - uses: ./.github/actions/setup-go
 
