@@ -4065,6 +4065,23 @@ The machine ends up with the new cask in the Caskroom, the old binary on `PATH`,
 and no error printed anywhere. The users it strands are the ones who installed
 cerberus *earliest*.
 
+That first paragraph describes the DESIGNED behavior; current Homebrew (4.6.20, verified live
+against the real tap, cerberus#3156) does not reach it. A same-tap formula-to-cask migration hits
+a cask-trust gate `brew update` cannot pass unattended — it prints a warning naming a `brew trust`
+command that does not exist (`brew help trust` → unknown command) and stops, never reaching the
+`… has been migrated …` announcement this section otherwise describes. Manually running
+`brew install --cask tsouza/tap/cerberus` afterward DOES auto-trust the cask, but still hits the
+keg-link refusal from the paragraph above, since the formula was never uninstalled — so an
+affected user needs both steps, in order:
+
+```sh
+brew uninstall --formula cerberus
+brew install --cask tsouza/tap/cerberus
+```
+
+See issue #3156 for the full reproduction; it is open pending either a change in Homebrew's own
+cask-trust behavior for tap migrations or a repo-side workaround nobody has found yet.
+
 The target is written as the bare tap name, which is how homebrew/core spells its
 own formula-to-cask migrations. Homebrew splits it on `/`: a two-part value has no
 name component and is read as "same package, that tap", installing the
