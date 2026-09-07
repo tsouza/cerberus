@@ -1816,6 +1816,22 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 // sentinel (executor.go's own comment), so dividing 0 by K here would
 // silently ask WithRangeBucketGridNativeMax{Rows,DensityUnits} to fall
 // back to the FULL, un-apportioned default instead of an apportioned one.
+//
+// This apportionment does NOT relieve a `groups`-dominated query (a
+// wide-bucket classic histogram at high series cardinality) — investigated
+// and confirmed correct, not a bug, in cerberus issue #3165. The density
+// bound is itself derived linearly from the memory cap
+// (rbgnDensityUnitsForMemory), so dividing the whole-query bound by K is
+// arithmetically the same as re-deriving it from the shard's own real,
+// apportioned cap (memCap/K) — self-consistent, not a drift. `groups`
+// (series x rung cardinality) does not shrink under TIME-based sharding
+// the way `anchors` (window/step) does, so a shard's real cost and its
+// apportioned budget shrink by the same 1/K factor: the pass/fail verdict
+// is mathematically invariant to K. For that shape sharding is not an
+// escape valve, unlike the row-count/anchor-dominated case the "routes to
+// a sharded execution rather than failing it outright" framing above
+// describes — the operator has to size CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS
+// for the metric's real, un-apportioned cost instead.
 func routeBExecCtx(
 	ctx context.Context, langName, responseShape string, decision *solver.Decision,
 	plan chplan.Node, memCap int64, joinSpill bool,
