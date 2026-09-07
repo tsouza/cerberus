@@ -412,6 +412,12 @@ ClickHouse >= 25.9** (the left-open window fix, PR #86588). See
 | ---------------------------------- | ----------- | -------- | ------- | ------------------------------------------------------------------------------------------------------ |
 | `CERBERUS_LOKI_TAIL_WRITE_TIMEOUT` | —           | duration | `10s`   | Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`. |
 
+## Loki metadata
+
+| Variable                            | Config file | Type | Default | Description                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------------- | ----------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CERBERUS_LOKI_PATTERNS_MIN_VOLUME` | —           | int  | `30`    | Minimum total sample count a `/loki/api/v1/patterns` cluster must reach before it is returned, mirroring upstream Loki's `minClusterSize` (verified against `pkg/pattern/ingester_querier.go`, cerberus issue #2081). `30` default. `0` is a valid, explicit choice that disables the floor entirely — every detected template is returned, matching cerberus's pre-#2205 behaviour. |
+
 ## Schema overrides and Prometheus resource labels
 
 Two further setting families shape ClickHouse interaction but are resolved by

@@ -10,12 +10,12 @@ import (
 
 // TestMinePatternsClearsE2ESeedFloor pins the class of regression that
 // broke the "dashboard" e2e gate for 12+ hours after #2205 added the
-// minimumPatternVolume floor (mirroring upstream Loki's minClusterSize):
+// defaultPatternsMinVolume floor (mirroring upstream Loki's minClusterSize):
 // the rolling e2e seed (test/e2e/seed/cmd/seed/main.go's insertLogsSQL)
 // generates otel_logs rows for {service_name="api"} that, once the
 // rolling re-seeder (`just e2e-seed-rolling`, 30 s ticks) has accumulated
 // a realistic handful of ticks, must produce at least one drain cluster
-// whose volume clears minimumPatternVolume — otherwise the
+// whose volume clears defaultPatternsMinVolume — otherwise the
 // /loki/api/v1/patterns e2e assertion
 // (test/e2e/playwright/loki_ux.spec.ts:152, "patterns: the /patterns
 // endpoint extracts drain clusters from log bodies") sees
@@ -76,15 +76,15 @@ func TestMinePatternsClearsE2ESeedFloor(t *testing.T) {
 		}
 	}
 
-	got := minePatterns(lines, start, end, minimumPatternSampleResolution)
+	got := minePatterns(lines, start, end, minimumPatternSampleResolution, defaultPatternsMinVolume)
 	if len(got) == 0 {
 		t.Fatalf("0 clusters after %d re-seed ticks (%d api lines in the query window) — "+
-			"the e2e seed fixture no longer clears minimumPatternVolume=%d; "+
+			"the e2e seed fixture no longer clears defaultPatternsMinVolume=%d; "+
 			"see test/e2e/seed/cmd/seed/main.go's insertLogsSQL",
-			realisticDwellTicks, len(lines), minimumPatternVolume)
+			realisticDwellTicks, len(lines), defaultPatternsMinVolume)
 	}
-	if v := patternTestVolume(got[0]); v < minimumPatternVolume {
-		t.Fatalf("best cluster volume=%d want >= minimumPatternVolume=%d after %d re-seed ticks",
-			v, minimumPatternVolume, realisticDwellTicks)
+	if v := patternTestVolume(got[0]); v < defaultPatternsMinVolume {
+		t.Fatalf("best cluster volume=%d want >= defaultPatternsMinVolume=%d after %d re-seed ticks",
+			v, defaultPatternsMinVolume, realisticDwellTicks)
 	}
 }

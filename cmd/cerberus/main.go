@@ -1424,6 +1424,7 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	h.Lang.AttrStrategies = h.AttrStrategies
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	h.TailWriteTimeout = cfg.LokiTailWriteTimeout
+	h.PatternsMinVolume = cfg.LokiPatternsMinVolume
 	// LabelCatalogEnabled (cerberus issue #2770) is the resolved chopt
 	// loki_catalog_mv verdict — the SAME cfg.SchemaLokiCatalogMV DDLConfig
 	// threads to gate provisioning the catalog table in the first place, so
