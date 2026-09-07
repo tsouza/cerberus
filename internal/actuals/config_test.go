@@ -23,6 +23,8 @@ func TestConfig_ValidateRejectsBadFields(t *testing.T) {
 		{"non-positive entry ttl", func(c *Config) { c.EntryTTL = 0 }},
 		{"non-positive poll interval", func(c *Config) { c.QueryLogPollInterval = 0 }},
 		{"non-positive lookback", func(c *Config) { c.QueryLogLookback = 0 }},
+		{"lookback equal to poll interval", func(c *Config) { c.QueryLogLookback = c.QueryLogPollInterval }},
+		{"lookback below poll interval", func(c *Config) { c.QueryLogLookback = c.QueryLogPollInterval / 2 }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

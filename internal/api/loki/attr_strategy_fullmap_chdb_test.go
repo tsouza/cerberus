@@ -4,7 +4,7 @@
 // ad-hoc discovery-endpoint query builders (/labels, /series,
 // /detected_labels, /detected_fields, /label/<name>/values) never route
 // through chplan/engine.emitForHead, so they need their own JSON-aware
-// rendering (attr_strategy.go's attrMapFrag / distinctAttrKeysFrag,
+// rendering (attr_strategy.go's attrMapFrag / chsql.DistinctAttrKeys,
 // chsql's Builder.MapAt fix) gated on the SAME Handler.AttrStrategies the
 // normal query path resolves. Each test here runs the SAME HTTP request
 // against a Map-typed otel_logs table and a logically equivalent
@@ -77,7 +77,7 @@ INSERT INTO %[5]s (Timestamp, Body, LogAttributes, ResourceAttributes) VALUES
 // (formatted with the four seed-row timestamps plus a distinct table
 // name), with AttrStrategies wired exactly as cmd/cerberus's boot path
 // wires it for a JSON-typed schema — nil for a Map-typed table
-// (attr_strategy.go's attrMapFrag / distinctAttrKeysFrag's own no-op
+// (attr_strategy.go's attrMapFrag / chsql.DistinctAttrKeys's own no-op
 // default, identical to every call site that predates cerberus issue
 // #3063).
 //
@@ -148,7 +148,7 @@ func decodeStringSliceResponse(t *testing.T, resp *http.Response) []string {
 }
 
 // TestLabels_JSONStrategy_ChDB pins /loki/api/v1/labels: the JSON-typed
-// table's key set (via distinctAttrKeysFrag's JSONAllPaths branch) must
+// table's key set (via chsql.DistinctAttrKeys's JSONAllPaths branch) must
 // match the Map-typed table's (.keys subcolumn branch) exactly, dotted
 // OTel key (http.status_code) included.
 func TestLabels_JSONStrategy_ChDB(t *testing.T) {

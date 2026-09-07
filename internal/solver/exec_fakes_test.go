@@ -20,9 +20,12 @@ type fakeEmitter struct {
 	failAt  int // -1 = never
 	now64At int // -1 = never
 	calls   atomic.Int64
+	// physicalScans is the per-statement scan count every successful Emit
+	// reports (chsql.EmitCounted's third result); 1 unless a test sets it.
+	physicalScans int
 }
 
-func newFakeEmitter() *fakeEmitter { return &fakeEmitter{failAt: -1, now64At: -1} }
+func newFakeEmitter() *fakeEmitter { return &fakeEmitter{failAt: -1, now64At: -1, physicalScans: 1} }
 
 func (e *fakeEmitter) Emit(_ context.Context, _ chplan.Node) (string, []any, int, error) {
 	n := int(e.calls.Add(1)) - 1
@@ -30,9 +33,9 @@ func (e *fakeEmitter) Emit(_ context.Context, _ chplan.Node) (string, []any, int
 		return "", nil, 0, fmt.Errorf("synthetic emit failure on shard %d", n)
 	}
 	if e.now64At >= 0 && n == e.now64At {
-		return fmt.Sprintf("SELECT now64(9) /* shard %d */", n), []any{n}, 1, nil
+		return fmt.Sprintf("SELECT now64(9) /* shard %d */", n), []any{n}, e.physicalScans, nil
 	}
-	return fmt.Sprintf("SELECT 1 /* shard %d */", n), []any{n}, 1, nil
+	return fmt.Sprintf("SELECT 1 /* shard %d */", n), []any{n}, e.physicalScans, nil
 }
 
 // ---- fake CursorQuerier -------------------------------------------------

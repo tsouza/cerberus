@@ -6,9 +6,10 @@
 // against chsql.NewQuery() rather than through a chplan tree, so they
 // never reached engine.emitForHead / chsql.Emit's ctx-based
 // AttrStrategies threading at all — Handler.AttrStrategies (cerberus
-// issue #3062) had no effect on them. internal/api/tempo/attr_strategy.go
-// (distinctAttrKeysFrag) plus threading chsql.AttrStrategies explicitly
-// onto every chsql.QueryBuilder these two files build (mirroring
+// issue #3062) had no effect on them. chsql.DistinctAttrKeys (the
+// whole-map key-discovery shape this head shares with internal/api/loki)
+// plus threading chsql.AttrStrategies explicitly onto every
+// chsql.QueryBuilder these two files build (mirroring
 // internal/api/loki/attr_strategy.go's identical fix for cerberus issue
 // #3063 point 2) is this file's target.
 //
@@ -17,7 +18,7 @@
 // key discovery AND /search/tag/{name}/values' per-scope, auto-scope
 // (leading-dot union) and existence-pre-filter shapes — every one of
 // which reads through a DIFFERENT ad-hoc Frag helper
-// (distinctAttrKeysFrag / mapAtFrag / mapContainsFrag /
+// (chsql.DistinctAttrKeys / mapAtFrag / mapContainsFrag /
 // attrValueArrayJoinFrag / mapContainsAnyFrag) that must all resolve the
 // SAME threaded AttrStrategies to agree with each other and with the
 // query path's own per-key JSON rendering (cerberus issue #3062).
@@ -97,7 +98,7 @@ func TestTags_JSONAttrStrategy_KeyDiscovery_ChDB(t *testing.T) {
 				t.Fatalf("Map /api/search/tags?scope=%s = %v, want it to contain %q (test's own expectation, not just Map==JSON)", scope, mapTags, wantKey)
 			}
 			if !containsStr(jsonTags, wantKey) {
-				t.Errorf("JSON /api/search/tags?scope=%s = %v, want it to contain %q — distinctAttrKeysFrag's "+
+				t.Errorf("JSON /api/search/tags?scope=%s = %v, want it to contain %q — chsql.DistinctAttrKeys's "+
 					"JSONAllPaths branch must report every key a Map .keys subcolumn would", scope, jsonTags, wantKey)
 			}
 		})

@@ -333,11 +333,10 @@ func wrapExpHistogramMergeSumMapBudgetGuard(merged chplan.Node, maxCostUnits int
 // they bound the WindowExpr pre-pass's own total-scale cost, a mechanism
 // the single-group guard's cost model never had to account for, so folding
 // them into the SAME operator override would conflate two different real
-// cost drivers behind one number. A future session that wants operator
-// control over these too can add it the same way cerberus issue #2667
-// added [EnvHistogramMergeMaxCostUnits] for the per-group ceiling — not
-// done here to keep this issue's own scope to the guard's EXISTENCE and
-// calibration, not a new knob no operator has asked for yet.
+// cost drivers behind one number. These two ceilings are fixed constants
+// by design: no operator has asked to tune them, and a knob nobody turns is
+// surface without a user. If one is ever wanted, cerberus issue #2667's
+// [EnvHistogramMergeMaxCostUnits] is the pattern to copy.
 const (
 	// maxHistogramMergeSumMapTotalRowCountGuard bounds the TOTAL row count
 	// entering the WindowExpr pre-pass across every group in a multi-group

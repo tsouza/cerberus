@@ -13,6 +13,9 @@
 // node: builtins only (via ./gh.mjs) + the `gh` CLI already authenticated
 // by the calling workflow's GH_TOKEN.
 
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import process from 'node:process';
 import { capture, error, notice } from './gh.mjs';
 
@@ -20,9 +23,25 @@ import { capture, error, notice } from './gh.mjs';
 // Nowhere near a real "how many incidents could there be" estimate — it is
 // generous headroom over "more than one lane could plausibly have open at
 // once" (each lane's `trackingLabels` filter already narrows the search to
-// its own issues), kept well under gh's own default page size so a single
-// request always suffices.
+// its own issues). Passed explicitly rather than relying on gh's default
+// (also 30 today) so the dedup search never silently shrinks under a gh
+// upgrade that changes that default: a page too small to reach the existing
+// tracking issue would file a duplicate, which is the one failure this
+// whole mechanism exists to avoid.
 const TRACKING_ISSUE_LIST_LIMIT = 30;
+
+// bodyFile writes an issue/comment body to a fresh temp file and returns
+// its path, for `gh ... --body-file`. Every GitHub prose write goes through
+// a body file rather than an inline `--body` argument (CLAUDE.md invariant
+// 18): a file carries real newline bytes and is immune to the argv-length
+// and shell-quoting hazards a body-sized string is exposed to. The temp
+// directory is left for the runner to reclaim — this runs once per
+// scheduled job on a throwaway VM.
+function bodyFile(body) {
+  const path = join(mkdtempSync(join(tmpdir(), 'nightly-health-notify-')), 'body.md');
+  writeFileSync(path, body);
+  return path;
+}
 
 /**
  * Pure roll-up over a schedule run's terminal job results. Anything other
@@ -218,7 +237,7 @@ export function runNotifyMain({
     case 'create': {
       const body = buildFailureBody({ laneLabel, failed: health.failed, experimentalFailed: health.experimentalFailed, runUrl, runId, issueRef });
       const out = ghOrDie(
-        ['issue', 'create', '--repo', repo, '--title', trackingTitle, '--body', body, ...labelArgs],
+        ['issue', 'create', '--repo', repo, '--title', trackingTitle, '--body-file', bodyFile(body), ...labelArgs],
         'gh issue create failed',
         contextTitle,
         captureImpl,
@@ -233,7 +252,7 @@ export function runNotifyMain({
     case 'comment': {
       const body = buildFailureBody({ laneLabel, failed: health.failed, experimentalFailed: health.experimentalFailed, runUrl, runId, issueRef });
       ghOrDie(
-        ['issue', 'comment', String(decision.number), '--repo', repo, '--body', body],
+        ['issue', 'comment', String(decision.number), '--repo', repo, '--body-file', bodyFile(body)],
         'gh issue comment failed',
         contextTitle,
         captureImpl,
@@ -248,6 +267,12 @@ export function runNotifyMain({
     }
     case 'close': {
       const body = buildRecoveryBody({ laneLabel, experimentalFailed: health.experimentalFailed, runUrl, runId });
+      // `gh issue close --comment` takes the text inline: unlike `issue
+      // create` / `issue comment` it has no `--body-file` form, so this is
+      // the one prose write here that cannot go through bodyFile(). The
+      // recovery body is short, fixed-shape text this module composes
+      // itself (no user-controlled content), so the hazards a body file
+      // guards against do not arise for it.
       ghOrDie(
         ['issue', 'close', String(decision.number), '--repo', repo, '--comment', body],
         'gh issue close failed',

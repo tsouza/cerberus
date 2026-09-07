@@ -216,5 +216,12 @@ func (c Config) Validate() error {
 	if c.QueryLogLookback <= 0 {
 		return fmt.Errorf("actuals: QueryLogLookback must be > 0, got %s", c.QueryLogLookback)
 	}
+	// QueryLogLookback is the overlap margin between two polls (its own doc
+	// above): a lookback no longer than the poll interval leaves no overlap
+	// at all, so a slow query_log flush or one missed tick drops rows
+	// silently — the exact failure the field exists to prevent.
+	if c.QueryLogLookback <= c.QueryLogPollInterval {
+		return fmt.Errorf("actuals: QueryLogLookback (%s) must be > QueryLogPollInterval (%s)", c.QueryLogLookback, c.QueryLogPollInterval)
+	}
 	return nil
 }

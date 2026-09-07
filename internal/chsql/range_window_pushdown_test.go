@@ -295,7 +295,7 @@ func TestEmitMetricsExemplarsInnerScanPushdown_BothSet(t *testing.T) {
 		TimestampColumn: "Timestamp",
 	}
 
-	sql, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+	sql, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestEmitMetricsExemplarsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 				End:             c.end,
 				TimestampColumn: "Timestamp",
 			}
-			sql, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+			sql, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 			if err != nil {
 				t.Fatalf("EmitMetricsExemplars: %v", err)
 			}

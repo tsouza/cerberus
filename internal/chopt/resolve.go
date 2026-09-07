@@ -137,6 +137,12 @@ const (
 	selectionOff  = "off"
 )
 
+// SelectionAuto is the "auto" selection token as a caller spells it in
+// CERBERUS_CH_OPTIMIZATIONS, exported for callers that resolve the auto set
+// programmatically (the solver-decision ratchet models a fully capable
+// server this way) instead of restating the token as a string literal.
+const SelectionAuto = selectionAuto
+
 // Resolve runs after a runtime version probe and produces an immutable
 // EnabledSet plus the human-readable warnings to log (permissive skips and the
 // legacy-alias deprecation / override notices). It is a pure function of the

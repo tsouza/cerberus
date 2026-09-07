@@ -17,10 +17,13 @@ import (
 // and names #3079 as the issue that should execute them against a real
 // multi-shard cluster. These tests are UNCONDITIONAL — they run in every
 // `just e2e-run` invocation (the standard single-shard lane, the bwc lane,
-// AND the datashard lane), which is exactly how this suite already proves
-// "results match a single-shard reference run" everywhere else: the SAME
-// pinned assertions running byte-identically regardless of which lane
-// executes them. Two of the six shapes already have dedicated coverage
+// AND the datashard lane). What that proves is that each shape survives the
+// Distributed target and returns a well-formed, non-empty answer in every
+// lane — the same assertions running byte-identically regardless of which
+// lane executes them. It is NOT a value-level comparison against a
+// single-shard reference run: no lane pins a numeric result, so a shard
+// that silently returned a wrong (but well-formed, non-empty) value would
+// pass here. Two of the six shapes already have dedicated coverage
 // elsewhere in this package and are deliberately NOT duplicated here:
 //   - shape 3 (plain TraceQL search over a Distributed spans table) —
 //     TestTempoSearch (e2e_tempo_test.go).

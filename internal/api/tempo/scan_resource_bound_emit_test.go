@@ -259,7 +259,7 @@ func TestScanResourceBound_ExemplarsBoundedAndFailClosed(t *testing.T) {
 		Input: m, Step: time.Minute, Range: time.Minute,
 		Start: start, End: start.Add(5 * time.Minute), TimestampColumn: "Timestamp",
 	}
-	sql, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m,
+	sql, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m,
 		s.TraceIDColumn, s.SpanIDColumn, 1, s.SpansTable)
 	if err != nil {
 		t.Fatalf("exemplars (windowed) emit: %v", err)
@@ -269,7 +269,7 @@ func TestScanResourceBound_ExemplarsBoundedAndFailClosed(t *testing.T) {
 	rwUnbounded := &chplan.RangeWindow{
 		Input: m, Step: time.Minute, Range: time.Minute, TimestampColumn: "Timestamp",
 	}
-	_, _, err = chsql.EmitMetricsExemplars(context.Background(), rwUnbounded, m,
+	_, _, _, err = chsql.EmitMetricsExemplars(context.Background(), rwUnbounded, m,
 		s.TraceIDColumn, s.SpanIDColumn, 1, s.SpansTable)
 	if !errors.Is(err, chsql.ErrUnboundedSpansScan) {
 		t.Fatalf("zero-window exemplars over spans inner must fail closed, got %v", err)

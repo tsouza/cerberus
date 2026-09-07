@@ -55,11 +55,12 @@ type ConfigLookup func(key string) (string, bool)
 // is small (per-pod JSONL, or a single CH GROUP BY) and resolution is offline, so
 // this has never mattered in practice.
 //
-// ponytail: batching corpus aggregates that share an AggSpec (scope, partition_by,
-// fraction) into one scan would cut this to O(distinct scope-groups) passes. It is
-// left unimplemented because the corpus is small and the win is unmeasured — do it
-// only if a large corpus ever makes resolution a hotspot. TestResolveScanCount
-// pins the actual scan count so this doc can't drift from the code again.
+// Batching corpus aggregates that share an AggSpec (scope, partition_by,
+// fraction) into one scan would cut this to O(distinct scope-groups) passes. The
+// resolver deliberately does not batch: the corpus is small and resolution is
+// offline, so the saving is not measurable, and a per-param pass keeps each
+// param's aggregate independently testable. TestResolveScanCount pins the
+// actual scan count so this doc can't drift from the code again.
 type ParamResolver struct {
 	cfg ConfigLookup
 	src CorpusSource
@@ -87,7 +88,7 @@ func (r *ParamResolver) Resolve(ctx context.Context, cat *Catalog) (Env, error) 
 	// Resolve in dependency order, one param at a time: config leaves and ratios
 	// resolve inline, and each corpus-kind param drives its own full corpus pass
 	// via resolveOne -> resolveCorpus -> CorpusSource.Aggregate. No cross-param
-	// batching today (see the type doc's ponytail note); the corpus is small and
+	// batching today (see the type doc's batching note); the corpus is small and
 	// resolution is offline.
 	env := make(Env, len(order))
 	for _, name := range order {

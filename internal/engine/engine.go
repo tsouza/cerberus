@@ -839,11 +839,26 @@ type memoryCapQuerier interface {
 	MaxQueryMemoryBytes() int64
 }
 
-// queryMemoryCap returns the engine Client's per-query memory cap in bytes, or
-// 0 when the Client doesn't expose one. A 0 cap means "no max_memory_usage
-// configured", which spillThreshold treats as "use the absolute no-cap spill
-// threshold" rather than taking a fraction of a non-positive value.
+// effectiveMemoryCapQuerier is the accessor a Client exposes for the cap a
+// single data-plane statement ACTUALLY runs under — the configured cap
+// apportioned by DataShardCount (chclient.Client.EffectiveMaxQueryMemoryBytes).
+// Preferred over memoryCapQuerier: a spill threshold sized from the
+// un-apportioned cap sits at or above the real limit once DataShardCount >= 2.
+type effectiveMemoryCapQuerier interface {
+	EffectiveMaxQueryMemoryBytes() int64
+}
+
+// queryMemoryCap returns the per-query memory cap (bytes) the engine Client
+// stamps on a data-plane statement, or 0 when the Client doesn't expose one.
+// A 0 cap means "no max_memory_usage configured", which spillThreshold treats
+// as "use the absolute no-cap spill threshold" rather than taking a fraction
+// of a non-positive value. The apportioned accessor wins when present; the
+// configured-cap accessor is the fallback for a Client (a test fake) that
+// only exposes that one.
 func (e *Engine) queryMemoryCap() int64 {
+	if mc, ok := e.Client.(effectiveMemoryCapQuerier); ok {
+		return mc.EffectiveMaxQueryMemoryBytes()
+	}
 	if mc, ok := e.Client.(memoryCapQuerier); ok {
 		return mc.MaxQueryMemoryBytes()
 	}
@@ -1803,6 +1818,7 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 // back to the FULL, un-apportioned default instead of an apportioned one.
 func routeBExecCtx(
 	ctx context.Context, langName, responseShape string, decision *solver.Decision,
+	plan chplan.Node, memCap int64, joinSpill bool,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
 	bounds ResourceBoundOverrides,
 	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
@@ -1826,6 +1842,25 @@ func routeBExecCtx(
 	// four of them: executeRouted, ... the route-memo hit and the A->B
 	// retry"), so wiring it here covers all four in one place.
 	ctx = applyActualsCapture(ctx, actualsTracker, decision)
+	// Spill / memory-bound parity with route A's execContext above: every
+	// threshold there is sized from the cap the statement runs under, so
+	// here they are sized from the PER-SHARD cap — the route-A cap
+	// apportioned by decision.K, the same never-looser-than-kEff argument
+	// the RangeBucketGridNative bounds at the bottom of this function rest
+	// on (a shard's real max_memory_usage is cap/(kEff x DataShardCount),
+	// and K >= kEff, so cap/K is at or above it: the threshold stays a real
+	// fraction of the shard's limit, never a value at or past it). Without
+	// this a shard ran under an apportioned max_memory_usage with NO spill
+	// threshold at all, so a heavy GROUP BY / sort / join that route A
+	// would have spilled-and-completed aborted the shard with
+	// MEMORY_LIMIT_EXCEEDED — the exact availability class spill.go's doc
+	// says the thresholds exist to close, reopened for route B.
+	shardMemCap := apportionShardMemoryCap(memCap, decisionK(decision))
+	ctx = applySpillSettings(ctx, shardMemCap)
+	ctx = applyJoinSpillSettings(ctx, plan, shardMemCap, joinSpill)
+	ctx = applyCompareMemoryBound(ctx, plan, shardMemCap)
+	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
+	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
 	if decisionHasTSGridNative(decision) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
@@ -1841,6 +1876,19 @@ func routeBExecCtx(
 	ctx = chsql.WithRangeBucketGridNativeMaxRows(ctx, apportionedRows)
 	ctx = chsql.WithRangeBucketGridNativeMaxDensityUnits(ctx, apportionedDensityUnits)
 	return ctx
+}
+
+// apportionShardMemoryCap divides the route-A memory cap by k for one
+// route-B shard's spill sizing (routeBExecCtx). 0 is the no-cap sentinel
+// every spill helper reads as "use the absolute default threshold"
+// (spillThreshold's doc), so it must stay 0 rather than become the 1-byte
+// floor chclient.ApportionMemoryBytes clamps to — which is why this is
+// plain integer division and not that helper.
+func apportionShardMemoryCap(memCap, k int64) int64 {
+	if memCap <= 0 {
+		return 0
+	}
+	return memCap / k
 }
 
 // decisionK is decision.K, defensively floored to 1 — routeBExecCtx is only
@@ -1910,7 +1958,8 @@ func (e *Engine) executeRouted(
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
-			ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
+			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings().JoinSpill,
+			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
 			attrStrategiesForLang(lang),
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
@@ -2427,7 +2476,8 @@ func (e *Engine) executeRoutedCursor(
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
-			ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
+			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings().JoinSpill,
+			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
 			attrStrategiesForLang(lang),
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),

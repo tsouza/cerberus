@@ -149,8 +149,9 @@ func withTransportRetry[T any](ctx context.Context, call func() (T, error)) (T, 
 // fan-out admission point (cerberus issues #3081, #3128): every dispatch
 // this package makes — route A's single statement AND every one of route
 // B's per-shard dispatches, since the sharded solver's Executor reaches
-// ClickHouse through this same Client — acquires its DataShardCount-weighted
-// share of the gate HERE, before the retry loop ever touches c.conn.Query,
+// ClickHouse through this same Client — acquires its share of the gate HERE
+// (the statement's physical-scan count x DataShardCount, clamped to the cap —
+// fanout_gate.go), before the retry loop ever touches c.conn.Query,
 // and holds it for exactly as long as the caller keeps the returned rows
 // open (gatedRows.Close releases it). A denied acquire returns before any
 // retry attempt and before any CH connection is opened — breaker-neutral,

@@ -154,11 +154,10 @@ package chclient
 //     trace-ranking subquery), an `IN` self-reference of the identical
 //     shape the four shapes above make deliberately, just without a
 //     literal JOIN keyword. Added to this list by cerberus issue #3128
-//     round 4, which additionally found this shape's self-reference
-//     under-charges internal/chclient/fanout_gate.go's own admission-
-//     control weight (that file's own "ROUND 4" doc has the real-cluster
-//     evidence and the fix) — a gap the four shapes above may share too,
-//     tracked by cerberus issue #3141 rather than assumed fixed here.
+//     round 4. Neither this shape nor the four above can under-charge
+//     fanout_gate.go's admission weight any more: the weight is the
+//     emitted statement's physical-scan count (chsql.EmitCounted), not a
+//     per-shape constant.
 //
 // LIMIT OF THE `global` REWRITE (cerberus issue #3128, real-cluster
 // evidence in internal/chsql/search_trace_limit.go's doc): the server

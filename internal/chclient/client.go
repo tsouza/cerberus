@@ -4,7 +4,9 @@ package chclient
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -1061,10 +1063,13 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 //   - the span id disambiguates two cerberus replicas that share a trace and
 //     could otherwise pick the same counter value.
 //
-// When no valid trace is present (no-op tracer in tests, a non-instrumented
-// caller) the trace id is the all-zero invalid id; the returned id is ""
-// (nothing cached) so the driver self-generates one — query_id is never an
-// error path.
+// With no valid trace on ctx (the default CERBERUS_OTLP_ENDPOINT="" boots
+// the no-op tracer; tests and non-instrumented callers too) mintQueryID
+// substitutes random trace/span components, so an id is ALWAYS minted and
+// cached — never left for the driver to self-generate. acquireDataShardFanout's
+// cancellation path targets `KILL QUERY WHERE query_id = ?` at this id
+// (fanout_gate.go), and it must exist in every deployment, not only a
+// traced one.
 func ensureQueryID(ctx context.Context) (string, context.Context) {
 	if id, ok := ctx.Value(queryIDKey).(string); ok {
 		return id, ctx
@@ -1077,25 +1082,49 @@ func ensureQueryID(ctx context.Context) (string, context.Context) {
 // reading or writing the ctx cache. It is the single place the id's shape is
 // built, shared by every seam that needs one (ensureQueryID, freshQueryID, and
 // the exported MintQueryID the routed fan-out pre-mints its per-shard ids
-// with), so the "<traceID>-<spanID>-<counter>" form and the no-trace ""
-// contract cannot drift between them.
+// with), so the "<traceID>-<spanID>-<counter>" form cannot drift between
+// them. Without a valid trace on ctx the trace and span components are
+// random (the same widths, so query_log consumers that group by the 32-hex
+// prefix keep working; two untraced dispatches never share a prefix): an id
+// is minted unconditionally because the cancellation KILL QUERY needs one to
+// target and the process-wide counter alone would not be unique across
+// cerberus replicas.
 func mintQueryID(ctx context.Context) string {
 	sc := trace.SpanContextFromContext(ctx)
-	if !sc.HasTraceID() {
-		return ""
+	var traceID, spanID string
+	if sc.HasTraceID() {
+		traceID, spanID = sc.TraceID().String(), sc.SpanID().String()
+	} else {
+		traceID, spanID = randomHex(untracedTraceIDBytes), randomHex(untracedSpanIDBytes)
 	}
-	return sc.TraceID().String() + "-" + sc.SpanID().String() + "-" +
-		strconv.FormatUint(queryIDCounter.Add(1), 10)
+	return traceID + "-" + spanID + "-" + strconv.FormatUint(queryIDCounter.Add(1), 10)
+}
+
+// untracedTraceIDBytes / untracedSpanIDBytes are the W3C trace-context
+// widths (16- and 8-byte ids) mintQueryID substitutes random bytes for when
+// ctx carries no trace, so an untraced query_id has exactly the shape a
+// traced one has.
+const (
+	untracedTraceIDBytes = 16
+	untracedSpanIDBytes  = 8
+)
+
+// randomHex returns n cryptographically random bytes as lowercase hex.
+// crypto/rand.Read on a supported platform does not fail; a failure here
+// would mean the process cannot mint unique ids at all, so it is surfaced
+// as a panic rather than degraded into a colliding constant.
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic("chclient: crypto/rand unavailable for query_id: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
 
 // withQueryID caches id as ctx's per-dispatch query_id, so queryContext stamps
 // exactly that value on the ClickHouse query and queryIDFromContext reads it
-// back. An empty id returns ctx unchanged (the no-trace case: the driver
-// self-generates an id and nothing is cached).
+// back.
 func withQueryID(ctx context.Context, id string) context.Context {
-	if id == "" {
-		return ctx
-	}
 	return context.WithValue(ctx, queryIDKey, id)
 }
 
@@ -1120,8 +1149,8 @@ func queryIDFromContext(ctx context.Context) string {
 // (QUERY_WITH_SAME_ID_IS_ALREADY_RUNNING). A fresh counter value keeps the
 // fallback's id unique while preserving the "<traceID>-<spanID>-<counter>" shape
 // (the trace id stays a greppable prefix). When no valid trace is present the id
-// is "" (the driver self-generates one) and ctx is returned unchanged, matching
-// ensureQueryID's no-trace contract.
+// is minted with random trace/span components (mintQueryID), matching
+// ensureQueryID.
 func freshQueryID(ctx context.Context) (string, context.Context) {
 	id := mintQueryID(ctx)
 	return id, withQueryID(ctx, id)
@@ -1142,7 +1171,7 @@ func freshQueryID(ctx context.Context) (string, context.Context) {
 // and the span id + process-global counter make it unique per CH dispatch, so
 // the many concurrent queries a single trace fans out never collide on one
 // query_id (which ClickHouse rejects with code 216). When no valid trace is
-// present the id is "" (nothing cached) and the driver self-generates one.
+// present the id is minted with random trace/span components (mintQueryID).
 func EnsureQueryID(ctx context.Context) (string, context.Context) {
 	return ensureQueryID(ctx)
 }
@@ -1169,7 +1198,8 @@ func QueryIDFromContext(ctx context.Context) string {
 // same query_id — which ClickHouse rejects with code 216.
 //
 // Pair it with WithQueryID on each per-shard context. When no valid trace is
-// present the id is "" (the driver self-generates one), matching EnsureQueryID.
+// present the id is minted with random trace/span components, matching
+// EnsureQueryID.
 func MintQueryID(ctx context.Context) string {
 	return mintQueryID(ctx)
 }
@@ -1436,6 +1466,23 @@ func (c *Client) PeekBreakerState() string {
 // the SAME value the data-plane query path uses, never a hard-coded guess.
 func (c *Client) MaxQueryMemoryBytes() int64 {
 	return c.maxMemory
+}
+
+// EffectiveMaxQueryMemoryBytes is the max_memory_usage a route-A statement
+// actually runs under: MaxQueryMemoryBytes apportioned by DataShardCount
+// (querySettings stamps exactly this, see ApportionMemoryBytes's doc), or 0
+// when no cap is configured — 0 must stay 0 because the engine reads it as
+// the no-cap sentinel (spillThreshold's absolute default), never the 1-byte
+// floor the apportionment clamps to. The engine sizes every cap-relative
+// threshold (spill, join spill, compare bound) from THIS value, so a
+// threshold can never sit at or above the limit the statement runs under
+// (cerberus issue #3128 audit). The un-apportioned accessor stays for the
+// solver, which apportions by kEff x DataShardCount itself.
+func (c *Client) EffectiveMaxQueryMemoryBytes() int64 {
+	if c.maxMemory <= 0 {
+		return 0
+	}
+	return ApportionMemoryBytes(c.maxMemory, c.dataShardCount)
 }
 
 // MaxQuerySamples is Config.MaxQuerySamples — the per-query sample budget.

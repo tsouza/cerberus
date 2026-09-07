@@ -39,36 +39,26 @@ type ScanEstimate struct {
 	Marks uint64
 }
 
-// explainEstimatePrefix is a fixed, compile-time SQL keyword literal — it
-// carries no plan- or request-derived data, unlike the statement it
-// prefixes. internal/chsql's typed Frag pipeline (invariant 10) builds THAT
-// inner statement; EXPLAIN ESTIMATE is a statement-level modifier ClickHouse
-// recognizes only as a leading keyword, not an expression the Frag system
-// has vocabulary for, so it is prefixed here rather than threaded through
-// chsql — mirroring this package's own existing pattern of hand-written
-// literal SQL for infra-level probes (ts_grid_probe.go's
-// tsGridCapabilityProbeSQL), never internal/chsql's expression-tree API.
-const explainEstimatePrefix = "EXPLAIN ESTIMATE "
-
-// ExplainEstimate runs ClickHouse's own no-execution scan estimator over
-// sql, summing every returned (database, table, parts, rows, marks) row into
-// one ScanEstimate. sql MUST be a statement chsql.Emit already rendered (and
-// therefore already checked against chsql's own emit_size_bound /
-// CERBERUS_CH_MAX_EMITTED_SQL_BYTES ceiling, internal/chsql/
-// emit_size_bound.go) — this renders that SAME statement a second time under
-// the EXPLAIN ESTIMATE prefix, which adds a fixed, negligible number of bytes
-// against that ceiling and performs no query execution of its own.
+// ExplainEstimate runs ClickHouse's own no-execution scan estimator,
+// summing every returned (database, table, parts, rows, marks) row into one
+// ScanEstimate. explainSQL MUST be the `EXPLAIN ESTIMATE <statement>` text
+// chsql.ExplainEstimateStatement composed over a statement chsql.Emit already
+// rendered (and therefore already checked against chsql's own
+// emit_size_bound / CERBERUS_CH_MAX_EMITTED_SQL_BYTES ceiling): this package
+// cannot import chsql and never composes SQL text itself (invariant 10), so
+// the caller hands it the finished statement and it runs that verbatim. The
+// prefix adds a fixed, negligible number of bytes against that ceiling and
+// performs no query execution of its own.
 //
 // Guarded by the circuit breaker (see [Client] doc), exactly like every other
 // query method here: EXPLAIN ESTIMATE still does real analysis work against
 // ClickHouse (parses the statement and consults the index), it just never
 // reads a data part.
-func (c *Client) ExplainEstimate(ctx context.Context, sql string, args ...any) (ScanEstimate, error) {
+func (c *Client) ExplainEstimate(ctx context.Context, explainSQL string, args ...any) (ScanEstimate, error) {
 	if !c.br.allow() {
 		return ScanEstimate{}, c.br.openErr("chclient: explain estimate")
 	}
 	ctx = c.queryContext(ctx)
-	explainSQL := explainEstimatePrefix + sql
 	ctx, span := startExecuteSpan(ctx, explainSQL, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)

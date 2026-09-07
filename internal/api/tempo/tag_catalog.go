@@ -24,11 +24,9 @@ import (
 // to the SAME live path every other request already takes — that path is
 // untouched and permanent, never a transitional shim.
 //
-// ELIGIBILITY is narrower than Loki's own selector-less rule, because a
-// tag-discovery response here is a LIST of keys/values (what the catalog
-// approximates over its own trailing window and top-N cap), not a
-// cardinality COUNT (which tolerates a window mismatch — see
-// FeatureLokiCatalogMV's doc). Eligible only when ALL of:
+// ELIGIBILITY shares Loki's selector-less and windowless terms and adds
+// the scope / intrinsic terms this head's own request vocabulary needs.
+// Eligible only when ALL of:
 //
 //   - the request carries no `q=<TraceQL>` narrowing filter (the resolved
 //     chsql.Frag from tagQueryFilter is nil) — the catalog has no way to

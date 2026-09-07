@@ -206,7 +206,7 @@ func (l *lang) ProjectSamples(plan chplan.Node, _ engine.Meta) chplan.Node {
 }
 
 // RangeSeriesOrder implements the engine's route-A-only, emit-time
-// ordering hook (mirrors spansTabler / lateMatTabler — see
+// ordering hook (mirrors spansTabler — see
 // internal/engine.emitForHead). On the /api/v1/query_range path (Step > 0)
 // it wraps plan in a chplan.OrderBy on (series, timestamp) so the cursor
 // matrixFromCursor drains hands it rows already grouped by series,

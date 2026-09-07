@@ -2,6 +2,7 @@ package chclient
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -69,19 +70,30 @@ func tracedCtx(tid trace.TraceID, sid trace.SpanID) context.Context {
 	return trace.ContextWithSpanContext(context.Background(), sc)
 }
 
-// TestEnsureQueryID_NoTrace — an un-instrumented ctx yields "" (the driver
-// generates its own id) and nothing is cached on the returned ctx.
+// TestEnsureQueryID_NoTrace — an un-instrumented ctx (the default
+// CERBERUS_OTLP_ENDPOINT="" boot) still yields an id of the traced shape,
+// with random trace/span components, cached on the returned ctx: the
+// cancellation KILL QUERY must always have a target, and two untraced
+// dispatches must never share an id.
 func TestEnsureQueryID_NoTrace(t *testing.T) {
 	t.Parallel()
 
 	id, out := ensureQueryID(context.Background())
-	if id != "" {
-		t.Errorf("ensureQueryID(plain) = %q; want empty", id)
+	if !queryIDShape.MatchString(id) {
+		t.Fatalf("ensureQueryID(plain) = %q; want <32hex>-<16hex>-<counter>", id)
 	}
-	if got := queryIDFromContext(out); got != "" {
-		t.Errorf("queryIDFromContext after no-trace ensure = %q; want empty", got)
+	if got := queryIDFromContext(out); got != id {
+		t.Errorf("queryIDFromContext after no-trace ensure = %q; want the minted %q cached", got, id)
+	}
+	other, _ := ensureQueryID(context.Background())
+	if other == id || other[:32] == id[:32] {
+		t.Errorf("two untraced dispatches minted %q and %q; want distinct ids with distinct trace prefixes", id, other)
 	}
 }
+
+// queryIDShape is the "<traceID>-<spanID>-<counter>" form every minted
+// query_id has, traced or not.
+var queryIDShape = regexp.MustCompile(`^[0-9a-f]{32}-[0-9a-f]{16}-[0-9]+$`)
 
 // TestEnsureQueryID_TracePrefix — a valid trace yields a non-empty id whose
 // trace id is a greppable prefix (operators join query_log on `LIKE
@@ -229,19 +241,19 @@ func TestFreshQueryID_DistinctFromCached(t *testing.T) {
 	}
 }
 
-// TestFreshQueryID_NoTrace — with no valid trace, freshQueryID yields "" and
-// leaves ctx unchanged (the driver self-generates an id), mirroring
-// ensureQueryID's no-trace contract so an un-instrumented fallback is never an
-// error path.
+// TestFreshQueryID_NoTrace — with no valid trace, freshQueryID still mints a
+// fresh id of the traced shape and re-keys ctx with it, mirroring
+// ensureQueryID's contract: an un-instrumented fallback dispatch gets its own
+// distinct query_id exactly like a traced one.
 func TestFreshQueryID_NoTrace(t *testing.T) {
 	t.Parallel()
 
 	id, out := freshQueryID(context.Background())
-	if id != "" {
-		t.Errorf("freshQueryID(plain) = %q; want empty", id)
+	if !queryIDShape.MatchString(id) {
+		t.Fatalf("freshQueryID(plain) = %q; want <32hex>-<16hex>-<counter>", id)
 	}
-	if out != context.Background() {
-		t.Error("freshQueryID(plain) re-keyed the ctx; want it unchanged when no trace is present")
+	if got := queryIDFromContext(out); got != id {
+		t.Errorf("queryIDFromContext after no-trace freshQueryID = %q; want the minted %q", got, id)
 	}
 }
 

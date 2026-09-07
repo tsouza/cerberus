@@ -121,7 +121,7 @@ func TestEmitQueryExemplars_Fixtures(t *testing.T) {
 				t.Fatalf("no case registered for fixture %s; add it to queryExemplarsCases in query_exemplars_spec_test.go", c.Name)
 			}
 
-			sql, args, err := chsql.EmitQueryExemplarsUnion(
+			sql, args, _, err := chsql.EmitQueryExemplarsUnion(
 				context.Background(),
 				tc.arms,
 				tc.start,

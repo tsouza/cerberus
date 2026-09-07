@@ -198,3 +198,44 @@ func TestLowerAttribute_NumericMaterializedColumnSkipsCoercion(t *testing.T) {
 		})
 	}
 }
+
+// TestLowerAttribute_NumericMaterializedColumnFallsBackForStringOps is the
+// third leg of the #2869 numeric-routing contract: a comparison ClickHouse
+// cannot evaluate over the Nullable(Int32) column — a regex match, or a
+// compare against a NON-numeric string literal — must read the attribute
+// MAP (match() over an Int32 and `Int32 = 'abc'` both abort the whole
+// query, where reference TraceQL just fails to match). Numeric-looking
+// string literals and numeric literals keep the column, so the demotion is
+// per operator and per literal, not a blanket retreat from the routing.
+func TestLowerAttribute_NumericMaterializedColumnFallsBackForStringOps(t *testing.T) {
+	t.Parallel()
+
+	const col = "`__cerberus_materialized_http.status_code`"
+	on := schema.DefaultOTelTraces()
+	on.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": "__cerberus_materialized_http.status_code"}
+
+	for _, tc := range []struct {
+		name       string
+		query      string
+		wantColumn bool
+	}{
+		{"regex_match", `{ span.http.status_code =~ "5.." }`, false},
+		{"regex_not_match", `{ span.http.status_code !~ "5.." }`, false},
+		{"eq_non_numeric_string", `{ span.http.status_code = "abc" }`, false},
+		{"gt_non_numeric_string", `{ span.http.status_code > "abc" }`, false},
+		{"ne_numeric_string_keeps_column", `{ span.http.status_code != "500" }`, true},
+		{"gt_numeric_string_keeps_column", `{ span.http.status_code > "4" }`, true},
+		{"numeric_literal_keeps_column", `{ span.http.status_code = 500 }`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sqlStr := emitTraceQL(t, tc.query, on)
+			if got := strings.Contains(sqlStr, col); got != tc.wantColumn {
+				t.Fatalf("materialized column referenced = %v, want %v; got: %s", got, tc.wantColumn, sqlStr)
+			}
+			if !tc.wantColumn && !strings.Contains(sqlStr, "`SpanAttributes`[?]") {
+				t.Fatalf("SQL must read the attribute map subscript when the numeric column is demoted; got: %s", sqlStr)
+			}
+		})
+	}
+}

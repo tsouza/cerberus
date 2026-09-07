@@ -22,7 +22,7 @@
 //     actually render against for per-key lookups and comparisons
 //     (Result.LogsAttrStrategies / TracesAttrStrategies — internal/engine
 //     threads the right one onto the emit context per request; see
-//     tableReq.jsonQuerySupported). Logs shipped this in cerberus issue
+//     tableReq.jsonAttrMapCompat). Logs shipped this in cerberus issue
 //     #2777's original PR; traces shipped it in the #3062 follow-up.
 //     Metrics attribute maps carry series identity and stay Map-only per
 //     the issue's own scoping — see tableReq.jsonAttrMapCompat.
@@ -166,9 +166,10 @@ const attrMapType = "Map(String,String)"
 // prefix rather than an exact string. cerberus issue #2777 phase 1: the
 // upstream OTel exporter's `json:true` schema variant types the attribute
 // columns this way instead of Map(String,String). Recognising the shape
-// here is detection only — the query emitters (chsql.Builder) still assume
-// Map, so this is consulted solely to let tableReq.jsonAttrMapCompat tables
-// boot instead of FATALing; it changes no SQL cerberus emits.
+// here is detection only: it lets a tableReq.jsonAttrMapCompat table boot
+// instead of FATALing and feeds the column into Result.LogsAttrStrategies /
+// TracesAttrStrategies; the SQL rendering decision itself is chsql's
+// (AttrStrategyJSON), never this function's.
 func isJSONAttrType(deployedType string) bool {
 	s := strings.TrimSpace(deployedType)
 	return s == "JSON" || strings.HasPrefix(s, "JSON(")
@@ -756,36 +757,29 @@ type tableReq struct {
 	columns []string
 	attrMap []string
 	// jsonAttrMapCompat allows this table's attrMap columns to alternatively
-	// be typed JSON instead of Map(String,String) — cerberus issue #2777
-	// phase 1's boot-probe compat gate (the upstream OTel exporter's
-	// `json:true` schema variant). Only logs and traces set this: their
-	// attribute maps are per-row lookups, so a JSON-typed column there boots
-	// with a WARNING rather than a FATAL (query lowering against it is a
-	// follow-up, see the issue). Metrics attribute maps carry SERIES
-	// IDENTITY — the whole map, positionally sorted, contributes to the
-	// metric's label set — and the issue itself scopes metrics out ("Metrics
-	// tables stay Map"), so a JSON-typed metrics attribute column stays a
-	// genuine FATAL misconfiguration; requiredTables leaves this false for
-	// every metrics tableReq.
+	// be typed JSON instead of Map(String,String) — cerberus issue #2777's
+	// boot-probe compat gate (the upstream OTel exporter's `json:true`
+	// schema variant). Only logs and traces set this: their attribute maps
+	// are per-row lookups, so a JSON-typed column there boots with a
+	// WARNING rather than a FATAL, and is surfaced through
+	// Result.LogsAttrStrategies / TracesAttrStrategies for internal/engine
+	// to actually render queries against (the chsql.Builder
+	// attribute-access-strategy threading: chsql's exprMapAccess /
+	// exprFieldAccess / FnMapContainsKey render hooks all have a JSON
+	// branch, wired for per-key lookups — LogQL label matchers /
+	// detected_level / the OTelDottedFallbackChain candidate chain; TraceQL
+	// span/resource/scope attribute matchers and comparisons, cerberus
+	// issue #3062, verified against real ClickHouse via chDB differentials,
+	// see internal/api/tempo/attr_strategy_json_chdb_test.go). Metrics
+	// attribute maps carry SERIES IDENTITY — the whole map, positionally
+	// sorted, contributes to the metric's label set — and the issue itself
+	// scopes metrics out ("Metrics tables stay Map"), so a JSON-typed
+	// metrics attribute column stays a genuine FATAL misconfiguration;
+	// requiredTables leaves this false for every metrics tableReq.
 	jsonAttrMapCompat bool
-	// jsonQuerySupported narrows jsonAttrMapCompat's warning text and
-	// controls whether this table's JSON-typed attribute columns are
-	// surfaced through Result.LogsAttrStrategies / TracesAttrStrategies for
-	// internal/engine to actually render queries against (cerberus issue
-	// #2777, the chsql.Builder attribute-access-strategy threading slice).
-	// True for both logs and traces: chsql's exprMapAccess / exprFieldAccess
-	// / FnMapContainsKey render hooks all have a JSON branch, wired for
-	// per-key lookups (LogQL label matchers / detected_level / the
-	// OTelDottedFallbackChain candidate chain; TraceQL span/resource/scope
-	// attribute matchers and comparisons — cerberus issue #3062, verified
-	// against real ClickHouse via chDB differentials, see
-	// internal/api/tempo/attr_strategy_json_chdb_test.go). requiredTables
-	// is the only place that sets this; jsonQuerySupportedGaps names what
-	// remains UNSUPPORTED for the table that sets it true.
-	jsonQuerySupported bool
 	// jsonQuerySupportedGaps names, in the boot warning, the query-time
-	// capability still missing against a jsonQuerySupported table's
-	// JSON-typed attribute column. Required whenever jsonQuerySupported is
+	// capability still missing against a jsonAttrMapCompat table's
+	// JSON-typed attribute column. Required whenever jsonAttrMapCompat is
 	// true (checkTable's message composition has no other source for this
 	// text). Cerberus issues #3063 (LogQL) and #3065 (TraceQL) closed every
 	// query-time gap each signal's full-map operations and ad-hoc discovery
@@ -793,7 +787,7 @@ type tableReq struct {
 	// table whose ingestion ever used json_type_escape_dots_in_keys=1 or
 	// mixed dotted-key encodings — is signal-agnostic, so
 	// logsJSONQuerySupportedGaps / tracesJSONQuerySupportedGaps below name
-	// only that. Ignored when jsonQuerySupported is false.
+	// only that. Ignored when jsonAttrMapCompat is false.
 	jsonQuerySupportedGaps string
 	// materializedColumns is the subset of columns that must be typed a
 	// SPECIFIC ClickHouse type rather than checked for mere existence —
@@ -820,7 +814,7 @@ type materializedColumnCheck struct {
 
 // logsJSONQuerySupportedGaps / tracesJSONQuerySupportedGaps name, for
 // checkTable's boot-warning text, the query-time capability that remains
-// UNSUPPORTED against a jsonQuerySupported table's JSON-typed attribute
+// UNSUPPORTED against a jsonAttrMapCompat table's JSON-typed attribute
 // column — see tableReq.jsonQuerySupportedGaps. Declared as constants
 // (rather than composed inline in requiredTables) so the exact sentence
 // checkTable renders is reviewable in one place per signal, matching
@@ -892,7 +886,6 @@ func requiredTables(req Requirements) []tableReq {
 			),
 			attrMap:                nonEmpty(l.AttributesColumn, l.ResourceAttributesColumn, l.ScopeAttributesColumn),
 			jsonAttrMapCompat:      true,
-			jsonQuerySupported:     true,
 			jsonQuerySupportedGaps: logsJSONQuerySupportedGaps,
 		})
 	}
@@ -921,7 +914,6 @@ func requiredTables(req Requirements) []tableReq {
 			), materializedCols...),
 			attrMap:                nonEmpty(tr.AttributesColumn, tr.ResourceAttributesColumn, tr.ScopeAttributesColumn),
 			jsonAttrMapCompat:      true,
-			jsonQuerySupported:     true,
 			jsonQuerySupportedGaps: tracesJSONQuerySupportedGaps,
 			materializedColumns:    materializedChecks,
 		})
@@ -987,8 +979,8 @@ func nonEmpty(vals ...string) []string {
 // failure, the ABSENT-table names — tables system.columns reports zero rows
 // for, i.e. not yet provisioned — the boot-probe WARNINGS (a
 // jsonAttrMapCompat table whose attribute map is JSON-typed), and
-// jsonColsByTable, the JSON-typed attribute columns found per jsonQuerySupported
-// table name (logs and traces; see tableReq.jsonQuerySupported) — Run resolves
+// jsonColsByTable, the JSON-typed attribute columns found per jsonAttrMapCompat
+// table name (logs and traces) — Run resolves
 // this into Result.LogsAttrStrategies / TracesAttrStrategies. An
 // entirely-absent table is transient (the schema race), so it lands in the
 // second value and is NOT a wrong-shape problem; a table that exists but has
@@ -1086,34 +1078,22 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 		}
 		if t.jsonAttrMapCompat && isJSONAttrType(got) {
 			// Boot-probe compat (cerberus issue #2777): a JSON-typed
-			// attribute map on logs/traces boots instead of FATALing. The
-			// warning's own text is the DELIBERATE per-table posture
-			// decision (never inherited by default): a jsonQuerySupported
-			// table now has a real, tested chsql JSON rendering path for
-			// per-key attribute lookups (logs since cerberus issue #2777's
-			// original PR, traces since #3062), so the warning narrows to
-			// naming the KNOWN remaining gaps (t.jsonQuerySupportedGaps,
-			// which differs per signal) rather than claiming nothing works;
-			// a table without query support at all would keep the original
-			// "nothing works yet" text — no current tableReq sets
-			// jsonAttrMapCompat without jsonQuerySupported, but the branch
-			// stays as the fail-safe default for a future table that does.
-			if t.jsonQuerySupported {
-				jsonCols = append(jsonCols, col)
-				warnings = append(warnings, fmt.Sprintf(
-					"table %s column %s: JSON-typed attribute schema detected (cerberus issue #2777) — "+
-						"per-key attribute lookups and comparisons against this column are supported. "+
-						"NOT yet supported: %s",
-					t.name, col, t.jsonQuerySupportedGaps,
-				))
-			} else {
-				warnings = append(warnings, fmt.Sprintf(
-					"table %s column %s: JSON-typed attribute schema detected (cerberus issue #2777) — "+
-						"boot allowed, but attribute-path query lowering is not implemented for this table "+
-						"yet; queries touching this column's attribute keys will fail until follow-up work lands",
-					t.name, col,
-				))
-			}
+			// attribute map on logs/traces boots instead of FATALing, and
+			// the column is surfaced through jsonColsByTable so the query
+			// emitters render against it (Result.LogsAttrStrategies /
+			// TracesAttrStrategies). Every jsonAttrMapCompat table has a
+			// real, tested chsql JSON rendering path for per-key attribute
+			// lookups (logs since cerberus issue #2777's original PR, traces
+			// since #3062), so the warning names the KNOWN remaining gaps
+			// (t.jsonQuerySupportedGaps, which differs per signal) rather
+			// than claiming nothing works.
+			jsonCols = append(jsonCols, col)
+			warnings = append(warnings, fmt.Sprintf(
+				"table %s column %s: JSON-typed attribute schema detected (cerberus issue #2777) — "+
+					"per-key attribute lookups and comparisons against this column are supported. "+
+					"Unsupported against this column: %s",
+				t.name, col, t.jsonQuerySupportedGaps,
+			))
 			continue
 		}
 		problems = append(problems, fmt.Sprintf(

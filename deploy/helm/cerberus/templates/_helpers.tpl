@@ -510,9 +510,9 @@ declared; every other affinity field the operator sets is preserved verbatim
 cerberus.effectiveReplicas — the MAXIMUM number of cerberus processes this
 render can have running against the ClickHouse data tier at once, which is
 the divisor any CLUSTER-WIDE per-process budget has to be apportioned by
-(clickhouse.bundled.dataShards.fanoutCap is the one consumer today —
-cerberus issue #3128: DataShardFanoutGate is a per-process semaphore, so the
-real cluster-wide ceiling is replicas x per-process cap, and only the chart
+(clickhouse.bundled.dataShards.fanoutCap is the one consumer today:
+DataShardFanoutGate is a per-process semaphore by design, so the real
+cluster-wide ceiling is replicas x per-process cap, and only the chart
 knows the replica count). Monolith: the HPA's maxReplicas when autoscaling
 is on (the pod count can reach it at any moment), else replicaCount. Split:
 the sum of every enabled head's resolved replicaCount (hpa.yaml is

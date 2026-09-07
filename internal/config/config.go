@@ -45,16 +45,6 @@ type Config struct {
 	// "shard" disambiguation this repo needs.
 	ClusterTopology chopt.ClusterTopology
 
-	// ExperimentalDistributedMode is CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE
-	// (default false): the explicit opt-in that gates
-	// ClusterTopology.DataShardCount > 1. ClickHouse Distributed-table
-	// multi-shard routing (epic #3074) is EXPERIMENTAL and off by default —
-	// FromEnv refuses to boot with CERBERUS_CH_DATA_SHARDS > 1 unless this is
-	// true, so the shard count alone can never land a deployment on the
-	// experimental path. The default single-data-shard path and the
-	// replication path (`clickhouse.bundled.replicas`) never consult it.
-	ExperimentalDistributedMode bool
-
 	// DebugPProf, when true, mounts the net/http/pprof debug handlers
 	// (/debug/pprof/…) on the main HTTP listener. Default false — the
 	// profiling surface stays OFF in production so it is never reachable
@@ -1219,7 +1209,7 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	topology, experimentalDistributed, err := clusterTopologyFromEnv(v)
+	topology, err := clusterTopologyFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1356,7 +1346,6 @@ func FromEnv() (Config, error) {
 		RangeBucketGridNativeMaxDensityUnits: rbgnMaxDensityUnits,
 		ClickHouse:                           chCfg,
 		ClusterTopology:                      topology,
-		ExperimentalDistributedMode:          experimentalDistributed,
 		// Resolved through the file-aware lookup rather than os.Getenv so the
 		// read-side schema shape obeys a cerberus.yaml exactly as the rest of
 		// the surface does — internal/schema owns these defaults, so they never
@@ -1758,7 +1747,7 @@ const (
 	// defaultExperimentalDistributedMode keeps ClickHouse Distributed-table
 	// multi-shard routing OFF: an experimental path must be opted into
 	// explicitly, never reached by setting the shard count alone — see
-	// Config.ExperimentalDistributedMode's doc.
+	// clusterTopologyFromEnv.
 	defaultExperimentalDistributedMode = false
 	defaultLogCommentShape             = false
 	// defaultResultCacheIngestLag / defaultResultCacheTTL back
@@ -2147,13 +2136,14 @@ func queryTimeoutFromEnv(v *viper.Viper) (time.Duration, error) {
 //
 // The EFFECTIVE cap (the override when set, else maxOpenConns — the same
 // resolution chclient.NewDataShardFanoutGate performs) must be at least
-// dataShardCount whenever dataShardCount > 1: every dispatch acquires the
-// gate with weight dataShardCount, and semaphore.Weighted never admits a
-// weight larger than its size — it parks the caller until the request
-// context expires — so a cap below the width would make EVERY query time
-// out, with nothing in the logs naming the cause. Refused here, at the one
-// boundary where both numbers are known, instead of surfacing as a fleet of
-// deadline errors after boot.
+// dataShardCount whenever dataShardCount > 1: the narrowest possible
+// dispatch already charges the gate one full shard width, so a cap below
+// that width can only be met by chclient clamping every dispatch's weight
+// to the cap and admitting them one at a time — a deployment where the
+// admission budget serialises all traffic and bounds nothing. That is a
+// misconfiguration, refused here at the one boundary where both numbers are
+// known, with an error naming the variable to raise, rather than served
+// slowly with nothing in the logs naming the cause.
 func dataShardFanoutCapOverrideFromEnv(v *viper.Viper, dataShardCount, maxOpenConns int) (*int64, error) {
 	override, err := getOptionalInt64(v, envCHDataShardFanoutCapOverride)
 	if err != nil {
@@ -2170,7 +2160,7 @@ func dataShardFanoutCapOverrideFromEnv(v *viper.Viper, dataShardCount, maxOpenCo
 		effective, source = *override, envCHDataShardFanoutCapOverride
 	}
 	if effective < int64(dataShardCount) {
-		return nil, fmt.Errorf("%s=%d is below %s=%d: every ClickHouse dispatch charges the data-shard fan-out gate its full shard width, so a cap below the width can never admit a single query (each would block until its deadline); raise %s to at least %d",
+		return nil, fmt.Errorf("%s=%d is below %s=%d: every ClickHouse dispatch charges the data-shard fan-out gate at least its full shard width, so a cap below the width would admit dispatches one at a time and bound nothing; raise %s to at least %d",
 			source, effective, envCHDataShards, dataShardCount, source, dataShardCount)
 	}
 	return override, nil
@@ -2970,22 +2960,22 @@ func resultCacheDurationsFromEnv(v *viper.Viper) (ingestLag, ttl time.Duration, 
 // it. Extracted from FromEnv so the parse does not itself push FromEnv over
 // its statement-count budget, the same reason resultCacheDurationsFromEnv
 // above is its own function.
-func clusterTopologyFromEnv(v *viper.Viper) (topology chopt.ClusterTopology, experimental bool, err error) {
+func clusterTopologyFromEnv(v *viper.Viper) (chopt.ClusterTopology, error) {
 	dataShardCount, err := getPositiveInt(v, envCHDataShards)
 	if err != nil {
-		return chopt.ClusterTopology{}, false, err
+		return chopt.ClusterTopology{}, err
 	}
-	experimental, err = getBool(v, envExperimentalDistributedMode)
+	experimental, err := getBool(v, envExperimentalDistributedMode)
 	if err != nil {
-		return chopt.ClusterTopology{}, false, err
+		return chopt.ClusterTopology{}, err
 	}
 	if dataShardCount > 1 && !experimental {
-		return chopt.ClusterTopology{}, false, fmt.Errorf(
+		return chopt.ClusterTopology{}, fmt.Errorf(
 			"%s=%d: ClickHouse Distributed-table multi-shard routing is EXPERIMENTAL and off by default; set %s=true to opt in (cerberus epic #3074; see issue #3128)",
 			envCHDataShards, dataShardCount, envExperimentalDistributedMode,
 		)
 	}
-	return chopt.ClusterTopology{DataShardCount: dataShardCount}, experimental, nil
+	return chopt.ClusterTopology{DataShardCount: dataShardCount}, nil
 }
 
 // chOptCorpusFromEnv parses the CERBERUS_CH_OPT_CORPUS_* knobs into a

@@ -87,7 +87,7 @@ const maxRenderedQueryBytes = 200 * 1024
 // endpoints build starts well under ClickHouse's max_query_size. A slice
 // at or below the cap returns a single chunk (the typical one-round-trip
 // case); only an over-cap set fans into ⌈len/cap⌉ chunks. The
-// rendered-size guard (splitOversizeChunk) may split any of these chunks
+// rendered-size guard (buildBoundedChunkSQL) may split any of these chunks
 // further at build time. Returns nil for an empty input so callers
 // short-circuit without issuing a query.
 func chunkMatcherVariants(variants []string) [][]string {
@@ -134,8 +134,8 @@ func chunkMatcherVariants(variants []string) [][]string {
 // We add the per-arg inlined-literal cost so the guard measures the bound
 // query the driver transmits, and buildBoundedChunkSQL splits on the real
 // figure.
-func renderedSQLBytes(arms []chsql.Frag, combine func([]chsql.Frag) (string, []any)) int {
-	sql, args := combine(arms)
+func renderedSQLBytes(arms []chsql.Frag, combine func([]chsql.Frag) (string, []any, int)) int {
+	sql, args, _ := combine(arms)
 	return boundQueryBytes(sql, args)
 }
 
@@ -187,13 +187,13 @@ func argLiteralBytes(a any) int {
 // further, and CH will surface its own max_query_size error rather than
 // cerberus silently dropping it). Correctness over the perf win: the
 // caller's Go dedup folds the overlapping sub-chunk results safely.
-func buildBoundedChunkSQL(arms []chsql.Frag, combine func([]chsql.Frag) (string, []any)) []renderedQuery {
+func buildBoundedChunkSQL(arms []chsql.Frag, combine func([]chsql.Frag) (string, []any, int)) []renderedQuery {
 	if len(arms) == 0 {
 		return nil
 	}
 	if len(arms) == 1 || renderedSQLBytes(arms, combine) <= maxRenderedQueryBytes {
-		sql, args := combine(arms)
-		return []renderedQuery{{sql: sql, args: args}}
+		sql, args, physicalScans := combine(arms)
+		return []renderedQuery{{sql: sql, args: args, physicalScans: physicalScans}}
 	}
 	mid := len(arms) / 2
 	left := buildBoundedChunkSQL(arms[:mid], combine)
@@ -204,9 +204,16 @@ func buildBoundedChunkSQL(arms []chsql.Frag, combine func([]chsql.Frag) (string,
 // renderedQuery is one combined (sql, args) statement the batched
 // endpoints execute. buildBoundedChunkSQL returns a slice of these so the
 // caller runs each as its own round-trip and merges the results.
+// physicalScans is the statement's physical-table scan count — one per
+// matcher arm's merge() member — which the caller stamps as the
+// data-shard fan-out weight (chclient.WithDataShardFanoutMultiplier): a
+// chunk of up to maxMetricCandidatesPerQuery arms is the widest statement
+// this head dispatches, and charging it as one scan would let several of
+// them admit concurrently on a multi-data-shard deployment.
 type renderedQuery struct {
-	sql  string
-	args []any
+	sql           string
+	args          []any
+	physicalScans int
 }
 
 // handleLabels implements GET /api/v1/labels — distinct label names across
@@ -529,8 +536,10 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string, start,
 
 	var out []chclient.MetricMetaRow
 	for _, spec := range specs {
-		sql, args := h.metricMetaSQL(spec.table, metricName, spec.monotonic, start, end, nowAnchored)
-		rows, err := h.Client.QueryMetricMeta(ctx, sql, spec.kind, args...)
+		sql, args, physicalScans := h.metricMetaSQL(spec.table, metricName, spec.monotonic, start, end, nowAnchored)
+		// Engine bypass: one table per spec today, counted so a widened
+		// statement can never under-charge the data-shard fan-out gate.
+		rows, err := h.Client.QueryMetricMeta(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sql, spec.kind, args...)
 		if err != nil {
 			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 		}
@@ -610,7 +619,7 @@ func monotonicPred(col string, monotonic, nowAnchored bool) (pred chsql.Frag, us
 	return pred, nowAnchored
 }
 
-func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start, end time.Time, nowAnchored bool) (string, []any) {
+func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start, end time.Time, nowAnchored bool) (string, []any, int) {
 	nameCol := h.Schema.MetricNameColumn
 	descCol := h.Schema.MetricDescriptionColumn
 	unitCol := h.Schema.MetricUnitColumn
@@ -644,11 +653,10 @@ func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start
 
 	if metricName == "" {
 		sb.OrderBy(chsql.Col(nameCol), false)
-		sql, args := sb.Build()
-		return sql, args
+		return sb.BuildCounted()
 	}
 	sb.Where(chsql.Eq(chsql.Col(nameCol), chsql.Lit(metricName)))
-	return sb.Build()
+	return sb.BuildCounted()
 }
 
 // parseLimit decodes the `limit` query parameter — a positive integer.
@@ -771,8 +779,9 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 // doing `sum by (service_name)` silently produce empty matrices.
 func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, nowAnchored bool) ([]string, error) {
 	names, err := timeCH(ctx, func() ([]string, error) {
-		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any) {
-			return h.unionLabelNamesSQL(tables, start, end, nowAnchored), nil
+		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any, int) {
+			sql, physicalScans := h.unionLabelNamesSQL(tables, start, end, nowAnchored)
+			return sql, nil, physicalScans
 		})
 	})
 	if err != nil {
@@ -799,8 +808,9 @@ func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, now
 // the /labels listing alongside the Attributes keys + __name__.
 func (h *Handler) fetchResourceLabelNames(ctx context.Context, start, end time.Time) ([]string, error) {
 	resNames, err := timeCH(ctx, func() ([]string, error) {
-		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any) {
-			return h.unionResourceLabelNamesSQL(tables, start, end), nil
+		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any, int) {
+			sql, physicalScans := h.unionResourceLabelNamesSQL(tables, start, end)
+			return sql, nil, physicalScans
 		})
 	})
 	if err != nil {
@@ -831,7 +841,7 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string, start, end 
 		return h.fetchMetricNameValues(ctx, start, end, nowAnchored)
 	}
 	values, err := timeCH(ctx, func() ([]string, error) {
-		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any) {
+		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any, int) {
 			return h.unionLabelValuesSQL(tables, name, start, end, nowAnchored)
 		})
 	})
@@ -880,8 +890,9 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 	var values []string
 	if len(bareTables) > 0 {
 		bare, err := timeCH(ctx, func() ([]string, error) {
-			return h.queryStringsDegradingUnknownTable(ctx, bareTables, func(tables []string) (string, []any) {
-				return h.metricNamesSQL(tables, start, end, nowAnchored), nil
+			return h.queryStringsDegradingUnknownTable(ctx, bareTables, func(tables []string) (string, []any, int) {
+				sql, physicalScans := h.metricNamesSQL(tables, start, end, nowAnchored)
+				return sql, nil, physicalScans
 			})
 		})
 		if err != nil {
@@ -938,8 +949,9 @@ func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, 
 		return nil, nil
 	}
 	names, err := timeCH(ctx, func() ([]string, error) {
-		return h.queryStringsDegradingUnknownTable(ctx, []string{histogramTable}, func(tables []string) (string, []any) {
-			return h.metricNamesSQL(tables, start, end, nowAnchored), nil
+		return h.queryStringsDegradingUnknownTable(ctx, []string{histogramTable}, func(tables []string) (string, []any, int) {
+			sql, physicalScans := h.metricNamesSQL(tables, start, end, nowAnchored)
+			return sql, nil, physicalScans
 		})
 	})
 	if err != nil {
@@ -1079,11 +1091,11 @@ func (h *Handler) matcherArms(
 ) ([]chsql.Frag, error) {
 	arms := make([]chsql.Frag, 0, len(matchers))
 	for _, m := range matchers {
-		innerSQL, args, err := h.catalogMatcherSQL(ctx, m, start, end, lowerCatalog)
+		innerSQL, args, physicalScans, err := h.catalogMatcherSQL(ctx, m, start, end, lowerCatalog)
 		if err != nil {
 			return nil, err
 		}
-		arms = append(arms, matcherSubqueryFrag(innerSQL, args))
+		arms = append(arms, matcherSubqueryFrag(innerSQL, args, physicalScans))
 	}
 	return arms, nil
 }
@@ -1108,12 +1120,12 @@ func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string, s
 	if len(matchers) == 0 {
 		return nil, nil
 	}
-	combine := func(arms []chsql.Frag) (string, []any) {
+	combine := func(arms []chsql.Frag) (string, []any, int) {
 		return chsql.NewQuery().
 			Select(chsql.As(distinctIdent(promql.MetadataNameColumn), "")).
 			From(chsql.Paren(chsql.UnionAll(arms...))).
 			OrderBy(chsql.Col(promql.MetadataNameColumn), false).
-			Build()
+			BuildCounted()
 	}
 	var all []string
 	for _, chunk := range chunkMatcherVariants(matchers) {
@@ -1123,7 +1135,7 @@ func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string, s
 		}
 		for _, q := range buildBoundedChunkSQL(arms, combine) {
 			keys, err := timeCH(ctx, func() ([]string, error) {
-				return h.Client.QueryStrings(ctx, q.sql, q.args...)
+				return h.Client.QueryStrings(chclient.WithDataShardFanoutMultiplier(ctx, q.physicalScans), q.sql, q.args...)
 			})
 			if err != nil {
 				return nil, err
@@ -1174,7 +1186,7 @@ func (h *Handler) labelValuesForMatchers(ctx context.Context, name string, match
 		}
 		for _, q := range buildBoundedChunkSQL(arms, combine) {
 			vals, err := timeCH(ctx, func() ([]string, error) {
-				return h.Client.QueryStrings(ctx, q.sql, q.args...)
+				return h.Client.QueryStrings(chclient.WithDataShardFanoutMultiplier(ctx, q.physicalScans), q.sql, q.args...)
 			})
 			if err != nil {
 				return nil, err
@@ -1194,13 +1206,13 @@ func (h *Handler) labelValuesForMatchers(ctx context.Context, name string, match
 // value` over the UNION-ALL. The empty-string sentinel CH returns for an
 // absent map key is dropped by the caller's `seen` filter, matching Prom's
 // "an absent label has no value" contract.
-func labelValueCombine() func([]chsql.Frag) (string, []any) {
-	return func(arms []chsql.Frag) (string, []any) {
+func labelValueCombine() func([]chsql.Frag) (string, []any, int) {
+	return func(arms []chsql.Frag) (string, []any, int) {
 		return chsql.NewQuery().
 			Select(chsql.As(distinctIdent(promql.MetadataValueColumn), "")).
 			From(chsql.Paren(chsql.UnionAll(arms...))).
 			OrderBy(chsql.Col(promql.MetadataValueColumn), false).
-			Build()
+			BuildCounted()
 	}
 }
 
@@ -1212,10 +1224,10 @@ func labelValueCombine() func([]chsql.Frag) (string, []any) {
 func (h *Handler) catalogMatcherSQL(
 	ctx context.Context, matcher string, start, end time.Time,
 	lowerCatalog func(context.Context, promparser.Expr, schema.Metrics, time.Time, time.Time) (chplan.Node, error),
-) (string, []any, error) {
+) (sql string, args []any, physicalScans int, err error) {
 	expr, err := h.parseMatchSelector(ctx, matcher)
 	if err != nil {
-		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+		return "", nil, 0, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	lower := lowerCatalog
 	if lower == nil {
@@ -1223,14 +1235,14 @@ func (h *Handler) catalogMatcherSQL(
 	}
 	plan, err := lower(ctx, expr, h.Schema, start, end)
 	if err != nil {
-		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+		return "", nil, 0, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	plan = h.Optimizer.Run(ctx, plan)
-	sql, args, err := chsql.Emit(ctx, plan)
+	sql, args, physicalScans, err = chsql.EmitCounted(ctx, plan)
 	if err != nil {
-		return "", nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
-	return sql, args, nil
+	return sql, args, physicalScans, nil
 }
 
 // expandSeriesMatchers fans every input match[] selector out through
@@ -1455,11 +1467,11 @@ func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, start
 	// (…)` boundary, which some CH drivers (chdb) refuse to cast back to
 	// MAP.
 	if len(matchers) == 1 {
-		sql, args, err := h.seriesMatcherSQL(ctx, matchers[0], start, end)
+		sql, args, physicalScans, err := h.seriesMatcherSQL(ctx, matchers[0], start, end)
 		if err != nil {
 			return nil, err
 		}
-		return h.querySamples(ctx, sql, args)
+		return h.querySamples(ctx, sql, args, physicalScans)
 	}
 	// Multi-matcher: UNION-ALL the per-variant Sample-shape SELECTs into
 	// ONE statement. `chsql.UnionAll` emits `(arm1) UNION ALL (arm2) …` —
@@ -1469,18 +1481,18 @@ func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, start
 	// byte budget.
 	arms := make([]chsql.Frag, 0, len(matchers))
 	for _, m := range matchers {
-		s, a, err := h.seriesMatcherSQL(ctx, m, start, end)
+		s, a, n, err := h.seriesMatcherSQL(ctx, m, start, end)
 		if err != nil {
 			return nil, err
 		}
-		arms = append(arms, matcherSubqueryFrag(s, a))
+		arms = append(arms, matcherSubqueryFrag(s, a, n))
 	}
-	combine := func(arms []chsql.Frag) (string, []any) {
-		return chsql.Render(chsql.UnionAll(arms...))
+	combine := func(arms []chsql.Frag) (string, []any, int) {
+		return chsql.RenderCounted(chsql.UnionAll(arms...))
 	}
 	var out []chclient.Sample
 	for _, q := range buildBoundedChunkSQL(arms, combine) {
-		samples, err := h.querySamples(ctx, q.sql, q.args)
+		samples, err := h.querySamples(ctx, q.sql, q.args, q.physicalScans)
 		if err != nil {
 			return nil, err
 		}
@@ -1491,8 +1503,11 @@ func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, start
 
 // querySamples runs a Sample-projecting SELECT and maps the CH error to a
 // 502 apiError. Shared by the single-matcher fast path and the
-// multi-matcher UNION-ALL path in fetchSeriesChunk.
-func (h *Handler) querySamples(ctx context.Context, sql string, args []any) ([]chclient.Sample, error) {
+// multi-matcher UNION-ALL path in fetchSeriesChunk. physicalScans is the
+// statement's own scan count, stamped as the data-shard fan-out weight
+// because this dispatch bypasses the engine (renderedQuery's doc).
+func (h *Handler) querySamples(ctx context.Context, sql string, args []any, physicalScans int) ([]chclient.Sample, error) {
+	ctx = chclient.WithDataShardFanoutMultiplier(ctx, physicalScans)
 	samples, err := timeCH(ctx, func() ([]chclient.Sample, error) {
 		return h.Client.Query(ctx, sql, args...)
 	})
@@ -1515,22 +1530,22 @@ func (h *Handler) querySamples(ctx context.Context, sql string, args []any) ([]c
 // staleness window at `end`. A zero start/end omits that bound. This is
 // what makes /series return a series with any in-window sample instead of
 // only series with a sample in the last 5m at wall-clock `now`.
-func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, end time.Time) (string, []any, error) {
+func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, end time.Time) (sql string, args []any, physicalScans int, err error) {
 	expr, err := h.parseMatchSelector(ctx, matcher)
 	if err != nil {
-		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+		return "", nil, 0, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	plan, err := promql.LowerMetadataRange(ctx, expr, h.Schema, start, end)
 	if err != nil {
-		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+		return "", nil, 0, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	plan = wrapWithSampleProjection(plan, h.Schema)
 	plan = h.Optimizer.Run(ctx, plan)
-	sql, args, err := chsql.Emit(ctx, plan)
+	sql, args, physicalScans, err = chsql.EmitCounted(ctx, plan)
 	if err != nil {
-		return "", nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
-	return sql, args, nil
+	return sql, args, physicalScans, nil
 }
 
 // resourceArmActive reports whether the unmatched catalog endpoints
@@ -1600,7 +1615,7 @@ func (h *Handler) resourceLabelValueArmActive(promLabel string) bool {
 // ONE shape keeps the mapKeys(...) spelling rather than the <col>.keys
 // subcolumn form arrayJoinMapKeysFrag uses everywhere else. A user-supplied
 // finite window keeps the exact WHERE-bounded scan.
-func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowAnchored bool) string {
+func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowAnchored bool) (sql string, physicalScans int) {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
 	tsCol := h.Schema.TimestampColumn
@@ -1628,8 +1643,8 @@ func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowA
 		Select(chsql.As(distinctIdent("name"), "")).
 		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("name"), false)
-	sql, _ := outer.Build()
-	return sql
+	sql, _, physicalScans = outer.BuildCounted()
+	return sql, physicalScans
 }
 
 // unionResourceLabelNamesSQL builds a UNION of all metric tables'
@@ -1638,7 +1653,7 @@ func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowA
 // sanitizes + allowlist-filters in Go (cheaper than an N-key SQL IN over
 // every row's map, and it keeps the Attributes union byte-identical so the
 // promote-all default adds no churn to existing fixtures).
-func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Time) string {
+func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Time) (sql string, physicalScans int) {
 	resCol := h.Schema.ResourceAttributesColumn
 	pred := h.metadataWindowPred(start, end)
 	parts := make([]chsql.Frag, 0, len(tables))
@@ -1655,8 +1670,8 @@ func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Ti
 		Select(chsql.As(distinctIdent("name"), "")).
 		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("name"), false)
-	sql, _ := outer.Build()
-	return sql
+	sql, _, physicalScans = outer.BuildCounted()
+	return sql, physicalScans
 }
 
 // dateTime64Frag renders the `toDateTime64('<ts>', 9)` literal used to
@@ -1725,7 +1740,7 @@ func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
 //     straddle but skip the window would be a false positive), and the
 //     request's own range is where MergeTree partition pruning already bounds
 //     the scan.
-func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAnchored bool) string {
+func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAnchored bool) (sql string, physicalScans int) {
 	metricCol := h.Schema.MetricNameColumn
 	parts := make([]chsql.Frag, 0, len(tables))
 	if nowAnchored {
@@ -1756,8 +1771,8 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 		Select(chsql.As(distinctIdent("value"), "")).
 		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("value"), false)
-	sql, _ := outer.Build()
-	return sql
+	sql, _, physicalScans = outer.BuildCounted()
+	return sql, physicalScans
 }
 
 // unionLabelValuesSQL returns the distinct Attributes[?] values across
@@ -1776,7 +1791,7 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 // Mirrors the matcher-side `attributeLookup` chain in
 // `internal/promql/lower.go`: both query and listing surfaces now
 // resolve the same Prom-grammar → OTel-key candidates the same way.
-func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end time.Time, nowAnchored bool) (string, []any) {
+func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end time.Time, nowAnchored bool) (string, []any, int) {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
 	tsCol := h.Schema.TimestampColumn
@@ -1846,7 +1861,7 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 		Select(chsql.As(distinctIdent("value"), "")).
 		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("value"), false)
-	return outer.Build()
+	return outer.BuildCounted()
 }
 
 // labelValueCandidates returns the candidate Attributes-map keys for a
@@ -1878,7 +1893,9 @@ func (h *Handler) metricTables() []string {
 	return h.Schema.ConfiguredMetricTables()
 }
 
-// queryStringsDegradingUnknownTable executes buildSQL(tables) via
+// queryStringsDegradingUnknownTable executes buildSQL(tables) — whose third
+// result is the statement's physical-table scan count, stamped as the
+// data-shard fan-out weight because this dispatch bypasses the engine — via
 // h.Client.QueryStrings, where tables is the FULL candidate set a metadata
 // UNION would normally read from (e.g. h.metricTables()) — every physical
 // table this surface unions across, whether or not this deployment
@@ -1911,13 +1928,13 @@ func (h *Handler) metricTables() []string {
 func (h *Handler) queryStringsDegradingUnknownTable(
 	ctx context.Context,
 	tables []string,
-	buildSQL func([]string) (string, []any),
+	buildSQL func([]string) (string, []any, int),
 ) ([]string, error) {
 	if len(tables) == 0 {
 		return nil, nil
 	}
-	sql, args := buildSQL(tables)
-	out, err := h.Client.QueryStrings(ctx, sql, args...)
+	sql, args, physicalScans := buildSQL(tables)
+	out, err := h.Client.QueryStrings(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sql, args...)
 	if err == nil {
 		return out, nil
 	}
@@ -1932,8 +1949,8 @@ func (h *Handler) queryStringsDegradingUnknownTable(
 		// surface the rejection as a 502.
 		return nil, nil
 	}
-	sql, args = buildSQL(existing)
-	out, err = h.Client.QueryStrings(ctx, sql, args...)
+	sql, args, physicalScans = buildSQL(existing)
+	out, err = h.Client.QueryStrings(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sql, args...)
 	if err == nil {
 		return out, nil
 	}
@@ -2035,8 +2052,8 @@ func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 // chsql.Emit and the typed QueryBuilder surface. A future R6.x port
 // of chsql.Emit to return a *QueryBuilder will retire this helper
 // (and chsql.PreRenderedSQL).
-func matcherSubqueryFrag(sql string, args []any) chsql.Frag {
-	return chsql.Subquery(chsql.PreRenderedSQL{SQL: sql, Args: args})
+func matcherSubqueryFrag(sql string, args []any, physicalScans int) chsql.Frag {
+	return chsql.Subquery(chsql.PreRenderedSQL{SQL: sql, Args: args, PhysicalScans: physicalScans})
 }
 
 // normalizeMetricValues runs each candidate through OTelToPromMetric

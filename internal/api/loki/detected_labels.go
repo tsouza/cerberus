@@ -47,6 +47,11 @@ type DetectedLabelsData struct {
 // window (the same shape /series fetches) and counts the cardinality of
 // each key client-side, reusing QueryLabelSets.
 func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
+	// windowless is captured from the raw params BEFORE parseStartEnd
+	// defaults start/end to [now-1h, now] — it is the second catalog
+	// eligibility signal (see labelCatalogEligible): only a request carrying
+	// no start/end at all is a datasource-open probe.
+	windowless := r.FormValue("start") == "" && r.FormValue("end") == ""
 	start, end, err := parseStartEnd(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
@@ -63,15 +68,15 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Catalog-eligible fast path (cerberus issue #2770): a selector-less
-	// (or trivially empty, e.g. `{}`) request is exactly the
+	// (or trivially empty, e.g. `{}`), windowless request is exactly the
 	// datasource-open-probe shape the refreshable-MV catalog answers — see
-	// labelCatalogEligible's doc comment for why this is the whole
-	// eligibility rule. detectedLabelsFromCatalog only returns ok=true on a
-	// genuine catalog hit; any miss (feature off, table not yet
+	// labelCatalogEligible's doc comment for why these two terms are the
+	// whole eligibility rule. detectedLabelsFromCatalog only returns ok=true
+	// on a genuine catalog hit; any miss (feature off, table not yet
 	// provisioned, catalog query error, or an empty/not-yet-refreshed
 	// snapshot) falls straight through to the SAME per-request path every
 	// other request already takes — that path is untouched below.
-	if h.LabelCatalogEnabled && labelCatalogEligible(matchers) {
+	if h.LabelCatalogEnabled && labelCatalogEligible(matchers, windowless) {
 		if out, ok := h.detectedLabelsFromCatalog(r.Context()); ok {
 			writeJSON(w, http.StatusOK, DetectedLabelsData{DetectedLabels: out})
 			return
@@ -180,16 +185,27 @@ func summariseDetectedLabels(rows []map[string]string) []DetectedLabel {
 // labelCatalogEligible reports whether a /detected_labels request may be
 // served from the refreshable-MV label catalog instead of the per-request
 // GROUP BY above. The rule is deliberately the SIMPLEST, most conservative
-// one the issue names: eligible only when the request carries NO stream
-// matchers at all — an empty `query` param, or one that parses to zero
-// matchers (e.g. `{}`) — i.e. a datasource-open probe asking "what labels
-// exist across every stream". The catalog itself is unkeyed by stream (see
-// FeatureLokiCatalogMV's doc comment), so it has no way to answer a
-// SELECTOR-scoped request (Grafana Logs Drilldown's per-service view)
-// correctly; those stay on the fallback path unconditionally, forever —
-// not a gap this rule tries to paper over.
-func labelCatalogEligible(matchers []*labels.Matcher) bool {
-	return len(matchers) == 0
+// one the issue names — a datasource-open probe asking "what labels exist
+// across every stream", and nothing else. Eligible only when BOTH:
+//
+//   - the request carries NO stream matchers at all — an empty `query`
+//     param, or one that parses to zero matchers (e.g. `{}`). The catalog
+//     itself is unkeyed by stream (see FeatureLokiCatalogMV's doc comment),
+//     so it has no way to answer a SELECTOR-scoped request (Grafana Logs
+//     Drilldown's per-service view) correctly; those stay on the fallback
+//     path unconditionally, forever — not a gap this rule tries to paper
+//     over.
+//   - the request is windowless — no `start`/`end` query parameters at
+//     all, captured BEFORE parseStartEnd defaults them to [now-1h, now].
+//     The catalog aggregates its own fixed trailing window
+//     (internal/schema/ddl's lokiLabelCatalogWindowHours), so an explicit
+//     historical window — a user scrubbing the time picker back a week —
+//     must be answered from the rows in THAT window, not silently from
+//     the catalog's. Mirrors internal/api/tempo's tagsCatalogEligible
+//     exactly; a cardinality COUNT is no more tolerant of a window
+//     mismatch than a key LIST is.
+func labelCatalogEligible(matchers []*labels.Matcher, windowless bool) bool {
+	return len(matchers) == 0 && windowless
 }
 
 // detectedLabelsFromCatalog attempts the catalog read: it queries

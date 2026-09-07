@@ -153,9 +153,11 @@ on:
           shared runner capacity on every iteration. `datashard` itself has
           no `needs:` dependency on any other job in this workflow, so this
           is a pure skip of unrelated work, not a reordering. Every other
-          job's own `if:` gains `&& !inputs.datashard_only` (or, for the
-          handful of root jobs a whole pipeline cascades from, a new
-          standalone `if:`) so a plain `false` here (every non-dispatch
+          job that can run on a `workflow_dispatch` gains
+          `&& !inputs.datashard_only` on its own `if:` (or, for the handful
+          of root jobs a whole pipeline cascades from, a new standalone
+          `if:`); `nightly-health-notify` is `schedule`-only and so never
+          sees this input. A plain `false` here (every non-dispatch
           trigger, and a dispatch that leaves it unset) is a complete no-op —
           byte-identical to this workflow's behaviour before this input
           existed.
@@ -461,32 +463,9 @@ jobs:
 
       - name: dump compose state + logs on failure
         if: failure() || steps.playwright_smoke.outcome == 'failure'
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h || true
-          echo "=== compose ps ==="
-          docker compose ps | tee /tmp/compose-state.log
-          echo "=== clickhouse logs (last 200) ==="
-          docker compose logs --tail=200 clickhouse 2>&1 | tee -a /tmp/compose-state.log || true
-          echo "=== cerberus logs (last 200) ==="
-          docker compose logs --tail=200 cerberus 2>&1 | tee -a /tmp/compose-state.log || true
-          echo "=== grafana logs (last 200) ==="
-          docker compose logs --tail=200 grafana 2>&1 | tee -a /tmp/compose-state.log || true
-          echo "=== otel-collector logs (last 200) ==="
-          docker compose logs --tail=200 otel-collector 2>&1 | tee -a /tmp/compose-state.log || true
-          echo "=== seed logs (last 200) ==="
-          docker compose logs --tail=200 seed 2>&1 | tee -a /tmp/compose-state.log || true
-          # Infra-flake breadcrumb. Fire ONLY on a REAL disk-full signal —
-          # the kernel ENOSPC string in a container log, or root >=90% full.
-          # The bare field names
-          # 'DiskPressure'/'ephemeral-storage' were dropped: they are k8s
-          # terms that don't appear in compose container logs anyway, and
-          # keeping them invited the same false-positive that plagued the
-          # k3d lanes (see the dashboard job + PR diagnosis).
-          if grep -qiE 'no space left on device' /tmp/compose-state.log \
-             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
-            echo "::notice::infra: real disk-full / ephemeral-storage eviction detected (ENOSPC or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        env:
+          COMPOSE: "true"
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: teardown
         if: always()
@@ -680,31 +659,9 @@ jobs:
 
       - name: dump compose state + logs on failure
         if: failure() || steps.playwright_smoke.outcome == 'failure'
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h || true
-          echo "=== compose ps ==="
-          docker compose ps | tee /tmp/compose-state.log
-          echo "=== clickhouse logs (last 200) ==="
-          docker compose logs --tail=200 clickhouse 2>&1 | tee -a /tmp/compose-state.log || true
-          echo "=== cerberus logs (last 200) ==="
-          docker compose logs --tail=200 cerberus 2>&1 | tee -a /tmp/compose-state.log || true
-          echo "=== grafana logs (last 200) ==="
-          docker compose logs --tail=200 grafana 2>&1 | tee -a /tmp/compose-state.log || true
-          echo "=== otel-collector logs (last 200) ==="
-          docker compose logs --tail=200 otel-collector 2>&1 | tee -a /tmp/compose-state.log || true
-          echo "=== seed logs (last 200) ==="
-          docker compose logs --tail=200 seed 2>&1 | tee -a /tmp/compose-state.log || true
-          # Fire ONLY on a REAL disk-full signal — the kernel ENOSPC string
-          # in a container log, or root >=90% full. The bare field names
-          # 'DiskPressure'/'ephemeral-storage' were dropped: they are k8s
-          # terms that don't appear in compose container logs anyway, and
-          # keeping them invited the same false-positive that plagued the
-          # k3d lanes (see the dashboard job + PR diagnosis).
-          if grep -qiE 'no space left on device' /tmp/compose-state.log \
-             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
-            echo "::notice::infra: real disk-full / ephemeral-storage eviction detected (ENOSPC or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        env:
+          COMPOSE: "true"
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: teardown
         if: always()
@@ -1259,79 +1216,10 @@ jobs:
 
       - name: Dump cluster state on failure
         if: failure() && env.RUN_SHARD == 'true'
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h || true
-          echo "=== pods ==="
-          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
-          echo "=== events (last 50) ==="
-          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
-          echo "=== node conditions (DiskPressure et al.) ==="
-          kubectl describe nodes 2>&1 | tee -a /tmp/cluster-state.log | grep -iE 'DiskPressure|ephemeral-storage|Evicted' || true
-          echo "=== cerberus logs ==="
-          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
-          # Per-pod current + previous-container logs for EVERY
-          # cerberus pod: `logs deploy/...` picks one pod, which on a
-          # crash-looping deployment is usually a healthy survivor —
-          # run 27249217602 had two cerberus pods in CrashLoopBackOff
-          # (exit 1) and the dump captured nothing about why. The
-          # --previous tail is the crash evidence.
-          for p in $(kubectl -n cerberus get pods -l app=cerberus -o name); do
-            echo "=== $p (current) ==="
-            kubectl -n cerberus logs "$p" --tail 50 || true
-            echo "=== $p (previous container, if restarted) ==="
-            kubectl -n cerberus logs "$p" --previous --tail 100 || true
-          done
-          echo "=== cerberus pod describes ==="
-          kubectl -n cerberus describe pods -l app=cerberus || true
-          echo "=== clickhouse logs ==="
-          kubectl -n cerberus logs deploy/clickhouse --tail 200 || true
-          echo "=== grafana logs ==="
-          kubectl -n cerberus logs deploy/grafana --tail 200 || true
-          echo "=== otel-collector gateway logs ==="
-          kubectl -n cerberus logs deploy/otel-collector-gateway --tail 200 || true
-          echo "=== otel-collector agent logs ==="
-          kubectl -n cerberus logs daemonset/otel-collector-agent --tail 200 || true
-          echo "=== sample-app traces logs ==="
-          kubectl -n cerberus logs deploy/sample-app-traces --tail 100 || true
-          echo "=== sample-app metrics logs ==="
-          kubectl -n cerberus logs deploy/sample-app-metrics --tail 100 || true
-          echo "=== sample-app metrics previous-container logs ==="
-          kubectl -n cerberus logs deploy/sample-app-metrics --previous --tail 100 || true
-          echo "=== sample-app logs logs ==="
-          kubectl -n cerberus logs deploy/sample-app-logs --tail 100 || true
-          echo "=== sample-app metrics describe ==="
-          kubectl -n cerberus describe deployment/sample-app-metrics || true
-          kubectl -n cerberus describe pod -l app=sample-app,signal=metrics || true
-          echo "=== rolling seeder log (tail 200) ==="
-          tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
-          echo "=== rolling seeder port-forward log (tail 50) ==="
-          tail -50 /tmp/cerberus-e2e-seed-pf.log 2>/dev/null || true
-          # Infra-flake breadcrumb: fire ONLY on a REAL ephemeral-storage
-          # eviction, so a reviewer can trust the "safe to re-run" hint.
-          #
-          # The previous guard grepped cluster-state.log for the bare field
-          # names 'DiskPressure' / 'ephemeral-storage'. But `kubectl describe
-          # nodes` (tee'd into that file above) ALWAYS prints those words on a
-          # HEALTHY node — `DiskPressure  False`, `KubeletHasNoDiskPressure`,
-          # `ephemeral-storage: <capacity>Ki`. So the breadcrumb fired on
-          # EVERY k3d failure regardless of cause (e.g. a cerberus /readyz 503
-          # timing bug), mislabelling real regressions as "infra flake, safe
-          # to re-run" and inventing a recurring disk flake that the df
-          # numbers show never happened (root sits <40% on these 145 GB
-          # runners; there is no /mnt). See PR for the full diagnosis.
-          #
-          # Match only the AFFIRMATIVE-pressure signals, none of which appear
-          # on a healthy node:
-          #   no space left on device   - the kernel ENOSPC string
-          #   DiskPressure +True        - the node condition flipped True
-          #   KubeletHasDiskPressure    - the pressure event (NOT the healthy
-          #   NodeHasDiskPressure         'KubeletHasNoDiskPressure'/'No' form)
-          #   Evicted                   - a pod actually evicted
-          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
-             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
-            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        env:
+          NAMESPACE: cerberus
+          SEED_LOG: /tmp/cerberus-e2e-seed-rolling.log /tmp/cerberus-e2e-seed-pf.log
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Tear down
         if: always() && env.RUN_SHARD == 'true'
@@ -1679,50 +1567,10 @@ jobs:
       # recovery assertion instead).
       - name: Dump cluster state on failure
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h || true
-          echo "=== pods ==="
-          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
-          echo "=== events (last 50) ==="
-          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
-          echo "=== node conditions (DiskPressure et al.) ==="
-          kubectl describe nodes 2>&1 | tee -a /tmp/cluster-state.log | grep -iE 'DiskPressure|ephemeral-storage|Evicted' || true
-          echo "=== networkpolicies ==="
-          kubectl -n cerberus get networkpolicies -o wide || true
-          echo "=== cerberus logs ==="
-          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
-          for p in $(kubectl -n cerberus get pods -l app=cerberus -o name); do
-            echo "=== $p (current) ==="
-            kubectl -n cerberus logs "$p" --tail 50 || true
-            echo "=== $p (previous container, if restarted) ==="
-            kubectl -n cerberus logs "$p" --previous --tail 100 || true
-          done
-          echo "=== cerberus pod describes ==="
-          kubectl -n cerberus describe pods -l app=cerberus || true
-          echo "=== clickhouse logs ==="
-          kubectl -n cerberus logs deploy/clickhouse --tail 200 || true
-          echo "=== clickhouse pod describes ==="
-          kubectl -n cerberus describe pods -l app=clickhouse || true
-          echo "=== otel-collector gateway logs ==="
-          kubectl -n cerberus logs deploy/otel-collector-gateway --tail 200 || true
-          echo "=== otel-collector agent logs ==="
-          kubectl -n cerberus logs daemonset/otel-collector-agent --tail 200 || true
-          echo "=== rolling seeder log (tail 200) ==="
-          tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
-          # Infra-flake breadcrumb: fire ONLY on a REAL ephemeral-storage
-          # eviction. The previous guard grepped for the bare field names
-          # 'DiskPressure' / 'ephemeral-storage', which `kubectl describe
-          # nodes` ALWAYS prints on a healthy node ('DiskPressure  False',
-          # 'KubeletHasNoDiskPressure', 'ephemeral-storage: <cap>Ki'), so it
-          # fired on every chaos failure regardless of cause. Match only the
-          # affirmative-pressure signals (none present on a healthy node) plus
-          # a true root-disk-full threshold. See the dashboard job + PR for
-          # the full diagnosis.
-          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
-             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
-            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        env:
+          NAMESPACE: cerberus
+          SEED_LOG: /tmp/cerberus-e2e-seed-rolling.log
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Tear down
         if: always()
@@ -1879,27 +1727,10 @@ jobs:
 
       - name: Dump cluster state on failure
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h || true
-          echo "=== pods ==="
-          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
-          echo "=== events (last 50) ==="
-          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
-          echo "=== cerberus logs ==="
-          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
-          echo "=== bundled clickhouse logs ==="
-          kubectl -n cerberus logs statefulset/cerberus-clickhouse --tail 200 || true
-          echo "=== minio logs ==="
-          kubectl -n cerberus logs deploy/minio --tail 100 || true
-          echo "=== bucket-create job logs ==="
-          kubectl -n cerberus logs job/minio-create-bucket --tail 100 || true
-          echo "=== rolling seeder log (tail 200) ==="
-          tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
-          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
-             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
-            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        env:
+          NAMESPACE: cerberus
+          SEED_LOG: /tmp/cerberus-e2e-seed-rolling.log
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Tear down
         if: always()
@@ -1923,10 +1754,10 @@ jobs:
   # Each leg: brings up its own dataShardCount-shard cluster + a built
   # cerberus image (`just e2e-datashard-up`), seeds the deterministic OTel
   # rows (`just e2e-seed-rolling`), runs the FULL Go e2e suite
-  # (`just e2e-run` — includes the new ClickHouse#29332 subquery-shaped
-  # tests in test/e2e/e2e_datashard_subquery_test.go, run UNCONDITIONALLY in
-  # every lane so the SAME pinned assertions prove "matches the single-shard
-  # reference" by construction rather than by a separate diff step), then
+  # (`just e2e-run` — includes the ClickHouse#29332 subquery-shaped tests
+  # in test/e2e/e2e_datashard_subquery_test.go, run UNCONDITIONALLY in every
+  # lane so the SAME assertions prove each shape survives the Distributed
+  # target with a well-formed, non-empty answer everywhere), then
   # fires a concurrent PromQL/LogQL/TraceQL burst and asserts the real
   # ClickHouse-side admission-control + memory behavior against
   # `system.query_log` (`just e2e-datashard-verify` —
@@ -1994,9 +1825,11 @@ jobs:
 
       # Reused UNCHANGED across every e2e lane (standard, bwc, datashard) —
       # includes test/e2e/e2e_datashard_subquery_test.go's ClickHouse#29332
-      # subquery-shaped tests, so the SAME pinned assertions running
-      # byte-identically here is the "matches a single-shard reference run"
-      # correctness proof (docs/operations.md's #29332 test-plan section).
+      # subquery-shaped tests, so the SAME assertions running byte-identically
+      # here prove each shape survives the Distributed target and returns a
+      # well-formed, non-empty answer in every lane (docs/operations.md's
+      # #29332 test-plan section). Not a value-level comparison against a
+      # single-shard reference run: no lane pins a numeric result.
       - name: Run Go E2E tests (correctness against the real multi-data-shard cluster)
         run: just e2e-run
 
@@ -2005,38 +1838,10 @@ jobs:
 
       - name: Dump cluster state on failure
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h || true
-          echo "=== node capacity/allocatable + conditions ==="
-          kubectl describe nodes 2>&1 | tee /tmp/cluster-nodes.log || true
-          echo "=== pods (all namespaces, for scheduling contention) ==="
-          kubectl get pods -A -o wide | tee /tmp/cluster-state.log || true
-          echo "=== events (last 100) ==="
-          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -100 || true
-          echo "=== describe pods (Pending/CrashLoop reasons, resource requests) ==="
-          kubectl -n cerberus describe pods 2>&1 | tee /tmp/cluster-describe.log || true
-          echo "=== cerberus logs ==="
-          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
-          echo "=== data-shard clickhouse pods ==="
-          for p in $(kubectl -n cerberus get pod -l app.kubernetes.io/component=clickhouse -o jsonpath='{.items[*].metadata.name}'); do \
-            echo "--- $p ---"; \
-            kubectl -n cerberus logs "$p" --tail 100 || true; \
-          done
-          echo "=== keeper pods ==="
-          for p in $(kubectl -n cerberus get pod -l app.kubernetes.io/component=clickhouse-keeper -o jsonpath='{.items[*].metadata.name}'); do \
-            echo "--- $p ---"; \
-            kubectl -n cerberus logs "$p" --tail 100 || true; \
-          done
-          echo "=== rolling seeder log (tail 200) ==="
-          tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
-          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
-             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
-            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
-          if grep -qiE 'Insufficient (cpu|memory)|OOMKilled|FailedScheduling' /tmp/cluster-describe.log /tmp/cluster-state.log 2>/dev/null; then
-            echo "::notice::resource: pod(s) reported insufficient cpu/memory, FailedScheduling, or OOMKilled — see the describe-pods dump above"
-          fi
+        env:
+          NAMESPACE: cerberus
+          SEED_LOG: /tmp/cerberus-e2e-seed-rolling.log
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Tear down
         if: always()
@@ -2126,24 +1931,10 @@ jobs:
 
       - name: Dump cluster state on failure
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h || true
-          echo "=== pods ==="
-          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
-          echo "=== events (last 50) ==="
-          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
-          echo "=== cerberus logs ==="
-          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
-          echo "=== data-shard clickhouse pods ==="
-          for p in $(kubectl -n cerberus get pod -l app.kubernetes.io/component=clickhouse -o jsonpath='{.items[*].metadata.name}'); do \
-            echo "--- $p ---"; \
-            kubectl -n cerberus logs "$p" --tail 100 || true; \
-          done
-          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
-             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
-            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        env:
+          NAMESPACE: cerberus
+          SEED_LOG: /tmp/cerberus-e2e-seed-rolling.log
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Tear down
         if: always()

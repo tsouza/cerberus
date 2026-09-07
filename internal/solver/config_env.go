@@ -38,18 +38,14 @@ const (
 	EnvEstimateNearEmptyRowFloor         = "CERBERUS_SHARD_ESTIMATE_NEAR_EMPTY_ROW_FLOOR"
 	EnvMaxKWithEstimate                  = "CERBERUS_SHARD_MAX_K_WITH_ESTIMATE"
 	EnvEstimateMinRowsPerAdditionalShard = "CERBERUS_SHARD_ESTIMATE_MIN_ROWS_PER_ADDITIONAL_SHARD"
-
-	// EnvDisableSplitOnMultiDataShard maps onto
-	// Config.DisableSplitOnMultiDataShard (cerberus issue #3081, epic
-	// #3074) — see the field's own doc. DataShardCount itself has NO env
-	// var here by design: it is sourced from internal/chopt.ClusterTopology
-	// (see Config.DataShardCount's doc), not this package's own env
-	// surface. The data-shard fanout cap override
-	// (CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP) used to live here too; cerberus
-	// issue #3128 moved the whole fanout-gate mechanism to internal/chclient,
-	// so its override now lives on chclient.Config, parsed by internal/config.
-	EnvDisableSplitOnMultiDataShard = "CERBERUS_SOLVER_DISABLE_SPLIT_ON_MULTI_DATA_SHARD"
 )
+
+// DataShardCount has NO env var in this package by design: it is sourced
+// from internal/chopt.ClusterTopology (see Config.DataShardCount's doc), not
+// this package's own env surface. The data-shard fanout cap override
+// (CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP) used to live here too; cerberus
+// issue #3128 moved the whole fanout-gate mechanism to internal/chclient, so
+// its override now lives on chclient.Config, parsed by internal/config.
 
 // DeprecatedEnvWarnings returns a one-line notice for every soft-deprecated
 // CERBERUS_* solver var that is SET in the environment, for the caller to log
@@ -148,9 +144,6 @@ func ConfigFromEnv() (Config, error) {
 	// DataShardCount is deliberately NOT read here — see its own doc: it is
 	// sourced from internal/chopt.ClusterTopology by cmd/cerberus, stamped
 	// onto cfg AFTER ConfigFromEnv returns.
-	if cfg.DisableSplitOnMultiDataShard, err = envBool(EnvDisableSplitOnMultiDataShard, cfg.DisableSplitOnMultiDataShard); err != nil {
-		return Config{}, err
-	}
 	return cfg, nil
 }
 

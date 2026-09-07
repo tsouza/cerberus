@@ -6,12 +6,12 @@ import (
 )
 
 // TestFromEnv_DataShardFanoutCap_MustCoverShardWidth pins the boundary
-// check for the data-shard fan-out gate's cap: every dispatch acquires the
-// gate with weight DataShardCount, and a semaphore never admits a weight
-// above its size, so an effective cap below the width would time every
-// query out. Both cap sources are covered — the explicit override and the
-// MaxOpenConns default the gate falls back to — and the single-shard
-// default never consults the rule at all.
+// check for the data-shard fan-out gate's cap: the narrowest dispatch
+// charges one full shard width, so an effective cap below the width would
+// serialise every dispatch at full-cap weight and bound nothing — a
+// misconfiguration refused at boot. Both cap sources are covered — the
+// explicit override and the MaxOpenConns default the gate falls back to —
+// and the single-shard default never consults the rule at all.
 func TestFromEnv_DataShardFanoutCap_MustCoverShardWidth(t *testing.T) {
 	cases := []struct {
 		name         string

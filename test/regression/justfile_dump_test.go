@@ -40,12 +40,18 @@ type justRecipeDump struct {
 // dumpAssignment is one entry of `just --dump`'s top-level `assignments`
 // map. `Value` is either a plain JSON string (`NAME := "literal"`) or a
 // tagged expression array (`["variable", ...]`, `["concatenate", ...]`,
-// `["call", "env_var_or_default", ...]`) — see renderJustValueOK().
+// `["call", "env_var_or_default", ...]`) — see resolveJustValue().
 type dumpAssignment struct {
 	Name    string          `json:"name"`
 	Export  bool            `json:"export"`
 	Private bool            `json:"private"`
 	Value   json.RawMessage `json:"value"`
+
+	// scope is the dump's whole `assignments` map, attached by
+	// justDumpDoc.assignment() so stringValue() can resolve a `variable`
+	// reference to ANOTHER assignment without the caller threading the
+	// document through. Never populated by encoding/json (unexported).
+	scope map[string]dumpAssignment
 }
 
 // justDumpDoc is the top-level shape of `just --dump --dump-format json`
@@ -110,6 +116,7 @@ func (d justDumpDoc) assignment(t *testing.T, name string) dumpAssignment {
 	if !ok {
 		t.Fatalf("just --dump reports no assignment %q", name)
 	}
+	a.scope = d.Assignments
 	return a
 }
 
@@ -174,17 +181,19 @@ func (d justDumpDoc) transitiveDependencyNames(t *testing.T, recipe string) map[
 }
 
 // stringValue resolves an assignment to a plain string, recursively
-// evaluating a `concatenate` of literals (`MIGRATION_TIER2_SERVICES`'s
-// shape) the same way `just` itself would. Fails loudly on a value that
-// depends on something this process cannot know without running `just`
-// itself (an env-derived `call`) — no current caller's assignment has that
-// shape, and a silently-wrong placeholder would be worse than a clear
-// failure pointing at the one that does.
+// evaluating a `concatenate` of literals and `variable` references to OTHER
+// top-level assignments (`MIGRATION_TIER2_SERVICES`'s shape, which starts
+// from `MIGRATION_TIER1_SERVICES`) the same way `just` itself would. Fails
+// loudly on a value that depends on something this process cannot know
+// without running `just` itself (an env-derived `call`, a reference to an
+// assignment that is itself unresolvable, or a reference cycle) — a
+// silently-wrong placeholder would be worse than a clear failure pointing
+// at the one that does.
 func (a dumpAssignment) stringValue(t *testing.T) string {
 	t.Helper()
-	s, ok := renderJustValueOK(a.Value)
+	s, ok := resolveJustValue(a.Value, a.scope)
 	if !ok {
-		t.Fatalf("assignment %q: cannot render %s to a plain string", a.Name, a.Value)
+		t.Fatalf("assignment %q: cannot resolve %s to a plain string", a.Name, a.Value)
 	}
 	return s
 }
@@ -201,27 +210,41 @@ func (d justDumpDoc) recipeNames() map[string]bool {
 }
 
 // resolvedStringAssignments returns every top-level assignment that resolves
-// to a plain string (a literal, or a `concatenate` of literals) — skipping,
-// not failing on, the handful that are genuinely dynamic (`env_var_or_default`
-// calls: E2E_MODE, CERBERUS_BUILD_TAGS, K3D_EXTRA_ARGS). A caller that reads
-// ONE specific assignment by name and needs it to resolve should use
+// to a plain string (a literal, a `concatenate` of literals, or a reference
+// to another assignment that itself resolves) — skipping, not failing on,
+// the handful that are genuinely dynamic (`env_var_or_default` calls:
+// E2E_MODE, CERBERUS_BUILD_TAGS, K3D_EXTRA_ARGS). A caller that reads ONE
+// specific assignment by name and needs it to resolve should use
 // assignment(t, name).stringValue(t) instead, which fails loudly when that
 // one does not.
 func (d justDumpDoc) resolvedStringAssignments() map[string]string {
 	out := make(map[string]string, len(d.Assignments))
 	for name, a := range d.Assignments {
-		if s, ok := renderJustValueOK(a.Value); ok {
+		if s, ok := resolveJustValue(a.Value, d.Assignments); ok {
 			out[name] = s
 		}
 	}
 	return out
 }
 
-// renderJustValueOK is the non-fatal core: it renders what it recognises and
-// reports false on what it does not, rather than failing outright — a
-// value that depends on something this process cannot know without running
-// `just` itself (an env-derived `call`) is a real, occasional shape here,
-// not a bug in this renderer, and a caller iterating EVERY assignment (see
+// justExprHandlers are the two seams on which resolving an assignment's
+// VALUE and reconstructing a recipe body's SYNTAX differ. Everything else
+// about walking a `just --dump` expression tree — a JSON string is literal
+// text, a `concatenate` joins its rendered arguments, a body fragment's
+// interpolation wrapper concatenates its members — is identical for both and
+// lives once in renderJustExpr.
+type justExprHandlers struct {
+	// variable renders a `["variable", NAME]` reference.
+	variable func(name string) (string, bool)
+	// call renders a `["call", FNAME, ...args]` invocation.
+	call func(fname string, args []json.RawMessage) (string, bool)
+}
+
+// renderJustExpr is the shared, non-fatal walker: it renders what it
+// recognises and reports false on what it does not, rather than failing
+// outright — a value that depends on something this process cannot know
+// without running `just` itself is a real, occasional shape here, not a bug
+// in this renderer, and a caller iterating EVERY assignment (see
 // resolvedStringAssignments) needs to skip just that one rather than crash
 // on it.
 //
@@ -235,7 +258,7 @@ func (d justDumpDoc) resolvedStringAssignments() map[string]string {
 // Distinguished by peeking at the first element: a JSON string there means
 // THIS array is the tagged expression; a JSON array there means this array
 // is the wrapper.
-func renderJustValueOK(raw json.RawMessage) (string, bool) {
+func renderJustExpr(raw json.RawMessage, h justExprHandlers) (string, bool) {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s, true
@@ -251,12 +274,12 @@ func renderJustValueOK(raw json.RawMessage) (string, bool) {
 
 	var tag string
 	if err := json.Unmarshal(arr[0], &tag); err == nil {
-		return renderTaggedExprOK(tag, arr[1:])
+		return renderJustTaggedExpr(tag, arr[1:], h)
 	}
 
 	var b strings.Builder
 	for _, item := range arr {
-		s, ok := renderJustValueOK(item)
+		s, ok := renderJustExpr(item, h)
 		if !ok {
 			return "", false
 		}
@@ -265,88 +288,27 @@ func renderJustValueOK(raw json.RawMessage) (string, bool) {
 	return b.String(), true
 }
 
-// renderTaggedExprOK renders one `[tag, ...args]` just expression to its
-// RESOLVED VALUE. Only "variable" (rendered back to `{{NAME}}`, since a
-// caller resolving one assignment's value may still be holding an unresolved
-// reference to another) and "concatenate" are recognised; "call" (an
-// env-derived default, or a builtin like `just_executable()`) and anything
-// else report false rather than guess at a runtime value this process does
-// not have. Use renderBodySyntax instead when reconstructing a recipe BODY's
-// source text, where a `call` should round-trip as syntax, not fail.
-func renderTaggedExprOK(tag string, args []json.RawMessage) (string, bool) {
+// renderJustTaggedExpr renders one `[tag, ...args]` just expression.
+// "concatenate" is handled here for both callers; "variable" and "call"
+// dispatch to the handlers, and anything else reports false. A tagged
+// expression with no argument where one is required (`["variable"]`,
+// `["call"]`) is malformed dump output, reported as unrenderable rather than
+// indexed past the end.
+func renderJustTaggedExpr(tag string, args []json.RawMessage, h justExprHandlers) (string, bool) {
 	switch tag {
 	case "variable":
+		if len(args) == 0 {
+			return "", false
+		}
 		var name string
 		if err := json.Unmarshal(args[0], &name); err != nil {
 			return "", false
 		}
-		return "{{" + name + "}}", true
+		return h.variable(name)
 	case "concatenate":
 		var b strings.Builder
 		for _, a := range args {
-			s, ok := renderJustValueOK(a)
-			if !ok {
-				return "", false
-			}
-			b.WriteString(s)
-		}
-		return b.String(), true
-	default:
-		return "", false
-	}
-}
-
-// renderBodySyntax renders one recipe-body fragment back to the source
-// syntax it reads as — the body-reconstruction counterpart of
-// renderJustValueOK, which resolves an assignment to its VALUE instead. The
-// two agree on "variable" and "concatenate"; they diverge on "call" (a
-// builtin/function invocation like `just_executable()` or
-// `env_var_or_default(NAME, default)`), which a body reconstruction renders
-// back to `{{fn(arg, ...)}}` call syntax rather than refusing, since nothing
-// here is trying to know the runtime value — only to reproduce the text a
-// substring or regex check was written against.
-func renderBodySyntax(raw json.RawMessage) (string, bool) {
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, true
-	}
-
-	var arr []json.RawMessage
-	if err := json.Unmarshal(raw, &arr); err != nil {
-		return "", false
-	}
-	if len(arr) == 0 {
-		return "", true
-	}
-
-	var tag string
-	if err := json.Unmarshal(arr[0], &tag); err == nil {
-		return renderBodyTaggedExpr(tag, arr[1:])
-	}
-
-	var b strings.Builder
-	for _, item := range arr {
-		s, ok := renderBodySyntax(item)
-		if !ok {
-			return "", false
-		}
-		b.WriteString(s)
-	}
-	return b.String(), true
-}
-
-func renderBodyTaggedExpr(tag string, args []json.RawMessage) (string, bool) {
-	switch tag {
-	case "variable":
-		var name string
-		if err := json.Unmarshal(args[0], &name); err != nil {
-			return "", false
-		}
-		return "{{" + name + "}}", true
-	case "concatenate":
-		var b strings.Builder
-		for _, a := range args {
-			s, ok := renderBodySyntax(a)
+			s, ok := renderJustExpr(a, h)
 			if !ok {
 				return "", false
 			}
@@ -361,25 +323,82 @@ func renderBodyTaggedExpr(tag string, args []json.RawMessage) (string, bool) {
 		if err := json.Unmarshal(args[0], &fname); err != nil {
 			return "", false
 		}
-		parts := make([]string, 0, len(args)-1)
-		for _, a := range args[1:] {
-			// A bare string argument is a quoted literal in source
-			// (`env_var_or_default("NAME", "default")`) — re-quote it rather
-			// than rendering it as bare text. Anything else (a nested
-			// expression) renders generically.
-			var lit string
-			if err := json.Unmarshal(a, &lit); err == nil {
-				parts = append(parts, strconv.Quote(lit))
-				continue
-			}
-			s, ok := renderBodySyntax(a)
-			if !ok {
-				return "", false
-			}
-			parts = append(parts, s)
-		}
-		return "{{" + fname + "(" + strings.Join(parts, ", ") + ")}}", true
+		return h.call(fname, args[1:])
 	default:
 		return "", false
 	}
+}
+
+// resolveJustValue renders an assignment's value to its RESOLVED string.
+// A `variable` reference is looked up in `scope` (the dump's own
+// `assignments` map) and resolved recursively, so an assignment built from
+// another (`MIGRATION_TIER2_SERVICES := MIGRATION_TIER1_SERVICES + "..."`)
+// comes back as the full text `just` would substitute, never as a `{{NAME}}`
+// placeholder a `strings.Fields` caller would read as a literal token. A
+// reference to a name `scope` does not carry, to an assignment that is
+// itself unresolvable, or a reference cycle all report false. A `call` (an
+// env-derived default, or a builtin like `just_executable()`) reports false
+// rather than guessing at a runtime value this process does not have — use
+// renderBodySyntax instead when reconstructing a recipe BODY's source text,
+// where a `call` should round-trip as syntax, not fail.
+func resolveJustValue(raw json.RawMessage, scope map[string]dumpAssignment) (string, bool) {
+	resolving := map[string]bool{}
+	var h justExprHandlers
+	h = justExprHandlers{
+		variable: func(name string) (string, bool) {
+			ref, ok := scope[name]
+			if !ok || resolving[name] {
+				return "", false
+			}
+			resolving[name] = true
+			defer delete(resolving, name)
+			return renderJustExpr(ref.Value, h)
+		},
+		call: func(string, []json.RawMessage) (string, bool) {
+			return "", false
+		},
+	}
+	return renderJustExpr(raw, h)
+}
+
+// renderBodySyntax renders one recipe-body fragment back to the source
+// syntax it reads as — the body-reconstruction counterpart of
+// resolveJustValue, which resolves an assignment to its VALUE instead. The
+// two share renderJustExpr and diverge only on the handlers: a `variable`
+// renders back to `{{NAME}}` rather than being substituted, and a `call` (a
+// builtin/function invocation like `just_executable()` or
+// `env_var_or_default(NAME, default)`) renders back to `{{fn(arg, ...)}}`
+// call syntax rather than refusing, since nothing here is trying to know the
+// runtime value — only to reproduce the text a substring or regex check was
+// written against.
+func renderBodySyntax(raw json.RawMessage) (string, bool) {
+	return renderJustExpr(raw, justExprHandlers{
+		variable: func(name string) (string, bool) {
+			return "{{" + name + "}}", true
+		},
+		call: renderBodyCallSyntax,
+	})
+}
+
+// renderBodyCallSyntax is renderBodySyntax's `call` handler: `{{fn(arg,
+// ...)}}`, each argument rendered back to source syntax.
+func renderBodyCallSyntax(fname string, args []json.RawMessage) (string, bool) {
+	parts := make([]string, 0, len(args))
+	for _, a := range args {
+		// A bare string argument is a quoted literal in source
+		// (`env_var_or_default("NAME", "default")`) — re-quote it rather
+		// than rendering it as bare text. Anything else (a nested
+		// expression) renders generically.
+		var lit string
+		if err := json.Unmarshal(a, &lit); err == nil {
+			parts = append(parts, strconv.Quote(lit))
+			continue
+		}
+		s, ok := renderBodySyntax(a)
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, s)
+	}
+	return "{{" + fname + "(" + strings.Join(parts, ", ") + ")}}", true
 }

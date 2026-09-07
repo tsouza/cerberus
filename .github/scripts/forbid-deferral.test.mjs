@@ -39,6 +39,7 @@ import {
   headingLevel,
   issueRefs,
   issuesReadability,
+  joinContinuations,
   paragraphs,
   parseDiff,
   scanDiff,
@@ -66,6 +67,7 @@ const NOT_YET_HERE = lit('not yet implemented ', 'here');
 const LATER_PR = lit('in a later ', 'PR');
 const LEFT_FOR_LATER = lit('left for ', 'later');
 const PUNTED_ON = lit('punted ', 'on');
+const HOUSE_MARKER = lit('pony', 'tail');
 
 const REPO = 'tsouza/cerberus';
 
@@ -115,6 +117,7 @@ test('every table row is reachable — each id fires on a real example', () => {
     `// ${TODO_WORD}: rewire the cursor`,
     `// ${FIXME_WORD} the off-by-one`,
     `// ${XXX_WORD} suspicious`,
+    `// ${HOUSE_MARKER}: lift to a CTE only if the planner needs it`,
     `The bucket bug is ${NOT_FIXED_HERE}.`,
     `Exponential buckets are ${NOT_YET_HERE}.`,
     `## ${FOLLOWUP_WORD}`,
@@ -258,6 +261,48 @@ test('bare "not yet" is state, not a deferral', () => {
     assert.deepEqual(ids(line), [], `matched on: ${line}`);
   }
   assert.deepEqual(ids(`exponential buckets are ${NOT_YET_HERE}`), ['not-yet-here']);
+});
+
+// --- comment continuations: a phrase wrapped across comment lines --------------
+
+test('a multi-word marker wrapped across a comment continuation still matches', () => {
+  // Every phrase in the table joins its words with `\s+`, which crosses a
+  // newline but not the sigil the next comment line starts with — the exact
+  // evasion a hard-wrapped Go comment produced in the release audit.
+  const cases = [
+    [`this is not\n// done here`, 'unfixed-here'],
+    [`this is not\n# done here`, 'unfixed-here'],
+    [`this is not\n * done here`, 'unfixed-here'],
+    [`\t// the offset modifier is not yet\n\t// supported here`, 'not-yet-here'],
+    [`# the rewrite is left\n#   for later`, 'left-for-later'],
+    [`// that is out of scope for\n// this PR`, 'pr-scoped-exclusion'],
+  ];
+  for (const [text, id] of cases) {
+    assert.deepEqual(ids(text), [id], `did not match across the wrap: ${JSON.stringify(text)}`);
+  }
+});
+
+test('a wrapped marker is reported on the line it starts on, with its end line', () => {
+  const found = findMarkers(`intro\n// the bucket bug is not\n// fixed here.`);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].line, 2);
+  assert.equal(found[0].endLine, 3);
+  assert.equal(found[0].text, `not\n// fixed here`.replace(/\n\/\/ /, ' '), 'the reported text is the joined phrase');
+});
+
+test('joining continuations never duplicates a match the plain pass already found', () => {
+  // One line, one marker: the two passes both see it and it is reported once.
+  const found = findMarkers(`// ${TODO_WORD}: fold the grid`);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].line, 1);
+  assert.equal(found[0].endLine, 1);
+});
+
+test('joinContinuations maps every joined character back to its original index', () => {
+  const src = `ab\n// cd`;
+  const { text, origin } = joinContinuations(src);
+  assert.equal(text, 'ab cd');
+  assert.deepEqual([...origin].map((i) => (i === 2 ? '\\n' : src[i])), ['a', 'b', '\\n', 'c', 'd']);
 });
 
 test('ordinary engineering prose stays clean', () => {
@@ -454,6 +499,51 @@ test('a citation inside the comment block counts, one far away does not', () => 
     REPO,
   );
   assert.deepEqual(far[0].refs, [], 'a citation beyond the window belongs to something else');
+});
+
+test('a marker wrapped across two added comment lines is one diff violation', () => {
+  const found = scanDiff(
+    diffWith([' func emit() {', '+\t// the bucket bug is not', '+\t// fixed here.', ' }']),
+    REPO,
+  );
+  assert.equal(found.length, 1);
+  assert.equal(found[0].markerId, 'unfixed-here');
+  assert.equal(found[0].location, 'internal/chsql/emit.go:21', 'reported on the line the phrase starts on');
+});
+
+test('a wrap that starts on a context line and ends on an added line is still this change\'s', () => {
+  // The added line completed the phrase, so the change introduced it.
+  const found = scanDiff(
+    diffWith([' \t// the bucket bug is not', '+\t// fixed here.', ' }']),
+    REPO,
+  );
+  assert.equal(found.length, 1);
+  assert.equal(found[0].location, 'internal/chsql/emit.go:20');
+});
+
+test('a wrapped marker entirely on context lines is not this change\'s', () => {
+  const found = scanDiff(
+    diffWith([' \t// the bucket bug is not', ' \t// fixed here.', '+\treturn nil', ' }']),
+    REPO,
+  );
+  assert.deepEqual(found, []);
+});
+
+test('a citation just past the END of a wrapped marker still counts', () => {
+  const found = scanDiff(
+    diffWith([
+      ' func emit() {',
+      '+\t// the bucket bug is not',
+      '+\t// fixed here — see the',
+      '+\t// harness limitation;',
+      '+\t// filler line one',
+      '+\t// tracked in #1535.',
+      ' }',
+    ]),
+    REPO,
+  );
+  assert.equal(found.length, 1);
+  assert.deepEqual(found[0].refs, [1535], 'the window is measured from the marker\'s last line, not its first');
 });
 
 test('an unchanged line inside the window still supplies the citation', () => {
@@ -899,4 +989,32 @@ test('every unreadable payload yields no number either', () => {
   for (const [what, path] of Object.entries(cases)) {
     assert.equal(eventPayloadNumber(path), null, what);
   }
+});
+
+// NOT_DONE — the `unfixed-here` marker phrase, assembled at runtime so this
+// file's own source text never carries it (the same `lit` move the TO/DO
+// tokens above make): these fixtures arrive as ADDED lines in this change's
+// own diff, which the gate scans.
+const NOT_DONE_TAIL = lit('done', ' here');
+
+test('joinContinuations does not join across a blank line', () => {
+  // Two unrelated paragraphs: the first ends with "not", the second opens
+  // with the marker's tail. Joining them with a space would synthesise a
+  // marker phrase that neither paragraph contains.
+  const src = `a sentence ending in not\n\n${NOT_DONE_TAIL} is how the next one opens`;
+  assert.ok(
+    !new RegExp(`not ${NOT_DONE_TAIL}`).test(joinContinuations(src).text),
+    'a blank line was joined as a space',
+  );
+  assert.equal(findMarkers(src).length, 0);
+});
+
+test('joinContinuations still joins a wrapped comment across its sigil', () => {
+  assert.equal(findMarkers(`// this is not\n// ${NOT_DONE_TAIL}`).length, 1);
+});
+
+test('a marker may not span a blank continuation line inside one comment', () => {
+  // A bare `//` line is the paragraph break inside a doc comment; the two
+  // halves are separate statements, not one wrapped sentence.
+  assert.equal(findMarkers(`// this is not\n//\n// ${NOT_DONE_TAIL} is another thought`).length, 0);
 });

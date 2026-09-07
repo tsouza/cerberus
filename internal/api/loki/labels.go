@@ -26,8 +26,7 @@ import (
 // The SQL groups distinct map keys via arrayJoin(<col>.keys) on the
 // resource-attributes column's virtual keys subcolumn — or, for a
 // JSON-strategy column (cerberus issue #3063 point 2), arrayJoin over
-// JSONAllPaths(<col>) instead, via distinctAttrKeysFrag
-// (attr_strategy.go).
+// JSONAllPaths(<col>) instead — via chsql.DistinctAttrKeys.
 func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	start, end, err := parseStartEnd(r)
 	if err != nil {
@@ -82,7 +81,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 // no fmt.Sprintf-on-SQL.
 func buildLabelsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(chsql.As(distinctAttrKeysFrag(strategies, s.ResourceAttributesColumn), "k")).
+		Select(chsql.As(chsql.DistinctAttrKeys(strategies, s.ResourceAttributesColumn), "k")).
 		From(chsql.Col(s.LogsTable)).
 		WithAttrStrategies(strategies)
 

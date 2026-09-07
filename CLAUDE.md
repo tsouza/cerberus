@@ -181,7 +181,12 @@ per-layer "catches X / misses Y" guidance.
     (`docs/upstream-forks.md`), bump the `replace` in `go.mod`, and consume the typed accessor. The
     `forbidigo` linter enforces both patterns across all of `internal/**`.
 12. **No caching of query results.** Cerberus never caches the answer to a query. Internal
-    performance caches are acceptable only where staleness is proven output-safe.
+    performance caches are acceptable only where staleness is proven output-safe. The one carve-out
+    is ClickHouse's own server-side result cache (`result_cache`, `use_query_cache=1`), which the
+    engine stamps only on a query whose every evaluated window ends strictly before
+    `now − CERBERUS_RESULT_CACHE_INGEST_LAG` and whose plan carries no `now()` expression — a closed
+    window no later ingest can change, so the cached answer is proven output-safe by construction
+    (`docs/clickhouse-optimizations.md` § "Feature registry", the `result_cache` entry).
 13. **No magic constants.** A meaning-bearing numeric literal must be a named `const` whose name *is*
     the explanation: `if n > 200` becomes `const maxSearchRecentLimit = 200`. If no short honest name
     fits, the number is probably wrong. Out of scope: self-evident `+1` / `-1`, trivial `0` / `1` /

@@ -33,10 +33,12 @@ the k8s + in-cluster-ClickHouse lookups the e2e Node scripts share: a namespaced
 `app.kubernetes.io/component=clickhouse` selector label), and a `kubectl exec
 ... clickhouse-client` query runner in both a never-exits `chQueryRaw` form
 (a poll loop treats a not-yet-queryable ClickHouse as "no data yet", not a
-hard failure) and an exits-on-failure `chQuery` form. Used by
-`e2e-bwc-verify-placement.mjs`, `e2e-bwc-verify-mode-toggle.mjs`,
-`e2e-datashard-verify.mjs`, and `e2e-wait-otel.mjs`. One source of truth so
-a new e2e verify/wait script never has to re-copy them.
+hard failure) and an exits-on-failure `chQuery` form (with an optional
+`format`, the `TSVRaw` shape the verify scripts read multi-column rows
+through). Used by `e2e-bwc-verify-placement.mjs`,
+`e2e-bwc-verify-mode-toggle.mjs`, `e2e-datashard-verify.mjs`,
+`e2e-datashard-replica-affinity-verify.mjs`, and `e2e-wait-otel.mjs`. One
+source of truth so a new e2e verify/wait script never has to re-copy them.
 
 `lib/shard-coverage.mjs` holds the Playwright spec-partition rules the two
 e2e shard-matrix modules share — `discoverSpecs()` (the tracked spec
@@ -381,8 +383,14 @@ what actually runs.
   SQL writes outside the chsql Frag layer". Scans `internal/chsql/**/*.go`
   (excluding `builder.go` and test files) for `strings.Builder`, `sb.Write*`,
   and `writeSQL(` usage. Fails on any match outside the two known-good emitter
-  files (`emit_node.go`, `emit.go`). See CLAUDE.md § "No raw SQL strings" and
-  #1441. No env inputs; always runs the full scan.
+  files (`emit_node.go`, `emit.go`). A chsql-scoped SUBSET of CLAUDE.md
+  invariant 10 (§ "No raw SQL strings"): format-string SQL construction
+  (`fmt.Sprintf`) and `verbatim()` shape-building are reviewer-caught, not
+  gate-caught — the same formatting primitives legitimately build non-SQL
+  strings everywhere else, so neither the pathspec nor the pattern is wider.
+  See #1441. No env inputs; always runs the full scan. The companion
+  `forbid-sql-raw.test.mjs` pins the pattern, the inventory and a real
+  `git ls-files` run over a flat `internal/chsql/` (#2321).
   - Exit: `0` clean, `1` on any raw-write violation.
 - **`forbid-chplan-fn-literal.mjs`** — `ci.yml`, the `forbid-skip` job step
   "Reject raw chplan Fn literal construction", and the matching pre-push
@@ -2090,16 +2098,22 @@ what actually runs.
   after a concurrent PromQL/LogQL/TraceQL burst has run against the
   `Distributed` target. Reads `system.query_log` (never cerberus's own HTTP
   responses) to prove: a genuine solver-split (`kEff > 1`) query reached the
-  cluster at all (otherwise the leg is vacuous); the real, concurrent,
-  cluster-wide per-shard statement count (`is_initial_query=0` rows) never
-  exceeded `DATA_SHARD_FANOUT_CAP` — `DataShardFanoutGate`'s own ceiling,
-  not merely the trivially-safe `N=2` case; no cerberus 5xx during the burst
-  (admission control degrades, never rejects); every per-shard statement's
-  own `max_memory_usage` setting sits within `perShardMemoryBytes`'s
-  predicted ceiling for THAT STATEMENT's own `kEff` (joined back via its
-  `initial_query_id`, not a group-wide bound) and no
-  `MEMORY_LIMIT_EXCEEDED`/OOM appears anywhere in the cluster. `kEff` and
-  the per-shard fan-out are both
+  cluster at all (otherwise the leg is vacuous); the real, concurrent
+  per-shard `Select` statement count issued by cerberus pods
+  (`is_initial_query=0` rows, attributed per pod via `client_hostname`)
+  never exceeded `DataShardFanoutGate`'s own ceiling — Σ (scans × kEff ×
+  DataShardCount) ≤ cap, `scans` being `chsql.EmitCounted`'s physical-table
+  count — in BOTH scopes: per process (the cap read back from the chart's
+  env ConfigMap) and cluster-wide (`replicas × cap`), with the peak instant
+  required to hold children of at least two distinct dispatches so the
+  cross-request bound was genuinely exercised; no cerberus 5xx during the
+  burst (admission control degrades, never rejects); every cerberus-issued
+  per-shard statement's own `max_memory_usage` setting sits within
+  `perShardMemoryBytes`'s predicted ceiling for THAT STATEMENT's own `kEff`
+  (joined back via its `initial_query_id`, not a group-wide bound, with the
+  cap read back from `CERBERUS_CH_QUERY_MAX_MEMORY` in the same ConfigMap)
+  and no `MEMORY_LIMIT_EXCEEDED`/OOM appears anywhere in the cluster (OOMKills
+  baselined before the burst). `kEff` and the per-shard fan-out are both
   recovered by grouping `query_id` on its leading 32-hex-char trace-id
   component (`internal/chclient/client.go`'s `mintQueryID` shape) — see the
   script's own header for the full mechanism. INFORMATIONAL — never a PR
@@ -2107,9 +2121,10 @@ what actually runs.
   - Env: `NAMESPACE` (default `cerberus`), `CERBERUS_URL` (default
     `http://localhost:8080`), `DB` (default `otel`), `CH_USER`/`CH_PASSWORD`
     (default `cerberus`/`cerberus`), `CH_CLUSTER` (default `bwc_cluster`),
-    `DATA_SHARD_COUNT` / `DATA_SHARD_FANOUT_CAP` (required), `BURST_SECONDS`
-    (default `20`), `BURST_CONCURRENCY` (default `6`), `FLUSH_WAIT_SECONDS`
-    (default `10`).
+    `DATA_SHARD_COUNT` (required), `CERBERUS_DEPLOYMENT` (default
+    `cerberus`), `CERBERUS_ENV_CONFIGMAP` (default `cerberus-env`),
+    `BURST_SECONDS` (default `20`), `BURST_CONCURRENCY` (default `6`),
+    `FLUSH_WAIT_SECONDS` (default `10`).
   - Exit: `0` all assertions passed, `1` on any failure.
 - **`e2e-datasource-sync.mjs`** — the Justfile (`e2e-up`'s split-mode block),
   extracted from its inline `awk` + poll loop (cerberus issue #3096). In
@@ -2740,6 +2755,30 @@ what actually runs.
     service names, in order), `MIGRATION_LOG_TAIL` — all required.
   - Exit: always `0`.
 
+- **`dump-cluster-state.mjs`** — `e2e.yml` (the compose-smoke shards,
+  `dashboard`, `chaos`, `bwc-minio`, `datashard` and
+  `datashard-replica-affinity` jobs) and `compatibility.yml` (every harness
+  job): the "dump state on failure" step, extracted from twelve inline
+  `run:` blocks that had drifted in what they dumped and in the disk-full
+  threshold they used. Purely diagnostic and always exits 0. With
+  `NAMESPACE` set it dumps the k3d cluster — node conditions, all pods,
+  namespace events, network policies, workloads, `describe pods`, and the
+  current AND previous-container logs of EVERY pod in the namespace (never
+  `logs deploy/...`, which picks one pod and hides a crash-looping
+  replica); with `COMPOSE=true` it dumps `docker compose ps` plus the tail
+  of every defined service's log; with neither, root-fs usage alone (the
+  compatibility harness tears its own stack down). `SEED_LOG` names local
+  log files to tail afterwards. Ends with two `::notice::` breadcrumbs:
+  `infra:` on an affirmative disk-pressure signal (never the bare field
+  names a healthy `describe nodes` prints) or root-fs usage at/above the
+  single `DISK_FULL_PERCENT` (90 — the fraction the kubelet's own
+  `nodefs.available < 10%` eviction signal keys on, chosen over the
+  compatibility lanes' old "< 2 GB free" because a byte count is a
+  different threshold on every runner size), and `resource:` on
+  `Insufficient cpu/memory`, `FailedScheduling` or `OOMKilled`.
+  - Env: `NAMESPACE` (optional), `COMPOSE` (optional, `"true"`), `SEED_LOG`
+    (optional, whitespace-separated paths).
+  - Exit: always `0`.
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the
   `dashboard` (k3d) lane fans its Playwright spec set across a MODEST matrix

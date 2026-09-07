@@ -25,13 +25,8 @@ func TestDefaultConfig_Valid(t *testing.T) {
 	// dataset), the value that makes internal/chclient's data-shard fanout
 	// gate a structural no-op (cerberus issue #3128 moved that mechanism
 	// out of this package; see chclient.NewDataShardFanoutGate).
-	// DisableSplitOnMultiDataShard stays false — it has no default worth
-	// setting explicitly.
 	if c.DataShardCount != 1 {
 		t.Fatalf("default DataShardCount = %d, want 1", c.DataShardCount)
-	}
-	if c.DisableSplitOnMultiDataShard {
-		t.Fatalf("default DisableSplitOnMultiDataShard = true, want false")
 	}
 }
 

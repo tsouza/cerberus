@@ -8,6 +8,8 @@ package traceql
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -1436,6 +1438,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// happens server-side. Float64 widens both int and float literals
 	// without precision loss for the magnitudes typical of attribute
 	// values (HTTP status codes, percentages, sizes).
+	lhs, rhs = demoteNumericMaterializedForStringOp(op, lhs, rhs)
 	lhs, rhs = coerceNumericFieldAccess(op, lhs, rhs, binaryHasNumericOperand(b))
 	// Boolean coercion: the OTel-CH exporter stringifies bool-typed
 	// attribute values into the Map(String, String) carriers as
@@ -1901,6 +1904,61 @@ func stringifyListForMap(elems []chplan.Expr) []chplan.Expr {
 		}
 	}
 	return out
+}
+
+// demoteNumericMaterializedForStringOp routes an attribute reference that
+// is materialized into a NUMERIC column (FieldAccess.MaterializedColumnNumeric,
+// cerberus issue #2869) back to its String attribute-map subscript for the
+// two comparisons ClickHouse cannot evaluate over that column at all: a
+// regex match (=~ / !~ — match() rejects a Nullable(Int32) argument) and a
+// comparison against a string literal that is not a number
+// (`span.http.status_code = "abc"` — the literal cannot be parsed as the
+// column's type, so the whole query aborts instead of the span merely not
+// matching, which is what reference TraceQL's per-span typing does). The
+// map subscript is what this head compared before the column existed and
+// already reproduces that: 'abc' matches nothing. The map value is
+// value-identical to the column by construction (FieldAccess.
+// MaterializedColumn's doc), so only the storage read changes.
+//
+// A numeric-looking string literal (`= "200"`, `> "4"`) KEEPS the column:
+// ClickHouse parses the literal as the column's type, so the compare is
+// both valid and index-served, and demoting it would trade the routing's
+// whole benefit for nothing (TestLowerAttribute_MaterializedColumnRouting
+// pins `= "200"` on the column). Numeric-literal and attribute-to-attribute
+// peers keep it for the same reason, and a String-typed materialized
+// column is never demoted — match() and a String compare accept it as-is.
+func demoteNumericMaterializedForStringOp(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Expr, chplan.Expr) {
+	regexOp := op == chplan.OpMatch || op == chplan.OpNotMatch
+	if !regexOp && !nonNumericStringLit(lhs) && !nonNumericStringLit(rhs) {
+		return lhs, rhs
+	}
+	return demoteNumericMaterialized(lhs), demoteNumericMaterialized(rhs)
+}
+
+// nonNumericStringLit reports whether e is a string literal ClickHouse could
+// not parse as a number when comparing it against a numeric column.
+func nonNumericStringLit(e chplan.Expr) bool {
+	lit, ok := e.(*chplan.LitString)
+	if !ok {
+		return false
+	}
+	_, err := strconv.ParseFloat(strings.TrimSpace(lit.V), 64)
+	return err != nil
+}
+
+// demoteNumericMaterialized returns e with its numeric materialized-column
+// routing cleared (so chsql renders the Map subscript), or e itself when it
+// is not such a FieldAccess. A copy, never a mutation: the same lowered
+// FieldAccess may be shared by another operator that keeps the column.
+func demoteNumericMaterialized(e chplan.Expr) chplan.Expr {
+	f, ok := e.(*chplan.FieldAccess)
+	if !ok || !f.MaterializedColumnNumeric {
+		return e
+	}
+	demoted := *f
+	demoted.MaterializedColumn = ""
+	demoted.MaterializedColumnNumeric = false
+	return &demoted
 }
 
 // coerceBoolFieldAccess rewrites a LitBool compared against a

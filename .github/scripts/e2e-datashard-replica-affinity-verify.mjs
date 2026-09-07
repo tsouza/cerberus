@@ -27,13 +27,21 @@
 //   1. The topology itself is genuinely multi-replica-per-shard — read back
 //      from `system.clusters`, not merely asserted — so this leg cannot pass
 //      vacuously against a degenerate single-replica render.
-//   2. A genuine solver-split (kEff > 1) query reached the `Distributed`
-//      target — otherwise there is no SECOND statement to compare a first
-//      one against, and the whole leg would be vacuous.
-//   3. For every such split trace, every remote-shard child statement
-//      touching the SAME data shard landed on the SAME physical replica
+//   2. A genuine multi-statement trace (a solver-split request, which
+//      dispatches more than one initiator statement under one trace id)
+//      reached the `Distributed` target — otherwise there is no SECOND
+//      statement to compare a first one against, and the whole leg would be
+//      vacuous. Counted as statements per trace, NOT as kEff: kEff is the
+//      solver's peak concurrent shard count, which this leg has no reason
+//      to measure — two statements one after another are enough to observe
+//      two independent replica selections.
+//   3. For every such trace, every remote-shard child statement touching
+//      the SAME data shard landed on the SAME physical replica
 //      (`system.query_log.hostname`) — the central claim issue #3086 set out
-//      to answer, observed directly rather than inferred.
+//      to answer, observed directly rather than inferred. Asserted only
+//      over (trace, shard) groups that hold at least TWO child statements;
+//      a group of one has nothing to agree with, and a run in which no
+//      group reached two is reported as vacuous rather than passed.
 //   4. That shared replica is specifically each shard's OWN ordinal-0 pod —
 //      confirming the MECHANISM (first_or_random + offset 0 always prefers
 //      the config-order-first replica), not merely a coincidental agreement.
@@ -98,8 +106,8 @@ function chExec(pod, sql) {
 // A wide range (3h) at a fine step (5s) yields ~2160 anchors — combined
 // with cerberus-values-datashard.yaml's collapsed MinFanout/MinAnchorPairs/
 // MinAnchorsPerSlice (reused unchanged as this lane's base overlay), this
-// reliably reaches kEff > 1 without needing concurrent load — see that
-// file's own doc for why.
+// reliably produces a multi-statement (solver-split) trace without needing
+// concurrent load — see that file's own doc for why.
 function wideRangeURL() {
   const now = Math.floor(Date.now() / 1000);
   const start = now - 3 * 60 * 60;
@@ -184,22 +192,26 @@ async function main() {
   const windowStart = Math.floor(burstStartMs / 1000) - 5;
   const windowEnd = Math.floor(burstEndMs / 1000) + FLUSH_WAIT_SECONDS + 10;
 
-  // ---- point 2: a genuine solver-split (kEff > 1) query happened ----
-  const traceKRows = chQueryTSV(
+  // ---- point 2: a genuine multi-statement trace happened ----
+  // statementsPerTrace is a flat count of a trace's initiator statements
+  // over the window — deliberately not the peak-overlap kEff
+  // e2e-datashard-verify.mjs derives, because sequential statements are
+  // exactly as good as concurrent ones for observing replica selection.
+  const traceStatementRows = chQueryTSV(
     pod,
-    `SELECT substring(query_id, 1, 32) AS trace, count() AS k
+    `SELECT substring(query_id, 1, 32) AS trace, count() AS statements
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
      WHERE is_initial_query = 1 AND type = 'QueryFinish'
        AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
      GROUP BY trace`,
   );
-  const splitTraces = traceKRows
+  const multiStatementTraces = traceStatementRows
     .map((r) => r.split('\t'))
-    .filter(([, k]) => Number(k) > 1)
+    .filter(([, statementsPerTrace]) => Number(statementsPerTrace) > 1)
     .map(([trace]) => trace);
-  log(`observed ${traceKRows.length} initiator trace(s); ${splitTraces.length} genuinely solver-split (kEff>1)`);
-  if (splitTraces.length === 0) {
-    error('no solver-split (kEff > 1) query was observed in system.query_log — this leg is vacuous without one to compare statements within');
+  log(`observed ${traceStatementRows.length} initiator trace(s); ${multiStatementTraces.length} multi-statement (solver-split) trace(s)`);
+  if (multiStatementTraces.length === 0) {
+    error('no multi-statement (solver-split) trace was observed in system.query_log — this leg is vacuous without one to compare statements within');
     process.exit(1);
   }
 
@@ -212,12 +224,15 @@ async function main() {
      WHERE is_initial_query = 0 AND type = 'QueryFinish'
        AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
   );
-  const splitTraceSet = new Set(splitTraces);
-  // (trace, shard) -> Set<hostname>
+  const multiStatementTraceSet = new Set(multiStatementTraces);
+  // (trace, shard) -> { hosts: Set<hostname>, n: child statement count }.
+  // `n` is what makes the assertion non-vacuous: a group holding ONE child
+  // statement trivially "agrees with itself", so only groups with n >= 2
+  // are evidence, and a run where no group reaches 2 has observed nothing.
   const byTraceShard = new Map();
   for (const row of childRows) {
     const [trace, hostname] = row.split('\t');
-    if (!splitTraceSet.has(trace)) continue;
+    if (!multiStatementTraceSet.has(trace)) continue;
     const sr = hostnameShardReplica(hostname);
     if (!sr) {
       error(`child statement hostname ${JSON.stringify(hostname)} does not match this chart's <fullname>-datashard-<shard>-<ordinal> convention — cannot classify`);
@@ -225,36 +240,47 @@ async function main() {
       continue;
     }
     const key = `${trace}\t${sr.shard}`;
-    if (!byTraceShard.has(key)) byTraceShard.set(key, new Set());
-    byTraceShard.get(key).add(hostname);
+    if (!byTraceShard.has(key)) byTraceShard.set(key, { hosts: new Set(), n: 0 });
+    const group = byTraceShard.get(key);
+    group.hosts.add(hostname);
+    group.n++;
   }
   if (byTraceShard.size === 0) {
-    error('no remote-shard child statement (is_initial_query=0) was observed for any solver-split trace — cannot assert cross-statement replica affinity');
+    error('no remote-shard child statement (is_initial_query=0) was observed for any multi-statement trace — cannot assert cross-statement replica affinity');
     process.exit(1);
   }
+  // The smallest group size that can show two statements agreeing.
+  const minGroupSizeForAffinity = 2;
   let groupsChecked = 0;
-  for (const [key, hostnames] of byTraceShard) {
+  let maxGroupSize = 0;
+  for (const [key, { hosts, n }] of byTraceShard) {
     const [trace, shard] = key.split('\t');
+    if (n > maxGroupSize) maxGroupSize = n;
+    if (n < minGroupSizeForAffinity) continue;
     groupsChecked++;
-    if (hostnames.size !== 1) {
-      error(`trace ${trace} data-shard ${shard}: ${hostnames.size} DIFFERENT replicas served this ONE trace's statements (${[...hostnames].join(', ')}) — cross-statement replica divergence reopened; the load_balancing pin did not hold`);
+    if (hosts.size !== 1) {
+      error(`trace ${trace} data-shard ${shard}: ${hosts.size} DIFFERENT replicas served this ONE trace's ${n} statements (${[...hosts].join(', ')}) — cross-statement replica divergence reopened; the load_balancing pin did not hold`);
       failures++;
       continue;
     }
-    const [hostname] = hostnames;
+    const [hostname] = hosts;
     const sr = hostnameShardReplica(hostname);
     if (sr.replica !== 0) {
-      error(`trace ${trace} data-shard ${shard}: consistently served by replica ordinal ${sr.replica} (${hostname}), not the expected ordinal-0 — the OBSERVED behavior no longer matches the first_or_random+offset=0 mechanism this pin relies on`);
+      error(`trace ${trace} data-shard ${shard}: all ${n} statements consistently served by replica ordinal ${sr.replica} (${hostname}), not the expected ordinal-0 — the OBSERVED behavior no longer matches the first_or_random+offset=0 mechanism this pin relies on`);
       failures++;
     }
   }
-  log(`checked ${groupsChecked} (trace, data-shard) group(s) across ${splitTraces.length} split trace(s)`);
+  log(`checked ${groupsChecked} (trace, data-shard) group(s) holding >= ${minGroupSizeForAffinity} statements (of ${byTraceShard.size} groups total, largest ${maxGroupSize} statements) across ${multiStatementTraces.length} multi-statement trace(s)`);
+  if (groupsChecked === 0) {
+    error(`every (trace, data-shard) group held a single child statement (largest group ${maxGroupSize}) — no group had two statements whose replicas could be compared, so the affinity assertion is vacuous on this run`);
+    failures++;
+  }
 
   if (failures > 0) {
     error(`e2e-datashard-replica-affinity-verify: ${failures} assertion(s) failed`);
     process.exit(1);
   }
-  notice(`e2e-datashard-replica-affinity-verify: all assertions passed (dataShardCount=${DATA_SHARD_COUNT}, replicas=${REPLICAS}, splitTraces=${splitTraces.length}, groupsChecked=${groupsChecked})`);
+  notice(`e2e-datashard-replica-affinity-verify: all assertions passed (dataShardCount=${DATA_SHARD_COUNT}, replicas=${REPLICAS}, multiStatementTraces=${multiStatementTraces.length}, groupsChecked=${groupsChecked}, maxGroupSize=${maxGroupSize})`);
 }
 
 main().catch((e) => {

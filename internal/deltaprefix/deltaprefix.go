@@ -34,12 +34,18 @@ type Conn interface {
 // corpus-mining source's: a real backfill scans a metric's full
 // pre-cutover DELTA history once, which can legitimately take longer than
 // an interactive report.
+//
+// Exported because internal/downsampletier stamps the SAME five caps for
+// the same reason and cannot import this package in production code
+// (.go-arch-lint.yml keeps both as leaf packages depending on chsql only),
+// so its own copy is pinned against these by its
+// TestResourceCapsMatchDeltaPrefix instead.
 const (
-	maxExecutionTimeSeconds = 900.0 // 15 minutes
-	maxThreads              = 4
-	priority                = 10
-	maxRowsToRead           = 20_000_000_000
-	maxBytesToRead          = 256 << 30 // 256 GiB
+	MaxExecutionTimeSeconds = 900.0 // 15 minutes
+	MaxThreads              = 4
+	Priority                = 10
+	MaxRowsToRead           = 20_000_000_000
+	MaxBytesToRead          = 256 << 30 // 256 GiB
 )
 
 // withCaps stamps the conservative resource-cap settings onto ctx via the
@@ -49,12 +55,12 @@ const (
 // enforcement rather than starving the data plane.
 func withCaps(ctx context.Context) context.Context {
 	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"max_execution_time":    maxExecutionTimeSeconds,
+		"max_execution_time":    MaxExecutionTimeSeconds,
 		"timeout_overflow_mode": "throw",
-		"max_threads":           maxThreads,
-		"priority":              priority,
-		"max_rows_to_read":      maxRowsToRead,
-		"max_bytes_to_read":     maxBytesToRead,
+		"max_threads":           MaxThreads,
+		"priority":              Priority,
+		"max_rows_to_read":      MaxRowsToRead,
+		"max_bytes_to_read":     MaxBytesToRead,
 		"read_overflow_mode":    "break",
 	}))
 }

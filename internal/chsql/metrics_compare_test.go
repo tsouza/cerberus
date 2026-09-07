@@ -36,7 +36,7 @@ func containsInt64Arg(args []any, want int64) bool {
 // and the containment check below is the assertion those assumptions never got.
 func compareRootLeg(t *testing.T, rw *chplan.RangeWindow, matrixSQL string) (string, []any) {
 	t.Helper()
-	legSQL, legArgs, err := chsql.EmitCompareRootLeg(context.Background(), rw)
+	legSQL, legArgs, _, err := chsql.EmitCompareRootLeg(context.Background(), rw)
 	if err != nil {
 		t.Fatalf("EmitCompareRootLeg: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	// (tsBoundExprs) renders as fromUnixTimestamp64Nano(?) — the same
 	// parameterized shape the search lowering's tsBound uses — not the
 	// inlined toDateTime64(...) literal the 's' leg's lo/hi above use.
-	rSeededScan := "PREWHERE (`ParentSpanId` = ?) WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` " +
+	rSeededScan := "PREWHERE (`ParentSpanId` = ?) WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` " +
 		"WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)))))"
 	if !strings.Contains(sql, rSeededScan) {
 		t.Errorf("matrix join SQL must seed the 'r' root leg's own scan by bounded trace-ids (want %q):\n%s", rSeededScan, sql)
@@ -251,7 +251,7 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 		}
 		rLeg := sql[:onIdx]
 		start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
-		seed := strings.Index(rLeg, "`TraceId` IN (SELECT `TraceId`")
+		seed := strings.Index(rLeg, "`TraceId` GLOBAL IN (SELECT `TraceId`")
 		if start < 0 || seed < 0 || seed <= start {
 			t.Fatalf("expected root leg ParentSpanId filter then TraceId-IN seed:\n%s", rLeg)
 		}
@@ -347,7 +347,7 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 	// The cohort is a whole subquery over the spans table, so every extra
 	// render of it is another scan. It renders exactly twice: inside the
 	// binding body, and as the root scan's own membership gate.
-	const seedOpener = "`TraceId` IN (SELECT `TraceId`"
+	const seedOpener = "`TraceId` GLOBAL IN (SELECT `TraceId`"
 	if got := strings.Count(sql, seedOpener); got != 2 {
 		t.Errorf("cohort seed rendered %d times, want exactly 2:\n%s", got, sql)
 	}
@@ -519,7 +519,7 @@ func TestEmitCompareRootLeg(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 
-				_, _, err := chsql.EmitCompareRootLeg(context.Background(), tc.rw)
+				_, _, _, err := chsql.EmitCompareRootLeg(context.Background(), tc.rw)
 				if err == nil {
 					t.Fatalf("EmitCompareRootLeg should fail for %s", tc.name)
 				}
@@ -575,7 +575,7 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsPartialConfig(t *testing.T) {
 			start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
 			// With no envelope the FIRST TraceId-IN is the exact cohort seed, so
 			// the prefix is the whole pre-seed scan filter.
-			seed := strings.Index(rLeg, "`TraceId` IN (SELECT `TraceId`")
+			seed := strings.Index(rLeg, "`TraceId` GLOBAL IN (SELECT `TraceId`")
 			if start < 0 || seed < 0 || seed <= start {
 				t.Fatalf("expected root scan filter then TraceId seed:\n%s", rLeg)
 			}

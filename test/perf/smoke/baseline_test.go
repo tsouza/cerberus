@@ -1,6 +1,10 @@
 package smoke
 
-import "testing"
+import (
+	"strconv"
+	"strings"
+	"testing"
+)
 
 // preClampCeilingBytes records, per sentinel, the ceiling
 // perf-smoke-baseline.json carried before issue #2906 clamped the calibration
@@ -32,10 +36,14 @@ func TestCommittedCeilingBytes_ClampsToTheAbsoluteCeiling(t *testing.T) {
 	// clamped to the absolute ceiling. The boundary case (a measurement whose
 	// multiple lands exactly on the ceiling) must NOT be clamped away from the
 	// value the unclamped arithmetic produces.
-	// A var, not a const: 651,518,401 * 1.5 is not an integer, so the
-	// unclamped cross-check below has to go through runtime float64 arithmetic
-	// rather than Go's exact-rational constant folding.
-	var overshoot uint64 = 651_518_401 // spill_high_cardinality_groupby's calibration measurement
+	// overshoot is derived, not picked: the measurement that produced
+	// spill_high_cardinality_groupby's PRE-clamp ceiling (preClampCeilingBytes
+	// / sentinelBaselineHeadroom) — the exact calibration reading whose
+	// unclamped multiple issue #2906 found committed above the absolute
+	// ceiling. A var, not a const: the division is not integral, so it has to
+	// go through runtime float64 arithmetic rather than Go's exact-rational
+	// constant folding.
+	overshoot := uint64(float64(preClampCeilingBytes["spill_high_cardinality_groupby"]) / sentinelBaselineHeadroom)
 	const boundary = uint64(float64(sentinelCapCeilingBytes) / sentinelBaselineHeadroom)
 
 	cases := []struct {
@@ -65,6 +73,59 @@ func TestCommittedCeilingBytes_ClampsToTheAbsoluteCeiling(t *testing.T) {
 			"the clamp case above proves nothing; pick a larger measurement",
 			overshoot, unclamped, sentinelCapCeilingBytes)
 	}
+}
+
+// TestCalibratedBound_RefusesABindingClamp pins the calibration path's
+// fail-loud contract: a measurement whose nominal headroom multiple fits under
+// the absolute ceiling (or lands exactly on it) is committed with that
+// multiple; one whose multiple overshoots is refused with an error naming the
+// sentinel and every number the operator needs, rather than silently
+// committed clamped — a PRONG (b) equal to PRONG (a) gates nothing of its own.
+func TestCalibratedBound_RefusesABindingClamp(t *testing.T) {
+	const boundary = uint64(float64(sentinelCapCeilingBytes) / sentinelBaselineHeadroom)
+	const name = "some_sentinel"
+
+	for _, tc := range []struct {
+		caseName string
+		maxBytes uint64
+	}{
+		{"well under the ceiling", 100_000_000},
+		{"exactly on the ceiling", boundary},
+	} {
+		t.Run(tc.caseName, func(t *testing.T) {
+			bound, err := calibratedBound(name, tc.maxBytes)
+			if err != nil {
+				t.Fatalf("calibratedBound(%d) refused a measurement whose multiple fits: %v", tc.maxBytes, err)
+			}
+			if bound.Name != name || bound.MaxOfNBytes != tc.maxBytes || bound.CeilingBytes != committedCeilingBytes(tc.maxBytes) {
+				t.Fatalf("calibratedBound(%d) = %+v, want {%s %d %d}", tc.maxBytes, bound, name, tc.maxBytes, committedCeilingBytes(tc.maxBytes))
+			}
+			if clampBinds(tc.maxBytes) {
+				t.Fatalf("clampBinds(%d) reports a bind for a measurement calibratedBound accepted", tc.maxBytes)
+			}
+		})
+	}
+
+	t.Run("overshoots the ceiling", func(t *testing.T) {
+		overshoot := boundary + 1
+		if !clampBinds(overshoot) {
+			t.Fatalf("clampBinds(%d) must report a bind one byte past the boundary", overshoot)
+		}
+		bound, err := calibratedBound(name, overshoot)
+		if err == nil {
+			t.Fatalf("calibratedBound(%d) committed a clamped bound %+v instead of refusing", overshoot, bound)
+		}
+		for _, want := range []string{
+			name,
+			strconv.FormatUint(overshoot, 10),
+			strconv.FormatUint(uint64(float64(overshoot)*sentinelBaselineHeadroom), 10),
+			strconv.FormatUint(sentinelCapCeilingBytes, 10),
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal %q does not name %q", err, want)
+			}
+		}
+	})
 }
 
 // TestPerfSmokeBaseline_ProngBIsNeverLooserThanProngA is the gate issue #2906

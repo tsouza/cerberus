@@ -195,7 +195,16 @@ func locallyBuiltRefs(t *testing.T, files []string) map[string]bool {
 			for _, m := range buildTagArgument.FindAllStringSubmatch(line, -1) {
 				target := m[1]
 				if p := justPlaceholder.FindStringSubmatch(target); p != nil {
-					target = vars[p[1]]
+					// A placeholder naming no resolvable assignment must fail
+					// here, not silently become "" — an empty built-set entry
+					// would let the `*_IMAGE :=` pin it stands for slip into
+					// the pulled set with nothing to say why.
+					v, ok := vars[p[1]]
+					if !ok {
+						t.Fatalf("%s: build target %s names just variable %q, which `just --dump` does not resolve "+
+							"to a plain string (missing, or env-derived)", file, target, p[1])
+					}
+					target = v
 				}
 				built[target] = true
 			}

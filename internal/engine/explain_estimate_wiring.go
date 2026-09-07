@@ -7,6 +7,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/routememo"
 	"github.com/tsouza/cerberus/internal/solver"
 )
@@ -190,7 +191,7 @@ func (a *ScanEstimateAdvisor) Advise(
 		// Fail open: no estimate, exactly as if this file did not exist.
 		return nil
 	}
-	est, err := a.client.ExplainEstimate(ctx, sql, args...)
+	est, err := a.client.ExplainEstimate(ctx, chsql.ExplainEstimateStatement(sql), args...)
 	if err != nil {
 		// Advisory-only, fail-open (this file's own doc): a probe failure —
 		// breaker-open, transport error — must never turn into a query

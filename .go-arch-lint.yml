@@ -318,6 +318,15 @@ deps:
     mayDependOn:
       - actuals
 
+  # httperr is the heads' shared HTTP-error carrier. It reads chclient's
+  # error sentinels for the ONE cross-head classification it owns
+  # (IsDistributedShardErr: the Distributed partial-shard-failure class
+  # every head answers with 503), so the three handlers cannot drift
+  # apart on it. chclient never imports httperr, so no cycle.
+  httperr:
+    mayDependOn:
+      - chclient
+
   # QL layers parse upstream syntax and lower to chplan. The LogQL
   # adapter has migrated to the engine.Lang interface, so it depends
   # on `engine` for the typed contracts (engine.Meta etc); promql and

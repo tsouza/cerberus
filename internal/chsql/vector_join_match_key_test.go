@@ -95,11 +95,11 @@ func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Run("setop_default_signature", func(t *testing.T) {
 		t.Parallel()
 		sql := emitSetOp(t, matchKeySetOp(chplan.VectorMatch{}))
-		want := "WHERE mapSort(`Attributes`) IN ((SELECT DISTINCT mapSort(`Attributes`) FROM"
+		want := "WHERE mapSort(`Attributes`) GLOBAL IN (SELECT DISTINCT mapSort(`Attributes`) FROM"
 		if !strings.Contains(sql, want) {
 			t.Errorf("default-matching set op: missing %q; sql=%s", want, sql)
 		}
-		if strings.Contains(sql, "WHERE `Attributes` IN ((SELECT DISTINCT `Attributes` FROM") {
+		if strings.Contains(sql, "WHERE `Attributes` GLOBAL IN (SELECT DISTINCT `Attributes` FROM") {
 			t.Errorf("default-matching set op: still keys on the raw Map value; sql=%s", sql)
 		}
 	})
@@ -107,8 +107,8 @@ func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Run("setop_on_labels_signature", func(t *testing.T) {
 		t.Parallel()
 		sql := emitSetOp(t, matchKeySetOp(chplan.VectorMatch{Labels: []string{"job", "dc"}, On: true}))
-		want := "WHERE mapSort(mapFilter((k, v) -> k IN (?, ?), `Attributes`)) IN " +
-			"((SELECT DISTINCT mapSort(mapFilter((k, v) -> k IN (?, ?), `Attributes`)) FROM"
+		want := "WHERE mapSort(mapFilter((k, v) -> k IN (?, ?), `Attributes`)) GLOBAL IN " +
+			"(SELECT DISTINCT mapSort(mapFilter((k, v) -> k IN (?, ?), `Attributes`)) FROM"
 		if !strings.Contains(sql, want) {
 			t.Errorf("on(labels) set op: missing %q; sql=%s", want, sql)
 		}
@@ -117,8 +117,8 @@ func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Run("setop_ignoring_signature", func(t *testing.T) {
 		t.Parallel()
 		sql := emitSetOp(t, matchKeySetOp(chplan.VectorMatch{Labels: []string{"env"}}))
-		want := "WHERE mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) IN " +
-			"((SELECT DISTINCT mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) FROM"
+		want := "WHERE mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) GLOBAL IN " +
+			"(SELECT DISTINCT mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) FROM"
 		if !strings.Contains(sql, want) {
 			t.Errorf("ignoring() set op: missing %q; sql=%s", want, sql)
 		}
@@ -128,7 +128,7 @@ func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Run("setop_on_no_labels_is_not_a_map", func(t *testing.T) {
 		t.Parallel()
 		sql := emitSetOp(t, matchKeySetOp(chplan.VectorMatch{On: true}))
-		if !strings.Contains(sql, "WHERE tuple() IN ((SELECT DISTINCT tuple() FROM") {
+		if !strings.Contains(sql, "WHERE tuple() GLOBAL IN (SELECT DISTINCT tuple() FROM") {
 			t.Errorf("on() set op: expected the constant-tuple key; sql=%s", sql)
 		}
 		if strings.Contains(sql, canonical) {

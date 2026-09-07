@@ -118,6 +118,61 @@ func TestDetectedLabels_CatalogIneligible_SelectorPresent(t *testing.T) {
 	}
 }
 
+// TestDetectedLabels_CatalogIneligible_ExplicitWindow: a request carrying an
+// explicit start/end (a real historical window, not a datasource-open
+// probe) is NEVER catalog-eligible, even with LabelCatalogEnabled=true, no
+// selector, and a populated catalog response — the catalog aggregates its
+// own fixed trailing window, so an explicit window must be answered from
+// the rows in THAT window (the per-request path), never silently from the
+// catalog's. A one-sided window is a window too: only a request with
+// neither param is windowless. Mirrors internal/api/tempo's
+// TestSearchTags_ExplicitWindow_StaysOnLivePath.
+func TestDetectedLabels_CatalogIneligible_ExplicitWindow(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"start_and_end", "?start=1700000000&end=1700003600"},
+		{"start_only", "?start=1700000000"},
+		// An end far in the future: parseStartEnd defaults the absent start
+		// to now-1h and rejects end < start as 400, so a one-sided end must
+		// sit after that default to exercise the eligibility rule at all.
+		{"end_only", "?end=4102444800"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{
+				labelCardinalities: []chclient.LabelCardinalityRow{{LabelKey: "job", Cardinality: 99}},
+				labelSets:          []map[string]string{{"job": "api"}},
+			}
+			srv := newCatalogServer(q, true)
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + `/loki/api/v1/detected_labels` + tc.query)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+
+			var out loki.DetectedLabelsData
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(out.DetectedLabels) != 1 || out.DetectedLabels[0].Cardinality != 1 {
+				t.Fatalf("expected the per-request fallback's cardinality=1 (from labelSets), got %+v — catalog's cardinality=99 must not have been served", out.DetectedLabels)
+			}
+			if strings.Contains(q.LastSQL(), "uniqMerge(") {
+				t.Errorf("an explicitly windowed request must never run the catalog query, got SQL: %q", q.LastSQL())
+			}
+		})
+	}
+}
+
 // TestDetectedLabels_CatalogDisabled: LabelCatalogEnabled=false must never
 // attempt the catalog query even when the request is otherwise eligible
 // (no selector) and the stub has catalog rows ready — the feature being

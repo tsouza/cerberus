@@ -101,6 +101,20 @@ cerberus endpoint below — it speaks all three wire formats on one port.
    enabled=true (a dedicated PVC, ideally on a faster StorageClass). See
    docs/helm-clickhouse.md.
 {{- end }}
+{{- if gt (int (include "cerberus.clickhouse.dataShardCount" .)) 1 }}
+
+   WARNING — EXPERIMENTAL: clickhouse.bundled.dataShards.count is {{ .Values.clickhouse.bundled.dataShards.count }}
+   (> 1) — the multi-shard `Distributed`-table path (cerberus epic #3074).
+   It rendered only because
+   clickhouse.bundled.experimentalDistributedMode is true, and that same
+   consent is forwarded to cerberus as CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE.
+   This path is NOT production-supported: the `datashard` e2e lane that
+   exercises it is informational only and never gates a release. Bound the
+   cluster-wide data-shard fan-out ceiling with clickhouse.bundled.dataShards.
+   fanoutCap (apportioned across every cerberus replica). Plain replication
+   (clickhouse.bundled.replicas) is the supported path and needs none of
+   this. See the DATA-shard topology section in docs/helm-clickhouse.md.
+{{- end }}
 
 5. Memory sizing note:
    cerberus's Go heap does not see the cgroup limit on its own, so the chart

@@ -328,21 +328,31 @@ type Config struct {
 	// exclusive with every *CatalogEnabled / DeltaPrefixEnabled /
 	// DownsampleTierEnabled opt-in feature below (Validate rejects the
 	// combination): those introduce a SEPARATELY-named table the read path
-	// also scans by name, and wiring the same local+Distributed split
-	// through their own MV pairs is explicitly out of THIS issue's scope —
-	// see cerberus issue #3077's "declaring multi-shard supported" carve-out
-	// (epic #3074's later settings-verification and e2e-hardening
-	// sub-issues, #3078/#3079, own that follow-up).
+	// also scans by name, and the local+Distributed split is wired for the
+	// base signal tables only — the permanent design boundary of the
+	// EXPERIMENTAL multi-data-shard mode (docs/helm-clickhouse.md, "What's
+	// out of scope"), not a pending extension. A multi-shard deployment
+	// that enables one of them fails loudly at boot instead of silently
+	// missing that table on every shard but one.
 	DataShardCount int
 
 	// DataShardingKey is the Distributed-engine sharding-key expression for
 	// the wrapper tables DataShardCount > 1 renders. nil (the default) uses
-	// rand() — an unweighted, correctness-neutral default. This expression
-	// governs only an INSERT that goes directly through the Distributed
-	// wrapper; cerberus recommends collector-side direct-to-LOCAL-table
-	// writes instead (see docs/operations.md's write-path section), and
-	// every SELECT against the wrapper table fans out to and merges ALL
-	// shards regardless of this key, so it never affects read correctness.
+	// rand() — an unweighted default. This expression governs only an
+	// INSERT that goes directly through the Distributed wrapper; cerberus
+	// recommends collector-side direct-to-LOCAL-table writes instead (see
+	// docs/operations.md's write-path section). On the read side it is
+	// correctness-neutral for a plain fan-out scan — every SELECT against
+	// the wrapper fans out to and merges ALL shards regardless of the key —
+	// but NOT on its own for a query that joins the table against itself
+	// across shards (the Tempo structural closures and root-span lookups):
+	// under a random key the two sides of such a join land on shards
+	// independently, and it is internal/chclient's unconditional
+	// distributed_product_mode=global pin
+	// (internal/chclient/distributed_query_settings.go) that keeps those
+	// correct, by computing the inner side once at the initiator and
+	// broadcasting it to every shard. That pin, not this key, is what makes
+	// the default read-correct for every shape cerberus emits.
 	DataShardingKey chsql.Frag
 }
 
@@ -742,11 +752,12 @@ func (c Config) Validate() error {
 		// table (plus its own materialized view) that internal/schema's
 		// read path also scans by name — the same read-path contract the
 		// five metrics tables / Logs / Traces carry, which DataShardCount
-		// DOES wire the local+Distributed split for. Wiring the split
-		// through their own MV pairs too is explicitly out of scope for
-		// issue #3077 (see epic #3074's #3078/#3079 follow-ups); rejecting
-		// the combination here keeps a multi-shard deployment from silently
-		// missing one of these tables instead of failing loud at boot.
+		// DOES wire the local+Distributed split for. The split is wired for
+		// the base signal tables only — the permanent design boundary of
+		// the EXPERIMENTAL multi-data-shard mode (docs/helm-clickhouse.md,
+		// "What's out of scope") — so rejecting the combination here keeps
+		// a multi-shard deployment from silently missing one of these
+		// tables instead of failing loud at boot.
 		for _, f := range []struct {
 			name    string
 			enabled bool
@@ -758,9 +769,9 @@ func (c Config) Validate() error {
 		} {
 			if f.enabled {
 				return fmt.Errorf(
-					"ddl: DataShardCount %d is not yet supported together with %s — that feature's own "+
-						"table + materialized view are not wired for the local/Distributed split (cerberus "+
-						"issue #3077's explicit scope carve-out); disable it or keep DataShardCount <= 1",
+					"ddl: DataShardCount %d cannot be combined with %s — that feature's own table + "+
+						"materialized view are single-data-shard-only by design (not wired for the "+
+						"local/Distributed split); disable it or keep DataShardCount <= 1",
 					c.DataShardCount, f.name,
 				)
 			}
@@ -1014,7 +1025,8 @@ func (c Config) dataShardLocalConfig(s Signal) (Config, []dataShardTablePair) {
 
 // dataShardingKey returns Config.DataShardingKey, defaulting to `rand()`
 // when unset — see that field's own doc for why an unweighted default is
-// correctness-neutral for read queries.
+// read-correct: neutral for a plain fan-out scan, and covered for
+// cross-shard self-joins by chclient's distributed_product_mode=global pin.
 func (c Config) dataShardingKey() chsql.Frag {
 	if c.DataShardingKey != nil {
 		return c.DataShardingKey
@@ -1473,10 +1485,12 @@ const (
 // SAME reasoning every other ALTER in this package already follows (ADD
 // PROJECTION, ADD STATISTICS, ADD INDEX all install NEW, non-colliding
 // names). Retiring the now-redundant legacy idx_lower_body tokenbf index on
-// upgraded tables is left to a dedicated follow-up (cerberus issue #2773's
-// PR body links it) — dropping an index an operator's running queries may
-// still be planning against is a real production-cluster risk this
-// render-time DDL apply should not make unilaterally.
+// an upgraded table is DropLegacyBodyTokenBFIndexSQL below, run deliberately
+// by an operator through the `cerberus schema retire-idx-lower-body` verb
+// (cmd/cerberus/cmd_schema.go) rather than here — dropping an index an
+// operator's running queries may still be planning against is a real
+// production-cluster risk this render-time DDL apply should not take
+// unilaterally.
 //
 // Adding a skip index is metadata-only for NEW parts; EXISTING parts need
 // the one-time `ALTER TABLE ... MATERIALIZE INDEX idx_body_text` backfill

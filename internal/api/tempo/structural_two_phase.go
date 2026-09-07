@@ -241,12 +241,18 @@ func (h *Handler) runStructuralPhaseA(ctx context.Context, sj *chplan.Structural
 	phaseA := buildStructuralPhaseAPlan(sj, h.Schema, limit)
 	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
 	ctx = chsql.WithAttrStrategies(ctx, h.AttrStrategies)
-	sql, args, err := chsql.Emit(ctx, phaseA)
+	sql, args, physicalScans, err := chsql.EmitCounted(ctx, phaseA)
 	if err != nil {
 		// Mirror the engine's `emit:` wrapping so ClassifyErr maps this
 		// to HTTP 500 like any other emit failure.
 		return nil, fmt.Errorf("engine: emit: structural phase A: %w", err)
 	}
+	// This dispatch bypasses the engine, so it stamps the data-shard fan-out
+	// weight itself: a structural join renders the spans table once per
+	// closure arm (five to seven times for the committed shapes), and each
+	// render is its own Distributed fan-out on a multi-data-shard deployment
+	// (chclient.WithDataShardFanoutMultiplier's doc).
+	ctx = chclient.WithDataShardFanoutMultiplier(ctx, physicalScans)
 	ids, err := h.Client.QueryStrings(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("engine: execute: structural phase A: %w", err)

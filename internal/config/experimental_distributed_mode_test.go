@@ -10,22 +10,22 @@ import (
 // count above 1 refuses to boot unless CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE
 // is explicitly true, so nobody lands on Distributed-table routing by setting
 // the shard count alone; the default count (1) never consults the flag, and
-// the flag alone changes nothing.
+// the flag alone changes nothing. The opt-in leaves no trace on Config by
+// design: a DataShardCount above 1 IS the evidence the gate was passed.
 func TestFromEnv_ExperimentalDistributedMode_GatesDataShards(t *testing.T) {
 	cases := []struct {
-		name        string
-		shards      string
-		flag        string
-		wantErr     bool
-		wantEnabled bool
-		wantShards  int
+		name       string
+		shards     string
+		flag       string
+		wantErr    bool
+		wantShards int
 	}{
-		{"default: one shard, flag unset", "", "", false, false, 1},
-		{"two shards without the flag is refused", "2", "", true, false, 0},
-		{"two shards with flag=false is refused", "2", "false", true, false, 0},
-		{"two shards with flag=true boots", "2", "true", false, true, 2},
-		{"four shards with flag=true boots", "4", "true", false, true, 4},
-		{"flag=true alone (one shard) is harmless", "", "true", false, true, 1},
+		{"default: one shard, flag unset", "", "", false, 1},
+		{"two shards without the flag is refused", "2", "", true, 0},
+		{"two shards with flag=false is refused", "2", "false", true, 0},
+		{"two shards with flag=true boots", "2", "true", false, 2},
+		{"four shards with flag=true boots", "4", "true", false, 4},
+		{"flag=true alone (one shard) is harmless", "", "true", false, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -46,9 +46,6 @@ func TestFromEnv_ExperimentalDistributedMode_GatesDataShards(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("FromEnv: %v", err)
-			}
-			if cfg.ExperimentalDistributedMode != tc.wantEnabled {
-				t.Errorf("ExperimentalDistributedMode = %v; want %v", cfg.ExperimentalDistributedMode, tc.wantEnabled)
 			}
 			if cfg.ClusterTopology.DataShardCount != tc.wantShards {
 				t.Errorf("ClusterTopology.DataShardCount = %d; want %d", cfg.ClusterTopology.DataShardCount, tc.wantShards)

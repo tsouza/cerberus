@@ -61,12 +61,15 @@ type Builder struct {
 	// nested QueryBuilder's own render). On a multi-data-shard deployment
 	// every such reference is a `Distributed` wrapper that fans out
 	// DataShardCount per-shard statements, so this number x DataShardCount
-	// is exactly the ClickHouse-side statement count one dispatch of the
-	// rendered SQL produces — the weight chclient's DataShardFanoutGate must
-	// charge (cerberus issue #3128). Counted where the text is written, not
-	// derived from the plan: an emitter renders one Scan node several times
-	// (SearchTraceLimit's two arms, rate()'s three window scans), and only
-	// the render knows how many.
+	// is the ClickHouse-side statement width one dispatch of the rendered
+	// SQL produces — the weight chclient's DataShardFanoutGate charges
+	// (cerberus issue #3128). It is a textual count, and therefore a bound
+	// on CONCURRENT statements rather than an exact total: a recursive CTE
+	// arm is counted once but re-executed by ClickHouse on every iteration,
+	// sequentially. Counted where the text is written, not derived from the
+	// plan: an emitter renders one Scan node several times (SearchTraceLimit's
+	// two arms, rate()'s three window scans), and only the render knows how
+	// many.
 	physicalScans int
 }
 
@@ -579,6 +582,7 @@ func (b *Builder) exprScalarSubquery(s *chplan.ScalarSubquery) error {
 	}
 	b.sb.WriteString(e.b.String())
 	b.args = append(b.args, e.args...)
+	b.physicalScans += e.physicalScans
 	return nil
 }
 
@@ -600,7 +604,10 @@ func (b *Builder) exprInSubquery(v *chplan.InSubquery) error {
 	if err := e.emitSubquery(v.Subquery); err != nil {
 		return err
 	}
-	sql, args := e.b.String(), e.args
+	// The sub-emitter's scan count rides the Frag exactly like
+	// PreRenderedSQL.PhysicalScans does for subqueryFrag: InSubquery decides
+	// GLOBAL from it, and it then lands on b through the splice.
+	sub := PreRenderedSQL{SQL: e.b.String(), Args: e.args, PhysicalScans: e.physicalScans}
 
 	var leftErr error
 	InSubquery(
@@ -609,10 +616,7 @@ func (b *Builder) exprInSubquery(v *chplan.InSubquery) error {
 				leftErr = err
 			}
 		},
-		func(sb *Builder) {
-			sb.sb.WriteString(sql)
-			sb.args = append(sb.args, args...)
-		},
+		Spliced(sub),
 	)(b)
 	return leftErr
 }
@@ -2011,14 +2015,24 @@ func InlineLit(v any) Frag {
 // some ClickHouse drivers (chdb) refuse to cast the column back to MAP, so
 // the bare-Frag render keeps the union as the top-level SELECT.
 func Render(f Frag) (string, []any) {
+	sql, args, _ := RenderCounted(f)
+	return sql, args
+}
+
+// RenderCounted is Render plus the rendered statement's physical-table scan
+// count (see QueryBuilder.BuildCounted for why a direct dispatcher needs
+// it). It is the render every top-level UnionAll dispatch outside the
+// engine goes through, so the count is taken from the same Builder that
+// produced the text.
+func RenderCounted(f Frag) (sql string, args []any, physicalScans int) {
 	b := NewBuilder()
 	f(b)
-	// Render's callers (RenderDDL) only ever hand it DDL Frags, which
-	// compose Ident / InlineLit / Call and never reach chplan.Expr — so
-	// b.err is always nil here. Discarding it keeps Render's signature
-	// stable for its one production caller; see Builder.err.
-	sql, args, _ := b.Build()
-	return sql, args
+	// Render's callers (RenderDDL, the prom /series union) only ever hand
+	// it Frags that compose Ident / InlineLit / Call / pre-rendered
+	// subqueries and never reach chplan.Expr — so b.err is always nil
+	// here. Discarding it keeps Render's signature stable; see Builder.err.
+	sql, args, _ = b.Build()
+	return sql, args, b.physicalScans
 }
 
 // UnionAll joins one or more Frags with " UNION ALL " between them. It
@@ -2944,6 +2958,16 @@ func In(left Frag, right ...Frag) Frag {
 	}
 }
 
+// ExplainEstimateStatement returns the `EXPLAIN ESTIMATE <statement>` text
+// for an already-rendered statement. EXPLAIN ESTIMATE is a statement-level
+// modifier ClickHouse recognises only as a leading keyword — not an
+// expression the Frag system has vocabulary for — so it is the one
+// statement-prefix composition this package offers; it lives here, in the
+// only file allowed to write raw SQL tokens (invariant 10), so that
+// internal/chclient (which cannot import this package) runs the composed
+// statement verbatim instead of concatenating the keyword itself.
+func ExplainEstimateStatement(sql string) string { return "EXPLAIN ESTIMATE " + sql }
+
 // InSubquery returns a Frag rendering "<left> IN <sub>" — the set-
 // membership predicate where the right-hand side is a single subquery
 // Frag that already carries its own surrounding parens (e.g. a
@@ -3427,6 +3451,16 @@ func (s *QueryBuilder) Frag() Frag {
 func (s *QueryBuilder) Build() (string, []any) {
 	sql, args, _ := s.subquerySQL()
 	return sql, args
+}
+
+// BuildCounted is Build plus the statement's physical-table scan count —
+// the data-shard fan-out weight a caller that dispatches the statement
+// itself (outside the engine) must stamp via
+// chclient.WithDataShardFanoutMultiplier, exactly as EmitCounted hands it
+// to the engine. Same render as Build, so the two never disagree.
+func (s *QueryBuilder) BuildCounted() (sql string, args []any, physicalScans int) {
+	sql, args, _ = s.subquerySQL()
+	return sql, args, s.physicalScans()
 }
 
 // subquerySQL is Build's error-propagating counterpart (see

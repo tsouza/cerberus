@@ -317,11 +317,15 @@ func runSentinelFloor(
 				100*float64(maxBytes)/float64(sentinelMemoryCapBytes), sentinelMemoryCapBytes, capCeiling)
 
 			if update {
-				// committedCeilingBytes clamps to capCeiling — see its own
-				// comment for why an unclamped PRONG (b) ceiling gates
-				// nothing (#2906).
-				ceiling := committedCeilingBytes(maxBytes)
-				updated[sentinel.Name] = sentinelBound{Name: sentinel.Name, MaxOfNBytes: maxBytes, CeilingBytes: ceiling}
+				// calibratedBound refuses a measurement whose headroom
+				// multiple the absolute ceiling would clamp — see its own
+				// comment for why a clamped PRONG (b) gates nothing of its
+				// own (#2906).
+				bound, err := calibratedBound(sentinel.Name, maxBytes)
+				if err != nil {
+					t.Fatalf("%v", err)
+				}
+				updated[sentinel.Name] = bound
 				return
 			}
 

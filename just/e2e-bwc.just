@@ -240,9 +240,12 @@ e2e-datashard-up count="2" replicas="1": e2e-down
 # asserts against real ClickHouse `system.query_log` state:
 #   - a solver-split (kEff > 1) query is genuinely reached;
 #   - the real concurrent per-shard statement count stays within
-#     CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP (8, pinned by
-#     cerberus-values-datashard.yaml) — DataShardFanoutGate's real,
-#     unconditional ceiling, not merely the trivially-safe N=2 case;
+#     DataShardFanoutGate's real, unconditional ceiling in BOTH of its
+#     scopes: per cerberus process, bounded by the
+#     CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP the script reads back from the
+#     chart's env ConfigMap (never a literal kept in sync by hand), and
+#     cluster-wide, bounded by `replicas x that cap` — not merely the
+#     trivially-safe N=2 case;
 #   - no MEMORY_LIMIT_EXCEEDED / OOM anywhere in the cluster during the
 #     burst, and every observed per-shard max_memory_usage setting matches
 #     perShardMemoryBytes = cap/(kEff*DataShardCount) for ITS OWN kEff.
@@ -250,9 +253,9 @@ e2e-datashard-up count="2" replicas="1": e2e-down
 # (docs/operations.md's "predicate pushdown through subqueries against
 # Distributed" section) — that is `test/e2e/e2e_datashard_subquery_test.go`'s
 # job, run via the normal `just e2e-run` (Go e2e suite), not this script.
-# Run AFTER `just e2e-seed-rolling` (+ `just e2e-run` for both the
-# deterministic correctness check against single-shard-pinned expected
-# values AND the #29332 subquery plan). Logic lives in the env-driven Node
+# Run AFTER `just e2e-seed-rolling` (+ `just e2e-run`, which proves every
+# #29332 subquery shape survives the Distributed target with a well-formed,
+# non-empty answer). Logic lives in the env-driven Node
 # module per the CLAUDE.md "non-trivial step logic in .github/scripts/*.mjs"
 # rule.
 

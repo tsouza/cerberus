@@ -1061,15 +1061,18 @@ consistently rather than silently diverging onto the upstream defaults.
 > and the bundled chart refuses to render `clickhouse.bundled.dataShards.count > 1`
 > unless `clickhouse.bundled.experimentalDistributedMode: true` (which then
 > sets the env var for you). When enabled, cerberus logs an `EXPERIMENTAL`
-> warning at boot, every time. Known limitation: the data-shard fan-out
-> admission ceiling (`DataShardFanoutCap`) is enforced per cerberus
-> *process*, so at more than one cerberus replica the real cluster-wide
-> ceiling is `replicas x DataShardFanoutCap`, not the cap alone — tracked on
-> [#3128](https://github.com/tsouza/cerberus/issues/3128). The `datashard`
-> e2e lane below is informational: its results are reported as advisory in
-> the nightly health roll-up and never gate a PR or release. Plain
-> **replication** (`clickhouse.bundled.replicas > 1`, the section above) is
-> a supported path and needs none of this.
+> warning at boot, every time. The data-shard fan-out admission ceiling
+> (`DataShardFanoutCap`) is a per-cerberus-*process* semaphore, so the ceiling
+> the ClickHouse cluster sees is `replicas x per-process cap`; the bundled
+> chart's `clickhouse.bundled.dataShards.fanoutCap` is the cluster-wide budget
+> it apportions across the cerberus replica count into each process's
+> `CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP` (see the chart's
+> [DATA-shard topology section](helm-clickhouse.md#clickhouse-cluster-data-shard-topology-datashardscount)
+> and [`solver.md`](solver.md)). The `datashard` e2e lane below is
+> informational: its results are reported as advisory in the nightly health
+> roll-up and never gate a PR or release. Plain **replication**
+> (`clickhouse.bundled.replicas > 1`, the section above) is a supported path
+> and needs none of this.
 
 Everything above is about **replication** — N identical copies of the same
 dataset. `CERBERUS_CH_DATA_SHARDS` (`internal/chopt.ClusterTopology.
@@ -1131,36 +1134,27 @@ comes from `system.query_log` in the `datashard` e2e leg below, never from
 `EXPLAIN` — a permanent, structural gap in the perf harness, not a
 to-be-scheduled follow-up.
 
-**The sessionAffinity-vs-`Distributed`-fan-out question is open, not
-resolved.** `clickhouse.bundled.service.sessionAffinity` (see
+**Replica selection across a `Distributed` fan-out is pinned, not left to
+chance.** `clickhouse.bundled.service.sessionAffinity` (see
 [Multi-replica consistency](helm-clickhouse.md#multi-replica-consistency))
-still closes cross-replica divergence for the shard a cerberus connection
-actually lands on, but whether ClickHouse's own internal replica selection
-for every OTHER shard a `Distributed` fan-out touches can diverge across two
-statements of the same multi-statement request is unresolved. Tracked as
-[#3086](https://github.com/tsouza/cerberus/issues/3086); see the bundled
-chart's own
-[sessionAffinity-gap section](helm-clickhouse.md#3075-compatibility-object-disk-path-is-shard-agnostic-sessionaffinity-gains-a-new-gap)
-for the full mechanism and what is and isn't already covered.
+closes cross-replica divergence only for the shard a cerberus connection
+actually lands on; for every OTHER shard a `Distributed` fan-out touches,
+ClickHouse's own `load_balancing` setting picks the replica. cerberus pins
+`load_balancing=first_or_random` + `load_balancing_first_offset=0`
+unconditionally, so every statement against a remote shard converges on that
+shard's offset-0 replica while it stays healthy — see that setting's row in
+the [per-query setting table](#per-query-setting--distributed-behavior) below
+and the decision record in the bundled chart's own
+[sessionAffinity section](helm-clickhouse.md#3075-compatibility-object-disk-path-is-shard-agnostic-sessionaffinity-gains-a-new-gap).
 
-**Current status: infrastructure-validated only, not yet
-query-correctness-proven under real load.** See the bundled chart's own
+**Validation status.** The bundled chart's own
 [DATA-shard topology section](helm-clickhouse.md#clickhouse-cluster-data-shard-topology-datashardscount)
-for what the manual k3d run in cerberus issue #3077 actually proved. The
-epic's own [settings-verification](https://github.com/tsouza/cerberus/issues/3078)
-and [e2e-hardening](https://github.com/tsouza/cerberus/issues/3079)
-sub-issues have both since merged — their analysis is the two sections
-below — but **the automated `datashard` e2e lane issue #3079 added has not
-yet gone green in real CI**: its only post-merge run so far,
-[run 33998800104](https://github.com/tsouza/cerberus/actions/runs/33998800104)
-(triggered by issue #3079's own merge to `main`), failed both the `N=2` and
-`N=4` legs at `helm upgrade --install` itself — `Error: context deadline
-exceeded` bringing up the multi-shard ClickHouse StatefulSets within the
-job's 420s timeout — before any of the correctness/admission-control
-assertions described below ever ran. Nothing in this document should be
-read as that lane having passed; `count > 1` remains unproven under real
-concurrent multi-shard load until it does. Tracked as
-[#3105](https://github.com/tsouza/cerberus/issues/3105).
+records what the manual k3d run in cerberus issue #3077 proved at the
+infrastructure layer; the automated `datashard` e2e lane (its own section
+below) is the standing proof under real concurrent multi-shard load, and its
+current result is stated there. The epic's settings-verification (#3078) and
+e2e-hardening (#3079) sub-issues both merged — their analysis is the two
+sections below.
 
 ### ClickHouse Distributed-query settings, error taxonomy, and known risks (cerberus issue #3078)
 
@@ -1496,20 +1490,23 @@ that script's own header comment for the full query_id-trace-grouping
 mechanism this relies on. `datashard`, like `bwc-minio`, is INFORMATIONAL —
 never a PR gate.
 
-**Current status (experimental lane, advisory only).** The lane now brings
-the multi-shard cluster up, seeds it, runs the full Go e2e correctness suite
-and the concurrent burst, and reaches every `query_log` assertion above on
-both legs. The memory-apportionment assertion passes; the solver-split
-assertion passes; the admission-ceiling assertion still fails on both legs
-for the per-process reason the EXPERIMENTAL note at the top of the DATA-shard
-topology section names (tracked on
-[#3128](https://github.com/tsouza/cerberus/issues/3128) with the real
-per-run numbers). Because the feature is experimental, this lane's verdict is
-reported under an advisory heading by `.github/scripts/notify-nightly-failure.mjs`
-(`EXPERIMENTAL_LANES`) and never counts toward the nightly's clean-pass
-decision — a supported lane regressing is exactly as loud as it always was.
-`workflow_dispatch` with `datashard_only=true` runs just this lane for a
-fast, focused iteration.
+**Current status (experimental lane, advisory only).** The lane is green on
+both legs (`N=2` and `N=4`) and on its `datashard-replica-affinity` sibling —
+the first fully green run was
+[run 34059346299](https://github.com/tsouza/cerberus/actions/runs/34059346299).
+Each leg brings the multi-shard cluster up, seeds it, runs the full Go e2e
+correctness suite and the concurrent burst, and every `query_log` assertion
+above holds: the solver-split evidence, the memory-apportionment bound, and
+the admission ceiling in BOTH scopes — per cerberus process (every per-shard
+statement attributed to the pod whose gate admitted it) and cluster-wide
+(`replicas x per-process cap`, the chart's `dataShards.fanoutCap` budget
+read back from the live Deployment and env ConfigMap). The path stays
+EXPERIMENTAL because no production support is offered for it, not because
+an assertion is red: this lane's verdict is reported under an advisory
+heading by `.github/scripts/notify-nightly-failure.mjs` (`EXPERIMENTAL_LANES`)
+and never counts toward the nightly's clean-pass decision — a supported lane
+regressing is exactly as loud as it always was. `workflow_dispatch` with
+`datashard_only=true` runs just this lane for a fast, focused iteration.
 
 ### Compat and migration-lane scope: single ClickHouse data shard (cerberus issue #3079)
 
@@ -3952,7 +3949,7 @@ now the only thing standing between them and a publish.
 | Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `mutation`                 | A test-QUALITY ratchet, not a property of the artifact — and not a required check on either gate (its diff-scoped selection runs on ordinary PRs for author-time visibility only; see "Two-tier test fence" above). Requiring it here would put its ~11-leg full-sweep matrix on the critical path of every publish. On a maintenance line — where there is no PR at all — this means a hotfix publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly.                                                                                                                                                                            |
+| `mutation`                 | A test-QUALITY ratchet, not a property of the artifact — not a required check on `main`'s merge gate (its diff-scoped selection runs on ordinary PRs for author-time visibility only; see "Two-tier test fence" above) and not required by this preflight; the one place it IS required is the maintenance-line ruleset, on a pull request into `release/*.x` (see "Maintenance lines" below). Requiring it here would put its ~11-leg full-sweep matrix on the critical path of every publish. A direct hotfix push to a maintenance line therefore publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly.                      |
 | `gremlins`                 | The `mutation` aggregator's own matrix legs (e.g. `gremlins phase4-promql-a`) post their OWN check-runs, under their own names — they do not share the `mutation` prefix, so de-gating `mutation` alone never covered them. Same reasoning as that row: a test-quality ratchet, not a property of the artifact. Caught when v1.16.0's release commit blocked on 6 pre-existing, already-tracked red `gremlins phase4-promql-*` legs even though `mutation` itself was already de-gated.                                                                                                                                                                                  |
 | `drought`                  | `chaos-not-applicable-rate.yml`'s Wednesday-cron detector for the chaos lane's silent not-applicable outcomes. It mines chaos-job run HISTORY, not the commit it happens to post against, so a red run says nothing about the commit being released — its own header comment already excludes it from PR gating for the identical reason. Left required, an unlucky coincidence between the cron and a release push would hold a release hostage to accumulated chaos-lane drift the release itself did not cause.                                                                                                                                                       |
 | `update-golden-guard`      | Structural, not a cost trade. It guards a PULL REQUEST against merging while an `update-golden.yml` dispatch is still regenerating its head branch (#2350). A publish commit has no head branch to strand and no pull request to hold back, and `update-golden-guard.yml` triggers on `pull_request` / `merge_group` / `workflow_run` only — with no push trigger on `main` or a maintenance line, a release commit can never carry that check-run, so requiring it would make the preflight wait out its window and abort every publish. Its enforcement points are the merge gate and the merge queue, both of which a change passes before reaching a release commit. |
@@ -4185,7 +4182,19 @@ The maintenance branches are **not** unprotected. The repository ruleset
   `check`, `lint`, `forbid-skip`, `probe`, `roundtrip (promql)`,
   `roundtrip (logql)`, `roundtrip (traceql)`, `chart-validate`, `coverage`,
   `mutation`, `profile`, and
-  `property (PromQL + LogQL + TraceQL, rapid N=500)`.
+  `property (PromQL + LogQL + TraceQL, rapid N=500)`. This is not a subset of
+  `main`'s seventeen: it drops the PR-hygiene and merge-gate-only contexts
+  (`pr-body`, `forbid-deferral`, `update-golden-guard`, `CodeQL`,
+  `agpl-clean`, `config-docs`, `link-check`, `schema-ddl`, `strict-scan`,
+  `quickstart`) and adds the three `roundtrip` legs, `profile` and
+  `mutation` — release-gate lanes `main` never requires as a status check.
+  `mutation` is therefore required in exactly one place in this repository:
+  a pull request into a maintenance line. On `main` it is informational
+  (diff-scoped, author-time signal only), and `release.yml`'s preflight
+  de-gates it from every publish — including the maintenance-line publish
+  that follows such a merge — so that its ~11-leg matrix never sits on the
+  critical path of shipping a hotfix (see the
+  [de-gated lanes table](#de-gated-lanes-on-the-publish-path)).
 
 There is no `creation` rule, so cutting a **new** line (`git push origin
 v1.11.1^{}:refs/heads/release/1.11.x`) needs no bypass. The single bypass actor
@@ -4193,11 +4202,11 @@ is the `admin` RepositoryRole in `always` mode, which is why `eol-retire` needs
 `RELEASE_PAT`: an admin-owned PAT inherits the admin role and bypasses the
 `deletion` rule (GitHub records this as `Bypassed rule violations`), whereas the
 default `GITHUB_TOKEN` acts as `github-actions[bot]` — write, never admin — and
-is refused. The required-check set is deliberately lighter than `main`'s: the
-`compatibility/*` lanes are not gated on maintenance lines, because a backport
-must stay cheap enough to ship. The substrate lanes (`compose-smoke`,
-`dashboard`) gate no pull request anywhere — they are release gates, enforced
-by release.yml's preflight on the commit being published.
+is refused. The `compatibility/*` lanes are not a status check on either
+branch: on a maintenance line, as on `main`, they are release gates enforced
+by `release.yml`'s preflight (`RELEASE_REQUIRED_CHECKS`) on the commit being
+published, as are the substrate lanes (`compose-smoke`, `dashboard`), which
+gate no pull request anywhere.
 
 EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
 their GitHub Releases — and the already-pushed images, charts, and binaries —

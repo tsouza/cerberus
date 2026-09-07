@@ -102,17 +102,17 @@ func EmitQueryExemplars(
 	predicate Frag,
 	start, end time.Time,
 	s schema.Metrics,
-) (string, []any, error) {
+) (sql string, args []any, physicalScans int, err error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
 
-	sql, args, err := emitQueryExemplarsArm(ExemplarArm{Table: exemplarsTable, Predicate: predicate}, start, end, s)
+	sql, args, physicalScans, err = emitQueryExemplarsArm(ExemplarArm{Table: exemplarsTable, Predicate: predicate}, start, end, s)
 	if err != nil {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
-	return sql, args, nil
+	return sql, args, physicalScans, nil
 }
 
 // ExemplarArm is one arm of an exemplar fan-out: the candidate table to
@@ -157,23 +157,23 @@ func EmitQueryExemplarsUnion(
 	arms []ExemplarArm,
 	start, end time.Time,
 	s schema.Metrics,
-) (string, []any, error) {
+) (sql string, args []any, physicalScans int, err error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
 
 	if len(arms) == 0 {
 		err := fmt.Errorf("%w: no exemplars table to read", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	if len(arms) == 1 {
-		sql, args, err := emitQueryExemplarsArm(arms[0], start, end, s)
+		sql, args, physicalScans, err = emitQueryExemplarsArm(arms[0], start, end, s)
 		if err != nil {
 			span.RecordError(err)
-			return "", nil, err
+			return "", nil, 0, err
 		}
 		span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
-		return sql, args, nil
+		return sql, args, physicalScans, nil
 	}
 
 	parts := make([]Frag, 0, len(arms))
@@ -181,30 +181,34 @@ func EmitQueryExemplarsUnion(
 		q, err := queryExemplarsSelect(arm, start, end, s)
 		if err != nil {
 			span.RecordError(err)
-			return "", nil, err
+			return "", nil, 0, err
 		}
 		parts = append(parts, q.Frag())
 	}
 
 	b := NewBuilder()
 	UnionAll(parts...)(b)
-	sql, args, err := b.Build()
+	sql, args, err = b.Build()
 	if err != nil {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
-	return sql, args, nil
+	return sql, args, b.PhysicalScans(), nil
 }
 
 // emitQueryExemplarsArm renders one arm as a standalone statement — the
 // unparenthesised SELECT both single-table entry points return.
-func emitQueryExemplarsArm(arm ExemplarArm, start, end time.Time, s schema.Metrics) (string, []any, error) {
+func emitQueryExemplarsArm(arm ExemplarArm, start, end time.Time, s schema.Metrics) (string, []any, int, error) {
 	q, err := queryExemplarsSelect(arm, start, end, s)
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
-	return q.subquerySQL()
+	sql, args, err := q.subquerySQL()
+	if err != nil {
+		return "", nil, 0, err
+	}
+	return sql, args, q.physicalScans(), nil
 }
 
 // queryExemplarsSelect builds the outer SELECT for one arm, validating

@@ -38,50 +38,50 @@ func EmitMetricsExemplars(
 	traceIDCol, spanIDCol string,
 	maxPerSeries int64,
 	spansTable string,
-) (string, []any, error) {
+) (string, []any, int, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
 
 	if rw == nil {
 		err := fmt.Errorf("%w: RangeWindow is nil", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	if m == nil {
 		err := fmt.Errorf("%w: MetricsAggregate is nil", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	if rw.TimestampColumn == "" {
 		err := fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for exemplar emission)", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	if rw.Step <= 0 {
 		err := fmt.Errorf("%w: RangeWindow wrapping exemplars requires Step > 0", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	if m.Inner == nil {
 		err := fmt.Errorf("%w: MetricsAggregate.Inner is nil", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	if traceIDCol == "" {
 		err := fmt.Errorf("%w: traceIDCol is empty", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	if spanIDCol == "" {
 		err := fmt.Errorf("%w: spanIDCol is empty", ErrUnsupported)
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 
 	e := &emitter{spansTable: spansTable}
 	if err := e.emitMetricsExemplars(rw, m, traceIDCol, spanIDCol, maxPerSeries, spansTable); err != nil {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	sql := e.b.String()
 	// Fail closed at the emit chokepoint, exactly as chsql.Emit does. The
@@ -97,10 +97,10 @@ func EmitMetricsExemplars(
 	// handler ctx is not engine-threaded with WithSpansTable).
 	if err := GuardEmittedSQL(WithSpansTable(ctx, spansTable), sql); err != nil {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
-	return sql, e.args, nil
+	return sql, e.args, e.physicalScans, nil
 }
 
 // exemplarNumAnchors computes the count of per-step anchors the exemplar
