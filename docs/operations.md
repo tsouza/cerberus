@@ -3954,8 +3954,7 @@ now the only thing standing between them and a publish.
 | `drought`                    | `chaos-not-applicable-rate.yml`'s Wednesday-cron detector for the chaos lane's silent not-applicable outcomes. It mines chaos-job run HISTORY, not the commit it happens to post against, so a red run says nothing about the commit being released — its own header comment already excludes it from PR gating for the identical reason. Left required, an unlucky coincidence between the cron and a release push would hold a release hostage to accumulated chaos-lane drift the release itself did not cause.                                                                                                                                                                                   |
 | `update-golden-guard`        | Structural, not a cost trade. It guards a PULL REQUEST against merging while an `update-golden.yml` dispatch is still regenerating its head branch (#2350). A publish commit has no head branch to strand and no pull request to hold back, and `update-golden-guard.yml` triggers on `pull_request` / `merge_group` / `workflow_run` only — with no push trigger on `main` or a maintenance line, a release commit can never carry that check-run, so requiring it would make the preflight wait out its window and abort every publish. Its enforcement points are the merge gate and the merge queue, both of which a change passes before reaching a release commit.                             |
 | `datashard-replica-affinity` | Sharding is EXPERIMENTAL and off by default; `.github/ci-lanes.json`'s `e2e.datashard-replica-affinity` entry already declares `release_posture: advisory`, and `notify-nightly-failure.mjs`'s `EXPERIMENTAL_LANES` lists it alongside `datashard` for the same reason. It was not in this set until it blocked v1.20.0's publish (#3155): unlisted in both `RELEASE_REQUIRED_CHECKS` and `RELEASE_INFORMATIONAL_CHECKS`, it fell into the preflight's own documented "gates by default" fallback despite its declared posture saying it should not gate.                                                                                                                                            |
-| `brew-migration`             | Verifies the ALREADY-PUBLISHED Homebrew cask's formula-to-cask migration path (`.github/ci-lanes.json`'s `release.brew-migration` entry: `main_posture: never`, `release_posture: post_publish`) — there is nothing meaningful to check pre-publish. `brew-verify.yml` runs on a `schedule`, independent of any push to main, so its check-run attaches to whatever main HEAD happens to be when the cron fires — the same "unlucky coincidence" `drought` above is de-gated against. v1.20.0's own publish was blocked this way: a nightly run landed on the release merge commit by pure timing and reported a real, pre-existing Homebrew tap bug (#3156) unrelated to the commit being released. |
-| `brew-verify`                | Same reasoning and same `.github/ci-lanes.json` entry shape (`release.brew-verify`: `main_posture: never`, `release_posture: post_publish`) as `brew-migration` above — it smoke-tests the already-published cask, not the commit being released.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `brew-verify`                | Verifies the ALREADY-PUBLISHED Homebrew cask (`.github/ci-lanes.json`'s `release.brew-verify` entry: `main_posture: never`, `release_posture: post_publish`) — there is nothing meaningful to check pre-publish. `brew-verify.yml` runs on a `schedule`, independent of any push to main, so its check-run attaches to whatever main HEAD happens to be when the cron fires — the same "unlucky coincidence" `drought` above is de-gated against. v1.20.0's own publish was blocked this way: a nightly `brew-migration` run (that job has since been removed — see #3156) landed on the release merge commit by pure timing and reported a bug unrelated to the commit being released.              |
 
 #### Homebrew tap
 
@@ -4041,59 +4040,27 @@ Homebrew picked: after the install, `cerberus` must appear in
 `brew list --cask --versions` and must not appear in `brew list --formula
 --versions`. Neither `command -v` nor `--version` can tell those two apart.
 
-Deleting the formula decides what a **new** install receives. What an **existing**
-formula install receives is decided by a second file, `tap_migrations.json` at the
-tap root:
-
-```json
-{
-  "cerberus": "tsouza/tap"
-}
-```
-
-Homebrew looks every package an update *deleted* up in that map. A hit whose
-target resolves to a cask in the same tap makes `brew update` unlink the formula
-and install the cask in its place, printing `cerberus has been migrated from a
-formula to a cask.`. A miss — including the map being absent — is
-indistinguishable from "this package did not move", and that is the whole failure
-mode: `brew upgrade` files the package under *Deleted Installed Formulae* and
-moves on, because a deleted formula has no newer version to move to. Installing
-the cask by hand afterwards does not rescue it either, since the formula's keg
-still owns `<prefix>/bin/cerberus` and the cask declines to link over it
-(`It seems there is already a Binary at … from formula cerberus; skipping link`).
-The machine ends up with the new cask in the Caskroom, the old binary on `PATH`,
-and no error printed anywhere. The users it strands are the ones who installed
-cerberus *earliest*.
-
-That first paragraph describes the DESIGNED behavior; current Homebrew (4.6.20, verified live
-against the real tap, cerberus#3156) does not reach it. A same-tap formula-to-cask migration hits
-a cask-trust gate `brew update` cannot pass unattended — it prints a warning naming a `brew trust`
-command that does not exist (`brew help trust` → unknown command) and stops, never reaching the
-`… has been migrated …` announcement this section otherwise describes. Manually running
-`brew install --cask tsouza/tap/cerberus` afterward DOES auto-trust the cask, but still hits the
-keg-link refusal from the paragraph above, since the formula was never uninstalled — so an
-affected user needs both steps, in order:
+Deleting the formula decides what a **new** install receives, and a new install
+is the only kind this tap supports. Cerberus's formula install path never had a
+meaningful user base — it was retired at v1.13.1, several minors before the tap
+existed as a documented, supported install path — so there is no
+`tap_migrations.json` here and no attempt to carry an old formula install
+across to the cask automatically (cerberus#3156 has the history: Homebrew's own
+same-tap formula→cask auto-migration hits a cask-trust gate it cannot pass
+unattended, on the Homebrew version verified live against this tap, so the
+mechanism does not reliably work even where cerberus once used it — not worth
+maintaining for an install base this small). Anyone still on the old formula
+install gets there themselves with:
 
 ```sh
 brew uninstall --formula cerberus
 brew install --cask tsouza/tap/cerberus
 ```
 
-See issue #3156 for the full reproduction; it is open pending either a change in Homebrew's own
-cask-trust behavior for tap migrations or a repo-side workaround nobody has found yet.
-
-The target is written as the bare tap name, which is how homebrew/core spells its
-own formula-to-cask migrations. Homebrew splits it on `/`: a two-part value has no
-name component and is read as "same package, that tap", installing the
-fully-qualified `tsouza/tap/cerberus`. A three-part `tsouza/tap/cerberus` takes a
-different branch that keeps only the trailing name and installs the bare token
-`cerberus`, resolved against whichever tap answers first — so the two spellings
-are different instructions, not variants of one, and `brew-smoke.mjs` accepts only
-the first. It reads the map on **every** release rather than treating the
-migration as a one-time event, because the file is a blob in a repository this one
-cannot write: nothing else would notice it being reverted, renamed or hand-edited,
-and no fresh install — which is every install path CI performs — can observe its
-absence.
+`brew-smoke.mjs` still asserts no `Formula/cerberus.rb` (or any sharded
+equivalent) exists anywhere Homebrew loads formulae from, so a stray formula
+file never silently resurfaces as the ambiguous bare-ref target `brew install
+tsouza/tap/cerberus` would otherwise resolve to.
 
 The two shapes that write no cask are **not** skipped — each takes the
 opposite assertion. An `rc.*` must have written none, so a cask declaring the

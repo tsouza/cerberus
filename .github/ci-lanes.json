@@ -2001,42 +2001,6 @@
       "accountable_owner": "query-quality"
     },
     {
-      "id": "release.brew-migration",
-      "description": "Published formula-to-cask upgrade-path verification on macOS and Linux.",
-      "owner": {
-        "workflow": ".github/workflows/brew-verify.yml",
-        "jobs": ["brew-migration"],
-        "producer_jobs": [],
-        "context_job": "brew-migration"
-      },
-      "executions": ["default"],
-      "context": {
-        "match": "prefix",
-        "name": "brew-migration (",
-        "protected": false
-      },
-      "purpose": "release",
-      "layers": ["8"],
-      "oracle_class": "packaging",
-      "recipes": [],
-      "command": "node .github/scripts/brew-upgrade-path.mjs",
-      "build_tags": [],
-      "package_globs": [
-        ".goreleaser.yml",
-        ".github/scripts/brew-upgrade-path.mjs"
-      ],
-      "substrate": "homebrew",
-      "risk_domains": ["artifact", "packaging", "release"],
-      "merge_posture": "never",
-      "main_posture": "never",
-      "release_posture": "post_publish",
-      "determinism": "deterministic",
-      "applicability": { "source": false, "artifact": true },
-      "timeout_minutes": 60,
-      "slo_minutes": 60,
-      "accountable_owner": "release-engineering"
-    },
-    {
       "id": "release.brew-verify",
       "description": "Published Homebrew cask installation and binary smoke on macOS and Linux.",
       "owner": {
