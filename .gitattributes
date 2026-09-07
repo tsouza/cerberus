@@ -92,6 +92,17 @@
 #   branches moving the SAME fixture's record.
 test/perf/cardinality-baseline/**/*.json     -merge
 
+# Regenerate: `just capture-release-perf-baseline <version> [ref]` (cerberus
+#   issue #3150). ONE version subdirectory per shipped release,
+#   release-baseline/<version>/cardinality/<head>/<name>.json — captured
+#   ONCE, at that release, and never touched again (unlike the rolling
+#   cardinality-baseline above); `just release-prep` calls it automatically
+#   for the version being cut. Also carries one meta.json per version
+#   (capture provenance — source ref/commit, not a fixture record). Two
+#   releases' captures never share a path, so `-merge` covers only the
+#   residual same-version-recaptured-by-hand case.
+test/perf/release-baseline/**/*.json         -merge
+
 # Regenerate: `just update-solver-decision-baseline`
 #   (UPDATE_SOLVER_DECISION_BASELINE=1 go test -count=1
 #    -run TestSolverDecisionRatchet ./test/perf/ — pure Go, no chDB). Also

@@ -964,9 +964,14 @@ update-cardinality-baseline:
 # (cerberus issue #3150). Called automatically by `just release-prep` for
 # the version being cut; call it by hand only to backfill a PAST release
 # from its tag, e.g. `just capture-release-perf-baseline 1.19.0 v1.19.0`.
-# Refuses to overwrite an existing capture — see the script's own doc.
+# Refuses to overwrite an existing capture — see the script's own doc. `ref`
+# is passed straight through to the script's own `--ref`; empty (the
+# default) is exactly what tells it to capture the working tree instead of
+# a git ref, so no `just`-side conditional is needed here at all.
+
+# Freeze the current cardinality baseline as a version-labeled release reference.
 capture-release-perf-baseline version ref="":
-    node .github/scripts/capture-release-perf-baseline.mjs --version {{version}} {{ if ref != "" { "--ref " + ref } else { "" } }}
+    node .github/scripts/capture-release-perf-baseline.mjs --version {{version}} --ref {{ref}}
     @node .github/scripts/lib/regen-diff.mjs --label "release perf baseline" test/perf/release-baseline/{{version}}/
 
 # Regenerate the routing-DECISION ratchet baseline (perf-assessment
