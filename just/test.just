@@ -956,6 +956,24 @@ update-cardinality-baseline:
     @CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" CARDINALITY_BASELINE_TIMEOUT="{{CARDINALITY_BASELINE_TIMEOUT}}" node .github/scripts/cardinality-baseline-update.mjs
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/cardinality-baseline/
 
+# Freeze the CURRENT cardinality baseline (test/perf/cardinality-baseline/)
+# as test/perf/release-baseline/<version>/cardinality/ — the fixed
+# reference TestReleasePerfRegression (release_regression_test.go) compares
+# a future release candidate against, so a release-cycle's worth of
+# individually-justified rolling re-baselines can still be caught in sum
+# (cerberus issue #3150). Called automatically by `just release-prep` for
+# the version being cut; call it by hand only to backfill a PAST release
+# from its tag, e.g. `just capture-release-perf-baseline 1.19.0 v1.19.0`.
+# Refuses to overwrite an existing capture — see the script's own doc. `ref`
+# is passed straight through to the script's own `--ref`; empty (the
+# default) is exactly what tells it to capture the working tree instead of
+# a git ref, so no `just`-side conditional is needed here at all.
+
+# Freeze the current cardinality baseline as a version-labeled release reference.
+capture-release-perf-baseline version ref="":
+    node .github/scripts/capture-release-perf-baseline.mjs --version {{version}} --ref {{ref}}
+    @node .github/scripts/lib/regen-diff.mjs --label "release perf baseline" test/perf/release-baseline/{{version}}/
+
 # Regenerate the routing-DECISION ratchet baseline (perf-assessment
 # Component D) from the current PromQL corpus. Parses every `-- query.promql --`
 # fixture under test/spec/promql/**, lowers it on the fixed eval grid

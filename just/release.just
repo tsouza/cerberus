@@ -29,7 +29,16 @@ release-prep version chart_bump="patch":
     branch="$(grep '^release_branch=' "$outputs" | cut -d= -f2-)"
     msg="$(grep '^commit_message=' "$outputs" | cut -d= -f2-)"
     git branch -m "$branch"
-    git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
+    # Freeze THIS release's own cardinality baseline as the fixed reference
+    # TestReleasePerfRegression will compare the NEXT release against
+    # (cerberus issue #3150) — from the working tree, which at this point is
+    # exactly origin/main's state (prepare-release.mjs above never touches
+    # test/perf/cardinality-baseline/), i.e. the version actually shipping.
+    # Staged into the SAME commit as the version bump, so every release
+    # commit is self-describing: it both cuts the release and captures the
+    # baseline the FOLLOWING release will be judged against.
+    just capture-release-perf-baseline {{version}}
+    git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md "test/perf/release-baseline/{{version}}/"
     git commit -m "$msg"
     git push -u origin "$branch"
     gh pr create --base main --head "$branch" --title "$msg" --body-file release-pr-body.md

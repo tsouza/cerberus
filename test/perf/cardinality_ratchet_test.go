@@ -183,6 +183,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/tsouza/cerberus/test/perf/profile"
@@ -268,52 +269,93 @@ func toEntry(r profile.Record) baselineEntry {
 	}
 }
 
-func TestCardinalityRatchet(t *testing.T) {
-	shard, err := profile.ShardFromEnv()
-	if err != nil {
-		t.Fatalf("read the corpus shard from the environment: %v", err)
-	}
-	t.Logf("cardinality ratchet over the %v", shard)
+var (
+	profileOnce    sync.Once
+	profileShard   profile.Shard
+	profileCurrent map[string]baselineEntry
+	profileErrs    []string
+	profileErr     error
+)
 
-	recs, err := profile.ProfileCorpusShard(specDir, shard)
-	if err != nil {
-		t.Fatalf("profile corpus (%v): %v", shard, err)
-	}
-
-	// The three windowless Prometheus metadata-discovery endpoints (#1530:
-	// /series, /labels, /label/<name>/values) build their SQL directly in
-	// internal/api/prom/metadata.go rather than through chplan, so they
-	// cannot become TXTAR fixtures ProfileCorpus walks — see
-	// profile.ProfileMetadataEndpoints' doc comment. Merging their Records
-	// into the same `current` map before the added/removed/regression
-	// logic below means they ratchet exactly like every corpus fixture,
-	// with no special-casing: a new fixture id fails until recorded, a
-	// removed one fails until dropped, and fan_factor/scan_rows drift is
-	// caught the same way.
-	//
-	// Sharded runs profile all three on every leg and keep the ones this
-	// shard owns. Capturing them costs one stub-backed HTTP round trip each
-	// against an already-open session — negligible beside the fixture walk —
-	// and deriving the three ids from the shard instead would duplicate,
-	// here, knowledge that only profile.ProfileMetadataEndpoints has.
-	metaRecs, err := profile.ProfileMetadataEndpoints()
-	if err != nil {
-		t.Fatalf("profile metadata endpoints: %v", err)
-	}
-	recs = append(recs, profile.FilterShard(shard, metaRecs, func(r profile.Record) string { return r.Fixture })...)
-
-	// A fixture the profiler could not execute has no meaningful fan-out
-	// signal — treat it as a hard regression (it used to be profilable) and
-	// keep it out of the baseline.
-	current := make(map[string]baselineEntry, len(recs))
-	var profErrs []string
-	for _, r := range recs {
-		if r.Err != "" {
-			profErrs = append(profErrs, fmt.Sprintf("%s: %s", r.Fixture, r.Err))
-			continue
+// currentCardinalityEntries profiles the current corpus shard exactly ONCE
+// per test-binary invocation and caches the result, so TestCardinalityRatchet
+// and TestReleasePerfRegression (release_regression_test.go) — which both
+// need the IDENTICAL profile of the IDENTICAL shard — don't each pay for
+// their own full chDB pass over the same fixtures.
+//
+// This is not an efficiency nicety: without it, three of eight CI legs
+// exceeded `perf-chdb`'s existing 27m timeout the first time
+// TestReleasePerfRegression shipped alongside the rolling ratchet
+// (`panic: test timed out after 27m0s`, real CI evidence, cerberus issue
+// #3150) — a second independent chDB profiling pass over the same slice
+// roughly doubles the one thing this test class is dominated by. Sharing
+// the pass keeps the combined cost close to the ORIGINAL single-pass
+// budget instead of needing a larger timeout, a wider shard count, or both.
+//
+// go test runs every Test function in one process for one package
+// invocation with no ordering guarantee this file may rely on, so this is
+// memoized by FIRST CALLER, not by which test happens to run first: either
+// test can trigger the profile, and the other reads the cached result.
+// profErrs is returned to BOTH callers (rather than reported only inside
+// TestCardinalityRatchet, as the pre-sharing code did) specifically so an
+// unprofilable fixture is still caught when TestReleasePerfRegression runs
+// alone (`-run TestReleasePerfRegression`), not only when both run together.
+func currentCardinalityEntries(t *testing.T) (profile.Shard, map[string]baselineEntry, []string) {
+	t.Helper()
+	profileOnce.Do(func() {
+		profileShard, profileErr = profile.ShardFromEnv()
+		if profileErr != nil {
+			return
 		}
-		current[r.Fixture] = toEntry(r)
+		recs, err := profile.ProfileCorpusShard(specDir, profileShard)
+		if err != nil {
+			profileErr = fmt.Errorf("profile corpus (%v): %w", profileShard, err)
+			return
+		}
+
+		// The three windowless Prometheus metadata-discovery endpoints
+		// (#1530: /series, /labels, /label/<name>/values) build their SQL
+		// directly in internal/api/prom/metadata.go rather than through
+		// chplan, so they cannot become TXTAR fixtures ProfileCorpus walks
+		// — see profile.ProfileMetadataEndpoints' doc comment. Merging
+		// their Records into the same map before the added/removed/
+		// regression logic means they ratchet exactly like every corpus
+		// fixture, with no special-casing.
+		//
+		// Sharded runs profile all three on every leg and keep the ones
+		// this shard owns. Capturing them costs one stub-backed HTTP
+		// round trip each against an already-open session — negligible
+		// beside the fixture walk — and deriving the three ids from the
+		// shard instead would duplicate, here, knowledge that only
+		// profile.ProfileMetadataEndpoints has.
+		metaRecs, err := profile.ProfileMetadataEndpoints()
+		if err != nil {
+			profileErr = fmt.Errorf("profile metadata endpoints: %w", err)
+			return
+		}
+		recs = append(recs, profile.FilterShard(profileShard, metaRecs, func(r profile.Record) string { return r.Fixture })...)
+
+		// A fixture the profiler could not execute has no meaningful
+		// fan-out signal — treat it as a hard regression (it used to be
+		// profilable) and keep it out of the baseline.
+		profileCurrent = make(map[string]baselineEntry, len(recs))
+		for _, r := range recs {
+			if r.Err != "" {
+				profileErrs = append(profileErrs, fmt.Sprintf("%s: %s", r.Fixture, r.Err))
+				continue
+			}
+			profileCurrent[r.Fixture] = toEntry(r)
+		}
+	})
+	if profileErr != nil {
+		t.Fatalf("%v", profileErr)
 	}
+	return profileShard, profileCurrent, profileErrs
+}
+
+func TestCardinalityRatchet(t *testing.T) {
+	shard, current, profErrs := currentCardinalityEntries(t)
+	t.Logf("cardinality ratchet over the %v", shard)
 
 	if os.Getenv(updateEnv) == "1" {
 		// The write is scoped to the SAME slice this leg profiled, so a
@@ -387,62 +429,76 @@ func TestCardinalityRatchet(t *testing.T) {
 	}
 	sort.Strings(matched)
 	for _, id := range matched {
-		cur, base := current[id], baseline[id]
-		// fan_factor is null-aware: see the file doc's "fan_factor can be
-		// unmeasured" section for the four-way truth table this implements.
-		// This is a pre-authorised maintainer decision — null must never
-		// silently pass, and it must never be blanket-failed either; it is
-		// compared against what the committed baseline already says.
-		switch {
-		case cur.FanFactor == nil && base.FanFactor == nil:
-			// Both unmeasured — already honestly acknowledged in the
-			// committed baseline. Nothing to check.
-		case cur.FanFactor == nil && base.FanFactor != nil:
-			t.Errorf("%s: fan_factor is now unmeasured (uncountable_levels=%d) but the baseline recorded a "+
-				"measured value of %s. A null fan_factor must never silently pass a fixture that used to be "+
-				"measured — either the profiler regressed (it can no longer see through a level it used to), "+
-				"or the fixture's SQL changed shape to one the decomposition can't see through. If the "+
-				"decomposition is correct and the fan-out is genuinely uncountable now, run "+
-				"`just update-cardinality-baseline` to record that explicitly; do not let this pass silently.",
-				id, cur.UncountableLevels, fmtFanFactor(base.FanFactor))
-		case cur.FanFactor != nil && base.FanFactor == nil:
-			// Became measurable — strictly an improvement in what the gate
-			// can see. Always allowed, no baseline update required.
-		default:
-			if *cur.FanFactor > *base.FanFactor+fanFactorEpsilon {
-				t.Errorf("%s: fan_factor regressed UPWARD %.2f → %.2f (peak_intermediate %d→%d at scan_rows %d). "+
-					"A query that fanned out N× now fans out more — root-cause the new intermediate blow-up; "+
-					"only run `just update-cardinality-baseline` if the increase is genuinely intended.",
-					id, *base.FanFactor, *cur.FanFactor, base.PeakIntermediate, cur.PeakIntermediate, cur.ScanRows)
-			}
+		compareCardinalityEntry(t, id, current[id], baseline[id], "just update-cardinality-baseline")
+	}
+}
+
+// compareCardinalityEntry is TestCardinalityRatchet's per-fixture
+// regression rule, factored out so TestReleasePerfRegression
+// (release_regression_test.go) can apply the IDENTICAL comparison against a
+// different (frozen, tag-pinned) baseline rather than duplicate five
+// structural checks and a null-aware four-way fan_factor truth table.
+//
+// regenHint names the recipe an t.Errorf should point a maintainer at —
+// `just update-cardinality-baseline` for the rolling ratchet, and
+// deliberately something ELSE for the release gate (see that test's own
+// doc): the frozen release baseline is never regenerated by that recipe.
+func compareCardinalityEntry(t *testing.T, id string, cur, base baselineEntry, regenHint string) {
+	t.Helper()
+	// fan_factor is null-aware: see the file doc's "fan_factor can be
+	// unmeasured" section for the four-way truth table this implements.
+	// This is a pre-authorised maintainer decision — null must never
+	// silently pass, and it must never be blanket-failed either; it is
+	// compared against what the committed baseline already says.
+	switch {
+	case cur.FanFactor == nil && base.FanFactor == nil:
+		// Both unmeasured — already honestly acknowledged in the
+		// committed baseline. Nothing to check.
+	case cur.FanFactor == nil && base.FanFactor != nil:
+		t.Errorf("%s: fan_factor is now unmeasured (uncountable_levels=%d) but the baseline recorded a "+
+			"measured value of %s. A null fan_factor must never silently pass a fixture that used to be "+
+			"measured — either the profiler regressed (it can no longer see through a level it used to), "+
+			"or the fixture's SQL changed shape to one the decomposition can't see through. If the "+
+			"decomposition is correct and the fan-out is genuinely uncountable now, run "+
+			"`%s` to record that explicitly; do not let this pass silently.",
+			id, cur.UncountableLevels, fmtFanFactor(base.FanFactor), regenHint)
+	case cur.FanFactor != nil && base.FanFactor == nil:
+		// Became measurable — strictly an improvement in what the gate
+		// can see. Always allowed, no baseline update required.
+	default:
+		if *cur.FanFactor > *base.FanFactor+fanFactorEpsilon {
+			t.Errorf("%s: fan_factor regressed UPWARD %.2f → %.2f (peak_intermediate %d→%d at scan_rows %d). "+
+				"A query that fanned out N× now fans out more — root-cause the new intermediate blow-up; "+
+				"only run `%s` if the increase is genuinely intended.",
+				id, *base.FanFactor, *cur.FanFactor, base.PeakIntermediate, cur.PeakIntermediate, cur.ScanRows, regenHint)
 		}
-		if cur.ScanRows != base.ScanRows {
-			t.Errorf("%s: scan_rows drifted %d → %d. The leaf scan row count is a pure function of the "+
-				"fixture's seed and its recorded `-- sql --`, so a change means the fixture changed and "+
-				"its row no longer describes it — regenerate with `just update-cardinality-baseline` and "+
-				"review the diff. A row recorded against SQL the same invocation then rewrote is exactly "+
-				"how this drifts silently.",
-				id, base.ScanRows, cur.ScanRows)
-		}
-		if cur.HasArrayJoin != base.HasArrayJoin {
-			t.Errorf("%s: has_array_join drifted %v → %v. arrayJoin is a bounded operator, so this is not "+
-				"a fan-out verdict — it is a structural identity check that the row still describes the "+
-				"emitted SQL. Regenerate with `just update-cardinality-baseline` so the operator set the "+
-				"fixture actually emits lands in the PR diff.",
-				id, base.HasArrayJoin, cur.HasArrayJoin)
-		}
-		if cur.HasCrossJoin && !base.HasCrossJoin {
-			t.Errorf("%s: a CROSS JOIN appeared where the baseline had none — this is the classic "+
-				"unbounded compute-fan-out shape; emit a bounded join/array form instead.", id)
-		}
-		if cur.HasRecursiveCTE && !base.HasRecursiveCTE {
-			t.Errorf("%s: a WITH RECURSIVE appeared where the baseline had none — ensure it carries a "+
-				"depth cap before introducing it.", id)
-		}
-		if cur.MaxRecursionDepth > base.MaxRecursionDepth {
-			t.Errorf("%s: recursion depth grew %d → %d — a recursive walk got deeper; confirm the "+
-				"depth cap still bounds it.", id, base.MaxRecursionDepth, cur.MaxRecursionDepth)
-		}
+	}
+	if cur.ScanRows != base.ScanRows {
+		t.Errorf("%s: scan_rows drifted %d → %d. The leaf scan row count is a pure function of the "+
+			"fixture's seed and its recorded `-- sql --`, so a change means the fixture changed and "+
+			"its row no longer describes it — regenerate with `%s` and "+
+			"review the diff. A row recorded against SQL the same invocation then rewrote is exactly "+
+			"how this drifts silently.",
+			id, base.ScanRows, cur.ScanRows, regenHint)
+	}
+	if cur.HasArrayJoin != base.HasArrayJoin {
+		t.Errorf("%s: has_array_join drifted %v → %v. arrayJoin is a bounded operator, so this is not "+
+			"a fan-out verdict — it is a structural identity check that the row still describes the "+
+			"emitted SQL. Regenerate with `%s` so the operator set the "+
+			"fixture actually emits lands in the PR diff.",
+			id, base.HasArrayJoin, cur.HasArrayJoin, regenHint)
+	}
+	if cur.HasCrossJoin && !base.HasCrossJoin {
+		t.Errorf("%s: a CROSS JOIN appeared where the baseline had none — this is the classic "+
+			"unbounded compute-fan-out shape; emit a bounded join/array form instead.", id)
+	}
+	if cur.HasRecursiveCTE && !base.HasRecursiveCTE {
+		t.Errorf("%s: a WITH RECURSIVE appeared where the baseline had none — ensure it carries a "+
+			"depth cap before introducing it.", id)
+	}
+	if cur.MaxRecursionDepth > base.MaxRecursionDepth {
+		t.Errorf("%s: recursion depth grew %d → %d — a recursive walk got deeper; confirm the "+
+			"depth cap still bounds it.", id, base.MaxRecursionDepth, cur.MaxRecursionDepth)
 	}
 }
 

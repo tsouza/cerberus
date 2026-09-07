@@ -692,6 +692,14 @@ jobs:
       # themselves are what a real regeneration run exercises this against.
       - name: Self-test the regen-diff helper
         run: node --test .github/scripts/lib/regen-diff.test.mjs
+      # Release perf-regression gate (#3150): the script `just
+      # capture-release-perf-baseline` (and `release-prep`, automatically)
+      # calls to freeze test/perf/cardinality-baseline/ as a version-labeled,
+      # never-touched-again reference for TestReleasePerfRegression. Self-test
+      # only here — real captures are what the release ritual exercises this
+      # against, over a real repo rather than this suite's own scratch one.
+      - name: Self-test the release perf-baseline capture script
+        run: node --test .github/scripts/capture-release-perf-baseline.test.mjs
       # Migration-lane extraction (#3099, epic #3091): the pure helpers behind
       # the .mjs replacements for migration-cerberus-image's build-vs-pull
       # decision, migration-tier1-seed/migration-tier2-seed's shared

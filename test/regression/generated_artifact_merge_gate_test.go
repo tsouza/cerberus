@@ -211,6 +211,14 @@ var shardTrees = []shardTree{
 	// (test/perf/baseline_shards_test.go owns both mappings).
 	{"test/perf/cardinality-baseline", "just update-cardinality-baseline", "profiled fixture"},
 	{"test/perf/solver-decision-baseline", "just update-solver-decision-baseline", "classified query"},
+	// The frozen per-RELEASE cardinality baselines (cerberus issue #3150):
+	// one version subdirectory per shipped release
+	// (test/perf/release-baseline/<version>/cardinality/<head>/<name>.json),
+	// each written ONCE by `just capture-release-perf-baseline` and never
+	// touched again. Registered at the PARENT dir, not per version — the
+	// walk below is recursive, so a future release's capture is covered
+	// automatically with no repeat registration here.
+	{"test/perf/release-baseline", "just capture-release-perf-baseline", "captured release fixture"},
 	// #2565: the coverage floor ledger, one shard per Go package
 	// (.github/scripts/lib/sharded-json.mjs owns the mapping).
 	{"test/coverage-floor", "just update-coverage-floor", "package floor"},
