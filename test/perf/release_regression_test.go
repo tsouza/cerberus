@@ -140,31 +140,16 @@ func TestReleasePerfRegression(t *testing.T) {
 	}
 	t.Logf("release perf regression gate: comparing against v%s (%s)", version, filepath.Join(releaseBaselineRoot, version, "cardinality"))
 
-	shard, err := profile.ShardFromEnv()
-	if err != nil {
-		t.Fatalf("read the corpus shard from the environment: %v", err)
-	}
-
-	recs, err := profile.ProfileCorpusShard(specDir, shard)
-	if err != nil {
-		t.Fatalf("profile corpus (%v): %v", shard, err)
-	}
-	metaRecs, err := profile.ProfileMetadataEndpoints()
-	if err != nil {
-		t.Fatalf("profile metadata endpoints: %v", err)
-	}
-	recs = append(recs, profile.FilterShard(shard, metaRecs, func(r profile.Record) string { return r.Fixture })...)
-
-	current := make(map[string]baselineEntry, len(recs))
-	for _, r := range recs {
-		if r.Err != "" {
-			// Unprofilable is a rolling-ratchet concern (TestCardinalityRatchet
-			// already fails the build on it); the release gate only cares
-			// about fixtures it CAN compare, and an unprofilable one has
-			// nothing in this run to compare with anyway.
-			continue
-		}
-		current[r.Fixture] = toEntry(r)
+	// Shares TestCardinalityRatchet's profile of this shard rather than
+	// re-running the same chDB pass a second time — see
+	// currentCardinalityEntries' own doc (cardinality_ratchet_test.go) for
+	// why: a second independent pass is what pushed three CI legs over
+	// perf-chdb's 27m timeout the first time this test shipped. Reported
+	// here too (not left to TestCardinalityRatchet alone) so an
+	// unprofilable fixture is still caught when this test runs by itself.
+	shard, current, profErrs := currentCardinalityEntries(t)
+	for _, e := range profErrs {
+		t.Errorf("fixture failed to profile (was it profilable at baseline time?): %s", e)
 	}
 
 	releaseShards := baselineShards[baselineEntry]{
