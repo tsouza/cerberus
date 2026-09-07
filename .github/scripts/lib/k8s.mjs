@@ -14,9 +14,13 @@
 // `kubectl`/ClickHouse command into the cluster (CLAUDE.md's DRY rule).
 //
 // Before adding a NEW helper here, check whether an existing e2e script
-// already has an equivalent inlined (as `e2e-datashard-verify.mjs`'s own
-// `chQueryTSV`/`chExec` do, for a `--format TSVRaw` shape `chQuery` below
-// does not cover) before reaching for a parallel implementation.
+// already has an equivalent inlined before reaching for a parallel
+// implementation. `chQuery` takes an optional `format` (the
+// `--format TSVRaw` shape `e2e-datashard-verify.mjs` and
+// `e2e-datashard-replica-affinity-verify.mjs` both read multi-column rows
+// through, each behind a two-line row-splitting wrapper of its own), so a
+// new script needing a different output format passes it here rather than
+// re-implementing the `kubectl exec ... clickhouse-client` invocation.
 
 import { error } from './gh.mjs';
 

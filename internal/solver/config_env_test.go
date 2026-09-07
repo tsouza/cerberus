@@ -166,15 +166,40 @@ func TestDeprecatedEnvWarnings_FiresOnLegacyName(t *testing.T) {
 	}
 }
 
+// TestDeprecatedEnvWarnings_FiresOnTheRetiredSplitKnob pins the same contract
+// for the knob the release audit REMOVED: a deployment whose manifest still
+// carries it must be told it is inert, not left to assume it still disables
+// something. Retired keys are otherwise ignored by ConfigFromEnv, which is
+// exactly why the notice has to be explicit.
+func TestDeprecatedEnvWarnings_FiresOnTheRetiredSplitKnob(t *testing.T) {
+	t.Setenv(envRetiredDisableSplitOnMultiDataShard, "true")
+
+	warns := DeprecatedEnvWarnings()
+	var found string
+	for _, w := range warns {
+		if strings.Contains(w, envRetiredDisableSplitOnMultiDataShard) {
+			found = w
+		}
+	}
+	if found == "" {
+		t.Fatalf("no notice for the retired knob; got %v", warns)
+	}
+	if !strings.Contains(found, "no effect") {
+		t.Errorf("notice %q must say the knob is inert", found)
+	}
+}
+
 // TestDeprecatedEnvWarnings_SilentWhenUnset: no warning when nobody set it.
 // The var is explicitly UNSET rather than left to the ambient environment —
 // DeprecatedEnvWarnings keys off LookupEnv, so a developer shell that happens
 // to export the legacy name would otherwise decide this test's outcome.
 // t.Setenv registers the restore; Unsetenv then removes the key entirely.
 func TestDeprecatedEnvWarnings_SilentWhenUnset(t *testing.T) {
-	t.Setenv(EnvLegacyRouteMemoEnabled, "")
-	if err := os.Unsetenv(EnvLegacyRouteMemoEnabled); err != nil {
-		t.Fatalf("unset %s: %v", EnvLegacyRouteMemoEnabled, err)
+	for _, key := range []string{EnvLegacyRouteMemoEnabled, envRetiredDisableSplitOnMultiDataShard} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
 	}
 	if w := DeprecatedEnvWarnings(); len(w) != 0 {
 		t.Errorf("unexpected deprecation warnings with nothing set: %v", w)
@@ -254,20 +279,6 @@ func TestConfigFromEnv_RouteMemoReValidationFractionExplicitSet(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_DisableSplitOnMultiDataShardDefaultsFalse pins the
-// off-by-default escape hatch (cerberus issue #3081).
-func TestConfigFromEnv_DisableSplitOnMultiDataShardDefaultsFalse(t *testing.T) {
-	t.Setenv(EnvDisableSplitOnMultiDataShard, "")
-
-	cfg, err := ConfigFromEnv()
-	if err != nil {
-		t.Fatalf("ConfigFromEnv() error = %v", err)
-	}
-	if cfg.DisableSplitOnMultiDataShard {
-		t.Errorf("DisableSplitOnMultiDataShard = true, want false (off by default)")
-	}
-}
-
 // TestConfigFromEnv_EveryKnobReachesItsOwnField (cerberus issue #2991) pins
 // the whole env-to-field ladder at once. ConfigFromEnv threads thirteen
 // knobs through a repetitive `if cfg.X, err = envT(EnvX, cfg.X); err != nil`
@@ -296,7 +307,6 @@ func TestConfigFromEnv_EveryKnobReachesItsOwnField(t *testing.T) {
 	t.Setenv(EnvEstimateNearEmptyRowFloor, "20")
 	t.Setenv(EnvMaxKWithEstimate, "21")
 	t.Setenv(EnvEstimateMinRowsPerAdditionalShard, "22")
-	t.Setenv(EnvDisableSplitOnMultiDataShard, "true")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
@@ -324,7 +334,6 @@ func TestConfigFromEnv_EveryKnobReachesItsOwnField(t *testing.T) {
 		{EnvEstimateNearEmptyRowFloor, cfg.EstimateNearEmptyRowFloor, int64(20), def.EstimateNearEmptyRowFloor},
 		{EnvMaxKWithEstimate, cfg.MaxKWithEstimate, 21, def.MaxKWithEstimate},
 		{EnvEstimateMinRowsPerAdditionalShard, cfg.EstimateMinRowsPerAdditionalShard, int64(22), def.EstimateMinRowsPerAdditionalShard},
-		{EnvDisableSplitOnMultiDataShard, cfg.DisableSplitOnMultiDataShard, true, def.DisableSplitOnMultiDataShard},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -376,7 +385,6 @@ func TestConfigFromEnv_MalformedKnobFailsFast(t *testing.T) {
 		{EnvEstimateNearEmptyRowFloor, "lots"},
 		{EnvMaxKWithEstimate, "some"},
 		{EnvEstimateMinRowsPerAdditionalShard, "9_000"},
-		{EnvDisableSplitOnMultiDataShard, "sideways"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.env, func(t *testing.T) {

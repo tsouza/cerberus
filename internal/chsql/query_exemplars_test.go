@@ -71,7 +71,7 @@ func TestEmitQueryExemplars_GoldenSQL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			sql, args, err := chsql.EmitQueryExemplars(
+			sql, args, _, err := chsql.EmitQueryExemplars(
 				context.Background(),
 				tc.table,
 				mkPredicate(),
@@ -121,7 +121,7 @@ func TestEmitQueryExemplars_RejectsSummaryTable(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 
-	_, _, err := chsql.EmitQueryExemplars(
+	_, _, _, err := chsql.EmitQueryExemplars(
 		context.Background(),
 		s.SummaryTable,
 		chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("my_summary_metric")),
@@ -153,7 +153,7 @@ func TestEmitQueryExemplars_RejectsMissingExemplarsColumn(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 
-	_, _, err := chsql.EmitQueryExemplars(
+	_, _, _, err := chsql.EmitQueryExemplars(
 		context.Background(),
 		s.SumTable,
 		chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_requests_total")),
@@ -183,7 +183,7 @@ func TestEmitQueryExemplars_RejectsEmptyTable(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 
-	_, _, err := chsql.EmitQueryExemplars(
+	_, _, _, err := chsql.EmitQueryExemplars(
 		context.Background(),
 		"",
 		chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_requests_total")),
@@ -224,7 +224,7 @@ func TestEmitQueryExemplars_PredicateWoven(t *testing.T) {
 		),
 	)
 
-	sql, args, err := chsql.EmitQueryExemplars(
+	sql, args, _, err := chsql.EmitQueryExemplars(
 		context.Background(),
 		s.SumTable,
 		predicate,
@@ -286,7 +286,7 @@ func TestEmitQueryExemplars_NilPredicate(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 
-	sql, args, err := chsql.EmitQueryExemplars(
+	sql, args, _, err := chsql.EmitQueryExemplars(
 		context.Background(),
 		s.SumTable,
 		nil, // intentionally nil — see test docstring
@@ -335,11 +335,11 @@ func TestEmitQueryExemplarsUnion_SingleArmIsByteStable(t *testing.T) {
 		return chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_request_duration_seconds"))
 	}
 
-	wantSQL, wantArgs, err := chsql.EmitQueryExemplars(context.Background(), s.GaugeTable, predicate(), start, end, s)
+	wantSQL, wantArgs, _, err := chsql.EmitQueryExemplars(context.Background(), s.GaugeTable, predicate(), start, end, s)
 	if err != nil {
 		t.Fatalf("EmitQueryExemplars: %v", err)
 	}
-	gotSQL, gotArgs, err := chsql.EmitQueryExemplarsUnion(
+	gotSQL, gotArgs, _, err := chsql.EmitQueryExemplarsUnion(
 		context.Background(),
 		[]chsql.ExemplarArm{{Table: s.GaugeTable, Predicate: predicate()}},
 		start, end, s,
@@ -388,7 +388,7 @@ func TestEmitQueryExemplarsUnion_JoinsArms(t *testing.T) {
 		},
 	}
 
-	sql, args, err := chsql.EmitQueryExemplarsUnion(context.Background(), arms, start, end, s)
+	sql, args, _, err := chsql.EmitQueryExemplarsUnion(context.Background(), arms, start, end, s)
 	if err != nil {
 		t.Fatalf("EmitQueryExemplarsUnion: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestEmitQueryExemplarsUnion_JoinsArms(t *testing.T) {
 func TestEmitQueryExemplarsUnion_RejectsEmptyArms(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := chsql.EmitQueryExemplarsUnion(
+	_, _, _, err := chsql.EmitQueryExemplarsUnion(
 		context.Background(),
 		nil,
 		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -458,7 +458,7 @@ func TestEmitQueryExemplarsUnion_RejectsSummaryArm(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	_, _, err := chsql.EmitQueryExemplarsUnion(
+	_, _, _, err := chsql.EmitQueryExemplarsUnion(
 		context.Background(),
 		[]chsql.ExemplarArm{
 			{Table: s.GaugeTable},

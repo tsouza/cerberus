@@ -216,5 +216,18 @@ func (c Config) Validate() error {
 	if c.QueryLogLookback <= 0 {
 		return fmt.Errorf("actuals: QueryLogLookback must be > 0, got %s", c.QueryLogLookback)
 	}
+	// QueryLogLookback is the overlap margin between two polls (its own doc
+	// above): a lookback no longer than the poll interval leaves no overlap
+	// at all, so a slow query_log flush or one missed tick drops rows
+	// silently — the exact failure the field exists to prevent.
+	//
+	// Gated on Enabled, unlike the bounds above, because this rule is NEW: an
+	// existing deployment that carries an inverted pair on a tracker it never
+	// turned on boots today, and refusing to start it over a field nothing
+	// reads would be a regression rather than a caught misconfiguration. With
+	// the tracker on, the Reconciler does read it every poll.
+	if c.Enabled && c.QueryLogLookback <= c.QueryLogPollInterval {
+		return fmt.Errorf("actuals: QueryLogLookback (%s) must be > QueryLogPollInterval (%s)", c.QueryLogLookback, c.QueryLogPollInterval)
+	}
 	return nil
 }

@@ -409,13 +409,7 @@ jobs:
         # critically full, print a loud, actionable notice that a fresh-runner
         # re-run is the fix.
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h
-          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
-          if [ "${avail_kb:-0}" -lt 2097152 ]; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Fail job if compatibility step failed
         # Last step in the job. Re-raises the harness step's failure
@@ -538,13 +532,7 @@ jobs:
         # compose stack down on exit, so we read the runner's own disk to
         # tell a DiskPressure infra flake apart from a real parity diff.
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h
-          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
-          if [ "${avail_kb:-0}" -lt 2097152 ]; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Fail job if forced-route compatibility step failed
         # Re-raises the harness failure after summary + artifact upload.
@@ -714,13 +702,7 @@ jobs:
 
       - name: Disk-pressure self-diagnosis on failure
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h
-          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
-          if [ "${avail_kb:-0}" -lt 2097152 ]; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Fail job if compatibility step failed
         # Mirrors compatibility/prometheus: only re-raises the HARNESS
@@ -893,13 +875,7 @@ jobs:
         # compose stack down on exit, so read the runner's own disk to tell a
         # DiskPressure infra flake apart from a real harness failure.
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h
-          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
-          if [ "${avail_kb:-0}" -lt 2097152 ]; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Fail job if harness step failed
         if: always() && steps.harness.outcome == 'failure'
@@ -1001,13 +977,7 @@ jobs:
         # compose stack down on exit, so read the runner's own disk to tell a
         # DiskPressure infra flake apart from a real harness failure.
         if: failure()
-        run: |
-          echo "=== disk usage (DiskPressure self-diagnosis) ==="
-          df -h
-          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
-          if [ "${avail_kb:-0}" -lt 2097152 ]; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
-          fi
+        run: node .github/scripts/dump-cluster-state.mjs
 
       - name: Fail job if harness step failed
         # Last step in the job. Re-raises the harness step's failure

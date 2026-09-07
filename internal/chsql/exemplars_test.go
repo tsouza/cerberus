@@ -13,7 +13,7 @@ import (
 
 func TestEmitMetricsExemplars_NilRangeWindow(t *testing.T) {
 	t.Parallel()
-	_, _, err := chsql.EmitMetricsExemplars(context.Background(), nil, &chplan.MetricsAggregate{
+	_, _, _, err := chsql.EmitMetricsExemplars(context.Background(), nil, &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
 		Inner:      &chplan.Scan{Table: "otel_traces"},
@@ -53,7 +53,7 @@ func TestEmitMetricsExemplars_MissingColumns(t *testing.T) {
 				End:             time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC),
 				TimestampColumn: "Timestamp",
 			}
-			_, _, err := chsql.EmitMetricsExemplars(context.Background(), plan,
+			_, _, _, err := chsql.EmitMetricsExemplars(context.Background(), plan,
 				plan.Input.(*chplan.MetricsAggregate),
 				tc.traceIDCol, tc.spanIDCol, 1, "")
 			if err == nil {
@@ -87,7 +87,7 @@ func TestEmitMetricsExemplars_ShapeSanity(t *testing.T) {
 		TimestampColumn: "Timestamp",
 	}
 
-	sql, args, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 2, "")
+	sql, args, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 2, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestEmitMetricsExemplars_StructuralUnwindowedInnerRejected(t *testing.T) {
 		End:             end,
 		TimestampColumn: "Timestamp",
 	}
-	_, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "otel_traces")
+	_, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "otel_traces")
 	if err == nil {
 		t.Fatalf("expected ErrUnboundedSpansScan for unwindowed recursive exemplars inner, got nil")
 	}
@@ -203,7 +203,7 @@ func TestEmitMetricsExemplars_PlainWindowedInnerAccepted(t *testing.T) {
 		End:             end,
 		TimestampColumn: "Timestamp",
 	}
-	if _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "otel_traces"); err != nil {
+	if _, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "otel_traces"); err != nil {
 		t.Fatalf("windowed plain inner must emit cleanly, got %v", err)
 	}
 }

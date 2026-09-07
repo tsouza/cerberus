@@ -683,6 +683,8 @@ jobs:
           node --test .github/scripts/e2e-seed-rolling.test.mjs
           node --test .github/scripts/e2e-seed-stop.test.mjs
           node --test .github/scripts/e2e-chaos-overlay.test.mjs
+          node --test .github/scripts/dump-cluster-state.test.mjs
+          node --test .github/scripts/e2e-datashard-verify.test.mjs
       # Baseline diff-stat helper extraction (#3095, epic #3091): the
       # shared `git --no-pager diff --stat` banner every update-*-baseline /
       # gen-config-docs / bench-report / migration-golden recipe now calls
@@ -1179,6 +1181,9 @@ jobs:
 
       - name: Assert the verbatim-concat gate scans a flat package correctly
         run: node --test .github/scripts/forbid-verbatim-concat.test.mjs
+
+      - name: Assert the raw-SQL gate's pattern table and scanner
+        run: node --test .github/scripts/forbid-sql-raw.test.mjs
 
       - name: Assert the sealed chplan Fn vocabulary gate
         run: node --test .github/scripts/forbid-chplan-fn-literal.test.mjs

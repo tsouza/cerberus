@@ -35,14 +35,14 @@ import (
 // share) and queryCursorColumnar (the columnar matrix-decode strategy's own
 // dial). internal/solver's Executor no longer acquires this gate itself
 // (see executor.go's admitAndGate, cerberus issue #3128) — its own K-shard
-// fan-out reaches ClickHouse through THIS Client's QueryCursor per shard,
-// so each of its kEff dispatches acquires weight DataShardCount here,
-// summing to the exact same kEff x DataShardCount the old single upfront
-// acquisition charged, just decomposed to the point of actual dispatch
-// instead of charged in one lump ahead of it. Charging at dispatch time
-// rather than admission time is what closes the route-A gap: route A is
-// exactly one such dispatch (weight DataShardCount), so it is now bounded
-// by the identical mechanism with no separate code path.
+// fan-out reaches ClickHouse through THIS Client's QueryCursor per shard, so
+// each of its K dispatches (at most pEff of them concurrently) acquires its
+// own weight here at the moment it is dispatched, instead of one upfront
+// lump. The weight of a dispatch is the emitted statement's physical-table
+// scan count x DataShardCount (WithDataShardFanoutMultiplier's doc), clamped
+// to the cap. Charging at dispatch time rather than admission time is what
+// closes the route-A gap: route A is exactly one such dispatch, so it is now
+// bounded by the identical mechanism with no separate code path.
 //
 // DataShardCount <= 1 (every deployment that predates cerberus issue #3081,
 // and every single-data-shard deployment) leaves dataShardFanoutGate nil —
@@ -176,14 +176,11 @@ import (
 //     under genuine concurrent-connection pressure against this e2e lane's
 //     deliberately thin per-shard pod sizing — see cerberus-values-
 //     datashard.yaml's own "sized down" doc) that creates extra per-shard
-//     statement executions this gate has no visibility into and cannot
-//     bound from the client side. Cerberus issue #3128's own filing text
-//     explicitly forbids a raised threshold as the resolution, so this is
-//     NOT worked around here; it stays open, and the concrete next step is
-//     ClickHouse-side profiling (system.text_log at a higher verbosity
-//     during a burst, or EXPLAIN PIPELINE against the exact offending SQL)
-//     that this investigation's tooling (an external e2e verify script and
-//     cerberus's own client-side logs) cannot reach.
+//     statement executions this gate has no visibility into. RESOLVED in
+//     rounds 4 and 5 below: the extra executions were not transport
+//     retries but ClickHouse re-running a nested IN subquery on every
+//     shard (and, separately, statements that scan the same Distributed
+//     table several times) — both now accounted for at the source.
 //
 // Route A's admission gap this file closes (Route A was completely
 // ungated before #3128's move) is a genuine, confirmed improvement over the
@@ -297,9 +294,26 @@ import (
 // statement's physical-table scan count, counted where the text is written
 // (chsql.EmitCounted / Builder.physicalScans — one per rendered table
 // reference, once per splice of a pre-rendered sub-statement, one per
-// merge() member) and stamped by every dispatch site (internal/engine's
-// route A, internal/solver's runShard for route B). Per-shape auditing of
-// the WEIGHT is thereby closed for every present and future emitter; issue
+// merge() member) and stamped by every dispatch site: internal/engine's
+// route A, internal/solver's runShard for route B, and the API-layer
+// direct dispatches that bypass the engine — prom metadata, series and
+// exemplars; tempo structural phase A, root lookup, metrics exemplars and
+// tag values; loki label values — each of which emits through
+// chsql.EmitCounted or a counted QueryBuilder.BuildCounted render and
+// stamps WithDataShardFanoutMultiplier before it reaches the client.
+//
+// Those are exactly the API dispatches whose statement can carry MORE than
+// one scan: several render the same table once per UNION-ALL arm (one arm
+// per storage shape, per matcher variant, or per attribute scope), and each
+// arm is its own Distributed fan-out. Every remaining direct dispatch in
+// internal/api renders exactly one physical table, for which the unstamped
+// default of 1 is the true weight — a claim that holds only while those
+// builders stay single-FROM, which is why any of them that grows an arm
+// must move to a counted render too. A statement whose FROM names its table
+// with a bare chsql.Col rather than chsql.PhysicalTable counts ZERO and so
+// charges the default 1 no matter how wide it really is; PhysicalTable's
+// own doc explains why that constructor exists. Per-shape
+// auditing of the WEIGHT is thereby closed for every present and future emitter; issue
 // #3141's audit is about the other half — whether a shape's self-reference
 // nests through a derived table the way SearchTraceLimit's did, which is a
 // correctness/plan question the count cannot answer. Because a single
@@ -308,7 +322,7 @@ import (
 // statement ALONE with the cap as its weight instead of parking it until
 // its deadline — see that function's own doc.
 //
-// ROUND 4 — a SECOND, real, still-open contributing cause: this gate's
+// SECOND CAUSE (also found in round 4, resolved below): this gate's
 // admission ceiling is PER-PROCESS, but a real deployment runs multiple
 // cerberus PODS. Re-verifying the SearchTraceLimit fix above against a real
 // e2e dispatch (run 34052929455) confirmed it is a genuine, measurable
@@ -350,24 +364,19 @@ import (
 // observations (12-31) against whatever replicaCount those earlier dispatch
 // runs happened to run.
 //
-// NOT fixed here — cerberus issue #3128 stays OPEN for this second cause. A
-// correct fix needs the resolved per-pod DataShardFanoutCap to know its own
-// share of the operator's INTENDED cluster-wide budget — e.g. dividing by
-// replicaCount at the Helm chart / config layer — and doing that correctly
-// also has to account for
-// docs/project_per_head_split's per-head split mode (each head can run a
-// DIFFERENT replicaCount under `split.<head>.replicaCount`, and each such
-// pod would need its OWN correctly-apportioned share) and the
-// `autoscaling.enabled` HPA case (values.yaml: "When true, replicaCount is
-// ignored" — the real pod count becomes dynamic, which a value baked in at
-// Helm render time cannot track). Getting either wrong without real
-// multi-pod e2e coverage of split mode would risk trading a real,
-// evidenced bug for a guessed, unverified one — exactly what this
-// investigation's own discipline (round 3's "REFUTED" entry above) exists
-// to avoid. Cerberus issue #3128 stays open for this: the concrete next
-// step is a replica-count-aware cap (or a genuine cross-pod coordination
-// mechanism) with its own dedicated multi-replica e2e verification, not a
-// guess landed alongside this round's unrelated SearchTraceLimit fix.
+// RESOLVED at the deployment layer (PR #3143, closing #3128): only the chart
+// knows the replica count, so the chart carries the cluster-wide knob —
+// `clickhouse.bundled.dataShards.fanoutCap`, apportioned into this
+// per-process cap as floor(fanoutCap / effective replicas), where the
+// effective count is the HPA's maxReplicas when autoscaling is on, else
+// replicaCount, and the sum of every enabled head's replicaCount in split
+// mode (deploy/helm/cerberus/templates/_helpers.tpl, cerberus.effectiveReplicas).
+// The gate itself stays a per-process semaphore; when fanoutCap is left
+// null the per-process cap is whatever the operator configured and the
+// cluster-wide ceiling is that value x the replica count, exactly as
+// described above. The datashard e2e lane asserts both scopes — each pod
+// under its per-process cap (attributed via query_log.client_hostname) and
+// the cluster under replicas x cap (.github/scripts/e2e-datashard-verify.mjs).
 
 // ErrDataShardFanoutGateBusy is the sentinel wrapped into the error
 // [Client.acquireDataShardFanout] returns when the request's own ctx
@@ -399,12 +408,13 @@ const minDataShardFanoutCap = 1
 // can assert the DataShardCount <= 1 case never allocates a semaphore
 // without duplicating this arithmetic.
 //
-// The resolved cap must be >= cfg.DataShardCount whenever the gate exists:
-// acquireDataShardFanout charges weight DataShardCount, and
 // semaphore.Weighted never admits a weight above its size (it parks the
-// caller until ctx is done). config.FromEnv refuses that shape at boot for
-// both cap sources; this constructor trusts it rather than clamping —
-// silently widening a cap the operator set is worse than a boot error.
+// caller until ctx is done), so acquireDataShardFanout clamps every
+// dispatch's weight to this cap — a statement wider than the whole budget is
+// admitted alone rather than never. config.FromEnv additionally refuses a
+// configured cap below cfg.DataShardCount at boot: with that shape every
+// single dispatch would run alone at full-cap weight, which is a
+// misconfiguration worth naming loudly rather than serving slowly.
 func NewDataShardFanoutGate(cfg Config) (gate *semaphore.Weighted, cap int64) {
 	cap = int64(cfg.MaxOpenConns)
 	if cfg.DataShardFanoutCapOverride != nil {

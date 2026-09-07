@@ -302,13 +302,13 @@ func attributeTagScopes(s schema.Traces, strategies chsql.AttrStrategies) []attr
 		out = append(out, attributeTagScope{name: name, keys: keys})
 	}
 	if s.ResourceAttributesColumn != "" {
-		add(tagScopeResource, distinctAttrKeysFrag(strategies, s.ResourceAttributesColumn))
+		add(tagScopeResource, chsql.DistinctAttrKeys(strategies, s.ResourceAttributesColumn))
 	}
 	if s.ScopeAttributesColumn != "" {
-		add(tagScopeInstrumentation, distinctAttrKeysFrag(strategies, s.ScopeAttributesColumn))
+		add(tagScopeInstrumentation, chsql.DistinctAttrKeys(strategies, s.ScopeAttributesColumn))
 	}
 	if s.AttributesColumn != "" {
-		add(tagScopeSpan, distinctAttrKeysFrag(strategies, s.AttributesColumn))
+		add(tagScopeSpan, chsql.DistinctAttrKeys(strategies, s.AttributesColumn))
 	}
 	if s.EventsColumn != "" {
 		add(tagScopeEvent, distinctNestedMapKeysFrag(s.EventsColumn))
@@ -384,20 +384,6 @@ func buildSearchTagsSQL(s schema.Traces, keys, filter chsql.Frag, start, end tim
 	return sb.Build()
 }
 
-// distinctMapKeysFrag emits "DISTINCT arrayJoin(`<col>`.`keys`)" — the CH
-// idiom for "every distinct attribute key seen", spelled against the
-// column's virtual `.keys` subcolumn rather than mapKeys(<col>) so the
-// key-only decode is explicit rather than depending on the server-side
-// optimize_functions_to_subcolumns rewrite (cerberus issue #2775). DISTINCT
-// is part of the SELECT list (CH's flavour), not a separate keyword, so it
-// folds into the Frag for the QueryBuilder slot. `arrayJoin` composes
-// through the typed Call constructor; the `.keys` subcolumn operand flows
-// through chsql.Qual. Safe unconditionally, with no version gate: key
-// enumeration never consults a skip index.
-func distinctMapKeysFrag(col string) chsql.Frag {
-	return chsql.Distinct(chsql.Call("arrayJoin", chsql.Qual(col, "keys")))
-}
-
 // nestedMapParam names the lambda-bound element the nested Array(Map)
 // attribute-family helpers below range over — one event / link on a
 // span row's Events.Attributes / Links.Attributes array.
@@ -440,10 +426,11 @@ func nestedMapValuesFlatFrag(col string) chsql.Frag {
 	)
 }
 
-// distinctNestedMapKeysFrag is distinctMapKeysFrag one nesting level up:
-// `Events.Attributes` / `Links.Attributes` are Array(Map(...)) — one map
-// per event / link on the span row — so the keys of every element are
-// collected via nestedMapKeysFlatFrag, then unrolled by arrayJoin.
+// distinctNestedMapKeysFrag is chsql.DistinctAttrKeys's Map shape one
+// nesting level up: `Events.Attributes` / `Links.Attributes` are
+// Array(Map(...)) — one map per event / link on the span row — so the keys
+// of every element are collected via nestedMapKeysFlatFrag, then unrolled
+// by arrayJoin.
 //
 // Emits "DISTINCT arrayJoin(arrayFlatten(arrayMap(m -> mapKeys(m),
 // `<col>`.`Attributes`)))".

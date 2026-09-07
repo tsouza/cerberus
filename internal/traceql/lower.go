@@ -8,6 +8,8 @@ package traceql
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -1436,6 +1438,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// happens server-side. Float64 widens both int and float literals
 	// without precision loss for the magnitudes typical of attribute
 	// values (HTTP status codes, percentages, sizes).
+	lhs, rhs = stringifyNumericMaterializedForStringOp(op, lhs, rhs)
 	lhs, rhs = coerceNumericFieldAccess(op, lhs, rhs, binaryHasNumericOperand(b))
 	// Boolean coercion: the OTel-CH exporter stringifies bool-typed
 	// attribute values into the Map(String, String) carriers as
@@ -1901,6 +1904,67 @@ func stringifyListForMap(elems []chplan.Expr) []chplan.Expr {
 		}
 	}
 	return out
+}
+
+// stringifyNumericMaterializedForStringOp wraps an attribute reference that
+// is materialized into a NUMERIC column (FieldAccess.MaterializedColumnNumeric,
+// cerberus issue #2869) in toString(...) for the two comparison shapes
+// ClickHouse cannot evaluate against schema.NumericMaterializedAttributeColumnType
+// (Nullable(Int32)) at all:
+//
+//   - a regex match (=~ / !~) — match() rejects an Int32 argument;
+//   - a comparison against a string literal that is not an Int32, such as
+//     "abc", "4.5" or "3000000000" — ClickHouse converts the literal to the
+//     column's type and THROWS when it cannot, aborting the whole query
+//     where reference TraceQL simply does not match that span.
+//
+// toString rather than a retreat to the attribute map: the column is
+// Nullable and its DEFAULT is toInt32OrNull(<map>[<key>]), so an absent or
+// non-numeric attribute is already NULL — and toString propagates that NULL,
+// so the row is dropped exactly as the numeric comparison would have dropped
+// it. Reading the map instead would compare against its ” default and make
+// `{ span.http.status_code != "abc" }` MATCH every span that never carried
+// the attribute. The column also stays index-eligible, which the map read
+// would have given up.
+//
+// A literal that IS an Int32 ("500", "4") keeps the bare column: ClickHouse
+// parses it to the column's type, so the comparison is both valid and
+// numerically ordered — turning it into a string compare would make
+// `> "4"` lexicographic and answer false for 1000. Numeric literals and
+// attribute-to-attribute peers keep it for the same reason, and a
+// String-typed materialized column is never touched: match() and a String
+// compare both accept it as-is.
+func stringifyNumericMaterializedForStringOp(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Expr, chplan.Expr) {
+	regexOp := op == chplan.OpMatch || op == chplan.OpNotMatch
+	if !regexOp && !nonInt32StringLit(lhs) && !nonInt32StringLit(rhs) {
+		return lhs, rhs
+	}
+	return stringifyNumericMaterialized(lhs), stringifyNumericMaterialized(rhs)
+}
+
+// nonInt32StringLit reports whether e is a string literal ClickHouse could
+// NOT convert to the numeric materialized column's own type
+// (schema.NumericMaterializedAttributeColumnType). The parser is deliberately
+// ParseInt/32 rather than ParseFloat: "4.5", "1e3" and "3000000000" all parse
+// as floats yet none converts to Int32, so a float-shaped test would leave
+// exactly the literals that abort the query on the untouched column path.
+func nonInt32StringLit(e chplan.Expr) bool {
+	lit, ok := e.(*chplan.LitString)
+	if !ok {
+		return false
+	}
+	_, err := strconv.ParseInt(strings.TrimSpace(lit.V), 10, 32)
+	return err != nil
+}
+
+// stringifyNumericMaterialized returns e wrapped in toString when it is a
+// numeric materialized-column FieldAccess, and e itself otherwise.
+func stringifyNumericMaterialized(e chplan.Expr) chplan.Expr {
+	f, ok := e.(*chplan.FieldAccess)
+	if !ok || !f.MaterializedColumnNumeric {
+		return e
+	}
+	return &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{f}}
 }
 
 // coerceBoolFieldAccess rewrites a LitBool compared against a

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
@@ -109,13 +110,10 @@ func ClassifyErr(err error) ErrClass {
 	case errors.Is(err, chclient.ErrCircuitOpen),
 		errors.Is(err, chclient.ErrQueryTimeout),
 		errors.Is(err, context.DeadlineExceeded),
-		errors.Is(err, chclient.ErrShardUnavailable),
-		errors.Is(err, chclient.ErrStaleReplicaFallbackDenied):
+		httperr.IsDistributedShardErr(err):
 		// Partial ClickHouse Distributed-cluster infrastructure trouble
-		// (cerberus issue #3078: a data shard with no reachable replica at
-		// all, or one whose reachable replicas are all stale and
-		// cerberus's own fallback_to_stale_replicas_for_distributed_queries=0
-		// pin refuses to silently serve). Same 503 "back off, try again"
+		// (cerberus issue #3078; the class is shared across every head by
+		// httperr.IsDistributedShardErr). Same 503 "back off, try again"
 		// class as a circuit-open or timed-out backend — ClickHouse itself
 		// is healthy, one shard behind the Distributed table is not.
 		return ErrClassUnavailable

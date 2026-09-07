@@ -257,11 +257,13 @@ func (t *Tracker) RecordActual(shapeID string, a Actual, source Source) (DriftRe
 // (no prediction recorded, no actual recorded, or Observations below
 // Config.MinObservations — the SAME corroboration floor DriftReport.Alerting
 // uses, so a factor is never handed out on less evidence than an alert
-// would need). Consumed by internal/engine's calibrateEstimate (Hook 1: the
-// solver's carrier-geometry cost-model calibration) to nudge a FUTURE
-// request's EXPLAIN ESTIMATE-derived row count toward what this shape has
-// actually been costing, bounded so one noisy shape can never swing a
-// single request's K clamp by more than 2x.
+// would need) or when the last prediction was zero rows — a ratio against
+// zero is undefined, and a zero-row prediction is a degenerate estimate no
+// factor could meaningfully calibrate. Consumed by internal/engine's
+// calibrateEstimate (Hook 1: the solver's carrier-geometry cost-model
+// calibration) to nudge a FUTURE request's EXPLAIN ESTIMATE-derived row
+// count toward what this shape has actually been costing, bounded so one
+// noisy shape can never swing a single request's K clamp by more than 2x.
 func (t *Tracker) CalibrationFactor(shapeID string) (factor float64, ok bool) {
 	if t == nil || shapeID == "" {
 		return 0, false

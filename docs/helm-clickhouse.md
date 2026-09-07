@@ -11,10 +11,15 @@ Two independent toggles pick the storage tier — **both default `true`**, so
 **hot/cold is the chart's default storage mode**, not an opt-in:
 
 - `clickhouse.bundled.objectStorage.enabled` (default `true`) — an S3 / GCS /
-  Azure object-store disk fronted by a local read-through cache.
+  Azure object-store disk (`bwc_object_disk`) fronted by a local read-through
+  cache (`bwc_object_cache`, a ClickHouse `cache` disk).
 - `clickhouse.bundled.hotVolume.enabled` (default `true`) — a genuine
-  local-disk "hot" tier new parts land on directly (not a read-through cache
-  of object-resident data).
+  local-disk "hot" tier (`bwc_hot_disk`): authoritative local storage that new
+  parts land on directly, IN ADDITION TO the cold volume's read-through cache,
+  which hot/cold mode keeps. The two are not interchangeable: ClickHouse's
+  `cache` disk is a transparent write-through wrapper — every write still
+  round-trips to object storage — so a hot tier that were "a cache too" would
+  collapse straight back into object-store mode.
 
 ## The four-cell matrix
 
@@ -190,7 +195,7 @@ own bucket/credentials before production use:
 | IRSA / GKE / AKS workload identity                                                               | Render / kubeconform-validated                                                  | env / SA annotations render; no live cloud-identity run                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Multi-replica + Keeper (ReplicatedMergeTree)                                                     | Render / kubeconform-validated                                                  | `deploy/helm/cerberus/ci/bwc-replicated-values.yaml` renders; no live multi-node run                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Dedicated hot-volume PVC (`hotVolume.persistence`)                                               | Render / kubeconform-validated                                                  | `deploy/helm/cerberus/ci/bwc-hot-cold-values.yaml` renders a dedicated `hot` volumeClaimTemplate; no live multi-node run                                                                                                                                                                                                                                                                                                                                                                 |
-| `dataShards.count: 2` topology (manual k3d, single-replica-per-shard, S3/MinIO)                  | **Infrastructure-validated**                                                    | Manual k3d run: `CREATE TABLE ... ON CLUSTER bwc_cluster` succeeded on both shards; a manual `cluster('bwc_cluster', ...)` query returned correctly merged rows from both. NOT a `just e2e` lane yet, and NOT query-correctness-supported under concurrent solver load — see [#3079](https://github.com/tsouza/cerberus/issues/3079)                                                                                                                                                     |
+| `dataShards.count: 2` / `4` topology (EXPERIMENTAL, single-replica-per-shard)                    | **Runtime-proven** by an informational lane                                     | The `datashard` e2e lane (`.github/workflows/e2e.yml`: the `datashard` `N=2` / `N=4` matrix + the `datashard-replica-affinity` leg) brings the chart's multi-shard render up on k3d with a built cerberus image, runs the Go e2e suite and a concurrent solver-split burst, and asserts the fan-out ceiling per cerberus process and cluster-wide — see [Validation status](#validation-status-experimental-exercised-by-an-informational-e2e-lane). Never a PR or release gate          |
 | `dataShards.count > 1` + `replicas > 1` (multi-replica per shard, classic `ReplicatedMergeTree`) | Render / kubeconform-validated; cross-shard replica-affinity **runtime-proven** | `chart-render-assert.mjs`'s replicated+dataShards section renders; no live multi-shard-multi-replica run for general query correctness, but issue #3086's `datashard-replica-affinity` e2e leg (`dataShards.count=2`, `replicas=2`) proves the `load_balancing` pin's specific claim — see the [#3075 compatibility section](#3075-compatibility-object-disk-path-is-shard-agnostic-sessionaffinity-gains-a-new-gap) above                                                               |
 
 Only S3/MinIO single-node, in every one of the three storage modes, is proven
@@ -225,12 +230,12 @@ but the cloud round-trip has not been exercised in CI.
 > render otherwise, naming the key), and that opt-in is forwarded to cerberus
 > as `CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true` so the binary's own
 > boot-time gate makes the same decision — there is no way onto this path
-> without explicit values-level consent. Known limitation: the data-shard
-> fan-out admission ceiling is enforced per cerberus process, so at
-> `replicaCount > 1` the real cluster-wide ceiling is
-> `replicaCount x DataShardFanoutCap`
-> ([#3128](https://github.com/tsouza/cerberus/issues/3128)). Plain
-> replication (`replicas > 1`, above) is supported and needs none of this.
+> without explicit values-level consent. The data-shard fan-out admission
+> ceiling is a per-cerberus-process semaphore, so `dataShards.fanoutCap`
+> (below) is the cluster-wide budget the chart apportions across the cerberus
+> replica count — set it so the ceiling the cluster sees stays bounded at
+> `replicaCount > 1`. Plain replication (`replicas > 1`, above) is supported
+> and needs none of this.
 
 `clickhouse.bundled.dataShards.count` (cerberus issue
 [#3077](https://github.com/tsouza/cerberus/issues/3077), part of epic
@@ -378,11 +383,13 @@ work on a real multi-node cluster. Since then the `datashard` e2e lane (next
 paragraph) has taken over as the standing proof: a built cerberus image
 inside the cluster, the full Go e2e correctness suite, and a real concurrent
 PromQL/LogQL/TraceQL burst through the sharded-pushdown path, at both
-`count: 2` and `count: 4`. What that lane shows today is the reason the
-feature is EXPERIMENTAL rather than supported: correctness and memory
-apportionment pass, but the admission-control ceiling does not hold
-cluster-wide because it is enforced per cerberus process
-([#3128](https://github.com/tsouza/cerberus/issues/3128)). Every
+`count: 2` and `count: 4`. That lane asserts correctness, memory
+apportionment, and the admission-control ceiling in both of its scopes — per
+cerberus process and cluster-wide, the latter being `dataShards.fanoutCap`
+apportioned across the cerberus replica count (its current result is stated
+in [`operations.md`'s e2e-hardening section](operations.md#multi-data-shard-e2e-hardening-leg-cerberus-issue-3079)).
+The feature is EXPERIMENTAL because no production support is offered for it:
+the lane is informational, never a PR or release gate. Every
 compat/migration harness in this repository remains single-shard-only by
 permanent, stated design (see
 [`operations.md`'s scoping section](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard-cerberus-issue-3079)).
@@ -489,13 +496,25 @@ assumed:
 
 ## What's out of scope
 
-Declaring `dataShards.count > 1` "supported" for production query
-correctness, and verifying `internal/chopt`'s per-query settings against the
-newly-real `Distributed` table, are explicitly later sub-issues of epic #3074
-(#3078 settings verification, #3079 e2e hardening) — not this chart's own
-scope. `internal/schema/ddl`'s `Config.DataShardCount` also does not yet wire
-the local/`Distributed` split for the opt-in DELTA-prefix / downsample-tier /
-Loki-label-catalog / Tempo-tag-catalog auxiliary tables (each introduces its
-own separately-named table + materialized view); combining `DataShardCount >
-1` with any of those is rejected at config-validation time rather than
-silently under-provisioning one of them.
+The verification of `internal/chopt`'s per-query settings against a real
+`Distributed` table and the runtime proof of `dataShards.count > 1` under
+concurrent load were delivered by epic #3074's later sub-issues, not by the
+chart itself: the settings analysis is
+[`operations.md`'s Distributed-query settings section](operations.md#clickhouse-distributed-query-settings-error-taxonomy-and-known-risks-cerberus-issue-3078),
+and the runtime proof is the `datashard` e2e lane
+([Validation status](#validation-status-experimental-exercised-by-an-informational-e2e-lane)
+above). The path remains EXPERIMENTAL by design — an informational lane, no
+production support.
+
+One boundary is permanent by design: `internal/schema/ddl`'s
+`Config.DataShardCount` wires the local/`Distributed` split for the base
+signal tables only. The four opt-in auxiliary features — DELTA prefix
+(`DeltaPrefixEnabled`), downsample tier (`DownsampleTierEnabled`), Loki label
+catalog (`LokiLabelCatalogEnabled`) and Tempo tag catalog
+(`TempoTagCatalogEnabled`) — each introduce a separately-named table plus its
+own materialized view, and none of them is wired for the split. Combining
+`DataShardCount > 1` with any of them is rejected at config-validation time
+(`Config.Validate`), so a multi-shard deployment fails loudly at boot rather
+than silently under-provisioning one of those tables. That carve-out is the
+EXPERIMENTAL mode's design boundary: the four features are
+single-data-shard-only.

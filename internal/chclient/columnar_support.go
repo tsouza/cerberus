@@ -123,9 +123,9 @@ func (a *profileEventAccumulator) observe(_ context.Context, events []chproto.Pr
 
 // stamp writes each accumulated non-zero ProfileEvent onto span as a
 // `ch.profile_event.<Name>` integer attribute. No-op when nothing was observed
-// or the span is not recording. ponytail: OTel's default 128-attribute span cap
-// silently drops the tail if a query emits an unusually large event set; raise
-// the span attribute limit in the tracer config if that ever bites.
+// or the span is not recording. OTel's default 128-attribute span cap silently
+// drops the tail if a query emits an unusually large event set; the tracer's
+// span-attribute limit is the knob that governs it.
 func (a *profileEventAccumulator) stamp(span trace.Span) {
 	if len(a.totals) == 0 || span == nil || !span.IsRecording() {
 		return

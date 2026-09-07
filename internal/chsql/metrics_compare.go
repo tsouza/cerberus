@@ -805,13 +805,13 @@ func (e *emitter) compareWindowedScanBound(
 // lookup — a nil RangeWindow, a non-MetricsCompare input, a missing
 // TimestampColumn or Step, a nil Inner, or a MetricsCompare with no RootLookup
 // (there is no root leg to render).
-func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []any, error) {
+func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []any, int, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
 
-	fail := func(err error) (string, []any, error) {
+	fail := func(err error) (string, []any, int, error) {
 		span.RecordError(err)
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	if r == nil {
 		return fail(fmt.Errorf("%w: RangeWindow is nil", ErrUnsupported))
@@ -875,5 +875,5 @@ func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []a
 		return fail(gerr)
 	}
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
-	return sql, args, nil
+	return sql, args, leg.physicalScans(), nil
 }

@@ -1127,35 +1127,19 @@ func isQueryTimeout(err error) bool {
 	return errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// isDistributedShardErr reports whether err is one of the ClickHouse
-// Distributed-query error taxonomy's two partial-shard-failure classes
-// (cerberus issue #3078): a data shard with no reachable replica at all
-// (chclient.ErrShardUnavailable, CH code 279 ALL_CONNECTION_TRIES_FAILED)
-// or one whose reachable replicas are all stale and cerberus's own
-// fallback_to_stale_replicas_for_distributed_queries=0 pin refuses to
-// silently serve one anyway (chclient.ErrStaleReplicaFallbackDenied, CH
-// code 369 ALL_REPLICAS_ARE_STALE).
-func isDistributedShardErr(err error) bool {
-	return errors.Is(err, chclient.ErrShardUnavailable) || errors.Is(err, chclient.ErrStaleReplicaFallbackDenied)
-}
-
 // distributedShardAPIError is the head-idiomatic rejection for a
-// partial ClickHouse Distributed-cluster outage — HTTP 503, errorType
-// "unavailable", the same wire shape as a tripped circuit breaker or a
-// timed-out backend: ClickHouse itself is healthy, one data shard behind
-// the Distributed table is not, and the client should back off and retry
-// rather than treat this as a query-shape problem or a cerberus fault.
+// partial ClickHouse Distributed-cluster outage (cerberus issue #3078; the
+// class and its text are shared across every head by
+// httperr.IsDistributedShardErr / DistributedShardUnavailableMessage) —
+// HTTP 503, errorType "unavailable", the same wire shape as a tripped
+// circuit breaker or a timed-out backend: ClickHouse itself is healthy,
+// one data shard behind the Distributed table is not, and the client
+// should back off and retry rather than treat this as a query-shape
+// problem or a cerberus fault.
 func distributedShardAPIError(err error) *apiError {
-	msg := "distributed shard unavailable"
-	switch {
-	case errors.Is(err, chclient.ErrShardUnavailable):
-		msg = "ClickHouse could not reach any replica of at least one data shard"
-	case errors.Is(err, chclient.ErrStaleReplicaFallbackDenied):
-		msg = "every reachable replica of at least one ClickHouse data shard is stale; refusing to silently serve stale data"
-	}
 	return &apiError{
 		Kind:   ErrUnavailable,
-		Err:    errors.New(msg),
+		Err:    errors.New(httperr.DistributedShardUnavailableMessage(err)),
 		Status: http.StatusServiceUnavailable,
 	}
 }
@@ -1546,7 +1530,7 @@ func classifyEngineError(err error) error {
 	// distributed_queries=0 pins refuse to silently paper over. 503
 	// errorType=unavailable, the same class as a tripped circuit breaker —
 	// ClickHouse is healthy, one shard is not.
-	if isDistributedShardErr(err) {
+	if httperr.IsDistributedShardErr(err) {
 		return distributedShardAPIError(err)
 	}
 	// Caller-initiated cancellation (open path): the client hung up

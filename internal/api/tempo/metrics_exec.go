@@ -252,14 +252,17 @@ func (h *Handler) attachMetricsExemplars(
 	rw *chplan.RangeWindow,
 	metrics *chplan.MetricsAggregate,
 ) {
-	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
+	exSQL, exArgs, exScans, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
 		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, exemplarsPerSeries, h.Schema.SpansTable)
 	if exErr != nil {
 		h.Logger.Warn("cerberus tempo metrics exemplars emit failed (matrix returns without exemplars)", "err", exErr)
 		telemetry.RecordTempoExemplarFailure(ctx, telemetry.StageEmit)
 		return
 	}
-	exSamples, qErr := h.Client.Query(ctx, exSQL, exArgs...)
+	// Engine bypass: stamp the data-shard fan-out weight from the emitted
+	// scan count (one spans scan today, counted so a second arm can never
+	// under-charge the gate).
+	exSamples, qErr := h.Client.Query(chclient.WithDataShardFanoutMultiplier(ctx, exScans), exSQL, exArgs...)
 	if qErr != nil {
 		h.Logger.Warn("cerberus tempo metrics exemplars query failed (matrix returns without exemplars)", "err", qErr)
 		telemetry.RecordTempoExemplarFailure(ctx, telemetry.StageExecute)

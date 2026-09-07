@@ -131,6 +131,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/chopttest"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -187,68 +188,38 @@ func decisionKey(id, lowering string) string {
 
 // nativeLowerers builds the promql.RangeLowerers table production wires on a
 // fully capable ClickHouse server: every AutoSelect feature in
-// chopt.Registry() resolved to its native strategy, mirroring
-// cmd/cerberus/main.go's nativeRangeLowerers with every optSet.Has(...) check
-// answering true. Built FROM the registry, not hand-copied, so a new
-// AutoSelect ts_grid feature fails this helper loudly — via the default case
-// below — instead of silently classifying only under the stale table, which
-// is exactly the blind spot #2120 reported (RangeWindowGridNative going from
-// not-sliceable to sliceable when #2117 shipped moved the ratchet's own
-// classification with zero recorded drift).
+// chopt.Registry() resolved to its native strategy. The COMPOSITION is
+// chopttest.BuildRangeLowerers — the one test-side copy of
+// cmd/cerberus/main.go's nativeRangeLowerers, shared with the integration
+// lanes — fed the set chopt.Resolve itself produces for "auto" on a server
+// above every version floor with every capability canary green, so this
+// helper can never drift from production's wiring the way a third
+// hand-rolled mirror could.
+//
+// What stays local is the completeness assertion that made the old mirror
+// worth its size: every AutoSelect feature in the registry must be one this
+// helper KNOWS is either a RangeLowerers dispatch strategy (consulted by
+// BuildRangeLowerers) or a CH SETTING stamped at emit time with no effect on
+// which lowering a query takes — a new AutoSelect feature fails loudly via
+// the default case instead of silently classifying only under a stale
+// table, which is exactly the blind spot #2120 reported (RangeWindowGridNative
+// going from not-sliceable to sliceable when #2117 shipped moved the
+// ratchet's own classification with zero recorded drift).
 func nativeLowerers(t *testing.T) promql.RangeLowerers {
 	t.Helper()
 
-	var l promql.RangeLowerers
-	recollapse := false
-	lagAdjacency := false
-	resample := false
-	argAndMaxFusion := false
 	for _, f := range chopt.Registry() {
 		if !f.AutoSelect {
 			continue // not wired on any server — chopt.FeatureTSGridChanges today.
 		}
 		switch f.ID {
-		case chopt.FeatureTSGridRange:
-			// Composed below, once FeatureTSGridRecollapse (which narrows it)
-			// is known — Recollapse is a modifier on Rate, not its own field.
-		case chopt.FeatureTSGridResample:
-			// Composed below, once FeatureArgAndMaxFusion (which sets
-			// FanoutStalenessLowerer's own field) is known — mirrors
-			// cmd/cerberus/main.go's nativeRangeLowerers exactly.
-			resample = true
-		case chopt.FeatureArgAndMaxFusion:
-			// A plain bool, not a Lowerer — see
-			// promql.RangeLowerers.ArgAndMaxFusion's own doc. Composed below
-			// into both l.ArgAndMaxFusion (read directly by
-			// internal/promql/binary.go for VectorJoin) and the Staleness
-			// Fallback's own copy (RangeLWR).
-			argAndMaxFusion = true
-		case chopt.FeatureTSGridIncrease:
-			l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
-		case chopt.FeatureTSGridResets:
-			// Composed below, once FeatureLagInFrameAdjacency (which narrows
-			// its Fallback) is known.
-		case chopt.FeatureTSGridDeriv:
-			l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
-		case chopt.FeatureTSGridPredictLinear:
-			l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
-		case chopt.FeatureTSGridDelta:
-			l.Delta = promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
-		case chopt.FeatureTSGridIrate, chopt.FeatureTSGridIdelta:
-			// Composed below, once FeatureLagInFrameAdjacency (which narrows
-			// their Fallback) is known — mirrors Resets above (cerberus issue
-			// #2746).
-		case chopt.FeatureTSGridHistogram:
-			// Matches cmd/cerberus/main.go's nativeRangeLowerers exactly.
-			l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
-				Fallback: promql.FanoutClassicHistogramWindowLowerer{},
-			}
-		case chopt.FeatureTSGridRecollapse:
-			recollapse = true
-		case chopt.FeatureLagInFrameAdjacency:
-			// Composed below: it narrows Changes/Resets/Irate/Idelta's
-			// Fallback — see cmd/cerberus/main.go's nativeRangeLowerers.
-			lagAdjacency = true
+		case chopt.FeatureTSGridRange, chopt.FeatureTSGridResample, chopt.FeatureArgAndMaxFusion,
+			chopt.FeatureTSGridIncrease, chopt.FeatureTSGridResets, chopt.FeatureTSGridDeriv,
+			chopt.FeatureTSGridPredictLinear, chopt.FeatureTSGridDelta, chopt.FeatureTSGridIrate,
+			chopt.FeatureTSGridIdelta, chopt.FeatureTSGridHistogram, chopt.FeatureTSGridRecollapse,
+			chopt.FeatureLagInFrameAdjacency:
+			// A RangeLowerers dispatch strategy (or a modifier on one) —
+			// composed by chopttest.BuildRangeLowerers from the resolved set.
 		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
@@ -288,47 +259,37 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// wrapper's call sites regardless of which strategy ran. It never
 			// reads, and has no field on, promql.RangeLowerers itself.
 		default:
-			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know how to wire it "+
-				"into promql.RangeLowerers — update this helper (see issue #2120)", f.ID)
+			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know whether it is a "+
+				"RangeLowerers strategy or an emit-time setting — update this helper and, if it is a "+
+				"strategy, chopttest.BuildRangeLowerers (see issue #2120)", f.ID)
 		}
 	}
-	l.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}, Recollapse: recollapse}
-	// Changes/Resets/Irate/Idelta — mirrors cmd/cerberus/main.go's
-	// nativeRangeLowerers composition exactly (issue #2759, #2746).
-	changesFallback := promql.ChangesLowerer(promql.FanoutChangesLowerer{})
-	resetsFallback := promql.ResetsLowerer(promql.FanoutResetsLowerer{})
-	irateFallback := promql.IrateLowerer(promql.FanoutIrateLowerer{})
-	ideltaFallback := promql.IdeltaLowerer(promql.FanoutIdeltaLowerer{})
-	if lagAdjacency {
-		changesFallback = promql.LagAdjacencyChangesLowerer{Fallback: changesFallback}
-		resetsFallback = promql.LagAdjacencyResetsLowerer{Fallback: resetsFallback}
-		irateFallback = promql.LagAdjacencyIrateLowerer{Fallback: irateFallback}
-		ideltaFallback = promql.LagAdjacencyIdeltaLowerer{Fallback: ideltaFallback}
+
+	set, _, err := chopt.Resolve(chopt.Config{
+		Optimizations:         chopt.SelectionAuto,
+		Capability:            chopt.CapabilityAvailable,
+		ResultCacheCapability: chopt.CapabilityAvailable,
+	}, fullyCapableServer)
+	if err != nil {
+		t.Fatalf("resolving the auto set against a fully capable server: %v", err)
 	}
-	// ts_grid_changes is permanently AutoSelect=false (#1721), so it never
-	// appears in this "every AutoSelect feature on" table — Changes gets
-	// ONLY the (possibly lag-adjacency-wrapped) fan-out, never
-	// NativeChangesLowerer. Resets/Irate/Idelta's native wrappers ARE
-	// applied: ts_grid_resets/ts_grid_irate/ts_grid_idelta are all
-	// AutoSelect=true (irate/idelta since cerberus issue #2746).
-	l.Changes = changesFallback
-	l.Resets = promql.NativeResetsLowerer{Fallback: resetsFallback}
-	l.Irate = promql.NativeIrateLowerer{Fallback: irateFallback}
-	l.Idelta = promql.NativeIdeltaLowerer{Fallback: ideltaFallback}
-	// arg_and_max_fusion (issue #2764) — mirrors cmd/cerberus/main.go's
-	// nativeRangeLowerers exactly: the top-level bool feeds VectorJoin
-	// directly, and FanoutStalenessLowerer carries its own copy for
-	// RangeLWR (see that field's own doc for why it needs a separate
-	// copy).
-	l.ArgAndMaxFusion = argAndMaxFusion
-	staleFallback := promql.StalenessLowerer(promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion})
-	if resample {
-		l.Staleness = promql.NativeStalenessLowerer{Fallback: staleFallback}
-	} else {
-		l.Staleness = staleFallback
+	// The ratchet's whole "native" column is hollow if the resolved set did
+	// not actually unlock the ts_grid family (a raised floor, a renamed
+	// capability): pin the anchor feature rather than trust the set.
+	if !set.Has(chopt.FeatureTSGridRange) {
+		t.Fatalf("auto set on a fully capable server lacks %s: %v — the native classification would silently degrade to fan-out", chopt.FeatureTSGridRange, set.IDs())
 	}
-	return l
+	return chopttest.BuildRangeLowerers(set)
 }
+
+// fullyCapableServer is a ClickHouse version above every registry floor, so
+// chopt.Resolve's "auto" admits every AutoSelect feature — the "every
+// optSet.Has(...) check answering true" server nativeLowerers models.
+var fullyCapableServer = chopt.Version{Major: fullyCapableMajor}
+
+// fullyCapableMajor is far above any ClickHouse major the registry gates
+// on; the value only has to exceed every floor, never to name a real release.
+const fullyCapableMajor = 1000
 
 // updateDecisionEnv, when set to "1", regenerates the baseline from the
 // current corpus classification instead of asserting against it. Mirrors the

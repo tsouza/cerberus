@@ -88,12 +88,18 @@ func TestLower(t *testing.T) {
 		// internal/chsql/query_exemplars_spec_test.go — they record
 		// the layer-2a SQL snapshot for the Prom
 		// /api/v1/query_exemplars endpoint, which does NOT flow
-		// through promql.Lower. Return early so the lower-pipeline
-		// harness no-ops on them rather than fail with a missing
-		// `query.promql` section. The forbid-skip CI gate rejects
-		// t.Skip in test files, so we no-op the subtest body rather
-		// than call t.Skip.
+		// through promql.Lower. This harness's job for them is to
+		// assert the ownership boundary itself, not to no-op: such a
+		// fixture must carry no `query.promql` section (one would be
+		// lowered by nobody) and must carry the `sql` snapshot its
+		// owner records.
 		if strings.HasPrefix(c.Name, "exemplars_") {
+			if _, has := c.Section("query.promql"); has {
+				t.Fatalf("fixture %s: an exemplars_ fixture belongs to the chsql exemplars harness and must not carry a query.promql section", c.Name)
+			}
+			if _, has := c.Section("sql"); !has {
+				t.Fatalf("fixture %s: an exemplars_ fixture must carry the sql snapshot internal/chsql/query_exemplars_spec_test.go records", c.Name)
+			}
 			return
 		}
 		query, ok := c.Section("query.promql")

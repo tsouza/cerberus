@@ -246,6 +246,23 @@ clickhouse:
     # ReplicatedMergeTree + zero-copy replication, and defaults cerberus's
     # `schema.replicated` on (REUSING the existing Replicated-DB env wiring).
     replicas: 1
+    # -- EXPERIMENTAL opt-in for ClickHouse `Distributed`-table multi-shard
+    # routing (`dataShards.count > 1`, epic #3074). OFF by default. The chart
+    # refuses to render `dataShards.count > 1` while this is false; when true
+    # AND `dataShards.count > 1` it also sets
+    # `CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true` on cerberus so the
+    # binary's own boot-time gate (internal/config) makes the same decision
+    # — there is no way to reach the experimental path without this explicit
+    # values-level consent, and the consent alone (at `count: 1`) changes
+    # nothing. Multi-shard routing is NOT production-supported: the
+    # `datashard` e2e lane that exercises it is informational only. Its
+    # admission-control ceiling (`DataShardFanoutCap`) is a per-cerberus-
+    # PROCESS semaphore, so `dataShards.fanoutCap` below is the CLUSTER-WIDE
+    # budget the chart apportions across the cerberus replica count — the
+    # ceiling the ClickHouse cluster sees is bounded regardless of
+    # `replicaCount`. `replicas` above (plain replication, N copies of the
+    # SAME data) is a supported path and never needs this.
+    experimentalDistributedMode: false
     # -- ClickHouse cluster DATA-shard topology (cerberus issue #3077, epic
     # #3074). DISAMBIGUATION: this is a DIFFERENT "shard" than `replicas`
     # above — replicas are copies of the SAME data; a DATA shard is a
@@ -254,22 +271,6 @@ clickhouse:
     # Keeper-coordination macros (see `schema.replicated.zookeeperPath`'s own
     # comment) and to `internal/solver`'s query-time-range "shard" — see
     # `internal/chopt/topology.go`'s terminology table for the full picture.
-    #
-    # -- EXPERIMENTAL opt-in for ClickHouse `Distributed`-table multi-shard
-    # routing (`dataShards.count > 1`, epic #3074). OFF by default. The chart
-    # refuses to render `dataShards.count > 1` while this is false, and when
-    # true it also sets `CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true` on
-    # cerberus so the binary's own boot-time gate (internal/config) makes
-    # the same decision — there is no way to reach the experimental path
-    # without this explicit values-level consent. Multi-shard routing is NOT
-    # production-supported: its admission-control ceiling
-    # (`DataShardFanoutCap`) is enforced per cerberus PROCESS, so at
-    # `replicaCount > 1` the real cluster-wide ceiling is `replicaCount x
-    # DataShardFanoutCap`, not the cap alone (issue #3128), and the
-    # `datashard` e2e lane is informational only. `replicas` above (plain
-    # replication, N copies of the SAME data) is a supported path and never
-    # needs this.
-    experimentalDistributedMode: false
     dataShards:
       # -- Number of independent ClickHouse DATA shards. `1` (default)
       # renders EXACTLY today's single-StatefulSet/single-Service chart
@@ -296,14 +297,15 @@ clickhouse:
       # real k3d clusters — see docs/helm-clickhouse.md's DATA-shard topology
       # section), and the `datashard` N=2/N=4 e2e lane
       # (`.github/workflows/e2e.yml`, push/nightly/dispatch-only, never a
-      # required PR gate) now runs the full correctness suite plus a real
-      # concurrent load burst against it — but that lane's admission-control
-      # assertion still fails: `DataShardFanoutCap` is enforced per cerberus
-      # PROCESS, so at `replicaCount > 1` the real cluster-wide ceiling is
-      # `replicaCount x DataShardFanoutCap`, not the cap alone (issue #3128).
+      # required PR gate) runs the full correctness suite plus a real
+      # concurrent load burst against it, asserting from `system.query_log`
+      # that the data-shard fan-out ceiling holds both per cerberus PROCESS
+      # and CLUSTER-WIDE — the cluster-wide bound being `fanoutCap` below,
+      # apportioned across the cerberus replica count. The lane stays
+      # informational: no production support is offered for this path.
       # Every compat/migration harness stays single-shard by design. See
-      # docs/operations.md's DATA-shard topology section for the current
-      # status.
+      # docs/operations.md's DATA-shard topology section for the lane's
+      # current status.
       #
       # >>> 1 -> N IS MANUAL-MIGRATION-ONLY <<< Bumping this on an ALREADY
       # populated single-shard deployment is NOT a supported in-place `helm
@@ -318,8 +320,8 @@ clickhouse:
       # this on a live deployment.
       count: 1
       # -- CLUSTER-WIDE budget for `DataShardFanoutCap`, the data-shard
-      # fan-out admission ceiling (docs/solver.md, cerberus issue #3128).
-      # The gate itself is a per-PROCESS semaphore, so the ceiling the
+      # fan-out admission ceiling (docs/solver.md, point 5 of the admission
+      # design). The gate itself is a per-PROCESS semaphore, so the ceiling the
       # ClickHouse cluster actually experiences is `cerberus replicas x
       # per-process cap` — and only the chart knows the replica count. Set
       # this and the chart apportions it: per-process cap = floor(fanoutCap

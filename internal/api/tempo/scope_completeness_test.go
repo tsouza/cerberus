@@ -115,7 +115,7 @@ func TestBuildAttributeValuesSQL_HandlesEveryScope(t *testing.T) {
 	for _, scope := range allAttrMapScopes {
 		t.Run(scope.String(), func(t *testing.T) {
 			t.Parallel()
-			sqlStr, _ := buildAttributeValuesSQL(s, "some.key", scope, nil, time.Time{}, time.Time{}, nil)
+			sqlStr, _, _ := buildAttributeValuesSQL(s, "some.key", scope, nil, time.Time{}, time.Time{}, nil)
 			if sqlStr == "" {
 				t.Errorf("buildAttributeValuesSQL(%v) produced empty SQL", scope)
 			}

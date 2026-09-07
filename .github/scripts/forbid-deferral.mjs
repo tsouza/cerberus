@@ -33,6 +33,17 @@
 // the bare phrase for an architectural exclusion must NOT match, only the
 // variant that names this pull request.
 //
+// A multi-word marker is matched across comment continuation lines. Every
+// phrase in the table joins its words with `\s+`, which crosses a bare
+// newline but NOT the `//`, `#` or `*` sigil the next line of a wrapped
+// source comment starts with — so a phrase split by a hard wrap used to
+// evade the table entirely. Every surface is therefore scanned twice: once
+// as written, and once with each line's leading comment sigil stripped and
+// the lines joined (joinContinuations), with an index map back to the
+// original text so a match is reported on the line it starts on. The two
+// passes are unioned per (marker, line), so nothing the first pass found is
+// lost and nothing is reported twice.
+//
 // WHAT IS REQUIRED — every match must be accompanied by a reference to an OPEN
 // GitHub Issue (`#<n>`, or the full issues URL for this repository) close enough
 // to be about it. "Close enough" is the author's own structure, not a fixed
@@ -159,6 +170,17 @@ export const DEFERRAL_MARKERS = [
     pattern: String.raw`\bTODO\b|\bFIXME\b|\bXXX\b`,
   },
   {
+    // A house-style synonym for the conventional work marker — a hair-tie
+    // metaphor for "tied off for later" — that the release audit found at
+    // five sites ("<synonym>: lift to a CTE only if ..."), none citing an
+    // issue. It is a deferral like any other and is gated like any other.
+    // The id and description name the class, not the word: the table's own
+    // self-match test reads both against every pattern.
+    id: 'house-work-marker',
+    description: 'a house-style synonym for a source-comment work marker',
+    pattern: String.raw`\bponytail\b`,
+  },
+  {
     id: 'unfixed-here',
     description: 'a finding named as unresolved by this change',
     pattern: String.raw`\bnot\s+(?:fixed|addressed|handled|done)\s+(?:here|in\s+this\s+PR)\b`,
@@ -259,22 +281,107 @@ function lineOf(text, index) {
   return line;
 }
 
-// findMarkers — every marker occurrence in `text`, with its 1-based line.
-// Overlapping rows both report: a sentence can defer in two idioms at once and
-// the author should see both.
-export function findMarkers(text) {
-  const found = [];
+// CONTINUATION_SIGIL — the leading comment sigil a wrapped source comment's
+// next line starts with: `//` (Go, JS), `#` (shell, YAML, Justfile) or `*`
+// (a C-style block comment's continuation). Only a sigil at the START of a
+// line is a continuation sigil; the same characters mid-line are content.
+const CONTINUATION_SIGIL = /^[ \t]*(?:\/\/+|#+|\*+)[ \t]*/;
+
+// PARAGRAPH_BREAK — a blank line, optionally carrying a bare comment sigil
+// (`//`, `#`, `*`) so a doc comment's own empty continuation line counts as
+// the break it visually is. No marker phrase may span one; see findMarkers.
+const PARAGRAPH_BREAK = /\n[ \t]*(?:\/\/+|#+|\*+)?[ \t]*\n/;
+
+// joinContinuations — `text` with every line's leading comment sigil
+// stripped and the lines joined by a single space (a BLANK line joins as a
+// newline instead: it is a hard break no comment or paragraph continues
+// across), plus `origin`: for each
+// character of the joined text, its index in the ORIGINAL text, so a match
+// found in the joined form is reported at its original line. Joining with a
+// space rather than keeping the newline is deliberate: the one marker arm
+// that is anchored to a line start (the `followup-label` heading form) is
+// meant for a real Markdown heading, which the first pass already reads,
+// not for a `#` that was a shell comment sigil a moment ago.
+export function joinContinuations(text) {
   const src = String(text ?? '');
+  const chars = [];
+  const origin = [];
+  let lineStart = 0;
+  const lines = src.split('\n');
+  lines.forEach((line, i) => {
+    const sigil = CONTINUATION_SIGIL.exec(line);
+    const from = sigil ? sigil[0].length : 0;
+    const blank = line.slice(from).trim() === '';
+    if (i > 0) {
+      // A BLANK line is a hard break, joined as a newline rather than a
+      // space: a wrapped source comment never continues across one, and in
+      // a prose surface it is the paragraph boundary the citation window is
+      // scoped to. Joining across it would let a marker phrase "span" two
+      // unrelated paragraphs (one ending in `not`, the next opening with
+      // `done here`) and report a deferral nobody wrote.
+      const priorBlank = (() => {
+        const prev = lines[i - 1];
+        const prevSigil = CONTINUATION_SIGIL.exec(prev);
+        return prev.slice(prevSigil ? prevSigil[0].length : 0).trim() === '';
+      })();
+      chars.push(blank || priorBlank ? '\n' : ' ');
+      origin.push(lineStart - 1); // the newline this character stands in for
+    }
+    for (let j = from; j < line.length; j += 1) {
+      chars.push(line[j]);
+      origin.push(lineStart + j);
+    }
+    lineStart += line.length + 1;
+  });
+  return { text: chars.join(''), origin };
+}
+
+// findMarkers — every marker occurrence in `text`, with the 1-based line it
+// starts on (`line`) and ends on (`endLine` — the same line unless the marker
+// spans a comment continuation). Overlapping rows both report: a sentence can
+// defer in two idioms at once and the author should see both. Two passes,
+// as written and with continuations joined (see the file header), unioned
+// per (marker, start line).
+export function findMarkers(text) {
+  const src = String(text ?? '');
+  const found = [];
+  const seen = new Set();
+  const record = (marker, matched, index, endIndex) => {
+    // A deferral phrase never spans a PARAGRAPH BREAK. Every multi-word
+    // marker separates its words with `\s+`, which matches a newline, so
+    // without this guard a paragraph ending in "not" followed by one opening
+    // with "done here" synthesises a marker neither paragraph contains.
+    // Applied to both passes (as-written and continuation-joined), because
+    // both carry the blank line through.
+    if (PARAGRAPH_BREAK.test(matched)) return;
+    const line = lineOf(src, index);
+    const key = `${marker.id}:${line}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push({
+      id: marker.id,
+      description: marker.description,
+      text: matched.trim(),
+      index,
+      line,
+      endLine: lineOf(src, endIndex),
+    });
+  };
   for (const marker of DEFERRAL_MARKERS) {
-    const re = markerRegex(marker.pattern);
-    for (const m of src.matchAll(re)) {
-      found.push({
-        id: marker.id,
-        description: marker.description,
-        text: m[0].trim(),
-        index: m.index,
-        line: lineOf(src, m.index),
-      });
+    for (const m of src.matchAll(markerRegex(marker.pattern))) {
+      record(marker, m[0], m.index, m.index + Math.max(m[0].length - 1, 0));
+    }
+  }
+  const joined = joinContinuations(src);
+  for (const marker of DEFERRAL_MARKERS) {
+    for (const m of joined.text.matchAll(markerRegex(marker.pattern))) {
+      // Map the first and last NON-blank characters of the match back to
+      // the original text: a match that starts on a line's joining space
+      // would otherwise be attributed to the line before it.
+      const leading = m[0].length - m[0].trimStart().length;
+      const first = m.index + leading;
+      const last = m.index + Math.max(m[0].trimEnd().length - 1, leading);
+      record(marker, m[0], joined.origin[first], joined.origin[last]);
     }
   }
   return found.sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
@@ -531,10 +638,31 @@ export function parseDiff(diffText) {
   return { files: [...files], lines };
 }
 
-// scanDiff — candidate violations among the diff's ADDED lines. A citation may
-// come from any line within CITATION_WINDOW_LINES in the same file, added or
-// merely nearby, so an issue already cited in the comment block being extended
-// still counts.
+// contiguousRuns — a file's diff lines split into runs of consecutive
+// new-file line numbers: one run per hunk. A marker is matched within a run,
+// never across the gap between two hunks, which is unchanged text this gate
+// does not read.
+function contiguousRuns(fileLines) {
+  const runs = [];
+  let run = [];
+  for (const l of fileLines) {
+    if (run.length > 0 && l.line !== run[run.length - 1].line + 1) {
+      runs.push(run);
+      run = [];
+    }
+    run.push(l);
+  }
+  if (run.length > 0) runs.push(run);
+  return runs;
+}
+
+// scanDiff — candidate violations among the diff's ADDED lines. Each hunk is
+// scanned as one text so a marker wrapped across a comment continuation is
+// still seen (see findMarkers); a marker counts when ANY line it spans was
+// added, and is reported on the line it starts on. A citation may come from
+// any line within CITATION_WINDOW_LINES of the marker's span in the same
+// file, added or merely nearby, so an issue already cited in the comment
+// block being extended still counts.
 export function scanDiff(diffText, repoSlug) {
   const { lines } = parseDiff(diffText);
   const byFile = new Map();
@@ -545,15 +673,19 @@ export function scanDiff(diffText, repoSlug) {
 
   const candidates = [];
   for (const [file, fileLines] of byFile) {
-    for (const l of fileLines) {
-      if (!l.added) continue;
-      for (const marker of findMarkers(l.text)) {
+    for (const run of contiguousRuns(fileLines)) {
+      const first = run[0].line;
+      for (const marker of findMarkers(run.map((o) => o.text).join('\n'))) {
+        const startLine = first + marker.line - 1;
+        const endLine = first + marker.endLine - 1;
+        const spanned = run.filter((o) => o.line >= startLine && o.line <= endLine);
+        if (!spanned.some((o) => o.added)) continue;
         const near = fileLines.filter(
-          (o) => Math.abs(o.line - l.line) <= CITATION_WINDOW_LINES,
+          (o) => o.line >= startLine - CITATION_WINDOW_LINES && o.line <= endLine + CITATION_WINDOW_LINES,
         );
         candidates.push({
           surface: 'diff',
-          location: `${file}:${l.line}`,
+          location: `${file}:${startLine}`,
           markerId: marker.id,
           description: marker.description,
           markerText: marker.text,

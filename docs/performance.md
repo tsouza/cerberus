@@ -69,12 +69,18 @@ Two architectural invariants frame the whole approach:
   failure surfaces as one typed error (first-error-wins, cause-threaded), never
   as a partial body. Sharding is an internal execution strategy, invisible at
   the wire format.
-- **No caching.** Cerberus is a stateless query gateway, not a result cache.
-  This invariant is **unchanged** by the solver relaxation — the solver
-  re-emits and re-executes per request, it never memoises a previous result.
-  The only TTL anywhere is the `/readyz` health probe. Speed comes from
-  emitting a better query (and, for the unbounded class, from dividing it),
-  never from caching a previous one.
+- **No caching in cerberus.** Cerberus is a stateless query gateway: it never
+  memoises a previous result, and the solver re-emits and re-executes per
+  request. The one place a previously computed answer can be served is
+  ClickHouse's own server-side result cache (`result_cache`,
+  `use_query_cache=1`), which the engine stamps only on a query whose every
+  evaluated window ends strictly before `now − CERBERUS_RESULT_CACHE_INGEST_LAG`
+  and whose plan carries no `now()` — a closed window no later ingest can
+  change, so the cached answer is output-safe by construction (invariant 12
+  in `CLAUDE.md`; [clickhouse-optimizations.md](clickhouse-optimizations.md)
+  § "Feature registry", the `result_cache` entry). Everything else is speed
+  from emitting a better query (and, for the unbounded class, from dividing
+  it), never from caching a previous one.
 
 ## Where the speed comes from, layer by layer
 

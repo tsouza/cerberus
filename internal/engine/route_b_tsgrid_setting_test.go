@@ -117,7 +117,7 @@ func TestRouteBExecCtx_StampsTSGridSettingForNativeShards(t *testing.T) {
 			t.Parallel()
 
 			ctx := routeBExecCtx(context.Background(), "promql",
-				chclient.ResponseShapeMatrix, tsGridRouteBDecision(tc.wrap), 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+				chclient.ResponseShapeMatrix, tsGridRouteBDecision(tc.wrap), routeBTestPlan(), 0, false, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
 
 			settings := chclient.QuerySettingsFromContext(ctx)
 			_, got := settings[chclient.SettingExperimentalTSGridAggregate]
@@ -137,15 +137,54 @@ func TestRouteBExecCtx_StampsTSGridSettingForNativeShards(t *testing.T) {
 	}
 }
 
+// routeBTestPlan is the plain scan the route-B ctx tests hand
+// routeBExecCtx: no join, no compare, no histogram, no sorted slab, so none
+// of the plan-shape-gated settings fire and only the always-on spill
+// thresholds (and, per test, the ts-grid setting) can appear.
+func routeBTestPlan() chplan.Node {
+	return &chplan.Scan{Table: "otel_metrics_gauge", Columns: []string{"MetricName", "TimeUnix", "Value"}}
+}
+
 // TestRouteBExecCtx_NilDecisionStampsNothing pins the degenerate input. A nil
 // Decision reaches this seam only from a wiring bug, and inventing an
 // experimental setting for a dispatch nobody classified would put the knob on a
-// query that may not tolerate it.
+// query that may not tolerate it. The always-on spill thresholds are NOT
+// decision-gated (they ride every data-plane dispatch, route A included), so
+// the assertion is on the experimental setting alone.
 func TestRouteBExecCtx_NilDecisionStampsNothing(t *testing.T) {
 	t.Parallel()
 
-	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, nil, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
-	if settings := chclient.QuerySettingsFromContext(ctx); len(settings) != 0 {
-		t.Fatalf("nil decision stamped settings %v", settings)
+	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, nil, routeBTestPlan(), 0, false, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+	if _, got := chclient.QuerySettingsFromContext(ctx)[chclient.SettingExperimentalTSGridAggregate]; got {
+		t.Fatalf("nil decision stamped %s", chclient.SettingExperimentalTSGridAggregate)
+	}
+}
+
+// TestRouteBExecCtx_SpillThresholdsSizedFromTheShardCap pins the route-B half
+// of the spill parity: a shard's external-group-by / external-sort thresholds
+// must be derived from the route-A cap apportioned by decision.K — the same
+// fraction of a shard's real limit that route A stamps of its own — not from
+// the whole cap (which would sit at or above the shard's apportioned
+// max_memory_usage and never fire before ClickHouse aborts the shard), and
+// not absent (the pre-parity state).
+func TestRouteBExecCtx_SpillThresholdsSizedFromTheShardCap(t *testing.T) {
+	t.Parallel()
+
+	const (
+		memCap = int64(8 << 30)
+		k      = 4
+	)
+	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, &solver.Decision{K: k},
+		routeBTestPlan(), memCap, false, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+	settings := chclient.QuerySettingsFromContext(ctx)
+	want := spillThreshold(memCap / k)
+	for _, name := range []string{settingMaxBytesBeforeExternalGroupBy, settingMaxBytesBeforeExternalSort} {
+		got, ok := settings[name]
+		if !ok {
+			t.Fatalf("%s not stamped on the route-B ctx — a shard would run with no spill threshold under its apportioned cap", name)
+		}
+		if got != want {
+			t.Fatalf("%s = %v, want spillThreshold(cap/K) = %d (whole-cap threshold would be %d)", name, got, want, spillThreshold(memCap))
+		}
 	}
 }

@@ -4,8 +4,12 @@ package chopt
 // independent ClickHouse DATA shards sit behind cerberus's logical dataset
 // (cerberus issue #3081, part of epic #3074's multi-shard support). It is
 // read once at startup (CERBERUS_CH_DATA_SHARDS, internal/config) and
-// threaded, unchanged, into every consumer that needs the count — today,
-// internal/solver's admission control: cmd/cerberus's buildSolver copies
+// threaded, unchanged, into every consumer that needs the count: primarily
+// internal/chclient (its DataShardFanoutGate charges every dispatch
+// DataShardCount x the statement's physical-scan count, and its data-plane
+// `max_memory_usage` is apportioned by it — chclient.Config.DataShardCount,
+// set by internal/config), and secondarily internal/solver's per-shard
+// memory apportionment: cmd/cerberus's buildSolver copies
 // ClusterTopology.DataShardCount into solver.Config.DataShardCount once, at
 // solver construction, keeping internal/solver's own import surface at
 // chplan + chclient + the standard library (its own package doc) rather
@@ -27,8 +31,8 @@ package chopt
 //     ClickHouse cluster's own physical DATA partitions: how many-way a
 //     `Distributed` table fans a single query out across. Every new
 //     identifier for THIS sense uses the DataShard-prefixed compound form
-//     (DataShardCount, DataShardFanoutGate, DataShardFanoutCap,
-//     DisableSplitOnMultiDataShard) to keep it apart from the other two.
+//     (DataShardCount, DataShardFanoutGate, DataShardFanoutCap) to keep it
+//     apart from the other two.
 type ClusterTopology struct {
 	// DataShardCount is the number of ClickHouse data shards the connected
 	// cluster's `Distributed` tables fan a query out across. 1 (the

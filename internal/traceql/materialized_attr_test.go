@@ -198,3 +198,58 @@ func TestLowerAttribute_NumericMaterializedColumnSkipsCoercion(t *testing.T) {
 		})
 	}
 }
+
+// TestLowerAttribute_NumericMaterializedColumnStringifiesForStringOps is the
+// third leg of the #2869 numeric-routing contract. A comparison ClickHouse
+// cannot evaluate against the Nullable(Int32) column — a regex match, or a
+// compare against a string literal that is not an Int32 — must run over
+// toString(column), NOT over the raw column (which aborts the whole query)
+// and NOT over the attribute map (whose ” default for an absent attribute
+// would make `!= "abc"` match every span that never carried the key, where
+// the column's NULL correctly drops it).
+//
+// Literals that ARE Int32 keep the bare column: ClickHouse parses them to the
+// column's type, so the compare stays numerically ordered and index-eligible.
+// "4.5" and "3000000000" are the cases a float-shaped literal test would have
+// misclassified as numeric and left on the aborting path.
+func TestLowerAttribute_NumericMaterializedColumnStringifiesForStringOps(t *testing.T) {
+	t.Parallel()
+
+	const col = "`__cerberus_materialized_http.status_code`"
+	on := schema.DefaultOTelTraces()
+	on.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": "__cerberus_materialized_http.status_code"}
+
+	for _, tc := range []struct {
+		name          string
+		query         string
+		wantStringify bool
+	}{
+		{"regex_match", `{ span.http.status_code =~ "5.." }`, true},
+		{"regex_not_match", `{ span.http.status_code !~ "5.." }`, true},
+		{"eq_non_numeric_string", `{ span.http.status_code = "abc" }`, true},
+		{"ne_non_numeric_string", `{ span.http.status_code != "abc" }`, true},
+		{"eq_float_shaped_string", `{ span.http.status_code = "4.5" }`, true},
+		{"gt_float_shaped_string", `{ span.http.status_code > "4.5" }`, true},
+		{"eq_out_of_int32_range_string", `{ span.http.status_code = "3000000000" }`, true},
+		{"eq_int32_string_keeps_bare_column", `{ span.http.status_code = "500" }`, false},
+		{"gt_int32_string_keeps_bare_column", `{ span.http.status_code > "4" }`, false},
+		{"numeric_literal_keeps_bare_column", `{ span.http.status_code = 500 }`, false},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sqlStr := emitTraceQL(t, tc.query, on)
+			if !strings.Contains(sqlStr, col) {
+				t.Fatalf("SQL must reference the materialized column either way; got: %s", sqlStr)
+			}
+			if got := strings.Contains(sqlStr, "toString("+col+")"); got != tc.wantStringify {
+				t.Fatalf("toString(column) present = %v, want %v; got: %s", got, tc.wantStringify, sqlStr)
+			}
+			// The attribute map is never the answer: its '' default for an
+			// absent key does not reproduce the column's NULL semantics.
+			if strings.Contains(sqlStr, "`SpanAttributes`[?]") {
+				t.Fatalf("a materialized numeric attribute must never fall back to the attribute map; got: %s", sqlStr)
+			}
+		})
+	}
+}

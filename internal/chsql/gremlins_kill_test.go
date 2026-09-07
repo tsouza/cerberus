@@ -302,7 +302,7 @@ func TestEmitMetricsExemplars_StepBoundary(t *testing.T) {
 		Range:           time.Minute,
 		TimestampColumn: "Timestamp",
 	}
-	_, _, err := EmitMetricsExemplars(context.Background(), plan,
+	_, _, _, err := EmitMetricsExemplars(context.Background(), plan,
 		plan.Input.(*chplan.MetricsAggregate), "TraceId", "SpanId", 1, "")
 	if err == nil {
 		t.Fatalf("expected error for Step=0, got nil")
@@ -328,7 +328,7 @@ func TestEmitMetricsExemplars_NilInner(t *testing.T) {
 		Range:           time.Minute,
 		TimestampColumn: "Timestamp",
 	}
-	_, _, err := EmitMetricsExemplars(context.Background(), plan,
+	_, _, _, err := EmitMetricsExemplars(context.Background(), plan,
 		plan.Input.(*chplan.MetricsAggregate), "TraceId", "SpanId", 1, "")
 	if err == nil {
 		t.Fatalf("expected error for nil Inner, got nil")
@@ -344,7 +344,7 @@ func TestEmitMetricsExemplars_NilMetricsAggregate(t *testing.T) {
 		Range:           time.Minute,
 		TimestampColumn: "Timestamp",
 	}
-	_, _, err := EmitMetricsExemplars(context.Background(), rw, nil, "TraceId", "SpanId", 1, "")
+	_, _, _, err := EmitMetricsExemplars(context.Background(), rw, nil, "TraceId", "SpanId", 1, "")
 	if err == nil {
 		t.Fatalf("expected error for nil MetricsAggregate, got nil")
 	}
@@ -363,7 +363,7 @@ func TestEmitMetricsExemplars_EmptyTimestampColumn(t *testing.T) {
 		Step:  time.Minute,
 		Range: time.Minute,
 	}
-	_, _, err := EmitMetricsExemplars(context.Background(), rw,
+	_, _, _, err := EmitMetricsExemplars(context.Background(), rw,
 		rw.Input.(*chplan.MetricsAggregate), "TraceId", "SpanId", 1, "")
 	if err == nil {
 		t.Fatalf("expected error for empty TimestampColumn, got nil")
@@ -422,7 +422,7 @@ func TestEmitMetricsExemplars_RangeDurationFallback(t *testing.T) {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			sql, _, err := EmitMetricsExemplars(context.Background(), c.rw, m, "TraceId", "SpanId", 1, "")
+			sql, _, _, err := EmitMetricsExemplars(context.Background(), c.rw, m, "TraceId", "SpanId", 1, "")
 			if err != nil {
 				t.Fatalf("EmitMetricsExemplars: %v", err)
 			}
@@ -488,7 +488,7 @@ func TestEmitMetricsExemplars_NumAnchorsBoundary(t *testing.T) {
 				End:             c.end,
 				TimestampColumn: "Timestamp",
 			}
-			sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+			sql, _, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
@@ -542,7 +542,7 @@ func TestEmitMetricsExemplars_GroupByDisplayNamesFallback(t *testing.T) {
 				Input: m, Step: time.Minute, Range: time.Minute,
 				Start: start, End: end, TimestampColumn: "Timestamp",
 			}
-			_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+			_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
@@ -602,7 +602,7 @@ func TestEmitMetricsExemplars_MetricArgEmission_Op154(t *testing.T) {
 			// For aggregates that demand Attr (SumOverTime with nil),
 			// the call errors before assembling SQL; absorb that and
 			// skip the substring check.
-			sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+			sql, _, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 			if err != nil {
 				if c.want {
 					t.Fatalf("Emit: %v", err)
@@ -654,7 +654,7 @@ func TestEmitMetricsExemplars_ValueExprOpEquality(t *testing.T) {
 				Input: m, Step: time.Minute, Range: time.Minute,
 				Start: start, End: end, TimestampColumn: "Timestamp",
 			}
-			sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+			sql, _, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
@@ -795,7 +795,7 @@ func TestEmitMetricsExemplars_GroupAliasFallback_Iter1039(t *testing.T) {
 		Input: m, Step: time.Minute, Range: time.Minute,
 		Start: start, End: end, TimestampColumn: "Timestamp",
 	}
-	sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+	sql, _, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -1839,7 +1839,7 @@ func TestEmitMetricsExemplars_ArithmeticBoundary118(t *testing.T) {
 		End:             time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC),
 		TimestampColumn: "Timestamp",
 	}
-	sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+	sql, _, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -3025,7 +3025,7 @@ func TestEmitMetricsExemplars_OuterRangeNumAnchors(t *testing.T) {
 		OuterRange:      4 * time.Minute,
 		TimestampColumn: "Timestamp",
 	}
-	sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+	sql, _, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -3054,7 +3054,7 @@ func TestEmitMetricsExemplars_QuantileKeyBranch(t *testing.T) {
 			Inner:      &chplan.Scan{Table: "otel_traces"},
 		}
 		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
-		_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+		_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -3079,7 +3079,7 @@ func TestEmitMetricsExemplars_QuantileKeyBranch(t *testing.T) {
 			Inner:      &chplan.Scan{Table: "otel_traces"},
 		}
 		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
-		_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+		_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -3108,7 +3108,7 @@ func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
 			Inner:      &chplan.Scan{Table: "otel_traces"},
 		}
 		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
-		_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+		_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -3130,7 +3130,7 @@ func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
 			Inner:          &chplan.Scan{Table: "otel_traces"},
 		}
 		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
-		_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+		_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}

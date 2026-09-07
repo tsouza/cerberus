@@ -3750,6 +3750,10 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 //   - The window must be genuinely instant: Step == 0 and End pinned (the
 //     gridSingleAnchor shape — see rangeGridShapeFor). A materialised range
 //     grid (Step > 0) is nativeTSGridMatrixNode's own territory.
+//   - rw.Range and rw.Offset must be whole seconds — the same clause
+//     nativeTSGridMatrixNode and nativeLastOverTimeNode apply (issue #3068):
+//     the native aggregate's window arguments are second-resolution, so a
+//     sub-second value would be truncated rather than honoured.
 //   - rw.Identity must be false and rw.Input must be a plain Scan / Filter,
 //     optionally wrapped in the canonical selector-attributes Project — the
 //     same row-shape relation nativeTSGridMatrixNode requires
@@ -3773,6 +3777,15 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 		return nil
 	}
 	if rw.Identity || rw.Step > 0 || rw.End.IsZero() {
+		return nil
+	}
+	// Same whole-second contract as nativeTSGridMatrixNode /
+	// nativeLastOverTimeNode (issue #3068): the native aggregate takes
+	// second-resolution window arguments, so a sub-second range or offset
+	// would be truncated — a 500ms range becomes a 0s window — while the
+	// fan-out path keeps nanosecond precision. Fall back rather than answer
+	// wrong.
+	if !wholeSeconds(rw.Range) || !wholeSeconds(rw.Offset) {
 		return nil
 	}
 	if !isNativeRateInput(rw.Input, s) {
@@ -4673,11 +4686,15 @@ var nativeGridVectorAggFns = map[chplan.Fn]struct{}{
 	chplan.FnCount: {},
 }
 
-// nativeGridVectorAggUnionFns narrows nativeGridVectorAggFns further for the
-// rate()/increase() temporality-union shape [rateIncreaseTemporalityUnionArms]
-// recognizes (cerberus issue #2852, extended to avg/count by #2884). Every
-// entry has its own composition proof, because "re-apply the same Fn a
-// second time" only holds for three of the five:
+// nativeGridVectorAggUnionFns is the aggregate set the rate()/increase()
+// temporality-union shape [rateIncreaseTemporalityUnionArms] accepts
+// (cerberus issue #2852, extended to avg/count by #2884). Since #2884 it is
+// the SAME membership as nativeGridVectorAggFns — it is kept as its own set
+// because admission here rests on the per-Fn composition proofs below,
+// which the plain-grid set does not need, and TestNativeGridVectorAggUnionFns_
+// TracksTheGridSet pins the two equal so they cannot drift apart silently.
+// Every entry has its own composition proof, because "re-apply the same Fn
+// a second time" only holds for three of the five:
 //
 //   - sum/min/max compose correctly by re-applying the SAME associative Fn a
 //     second time, at the combining Aggregate [buildTemporalityUnionVectorAgg]

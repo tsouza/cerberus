@@ -13,10 +13,11 @@ import (
 const (
 	compareWindowRange  = time.Minute
 	compareWindowOffset = 2 * time.Minute
-	// rootSeedMarker is the `TraceId IN (<windowed cohort>)` seed the compare
-	// emitter pushes onto the root-lookup scan. Its presence is what the guards
-	// under test decide.
-	rootSeedMarker = "`TraceId` IN (SELECT `TraceId` FROM"
+	// rootSeedMarker is the `TraceId GLOBAL IN (<windowed cohort>)` seed the
+	// compare emitter pushes onto the root-lookup scan (GLOBAL because the
+	// cohort reads a physical table — subqueryMembership's doc). Its presence
+	// is what the guards under test decide.
+	rootSeedMarker = "`TraceId` GLOBAL IN (SELECT `TraceId` FROM"
 )
 
 var (

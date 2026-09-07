@@ -136,14 +136,18 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sql, args, err := chsql.EmitQueryExemplarsUnion(r.Context(), arms, start, end, h.Schema)
+	sql, args, physicalScans, err := chsql.EmitQueryExemplarsUnion(r.Context(), arms, start, end, h.Schema)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrInternal, err)
 		return
 	}
 	h.Logger.Debug("cerberus query_exemplars", "promql", telemetry.SanitizeForLog(q), "sql", sql, "args", telemetry.SanitizeArgsForLog(args))
 
-	rows, err := h.Client.QueryExemplars(r.Context(), sql, args...)
+	// Engine bypass: the union renders one arm per exemplar source table,
+	// and each arm is its own Distributed fan-out on a multi-data-shard
+	// deployment, so the gate weight is stamped here from the emitted count.
+	ctx := chclient.WithDataShardFanoutMultiplier(r.Context(), physicalScans)
+	rows, err := h.Client.QueryExemplars(ctx, sql, args...)
 	if err != nil {
 		// Bare err so respondError reclassifies a drain sample-budget overage
 		// (chclient.drainBudgetExceeded) to the 422 limit rejection, like the

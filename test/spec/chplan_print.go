@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -621,8 +622,71 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
+	case *chplan.RangeWindowGridNativeInstant:
+		fmt.Fprintf(b, "%sRangeWindowGridNativeInstant func=%s range=%s anchor=%s",
+			indent, v.Func, v.Range, v.Anchor.UTC().Format(time.RFC3339Nano))
+		if v.Offset != 0 {
+			fmt.Fprintf(b, " offset=%s", v.Offset)
+		}
+		if v.TimestampColumn != "" {
+			fmt.Fprintf(b, " ts=%s", v.TimestampColumn)
+		}
+		if v.ValueColumn != "" {
+			fmt.Fprintf(b, " value=%s", v.ValueColumn)
+		}
+		if len(v.GroupBy) > 0 {
+			gb := make([]string, len(v.GroupBy))
+			for i, e := range v.GroupBy {
+				gb[i] = printExpr(e)
+			}
+			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
+		}
+		if len(v.Scalars) > 0 {
+			fmt.Fprintf(b, " scalars=%v", v.Scalars)
+		}
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
+	case *chplan.HistogramVectorJoin:
+		fmt.Fprintf(b, "%sHistogramVectorJoin match=%s card=%s",
+			indent, printVectorMatch(v.Match), printVectorCard(v.Card))
+		if len(v.Include) > 0 {
+			fmt.Fprintf(b, " include=[%s]", strings.Join(v.Include, ", "))
+		}
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
+		b.WriteString("\n")
+		printNode(b, v.Left, depth+1)
+		printNode(b, v.Right, depth+1)
+	case *chplan.HistogramFloatVectorJoin:
+		fmt.Fprintf(b, "%sHistogramFloatVectorJoin match=%s card=%s",
+			indent, printVectorMatch(v.Match), printVectorCard(v.Card))
+		if len(v.Include) > 0 {
+			fmt.Fprintf(b, " include=[%s]", strings.Join(v.Include, ", "))
+		}
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
+		b.WriteString("\n")
+		printNode(b, v.Left, depth+1)
+		printNode(b, v.Right, depth+1)
+	case *chplan.MixedVectorJoin:
+		fmt.Fprintf(b, "%sMixedVectorJoin match=%s card=%s",
+			indent, printVectorMatch(v.Match), printVectorCard(v.Card))
+		if len(v.Include) > 0 {
+			fmt.Fprintf(b, " include=[%s]", strings.Join(v.Include, ", "))
+		}
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
+		b.WriteString("\n")
+		printNode(b, v.Left, depth+1)
+		printNode(b, v.Right, depth+1)
 	default:
-		fmt.Fprintf(b, "%s<unknown:%T>\n", indent, n)
+		// Every node kind must have a printer arm: an opaque leaf would hide
+		// the whole subtree beneath it from the `-- chplan --` golden layer,
+		// which is exactly the drift this printer exists to catch.
+		panic(fmt.Sprintf("chplan_print: no printer arm for %T — add one above so its subtree stays visible to the goldens", n))
 	}
 }
 

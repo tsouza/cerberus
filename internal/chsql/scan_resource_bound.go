@@ -115,7 +115,7 @@ func (e *emitter) fromSpansScan(spansTable string, b scanResourceBound) (Frag, e
 	if err := requireScanResourceBound(e.spansTable, spansTable, b); err != nil {
 		return nil, err
 	}
-	return Col(spansTable), nil
+	return physicalTableFrag(spansTable), nil
 }
 
 // requireInnerSpansScanBound is the Tempo-only fail-closed wrapper for the

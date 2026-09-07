@@ -50,9 +50,10 @@ import (
 // physical table scan (its own doc), the rule this shape was the first
 // proven instance of and every other self-referencing emitter shares.
 //
-// ponytail: the input subquery is emitted twice (outer drain + inner
-// ranking). The window predicate keeps each scan cheap; lift to a single
-// `WITH src AS (...)` CTE only if the double scan shows up on the perf gate.
+// The input subquery is emitted twice (outer drain + inner ranking) by
+// design. The window predicate keeps each scan cheap, and a `WITH src AS
+// (...)` CTE would not remove the second scan: ClickHouse inlines a CTE at
+// every reference rather than materialising it, so there is nothing to lift.
 func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 	if n.TraceIDColumn == "" || n.TimestampColumn == "" {
 		return fmt.Errorf("%w: SearchTraceLimit column names unset", ErrUnsupported)

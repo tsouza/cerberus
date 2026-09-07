@@ -215,20 +215,6 @@ type Config struct {
 	// doc for the full three-way disambiguation. Every NEW identifier this
 	// issue introduces therefore uses the DataShard-prefixed compound form.
 	DataShardCount int
-
-	// DisableSplitOnMultiDataShard
-	// (CERBERUS_SOLVER_DISABLE_SPLIT_ON_MULTI_DATA_SHARD) is an
-	// operator-facing escape hatch, false by default. It is a config
-	// surface only: nothing in this package's admission-control path
-	// branches on it today. The always-on, unconditional behavior is that
-	// internal/chclient's data-shard fanout gate (cerberus issues #3081,
-	// #3128) already bounds the combined ClickHouse-side cost of this
-	// solver's own K-way query-time-range split running against a
-	// multi-data-shard cluster's own fan-out on the SAME request — every
-	// one of the K shards this solver dispatches reaches ClickHouse
-	// through that same gate — which is why composing the two needs no
-	// separate serialization mode to stay safe.
-	DisableSplitOnMultiDataShard bool
 }
 
 // Default tuning constants (docs/solver.md).

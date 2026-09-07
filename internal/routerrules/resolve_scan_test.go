@@ -27,7 +27,7 @@ func (c *countingCorpusSource) EvalRule(ctx context.Context, q RuleQuery) ([]Gro
 // corpus scan per corpus-kind param (~O(corpus-params)), NOT one scan per
 // distinct scope-group. It exists so the ParamResolver doc — which used to claim
 // a batching optimization the code never had — cannot silently drift from the
-// implementation again. If batching is ever added (the ponytail note on
+// implementation again. If batching is ever added (the batching note on
 // ParamResolver), this test is where the new, lower count gets re-pinned.
 func TestResolveScanCount(t *testing.T) {
 	cat := loadCatalogT(t)

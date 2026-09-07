@@ -457,10 +457,12 @@ func TestBuildRoutedCursorResult_ObservesOnce(t *testing.T) {
 }
 
 // TestExecuteRoutedCursor_UntracedRequestStillSucceeds pins the "recording can
-// never fail the query" half of the seam's contract at its one branch that can
-// legitimately produce nothing: without a trace context there is no query_id to
-// mint, so there is no join key and nothing is recorded — and the routed query
-// must still run and stream its rows.
+// never fail the query" half of the seam's contract on an untraced request.
+// A missing trace context no longer means a missing join key: chclient mints a
+// random, query_log-joinable query_id for every dispatch (MintQueryID's doc —
+// an unstamped dispatch could not be killed on cancellation, the round-3 gap
+// of cerberus issue #3128), so the fan-out is recorded with one real id per
+// shard — and the routed query must still run and stream its rows.
 func TestExecuteRoutedCursor_UntracedRequestStillSucceeds(t *testing.T) {
 	t.Parallel()
 
@@ -488,8 +490,22 @@ func TestExecuteRoutedCursor_UntracedRequestStillSucceeds(t *testing.T) {
 		t.Error("untraced routed query streamed no rows; the corpus seam must never change what the query returns")
 	}
 
-	if _, routed := obs.snapshot(); len(routed) != 0 {
-		t.Errorf("routed observations = %d for an untraced request; want 0 (no join key exists)", len(routed))
+	_, routed := obs.snapshot()
+	if len(routed) != 1 {
+		t.Fatalf("routed observations = %d for an untraced request; want exactly 1 (every dispatch carries a minted, joinable query_id)", len(routed))
+	}
+	if got, want := len(routed[0]), len(d.Slices); got != want {
+		t.Fatalf("recorded %d shard query_ids, want one per slice (%d)", got, want)
+	}
+	seen := make(map[string]struct{}, len(routed[0]))
+	for i, id := range routed[0] {
+		if id == "" {
+			t.Fatalf("shard %d recorded an empty query_id — the corpus row would have no join key", i)
+		}
+		if _, dup := seen[id]; dup {
+			t.Fatalf("shard %d recorded query_id %q twice — shards must never share an id (ClickHouse error 216)", i, id)
+		}
+		seen[id] = struct{}{}
 	}
 }
 

@@ -345,8 +345,10 @@ returned to the handler:
    single-statement dispatches are now bounded by the identical mechanism.
    `DataShardFanoutCap` defaults to the chclient connection pool's own size
    (`CERBERUS_CH_MAX_OPEN_CONNS`), independently overridable
-   (`CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`, the historical name kept for
-   backward compatibility). Whichever source wins must be at least
+   (`CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP` — it sits in the
+   `CERBERUS_SOLVER_*` family because this section defines the fan-out
+   budget as a solver concern, even though the gate object itself lives in
+   `internal/chclient`). Whichever source wins must be at least
    `DataShardCount`: every dispatch charges its full width, and a
    semaphore never admits a weight above its size, so a smaller cap would
    park every query until its deadline — `config.FromEnv` refuses the

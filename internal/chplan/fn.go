@@ -619,12 +619,15 @@ const (
 	// min(x) aggregate — the minimum non-NULL x in the group.
 	FnMin Fn = "min"
 
-	// quantile(phi)(x) aggregate — the phi-th (0..1) percentile of x in the group,
-	// CH's interpolated estimate.
+	// quantileExactInclusive(phi)(x) aggregate — the phi-th (0..1) percentile
+	// of x in the group, computed exactly with inclusive linear interpolation
+	// (the estimator Prometheus's own quantile() uses), not CH's reservoir
+	// `quantile` estimate — internal/chsql/fnresolution.go maps it.
 	FnQuantile Fn = "quantile"
 
-	// quantiles(phi1, phi2, ...)(x) aggregate — every requested percentile of x
-	// in the group as an Array(Float64), in parameter order.
+	// quantilesExactInclusive(phi1, phi2, ...)(x) aggregate — every requested
+	// percentile of x in the group as an Array(Float64), in parameter order,
+	// with the same exact-inclusive estimator as FnQuantile.
 	FnQuantiles Fn = "quantiles"
 
 	// stddevPop(x) aggregate — the population standard deviation of x in the

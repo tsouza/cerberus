@@ -1,8 +1,9 @@
 // Package promparse owns the one PromQL parser configuration cerberus parses
 // with.
 //
-// Every non-test construction of a Prometheus parser in this repository goes
-// through [New]. The ten production sites that used to spell the options inline
+// Every non-test construction of a Prometheus parser in this repository —
+// outside the vendored upstream snapshots under compatibility/*/upstream/**,
+// which are reference code, not cerberus's — goes through [New]. The ten production sites that used to spell the options inline
 // — the HTTP handler, both offline explain langs, the migration rule graph and
 // the six bench-report harnesses — held one policy in ten statements with
 // nothing keeping them in agreement, and one of those options is load-bearing

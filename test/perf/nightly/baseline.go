@@ -27,19 +27,30 @@ const perfNightlyMemoryCapBytes int64 = 1 << 30 // 1 GiB
 // nightlyMemoryCapFraction is PRONG (a)'s absolute ceiling. Same rationale
 // as test/perf/smoke's sentinelMemoryCapFraction (above
 // spillThreshold(cap)'s implied 0.5, below 1.0's OOM boundary), but NOT the
-// same value — 0.75 (smoke's own midpoint pick) does not fit this lane's
-// real measured data. Calibrated against this lane's own real
-// post-#2429-fix, max-of-5 numbers: the two ExpectedStatus=200 sentinels
-// measured 0.9% and 76.2% of cap; the two ExpectedStatus=422 sentinels
-// (rejected BEFORE the expensive stage runs, by design) measured 25.9% and
-// 27.6% at rejection. pod_status_reason_gauge's 76.2% already exceeds
-// 0.75x — a plain `sum by (reason) (...)` gauge aggregation over this
-// sample's real 7,024-series cardinality (855 distinct pods, only 8
-// distinct `reason` values it collapses to) genuinely costs this much;
-// filed as issue #2435 for its own investigation rather than silently
-// absorbed into a looser fraction picked to avoid looking at it. 0.85
-// keeps real, verified margin (~8 points) above that measured cost while
-// staying meaningfully below ClickHouse's own 1.0 OOM boundary.
+// same value, and the value is PINNED TO THE COMMITTED BASELINE'S CUT: every
+// ceiling_bytes in nightly-baseline.json is committedCeilingBytes(max_of_n,
+// headroom) clamped to this fraction of the cap at generation time, and
+// TestCommittedCeilingBytes_ClampsToTheAbsoluteCeiling refuses a file whose
+// ceilings were cut against a different fraction. So the fraction only
+// moves together with a baseline regeneration — never on its own, and never
+// by re-measuring on an unreleased branch, which would re-cut every
+// sentinel's max_of_n to whatever the branch costs today and blind the
+// ratchet to exactly the regression it exists to catch.
+//
+// 0.85 is the fraction the committed cut was made against: at that cut
+// pod_status_reason_gauge — a plain `sum by (reason) (...)` gauge
+// aggregation over this sample's real 7,024-series cardinality (855
+// distinct pods collapsing to 8 `reason` values) — measured 76.2% of cap,
+// above smoke's 0.75, and cerberus issue #2435 was filed for it rather than
+// the cost being silently absorbed. #2435 has since shipped (the
+// sum()/count() fusion over a RangeLWR fan-out, PR #2452): the lane's
+// max-of-5 read-outs are now a stable 66.1% across consecutive nightlies
+// (runs 34055929772, 34060679663 and 34063889701 on 2026-09-06), so the
+// widening no longer has a measured cost behind it — 0.75 fits again. It is
+// applied at the next baseline cut, with the max_of_n values that cut
+// measures, because that is the only way the fraction can move (above).
+// Until then PRONG (b)'s per-sentinel headroom, not this fraction, is the
+// bound that actually binds for that sentinel.
 const nightlyMemoryCapFraction = 0.85
 
 // nightlyCapCeilingBytes is PRONG (a): the ABSOLUTE, cap-relative ceiling

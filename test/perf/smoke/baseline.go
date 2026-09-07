@@ -4,13 +4,13 @@
 // This file is deliberately UNTAGGED while the harness that consumes it
 // (realch_perfsmoke_integration_test.go) is behind `integration`. The two
 // ceilings a sentinel is asserted against are pure arithmetic over committed
-// numbers, and the invariant that keeps the tighter of them honest — PRONG (b)
-// must never be looser than PRONG (a) — is a property of the committed file,
-// not of a ClickHouse container. Keeping the derivation here lets
-// sentinels_test.go assert it on every PR through the ordinary unit lane,
-// instead of only when somebody happens to regenerate the baseline with Docker
-// present. Issue #2906 is exactly the failure that costs: the clamp below was
-// missing for the whole life of this corpus and nothing could observe it.
+// numbers, and the invariant that keeps PRONG (b) meaningful — it must never
+// be looser than PRONG (a) — is a property of the committed file, not of a
+// ClickHouse container. Keeping the derivation here lets baseline_test.go
+// assert it on every PR through the ordinary unit lane, instead of only when
+// somebody happens to regenerate the baseline with Docker present. Issue
+// #2906 is exactly the failure that costs: the clamp below was missing for
+// the whole life of this corpus and nothing could observe it.
 package smoke
 
 import (
@@ -80,8 +80,19 @@ const sentinelCapCeilingBytes = uint64(float64(sentinelMemoryCapBytes) * sentine
 // already close to the absolute ceiling, an unclamped
 // maxBytes*sentinelBaselineHeadroom sits ABOVE PRONG (a)'s own bound, and a
 // ceiling above PRONG (a)'s can never fire — PRONG (a) rejects first, every
-// time. A looser "tighter" check is a gate that silently never gates. PRONG
-// (b) must never be looser than PRONG (a).
+// time. A per-sentinel check looser than the absolute one is a gate that
+// silently never gates. PRONG (b) must never be looser than PRONG (a).
+//
+// When the clamp BINDS (clampBinds), the two prongs COINCIDE: PRONG (b) then
+// detects no regression PRONG (a) would not have caught first, and the
+// committed max-of-N serves only the failure message's headroom report. That
+// is a calibration conflict — the sentinel's real cost sits above
+// sentinelCapCeilingBytes/sentinelBaselineHeadroom, where no per-sentinel
+// ceiling with the nominal headroom can exist under this cap fraction — and
+// calibratedBound refuses to write such a bound silently. This function
+// stays the pure arithmetic both the assertion path and baseline_test.go's
+// committed-file invariants read through: a bound that IS committed clamped
+// is still asserted exactly as committed.
 //
 // Issue #2906: the smoke lane shipped without this clamp, so
 // spill_high_cardinality_groupby (committed 977,277,601) and
@@ -90,6 +101,35 @@ const sentinelCapCeilingBytes = uint64(float64(sentinelMemoryCapBytes) * sentine
 // that runs on every PR through the required strict-scan job.
 func committedCeilingBytes(maxBytes uint64) uint64 {
 	return min(uint64(float64(maxBytes)*sentinelBaselineHeadroom), sentinelCapCeilingBytes)
+}
+
+// clampBinds reports whether committedCeilingBytes(maxBytes) is the absolute
+// ceiling rather than the nominal headroom multiple — i.e. whether PRONG (b)
+// derived from this measurement would coincide with PRONG (a). A multiple
+// landing EXACTLY on the absolute ceiling is not a bind: the unclamped
+// arithmetic already produced that value.
+func clampBinds(maxBytes uint64) bool {
+	return uint64(float64(maxBytes)*sentinelBaselineHeadroom) > sentinelCapCeilingBytes
+}
+
+// calibratedBound is the UPDATE_PERF_SMOKE_BASELINE=1 calibration path's
+// bound for one sentinel. It fails loudly — naming the sentinel, the
+// measurement, the ceiling the nominal headroom asks for and the absolute
+// ceiling that would clamp it — when the clamp binds, instead of committing
+// a PRONG (b) that coincides with PRONG (a) and gates nothing of its own.
+// The remedies are all calibration decisions (a smaller
+// sentinelBaselineHeadroom, a larger sentinelMemoryCapFraction, or a cheaper
+// sentinel), which is why this refuses rather than picking one.
+func calibratedBound(name string, maxBytes uint64) (sentinelBound, error) {
+	if clampBinds(maxBytes) {
+		nominal := uint64(float64(maxBytes) * sentinelBaselineHeadroom)
+		return sentinelBound{}, fmt.Errorf("%s: calibration measurement %d bytes × %.2f headroom = %d bytes exceeds the "+
+			"absolute cap-relative ceiling %d bytes — the clamp would bind and PRONG (b) would coincide with PRONG (a); "+
+			"the largest headroom this measurement admits is %.2fx",
+			name, maxBytes, sentinelBaselineHeadroom, nominal, sentinelCapCeilingBytes,
+			float64(sentinelCapCeilingBytes)/float64(maxBytes))
+	}
+	return sentinelBound{Name: name, MaxOfNBytes: maxBytes, CeilingBytes: committedCeilingBytes(maxBytes)}, nil
 }
 
 // exceedsCapCeiling reports whether a measured peak trips PRONG (a), the

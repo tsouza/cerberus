@@ -39,10 +39,13 @@ type Conn interface {
 }
 
 // Resource caps stamped on every statement this package issues — the SAME
-// values and the SAME rationale as internal/deltaprefix's own maxExecutionTimeSeconds
-// / maxThreads / priority / maxRowsToRead / maxBytesToRead: an
-// operator-run, off-hot-path tool sharing a ClickHouse cluster with live
-// query serving.
+// values and the SAME rationale as internal/deltaprefix's exported
+// MaxExecutionTimeSeconds / MaxThreads / Priority / MaxRowsToRead /
+// MaxBytesToRead: an operator-run, off-hot-path tool sharing a ClickHouse
+// cluster with live query serving. Duplicated rather than imported because
+// .go-arch-lint.yml keeps this package a leaf depending on chsql only (the
+// same constraint settingExperimentalTSGridAggregate above explains);
+// TestResourceCapsMatchDeltaPrefix pins the two blocks against each other.
 const (
 	maxExecutionTimeSeconds = 900.0 // 15 minutes
 	maxThreads              = 4

@@ -119,14 +119,41 @@ type Verdict struct {
 	corroboration int
 
 	// magnitudeEMARows / magnitudeObservations / magnitudeObservedAt are the
-	// OBSERVATIONAL (never routing-decision-affecting) real-magnitude axis
-	// issue #2789 adds — see magnitude.go's own doc. Untouched by every
-	// state-transition method in this file; only RecordActualMagnitude ever
-	// writes them, and only Lookup/eviction ever clear them (implicitly,
-	// by replacing or deleting the Verdict itself).
+	// real-magnitude axis issue #2789 added and issue #3035 made
+	// routing-relevant — see magnitude.go's own doc: MagnitudeFor feeds
+	// internal/engine/route_memo_wiring.go's trivialRevalidation gate, which
+	// declines a stale-PreferB rescue probe whose well-corroborated magnitude
+	// is trivially small. They never influence the OUTCOME axis (state /
+	// corroboration / createdAt) in this file. Only RecordActualMagnitude
+	// ever writes them; observeRouteBLocked's state transitions carry them
+	// across the Verdict replacement they perform (via inheritMagnitude), so
+	// a route-B lock/unlock cycle keeps the shape's tracked size; they are
+	// cleared only when the entry itself goes — a route-A success
+	// (observeRouteALocked), TTL expiry (getLiveLocked) or LRU eviction.
 	magnitudeEMARows      float64
 	magnitudeObservations int
 	magnitudeObservedAt   time.Time
+}
+
+// inheritMagnitude copies prev's magnitude axis onto v and returns v, so a
+// state transition that replaces a Key's Verdict wholesale keeps the
+// shape's tracked size. The magnitude is a property of the SHAPE — how much
+// data a clean route-B drain for this Key moves — not of the verdict that
+// happened to be current when it was measured, so a route-B failure
+// demoting PreferB to Unknown, or the success that later re-promotes it,
+// is no reason to forget it: the engine's trivialRevalidation gate needs
+// MinCorroboratingFailures readings before it acts, and discarding them on
+// every transition would keep that gate permanently one reading short on
+// exactly the churny keys it exists for. A nil prev (no prior entry) is the
+// zero value: nothing to inherit.
+func (v *Verdict) inheritMagnitude(prev *Verdict) *Verdict {
+	if prev == nil {
+		return v
+	}
+	v.magnitudeEMARows = prev.magnitudeEMARows
+	v.magnitudeObservations = prev.magnitudeObservations
+	v.magnitudeObservedAt = prev.magnitudeObservedAt
+	return v
 }
 
 // Memo is the bounded, in-process failure-driven route memo (docs/solver.md
@@ -439,9 +466,16 @@ func (m *Memo) observeRouteAResourceFailureLocked(k Key, now time.Time) {
 }
 
 func (m *Memo) observeRouteBLocked(k Key, now time.Time, outcome Outcome) {
+	// Every arm below replaces the Verdict wholesale; prev is what it
+	// replaces, read once so each arm's inheritMagnitude sees the same
+	// entry the corroboration bookkeeping consulted (the raw map entry, not
+	// getLiveLocked's TTL-filtered view — the arms below already read
+	// corroboration off the raw entry, and the magnitude axis follows the
+	// same source rather than a second, differently-filtered one).
+	prev := m.entries[k]
 	switch outcome {
 	case OutcomeSuccess:
-		m.entries[k] = &Verdict{state: PreferB, createdAt: now}
+		m.entries[k] = (&Verdict{state: PreferB, createdAt: now}).inheritMagnitude(prev)
 	case OutcomeResourceFailure:
 		// BothFail needs the SAME corroboration route-A failures need before
 		// they earn probe eligibility. Writing it on the first failure was the
@@ -456,16 +490,17 @@ func (m *Memo) observeRouteBLocked(k Key, now time.Time, outcome Outcome) {
 		// A first failure demotes to Unknown carrying the count, so the next
 		// dispatch re-derives eligibility and may probe again; the second
 		// consecutive one locks out. A success anywhere resets by replacing
-		// the entry outright.
-		if v, ok := m.entries[k]; ok && v.state != BothFail && v.corroboration+1 < MinCorroboratingFailures {
-			m.entries[k] = &Verdict{state: Unknown, createdAt: now, corroboration: v.corroboration + 1}
+		// the entry outright (the magnitude axis rides along — see
+		// inheritMagnitude).
+		if prev != nil && prev.state != BothFail && prev.corroboration+1 < MinCorroboratingFailures {
+			m.entries[k] = (&Verdict{state: Unknown, createdAt: now, corroboration: prev.corroboration + 1}).inheritMagnitude(prev)
 			break
 		}
-		if _, ok := m.entries[k]; !ok && MinCorroboratingFailures > 1 {
+		if prev == nil && MinCorroboratingFailures > 1 {
 			m.entries[k] = &Verdict{state: Unknown, createdAt: now, corroboration: 1}
 			break
 		}
-		m.entries[k] = &Verdict{state: BothFail, createdAt: now}
+		m.entries[k] = (&Verdict{state: BothFail, createdAt: now}).inheritMagnitude(prev)
 	default:
 		return
 	}

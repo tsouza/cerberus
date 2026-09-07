@@ -1,19 +1,21 @@
 // chart-render-assert.mjs — behavioural render assertions for the cerberus Helm
-// chart's HA-hardening paths that kubeconform (schema-only) cannot check:
+// chart that kubeconform (schema-only) cannot check. Sections:
 //
-//   1. Split-mode PodDisruptionBudget: `mode: split` + podDisruptionBudget
-//      enabled renders ONE PDB per enabled head, each selecting only that head's
-//      pods via app.kubernetes.io/component=<svc>. Disabling a head drops its
-//      PDB. The monolith PDB render is unchanged (single aggregate PDB).
-//   2. Derived GOMEMLIMIT: each container gets a GOMEMLIMIT env sized to ~80% of
-//      THAT container's resources.limits.memory (per-head in split, per-pod in
-//      monolith); an explicit extraEnv GOMEMLIMIT always wins; an unset limit
-//      emits nothing.
-//   9+ Bundled-ClickHouse hot/cold storage tiering (cerberus issue #3075): the
-//      four-cell hotVolume x objectStorage matrix, the two `fail` guards, the
-//      tierVolume/tierAfter auto-defaulting rule (and its fixed suppression
-//      bug), the dedicated hot-volume PVC path, the NOTES.txt capacity
-//      warning, and the ClickHouse Service `sessionAffinity` default/opt-out.
+//    1. Split-mode PodDisruptionBudget: one PDB per enabled head, dropped with the head.
+//    2. Monolith PodDisruptionBudget: a single aggregate PDB, no per-head component selector.
+//    3. Derived GOMEMLIMIT, monolith: ~80% of the pod's resources.limits.memory.
+//    4. Derived GOMEMLIMIT, split: per head, from each head's own memory limit.
+//    5. Explicit extraEnv GOMEMLIMIT wins over the derived one, in both modes.
+//    6. Unset memory limit emits no GOMEMLIMIT at all.
+//    7. admit.{prom,loki,tempo} accept an integer concurrency cap (schema is not boolean-only).
+//    8. admit.tail is its own env knob, independent of admit.loki.
+//    9. Object-store mode unchanged: legacy disk/policy/volume shape; the ClickHouse Service gains ONLY sessionAffinity; the bare bundled default is hot/cold.
+//   10. hotVolume x objectStorage four-cell matrix + the two `fail` guards.
+//   11. cerberus.bundled.apply tierVolume/tierAfter defaulting (+ the per-signal-override suppression fix).
+//   12. hotVolume.persistence.enabled: dedicated PVC + mount, distinct hot-disk XML path.
+//   13. storagePolicyName operator override wins in every storage mode.
+//   14. ClickHouse Service sessionAffinity default-on / opt-out.
+//   15. dataShards.count (EXPERIMENTAL): count==1 byte-identical to the bare default; count>1 per-shard objects and env wiring, PDB split, keeper guard, fanoutCap apportionment, the experimental opt-in gate.
 //
 // Env contract:
 //   CHART_DIR   chart directory (default: deploy/helm/cerberus)
@@ -31,6 +33,23 @@ const CHART_DIR = process.env.CHART_DIR || 'deploy/helm/cerberus'
 const GOMEMLIMIT_HEADROOM = 0.8
 const MiB = 1048576
 const GiB = 1073741824
+
+// Shared `--set` prefixes, spread into every render below:
+//   BUNDLED      — the bundled ClickHouse data tier on (bare default: hot/cold storage mode).
+//   OBJECT_STORE — BUNDLED pinned to the pre-#3075 single-volume object-store mode.
+//   HOT_ONLY     — BUNDLED pinned to hot-only mode, with the schema.ttl that mode requires.
+//   SHARD_OPT_IN — the EXPERIMENTAL two-data-shard topology + its values-level consent, on top of any bundled base.
+//   SHARDED      — OBJECT_STORE + SHARD_OPT_IN.
+const BUNDLED = ['--set', 'clickhouse.bundled.enabled=true']
+const OBJECT_STORE = [...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=false']
+const HOT_ONLY = [
+  ...BUNDLED,
+  '--set', 'clickhouse.bundled.hotVolume.enabled=true',
+  '--set', 'clickhouse.bundled.objectStorage.enabled=false',
+  '--set', 'schema.ttl=30d',
+]
+const SHARD_OPT_IN = ['--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true']
+const SHARDED = [...OBJECT_STORE, ...SHARD_OPT_IN]
 
 function tpl(args) {
   return execFileSync('helm', ['template', 'rn', CHART_DIR, ...args], {
@@ -190,14 +209,14 @@ function count(haystack, needle) {
 // mode requires hotVolume.enabled=false EXPLICITLY here — it is no longer the
 // bare `clickhouse.bundled.enabled=true` default (that is now hot-cold). ---
 {
-  const out = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '-s', 'templates/clickhouse/configmap-config.yaml'])
+  const out = tpl([...OBJECT_STORE, '-s', 'templates/clickhouse/configmap-config.yaml'])
   check(out.includes('<bwc_object_disk>'), 'object-store mode: legacy bwc_object_disk name unchanged')
   check(out.includes('<bwc_object_cache>'), 'object-store mode: legacy bwc_object_cache name unchanged')
   check(/<main>\s*<disk>bwc_object_cache<\/disk>\s*<\/main>/.test(out), 'object-store mode: legacy single "main" volume unchanged')
   check(out.includes('<bwc_object_store>'), 'object-store mode: default policy name bwc_object_store unchanged')
   check(!out.includes('bwc_hot_disk'), 'object-store mode: no hot disk rendered')
 
-  const svc = tpl(['--set', 'clickhouse.bundled.enabled=true', '-s', 'templates/clickhouse/service.yaml'])
+  const svc = tpl([...BUNDLED, '-s', 'templates/clickhouse/service.yaml'])
   const clusterIPSvc = svc.split('---')[1]
   const stripped = clusterIPSvc.replace(/\n\s*sessionAffinity:.*\n(\s*sessionAffinityConfig:\n(?:\s{4,}.*\n)*)?/, '\n')
   check(
@@ -209,7 +228,7 @@ function count(haystack, needle) {
   // The bare default (no hotVolume/objectStorage override at all) resolves to
   // hot-cold — locking this in explicitly guards against the default silently
   // flipping back (or to something else) unnoticed.
-  const bareDefault = tpl(['--set', 'clickhouse.bundled.enabled=true', '-s', 'templates/clickhouse/configmap-config.yaml'])
+  const bareDefault = tpl([...BUNDLED, '-s', 'templates/clickhouse/configmap-config.yaml'])
   check(bareDefault.includes('<bwc_hot_cold>'), 'bare default (clickhouse.bundled.enabled=true alone) resolves to hot-cold mode')
   check(bareDefault.includes('<bwc_hot_disk>'), 'bare default renders the local hot disk')
 }
@@ -217,8 +236,7 @@ function count(haystack, needle) {
 // --- 10. hotVolume x objectStorage four-cell matrix + the two `fail` guards.
 {
   const bothOff = tplFail([
-    '--set', 'clickhouse.bundled.enabled=true',
-    '--set', 'clickhouse.bundled.hotVolume.enabled=false',
+    ...OBJECT_STORE,
     '--set', 'clickhouse.bundled.objectStorage.enabled=false',
   ])
   check(bothOff !== null, 'hotVolume=false + objectStorage=false: render FAILS')
@@ -228,26 +246,20 @@ function count(haystack, needle) {
   )
 
   const hotOnlyNoTTL = tplFail([
-    '--set', 'clickhouse.bundled.enabled=true',
+    ...BUNDLED,
     '--set', 'clickhouse.bundled.hotVolume.enabled=true',
     '--set', 'clickhouse.bundled.objectStorage.enabled=false',
   ])
   check(hotOnlyNoTTL !== null, 'hot-only mode with schema.ttl unset: render FAILS')
   check(hotOnlyNoTTL && /schema\.ttl/.test(hotOnlyNoTTL), 'the hot-only-no-ttl failure names schema.ttl')
 
-  const hotOnlyArgs = [
-    '--set', 'clickhouse.bundled.enabled=true',
-    '--set', 'clickhouse.bundled.hotVolume.enabled=true',
-    '--set', 'clickhouse.bundled.objectStorage.enabled=false',
-    '--set', 'schema.ttl=30d',
-  ]
-  const hotOnly = tpl([...hotOnlyArgs, '-s', 'templates/clickhouse/configmap-config.yaml'])
+  const hotOnly = tpl([...HOT_ONLY, '-s', 'templates/clickhouse/configmap-config.yaml'])
   check(hotOnly.includes('<bwc_hot_only>'), 'hot-only mode: policy name bwc_hot_only')
   check(hotOnly.includes('<bwc_hot_disk>'), 'hot-only mode: local hot disk rendered')
   check(!hotOnly.includes('bwc_object_disk') && !hotOnly.includes('bwc_object_cache'), 'hot-only mode: NO object-store disk/cache rendered')
   check(!hotOnly.includes('<cold>'), 'hot-only mode: single volume only, no cold volume')
 
-  const hotOnlyFull = tpl(hotOnlyArgs)
+  const hotOnlyFull = tpl(HOT_ONLY)
   check(!hotOnlyFull.includes('kind: Secret'), 'hot-only mode: no object-store Secret rendered')
   check(!/S3_ACCESS_KEY_ID|GCS_ACCESS_KEY_ID|AZURE_ACCOUNT_NAME/.test(hotOnlyFull), 'hot-only mode: no object-store credential env vars rendered')
 
@@ -299,11 +311,11 @@ function count(haystack, needle) {
 // --- 12. hotVolume.persistence.enabled: dedicated PVC + mount, hot disk XML
 // path differs from the zero-new-PVC default subpath.
 {
-  const defaultPath = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=true', '--set', 'schema.ttl=30d', '-s', 'templates/clickhouse/configmap-config.yaml'])
+  const defaultPath = tpl([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=true', '--set', 'schema.ttl=30d', '-s', 'templates/clickhouse/configmap-config.yaml'])
   check(defaultPath.includes('<path>/var/lib/clickhouse/hot/</path>'), 'default hot volume: XML path is a subpath of the metadata mount')
 
   const dedicatedArgs = [
-    '--set', 'clickhouse.bundled.enabled=true',
+    ...BUNDLED,
     '--set', 'clickhouse.bundled.hotVolume.enabled=true',
     '--set', 'schema.ttl=30d',
     '--set', 'clickhouse.bundled.hotVolume.persistence.enabled=true',
@@ -315,10 +327,15 @@ function count(haystack, needle) {
 
   const dedicatedSts = tpl([...dedicatedArgs, '-s', 'templates/clickhouse/statefulset.yaml'])
   check(/name: hot\s*\n\s*mountPath: \/var\/lib\/clickhouse-hot/.test(dedicatedSts), 'dedicated hot volume: StatefulSet mounts a dedicated "hot" volume')
-  check(count(dedicatedSts, 'name: hot\n') > 0, 'dedicated hot volume: volumeClaimTemplate "hot" section present')
-  check(/name: hot[\s\S]*?storage: "50Gi"/.test(dedicatedSts), 'dedicated hot volume: volumeClaimTemplate sized from hotVolume.persistence.size')
+  // Scoped to the volumeClaimTemplates: section — the volumeMount asserted
+  // above already carries a `name: hot` line, so an unscoped search would
+  // pass with no claim template at all.
+  const claimTemplatesAt = dedicatedSts.indexOf('volumeClaimTemplates:')
+  const claimTemplates = claimTemplatesAt < 0 ? '' : dedicatedSts.slice(claimTemplatesAt)
+  check(claimTemplates.includes('name: hot\n'), 'dedicated hot volume: volumeClaimTemplates carries a "hot" claim (not just the volumeMount)')
+  check(/name: hot[\s\S]*?storage: "50Gi"/.test(claimTemplates), 'dedicated hot volume: the "hot" volumeClaimTemplate is sized from hotVolume.persistence.size')
 
-  const nonDedicatedSts = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=true', '--set', 'schema.ttl=30d', '-s', 'templates/clickhouse/statefulset.yaml'])
+  const nonDedicatedSts = tpl([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=true', '--set', 'schema.ttl=30d', '-s', 'templates/clickhouse/statefulset.yaml'])
   check(!nonDedicatedSts.includes('mountPath: /var/lib/clickhouse-hot'), 'default (non-dedicated) hot volume: no separate StatefulSet mount/PVC')
 }
 
@@ -326,10 +343,10 @@ function count(haystack, needle) {
 {
   for (const args of [
     // object-store mode (explicit — the bare default is hot-cold since #3075).
-    ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
-    ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=true', '--set', 'clickhouse.bundled.objectStorage.enabled=false', '--set', 'schema.ttl=30d', '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
+    [...OBJECT_STORE, '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
+    [...HOT_ONLY, '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
     // hot-cold mode (the bare default).
-    ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
+    [...BUNDLED, '--set', 'clickhouse.bundled.storagePolicyName=custom_policy'],
   ]) {
     const out = tpl([...args, '-s', 'templates/clickhouse/configmap-config.yaml'])
     check(out.includes('<custom_policy>'), `operator-set storagePolicyName wins over the mode-derived default (args: ${args.join(' ')})`)
@@ -338,14 +355,14 @@ function count(haystack, needle) {
 
 // --- 14. ClickHouse Service sessionAffinity default-on / opt-out. ---
 {
-  const def = tpl(['--set', 'clickhouse.bundled.enabled=true', '-s', 'templates/clickhouse/service.yaml'])
+  const def = tpl([...BUNDLED, '-s', 'templates/clickhouse/service.yaml'])
   check(def.includes('sessionAffinity: ClientIP'), 'sessionAffinity defaults to ClientIP')
   check(def.includes('timeoutSeconds: 10800'), 'sessionAffinityTimeoutSeconds defaults to 10800')
 
-  const customTimeout = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.service.sessionAffinityTimeoutSeconds=60', '-s', 'templates/clickhouse/service.yaml'])
+  const customTimeout = tpl([...BUNDLED, '--set', 'clickhouse.bundled.service.sessionAffinityTimeoutSeconds=60', '-s', 'templates/clickhouse/service.yaml'])
   check(customTimeout.includes('timeoutSeconds: 60'), 'sessionAffinityTimeoutSeconds is overridable')
 
-  const optOut = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.service.sessionAffinity=None', '-s', 'templates/clickhouse/service.yaml'])
+  const optOut = tpl([...BUNDLED, '--set', 'clickhouse.bundled.service.sessionAffinity=None', '-s', 'templates/clickhouse/service.yaml'])
   check(optOut.includes('sessionAffinity: None'), 'sessionAffinity: "None" disables affinity')
   check(!optOut.includes('sessionAffinityConfig'), 'sessionAffinity: "None" omits sessionAffinityConfig entirely')
 }
@@ -360,8 +377,8 @@ function count(haystack, needle) {
 // dataShards.count>1 `fail` guard (both ACPR findings against the initial
 // implementation).
 {
-  const bareDefault = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false'])
-  const explicitOne = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=1'])
+  const bareDefault = tpl([...OBJECT_STORE])
+  const explicitOne = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.dataShards.count=1'])
   check(bareDefault === explicitOne, 'dataShards.count=1 renders BYTE-IDENTICAL to the bare default (no dataShards set at all)')
   check(!bareDefault.includes('-datashard-'), 'dataShards.count=1: no -datashard- suffix anywhere in the render')
   check(!bareDefault.includes('macros-datashard-'), 'dataShards.count=1: no macros-datashard-<i>.xml ConfigMap key')
@@ -369,21 +386,47 @@ function count(haystack, needle) {
 
   // replicas=2 so cluster.xml (and its literal <shard>01</shard>) actually
   // renders (Keeper/cluster.xml only exist once keeperEnabled is true).
-  const bareDefaultReplicated = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.replicas=2'])
-  const explicitOneReplicated = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.replicas=2', '--set', 'clickhouse.bundled.dataShards.count=1'])
+  const bareDefaultReplicated = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2'])
+  const explicitOneReplicated = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2', '--set', 'clickhouse.bundled.dataShards.count=1'])
   check(bareDefaultReplicated === explicitOneReplicated, 'dataShards.count=1 + replicas=2: still BYTE-IDENTICAL to the bare default')
   check(bareDefaultReplicated.includes('<shard>01</shard>'), 'dataShards.count=1: cluster.xml keeps the literal <shard>01</shard>')
 
   // Every count>1 render below opts into the EXPERIMENTAL path explicitly —
   // the gate itself is asserted at the end of this block.
-  const n2 = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true'])
+  const n2 = tpl(SHARDED)
   check(count(n2, 'kind: StatefulSet') === 3, 'dataShards.count=2 at replicas=1: Keeper + 2 per-shard ClickHouse StatefulSets')
-  for (const i of [0, 1]) {
-    check(n2.includes(`name: rn-cerberus-clickhouse-datashard-${i}\n`), `dataShards.count=2: StatefulSet name for shard ${i} carries -datashard-${i} (INCLUDING index 0)`)
-    check(n2.includes(`name: rn-cerberus-clickhouse-headless-datashard-${i}\n`), `dataShards.count=2: headless Service name for shard ${i}`)
-    check(n2.includes(`macros-datashard-${i}.xml:`), `dataShards.count=2: macros-datashard-${i}.xml ConfigMap key present`)
+  // Exact per-shard identifier inventory for the N=2 render. The render is
+  // deterministic, so every count below is exact — a floor (`>= n`) would
+  // keep passing while an object silently gained or lost its suffix.
+  const SHARD_NAME_SITES = {
+    // `name: <fullname>-datashard-<i>`: the per-shard ClusterIP Service + StatefulSet.
+    clusterIPServiceAndStatefulSet: 2,
+    // `name: <headlessName>-datashard-<i>`: the per-shard headless Service.
+    headlessService: 1,
+    // `serviceName:` on the per-shard StatefulSet.
+    statefulSetServiceName: 1,
+    // `macros-datashard-<i>.xml`: the ConfigMap key + the StatefulSet config volume's items[].key alias.
+    macrosKey: 2,
+    // remote_servers.xml `<host>`: the shard's pod-0 FQDN through its own headless Service.
+    remoteServersHost: 1,
   }
-  check(count(n2, '-datashard-') >= 8, 'dataShards.count=2: -datashard- suffix appears on every per-shard object (StatefulSets, Services, ConfigMap keys)')
+  // `cerberus.io/data-shard: "<i>"` discriminator sites, by object.
+  const DATA_SHARD_LABEL_SITES = {
+    clusterIPService: 2, // metadata.labels + spec.selector
+    headlessService: 2, // metadata.labels + spec.selector
+    statefulSet: 5, // metadata.labels, spec.selector.matchLabels, pod template labels, podAntiAffinity labelSelector, volumeClaimTemplate labels
+  }
+  const dataShardLabelSites = Object.values(DATA_SHARD_LABEL_SITES).reduce((sum, n) => sum + n, 0)
+  for (const i of [0, 1]) {
+    check(count(n2, `name: rn-cerberus-clickhouse-datashard-${i}\n`) === SHARD_NAME_SITES.clusterIPServiceAndStatefulSet, `dataShards.count=2: shard ${i}'s -datashard-${i} name (INCLUDING index 0) on exactly its ClusterIP Service + StatefulSet`)
+    check(count(n2, `name: rn-cerberus-clickhouse-headless-datashard-${i}\n`) === SHARD_NAME_SITES.headlessService, `dataShards.count=2: exactly one headless Service named for shard ${i}`)
+    check(count(n2, `serviceName: rn-cerberus-clickhouse-headless-datashard-${i}\n`) === SHARD_NAME_SITES.statefulSetServiceName, `dataShards.count=2: shard ${i}'s StatefulSet serviceName points at its own headless Service`)
+    check(count(n2, `macros-datashard-${i}.xml`) === SHARD_NAME_SITES.macrosKey, `dataShards.count=2: macros-datashard-${i}.xml appears exactly as the ConfigMap key + the config volume's items[].key alias`)
+    check(count(n2, `<host>rn-cerberus-clickhouse-datashard-${i}-0.rn-cerberus-clickhouse-headless-datashard-${i}.`) === SHARD_NAME_SITES.remoteServersHost, `dataShards.count=2: remote_servers.xml lists shard ${i}'s pod-0 through its own headless Service exactly once`)
+    // Each per-shard StatefulSet/Service pair carries a DISTINCT selector (no
+    // cross-shard pod-ownership collision between StatefulSet controllers).
+    check(count(n2, `cerberus.io/data-shard: "${i}"`) === dataShardLabelSites, `dataShards.count=2: shard-${i} discriminator label on exactly the ${dataShardLabelSites} label/selector sites of its ClusterIP Service, headless Service and StatefulSet`)
+  }
   check(n2.includes('CERBERUS_CH_DATA_SHARDS: "2"'), 'dataShards.count=2: CERBERUS_CH_DATA_SHARDS wired to the solver')
   check(n2.includes('CERBERUS_SCHEMA_CLUSTER: "bwc_cluster"'), 'dataShards.count=2: CERBERUS_SCHEMA_CLUSTER defaulted for the Distributed/ON CLUSTER DDL')
   // #3075's sessionAffinity Service block wrapped unchanged in every per-shard Service.
@@ -391,11 +434,6 @@ function count(haystack, needle) {
   check(count(n2, 'timeoutSeconds: 10800') === 2, 'dataShards.count=2: sessionAffinityTimeoutSeconds default on BOTH per-shard Services')
   // Keeper auto-enables from dataShardCount>1 alone, even at bundled.replicas==1.
   check(n2.includes('kind: StatefulSet') && n2.includes('rn-cerberus-keeper'), 'dataShards.count=2 at replicas=1: Keeper ensemble still auto-enabled')
-
-  // Each per-shard StatefulSet/Service pair carries a DISTINCT selector (no
-  // cross-shard pod-ownership collision between StatefulSet controllers).
-  check(count(n2, 'cerberus.io/data-shard: "0"') >= 3, 'dataShards.count=2: shard-0 discriminator label present on StatefulSet + both Services')
-  check(count(n2, 'cerberus.io/data-shard: "1"') >= 3, 'dataShards.count=2: shard-1 discriminator label present on StatefulSet + both Services')
 
   // bundled.replicas>1 (multi-replica PER SHARD) TOGETHER with
   // dataShards.count>1 — the shared {shard}/{replica} macro combination
@@ -407,7 +445,7 @@ function count(haystack, needle) {
   // string, still sharing the same {shard}/{replica} macro slot.
   const replicatedPlusShards = tpl([
     '-f', `${CHART_DIR}/ci/bwc-replicated-values.yaml`,
-    '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true',
+    ...SHARD_OPT_IN,
   ])
   check(!replicatedPlusShards.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED'), 'replicated+dataShards: the plain Replicated-DATABASE env is NOT wired (mutually exclusive with ON CLUSTER)')
   check(replicatedPlusShards.includes("CERBERUS_SCHEMA_TABLE_ENGINE: \"ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')\""), 'replicated+dataShards: classic explicit ReplicatedMergeTree engine defaulted instead')
@@ -420,8 +458,7 @@ function count(haystack, needle) {
   // the combination internal/schema/ddl's TestDataShardCount_ReplicatedCombination
   // proves renders correctly) is respected, not silently overridden.
   const operatorChoosesReplicatedDB = tpl([
-    '--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false',
-    '--set', 'clickhouse.bundled.replicas=2', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true',
+    ...SHARDED, '--set', 'clickhouse.bundled.replicas=2',
     '--set', 'schema.replicated.enabled=true', '--set', 'schema.replicated.zookeeperPath=/clickhouse/databases/otel',
   ])
   check(operatorChoosesReplicatedDB.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED: "true"'), 'operator-forced schema.replicated.enabled=true wins even under dataShards.count>1')
@@ -448,59 +485,73 @@ function count(haystack, needle) {
   // <i>.xml keys that configmap-config.yaml only emits when Keeper is
   // enabled (ACPR finding: this combination previously left pods stuck in
   // ContainerCreating with no render-time signal at all).
-  const keeperOffWithShards = tplFail([
-    '--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false',
-    '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true', '--set', 'clickhouse.bundled.keeper.enabled=false',
-  ])
+  const keeperOffWithShards = tplFail([...SHARDED, '--set', 'clickhouse.bundled.keeper.enabled=false'])
   check(keeperOffWithShards !== null, 'keeper.enabled=false + dataShards.count=2: render FAILS')
   check(keeperOffWithShards && /keeper\.enabled/.test(keeperOffWithShards) && /dataShards\.count/.test(keeperOffWithShards), 'the keeper-off-with-shards failure names BOTH keeper.enabled and dataShards.count')
 
   // The SAME override at dataShards.count<=1 is unaffected (pre-existing,
   // soft-degrade behavior is untouched by this guard).
-  const keeperOffNoShards = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.keeper.enabled=false'])
+  const keeperOffNoShards = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.keeper.enabled=false'])
   check(!keeperOffNoShards.includes('kind: StatefulSet\nmetadata:\n  name: rn-cerberus-keeper'), 'keeper.enabled=false + dataShards.count<=1: still renders (no Keeper StatefulSet), unaffected by the new guard')
 
-  // dataShards.fanoutCap (cerberus issue #3128): a CLUSTER-WIDE budget the
-  // chart apportions across the effective cerberus replica count into the
-  // binary's per-process CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP. Every
-  // divisor source is pinned (replicaCount, HPA maxReplicas, split-mode
-  // head sum), plus every refused shape.
-  const shardBase = ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true']
+  // dataShards.fanoutCap: a CLUSTER-WIDE budget the chart apportions across
+  // the effective cerberus replica count into the binary's per-process
+  // CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP. Every divisor source is pinned
+  // (replicaCount, HPA maxReplicas, split-mode head sum), plus every refused
+  // shape.
   const capEnv = (n) => `CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: "${n}"`
-  const capReplicaCount = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
+  const capReplicaCount = tpl([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
   check(capReplicaCount.includes(capEnv(4)), 'dataShards.fanoutCap=16 / replicaCount=4 (HPA off): per-process CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=4')
-  const capHpa = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=1', '--set', 'autoscaling.enabled=true', '--set', 'autoscaling.maxReplicas=8'])
+  const capHpa = tpl([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=1', '--set', 'autoscaling.enabled=true', '--set', 'autoscaling.maxReplicas=8'])
   check(capHpa.includes(capEnv(2)), 'dataShards.fanoutCap=16 with the HPA on: apportioned by autoscaling.maxReplicas=8 (not replicaCount) -> 2 per process')
-  const capSplit = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'mode=split', '--set', 'replicaCount=1', '--set', 'split.tempo.replicaCount=2', '--set', 'autoscaling.enabled=true', '--set', 'autoscaling.maxReplicas=99'])
+  const capSplit = tpl([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'mode=split', '--set', 'replicaCount=1', '--set', 'split.tempo.replicaCount=2', '--set', 'autoscaling.enabled=true', '--set', 'autoscaling.maxReplicas=99'])
   check(capSplit.includes(capEnv(4)), 'dataShards.fanoutCap=16 in mode=split: apportioned by the SUM of every enabled head replicaCount (1+1+2=4, HPA ignored) -> 4 per process')
-  const capSplitDisabledHead = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'mode=split', '--set', 'replicaCount=1', '--set', 'split.loki.enabled=false', '--set', 'autoscaling.enabled=false'])
+  const capSplitDisabledHead = tpl([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'mode=split', '--set', 'replicaCount=1', '--set', 'split.loki.enabled=false', '--set', 'autoscaling.enabled=false'])
   check(capSplitDisabledHead.includes(capEnv(8)), 'dataShards.fanoutCap=16 in mode=split with a head disabled: that head is left out of the divisor (1+1=2) -> 8 per process')
-  const capFloor = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=17', '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
+  const capFloor = tpl([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=17', '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
   check(capFloor.includes(capEnv(4)), 'dataShards.fanoutCap=17 / 4 replicas floors to 4 per process (never rounds the budget UP)')
-  const capBelowWidth = tplFail([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=8', '--set', 'replicaCount=8', '--set', 'autoscaling.enabled=false'])
+  const capBelowWidth = tplFail([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=8', '--set', 'replicaCount=8', '--set', 'autoscaling.enabled=false'])
   check(capBelowWidth !== null && /fanoutCap=8/.test(capBelowWidth) && /below dataShards.count=2/.test(capBelowWidth), 'dataShards.fanoutCap=8 / 8 replicas = 1 per process < dataShards.count=2: render FAILS naming the arithmetic')
-  const capWithExplicit = tplFail([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=2', '--set', 'autoscaling.enabled=false', '--set', 'config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=5'])
+  const capWithExplicit = tplFail([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=2', '--set', 'autoscaling.enabled=false', '--set', 'config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=5'])
   check(capWithExplicit !== null && /both set and disagree/.test(capWithExplicit), 'dataShards.fanoutCap + a DIFFERENT explicit config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: render FAILS (contradicting scopes for one knob)')
-  const capRenderedTwice = tpl([...shardBase, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=2', '--set', 'autoscaling.enabled=false'])
+  const capRenderedTwice = tpl([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=2', '--set', 'autoscaling.enabled=false'])
   check((capRenderedTwice.match(/CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP: "8"/g) || []).length === 1, 'dataShards.fanoutCap apportionment is idempotent across the several nonSecretEnv passes one render makes (one env line, value 8, no self-contradiction)')
-  const capSingleShard = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.fanoutCap=16'])
+  const capSingleShard = tplFail([...OBJECT_STORE, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16'])
   check(capSingleShard !== null && /dataShards.count is 1/.test(capSingleShard), 'dataShards.fanoutCap at dataShards.count=1: render FAILS (no gate exists to budget)')
-  const noCap = tpl([...shardBase, '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
+  const noCap = tpl([...SHARDED, '--set', 'replicaCount=4', '--set', 'autoscaling.enabled=false'])
   check(!noCap.includes('CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP'), 'dataShards.fanoutCap unset (default null): no CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP emitted — the per-process default stays the binary\'s own')
+  // A values-file integer loads as float64 (--set-json produces the same
+  // float64 a values file does; plain --set yields int64 and never hit this):
+  // the explicit-vs-apportioned equality check must compare the numOrStr
+  // rendering, or 1000000 spells itself "1e+06" and an explicit cap that
+  // AGREES with the apportioned share is refused as a disagreement.
+  const floatCapArgs = [...SHARDED, '--set-json', 'clickhouse.bundled.dataShards.fanoutCap=2000000', '--set', 'replicaCount=2', '--set', 'autoscaling.enabled=false']
+  const capFloatAgrees = tpl([...floatCapArgs, '--set-json', 'config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=1000000'])
+  check(count(capFloatAgrees, capEnv(1000000)) === 1, 'dataShards.fanoutCap=2000000 / replicaCount=2 with an AGREEING explicit config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=1000000 supplied as float64: renders exactly one env line "1000000" — never "1e+06", never a false disagreement')
+  const capFloatDisagrees = tplFail([...floatCapArgs, '--set-json', 'config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP=1000001'])
+  check(capFloatDisagrees !== null && /=1000001 \(per-process/.test(capFloatDisagrees) && !/e\+0/.test(capFloatDisagrees), 'a genuinely DIFFERENT float64 explicit cap (1000001) still FAILS, and the message spells it 1000001, not in scientific notation')
+  // A zero divisor has no process to carry any share: refused by name
+  // (replicaCount / autoscaling.maxReplicas / split.<head>.replicaCount),
+  // never a Go template "integer divide by zero" panic.
+  const zeroDivisorMessage = (out) => out !== null && /replicaCount/.test(out) && /split\.<head>\.replicaCount/.test(out) && !/divide by zero/.test(out)
+  const capZeroReplicas = tplFail([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'replicaCount=0', '--set', 'autoscaling.enabled=false'])
+  check(zeroDivisorMessage(capZeroReplicas), 'dataShards.fanoutCap at replicaCount=0 (HPA off): render FAILS with a curated message naming replicaCount / split.<head>.replicaCount, not a divide-by-zero panic')
+  const capSplitNoHeads = tplFail([...SHARDED, '--set', 'clickhouse.bundled.dataShards.fanoutCap=16', '--set', 'mode=split', '--set', 'split.prometheus.enabled=false', '--set', 'split.loki.enabled=false', '--set', 'split.tempo.enabled=false'])
+  check(zeroDivisorMessage(capSplitNoHeads), 'dataShards.fanoutCap in mode=split with every head disabled (divisor 0): the same curated failure, not a divide-by-zero panic')
 
   // EXPERIMENTAL gate (epic #3074): dataShards.count>1 is off by default and
   // refuses to render without the explicit values-level opt-in; the opt-in is
   // forwarded to the binary as CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE so
   // internal/config's own boot-time gate makes the same decision; and the
   // opt-in alone (count<=1) changes nothing at all.
-  const shardsWithoutOptIn = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2'])
+  const shardsWithoutOptIn = tplFail([...OBJECT_STORE, '--set', 'clickhouse.bundled.dataShards.count=2'])
   check(shardsWithoutOptIn !== null, 'dataShards.count=2 WITHOUT experimentalDistributedMode: render FAILS (experimental, off by default)')
   check(shardsWithoutOptIn && /experimentalDistributedMode/.test(shardsWithoutOptIn) && /EXPERIMENTAL/.test(shardsWithoutOptIn), 'the missing-opt-in failure names experimentalDistributedMode and says EXPERIMENTAL')
-  const shardsOptInFalse = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=false'])
+  const shardsOptInFalse = tplFail([...OBJECT_STORE, '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=false'])
   check(shardsOptInFalse !== null, 'dataShards.count=2 + experimentalDistributedMode=false (explicit): render FAILS')
   check(n2.includes('CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE: "true"'), 'dataShards.count=2 + opt-in: CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE forwarded to the binary')
   check(!bareDefault.includes('CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE'), 'dataShards.count=1: CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE never emitted')
-  const optInAlone = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.experimentalDistributedMode=true'])
+  const optInAlone = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.experimentalDistributedMode=true'])
   check(optInAlone === bareDefault, 'experimentalDistributedMode=true at dataShards.count=1 renders BYTE-IDENTICAL to the bare default (the opt-in alone changes nothing)')
 
   // Every per-shard PodDisruptionBudget scopes minAvailable to ITS OWN
@@ -508,13 +559,13 @@ function count(haystack, needle) {
   // single shared-selector PDB would let minAvailable be satisfied by ANY
   // shard's surviving pods, so an eviction could legally drain an entire
   // OTHER shard at once).
-  const n2Pdb = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true', '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
+  const n2Pdb = tpl([...SHARDED, '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
   check(count(n2Pdb, 'kind: PodDisruptionBudget') === 2, 'dataShards.count=2 + podDisruptionBudget.enabled: ONE PodDisruptionBudget PER shard, not a single shared one')
   for (const i of [0, 1]) {
     check(n2Pdb.includes(`name: rn-cerberus-clickhouse-datashard-${i}\n`), `dataShards.count=2: PodDisruptionBudget name for shard ${i} carries -datashard-${i}`)
   }
-  const pdbBareDefault = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
-  const pdbExplicitOne = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false', '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true', '--set', 'clickhouse.bundled.dataShards.count=1'])
+  const pdbBareDefault = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
+  const pdbExplicitOne = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true', '--set', 'clickhouse.bundled.dataShards.count=1'])
   check(pdbBareDefault === pdbExplicitOne, 'PodDisruptionBudget: dataShards.count=1 renders BYTE-IDENTICAL to the bare default')
 }
 

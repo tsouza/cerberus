@@ -2213,7 +2213,7 @@ func buildSolver(
 	// limitation that matters most for a production reader.
 	if cfg.DataShardCount > 1 {
 		logger.Warn(
-			"EXPERIMENTAL: ClickHouse Distributed-table multi-shard routing is enabled; it is not production-supported, and its admission-control ceiling is per cerberus process, not cluster-wide (cerberus issue #3128)",
+			"EXPERIMENTAL: ClickHouse Distributed-table multi-shard routing is enabled; it is not production-supported, and its admission-control ceiling is per cerberus process unless the chart's clickhouse.bundled.dataShards.fanoutCap budget apportions one",
 			"data_shard_count", cfg.DataShardCount,
 			"opt_in", "CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true",
 		)

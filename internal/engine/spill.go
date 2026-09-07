@@ -89,7 +89,12 @@ func spillThreshold(maxMemory int64) int64 {
 }
 
 // applySpillSettings stamps the external-group-by AND external-sort spill
-// thresholds on ctx for EVERY data-plane query.
+// thresholds on ctx for EVERY data-plane query — route A's execContext with
+// the whole cap, and route B's routeBExecCtx with the per-shard cap (the
+// route-A cap apportioned by decision.K). The shard's threshold is therefore
+// at most the same fraction of its own limit that route A's is of the whole,
+// and a smaller one whenever admission throttles kEff below K — spilling
+// earlier than strictly necessary, never later than the abort.
 //
 // It is UNCONDITIONAL rather than scoped to one plan shape because the OOM-prone
 // GROUP BY / sort is not unique to TraceQL compare(): any head can

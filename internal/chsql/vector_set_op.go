@@ -808,11 +808,14 @@ func setOpInSubqueryFrag(s *chplan.VectorSetOp, sub Frag, in bool) Frag {
 	inner := NewQuery().
 		Select(append([]Frag{Distinct(keys[0])}, keys[1:]...)...).
 		From(sub)
-	// inner.Frag() already wraps the SELECT in parens; In / NotInSubquery
-	// each add the outer membership parens, giving the existing
-	// `<key> [NOT] IN ((SELECT DISTINCT … FROM …))` byte shape.
+	// Both directions go through the subquery-membership constructors
+	// (never the list-form In): they decide GLOBAL from the subquery's own
+	// physical-scan count, and a set operation's inner side scans the
+	// metrics tables by construction. inner.Frag() self-parenthesises;
+	// NotInSubquery adds its own outer pair (`NOT IN ((SELECT …))`),
+	// InSubquery does not (`IN (SELECT …)`).
 	if in {
-		return In(sig, inner.Frag())
+		return InSubquery(sig, inner.Frag())
 	}
 	return NotInSubquery(sig, inner.Frag())
 }

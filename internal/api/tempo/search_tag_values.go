@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
@@ -173,14 +174,15 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 	}
 	if !fromCatalog && !instrumentationUnconfigured {
 		var (
-			sqlStr string
-			args   []any
+			sqlStr        string
+			args          []any
+			physicalScans int
 		)
 		if resolved.IsIntrinsic {
-			sqlStr, args = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end, h.AttrStrategies)
+			sqlStr, args, physicalScans = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end, h.AttrStrategies)
 			valueTyp = intrinsicType(resolved.IntrinsicName)
 		} else {
-			sqlStr, args = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end, h.AttrStrategies)
+			sqlStr, args, physicalScans = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end, h.AttrStrategies)
 		}
 		h.Logger.Debug("cerberus tempo /search/tag/values",
 			"tag", name,
@@ -190,7 +192,11 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 			"sql", sqlStr,
 			"args", telemetry.SanitizeArgsForLog(args))
 
-		values, err = h.Client.QueryStrings(ctx, sqlStr, args...)
+		// Engine bypass: stamp the data-shard fan-out weight from the emitted
+		// statement's own scan count. The auto-scope shape UNION-ALLs a span
+		// arm and a resource arm over the SAME spans table, and each arm is
+		// its own Distributed fan-out on a multi-data-shard deployment.
+		values, err = h.Client.QueryStrings(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sqlStr, args...)
 		if err != nil {
 			h.Logger.Error("cerberus tempo /search/tag/values CH query failed", "err", err, "tag", name)
 			writeError(w, tagsErrStatus(err), "", "", err)
@@ -225,10 +231,10 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 // `filter` is the optional `?q=` span-row predicate (see
 // search_tags_filter.go); a nil filter appends no clause, so a request
 // without `q` renders exactly the SQL it always did.
-func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
+func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any, int) {
 	sb := chsql.NewQuery().
 		Select(distinctToStringFrag(col)).
-		From(chsql.Col(s.SpansTable)).
+		From(chsql.PhysicalTable(s.SpansTable)).
 		WithAttrStrategies(strategies)
 	if !start.IsZero() {
 		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
@@ -239,7 +245,7 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, sta
 	if filter != nil {
 		sb.Where(filter)
 	}
-	return sb.Build()
+	return sb.BuildCounted()
 }
 
 // buildAttributeValuesSQL builds the SELECT for a dynamic-attribute
@@ -306,7 +312,7 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, sta
 // it short-circuits to an empty result instead, the same treatment
 // attributeTagScopes() already gives an unconfigured instrumentation
 // bucket for /search/tags.
-func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
+func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any, int) {
 	switch scope {
 	case attrMapScopeEvent:
 		return buildNestedAttributeValuesSQL(s, s.EventsColumn, name, filter, start, end, strategies)
@@ -379,7 +385,7 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 	}
 	inner := chsql.NewQuery().
 		Select(selFrag).
-		From(chsql.Col(s.SpansTable)).
+		From(chsql.PhysicalTable(s.SpansTable)).
 		Where(whereFrag).
 		WithAttrStrategies(strategies)
 	if !start.IsZero() {
@@ -397,7 +403,7 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 		From(inner.Frag()).
 		Where(nonEmptyFrag("v")).
 		WithAttrStrategies(strategies)
-	return outer.Build()
+	return outer.BuildCounted()
 }
 
 // buildNestedAttributeValuesSQL is buildAttributeValuesSQL's single-scope
@@ -423,10 +429,10 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 // auto-scope form — an event./link. prefix is always a single-scope
 // request (see resolveTagName) — so unlike its flat-Map sibling this
 // builder has no attrMapScopeAny-shaped union branch to consider.
-func buildNestedAttributeValuesSQL(s schema.Traces, nestedCol, name string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
+func buildNestedAttributeValuesSQL(s schema.Traces, nestedCol, name string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any, int) {
 	inner := chsql.NewQuery().
 		Select(chsql.Col("v")).
-		From(chsql.Col(s.SpansTable)).
+		From(chsql.PhysicalTable(s.SpansTable)).
 		ArrayJoin(
 			chsql.As(nestedMapKeysFlatFrag(nestedCol), "k"),
 			chsql.As(nestedMapValuesFlatFrag(nestedCol), "v"),
@@ -448,7 +454,7 @@ func buildNestedAttributeValuesSQL(s schema.Traces, nestedCol, name string, filt
 		From(inner.Frag()).
 		Where(nonEmptyFrag("v")).
 		WithAttrStrategies(strategies)
-	return outer.Build()
+	return outer.BuildCounted()
 }
 
 // materializedColumnNumeric reports whether the materialized column for a
@@ -498,10 +504,10 @@ func materializedColumnPresenceFrag(col string, numeric bool) chsql.Frag {
 // buildAttributeValuesSQL's map-backed shape, this needs no arrayJoin
 // fan-out, no mapContains pre-filter, and no inner/outer query split: a
 // direct DISTINCT read is both the correct and the cheapest shape.
-func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, numeric bool, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any) {
+func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, numeric bool, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) (string, []any, int) {
 	sb := chsql.NewQuery().
 		Select(distinctToStringFrag(col)).
-		From(chsql.Col(s.SpansTable)).
+		From(chsql.PhysicalTable(s.SpansTable)).
 		Where(materializedColumnPresenceFrag(col, numeric)).
 		WithAttrStrategies(strategies)
 	if !start.IsZero() {
@@ -513,7 +519,7 @@ func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, numeric bo
 	if filter != nil {
 		sb.Where(filter)
 	}
-	return sb.Build()
+	return sb.BuildCounted()
 }
 
 // buildAutoScopeUnionAttributeValuesSQL builds the SELECT for an
@@ -575,7 +581,7 @@ func buildAutoScopeUnionAttributeValuesSQL(
 	resCol string, resMaterialized bool,
 	filter chsql.Frag, start, end time.Time,
 	strategies chsql.AttrStrategies,
-) (string, []any) {
+) (string, []any, int) {
 	numeric := materializedColumnNumeric(name)
 	spanArm := attrValueArmFrag(s, s.AttributesColumn, spanCol, spanMaterialized, numeric, name, filter, start, end, strategies)
 	resArm := attrValueArmFrag(s, s.ResourceAttributesColumn, resCol, resMaterialized, numeric, name, filter, start, end, strategies)
@@ -585,7 +591,7 @@ func buildAutoScopeUnionAttributeValuesSQL(
 		From(chsql.Paren(chsql.UnionAll(spanArm, resArm))).
 		Where(nonEmptyFrag("v")).
 		WithAttrStrategies(strategies)
-	return outer.Build()
+	return outer.BuildCounted()
 }
 
 // attrValueArmFrag builds one UNION ALL arm of
@@ -605,7 +611,7 @@ func buildAutoScopeUnionAttributeValuesSQL(
 // already String). materializedCol and numeric are both ignored when
 // materialized is false.
 func attrValueArmFrag(s schema.Traces, mapCol, materializedCol string, materialized, numeric bool, name string, filter chsql.Frag, start, end time.Time, strategies chsql.AttrStrategies) chsql.Frag {
-	arm := chsql.NewQuery().From(chsql.Col(s.SpansTable)).WithAttrStrategies(strategies)
+	arm := chsql.NewQuery().From(chsql.PhysicalTable(s.SpansTable)).WithAttrStrategies(strategies)
 	if materialized {
 		arm.Select(chsql.As(chsql.Call("toString", chsql.Col(materializedCol)), "v")).
 			Where(materializedColumnPresenceFrag(materializedCol, numeric))

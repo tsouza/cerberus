@@ -14,6 +14,7 @@
 // execution fall through into statements written assuming it never will.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { runNotifyMain } from './nightly-health-notify.mjs';
@@ -59,6 +60,17 @@ function argAfter(args, flag) {
   return i === -1 ? undefined : args[i + 1];
 }
 
+// bodyFileText reads the body a `gh issue create` / `gh issue comment` call
+// was handed via `--body-file`, asserting along the way that the prose went
+// through a file and not an inline `--body` argument (CLAUDE.md invariant
+// 18 — the one shape this module must never regress to).
+function bodyFileText(args) {
+  assert.equal(argAfter(args, '--body'), undefined, 'prose must not be passed inline via --body');
+  const path = argAfter(args, '--body-file');
+  assert.ok(path, 'expected a --body-file argument');
+  return readFileSync(path, 'utf8');
+}
+
 const base = {
   repo: 'tsouza/cerberus',
   runId: '123',
@@ -89,6 +101,9 @@ test('clean night with an existing tracking issue -> closes it, never exits', ()
   assert.equal(captureImpl.calls.length, 2);
   assert.deepEqual(captureImpl.calls[1].args.slice(0, 2), ['issue', 'close']);
   assert.equal(captureImpl.calls[1].args[2], '42');
+  // `gh issue close` has no --body-file form (see the module's own comment
+  // on the close arm), so the recovery text is the one inline prose write.
+  assert.match(argAfter(captureImpl.calls[1].args, '--comment'), /clean pass/);
   assert.equal(exit.calls.length, 0);
 });
 
@@ -100,7 +115,7 @@ test('not-clean night, no existing issue -> files a new one, carries the failed 
   const createArgs = captureImpl.calls[1].args;
   assert.deepEqual(createArgs.slice(0, 2), ['issue', 'create']);
   assert.equal(argAfter(createArgs, '--title'), base.trackingTitle);
-  assert.match(argAfter(createArgs, '--body'), /a: failure/);
+  assert.match(bodyFileText(createArgs), /a: failure/);
   assert.deepEqual(exit.calls, [1]);
 });
 
@@ -111,6 +126,7 @@ test('not-clean night with an existing issue -> comments on it, exits 1', () => 
   assert.equal(captureImpl.calls.length, 2);
   assert.deepEqual(captureImpl.calls[1].args.slice(0, 2), ['issue', 'comment']);
   assert.equal(captureImpl.calls[1].args[2], '7');
+  assert.match(bodyFileText(captureImpl.calls[1].args), /a: failure/);
   assert.deepEqual(exit.calls, [1]);
 });
 

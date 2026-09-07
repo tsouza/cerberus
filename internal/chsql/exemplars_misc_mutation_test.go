@@ -44,7 +44,7 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 	}
 
 	// maxPerSeries == 0 -> uncapped -> no LIMIT clause.
-	sql, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0, "")
+	sql, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 
 	// Sanity counter-case: a positive cap DOES emit the LIMIT BY, proving
 	// the assertion above is discriminating (not vacuously true).
-	sqlCapped, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 3, "")
+	sqlCapped, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 3, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars capped: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 		End:             end,
 		TimestampColumn: "Timestamp",
 	}
-	sqlUngrouped, _, err := chsql.EmitMetricsExemplars(
+	sqlUngrouped, _, _, err := chsql.EmitMetricsExemplars(
 		context.Background(), rwUngrouped, mUngrouped, "TraceId", "SpanId", 2, "",
 	)
 	if err != nil {
@@ -241,7 +241,7 @@ func TestExemplarsRateAndCountIgnoreAttr(t *testing.T) {
 			End:             end,
 			TimestampColumn: "Timestamp",
 		}
-		sql, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0, "")
+		sql, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0, "")
 		if err != nil {
 			t.Fatalf("EmitMetricsExemplars(op=%v): %v", op, err)
 		}
@@ -309,7 +309,7 @@ func TestExemplarsAttributesMapKeyShape(t *testing.T) {
 		Input: m, Step: time.Minute, Range: time.Minute,
 		Start: start, End: end, TimestampColumn: "Timestamp",
 	}
-	sql, args, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+	sql, args, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars: %v", err)
 	}

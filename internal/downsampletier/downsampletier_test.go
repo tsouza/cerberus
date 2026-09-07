@@ -9,6 +9,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
+	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/deltaprefix"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -759,4 +761,36 @@ func (c *singleRowsConn) Exec(context.Context, string, ...any) error { return ni
 
 func (c *singleRowsConn) Query(context.Context, string, ...any) (driver.Rows, error) {
 	return c.rows, nil
+}
+
+// TestSettingMatchesChclient pins settingExperimentalTSGridAggregate against
+// chclient.SettingExperimentalTSGridAggregate: the production code cannot
+// import chclient (see the constant's own doc), so this test is the one
+// place the two spellings meet.
+func TestSettingMatchesChclient(t *testing.T) {
+	if settingExperimentalTSGridAggregate != chclient.SettingExperimentalTSGridAggregate {
+		t.Fatalf("settingExperimentalTSGridAggregate = %q; chclient.SettingExperimentalTSGridAggregate = %q — the two must stay byte-identical",
+			settingExperimentalTSGridAggregate, chclient.SettingExperimentalTSGridAggregate)
+	}
+}
+
+// TestResourceCapsMatchDeltaPrefix pins this package's resource caps against
+// internal/deltaprefix's exported ones: the two operator-run tools share one
+// rationale and must share one set of numbers, and .go-arch-lint.yml keeps
+// either package from importing the other outside a test.
+func TestResourceCapsMatchDeltaPrefix(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		got, want any
+	}{
+		{"maxExecutionTimeSeconds", maxExecutionTimeSeconds, deltaprefix.MaxExecutionTimeSeconds},
+		{"maxThreads", maxThreads, deltaprefix.MaxThreads},
+		{"priority", priority, deltaprefix.Priority},
+		{"maxRowsToRead", maxRowsToRead, deltaprefix.MaxRowsToRead},
+		{"maxBytesToRead", maxBytesToRead, deltaprefix.MaxBytesToRead},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %v; internal/deltaprefix has %v — the two packages' caps must stay identical", c.name, c.got, c.want)
+		}
+	}
 }

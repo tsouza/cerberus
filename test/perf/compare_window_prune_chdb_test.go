@@ -412,7 +412,7 @@ func compareNonRootRootLookupSQL(t *testing.T, spansTable, lookupTable string, w
 		End:             winHi,
 		TimestampColumn: "Timestamp",
 	}
-	rootSQL, rootArgs, err := chsql.EmitCompareRootLeg(context.Background(), rw)
+	rootSQL, rootArgs, _, err := chsql.EmitCompareRootLeg(context.Background(), rw)
 	if err != nil {
 		t.Fatalf("chsql.EmitCompareRootLeg: %v", err)
 	}

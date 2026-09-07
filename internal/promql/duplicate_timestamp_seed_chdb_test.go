@@ -24,7 +24,7 @@
 // would have been an accident, and disagreement was: the `roundtrip-promql`
 // lane went red on a divergence that was exactly the discarded sample.
 //
-// The three fixtures are parity-EXEMPT now (reason `duplicate-timestamp-seed`,
+// All seven fixtures are parity-EXEMPT now (reason `duplicate-timestamp-seed`,
 // test/spec/parity_exempt.go), and this file is where the contract they exist
 // for is actually tested. It is a sharper oracle than a reference backend for
 // this one question: it compares the strategy under test against the fan-out

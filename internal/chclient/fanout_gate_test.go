@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -486,11 +487,49 @@ func TestAcquireDataShardFanout_NormalFinish_NoKillQuery(t *testing.T) {
 	}
 }
 
-// TestAcquireDataShardFanout_CancelledDispatch_NoQueryID_SkipsKillQuery
-// confirms the no-trace edge case (ensureQueryID's own contract: an
-// un-instrumented ctx carries no query_id) degrades safely: cancellation is
-// still detected, but with no query_id to target, killDataShardQuery cannot
-// run — release() must still free the weight rather than hang or panic.
+// TestAcquireDataShardFanout_CancelledDispatch_UntracedCtx_StillKills is the
+// default-deployment case (CERBERUS_OTLP_ENDPOINT="" boots the no-op tracer,
+// so no ctx ever carries a trace): the real dispatch seam stamps a minted
+// query_id before the gate is acquired (queryContext -> ensureQueryID), so a
+// cancelled dispatch has a KILL QUERY target exactly like a traced one. A
+// ctx that was never stamped at all (below) is the only shape with nothing
+// to target, and release() must still free the weight rather than hang.
+func TestAcquireDataShardFanout_CancelledDispatch_UntracedCtx_StillKills(t *testing.T) {
+	t.Parallel()
+	const dataShardCount = 2
+	conn := &execRecordingConn{}
+	m, _ := newTestConnMetrics(t)
+	cfg := Config{DataShardCount: dataShardCount, MaxOpenConns: dataShardCount}
+	c := assembleClientFromConn(cfg, conn, m)
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	id, ctx := ensureQueryID(ctx)
+
+	release, err := c.acquireDataShardFanout(ctx)
+	if err != nil {
+		t.Fatalf("acquireDataShardFanout: %v", err)
+	}
+	cancel()
+	release()
+
+	execs := conn.execCalls()
+	if len(execs) != 1 {
+		t.Fatalf("Exec calls = %d, want exactly 1 (the KILL QUERY for the untraced dispatch's minted id): %v", len(execs), execs)
+	}
+	if got := fmt.Sprint(execs[0].args); !strings.Contains(got, id) {
+		t.Fatalf("KILL QUERY args = %s, want the minted query_id %q", got, id)
+	}
+	if !c.dataShardFanoutGate.TryAcquire(dataShardCount) {
+		t.Fatal("gate weight was not fully released after the cancellation KILL")
+	}
+}
+
+// TestAcquireDataShardFanout_CancelledDispatch_NoQueryID_SkipsKillQuery pins
+// the one shape with nothing to target — a ctx never stamped by
+// queryContext, which no production dispatch produces — degrades safely:
+// cancellation is still detected, killDataShardQuery does not run, and
+// release() frees the weight rather than hanging or panicking.
 func TestAcquireDataShardFanout_CancelledDispatch_NoQueryID_SkipsKillQuery(t *testing.T) {
 	t.Parallel()
 	const dataShardCount = 2
@@ -501,8 +540,7 @@ func TestAcquireDataShardFanout_CancelledDispatch_NoQueryID_SkipsKillQuery(t *te
 	t.Cleanup(func() { _ = c.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// No withQueryID: mirrors the no-op-tracer case, where queryIDFromContext
-	// returns "".
+	// No queryContext/ensureQueryID: a ctx that was never stamped at all.
 
 	release, err := c.acquireDataShardFanout(ctx)
 	if err != nil {

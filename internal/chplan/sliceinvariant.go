@@ -227,9 +227,11 @@ func IsSliceInvariant(n Node) bool {
 //     NativeQuantileHistogram re-proves it against the bounded shape with
 //     zero diffs — no new differential fixture was needed.
 //     HistogramQuantileNative / HistogramProjection (the
-//     native/exponential-histogram siblings) remain DELIBERATELY ABSENT —
-//     same shape family, but no production traffic exists yet to validate
-//     against; a follow-up PR with its own fixtures registers them.
+//     native/exponential-histogram siblings) are DELIBERATELY ABSENT —
+//     same shape family, but no production traffic exists to validate a
+//     slice invariant for them against, and an invariant registered
+//     without that evidence would be a guessed gate. Registration follows
+//     evidence, not a schedule.
 //
 //   - RangeWindowGridNativeVectorAgg — the ForEach-combinator vector-aggregation
 //     narrowing of RangeWindowGridNative (cerberus issue #2763). Its own GROUP

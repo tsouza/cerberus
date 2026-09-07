@@ -120,12 +120,14 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 // the rendered statement contains — see Builder.physicalScans's doc. On a
 // multi-data-shard deployment every such reference is a `Distributed`
 // wrapper that fans out DataShardCount per-shard statements, so this count
-// is the exact per-request multiplier chclient's DataShardFanoutGate must
-// charge for one dispatch of the statement (cerberus issue #3128): the
-// engine stamps it via chclient.WithDataShardFanoutMultiplier. Counted at
-// render time, where the text is written, because the plan alone cannot
-// know it — one Scan node is rendered twice by SearchTraceLimit and three
-// times by rate()'s window arms.
+// is the per-request multiplier chclient's DataShardFanoutGate charges for
+// one dispatch of the statement (cerberus issue #3128): the engine stamps it
+// via chclient.WithDataShardFanoutMultiplier. It bounds the statement's
+// CONCURRENT per-shard width (a recursive CTE arm is counted once and
+// re-executed sequentially per iteration). Counted at render time, where the
+// text is written, because the plan alone cannot know it — one Scan node is
+// rendered twice by SearchTraceLimit and three times by rate()'s window
+// arms.
 func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, physicalScans int, err error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()

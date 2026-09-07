@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -99,11 +100,15 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	// omission is still wrong to leave unfixed.
 	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
 	ctx = chsql.WithAttrStrategies(ctx, h.AttrStrategies)
-	sql, args, err := chsql.Emit(ctx, plan)
+	sql, args, physicalScans, err := chsql.EmitCounted(ctx, plan)
 	if err != nil {
 		return nil, fmt.Errorf("root lookup: emit: %w", err)
 	}
 
+	// Engine bypass, so the data-shard fan-out weight is stamped here (one
+	// spans scan today; counted rather than assumed so a second arm can
+	// never under-charge the gate).
+	ctx = chclient.WithDataShardFanoutMultiplier(ctx, physicalScans)
 	samples, err := h.Client.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("root lookup: execute: %w", err)

@@ -78,7 +78,7 @@ func TestBuildAttributeValuesSQL_ChDB_InstrumentationScope_IsolatedFromSpanResou
 	s := schema.DefaultOTelTraces()
 	s.ScopeAttributesColumn = "ScopeAttributes"
 
-	sqlStr, args := tempo.BuildAttributeValuesSQLForTest(
+	sqlStr, args, _ := tempo.BuildAttributeValuesSQLForTest(
 		s, "otel.scope.name", tempo.AttrMapScopeInstrumentationForTest, nil, start, end, nil,
 	)
 
