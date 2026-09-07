@@ -126,6 +126,17 @@ type Handler struct {
 	// Handler keep the historical 10s bound.
 	TailWriteTimeout time.Duration
 
+	// PatternsMinVolume is the minimum total sample count a
+	// /loki/api/v1/patterns cluster must reach before it is returned,
+	// mirroring upstream Loki's minClusterSize (cerberus issue #2081).
+	// Wired from CERBERUS_LOKI_PATTERNS_MIN_VOLUME (Config.LokiPatternsMinVolume)
+	// in cmd/cerberus. Unlike TailWriteTimeout above, zero is a MEANINGFUL
+	// configured value here (it disables the floor, returning every
+	// detected template — cerberus's pre-#2205 behaviour), not an
+	// unset marker, so New sets this to defaultPatternsMinVolume directly
+	// rather than falling back to it at the point of use.
+	PatternsMinVolume int
+
 	// TextIndexLineFilter is chopt text_index_line_filter's resolved
 	// verdict (cerberus issue #2773), wired from cmd/cerberus's boot
 	// EnabledSet at construction (mirroring Limiter/QueryTimeout/Version
@@ -188,12 +199,13 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 	}
 	opt := optimizer.Default()
 	return &Handler{
-		Client:    client,
-		Schema:    s,
-		Optimizer: opt,
-		Logger:    logger,
-		Engine:    &engine.Engine{Optimizer: opt, Client: client},
-		Lang:      &logql.Lang{Schema: s},
+		Client:            client,
+		Schema:            s,
+		Optimizer:         opt,
+		Logger:            logger,
+		Engine:            &engine.Engine{Optimizer: opt, Client: client},
+		Lang:              &logql.Lang{Schema: s},
+		PatternsMinVolume: defaultPatternsMinVolume,
 	}
 }
 

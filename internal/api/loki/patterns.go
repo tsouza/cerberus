@@ -25,10 +25,14 @@ import (
 const (
 	defaultPatternsLineLimit = 1000
 
-	// minimumPatternVolume mirrors upstream Loki's minClusterSize: a
+	// defaultPatternsMinVolume mirrors upstream Loki's minClusterSize: a
 	// template must account for at least this many log lines before it is
-	// useful enough to return to the pattern panel.
-	minimumPatternVolume = 30
+	// useful enough to return to the pattern panel. Handler.New sets
+	// Handler.PatternsMinVolume to this value; cmd/cerberus overrides it
+	// from CERBERUS_LOKI_PATTERNS_MIN_VOLUME (Config.LokiPatternsMinVolume,
+	// cerberus issue #2081's follow-up) for operators whose log streams
+	// don't clear the upstream-matching default.
+	defaultPatternsMinVolume = 30
 
 	// maximumPatternSeries mirrors upstream Loki's maxPatterns response
 	// bound. The volume sort below makes the retained series the most
@@ -120,7 +124,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	patterns := minePatterns(lines, start, end, step)
+	patterns := minePatterns(lines, start, end, step, h.PatternsMinVolume)
 
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
@@ -174,7 +178,7 @@ func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time
 // instance (confirmed independent — a Miner owns its own token tree and
 // cluster slice, no shared state), so lines never mix templates across
 // levels.
-func minePatterns(lines []chclient.TimestampedLine, start, end time.Time, step time.Duration) []Pattern {
+func minePatterns(lines []chclient.TimestampedLine, start, end time.Time, step time.Duration, minVolume int) []Pattern {
 	type patternWithVolume struct {
 		pattern Pattern
 		volume  int64
@@ -207,7 +211,7 @@ func minePatterns(lines []chclient.TimestampedLine, start, end time.Time, step t
 			}
 			samples := projectSamples(c.Samples(), start, end)
 			volume := sampleVolume(samples)
-			if volume < minimumPatternVolume {
+			if volume < int64(minVolume) {
 				continue
 			}
 			weighted = append(weighted, patternWithVolume{

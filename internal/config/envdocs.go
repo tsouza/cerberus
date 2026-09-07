@@ -213,6 +213,10 @@ var envDocGroups = []envDocGroup{
 		Name:  "Loki streaming",
 		Intro: "",
 	},
+	{
+		Name:  "Loki metadata",
+		Intro: "",
+	},
 }
 
 // envDocs is the hand-authored metadata for every CERBERUS_* key the viper
@@ -354,6 +358,7 @@ var envDocs = []EnvDoc{
 
 	// --- Loki streaming ---
 	{envLokiTailWriteTO, docTypeDuration, "Loki streaming", "Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`."},
+	{envLokiPatternsMinVolume, "int", "Loki metadata", "Minimum total sample count a `/loki/api/v1/patterns` cluster must reach before it is returned, mirroring upstream Loki's `minClusterSize` (verified against `pkg/pattern/ingester_querier.go`, cerberus issue #2081). `30` default. `0` is a valid, explicit choice that disables the floor entirely — every detected template is returned, matching cerberus's pre-#2205 behaviour."},
 }
 
 // EnvDocs returns the documentation metadata for every CERBERUS_* key the

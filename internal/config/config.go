@@ -67,6 +67,17 @@ type Config struct {
 	// internal/api/loki/tail.go via CERBERUS_LOKI_TAIL_WRITE_TIMEOUT.
 	LokiTailWriteTimeout time.Duration
 
+	// LokiPatternsMinVolume is the minimum total sample count a
+	// /loki/api/v1/patterns cluster must reach before it is returned,
+	// mirroring upstream Loki's minClusterSize (verified against
+	// `pkg/pattern/ingester_querier.go` in cerberus issue #2081). Promoted
+	// from the hardcoded 30 in internal/api/loki/patterns.go via
+	// CERBERUS_LOKI_PATTERNS_MIN_VOLUME so an operator whose log streams
+	// don't clear the upstream-matching default can lower it; `0` is a
+	// valid, explicit choice that disables the floor entirely (every
+	// detected template is returned, the pre-#2205 behaviour).
+	LokiPatternsMinVolume int
+
 	// PromMetadataLookback is how far back a WINDOWLESS Prom
 	// metadata-discovery request (/api/v1/labels,
 	// /api/v1/label/<l>/values, /api/v1/series with no start/end)
@@ -981,6 +992,7 @@ const (
 	envHTTPMaxHeaderBytes           = "CERBERUS_HTTP_MAX_HEADER_BYTES"
 	envHTTPMaxBodyBytes             = "CERBERUS_HTTP_MAX_BODY_BYTES"
 	envLokiTailWriteTO              = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
+	envLokiPatternsMinVolume        = "CERBERUS_LOKI_PATTERNS_MIN_VOLUME"
 	envPromMetadataLookback         = "CERBERUS_PROM_METADATA_LOOKBACK"
 	envDeltaPrefixLookback          = "CERBERUS_DELTA_PREFIX_LOOKBACK"
 	envDeltaPrefixReadEnabled       = "CERBERUS_DELTA_PREFIX_READ_ENABLED"
@@ -1237,11 +1249,11 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maxSamples, err := getInt64(v, envQueryMaxSamples)
+	maxSamples, err := queryMaxSamplesFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
-	maxSamples, err = resolveQueryMaxSamples(maxSamples)
+	lokiPatternsMinVolume, err := lokiPatternsMinVolumeFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1339,6 +1351,7 @@ func FromEnv() (Config, error) {
 		HTTPAddr:                             getString(v, envHTTPAddr),
 		HTTPServer:                           surface.httpServer,
 		LokiTailWriteTimeout:                 surface.lokiTailWriteTimeout,
+		LokiPatternsMinVolume:                lokiPatternsMinVolume,
 		PromMetadataLookback:                 surface.promMetadataLookback,
 		DeltaPrefixLookback:                  deltaPrefixLookback,
 		DeltaPrefixReadEnabled:               deltaPrefixReadEnabled,
@@ -1426,6 +1439,7 @@ var allEnvKeys = []string{
 	envHTTPMaxHeaderBytes,
 	envHTTPMaxBodyBytes,
 	envLokiTailWriteTO,
+	envLokiPatternsMinVolume,
 	envPromMetadataLookback,
 	envDeltaPrefixLookback,
 	envDeltaPrefixReadEnabled,
@@ -1597,7 +1611,9 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envHTTPIdleTimeout, defaultHTTPIdleTimeout.String())
 	v.SetDefault(envHTTPMaxHeaderBytes, defaultHTTPMaxHeaderBytes)
 	v.SetDefault(envHTTPMaxBodyBytes, defaultHTTPMaxBodyBytes)
-	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
+	// Grouped into one call — see setLokiDefaults's own doc — purely to keep
+	// this function under golangci-lint's funlen cap.
+	setLokiDefaults(v)
 	v.SetDefault(envPromMetadataLookback, defaultPromMetadataLookback.String())
 	// Grouped into one call — see setDeltaPrefixAndRBGNDefaults's own doc —
 	// purely to keep this function under golangci-lint's funlen cap; the
@@ -1641,6 +1657,16 @@ func newDefaults() *viper.Viper {
 	setAdmitDefaults(v)
 	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
 	return v
+}
+
+// setLokiDefaults seeds the Loki-head knob defaults together. Extracted
+// from newDefaults purely to keep that function under golangci-lint's
+// funlen cap (mirrors setDeltaPrefixAndRBGNDefaults's / setAdmitDefaults's
+// own established precedent just below) — the two defaults are otherwise
+// unrelated beyond both being Loki-specific.
+func setLokiDefaults(v *viper.Viper) {
+	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
+	v.SetDefault(envLokiPatternsMinVolume, defaultLokiPatternsMinVolume)
 }
 
 // setDeltaPrefixAndRBGNDefaults seeds the DELTA-prefix reconstruction
@@ -1890,6 +1916,12 @@ const defaultHTTPMaxBodyBytes int64 = 4 << 20
 // /tail WebSocket write before a slow / dead client is torn down.
 const defaultLokiTailWriteTimeout time.Duration = 10 * time.Second
 
+// defaultLokiPatternsMinVolume promotes the previously-hardcoded
+// minimumPatternVolume in internal/api/loki/patterns.go: the minimum total
+// sample count a /patterns cluster must reach before it is returned,
+// verified against upstream Loki's minClusterSize (cerberus issue #2081).
+const defaultLokiPatternsMinVolume = 30
+
 // defaultPromMetadataLookback is zero on purpose: "no explicit lookback
 // configured", which leaves the windowless metadata scan on the Prom
 // handler's own conservative fallback horizon. A non-zero default here would
@@ -1981,6 +2013,19 @@ func resolveQueryMaxSamples(n int64) (int64, error) {
 	default:
 		return 0, fmt.Errorf("%s: must be > 0, 0 (use default), or -1 (disable); got %d", envQueryMaxSamples, n)
 	}
+}
+
+// queryMaxSamplesFromEnv reads CERBERUS_QUERY_MAX_SAMPLES and resolves it via
+// resolveQueryMaxSamples. Factored out of FromEnv purely to keep that
+// function under golangci-lint's funlen cap; resolveQueryMaxSamples stays a
+// standalone function since query_max_samples_test.go exercises it directly
+// against raw int64 inputs.
+func queryMaxSamplesFromEnv(v *viper.Viper) (int64, error) {
+	n, err := getInt64(v, envQueryMaxSamples)
+	if err != nil {
+		return 0, err
+	}
+	return resolveQueryMaxSamples(n)
 }
 
 // defaultRBGNMaxRows / defaultRBGNMaxDensityUnits mirror
@@ -2125,6 +2170,23 @@ func queryTimeoutFromEnv(v *viper.Viper) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: must be >= 0, got %s", envQueryTimeout, queryTimeout)
 	}
 	return queryTimeout, nil
+}
+
+// lokiPatternsMinVolumeFromEnv reads CERBERUS_LOKI_PATTERNS_MIN_VOLUME.
+// Factored out of FromEnv purely to keep that function under
+// golangci-lint's funlen cap. Unlike queryTimeoutFromEnv above, `0` is not
+// coerced back to the default — it is a valid, explicit "disable the
+// floor" choice (see Config.LokiPatternsMinVolume's doc comment) — so the
+// only rejected value is negative.
+func lokiPatternsMinVolumeFromEnv(v *viper.Viper) (int, error) {
+	minVolume, err := getInt(v, envLokiPatternsMinVolume)
+	if err != nil {
+		return 0, err
+	}
+	if minVolume < 0 {
+		return 0, fmt.Errorf("%s: must be >= 0, got %d", envLokiPatternsMinVolume, minVolume)
+	}
+	return minVolume, nil
 }
 
 // dataShardFanoutCapOverrideFromEnv reads CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP,
