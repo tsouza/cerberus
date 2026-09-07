@@ -265,7 +265,7 @@ jobs:
       - name: install gremlins
         run: >
           node .github/scripts/go-module-fetch.mjs --
-          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-phase-timeout-consume
+          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
