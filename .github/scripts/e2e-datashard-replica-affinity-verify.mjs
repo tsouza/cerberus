@@ -61,8 +61,29 @@
 //   REPLICAS                expected replicas PER shard             (required, must be >= 2)
 //   REQUEST_COUNT           sequential solver-splitting requests fired (default 3)
 //   FLUSH_WAIT_SECONDS      settle time before SYSTEM FLUSH LOGS    (default 10)
+//   HEALTH_POLL_SECONDS     bounded wait for a clean errors_count   (default 60)
 //
 // Exit 0 = every assertion passed; 1 = any failed (with ::error:: annotation).
+//
+// THE RACE THIS SCRIPT MUST NOT LOSE (cerberus issue #3148, same class as
+// #3109/PR #3125's mode-toggle readiness race): `just e2e-datashard-up`'s
+// readiness gate is `kubectl rollout status`, which only proves every
+// ClickHouse pod's own container passed its liveness/readiness probe — NOT
+// that every node's inter-node connections to its PEER replicas are already
+// healthy. A pod can report Ready to Kubernetes seconds before it can
+// actually dial a sibling shard's replica; the FIRST time an initiator
+// reaches a still-starting peer, that dial is refused, and ClickHouse
+// increments that replica's `error_count` server-side
+// (`PoolWithFailoverBase::Pool::error_count`, decaying only over
+// `distributed_replica_error_half_life`, 60s default) — during that decay
+// window `first_or_random` can legitimately prefer a NON-offset-0 replica,
+// which is exactly the false positive this leg exists to rule out (observed
+// live: run 34103918151, cerberus issue #3148). `system.clusters.errors_count`
+// is that same error-tracking state, readable directly, so this script polls
+// it to a clean state (every row's `errors_count = 0`) before firing the
+// affinity-verify burst — proving the fan-out load only starts once the
+// cluster has actually settled, rather than inferring settlement from pod
+// readiness alone.
 
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -79,6 +100,7 @@ const DATA_SHARD_COUNT = Number(process.env.DATA_SHARD_COUNT || '0');
 const REPLICAS = Number(process.env.REPLICAS || '0');
 const REQUEST_COUNT = Number(process.env.REQUEST_COUNT || '3');
 const FLUSH_WAIT_SECONDS = Number(process.env.FLUSH_WAIT_SECONDS || '10');
+const HEALTH_POLL_SECONDS = Number(process.env.HEALTH_POLL_SECONDS || '60');
 
 if (!DATA_SHARD_COUNT || DATA_SHARD_COUNT < 2) {
   error(`DATA_SHARD_COUNT must be a real data-shard count (>= 2), got ${process.env.DATA_SHARD_COUNT}`);
@@ -143,6 +165,42 @@ function hostnameShardReplica(hostname) {
   return { shard: Number(m[1]), replica: Number(m[2]) };
 }
 
+// waitForCleanClusterHealth polls system.clusters until every (shard,
+// replica) row's errors_count is 0, or HEALTH_POLL_SECONDS elapses — see the
+// module doc's "THE RACE THIS SCRIPT MUST NOT LOSE" section for why pod
+// readiness alone cannot stand in for inter-node connection health. Returns
+// the elapsed seconds on success; throws with the last-seen dirty rows on
+// timeout, since a burst fired into a cluster that never settled would only
+// reproduce the false positive this poll exists to close out.
+async function waitForCleanClusterHealth(pod) {
+  const deadline = Date.now() + HEALTH_POLL_SECONDS * 1000;
+  const pollIntervalMs = 2000;
+  let lastDirty = [];
+  for (;;) {
+    const rows = chQueryTSV(
+      pod,
+      `SELECT shard_num, replica_num, errors_count
+       FROM system.clusters WHERE cluster = '${CH_CLUSTER}'
+       ORDER BY shard_num, replica_num`,
+    );
+    lastDirty = rows
+      .map((r) => r.split('\t'))
+      .filter(([, , errorsCount]) => Number(errorsCount) !== 0);
+    if (lastDirty.length === 0) {
+      return (HEALTH_POLL_SECONDS * 1000 - (deadline - Date.now())) / 1000;
+    }
+    if (Date.now() >= deadline) {
+      const detail = lastDirty.map(([shard, replica, n]) => `shard=${shard} replica=${replica} errors_count=${n}`).join('; ');
+      throw new Error(
+        `system.clusters never reached a clean state (errors_count=0 for every replica) within ` +
+          `${HEALTH_POLL_SECONDS}s: ${detail} — firing the affinity burst now would risk observing a ` +
+          `replica-selection decision still influenced by the connection errors this poll exists to wait out`,
+      );
+    }
+    await sleep(pollIntervalMs);
+  }
+}
+
 async function main() {
   const pod = clickhousePodName(kubectl, NS);
   log(`replica-affinity verify: namespace=${NS} db=${DB} cluster=${CH_CLUSTER} dataShardCount=${DATA_SHARD_COUNT} replicas=${REPLICAS} pod=${pod}`);
@@ -171,6 +229,18 @@ async function main() {
     process.exit(1);
   }
   log(`topology confirmed: ${clusterRows.length} shard(s), ${REPLICAS} replica(s) each`);
+
+  // ---- settle window: wait for a genuinely healthy inter-node state ----
+  // See the module doc's "THE RACE THIS SCRIPT MUST NOT LOSE" section —
+  // `just e2e-datashard-up`'s pod-readiness gate proves nothing about
+  // whether every node can already reach every peer replica.
+  try {
+    const settleSeconds = await waitForCleanClusterHealth(pod);
+    log(`cluster health confirmed clean (errors_count=0 for every replica) after ${settleSeconds.toFixed(1)}s`);
+  } catch (e) {
+    error(e.message);
+    process.exit(1);
+  }
 
   // ---- fire REQUEST_COUNT sequential solver-splitting requests ----
   const burstStartMs = Date.now();
