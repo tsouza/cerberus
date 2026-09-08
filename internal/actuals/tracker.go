@@ -181,6 +181,12 @@ type Tracker struct {
 
 	mu     sync.Mutex
 	states map[string]*state
+	// packetObserved is the set of ClickHouse query_ids the progress-packet
+	// path has already taken an observation for, each with the time it was
+	// marked. It exists so the system.query_log poller can take the SET
+	// DIFFERENCE against them instead of re-recording the same physical
+	// query a second time — see MarkPacketObserved.
+	packetObserved map[string]time.Time
 
 	now func() time.Time // overridable by tests
 }
@@ -191,9 +197,10 @@ type Tracker struct {
 // separate nil check before every call site.
 func NewTracker(cfg Config) *Tracker {
 	return &Tracker{
-		cfg:    cfg,
-		states: make(map[string]*state),
-		now:    time.Now,
+		cfg:            cfg,
+		states:         make(map[string]*state),
+		packetObserved: make(map[string]time.Time),
+		now:            time.Now,
 	}
 }
 
@@ -206,6 +213,103 @@ func (t *Tracker) SetNowForTest(now func() time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.now = now
+}
+
+// MarkPacketObserved records that the progress-packet path owns the
+// observation for this dispatch's ClickHouse query_id, so the query_log
+// poller must not record it a second time.
+//
+// Why this exists. Both sources feed the SAME Tracker for the SAME physical
+// query and the poller had no query-id set-difference against the packet path,
+// so every completed query was recorded TWICE (cerberus issue #3184). The
+// poller's own filter is `type = 'QueryFinish'`, which excludes
+// ExceptionWhileProcessing / ExceptionBeforeStart — so it structurally cannot
+// see the failed-query case its doc says it exists for, and its row set is
+// almost exactly the successes the packet path already had. The damage is not
+// only a doubled counter:
+//
+//   - MinObservations is 2, so ONE query satisfied a corroboration floor whose
+//     whole point is that "a single observation is never enough evidence".
+//   - On route B the poller sees K rows — one per shard query_id, all sharing
+//     one log_comment — each carrying a shard's FRACTIONAL read_rows, while
+//     the packet path's ShardActualsFold correctly contributes one summed
+//     observation. K fractional samples drag the EMA toward total/K, which
+//     re-opens issue #3033 through the other source.
+//
+// Those feed the K clamp and per-rung admission, so this was a wrong routing
+// input, not merely a wrong metric.
+//
+// Marked at the DISPATCH seam (chclient.queryContext, where the id is minted
+// and the capture intent is already on the ctx) rather than from the packet
+// flush, for two reasons: the recorder's ctx is captured before the id is
+// fixed, so it cannot see one; and a route-B fan-out whose fold never
+// completes (a shard failed to open, so completed != k) records nothing at
+// all — which is correct, and marking at dispatch is what stops the poller
+// "helpfully" recording the surviving K-1 per-shard fragments as if each were
+// a whole query.
+//
+// Entries expire after cfg.QueryLogLookback, which is exactly the window in
+// which a row can still be read: the poller advances a watermark and the
+// lookback is sized (3x the poll interval) to give two full missed polls of
+// overlap. Past it, no poll can still be carrying the row, so remembering the
+// id has no purpose. Memory is therefore bounded by the dispatch rate over
+// that window, and the whole map is inert unless actuals capture is on.
+//
+// No-op on a nil Tracker or an empty id.
+func (t *Tracker) MarkPacketObserved(queryID string) {
+	if t == nil || queryID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	t.evictPacketObservedLocked(now)
+	t.packetObserved[queryID] = now
+}
+
+// ClaimQueryLogRow reports whether the query_log poller may record an
+// observation for queryID — true only when the packet path did not already
+// take one (MarkPacketObserved).
+//
+// Deliberately NON-consuming: the mark stays until it expires with the rest.
+// Consuming it would defeat the purpose, because the poller's watermark
+// windows deliberately OVERLAP (QueryLogLookback is 3x the poll interval, so
+// two full missed polls cannot drop a row) and the same query_log row is
+// therefore expected to be read more than once. A consuming claim would refuse
+// the first read and then admit the second, recording exactly the duplicate it
+// was added to prevent. The mark's lifetime is the same overlap window, so
+// every re-read inside it is refused and nothing outside it can still arrive.
+//
+// An empty queryID answers true: a row with no id cannot be matched against
+// anything, and refusing it would silently drop the poller's genuine residual
+// coverage — a dispatch whose log_comment was stamped (SettingsRules'
+// LogCommentShape) without actuals capture being armed, which the packet path
+// never sees. Always true on a nil Tracker, so the poller behaves exactly as
+// it did before this existed when the feature is off.
+func (t *Tracker) ClaimQueryLogRow(queryID string) bool {
+	if t == nil || queryID == "" {
+		return true
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, seen := t.packetObserved[queryID]
+	return !seen
+}
+
+// evictPacketObservedLocked drops ids past the lookback window. Called on
+// every mark rather than on a timer: the map only grows when dispatches
+// happen, so amortising the sweep onto the same event keeps it self-limiting
+// with no background goroutine. t.mu must be held.
+func (t *Tracker) evictPacketObservedLocked(now time.Time) {
+	ttl := t.cfg.QueryLogLookback
+	if ttl <= 0 {
+		return
+	}
+	for id, at := range t.packetObserved {
+		if now.Sub(at) > ttl {
+			delete(t.packetObserved, id)
+		}
+	}
 }
 
 // RecordPredicted records shapeID's most recent advisory row prediction

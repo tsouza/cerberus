@@ -1029,6 +1029,16 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 	// no "nothing to apply" case left to short-circuit here.
 	s := c.querySettings(ctx)
 	queryID, ctx := ensureQueryID(ctx)
+	// Claim this dispatch's query_id for the progress-packet path, so the
+	// system.query_log poller takes a set difference against it instead of
+	// recording the SAME physical query a second time (cerberus issue #3184,
+	// actuals.Tracker.MarkPacketObserved). This is the one seam that sees both
+	// the minted id and the capture intent, and every data-plane dispatch
+	// passes through it — route A's single statement and each of route B's K
+	// shard statements alike. Inert unless actuals capture is armed on ctx.
+	if intent, ok := actualsIntentFromContext(ctx); ok {
+		intent.tracker.MarkPacketObserved(queryID)
+	}
 	ctx = hiddenDeadlineContext(ctx)
 	opts := make([]clickhouse.QueryOption, 0, 3)
 	opts = append(opts, clickhouse.WithSettings(s))

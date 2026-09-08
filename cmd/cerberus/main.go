@@ -1047,13 +1047,15 @@ func (a queryLogQuerierAdapter) QueryLogActuals(ctx context.Context, since time.
 	}
 	out := make([]engine.QueryLogActualRow, len(rows))
 	for i, r := range rows {
-		out[i] = engine.QueryLogActualRow{
-			LogComment:  r.LogComment,
-			ReadRows:    r.ReadRows,
-			ReadBytes:   r.ReadBytes,
-			MemoryUsage: r.MemoryUsage,
-			EventTime:   r.EventTime,
-		}
+		// A whole-struct CONVERSION, deliberately, not a field-by-field
+		// literal. Go only permits this when the two structs are identical in
+		// field names, types and order, so the compiler enforces the
+		// "field-for-field identical" claim above. The literal this replaces
+		// compiled perfectly well after a new field was added to both sides
+		// and silently dropped it, which left the consumer reading a zero
+		// value — exactly the kind of hollow wiring a conversion makes
+		// impossible (cerberus issue #3184 added QueryID this way).
+		out[i] = engine.QueryLogActualRow(r)
 	}
 	return out, nil
 }

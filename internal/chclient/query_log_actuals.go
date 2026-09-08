@@ -32,7 +32,7 @@ import (
 // the prefix is passed in as a bound parameter rather than this file
 // duplicating the constant or fighting LIKE's own '%'/'_' escaping rules for
 // a literal prefix match.
-const queryLogActualsSQL = `SELECT log_comment, read_rows, read_bytes, memory_usage, event_time
+const queryLogActualsSQL = `SELECT log_comment, query_id, read_rows, read_bytes, memory_usage, event_time
 FROM system.query_log
 WHERE type = 'QueryFinish' AND event_time > ? AND startsWith(log_comment, ?)
 ORDER BY event_time ASC
@@ -45,8 +45,14 @@ type QueryLogActualRow struct {
 	// internal/engine's SettingsRules stamped it via
 	// chclient.WithQuerySetting(ctx, "log_comment", shapeID).
 	LogComment string
-	ReadRows   uint64
-	ReadBytes  uint64
+	// QueryID is ClickHouse's own per-statement query_id — the id cerberus
+	// minted for this dispatch (chclient.queryContext). It is the join key the
+	// consumer uses to take a SET DIFFERENCE against the dispatches the
+	// progress-packet path already recorded, so one physical query is never
+	// observed twice (cerberus issue #3184).
+	QueryID   string
+	ReadRows  uint64
+	ReadBytes uint64
 	// MemoryUsage is ClickHouse's own peak-memory-usage column for the
 	// query, matching the packet path's ProfileEvents
 	// "MemoryTrackerPeakUsage" reading (progress.go's own doc) — the two
@@ -92,7 +98,7 @@ func (c *Client) QueryLogActuals(ctx context.Context, since time.Time, shapeIDPr
 	var out []QueryLogActualRow
 	for rows.Next() {
 		var row QueryLogActualRow
-		if err := rows.Scan(&row.LogComment, &row.ReadRows, &row.ReadBytes, &row.MemoryUsage, &row.EventTime); err != nil {
+		if err := rows.Scan(&row.LogComment, &row.QueryID, &row.ReadRows, &row.ReadBytes, &row.MemoryUsage, &row.EventTime); err != nil {
 			return nil, fmt.Errorf("chclient: query log actuals scan: %w", err)
 		}
 		out = append(out, row)

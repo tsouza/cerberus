@@ -56,6 +56,7 @@ type QueryLogQuerier interface {
 // buildQueryLogActualsReconciler in cmd/cerberus/main.go).
 type QueryLogActualRow struct {
 	LogComment  string
+	QueryID     string
 	ReadRows    uint64
 	ReadBytes   uint64
 	MemoryUsage uint64
@@ -135,6 +136,20 @@ func (r *QueryLogActualsReconciler) poll(ctx context.Context, since time.Time) t
 	next := since
 	for _, row := range rows {
 		if row.LogComment == "" {
+			continue
+		}
+		// Set difference against the progress-packet path: this poller and
+		// the packet path feed the SAME Tracker for the SAME physical query,
+		// and without this every completed query was recorded TWICE — enough,
+		// on its own, to satisfy a MinObservations=2 corroboration floor, and
+		// on route B enough to drag the EMA toward per-shard rows with K
+		// fractional samples per request (cerberus issue #3184). The watermark
+		// still advances for a skipped row: it was read, and re-reading it
+		// forever would stall the poller.
+		if !r.tracker.ClaimQueryLogRow(row.QueryID) {
+			if row.EventTime.After(next) {
+				next = row.EventTime
+			}
 			continue
 		}
 		report, ok := r.tracker.RecordActual(row.LogComment, actuals.Actual{
