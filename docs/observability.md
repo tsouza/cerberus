@@ -214,18 +214,30 @@ attribute keys are a public contract — dashboards and alert rules
 reference them verbatim, and `internal/telemetry/contract_test.go` pins
 each one so a rename cannot ship silently.
 
-| Metric                                     | Type      | Attributes                                                                                  |
-| ------------------------------------------ | --------- | ------------------------------------------------------------------------------------------- |
-| `cerberus_queries_total`                   | counter   | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
-| `cerberus_queries_duration_seconds`        | histogram | `cerberus_ql`, `cerberus_route`, `result`                                                   |
-| `cerberus_pipeline_stage_duration_seconds` | histogram | `stage`, `cerberus_ql`                                                                      |
-| `cerberus_optimizer_rules_applied`         | histogram | —                                                                                           |
-| `cerberus_clickhouse_rows_read`            | histogram | `cerberus_ql`                                                                               |
-| `cerberus_clickhouse_bytes_read`           | histogram | `cerberus_ql`                                                                               |
-| `cerberus_query_inflight`                  | gauge     | `cerberus_ql`                                                                               |
-| `cerberus_tempo_exemplar_failures_total`   | counter   | `stage`                                                                                     |
+| Metric                                     | Type               | Attributes                                                                                  |
+| ------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------- |
+| `cerberus_queries_total`                   | counter            | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
+| `cerberus_queries_duration_seconds`        | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
+| `cerberus_pipeline_stage_duration_seconds` | histogram          | `stage`, `cerberus_ql`                                                                      |
+| `cerberus_optimizer_rules_applied`         | histogram          | —                                                                                           |
+| `cerberus_clickhouse_rows_read`            | histogram          | `cerberus_ql`                                                                               |
+| `cerberus_clickhouse_bytes_read`           | histogram          | `cerberus_ql`                                                                               |
+| `cerberus_query_inflight`                  | gauge              | `cerberus_ql`                                                                               |
+| `cerberus_tempo_exemplar_failures_total`   | counter            | `stage`                                                                                     |
 
 `cerberus_tempo_exemplar_failures_total` counts Tempo `/api/metrics/query_range` (and its gRPC `MetricsQueryRange` counterpart) exemplar-enrichment failures, split by which half of the best-effort exemplar attach failed: `stage="emit"` for a `chsql.EmitMetricsExemplars` render failure, `stage="execute"` for a ClickHouse query failure on the rendered SQL. Both failures still return the matrix response with an empty `exemplars` array — the same wire shape as a window with genuinely no exemplars — so this counter is the only way to notice a systematic exemplar outage without reading logs.
+
+`cerberus_queries_duration_seconds` is collected as a native/exponential
+histogram (cerberus issue #3170), not the classic explicit-bucket shape
+`cerberus_pipeline_stage_duration_seconds` and the other histograms above
+still use. A PromQL query against it has no `_bucket` series or `le` label:
+`histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_seconds[5m])))`
+is the whole expression, not `sum by (le, cerberus_ql) (rate(..._bucket[5m]))`.
+The switch removes this metric from the class of risk a wide classic
+histogram carries under the `RangeBucketGridNative` query-time cost guard
+(`internal/chsql/range_bucket_grid_native_bound.go`) — this metric already
+tripped that guard once, at a 24h self-monitoring window, before the
+guard's own recalibration fixed that specific incident.
 
 #### ClickHouse connection lifecycle
 

@@ -240,9 +240,55 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp, readerOpts...)),
 		sdkmetric.WithResource(res),
+		sdkmetric.WithView(queryDurationNativeHistogramView),
 	)
 	return mp, mp.Shutdown, nil
 }
+
+// queryDurationExpoHistogramMaxSize and …MaxScale are the OTel exponential
+// histogram spec's own documented defaults (the same values every major
+// OTel SDK ships when a caller doesn't override them): up to 160 buckets,
+// starting at the maximum resolution scale (20) and auto-narrowing as
+// measurements arrive. sdkmetric.AggregationBase2ExponentialHistogram's own
+// zero value is NOT a usable "use the SDK default" sentinel — its err()
+// rejects MaxSize <= 0, and sdkmetric.NewView silently drops (logs via
+// go.opentelemetry.io/otel's global error handler, otherwise unnoticed) an
+// Aggregation that fails validation, falling back to the classic default
+// this View exists to override. An unvalidated zero-value struct here would
+// make queryDurationNativeHistogramView a silent no-op.
+const (
+	queryDurationExpoHistogramMaxSize  = 160
+	queryDurationExpoHistogramMaxScale = 20
+)
+
+// queryDurationNativeHistogramView collects cerberus_queries_duration_seconds
+// (internal/telemetry/metrics.go's QueryDuration) as a native/exponential
+// histogram instead of the classic explicit-bucket-boundary aggregation its
+// own WithExplicitBucketBoundaries construction would otherwise get by
+// default (cerberus issue #3170). A classic histogram stores one physical
+// row per (series, `le` rung) — that storage shape, not this metric's own
+// cardinality, is what let the nightly e2e stack's own self-monitoring
+// dashboard trip the unrelated RangeBucketGridNative density guard once
+// before (range_bucket_grid_native_bound.go's "Issue #2522 recalibration"
+// section, querying this exact metric at a 24h/15s window). Native
+// histograms store the whole distribution as one compact row per (series,
+// timestamp), so that class of risk does not apply to them at all — see
+// cerberus issue #3165's investigation for the full comparison.
+//
+// StageDuration and the other histograms in metrics.go stay classic for now
+// — this metric is the one with a real prior incident and the one queried
+// in test/e2e/grafana/dashboards/cerberus.json, so it is the one worth the
+// dashboard-query-shape migration (native histogram PromQL has no `_bucket`
+// series or `le` label) that came with this change.
+var queryDurationNativeHistogramView = sdkmetric.NewView(
+	sdkmetric.Instrument{Name: "cerberus_queries_duration_seconds"},
+	sdkmetric.Stream{
+		Aggregation: sdkmetric.AggregationBase2ExponentialHistogram{
+			MaxSize:  queryDurationExpoHistogramMaxSize,
+			MaxScale: queryDurationExpoHistogramMaxScale,
+		},
+	},
+)
 
 // newLoggerProvider builds the OTLP gRPC logger provider that gives
 // the third o11y pillar (logs) the same wire-level treatment as traces

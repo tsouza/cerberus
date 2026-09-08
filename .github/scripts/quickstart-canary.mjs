@@ -134,7 +134,7 @@ export const HOME_DASHBOARD_TARGETS = Object.freeze([
     datasourceUID: "cerberus-prometheus",
     kind: "prometheus",
     expression:
-      "histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket[5m])))",
+      "histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_seconds[5m])))",
   }),
   Object.freeze({
     panelID: 3,

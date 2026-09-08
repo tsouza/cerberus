@@ -8,6 +8,7 @@ import (
 
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
@@ -33,6 +34,51 @@ func TestNew_NoopWhenEndpointEmpty(t *testing.T) {
 
 	if err := providers.Shutdown(t.Context()); err != nil {
 		t.Errorf("Shutdown: %v", err)
+	}
+}
+
+// TestQueryDurationNativeHistogramView pins that
+// queryDurationNativeHistogramView actually activates rather than silently
+// no-opping. sdkmetric.AggregationBase2ExponentialHistogram's own zero
+// value fails the SDK's internal validation (MaxSize <= 0) and
+// sdkmetric.NewView drops an invalid Aggregation without returning an
+// error — the resulting View still matches the instrument but falls back
+// to the classic default aggregation, which would make this whole cerberus
+// issue #3170 change a no-op nobody would notice locally. Recording
+// through a real MeterProvider with this View installed and asserting the
+// collected data point is genuinely metricdata.ExponentialHistogram (not
+// metricdata.Histogram) is the only way to catch that class of mistake.
+func TestQueryDurationNativeHistogramView(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(reader),
+		sdkmetric.WithView(queryDurationNativeHistogramView),
+	)
+	t.Cleanup(func() { _ = mp.Shutdown(t.Context()) })
+
+	hist, err := mp.Meter("test").Float64Histogram("cerberus_queries_duration_seconds")
+	if err != nil {
+		t.Fatalf("Float64Histogram: %v", err)
+	}
+	hist.Record(t.Context(), 1.23)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(rm.ScopeMetrics) != 1 || len(rm.ScopeMetrics[0].Metrics) != 1 {
+		t.Fatalf("ScopeMetrics = %#v, want exactly one metric", rm.ScopeMetrics)
+	}
+	m := rm.ScopeMetrics[0].Metrics[0]
+	expo, ok := m.Data.(metricdata.ExponentialHistogram[float64])
+	if !ok {
+		t.Fatalf("metric %q Data = %T, want metricdata.ExponentialHistogram[float64] — the View is not activating (falling back to the classic default aggregation)", m.Name, m.Data)
+	}
+	if len(expo.DataPoints) != 1 {
+		t.Fatalf("DataPoints = %#v, want exactly one", expo.DataPoints)
+	}
+	if got := expo.DataPoints[0].Count; got != 1 {
+		t.Errorf("DataPoints[0].Count = %d, want 1", got)
 	}
 }
 
