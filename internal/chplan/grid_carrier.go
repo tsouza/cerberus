@@ -76,6 +76,28 @@ type GridCarrier interface {
 	// carrier kind to answer, and the completeness ratchet closes the hole
 	// for free rather than needing a parallel list that can drift.
 	AnchorGridDivides() bool
+
+	// DataWindowEnd returns the latest sample timestamp this carrier's
+	// evaluation can read: the right edge of its DATA window, as opposed
+	// to the right edge of the request grid EvalGrid reports.
+	//
+	// The two differ whenever a selector carries an `offset`. Every
+	// windowed carrier here evaluates over `(anchor - Offset - <span>,
+	// anchor - Offset]`, so the data edge is `End - Offset` — and a
+	// NEGATIVE offset (`offset -1h`, which PromQL accepts and which shifts
+	// evaluation FORWARD) puts that edge AFTER the request grid's end,
+	// possibly in the future. A caller that reasons about whether a
+	// query's window has closed must read this, never EvalGrid's End.
+	//
+	// The zero time is returned when End is zero, preserving the
+	// codebase-wide sentinel for "resolve at emit time": such a carrier's
+	// window is not fixed at all and no caller may treat it as closed.
+	//
+	// It lives on the interface for the same reason AnchorGridDivides
+	// does: the compiler forces every carrier kind to answer, so a new
+	// kind cannot silently inherit a wrong default, and the completeness
+	// ratchet closes the hole rather than a parallel list that can drift.
+	DataWindowEnd() time.Time
 }
 
 // Compile-time proof that every grid-bearing node in this package implements
@@ -178,3 +200,35 @@ func (r *RangeBucketGridNative) AnchorGridDivides() bool { return true }
 
 // AnchorGridDivides: absent_over_time emits one row per anchor.
 func (a *AbsentOverTime) AnchorGridDivides() bool { return true }
+
+// dataWindowEnd is the shared `End - Offset` arithmetic every windowed
+// carrier's data edge uses, with the zero-End sentinel preserved.
+func dataWindowEnd(end time.Time, offset time.Duration) time.Time {
+	if end.IsZero() {
+		return time.Time{}
+	}
+	return end.Add(-offset)
+}
+
+// DataWindowEnd: a StepGrid carries no offset of its own — it is the
+// request's anchor grid — so its data edge is its End.
+func (s *StepGrid) DataWindowEnd() time.Time { return dataWindowEnd(s.End, 0) }
+
+func (r *RangeWindow) DataWindowEnd() time.Time { return dataWindowEnd(r.End, r.Offset) }
+
+func (r *RangeWindowGridNative) DataWindowEnd() time.Time { return dataWindowEnd(r.End, r.Offset) }
+
+func (r *RangeWindowStaleResample) DataWindowEnd() time.Time {
+	return dataWindowEnd(r.End, r.Offset)
+}
+
+func (r *RangeLWR) DataWindowEnd() time.Time { return dataWindowEnd(r.End, r.Offset) }
+
+func (r *RangeBucketFanout) DataWindowEnd() time.Time { return dataWindowEnd(r.End, r.Offset) }
+
+func (r *RangeBucketGridNative) DataWindowEnd() time.Time { return dataWindowEnd(r.End, r.Offset) }
+
+// DataWindowEnd: AbsentOverTime's emitter shifts the internal grid by
+// Offset and adds it back on the OUTPUT timestamp, so the rows it READS
+// still end at End - Offset like every other carrier's.
+func (a *AbsentOverTime) DataWindowEnd() time.Time { return dataWindowEnd(a.End, a.Offset) }
