@@ -39,10 +39,30 @@ type Rule struct {
 // Parse decodes a Prometheus rule file's YAML into RuleGroups. It wraps decode
 // errors so the caller (the migration harvester) can attribute a parse failure
 // to the file it read.
+//
+// A document with no `groups:` key is an ERROR, not an empty rule set. A plain
+// yaml.Unmarshal into this shape accepts anything whose YAML is well-formed, so
+// a `--rules` glob that matched a prometheus.yml, a comments-only file or an
+// empty one decoded cleanly to zero groups. The harvester reports a bad glob, an
+// unreadable file and a parse failure as skips, but had nothing to report for
+// this: 0 recorded, 0 consumers, 0 skips, and the cutover gate's rulegraph
+// stage returned PASS — certifying "nothing must stay materialized after
+// cutover" for a Prometheus whose recording rules were never read (#3182).
+//
+// Erroring here is what turns that silence into a counted skip. It is also the
+// right answer for a genuinely empty rule file: the gate must say it harvested
+// nothing from that file, rather than fold it into a clean total.
 func Parse(data []byte) (RuleGroups, error) {
 	var rg RuleGroups
 	if err := yaml.Unmarshal(data, &rg); err != nil {
 		return RuleGroups{}, fmt.Errorf("promrules: parse rule file: %w", err)
+	}
+	if len(rg.Groups) == 0 {
+		return RuleGroups{}, fmt.Errorf(
+			"promrules: parse rule file: no `groups:` key with any entry — this is not a Prometheus " +
+				"rule file (a prometheus.yml, an empty file or a comments-only file decodes to zero " +
+				"groups without a YAML error, and would otherwise read as `no rules, all clear`)",
+		)
 	}
 	return rg, nil
 }

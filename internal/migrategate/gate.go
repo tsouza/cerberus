@@ -649,6 +649,31 @@ func evalRuleGraph(path string) (StageResult, error) {
 			consumed = append(consumed, n)
 		}
 	}
+	// Nothing graphed is not orphan-safety proven. This stage is the only
+	// required one that had no zero-evidence guard, while both its siblings do
+	// (evalClassify's "nothing classified", evalVerify's "nothing verified").
+	//
+	// The hole was reachable: promrules.Parse is a lenient yaml.Unmarshal, so a
+	// `--rules` glob matching a prometheus.yml-shaped or empty file yields a
+	// document with no `groups:` and no error. That is not a bad glob, not an
+	// unreadable file and not a parse failure, so it produces no SkippedEntry
+	// either — 0 recorded, 0 consumers, 0 skips, and this stage returned PASS.
+	// "Nothing must stay materialized after cutover" for a Prometheus whose
+	// recording rules were never read (#3182).
+	//
+	// A deployment with genuinely no recording rules must supply evidence of
+	// that rather than an empty graph, exactly as evalClassify already demands
+	// of an empty corpus.
+	if g.Counts.Recorded == 0 && g.Counts.Consumers == 0 && g.Counts.Skipped == 0 {
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons,
+			"nothing graphed: 0 recorded series and 0 consumers were harvested "+
+				"(an empty rulegraph cannot prove orphan-safety — check that --rules matched real "+
+				"Prometheus rule files, not a prometheus.yml or an empty file)")
+		return res, nil
+	}
+
 	// A skip invalidates the orphan classification the whole stage rests on, so
 	// it blocks alongside any consumed series.
 	blockingSkip := g.Counts.Skipped > 0
