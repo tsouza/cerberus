@@ -16,6 +16,7 @@
 //   13. storagePolicyName operator override wins in every storage mode.
 //   14. ClickHouse Service sessionAffinity default-on / opt-out.
 //   15. dataShards.count (EXPERIMENTAL): count==1 byte-identical to the bare default; count>1 per-shard objects and env wiring, PDB split, keeper guard, fanoutCap apportionment, the experimental opt-in gate.
+//   16. schema.replicated.enabled requires a non-empty zookeeperPath (values.schema.json if/then), instead of rendering a config that crash-loops at cerberus's own boot-time validation.
 //
 // Env contract:
 //   CHART_DIR   chart directory (default: deploy/helm/cerberus)
@@ -567,6 +568,34 @@ function count(haystack, needle) {
   const pdbBareDefault = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true'])
   const pdbExplicitOne = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.podDisruptionBudget.enabled=true', '--set', 'clickhouse.bundled.dataShards.count=1'])
   check(pdbBareDefault === pdbExplicitOne, 'PodDisruptionBudget: dataShards.count=1 renders BYTE-IDENTICAL to the bare default')
+}
+
+// --- 16. schema.replicated.enabled requires a non-empty zookeeperPath --------
+// (cerberus issue #3176). Without the values.schema.json `if`/`then`
+// conditional this section pins, `schema.replicated.enabled: true` with the
+// chart's own default empty zookeeperPath renders CERBERUS_SCHEMA_DATABASE_
+// REPLICATED="true" with no ..._PATH — internal/schema/ddl.Config.Validate()
+// correctly rejects that at cerberus's own boot time, but only as a crash-
+// loop; the whole point of this schema addition is catching it here instead,
+// at `helm template`/`--dry-run`/`lint` time.
+{
+  const missingPath = tplFail(['--set', 'schema.replicated.enabled=true', '-s', 'templates/configmap-env.yaml'])
+  check(missingPath !== null, 'schema.replicated.enabled=true with the default empty zookeeperPath: render FAILS')
+  check(missingPath !== null && /zookeeperPath/.test(missingPath), 'the rejection names zookeeperPath')
+
+  const withPath = tpl([
+    '--set', 'schema.replicated.enabled=true',
+    '--set', 'schema.replicated.zookeeperPath=/clickhouse/databases/otel/{shard}/{replica}',
+    '-s', 'templates/configmap-env.yaml',
+  ])
+  check(withPath.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED: "true"'), 'schema.replicated.enabled=true + zookeeperPath set: renders CERBERUS_SCHEMA_DATABASE_REPLICATED')
+  check(
+    withPath.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: "/clickhouse/databases/otel/{shard}/{replica}"'),
+    'schema.replicated.enabled=true + zookeeperPath set: renders CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH',
+  )
+
+  const bareDefault = tpl(['-s', 'templates/configmap-env.yaml'])
+  check(!bareDefault.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED'), 'schema.replicated left at its default (disabled): still renders clean, no REPLICATED keys at all')
 }
 
 process.exit(ok ? 0 : 1)
