@@ -769,12 +769,31 @@ export function outcomesFromReports(reports) {
             : failed.map((s) => `"${s.keyword || ''}${s.name}" ${(s.result || {}).status}`).join('; ');
         const key = `${stories[0]}/${tiers[0]}`;
         const list = outcomes.get(key) || [];
-        list.push({ where, passed: steps.length > 0 && failed.length === 0, detail });
+        // `name` is what lets an attestation be matched to the ENUMERATED
+        // scenario that produced it rather than merely counted (#3182).
+        list.push({ where, name: el.name || '', passed: steps.length > 0 && failed.length === 0, detail });
         outcomes.set(key, list);
       }
     }
   }
   return { outcomes, unkeyable };
+}
+
+// scenarioNameMatches — does one report element come from this enumerated
+// scenario node?
+//
+// For a plain Scenario the pickle name is the scenario name verbatim. For a
+// Scenario Outline godog substitutes the Examples row into any `<placeholder>`
+// the NAME carries (placeholders in the steps do not affect it), so a name
+// holding one is matched as a template with each placeholder standing for the
+// row's value. Everything outside a placeholder is matched literally.
+export function scenarioNameMatches(enumeratedName, elementName) {
+  if (!enumeratedName.includes('<')) return enumeratedName === elementName;
+  const pattern = enumeratedName
+    .split(/<[^<>]*>/)
+    .map((lit) => lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*');
+  return new RegExp(`^${pattern}$`).test(elementName);
 }
 
 // collectAttestations — every attestation rule, collect-all in the same style
@@ -801,18 +820,23 @@ export function collectAttestations({ scenarios, tiers, story, outcomes, unkeyab
     );
   }
 
+  // The enumerated scenario NODES per key, not a count of them. Counting was
+  // the defect: a Scenario Outline expands to one report element per Examples
+  // row, so a key holding one Outline with N rows plus one plain Scenario has
+  // want=2 and got>=2 the moment the Outline alone runs — and the sibling that
+  // never ran was covered for by rows of a different scenario (#3182).
   const wanted = new Map();
   for (const sc of selected) {
     for (const st of sc.stories) {
       for (const t of sc.tiers) {
         if (!tiers.includes(t)) continue;
         const key = `${st}/${t}`;
-        wanted.set(key, (wanted.get(key) || 0) + 1);
+        wanted.set(key, [...(wanted.get(key) || []), sc]);
       }
     }
   }
 
-  for (const [key, want] of [...wanted].sort()) {
+  for (const [key, nodes] of [...wanted].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
     const [st, tier] = key.split('/');
     const got = outcomes.get(key) || [];
     if (got.length === 0) {
@@ -822,13 +846,16 @@ export function collectAttestations({ scenarios, tiers, story, outcomes, unkeyab
       );
       continue;
     }
-    // A Scenario Outline expands to one report element per Examples row, so
-    // MORE elements than enumerated nodes is normal; FEWER means an
-    // enumerated node produced no element and its execution is unproven.
-    if (got.length < want) {
+    // Every enumerated node must be matched by at least one report element of
+    // its own. MORE elements than nodes stays normal (that is an Outline's
+    // rows); what is no longer normal is one node's rows standing in for
+    // another node entirely.
+    for (const node of nodes) {
+      if (got.some((o) => scenarioNameMatches(node.name, o.name))) continue;
       add(
         'A1',
-        `${st}/${tier} enumerates ${want} scenario node(s) but only ${got.length} ran — ${want - got.length} of them never executed`,
+        `${st}/${tier} enumerates "${node.name}" (${node.feature}:${node.line}) but NO run report contains it — ` +
+          `other scenarios under @${st} @${tier} did run, so a count would have read as covered`,
       );
     }
     for (const o of got) {
