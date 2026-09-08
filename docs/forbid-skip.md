@@ -103,12 +103,13 @@ registry size (6), so the number can never drift from the source registry.
 
 When a new offender shape is discovered:
 
-1. Add the new regex to **all three** copies in the same PR:
-   `.github/scripts/forbid-skip.mjs` (widen an existing `CHECKS` registry
-   entry, or add a new entry plus a matching
+1. Add the new regex to `.github/scripts/forbid-skip.mjs` — widen an
+   existing `CHECKS` registry entry, or add a new entry plus a matching
    `run: node .github/scripts/forbid-skip.mjs` step with `CHECK: <name>`
-   in the `forbid-skip` job of `.github/workflows/ci.yml`),
-   `lefthook.yml`, and `scripts/test-forbid-skip.sh`.
+   in the `forbid-skip` job of `.github/workflows/ci.yml`. That step is the
+   gate. Mirror it in `lefthook.yml` when the scan is cheap enough to run on
+   pre-push; `playwright-skip` has no mirror, which costs a local warning and
+   nothing in CI.
 2. Add a new row to the summary table below + a detailed subsection
    covering the regex, its intent, a match-example, and a
    counter-example.
@@ -347,6 +348,33 @@ reason to call a method named `Skip`.
 - Matches: `godog.T(ctx).Skipf("no fixture for %s", archetype)`
 - Matches: `t := godog.T(ctx); t.SkipNow()`
 - Does NOT match: `w.Skipped = corpus.Skipped` (a field, not a call)
+
+## Pattern 9 — Playwright suppression routes (PR #3180)
+
+Regex: `(^|[^A-Za-z0-9_$.])(test|it|describe|suite)(\.describe)?\.(skip|fixme|only)\s*\(`
+
+Scope: `*.spec.{ts,js}`, excluding `**/node_modules/**`.
+
+Playwright's own suppression routes live in `.spec.ts`, so pattern 1's
+`*_test.go` scope cannot see any of them. `test.skip` and `test.fixme`
+silence a spec while the lane stays green. `.only` is the mirror image:
+it silences every OTHER spec in the file, so a lane reports green having
+run one test. All three are `t.Skip` in TypeScript.
+
+A conditional `test.skip(!process.env.X, …)` is the same move wearing an
+environment check, and is what let `tempo_two_phase_compare.spec.ts` look
+healthy while running in no lane at all (#3181): the A/B behind a
+default-on split had never executed. The remedy is the one this gate
+forces — make the missing environment a hard failure, and wire the spec
+into a lane.
+
+The leading `[^A-Za-z0-9_$.]` guard keeps the scan from firing on an
+unrelated property access that merely ends in `.skip`.
+
+- Matches: `test.skip('flaky', async () => {})`
+- Matches: `test.fixme(...)`, `test.only(...)`, `describe.skip(...)`
+- Matches: `test.skip(!process.env.CERBERUS_NOSPLIT_URL, 'needs the second head')`
+- Does NOT match: `const m = counters.skip(1)` (a property access, not the runner)
 
 ## Redundancy review
 
