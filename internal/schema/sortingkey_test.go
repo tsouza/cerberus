@@ -89,10 +89,12 @@ func isBareIdentifier(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		alpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
-		digit := c >= '0' && c <= '9'
-		if !alpha && !(digit && i > 0) {
-			return false
+		// A digit is legal in an identifier but never leads one.
+		digit := c >= '0' && c <= '9' && i > 0
+		if alpha || digit {
+			continue
 		}
+		return false
 	}
 	return true
 }
