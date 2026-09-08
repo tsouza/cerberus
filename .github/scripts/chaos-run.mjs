@@ -61,6 +61,7 @@
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
+import { pollUntil } from './lib/poll.mjs';
 
 // ---- env / constants -------------------------------------------------
 
@@ -93,7 +94,6 @@ const CERBERUS_RECOVERY_DEADLINE_MS = 90_000; // replica reschedule + readyz gre
 const BREAKER_TRIP_DEADLINE_MS = 30_000; // drive volume until 503+Retry-After:5 lands
 const PARTITION_TRIP_DEADLINE_MS = 60_000; // slower: each dial blocks up to DialTimeout
 const METRIC_SETTLE_DEADLINE_MS = 90_000; // OTLP flush lag before self-metrics corroborate
-const POLL_INTERVAL_MS = 2_000;
 const SETTLE_INTERVAL_MS = 3_000;
 
 // Breaker HALF-OPEN -> CLOSED drive (ch-pod-kill heal). When CH comes back the
@@ -382,30 +382,6 @@ function restartSum(selector) {
     .map((s) => parseInt(s.trim(), 10))
     .filter((n) => Number.isFinite(n))
     .reduce((a, b) => a + b, 0);
-}
-
-// ---- bounded poll ----------------------------------------------------
-
-// pollUntil — invoke `fn` (async, returns truthy on success) every
-// intervalMs until it succeeds or deadlineMs elapses. Returns true on
-// success, false on timeout. The ASSERT-side retry primitive: faults are
-// one-shot + idempotent, recovery checks retry to their deadline.
-async function pollUntil(fn, { deadlineMs, intervalMs = POLL_INTERVAL_MS, label = '' } = {}) {
-  const start = Date.now();
-  let attempt = 0;
-  while (Date.now() - start < deadlineMs) {
-    attempt += 1;
-    let ok = false;
-    try {
-      ok = await fn(attempt);
-    } catch (e) {
-      ok = false;
-      log(`    [poll ${label}] attempt ${attempt} threw: ${String(e?.message || e)}`);
-    }
-    if (ok) return true;
-    await sleep(intervalMs);
-  }
-  return false;
 }
 
 // ---- shared assertions -----------------------------------------------

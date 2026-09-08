@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { makeKubectl, clickhousePodName, chQuery, chQueryRaw } from './k8s.mjs';
+import { makeKubectl, clickhousePodName, chQuery, chQueryRaw, waitForClusterHealth } from './k8s.mjs';
 
 // fakeCapture — records every invocation and answers from a queue of
 // canned { status, stdout, stderr } results, FIFO.
@@ -69,4 +69,35 @@ test('chQuery returns trimmed stdout on success', () => {
   const { capture } = fakeCapture([{ status: 0, stdout: '  42\n', stderr: '' }]);
   const kubectl = makeKubectl(capture, 'cerberus');
   assert.equal(chQuery(kubectl, 'chpod', { database: 'otel' }, 'SELECT count()'), '42');
+});
+
+test('waitForClusterHealth resolves once every replica reports errors_count=0', async () => {
+  const { capture, calls } = fakeCapture([{ status: 0, stdout: '0\t0\t0\n0\t1\t0\n', stderr: '' }]);
+  const kubectl = makeKubectl(capture, 'cerberus');
+  const elapsed = await waitForClusterHealth(kubectl, 'chpod', { database: 'otel' }, {
+    cluster: 'bwc_cluster', deadlineMs: 1000, intervalMs: 0,
+  });
+  assert.ok(elapsed >= 0);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].join(' '), /--format TSVRaw/);
+  assert.match(calls[0].join(' '), /cluster = 'bwc_cluster'/);
+});
+
+test('waitForClusterHealth retries until errors_count clears', async () => {
+  const { capture, calls } = fakeCapture([
+    { status: 0, stdout: '0\t0\t3\n', stderr: '' }, // dirty — retries
+    { status: 0, stdout: '0\t0\t0\n', stderr: '' }, // clean — resolves
+  ]);
+  const kubectl = makeKubectl(capture, 'cerberus');
+  await waitForClusterHealth(kubectl, 'chpod', {}, { cluster: 'bwc_cluster', deadlineMs: 1000, intervalMs: 0 });
+  assert.equal(calls.length, 2);
+});
+
+test('waitForClusterHealth rejects with dirty-row detail once deadlineMs elapses', async () => {
+  const capture = () => ({ status: 0, stdout: '0\t0\t7\n1\t0\t2\n', stderr: '' });
+  const kubectl = makeKubectl(capture, 'cerberus');
+  await assert.rejects(
+    () => waitForClusterHealth(kubectl, 'chpod', {}, { cluster: 'bwc_cluster', deadlineMs: 15, intervalMs: 5 }),
+    /shard=0 replica=0 errors_count=7; shard=1 replica=0 errors_count=2/,
+  );
 });

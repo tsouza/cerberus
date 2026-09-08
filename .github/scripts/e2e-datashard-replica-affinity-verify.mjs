@@ -79,16 +79,19 @@
 // window `first_or_random` can legitimately prefer a NON-offset-0 replica,
 // which is exactly the false positive this leg exists to rule out (observed
 // live: run 34103918151, cerberus issue #3148). `system.clusters.errors_count`
-// is that same error-tracking state, readable directly, so this script polls
-// it to a clean state (every row's `errors_count = 0`) before firing the
-// affinity-verify burst — proving the fan-out load only starts once the
-// cluster has actually settled, rather than inferring settlement from pod
-// readiness alone.
+// is that same error-tracking state, readable directly, so this script waits
+// for a clean state (every row's `errors_count = 0`) via
+// `lib/k8s.mjs`'s `waitForClusterHealth` — promoted there by cerberus issue
+// #3172 so any OTHER datashard-lane script that fires load right after
+// cluster-up can wait out the same race, not just this one — before firing
+// the affinity-verify burst. That proves the fan-out load only starts once
+// the cluster has actually settled, rather than inferring settlement from
+// pod readiness alone.
 
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
-import { makeKubectl, clickhousePodName, chQuery } from './lib/k8s.mjs';
+import { makeKubectl, clickhousePodName, chQuery, waitForClusterHealth } from './lib/k8s.mjs';
 
 const NS = process.env.NAMESPACE || 'cerberus';
 const CERBERUS_URL = process.env.CERBERUS_URL || 'http://localhost:8080';
@@ -165,42 +168,6 @@ function hostnameShardReplica(hostname) {
   return { shard: Number(m[1]), replica: Number(m[2]) };
 }
 
-// waitForCleanClusterHealth polls system.clusters until every (shard,
-// replica) row's errors_count is 0, or HEALTH_POLL_SECONDS elapses — see the
-// module doc's "THE RACE THIS SCRIPT MUST NOT LOSE" section for why pod
-// readiness alone cannot stand in for inter-node connection health. Returns
-// the elapsed seconds on success; throws with the last-seen dirty rows on
-// timeout, since a burst fired into a cluster that never settled would only
-// reproduce the false positive this poll exists to close out.
-async function waitForCleanClusterHealth(pod) {
-  const deadline = Date.now() + HEALTH_POLL_SECONDS * 1000;
-  const pollIntervalMs = 2000;
-  let lastDirty = [];
-  for (;;) {
-    const rows = chQueryTSV(
-      pod,
-      `SELECT shard_num, replica_num, errors_count
-       FROM system.clusters WHERE cluster = '${CH_CLUSTER}'
-       ORDER BY shard_num, replica_num`,
-    );
-    lastDirty = rows
-      .map((r) => r.split('\t'))
-      .filter(([, , errorsCount]) => Number(errorsCount) !== 0);
-    if (lastDirty.length === 0) {
-      return (HEALTH_POLL_SECONDS * 1000 - (deadline - Date.now())) / 1000;
-    }
-    if (Date.now() >= deadline) {
-      const detail = lastDirty.map(([shard, replica, n]) => `shard=${shard} replica=${replica} errors_count=${n}`).join('; ');
-      throw new Error(
-        `system.clusters never reached a clean state (errors_count=0 for every replica) within ` +
-          `${HEALTH_POLL_SECONDS}s: ${detail} — firing the affinity burst now would risk observing a ` +
-          `replica-selection decision still influenced by the connection errors this poll exists to wait out`,
-      );
-    }
-    await sleep(pollIntervalMs);
-  }
-}
-
 async function main() {
   const pod = clickhousePodName(kubectl, NS);
   log(`replica-affinity verify: namespace=${NS} db=${DB} cluster=${CH_CLUSTER} dataShardCount=${DATA_SHARD_COUNT} replicas=${REPLICAS} pod=${pod}`);
@@ -235,7 +202,10 @@ async function main() {
   // `just e2e-datashard-up`'s pod-readiness gate proves nothing about
   // whether every node can already reach every peer replica.
   try {
-    const settleSeconds = await waitForCleanClusterHealth(pod);
+    const settleSeconds = await waitForClusterHealth(kubectl, pod, CH_OPTS, {
+      cluster: CH_CLUSTER,
+      deadlineMs: HEALTH_POLL_SECONDS * 1000,
+    });
     log(`cluster health confirmed clean (errors_count=0 for every replica) after ${settleSeconds.toFixed(1)}s`);
   } catch (e) {
     error(e.message);
