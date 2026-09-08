@@ -21,8 +21,14 @@
 // through, each behind a two-line row-splitting wrapper of its own), so a
 // new script needing a different output format passes it here rather than
 // re-implementing the `kubectl exec ... clickhouse-client` invocation.
+// `waitForClusterHealth` (cerberus issue #3172) is the same story one level
+// up: it started as `e2e-datashard-replica-affinity-verify.mjs`'s own
+// private poll loop and was promoted here so every datashard-lane script
+// that fires load right after `just e2e-datashard-up` can wait out the
+// same startup race, not just the one script that first hit it.
 
 import { error } from './gh.mjs';
+import { pollUntil } from './poll.mjs';
 
 // Returns a `kubectl(args, opts) => capture() result` closure pinned to the
 // given namespace.
@@ -70,4 +76,68 @@ export function chQuery(kubectl, target, opts, sql) {
     process.exit(1);
   }
   return res.stdout.trim();
+}
+
+// clusterHealthPollIntervalMs is deliberately wider than pollUntil's own
+// DEFAULT_POLL_INTERVAL_MS: each iteration here spawns a fresh `kubectl
+// exec` + `clickhouse-client` subprocess (chQuery has no persistent-session
+// mode), and the phenomenon this poll waits out — ClickHouse's own
+// distributed_replica_error_half_life — decays over 60s by default, so
+// sub-second responsiveness buys nothing a caller could observe. 5s cuts a
+// worst-case 60s wait from ~30 subprocess spawns to ~12 while staying far
+// finer than the 60s time constant it is tracking.
+const clusterHealthPollIntervalMs = 5_000;
+
+// waitForClusterHealth polls `system.clusters` until every (shard, replica)
+// row's errors_count is 0, or deadlineMs elapses (cerberus issue #3148,
+// promoted to this shared module by issue #3172 — same class as #3109/PR
+// #3125's mode-toggle readiness race).
+//
+// THE RACE THIS EXISTS TO CLOSE: `just e2e-datashard-up`'s readiness gate
+// is `kubectl rollout status`, which only proves each ClickHouse pod's own
+// container passed its liveness/readiness probe — NOT that its inter-node
+// connections to every OTHER data shard (and, on a multi-replica-per-shard
+// topology, every peer replica) are already dialable. The first cross-node
+// dial issued before that settles gets refused, and ClickHouse increments
+// the target's `system.clusters.errors_count` server-side
+// (`PoolWithFailoverBase::Pool::error_count`) — during that decay window a
+// verify script observing replica/shard selection, or firing load that
+// assumes a settled cluster, would see behavior the startup race caused
+// rather than the steady-state behavior it means to check. This is why the
+// wait belongs here rather than in any ONE verify script: every datashard-
+// lane script that fires load right after cluster-up is exposed to it.
+//
+// `target` and `chOpts` are chQuery's own (a pod name or `deploy/foo`, and
+// `{ database, user, password }`). Returns the elapsed seconds on success.
+// Throws with the last-seen dirty rows on timeout — firing load into a
+// cluster that never settled would only reproduce the exact race this poll
+// exists to wait out.
+export async function waitForClusterHealth(kubectl, target, chOpts, { cluster, deadlineMs, intervalMs = clusterHealthPollIntervalMs } = {}) {
+  const start = Date.now();
+  let lastDirty = [];
+  const ok = await pollUntil(
+    async () => {
+      const out = chQuery(
+        kubectl,
+        target,
+        { ...chOpts, format: 'TSVRaw' },
+        `SELECT shard_num, replica_num, errors_count
+         FROM system.clusters WHERE cluster = '${cluster}'
+         ORDER BY shard_num, replica_num`,
+      );
+      const rows = out.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0);
+      lastDirty = rows.map((r) => r.split('\t')).filter(([, , errorsCount]) => Number(errorsCount) !== 0);
+      return lastDirty.length === 0;
+    },
+    { deadlineMs, intervalMs, label: 'cluster-health' },
+  );
+  if (!ok) {
+    const detail = lastDirty.map(([shard, replica, n]) => `shard=${shard} replica=${replica} errors_count=${n}`).join('; ');
+    throw new Error(
+      `system.clusters never reached a clean state (errors_count=0 for every replica) within ` +
+        `${(deadlineMs / 1000).toFixed(0)}s: ${detail} — firing load now would risk observing a ` +
+        `decision still influenced by the connection errors this poll exists to wait out`,
+    );
+  }
+  return (Date.now() - start) / 1000;
 }

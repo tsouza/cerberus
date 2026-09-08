@@ -86,6 +86,7 @@
 //   BURST_SECONDS           sustained concurrent-load duration  (default 20)
 //   BURST_CONCURRENCY       concurrent requests in flight       (default 6)
 //   FLUSH_WAIT_SECONDS      settle time before SYSTEM FLUSH LOGS (default 10)
+//   HEALTH_POLL_SECONDS     bounded wait for a clean errors_count (default 60)
 //
 // Exit 0 = every assertion passed; 1 = any failed (with ::error:: annotation).
 
@@ -93,7 +94,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
-import { makeKubectl, clickhousePodName, chQuery } from './lib/k8s.mjs';
+import { makeKubectl, clickhousePodName, chQuery, waitForClusterHealth } from './lib/k8s.mjs';
 
 const NS = process.env.NAMESPACE || 'cerberus';
 const CERBERUS_URL = process.env.CERBERUS_URL || 'http://localhost:8080';
@@ -107,6 +108,7 @@ const CERBERUS_ENV_CONFIGMAP = process.env.CERBERUS_ENV_CONFIGMAP || 'cerberus-e
 const BURST_SECONDS = Number(process.env.BURST_SECONDS || '20');
 const BURST_CONCURRENCY = Number(process.env.BURST_CONCURRENCY || '6');
 const FLUSH_WAIT_SECONDS = Number(process.env.FLUSH_WAIT_SECONDS || '10');
+const HEALTH_POLL_SECONDS = Number(process.env.HEALTH_POLL_SECONDS || '60');
 
 // requireDataShardCount is called from main, NOT at import time: this module
 // is imported by its own test suite for the pure interval arithmetic below,
@@ -399,6 +401,25 @@ async function main() {
   const oomedBefore = new Set(oomKilledPods(allPods));
   if (oomedBefore.size > 0) {
     log(`pre-burst baseline: ${oomedBefore.size} ClickHouse pod(s) already carry an OOMKilled lastState from before this script ran (${[...oomedBefore].join(', ')}) — only a NEW OOMKill is attributed to the burst`);
+  }
+
+  // ---- settle window: wait for a genuinely healthy inter-node state ----
+  // `just e2e-datashard-up`'s pod-readiness gate (`kubectl rollout status`)
+  // proves nothing about whether every data shard can already dial every
+  // OTHER shard — the same startup race e2e-datashard-replica-affinity-
+  // verify.mjs exists to rule out (cerberus issue #3148), and this script
+  // fires load against the exact same Distributed cross-shard fan-out right
+  // after cluster-up, so it is exposed to it too (cerberus issue #3172:
+  // waitForClusterHealth was previously private to that one script).
+  try {
+    const settleSeconds = await waitForClusterHealth(kubectl, initiatorPod, CH_OPTS, {
+      cluster: CH_CLUSTER,
+      deadlineMs: HEALTH_POLL_SECONDS * 1000,
+    });
+    log(`cluster health confirmed clean (errors_count=0 for every replica) after ${settleSeconds.toFixed(1)}s`);
+  } catch (e) {
+    error(e.message);
+    process.exit(1);
   }
 
   const burstStartMs = Date.now();
