@@ -116,3 +116,57 @@ test('fails loudly rather than passing vacuously when the pathspec matches nothi
   assert.equal(res.status, 1, `a zero-file scan must fail loudly, got: ${res.stdout}`);
   assert.match(res.stdout, /matched zero files/, `expected the zero-file guard message, got: ${res.stdout}`);
 });
+
+// ---------------------------------------------------------------------------
+// The exemption inventory must itself be able to go stale-red (#3187).
+//
+// KNOWN_GOOD used to be keyed on "file:line". Two of its entries outlived the
+// fix that made them unnecessary and sat pointing at unrelated code, silently
+// ready to exempt whatever drifted onto those lines. Keying on the argument
+// TEXT removes the drift; these pin that the new key both survives a line shift
+// and fails when the site it names is gone.
+// ---------------------------------------------------------------------------
+
+test('a KNOWN_GOOD site still matches after unrelated lines shift it', () => {
+  // The exemption is on `verbatim(side + ".")` in vector_join.go. Padding the
+  // file above it moves the call to a different line; a line-keyed inventory
+  // would break here, a content-keyed one must not.
+  const { dir } = newChsqlRepo({
+    'internal/chsql/builder.go': 'package chsql\n\nfunc verbatim(sql string) Frag { return nil }\n',
+    // BOTH of this file's exempt calls, because an entry in scope that does not
+    // match is stale by design — see the next test.
+    'internal/chsql/vector_join.go':
+      'package chsql\n' + '\n// padding\n'.repeat(40) +
+      '\nfunc qualColFrag(side string) Frag {\n\treturn verbatim(side + ".")\n}\n' +
+      '\nfunc aliasedFrag(bareAlias string) Frag {\n\treturn verbatim(" AS " + bareAlias)\n}\n',
+  });
+  const res = runGate(dir);
+  assert.equal(res.status, 0, `the exemption must survive a line shift, got: ${res.stdout}`);
+  assert.match(res.stdout, /2 synthetic-token exemption\(s\) matched/, res.stdout);
+});
+
+test('a KNOWN_GOOD entry whose site is gone fails as a stale exemption', () => {
+  // vector_join.go is present (so the entries for it are in scope) but carries
+  // neither exempt call. Both must be reported stale rather than ignored.
+  const { dir } = newChsqlRepo({
+    'internal/chsql/builder.go': 'package chsql\n\nfunc verbatim(sql string) Frag { return nil }\n',
+    'internal/chsql/vector_join.go':
+      'package chsql\n\nfunc qualColFrag() Frag {\n\treturn verbatim("anchor_ts")\n}\n',
+  });
+  const res = runGate(dir);
+  assert.equal(res.status, 1, `a stale exemption must fail, got status=${res.status}: ${res.stdout}`);
+  assert.match(res.stdout, /stale KNOWN_GOOD entry/, res.stdout);
+  assert.match(res.stdout, /side \+ "\."/, `expected the stale entry named, got: ${res.stdout}`);
+});
+
+test('an entry for a file absent from THIS tree is inapplicable, not stale', () => {
+  // The script is run against synthetic single-file trees by these very tests.
+  // An exemption for a file that is not in the tree must not be read as stale,
+  // or every case above would fail for the wrong reason.
+  const { dir } = newChsqlRepo({
+    'internal/chsql/builder.go': 'package chsql\n\nfunc verbatim(sql string) Frag { return nil }\n',
+    'internal/chsql/emit.go': 'package chsql\n\nfunc alias() Frag {\n\treturn verbatim("anchor_ts")\n}\n',
+  });
+  const res = runGate(dir);
+  assert.equal(res.status, 0, `absent files must not read as stale, got: ${res.stdout}`);
+});

@@ -431,11 +431,21 @@ const lokiRuleSourcePrefix = "loki-rule:"
 // reading the remote-written metric by name); BuildRuleGraph links them
 // unmodified.
 //
-// Any input this cannot use — bad glob, unreadable file, YAML parse failure,
-// a rule with an empty record name — is returned as a SkippedEntry, never
-// silently dropped: a --loki-rules glob that matches zero files BLOCKS the
-// gate exactly like an equivalent --rules miss does today, so "nothing
-// configured" is never read as "no rules, all clear."
+// Any input this cannot use — bad glob, unreadable file, YAML parse failure
+// (which now includes a document carrying no `groups:` entry at all), a rule
+// with an empty record name — is returned as a SkippedEntry, never silently
+// dropped: a --loki-rules glob that matches zero files BLOCKS the gate exactly
+// like an equivalent --rules miss does today, so "nothing configured" is never
+// read as "no rules, all clear."
+//
+// That last clause used to be false in one case, and it is worth naming because
+// the enumeration above is what made it look covered: a glob matching a file
+// that is not rules-shaped is neither a zero-match nor a parse failure.
+// promrules.Parse was a plain yaml.Unmarshal, so a prometheus.yml or an empty
+// file decoded to zero groups with no error and produced no SkippedEntry —
+// exactly the "no rules, all clear" this comment promised was impossible
+// (#3182). Parse rejects that document now, so it arrives here as the parse
+// failure the enumeration always claimed it was.
 func HarvestLokiRuleFiles(rulePaths []string) (recorded []RecordedSeries, skipped []SkippedEntry) {
 	skipped = eachRuleFile(rulePaths, func(file string, rg promrules.RuleGroups) []SkippedEntry {
 		rec, sk := splitLokiRuleGroups(file, rg)

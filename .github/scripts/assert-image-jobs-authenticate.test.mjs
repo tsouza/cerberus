@@ -201,9 +201,20 @@ test('the shared policy is detected by a CALL, not by a mention of it', () => {
   assert.equal(callsSharedPolicy('export function pullImageWithRetry(image, options = {}) {'), false);
   assert.equal(callsSharedPolicy('if (!pullImageWithRetry(ref, { backoffStepSeconds })) failed++;'), true);
 
+  // chart-validate imports the rate-limit classifier out of lib/registry.mjs
+  // via chart-kubeconform.mjs and never pulls through it. It DOES acquire an
+  // image now — the helm-docs render (#3187) — so the discrimination this test
+  // guards is no longer "acquires nothing" but "acquires the one thing it
+  // actually pulls, and nothing on account of a mention".
   const chart = realScan().find((r) => r.id === 'chart-ci.yml:chart-validate');
   assert.ok(chart, 'chart-ci.yml:chart-validate was not scanned');
-  assert.deepEqual(chart.findings.acquisitions, []);
+  assert.deepEqual(chart.findings.acquisitions, [
+    '.github/scripts/render-helm-docs.mjs (shared mirror-first policy)',
+  ]);
+  assert.ok(
+    !chart.findings.acquisitions.some((a) => a.includes('chart-kubeconform')),
+    'importing the rate-limit classifier must not read as an acquisition',
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -642,4 +653,80 @@ test('a comment between two steps does not leak into the previous step body', ()
   const results = realScan();
   const unresolved = results.flatMap((r) => r.findings.unresolved);
   assert.deepEqual(unresolved.filter((u) => u.includes('`')), unresolved.filter(() => false));
+});
+
+// ---------------------------------------------------------------------------
+// `uses: docker://` (#3187).
+//
+// A Docker container action makes the runner PULL the named image before the
+// step runs. `step()` returned early on any `uses:` that was neither
+// docker/login-action nor a local composite, so that pull contributed nothing:
+// the required `chart-validate` job pulled `docker://jnorwood/helm-docs` from
+// Docker Hub with no login at all while this gate reported "26 jobs, all
+// authenticated" and did not list chart-validate among them.
+//
+// The negative controls below inject the shape back into a REAL workflow,
+// because a resolver that stopped seeing it would report the identical green
+// this gate reported for the whole time the hole was open.
+// ---------------------------------------------------------------------------
+
+// dockerUsesStep — a `uses: docker://` step spliced in ahead of a job's first
+// real step, matching the indentation of the file it lands in.
+const dockerUsesStep = [
+  '      - name: injected container action',
+  '        uses: docker://jnorwood/helm-docs:v1.14.2',
+  '',
+].join('\n');
+
+test('a `uses: docker://` step is recognised as an image acquisition', () => {
+  // quickstart.yml:run acquires through the shared policy and logs into ghcr.io
+  // only, so adding an unmirrored Docker Hub container action to it must both
+  // register as an acquisition and trip the Docker Hub login rule.
+  const results = scanWith('chart-ci.yml', (text) =>
+    text.replace('      - uses: actions/checkout@v7\n', `${dockerUsesStep}      - uses: actions/checkout@v7\n`),
+  );
+  const findings = findingsFor('chart-ci.yml:chart-validate', results);
+  assert.ok(
+    findings.acquisitions.some((a) => a.includes('docker://')),
+    `a docker:// container action must be an acquisition; got ${JSON.stringify(findings.acquisitions)}`,
+  );
+  assert.ok(
+    [...findings.refs].includes('jnorwood/helm-docs:v1.14.2'),
+    `the pulled image ref must be recorded; got ${JSON.stringify([...findings.refs])}`,
+  );
+});
+
+test('a `uses: docker://` pull with no login ahead of it is a violation', () => {
+  // The EXACT state chart-validate was in before #3187: helm-docs run as a
+  // Docker container action, and not one registry login in the job. The gate
+  // reported this as clean for as long as it existed.
+  const results = scanWith('chart-ci.yml', (text) => {
+    const stripped = withoutStep('Log in to GHCR')(withoutStep('Log in to Docker Hub')(text));
+    const reverted = stripped.replace(
+      '        run: node .github/scripts/render-helm-docs.mjs',
+      '        uses: docker://jnorwood/helm-docs:v1.14.2',
+    );
+    assert.notEqual(reverted, stripped, 'the render step was not reverted to the docker:// form');
+    return reverted;
+  });
+  const findings = findingsFor('chart-ci.yml:chart-validate', results);
+  assert.deepEqual(findings.logins, [], 'the negative control must leave the job with no login');
+  const violations = violationsFor('chart-ci.yml:chart-validate', findings);
+  assert.ok(
+    violations.some((v) => /no registry login step — the pull is anonymous/.test(v)),
+    `an anonymous docker:// pull must be reported; got ${JSON.stringify(violations)}`,
+  );
+});
+
+test('the live chart-validate job acquires helm-docs on the authenticated path', () => {
+  // The positive half: after the fix the job still ACQUIRES (so the gate has
+  // not simply stopped looking at it) and is clean. A green here that came from
+  // the resolver losing sight of the job again is exactly what the two negative
+  // controls above rule out.
+  const findings = findingsFor('chart-ci.yml:chart-validate', realScan());
+  assert.ok(
+    findings.acquisitions.length > 0,
+    'chart-validate must still register as acquiring the helm-docs image',
+  );
+  assert.deepEqual(violationsFor('chart-ci.yml:chart-validate', findings), []);
 });

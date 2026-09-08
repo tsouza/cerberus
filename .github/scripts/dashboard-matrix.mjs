@@ -213,7 +213,7 @@ const EXCLUDED = [
   'crawl/reconcile.spec.ts', //          crawl-suite reconcile pin; the k3d lane runs only the crawl trio, never reconcile
   'loki_tail.spec.ts', //                direct-WebSocket Loki live-tail oracle (#1011); runs in the compose-smoke lane (shard-kiosk), not the k3d dashboard lane — it drives the tail WS endpoint on the compose stack, never Grafana on k3d
   'metrics_histogram.spec.ts', //        direct cerberus Prom-API histogram_quantile checks over the exp/classic telemetrygen sources that exist only in the compose stack (docker-compose sidecars); runs in the compose-smoke lane (shard-smoke), never Grafana on k3d
-  'tempo_two_phase_compare.spec.ts', //  opt-in structural two-phase A/B; needs `docker compose --profile twophase up` (cerberus-nosplit + telemetrygen-traces) and CERBERUS_NOSPLIT_URL — skips otherwise, so never runs in the k3d dashboard lane
+  'tempo_two_phase_compare.spec.ts', //  structural two-phase A/B; runs in the compose-smoke lane (shard-twophase, which boots the `twophase` profile's split-OFF cerberus head). The k3d lane deploys ONE cerberus, so it has nothing to compare against — and the spec now FAILS rather than skips on a missing CERBERUS_NOSPLIT_URL, so it must not be scheduled here
 ];
 
 // discover() — the tracked dashboard-lane spec universe (lib/shard-coverage.mjs).

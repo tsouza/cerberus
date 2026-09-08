@@ -53,9 +53,29 @@ func measureE2E(s *session, iters int) (results []e2eResult, metricRows, logRows
 		return nil, 0, 0, 0, fmt.Errorf("seed traces: %w", err)
 	}
 
-	metricRows, _ = s.scalarCount("SELECT * FROM e2e_metrics_gauge")
-	logRows, _ = s.scalarCount("SELECT * FROM e2e_logs")
-	traceRows, _ = s.scalarCount("SELECT * FROM e2e_traces")
+	// These three counts are PUBLISHED: main_chdb.go threads them into
+	// docs/benchmarks.md, where they render as "a synthetic OpenTelemetry
+	// dataset of N metric samples, N log records, and N spans" under a heading
+	// that hardcodes "~500k datapoints". Discarding the error made a failed
+	// count print as 0, so the two halves of that one sentence would contradict
+	// each other in a committed document — and the generated prose immediately
+	// above it asserts "the row count it derives from is always measured"
+	// (#3182). ScanRows also feeds FanRatio's denominator, which is guarded
+	// `> 0` precisely because a zero was anticipated, suppressing the ratio
+	// rather than the report.
+	//
+	// A document generator that cannot count its own dataset must fail rather
+	// than publish a zero. Every other scalarCount in this program already
+	// propagates; these were the only four that did not.
+	if metricRows, err = s.scalarCount("SELECT * FROM e2e_metrics_gauge"); err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("metric row count: %w", err)
+	}
+	if logRows, err = s.scalarCount("SELECT * FROM e2e_logs"); err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("log row count: %w", err)
+	}
+	if traceRows, err = s.scalarCount("SELECT * FROM e2e_traces"); err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("trace row count: %w", err)
+	}
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 

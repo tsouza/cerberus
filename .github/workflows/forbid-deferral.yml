@@ -101,6 +101,7 @@ jobs:
           # range end below needs no extra term.
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          MERGE_TARGET_REF: origin/${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref || github.ref_name }}
       # test/rejection-parity/catalogue/'s class=divergence entries carry
       # the same tracking-issue liveness contract this job already enforces
       # for deferral markers, just read off the catalogue's own state instead
@@ -153,8 +154,20 @@ jobs:
       # `assert-go-setup-hardened.mjs` requires, and it also keeps this job from
       # archiving an empty module cache.
       - uses: ./.github/actions/setup-go
+      # The merge target is the branch this change would land ON, which is not
+      # always `main`: a maintenance-line backport is based on `release/*.x`, and
+      # comparing it against `main` made the gate blame it for every golden shard
+      # `main` had regenerated since the line forked, with a "merge origin/main
+      # into this branch" instruction that is wrong for a backport (#3187).
+      #
+      # Fetched under the same expression the scanner reads, so the ref it
+      # resolves and the ref this fetches cannot disagree.
       - name: Fetch the merge target for the stale-base comparison
-        run: git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+        env:
+          MERGE_TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref || github.ref_name }}
+        run: |
+          branch="${MERGE_TARGET_BRANCH#refs/heads/}"
+          git fetch --no-tags --quiet origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
       - name: Assert the lane affected-path derivation matches, and does not over-match
         run: node --test .github/scripts/lib/lane-closure.test.mjs
       - name: Assert the merge-risk scanner matches, and does not over-match

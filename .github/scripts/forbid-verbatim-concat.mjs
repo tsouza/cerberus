@@ -39,37 +39,47 @@ import { lsFiles, error, log } from './lib/gh.mjs';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 
-// KNOWN_GOOD — "file:line" sites pre-approved to concatenate inside a
-// verbatim() argument, each with a rationale. Two categories:
+// KNOWN_GOOD — argument texts pre-approved to concatenate inside a verbatim()
+// call, keyed by (file, argument text) rather than by line number.
 //
-// 1. Synthetic-token concatenation — gluing an emitter-chosen, never-
-//    user-controlled alias (a bare single letter like `L`/`R`, or a
-//    fixed internal name) to FIXED punctuation to form one simple
-//    qualified-identifier-like token (`L.*`, `L.`, ` AS L`). This is
-//    still "a synthetic token" per invariant 10's own definition, not a
-//    whole expression SHAPE (no operators, no function calls, no
-//    ORDER BY/PARTITION BY/frame clauses) — the `+` only stitches two
-//    inert strings together.
-// 2. Verified, tracked pre-existing debt — a real shape-building
-//    violation this gate would otherwise block on, already filed as its
-//    own issue for a dedicated fix (matching #2297's own precedent: too
-//    complex/risky for a drive-by rewrite). Remove the entry the moment
-//    its tracking issue's fix lands — this is not a silent bypass, it is
-//    an inventory of exactly what's still owed.
-const KNOWN_GOOD = new Set([
-  // Category 1 — synthetic single-letter join alias + fixed punctuation.
-  'internal/chsql/structural_join.go:556', // starExceptKeys: verbatim(side+".*")
-  'internal/chsql/vector_join.go:886',     // qualColFrag: verbatim(side+".")
-  'internal/chsql/vector_join.go:900',     // aliasedFrag: verbatim(" AS "+bareAlias)
+// Each entry is a synthetic-token concatenation: gluing an emitter-chosen,
+// never-user-controlled alias (a bare single letter like `L`/`R`) to FIXED
+// punctuation to form one simple qualified-identifier-like token (`L.*`, `L.`,
+// ` AS L`). That is "a synthetic token" per invariant 10's own definition, not
+// a whole expression SHAPE: no operators, no function calls, no
+// ORDER BY/PARTITION BY/frame clauses — the `+` stitches two inert strings.
+//
+// WHY THIS IS KEYED ON CONTENT (#3187). It used to be keyed on "file:line",
+// which is brittle in both directions: any edit ABOVE an entry either breaks
+// the gate spuriously (the real violation moves off its key and the build goes
+// red with a misleading message) or, worse, silently exempts whatever unrelated
+// text drifts ONTO that line. The second half was not hypothetical — two
+// further entries pointed at nested_set_annotate.go:404 and :414 as tracked
+// debt from #2297, that debt was paid by PR #2319, and the entries were left
+// behind pointing at `As(` and `From(events.Frag())`. They exempted nothing
+// they described and stood ready to exempt anything that landed there next.
+// A key made of the text being exempted cannot drift away from it.
+//
+// There is deliberately no "tracked debt" category any more. A pre-existing
+// shape-building violation is a bug to fix, not an inventory line: the two
+// entries that category ever held outlived their fix, which is the argument
+// against having it.
+const KNOWN_GOOD = [
+  { file: 'internal/chsql/structural_join.go', arg: 'side+".*"' }, //      starExceptKeys
+  { file: 'internal/chsql/vector_join.go', arg: 'side + "."' }, //         qualColFrag
+  { file: 'internal/chsql/vector_join.go', arg: '" AS " + bareAlias' }, // aliasedFrag
+];
 
-  // Category 2 — tracked pre-existing debt, not yet fixed.
-  // These two are already fixed by #2297 / PR #2319 (open, converts both to
-  // the new typed WindowFrame constructor) — remove once that PR merges and
-  // this branch rebases past it; listed here only so this NEW gate doesn't
-  // block on a violation a concurrently in-flight PR already resolves.
-  'internal/chsql/nested_set_annotate.go:404', // sum(...) OVER (...) _erank — #2297
-  'internal/chsql/nested_set_annotate.go:414', // first_value(...) OVER (...) _keyrank — #2297
-]);
+const KNOWN_GOOD_KEYS = new Set(KNOWN_GOOD.map((e) => knownGoodKey(e.file, e.arg)));
+
+// knownGoodKey — the (file, normalized argument text) identity of one exempt
+// site. Whitespace is collapsed so a gofmt reflow of the argument does not
+// break the key, but nothing else is normalized: a change to which identifiers
+// or which literal are concatenated is a DIFFERENT expression and must face
+// the gate again rather than inherit an exemption.
+function knownGoodKey(file, argText) {
+  return `${file}::${argText.replace(/\s+/g, ' ').trim()}`;
+}
 
 // findVerbatimCalls() walks content once, locating each `verbatim(` call
 // and extracting its full argument text (balanced across parens and,
@@ -161,6 +171,7 @@ if (files.length === 0) {
 }
 
 let violations = 0;
+const matchedExemptions = new Set();
 
 for (const file of files) {
   const rel = file.replace(/\\/g, '/');
@@ -176,13 +187,18 @@ for (const file of files) {
 
   for (const { line, argText } of findVerbatimCalls(content)) {
     const loc = `${rel}:${line}`;
-    if (KNOWN_GOOD.has(loc)) continue;
+    const key = knownGoodKey(rel, argText);
+    if (KNOWN_GOOD_KEYS.has(key)) {
+      matchedExemptions.add(key);
+      continue;
+    }
     if (hasTopLevelConcat(argText)) {
       error(
         `${loc}: verbatim(...) call built via string concatenation — this is shape-building, ` +
         'not a synthetic token, and violates invariant 10 (no raw SQL strings). Use typed Frags ' +
         '(Call / Window / WindowFrame / Eq / Lt / InlineLit / …) to express the shape instead. ' +
-        `If this really is a legitimate synthetic token, add "${loc}" to KNOWN_GOOD in ` +
+        'If this really is a legitimate synthetic token, add ' +
+        `knownGoodKey(${JSON.stringify(rel)}, ${JSON.stringify(argText)}) to KNOWN_GOOD in ` +
         '.github/scripts/forbid-verbatim-concat.mjs with a rationale comment and reviewer ' +
         'sign-off (see CLAUDE.md § "No raw SQL strings" and #2297).',
       );
@@ -196,5 +212,33 @@ if (violations > 0) {
   process.exit(1);
 }
 
-log('forbid-verbatim-concat: no verbatim() call builds a shape via concatenation.');
+// Every KNOWN_GOOD entry whose FILE this scan actually read must have matched a
+// real call. An entry that matches nothing is a stale exemption: it protects
+// nothing it names, and stands ready to protect whatever text replaces it. That
+// is precisely how two entries citing nested_set_annotate.go survived the fix
+// that made them unnecessary (#2297 / PR #2319) and ended up pointing at `As(`
+// and `From(events.Frag())`.
+//
+// Scoped to files the scan read, because this script is also run against
+// synthetic single-file trees by its own unit tests; an entry for a file that
+// is not in THIS tree is inapplicable, not stale.
+const scanned = new Set(files.map((f) => f.replace(/\\/g, '/')));
+const stale = KNOWN_GOOD.filter(
+  (e) => scanned.has(e.file) && !matchedExemptions.has(knownGoodKey(e.file, e.arg)),
+);
+if (stale.length > 0) {
+  for (const e of stale) {
+    error(
+      `forbid-verbatim-concat: stale KNOWN_GOOD entry — ${e.file} no longer contains a ` +
+      `verbatim() call whose argument is \`${e.arg}\`. It exempts nothing it names and would ` +
+      'exempt whatever replaces it; delete the entry.',
+    );
+  }
+  process.exit(1);
+}
+
+log(
+  `forbid-verbatim-concat: no verbatim() call builds a shape via concatenation ` +
+  `(${matchedExemptions.size} synthetic-token exemption(s) matched).`,
+);
 process.exit(0);
