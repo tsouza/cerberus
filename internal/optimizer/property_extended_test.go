@@ -61,6 +61,28 @@ func seedPropertyDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// requireVerified fails when a row-set equivalence loop finished without
+// ever getting past its `continue` — i.e. having verified nothing.
+//
+// Each loop skips an iteration whose PRE-optimization plan does not execute,
+// which is the right call for one unlucky generated plan and a silent
+// catastrophe for all of them: a chDB upgrade, a seed-schema change or an
+// emitter change that renders SQL chDB rejects makes every iteration skip,
+// and the test reports PASS while asserting nothing. These four are the only
+// tests in the tree that check the optimizer preserves RESULTS rather than
+// SQL text, so going inert costs exactly the coverage they exist for. The
+// t.Logf per skip is invisible without -v.
+func requireVerified(t *testing.T, verified, iterations int, rule string) {
+	t.Helper()
+	if verified == 0 {
+		t.Fatalf(
+			"%s: all %d iterations skipped on a pre-optimization execution error, so the "+
+				"row-set equivalence property was never checked — the test is inert, not passing",
+			rule, iterations,
+		)
+	}
+}
+
 // TestPropertyFilterFusion_RowSetEquivalent: build a Filter(Filter(Scan))
 // with two independent predicates and check that running FilterFusion
 // yields the same rows as the unoptimized plan. Each iteration picks
@@ -75,6 +97,7 @@ func TestPropertyFilterFusion_RowSetEquivalent(t *testing.T) {
 	ctx := context.Background()
 	d := optimizer.New(optimizer.FilterFusion{})
 
+	verified := 0
 	for i := 0; i < N; i++ {
 		plan := chplan.Node(&chplan.Filter{
 			Input: &chplan.Filter{
@@ -96,7 +119,9 @@ func TestPropertyFilterFusion_RowSetEquivalent(t *testing.T) {
 		if !rowsetEqual(pre, post) {
 			t.Fatalf("iter=%d row-set diverged\nplan: %s\npre: %s\npost: %s", i, dumpPlan(plan), dumpRows(pre), dumpRows(post))
 		}
+		verified++
 	}
+	requireVerified(t, verified, N, "FilterFusion")
 }
 
 // TestPropertyConstantFoldSemantic_RowSetEquivalent: build a Filter
@@ -128,6 +153,7 @@ func TestPropertyConstantFoldSemantic_RowSetEquivalent(t *testing.T) {
 		{chplan.OpNe, 1, 2},
 	}
 
+	verified := 0
 	for i := 0; i < N; i++ {
 		pair := literalPairs[rng.Intn(len(literalPairs))]
 		// Wrap the literal binary in `<literal-binary> AND <leaf>` to
@@ -158,7 +184,9 @@ func TestPropertyConstantFoldSemantic_RowSetEquivalent(t *testing.T) {
 		if !rowsetEqual(pre, post) {
 			t.Fatalf("iter=%d row-set diverged\nplan: %s\npre: %s\npost: %s", i, dumpPlan(plan), dumpRows(pre), dumpRows(post))
 		}
+		verified++
 	}
+	requireVerified(t, verified, N, "ConstantFoldSemantic")
 }
 
 // TestPropertyConstantFoldHeuristic_RowSetEquivalent: build a Filter
@@ -185,6 +213,7 @@ func TestPropertyConstantFoldHeuristic_RowSetEquivalent(t *testing.T) {
 		// returning ALL rows) since the runner may distinguish those.
 	}
 
+	verified := 0
 	for i := 0; i < N; i++ {
 		id := identities[rng.Intn(len(identities))]
 		leaf := generateLeafPredicate(rng)
@@ -209,7 +238,9 @@ func TestPropertyConstantFoldHeuristic_RowSetEquivalent(t *testing.T) {
 		if !rowsetEqual(pre, post) {
 			t.Fatalf("iter=%d row-set diverged\nplan: %s\npre: %s\npost: %s", i, dumpPlan(plan), dumpRows(pre), dumpRows(post))
 		}
+		verified++
 	}
+	requireVerified(t, verified, N, "ConstantFoldHeuristic")
 }
 
 // TestPropertyProjectionPushdown_RowSetEquivalent: pin that narrowing
@@ -225,6 +256,7 @@ func TestPropertyProjectionPushdown_RowSetEquivalent(t *testing.T) {
 	ctx := context.Background()
 	d := optimizer.New(optimizer.ProjectionPushdown{})
 
+	verified := 0
 	for i := 0; i < N; i++ {
 		// Subset of [MetricName, Value, TimeUnix].
 		cols := append([]string(nil), propertyColumns...)
@@ -251,5 +283,7 @@ func TestPropertyProjectionPushdown_RowSetEquivalent(t *testing.T) {
 		if !rowsetEqual(pre, post) {
 			t.Fatalf("iter=%d row-set diverged\nplan: %s\npre: %s\npost: %s", i, dumpPlan(plan), dumpRows(pre), dumpRows(post))
 		}
+		verified++
 	}
+	requireVerified(t, verified, N, "ProjectionPushdown")
 }

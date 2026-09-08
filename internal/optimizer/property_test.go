@@ -345,9 +345,19 @@ func runPlan(ctx context.Context, db *sql.DB, plan chplan.Node) ([][]any, error)
 	}
 	defer func() { _ = rows.Close() }()
 
-	colCount := projectionCount(rewritten)
+	// Ask the driver how many columns the result actually has. Deriving it
+	// by parsing the SELECT list cannot see through `SELECT *`, which counts
+	// as ONE projection and expands to the table's full width at scan time —
+	// so every iteration of a `SELECT *`-shaped plan failed with "expected 4
+	// destination arguments in Scan, not 1", took the loop's `continue`, and
+	// the property was never checked.
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("columns: %w", err)
+	}
+	colCount := len(cols)
 	if colCount == 0 {
-		return nil, fmt.Errorf("cannot determine projection count for %q", rewritten)
+		return nil, fmt.Errorf("result set has no columns for %q", rewritten)
 	}
 
 	var out [][]any
@@ -534,39 +544,6 @@ func splitOuterAlias(s string) (expr, alias string) {
 		}
 	}
 	return s, ""
-}
-
-func projectionCount(query string) int {
-	const sel = "SELECT "
-	upper := strings.ToUpper(query)
-	if !strings.HasPrefix(upper, sel) {
-		return 0
-	}
-	rest := query[len(sel):]
-	depth := 0
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-		if depth == 0 && i+6 <= len(rest) && strings.EqualFold(rest[i:i+6], " FROM ") {
-			head := rest[:i]
-			return len(splitTopLevelCommas(head))
-		}
-	}
-	// `SELECT *` with no FROM in the literal text (rare): one slot.
-	if strings.TrimSpace(rest) == "*" {
-		return 1
-	}
-	// `SELECT *` with FROM at the outermost level should have been
-	// caught above; an unrecognised shape falls through with the
-	// count of `*` columns in our fixed schema.
-	if strings.HasPrefix(rest, "*") {
-		return 4 // MetricName, Attributes, TimeUnix, Value
-	}
-	return 0
 }
 
 // decodeCellLocal mirrors decodeCell in test/spec/runner_chdb.go.
