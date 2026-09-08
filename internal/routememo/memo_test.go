@@ -155,16 +155,16 @@ func TestTTLExpiresFromCreationNotFromLookup(t *testing.T) {
 	release()
 
 	// Repeated lookups before the TTL must NOT refresh the clock.
-	clk.advance(memoEntryTTL - time.Second)
+	clk.advance(MemoEntryTTL - time.Second)
 	for i := 0; i < 5; i++ {
 		if state, _ := m.Lookup(k); state != PreferB {
 			t.Fatalf("expected PreferB to still be live just under the TTL, got %v", state)
 		}
 	}
 
-	clk.advance(2 * time.Second) // now past memoEntryTTL from creation
+	clk.advance(2 * time.Second) // now past MemoEntryTTL from creation
 	if state, _ := m.Lookup(k); state != Unknown {
-		t.Fatalf("expected the entry to have expired at memoEntryTTL from CREATION, got %v", state)
+		t.Fatalf("expected the entry to have expired at MemoEntryTTL from CREATION, got %v", state)
 	}
 }
 
@@ -178,7 +178,7 @@ func TestReValidationAtMidpointSuccessDropsEntry(t *testing.T) {
 	m.Observe(k, RouteB, OutcomeSuccess)
 	release()
 
-	clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 	state, stale := m.Lookup(k)
 	if state != PreferB || !stale {
 		t.Fatalf("Lookup(k) at the re-validation midpoint = (%v, stale=%v), want (PreferB, stale=true)", state, stale)
@@ -212,7 +212,7 @@ func TestReValidationAtMidpointFailureRefreshesVerdictState(t *testing.T) {
 	m.Observe(k, RouteB, OutcomeSuccess)
 	release()
 
-	clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 	if state, stale := m.Lookup(k); state != PreferB || !stale {
 		t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
 	}
@@ -223,7 +223,7 @@ func TestReValidationAtMidpointFailureRefreshesVerdictState(t *testing.T) {
 	}
 
 	// And the refreshed clock means it survives well past the ORIGINAL TTL.
-	clk.advance(memoEntryTTL - 2*time.Second)
+	clk.advance(MemoEntryTTL - 2*time.Second)
 	if state, _ := m.Lookup(k); state != PreferB {
 		t.Fatalf("expected the refreshed entry to still be live, got %v", state)
 	}
@@ -248,7 +248,7 @@ func TestObserveThenBeginProbeSeparately_MissesStaleRescue(t *testing.T) {
 	m.Observe(k, RouteB, OutcomeSuccess)
 	release()
 
-	clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 	if state, stale := m.Lookup(k); state != PreferB || !stale {
 		t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
 	}
@@ -277,7 +277,7 @@ func TestReValidationRescue_AdmitsStalePreferBFailure(t *testing.T) {
 	m.Observe(k, RouteB, OutcomeSuccess)
 	release()
 
-	clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 	if state, stale := m.Lookup(k); state != PreferB || !stale {
 		t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
 	}
@@ -354,15 +354,15 @@ func TestBothFailHasNoReValidationAndExpiresAtPlainTTL(t *testing.T) {
 	m.Observe(k, RouteB, OutcomeResourceFailure)
 	release()
 
-	clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 	// No re-validation staleness concept applies to bothFail.
 	if state, stale := m.Lookup(k); state != BothFail || stale {
 		t.Fatalf("bothFail at the PreferB re-validation midpoint = (%v, stale=%v), want (BothFail, false)", state, stale)
 	}
 
-	clk.advance(memoEntryTTL / reValidationFraction)
+	clk.advance(MemoEntryTTL / reValidationFraction)
 	if state, _ := m.Lookup(k); state != Unknown {
-		t.Fatalf("expected bothFail to expire at plain memoEntryTTL, got %v", state)
+		t.Fatalf("expected bothFail to expire at plain MemoEntryTTL, got %v", state)
 	}
 }
 
@@ -382,14 +382,14 @@ func fillDistinctPreferB(m *Memo, n int, keyAt func(i int) Key) {
 func TestLRUEvictionBoundsMemoSize(t *testing.T) {
 	m, _ := newTestMemo()
 
-	fillDistinctPreferB(m, memoMaxEntries+10, func(i int) Key { return Key{RootKind: testKeyName(i)} })
+	fillDistinctPreferB(m, MemoMaxEntries+10, func(i int) Key { return Key{RootKind: testKeyName(i)} })
 
 	stats := m.Stats()
-	if stats.Entries > memoMaxEntries {
-		t.Fatalf("memo grew to %d entries, want <= %d", stats.Entries, memoMaxEntries)
+	if stats.Entries > MemoMaxEntries {
+		t.Fatalf("memo grew to %d entries, want <= %d", stats.Entries, MemoMaxEntries)
 	}
 	if stats.Entries == 0 {
-		t.Fatalf("memo evicted everything; want the most recent memoMaxEntries to survive")
+		t.Fatalf("memo evicted everything; want the most recent MemoMaxEntries to survive")
 	}
 }
 
@@ -401,7 +401,7 @@ func TestLRUEvictsLeastRecentlyTouchedFirst(t *testing.T) {
 
 	// Fill the memo past capacity with distinct keys, never touching
 	// `first` again.
-	fillDistinctPreferB(m, memoMaxEntries, func(i int) Key { return Key{RootKind: testKeyName(i)} })
+	fillDistinctPreferB(m, MemoMaxEntries, func(i int) Key { return Key{RootKind: testKeyName(i)} })
 
 	m.mu.Lock()
 	_, stillPresent := m.entries[first]
@@ -416,7 +416,7 @@ func TestLRUEvictsLeastRecentlyTouchedFirst(t *testing.T) {
 // observeRouteAResourceFailureLocked — bumping corroboration on a live
 // Unknown entry, and refreshing a stale PreferB entry on re-validation —
 // both count as a touch for LRU purposes, matching the "least-recently-
-// touched" eviction policy documented at memoMaxEntries. Each subtest fills
+// touched" eviction policy documented at MemoMaxEntries. Each subtest fills
 // the memo to exactly capacity, re-touches `first` via the transition under
 // test, then adds ONE more distinct key to force a single eviction: if the
 // transition touched the LRU, `first` moved off the front and something
@@ -431,7 +431,7 @@ func TestLRUTouchesOnCorroborationBumpAndStaleRevalidation(t *testing.T) {
 
 		// Fill up to (but not past) capacity with distinct keys, all touched
 		// AFTER `first`'s creation.
-		fillDistinctPreferB(m, memoMaxEntries-1, func(i int) Key { return Key{RootKind: testKeyName(i)} })
+		fillDistinctPreferB(m, MemoMaxEntries-1, func(i int) Key { return Key{RootKind: testKeyName(i)} })
 
 		// Re-touch `first` via a second route-A failure (bumps corroboration,
 		// capped at minCorroboratingFailures) — now the MOST recently
@@ -460,9 +460,9 @@ func TestLRUTouchesOnCorroborationBumpAndStaleRevalidation(t *testing.T) {
 		m.Observe(first, RouteB, OutcomeSuccess)
 		release()
 
-		fillDistinctPreferB(m, memoMaxEntries-1, func(i int) Key { return Key{RootKind: testKeyName(i)} })
+		fillDistinctPreferB(m, MemoMaxEntries-1, func(i int) Key { return Key{RootKind: testKeyName(i)} })
 
-		clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+		clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 		if state, stale := m.Lookup(first); state != PreferB || !stale {
 			t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
 		}
@@ -657,7 +657,7 @@ func TestSetEntryTTLShortensExpiry(t *testing.T) {
 	buildPreferBEntry(t, shortened, k)
 
 	// Past the shortened TTL but far short of the package default
-	// (memoEntryTTL == 30m), so only the shortened Memo should have aged out.
+	// (MemoEntryTTL == 30m), so only the shortened Memo should have aged out.
 	clk.advance(shortTTL + time.Second)
 
 	if state, _ := shortened.Lookup(k); state != Unknown {
@@ -683,13 +683,13 @@ func TestSetReValidationFractionShortensReValidationWindow(t *testing.T) {
 	baseline.SetNowForTest(clk.now)
 	buildPreferBEntry(t, baseline, k)
 
-	const fasterFraction = 10 // midpoint at memoEntryTTL/10, versus the package default's /2
+	const fasterFraction = 10 // midpoint at MemoEntryTTL/10, versus the package default's /2
 	fasterReval := New(testPressureWindow)
 	fasterReval.SetNowForTest(clk.now)
 	fasterReval.SetReValidationFraction(fasterFraction)
 	buildPreferBEntry(t, fasterReval, k)
 
-	clk.advance(memoEntryTTL/fasterFraction + time.Second)
+	clk.advance(MemoEntryTTL/fasterFraction + time.Second)
 
 	if state, stale := fasterReval.Lookup(k); state != PreferB || !stale {
 		t.Fatalf("configured-fraction memo Lookup = (%v, stale=%v), want (PreferB, stale=true)", state, stale)
@@ -710,8 +710,8 @@ func TestSetEntryTTLAndSetReValidationFractionNoOpOnNonPositiveInput(t *testing.
 
 	for _, ttl := range []time.Duration{0, -time.Minute} {
 		m.SetEntryTTL(ttl)
-		if m.entryTTL != memoEntryTTL {
-			t.Fatalf("SetEntryTTL(%s) must no-op, got entryTTL=%s want default %s", ttl, m.entryTTL, memoEntryTTL)
+		if m.entryTTL != MemoEntryTTL {
+			t.Fatalf("SetEntryTTL(%s) must no-op, got entryTTL=%s want default %s", ttl, m.entryTTL, MemoEntryTTL)
 		}
 	}
 

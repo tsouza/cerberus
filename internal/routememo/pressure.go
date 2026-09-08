@@ -35,10 +35,10 @@ type pressureTracker struct {
 }
 
 // pressureTrackerMaxEntries bounds the tracker's resident size independently
-// of the time-based prune in countFresh. Reuses memoMaxEntries's rationale
+// of the time-based prune in countFresh. Reuses MemoMaxEntries's rationale
 // verbatim: the same order-of-magnitude bound on distinct in-flight Key
 // cardinality this process is sized for, not a fresh number to justify.
-const pressureTrackerMaxEntries = memoMaxEntries
+const pressureTrackerMaxEntries = MemoMaxEntries
 
 func newPressureTracker() *pressureTracker {
 	return &pressureTracker{
