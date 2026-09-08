@@ -271,8 +271,13 @@ func newSchemaDeltaPrefixVerifyCmd() *cobra.Command {
 			"required confirmation before an operator sets\n" +
 			"CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED=true. This is a per-metric\n" +
 			"COMPLETENESS check (did every DELTA row get backfilled), not a per-series\n" +
-			"identity-alignment check — see internal/deltaprefix's package doc for the\n" +
-			"scope boundary against cerberus issue #2389's still-open read-side task.\n" +
+			"identity-alignment check — see internal/deltaprefix's package doc for that\n" +
+			"scope boundary and where the alignment property is proven instead.\n" +
+			"The cutover day itself is EXCLUDED from the comparison and named in its\n" +
+			"own NOTE: BucketStart is calendar-day granularity, so that day's aggregate\n" +
+			"bucket holds both backfilled and live-MV rows while the base table can only\n" +
+			"be filtered by the exact --before instant. It needs no sum check — the\n" +
+			"backfill and the MV meet exactly at that instant by construction.\n" +
 			"Any day already past the target table's own TTL\n" +
 			"(CERBERUS_SCHEMA_TTL_METRICS) as of this run is EXCLUDED from the\n" +
 			"comparison and reported separately as a labeled NOTE, never as an\n" +
@@ -362,8 +367,27 @@ func writeDeltaPrefixVerifyReport(w io.Writer, rep deltaprefix.Report, asJSON bo
 			return err
 		}
 	}
+	writeCutoverDayNote(w, rep)
 	writeOutsideRetentionNote(w, rep)
 	return nil
+}
+
+// writeCutoverDayNote names the one day Verify structurally cannot compare
+// and says what covers it instead. Without it the exclusion would be
+// invisible, which is the failure mode the retention note above already
+// exists to avoid: a reader must never have to infer which days a PASS
+// actually spoke for.
+func writeCutoverDayNote(w io.Writer, rep deltaprefix.Report) {
+	if rep.CutoverDay.IsZero() {
+		return
+	}
+	fmt.Fprintf(w, "\nNOTE: the cutover day %s is EXCLUDED from the comparison above. Its aggregate "+
+		"bucket carries both backfilled and live-MV rows (BucketStart is calendar-day granularity) "+
+		"while the base table can only be filtered by the exact --before instant, so comparing the "+
+		"two would report every post-cutover write as a mismatch. That day needs no sum check: the "+
+		"backfill covers everything strictly before %s and the MV covers everything from it onward, "+
+		"so the two windows meet exactly — see docs/operations.md's DELTA-prefix backfill runbook.\n",
+		rep.CutoverDay.Format(time.DateOnly), rep.Before.Format(time.RFC3339))
 }
 
 // writeOutsideRetentionNote appends a clearly LABELED, separate notice —
