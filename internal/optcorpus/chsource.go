@@ -98,6 +98,13 @@ func QueryLogWindow(interval time.Duration) time.Duration {
 // corpusSettings is the conservative ClickHouse settings map stamped on every
 // corpus SELECT. It mirrors the data-plane query-settings discipline but biases
 // hard toward never disturbing the data plane.
+//
+// Both overflow modes are "throw", never ClickHouse's "break": "break" stops
+// reading once the cap is hit and returns the PARTIAL result as if it were
+// complete, so a tripped max_rows_to_read / max_bytes_to_read becomes silent
+// wrongness instead of a bound. Throwing makes a tripped read cap fail the
+// statement loudly, exactly as timeout_overflow_mode already did for
+// max_execution_time.
 func corpusSettings() clickhouse.Settings {
 	return clickhouse.Settings{
 		"max_execution_time":    corpusMaxExecutionTime,
@@ -106,7 +113,7 @@ func corpusSettings() clickhouse.Settings {
 		"priority":              corpusPriority,
 		"max_rows_to_read":      corpusMaxRowsToRead,
 		"max_bytes_to_read":     corpusMaxBytesToRead,
-		"read_overflow_mode":    "break",
+		"read_overflow_mode":    "throw",
 	}
 }
 

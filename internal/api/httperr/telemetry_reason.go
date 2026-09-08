@@ -50,11 +50,21 @@ func TelemetryReason(err error) string {
 	}
 	switch {
 	// The ClickHouse server-side max_execution_time abort (TIMEOUT_EXCEEDED,
-	// code 159) and the request's own deadline. A plain context.Canceled —
-	// the client walking away — is deliberately NOT a timeout: nothing ran
-	// out of time, the caller stopped waiting.
+	// code 159) and the request's own deadline. A plain context.Canceled is
+	// deliberately NOT a timeout — nothing ran out of time, the caller
+	// stopped waiting — and gets its own reason in the next arm.
 	case errors.Is(err, chclient.ErrQueryTimeout), errors.Is(err, context.DeadlineExceeded):
 		return telemetry.ReasonTimeout
+	// The caller walked away. This is the third meaning the two collided
+	// statuses carry, and the one the heads disagreed about outright: Tempo
+	// answers 499 (a 4xx, read as bad_request) while Prometheus and Loki
+	// answer 503 to match upstream's own errorCanceled envelope (read as
+	// backend_unavailable). Same event, two verdicts, neither true — the
+	// request was not malformed and the backend was not unavailable
+	// (cerberus issue #3197). Ordering matters only for readability: this
+	// sentinel is disjoint from DeadlineExceeded above.
+	case errors.Is(err, context.Canceled):
+		return telemetry.ReasonCanceled
 	// The three per-query budgets: the row-count sample budget, the
 	// wide-projection drain-byte budget, and ClickHouse's own memory-limit
 	// abort (code 241). Exactly the set the Tempo head already folds into

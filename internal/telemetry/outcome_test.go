@@ -113,13 +113,12 @@ func TestClassifyStatus(t *testing.T) {
 // bound on the label's cardinality: no status code, however exotic, can
 // introduce a reason value dashboards and alert rules have never seen.
 func TestClassifyStatus_ReasonVocabularyIsClosed(t *testing.T) {
-	reasons := map[string]bool{
-		telemetry.ReasonNone:               true,
-		telemetry.ReasonBadRequest:         true,
-		telemetry.ReasonBackendUnavailable: true,
-		telemetry.ReasonResourceExhausted:  true,
-		telemetry.ReasonTimeout:            true,
-		telemetry.ReasonInternal:           true,
+	// Derived from the one authoritative membership list rather than
+	// re-typed: a hand-written copy here silently stops gating the moment a
+	// member is added to the enum and not to the copy.
+	reasons := map[string]bool{}
+	for _, r := range telemetry.ErrorReasons() {
+		reasons[r] = true
 	}
 	classes := map[string]bool{
 		telemetry.StatusClass1xx:     true,
@@ -149,6 +148,41 @@ func TestClassifyStatus_ReasonVocabularyIsClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestSetReasonAcceptsEveryErrorReason pins the accept-list that gates
+// SetReason against the enum's authoritative membership, END TO END — the
+// label the counter actually records, never the helper's own return value.
+//
+// knownReason fails CLOSED: a value it does not recognise is silently ignored,
+// not reported. So a hand-written copy of the enum that fell behind
+// ErrorReasons would make a newly added reason vanish at runtime with nothing
+// failing anywhere — which is exactly how `canceled` could be threaded through
+// every head and still never reach the metric (cerberus issue #3184 found four
+// hand-written copies of this enum; this is the only one whose staleness is
+// invisible).
+func TestSetReasonAcceptsEveryErrorReason(t *testing.T) {
+	for _, reason := range telemetry.ErrorReasons() {
+		if reason == telemetry.ReasonNone {
+			// The success value is excluded on purpose: a handler must not be
+			// able to override a failure into a success.
+			continue
+		}
+		t.Run(reason, func(t *testing.T) {
+			got := serveWithMiddleware(t, func(w http.ResponseWriter, r *http.Request) {
+				telemetry.SetReason(r.Context(), reason)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			})
+			if got != reason {
+				t.Errorf("recorded reason = %q, want %q — the SetReason accept-list has fallen behind "+
+					"ErrorReasons, and it drops unknown values SILENTLY", got, reason)
+			}
+		})
+	}
+}
+
+// tempoClientClosedRequest is the 499 Tempo answers a cancellation with. Named
+// locally rather than imported: internal/telemetry must not depend on a head.
+const tempoClientClosedRequest = 499
 
 // TestOutcomeOK is the shorthand used by call sites with no HTTP status
 // to classify.

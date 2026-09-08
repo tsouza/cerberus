@@ -33,9 +33,20 @@ func TestTelemetryReason(t *testing.T) {
 			telemetry.ReasonTimeout,
 		},
 		{
-			"a client hang-up is NOT a timeout — nothing ran out of time",
+			// Still NOT a timeout — nothing ran out of time — but no longer
+			// unclassified either. Left as "" it fell back to the status, and
+			// the heads answer a cancellation with different statuses (Tempo
+			// 499, prom/loki 503), so the same event read bad_request on one
+			// head and backend_unavailable on the others (cerberus issue
+			// #3197).
+			"a client hang-up is its own reason, not a timeout",
 			fmt.Errorf("engine: execute: %w", context.Canceled),
-			"",
+			telemetry.ReasonCanceled,
+		},
+		{
+			"a bare client hang-up classifies the same as a wrapped one",
+			context.Canceled,
+			telemetry.ReasonCanceled,
 		},
 		{
 			"the sample budget is a capacity refusal",

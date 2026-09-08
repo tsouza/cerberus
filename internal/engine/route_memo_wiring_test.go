@@ -517,9 +517,17 @@ func TestRetryOnRouteAResourceFailure_RecordsProbeDeclineReasons(t *testing.T) {
 
 // TestRetryOnRouteAResourceFailure_RoutedDispatchInflight pins
 // RoutedDispatchInflight's begin/end pairing: it goes to 1 the moment the
-// probe is admitted and stays there — even after retryOnRouteAResourceFailure
-// itself has returned — until the caller's observeFn reports the drain
-// outcome, exactly mirroring when the memo's own admission token releases.
+// probe is admitted and stays there — even after
+// retryOnRouteAResourceFailure itself has returned, and even after the
+// caller's observeFn has reported the drain outcome — until the composed
+// cursor is CLOSED, exactly mirroring when the memo's own admission token
+// releases (dispatchTokenCursor).
+//
+// The observeFn step is asserted to leave the gauge ALONE on purpose. Before
+// cerberus issue #3184 the token and this gauge were released by observeFn,
+// an optional hook, which meant a caller that skipped it leaked both; the
+// memo-hit sibling was worse still and released at cursor OPEN. Close is the
+// one seam every caller is already obliged to reach.
 func TestRetryOnRouteAResourceFailure_RoutedDispatchInflight(t *testing.T) {
 	reader := installMemoWiringTelemetryReader(t)
 	cq := &fakeSolverCursorClient{rows: 2}
@@ -541,7 +549,7 @@ func TestRetryOnRouteAResourceFailure_RoutedDispatchInflight(t *testing.T) {
 	}
 
 	// corroboration=2: probe admitted, dispatch begins.
-	_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0, nil)
+	cur, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0, nil)
 	if !retried {
 		t.Fatal("did not retry on the 2nd consecutive route-A resource failure")
 	}
@@ -550,8 +558,23 @@ func TestRetryOnRouteAResourceFailure_RoutedDispatchInflight(t *testing.T) {
 	}
 
 	observeFn(nil) // caller's actual drain succeeded cleanly
+	if got := routedDispatchInflightValue(t, reader); got != 1 {
+		t.Errorf("routed_dispatch_inflight after observeFn = %d, want 1 — the drain hook reports the VERDICT; "+
+			"the dispatch is not over until the cursor is closed, and releasing on an optional hook leaks whenever a caller skips it", got)
+	}
+
+	if err := cur.Close(); err != nil {
+		t.Fatalf("cursor Close: %v", err)
+	}
 	if got := routedDispatchInflightValue(t, reader); got != 0 {
-		t.Errorf("routed_dispatch_inflight after observeFn released it = %d, want 0", got)
+		t.Errorf("routed_dispatch_inflight after the cursor closed = %d, want 0", got)
+	}
+
+	// Idempotent: a defensive caller closing twice must not hand back a
+	// token this dispatch never held.
+	_ = cur.Close()
+	if got := routedDispatchInflightValue(t, reader); got != 0 {
+		t.Errorf("routed_dispatch_inflight after a second Close = %d, want 0", got)
 	}
 }
 
@@ -1280,4 +1303,92 @@ func awaitDispatch(t *testing.T, cq *fakeSolverCursorClient, what string) {
 		time.Sleep(dispatchAwaitPoll)
 	}
 	t.Fatalf("Executor cursor opens = %d, want >= 1 (%s)", cq.opens.Load(), what)
+}
+
+// routedDispatchBudget discovers maxConcurrentRoutedDispatches — unexported in
+// internal/routememo — by draining a throwaway memo's admission semaphore, so
+// the test below can never drift from the real bound the way a hardcoded 4
+// would.
+func routedDispatchBudget(t *testing.T) int {
+	t.Helper()
+	throwaway := routememo.New(time.Minute)
+	n := 0
+	for {
+		if _, ok := throwaway.AdmitDispatch(); !ok {
+			if n == 0 {
+				t.Fatal("a fresh memo admitted no dispatch at all; the budget probe below would be vacuous")
+			}
+			return n
+		}
+		n++
+	}
+}
+
+// TestTryRouteMemoHit_DispatchTokenHeldUntilCursorClose pins the bound
+// docs/solver.md advertises: at most maxConcurrentRoutedDispatches route-B
+// dispatches may have ClickHouse work outstanding at once.
+//
+// This is cerberus issue #3184's headline finding. The memo-hit path deferred
+// release() inside tryRouteMemoHit, and Executor.Execute returns as soon as
+// the K shard cursors are OPENED — so every token was handed straight back
+// while its shards were still running, and the semaphore bounded nothing on
+// what route_memo_wiring.go itself calls the single most common route-B
+// dispatch shape. Before the fix this test admits dispatch after dispatch
+// without limit; after it, the budget+1'th memo hit is refused until a cursor
+// is actually closed.
+func TestTryRouteMemoHit_DispatchTokenHeldUntilCursorClose(t *testing.T) {
+	cq := &fakeSolverCursorClient{rows: 3}
+	eng, memo := newMemoWiringEngine(t, cq)
+	plan := memoWiringEligiblePlan()
+	seed := memoWiringNotRoutedDecision(t)
+	d := eng.deriveRouteMemoDispatch(plan, seed, memoWiringGridEnd.Add(2*memoWiringGridStep))
+	if !d.eligible {
+		t.Fatalf("fixture plan must be structurally eligible")
+	}
+	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
+
+	hit := func() (chclient.Cursor, bool) {
+		cur, _, _, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil, nil)
+		return cur, ok
+	}
+
+	// Saturate the budget, holding every composed cursor OPEN and undrained.
+	budget := routedDispatchBudget(t)
+	open := make([]chclient.Cursor, 0, budget)
+	for i := 0; i < budget; i++ {
+		cur, ok := hit()
+		if !ok {
+			t.Fatalf("memo hit %d of %d was declined while the budget still had room", i+1, budget)
+		}
+		open = append(open, cur)
+	}
+
+	// The budget is now genuinely spent: every one of those dispatches still
+	// has its shards' ClickHouse work outstanding.
+	if cur, ok := hit(); ok {
+		_ = cur.Close()
+		t.Fatalf("a %dth concurrent memo-hit dispatch was admitted with all %d cursors still open and undrained — "+
+			"the token is being released at cursor OPEN, so the process-wide K-shard concurrency bound is hollow", budget+1, budget)
+	}
+
+	// Closing one cursor — the point at which that dispatch's ClickHouse work
+	// is genuinely over — returns exactly one token.
+	if err := open[0].Close(); err != nil {
+		t.Fatalf("cursor Close: %v", err)
+	}
+	reclaimed, ok := hit()
+	if !ok {
+		t.Fatal("no dispatch was admitted after a cursor closed; the token was not returned on Close")
+	}
+
+	// ...and exactly one: the budget is full again.
+	if cur, ok := hit(); ok {
+		_ = cur.Close()
+		t.Fatal("closing ONE cursor returned more than one dispatch token")
+	}
+
+	_ = reclaimed.Close()
+	for _, cur := range open[1:] {
+		_ = cur.Close()
+	}
 }

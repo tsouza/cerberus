@@ -71,11 +71,21 @@ func (c *reasonCell) reasonFor() string {
 // deliberately: it is the success value, and a handler cannot override a
 // failure into a success without also changing the status the result label
 // is derived from.
+//
+// Membership is DERIVED from ErrorReasons rather than re-typed here. This
+// gate fails CLOSED — an unrecognised value is silently ignored, not
+// reported — so a hand-written copy that fell behind the enum would make a
+// newly added reason vanish at runtime with nothing failing anywhere
+// (cerberus issue #3184 found four such copies, and this is the only one
+// whose staleness is invisible).
 func knownReason(reason string) bool {
-	switch reason {
-	case ReasonBadRequest, ReasonBackendUnavailable, ReasonResourceExhausted, ReasonTimeout, ReasonInternal:
-		return true
-	default:
+	if reason == ReasonNone {
 		return false
 	}
+	for _, r := range ErrorReasons() {
+		if r == reason {
+			return true
+		}
+	}
+	return false
 }

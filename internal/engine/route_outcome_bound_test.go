@@ -23,17 +23,23 @@ func throwIfErr(msg string) error {
 // TestClassifyRouteOutcome_TimeSliceableBoundsAreResourceFailures pins the
 // classification #2681's tightened bounds depend on.
 //
-// Tightening the density guard to the measured OOM cliff converts a query
-// that used to die on ClickHouse's own memory limit — which the memo learns
-// from — into one rejected pre-flight. Unless that rejection is ALSO evidence,
-// the honest bound would be strictly worse than the loose one: terminal for
-// exactly the queries route B can answer.
+// Tightening a guard to the measured OOM cliff converts a query that used to
+// die on ClickHouse's own memory limit — which the memo learns from — into one
+// rejected pre-flight. Unless that rejection is ALSO evidence, the honest bound
+// would be strictly worse than the loose one: terminal for exactly the queries
+// route B can answer.
+//
+// That argument holds for exactly the guards whose CEILING route B leaves
+// alone. routeBExecCtx threads these three fan-out ceilings to the shards
+// un-apportioned while each shard's window shrinks, so a shard can genuinely
+// pass a bound the whole query failed. The two RangeBucketGridNative budgets
+// used to be in this list and are NOT any more — #2705 made their ceilings
+// K-apportioned, which makes their verdict K-invariant; see the sibling test
+// below and timeSliceableResourceBoundMessages' own doc.
 func TestClassifyRouteOutcome_TimeSliceableBoundsAreResourceFailures(t *testing.T) {
 	t.Parallel()
 
 	for _, msg := range []string{
-		chsql.RangeBucketGridNativeBudgetMessage,
-		chsql.RangeBucketGridNativeDensityBudgetMessage,
 		chsql.RangeBucketFanoutBudgetMessage,
 		chsql.RangeLWRFanoutBudgetMessage,
 		chsql.RateWindowFanoutBudgetMessage,
@@ -48,15 +54,24 @@ func TestClassifyRouteOutcome_TimeSliceableBoundsAreResourceFailures(t *testing.
 }
 
 // TestClassifyRouteOutcome_CardinalityBoundsAreNotEvidence pins the exclusion,
-// which is the half that can silently rot: adding a merge budget to the
-// sliceable set would spend a route-B dispatch on a bound sharding cannot
-// relieve, since slicing splits anchors and the merge cost is driven by series
-// cardinality and bucket width.
+// which is the half that can silently rot: adding a bound sharding cannot
+// relieve to the sliceable set spends a scarce route-B dispatch to reproduce a
+// verdict route A just produced.
+//
+// Three families qualify. A merge budget is driven by series cardinality and
+// bucket width, which slicing splits anchors rather than series and so cannot
+// touch. A shape fault is a user error no execution strategy resolves. And the
+// two RangeBucketGridNative budgets are K-INVARIANT since #2705 apportioned
+// their ceilings: a shard is judged by maxRows/K against a cost of
+// groups x anchors/K, which is the identical inequality route A already
+// failed (cerberus issue #3184).
 func TestClassifyRouteOutcome_CardinalityBoundsAreNotEvidence(t *testing.T) {
 	t.Parallel()
 
 	for _, msg := range []string{
 		chplan.HistogramMergeBudgetMessage,
+		chsql.RangeBucketGridNativeBudgetMessage,
+		chsql.RangeBucketGridNativeDensityBudgetMessage,
 		"some future shape-fault guard nobody has classified",
 	} {
 		got := classifyRouteOutcome(routememo.RouteA, throwIfErr(msg))

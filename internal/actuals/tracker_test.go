@@ -267,3 +267,62 @@ func shapeIDForTest(i int) string {
 	}
 	return string(b)
 }
+
+// TestPacketObservedClaim pins the three properties the query_log poller's set
+// difference depends on (cerberus issue #3184).
+func TestPacketObservedClaim(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	tr := NewTracker(cfg)
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	tr.SetNowForTest(func() time.Time { return now })
+
+	// 1. An unmarked id is claimable — the poller keeps its residual coverage
+	//    for dispatches the packet path never saw.
+	if !tr.ClaimQueryLogRow("never-dispatched") {
+		t.Error("an unmarked query id was refused; the poller would lose the rows only it can see")
+	}
+	// An empty id is claimable for the same reason: it matches nothing.
+	if !tr.ClaimQueryLogRow("") {
+		t.Error("an empty query id was refused")
+	}
+
+	// 2. A marked id is refused, and stays refused. The poller's watermark
+	//    windows deliberately overlap (QueryLogLookback is 3x the poll
+	//    interval), so the SAME row is expected to be read more than once — a
+	//    consuming claim would refuse the first read and admit the second,
+	//    recording exactly the duplicate this exists to prevent.
+	tr.MarkPacketObserved("dispatch-1")
+	for i := range 3 {
+		if tr.ClaimQueryLogRow("dispatch-1") {
+			t.Fatalf("read %d: a packet-observed id was claimable; the claim must not be consuming", i+1)
+		}
+	}
+
+	// 3. The mark expires once no poll could still be carrying the row, so the
+	//    set cannot grow without bound.
+	now = now.Add(cfg.QueryLogLookback + time.Second)
+	tr.MarkPacketObserved("dispatch-2") // marking is what sweeps
+	if !tr.ClaimQueryLogRow("dispatch-1") {
+		t.Errorf("a mark older than QueryLogLookback (%v) survived; the set would grow without bound",
+			cfg.QueryLogLookback)
+	}
+	if tr.ClaimQueryLogRow("dispatch-2") {
+		t.Error("the freshly marked id was swept along with the expired one")
+	}
+}
+
+// TestPacketObservedClaimNilTracker pins the nil-is-off convention every
+// optional mechanism in this codebase follows: with the feature unwired the
+// poller must behave exactly as it did before the set difference existed.
+func TestPacketObservedClaimNilTracker(t *testing.T) {
+	t.Parallel()
+
+	var tr *Tracker
+	tr.MarkPacketObserved("anything") // must not panic
+	if !tr.ClaimQueryLogRow("anything") {
+		t.Error("a nil Tracker refused a claim; the poller must be unaffected when actuals capture is off")
+	}
+}

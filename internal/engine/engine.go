@@ -317,35 +317,11 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// count of the EMITTED statement (chsql.EmitCounted), which only exists
 	// once emitForHead has rendered the SQL, so every dispatch site stamps it
 	// onto the ctx this function returns, right after the emit.
-	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
-	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
-	memCap := e.queryMemoryCap()
-	ctx = applySpillSettings(ctx, memCap)
-	// Join-bearing plans only, and only when the join_spill feature resolved
-	// in (server >= 26.4): let a large join's hash build spill to disk
-	// rather than blow the per-query memory cap, the same guardrail
-	// applySpillSettings already gives GROUP BY / sort.
-	ctx = applyJoinSpillSettings(ctx, plan, memCap, e.settings().JoinSpill)
-	// Compare()-only: cap read parallelism so the concurrent S3 read buffers
-	// for the wide attribute Map columns can't blow the budget even after the
-	// aggregation spills. Fires only on the metrics-compare plan shape.
-	ctx = applyCompareMemoryBound(ctx, plan, memCap)
-	// Native-histogram-only: disable ClickHouse's newer query analyzer, whose
-	// cost on the merge/window-fold machinery's deeply nested lambda/arrayMap
-	// expressions is wildly superlinear on the floor-pinned CH 24.8 relative
-	// to the older analyzer (cerberus issue #2355). Always-on and
-	// result-equivalent, like the compare() bound above.
-	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
-	// Sorted-slab-eligible shapes only (chopt.FeatureSortedSlabOverTime's own
-	// doc names the current 6-function set: sum/avg/first/stddev/stdvar/
-	// mad_over_time): cap max_block_size at 1 so the per-anchor
-	// arrayFilter/arrayMap intermediates the emitter builds per series row
-	// are freed row-by-row instead of retained across an entire vectorized
-	// block (cerberus issue #3046). Always-on and result-equivalent, like
-	// the two bounds above; fires only when the plan carries the opt-in
-	// sorted-slab RangeWindow shape.
-	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
-	ctx = e.settings().apply(ctx, plan)
+	// Every plan-shape-gated per-query setting BOTH routes must carry, sized
+	// from this statement's own memory cap. Shared verbatim with route B's
+	// seam (routeBExecCtx) so the two can never drift — see
+	// applySharedQuerySettings' own doc.
+	ctx = applySharedQuerySettings(ctx, plan, e.queryMemoryCap(), e.settings())
 	// Issue #2789: tag this route-A dispatch for actuals capture — see
 	// applyActualsCapture's own doc. No-op (ctx unchanged) whenever Actuals
 	// is nil or decision carries no ShapeID (either because Actuals was nil
@@ -364,6 +340,72 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// outcome (e.g. the sample-budget 422 surfacing through this dispatch) onto
 	// the same corpus record via observeOutcomeForErr.
 	return ctx, queryID
+}
+
+// applySharedQuerySettings layers every plan-shape-gated per-query ClickHouse
+// setting that BOTH dispatch routes must carry onto ctx. It is the ONE list
+// the route-A seam (Engine.execContext) and the route-B seam (routeBExecCtx)
+// read, so a bound or rule added here reaches both routes by construction —
+// before this existed the two seams kept parallel hand-maintained lists and
+// route B silently missed SettingsRules.apply entirely (cerberus issue #3184):
+// a routed query carried no workload, no log_comment shape id, no result
+// cache, no aggregation-in-order, while observeRoutedQuery went on recording
+// enabledOpts() for its corpus row — so calibration compared an optimized
+// route A against an un-optimized route B and attributed the difference to a
+// posture that never rode the shards.
+//
+// memCap is the memory cap the STATEMENT will actually run under, which is the
+// only thing that legitimately differs between the two callers: route A passes
+// the whole-query cap, route B passes that cap apportioned to a single shard
+// (apportionShardMemoryCap). Every threshold below is sized from it, so each
+// route gets thresholds scaled to its own real allowance.
+//
+// Every rule reachable from here is RESULT-EQUIVALENT — each one changes only
+// how ClickHouse executes the statement, never which rows it returns (see the
+// individual settings' own docs) — which is what makes applying the identical
+// list on both routes safe rather than a behaviour change per route.
+//
+// It lives here, with the other dispatch-seam wiring, rather than beside the
+// rules it composes: .github/scripts/perf-sentinel-obligation.mjs derives the
+// memory-bounding surface from internal/engine/spill.go and
+// internal/engine/query_settings_rules.go, closing over each file's own
+// reference graph. A function sitting in one of those files and naming BOTH a
+// spill bound and SettingsRules.apply would splice the neutral knobs into that
+// surface and make every future edit to an unrelated setting owe a perf
+// sentinel. This function computes no bound of its own — it is composition —
+// so engine.go, where execContext already composed exactly these, is where it
+// belongs.
+//
+// The timeSeries*ToGrid setting is deliberately NOT here: route A reads it off
+// the plan (planHasTSGridNative) while route B reads it off the decision's
+// shard plans (decisionHasTSGridNative), so the two seams genuinely need
+// different predicates for it and each stamps it itself.
+func applySharedQuerySettings(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
+	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
+	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
+	ctx = applySpillSettings(ctx, memCap)
+	// Join-bearing plans only, and only when the join_spill feature resolved
+	// in (server >= 26.4): the same guardrail for a large join's hash build.
+	ctx = applyJoinSpillSettings(ctx, plan, memCap, rules.JoinSpill)
+	// Compare()-only: cap read parallelism so the concurrent S3 read buffers
+	// for the wide attribute Map columns can't blow the budget even after the
+	// aggregation spills.
+	ctx = applyCompareMemoryBound(ctx, plan, memCap)
+	// Native-histogram-only: disable ClickHouse's newer query analyzer, whose
+	// cost on the merge/window-fold machinery's deeply nested lambda/arrayMap
+	// expressions is wildly superlinear on the floor-pinned CH 24.8 relative
+	// to the older analyzer (cerberus issue #2355).
+	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
+	// Sorted-slab-eligible shapes only: cap max_block_size at 1 so the
+	// per-anchor arrayFilter/arrayMap intermediates the emitter builds per
+	// series row are freed row-by-row instead of retained across an entire
+	// vectorized block (cerberus issue #3046).
+	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
+	// The DARK, flag-gated rules (workload, log_comment shape id, result
+	// cache, aggregation-in-order, condition cache, lazy materialisation,
+	// trace-id bitmap filter). Each is OFF unless its CERBERUS_* flag is set,
+	// so a default deployment's ctx is unchanged on both routes.
+	return rules.apply(ctx, plan)
 }
 
 // observeQuery feeds the corpus reconciler (when registered) the dispatch-seam
@@ -1834,7 +1876,7 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 // for the metric's real, un-apportioned cost instead.
 func routeBExecCtx(
 	ctx context.Context, langName, responseShape string, decision *solver.Decision,
-	plan chplan.Node, memCap int64, joinSpill bool,
+	plan chplan.Node, memCap int64, rules SettingsRules,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
 	bounds ResourceBoundOverrides,
 	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
@@ -1876,11 +1918,15 @@ func routeBExecCtx(
 	// MEMORY_LIMIT_EXCEEDED — the exact availability class spill.go's doc
 	// says the thresholds exist to close, reopened for route B.
 	shardMemCap := apportionShardMemoryCap(memCap, decisionK(decision))
-	ctx = applySpillSettings(ctx, shardMemCap)
-	ctx = applyJoinSpillSettings(ctx, plan, shardMemCap, joinSpill)
-	ctx = applyCompareMemoryBound(ctx, plan, shardMemCap)
-	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
-	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
+	// The SAME list route A's execContext applies, sized from the per-shard
+	// cap instead of the whole-query one — one shared function, so a bound or
+	// rule added for route A reaches route B by construction rather than by a
+	// reviewer noticing the second list. This is also what finally gives a
+	// routed query SettingsRules.apply (workload, log_comment shape id, result
+	// cache, aggregation-in-order): route B carried none of them before
+	// cerberus issue #3184, while observeRoutedQuery recorded enabledOpts()
+	// for its corpus row regardless.
+	ctx = applySharedQuerySettings(ctx, plan, shardMemCap, rules)
 	if decisionHasTSGridNative(decision) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
@@ -1989,7 +2035,7 @@ func (e *Engine) executeRouted(
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
-			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings().JoinSpill,
+			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings(),
 			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
 			attrStrategiesForLang(lang),
@@ -1997,6 +2043,16 @@ func (e *Engine) executeRouted(
 	)
 	if err != nil {
 		execT.Done(ctx)
+		// Same stamping route A's eager path does at its own dispatch
+		// failure (cerberus issue #3184): a breaker rejection or a
+		// memory-cap 241 that kills the fan-out before any shard opens is a
+		// cerberus-side outcome, and without this the corpus never learns
+		// it — the row is left to be joined from query_log, which for a
+		// dispatch that never ran has nothing to join. No query id exists
+		// yet at this site, which observeOutcomeForErr handles: the
+		// decision-only rejection rows it writes carry the routing read-out
+		// rather than a join key.
+		e.observeOutcomeForErr("", lang.Name(), plan, decision, err)
 		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), "", err)
 		return Result{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
@@ -2013,6 +2069,15 @@ func (e *Engine) executeRouted(
 	}
 	if cerr := cursor.Err(); cerr != nil {
 		execT.Done(ctx)
+		// The route-B eager path drains inside this function, so this is the
+		// ONLY site that can stamp a drain outcome for it — the streaming
+		// sibling gets its stamp from the handler via ObserveDrainOutcome,
+		// and route A's eager path from engine.go's own Client.Query branch.
+		// Without it a routed drain that hit a sample budget, a byte budget,
+		// an OOM or an open breaker was never recorded and the corpus kept
+		// it as an "ok"-by-join, biasing every calibration that keys on
+		// exit_status by route (cerberus issue #3184).
+		e.observeOutcomeForErr(routedQueryID(info), lang.Name(), plan, decision, cerr)
 		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), routedQueryID(info), cerr)
 		return Result{}, fmt.Errorf("engine: solver drain: %w", cerr)
 	}
@@ -2507,7 +2572,7 @@ func (e *Engine) executeRoutedCursor(
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
-			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings().JoinSpill,
+			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings(),
 			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
 			attrStrategiesForLang(lang),
