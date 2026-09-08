@@ -53,16 +53,30 @@ const (
 // internal/routerrules' chCorpusSource uses), so a runaway backfill/verify
 // against a very large deployment fails loudly under ClickHouse's own
 // enforcement rather than starving the data plane.
+//
+// Both overflow modes are "throw", never ClickHouse's "break": "break" stops
+// reading once the cap is hit and returns the PARTIAL result as if it were
+// complete, so a tripped max_rows_to_read / max_bytes_to_read becomes silent
+// wrongness instead of a bound. Throwing makes a tripped read cap fail the
+// statement loudly, exactly as timeout_overflow_mode already did for
+// max_execution_time.
 func withCaps(ctx context.Context) context.Context {
-	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+	return clickhouse.Context(ctx, clickhouse.WithSettings(capSettings()))
+}
+
+// capSettings is the settings map withCaps stamps, split out from the ctx
+// plumbing so a test can assert the map itself — clickhouse-go exposes no
+// public reader for the settings it stores on a context.
+func capSettings() clickhouse.Settings {
+	return clickhouse.Settings{
 		"max_execution_time":    MaxExecutionTimeSeconds,
 		"timeout_overflow_mode": "throw",
 		"max_threads":           MaxThreads,
 		"priority":              Priority,
 		"max_rows_to_read":      MaxRowsToRead,
 		"max_bytes_to_read":     MaxBytesToRead,
-		"read_overflow_mode":    "break",
-	}))
+		"read_overflow_mode":    "throw",
+	}
 }
 
 // Columns names the physical database/table/column identifiers the

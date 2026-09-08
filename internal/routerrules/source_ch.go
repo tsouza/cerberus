@@ -49,23 +49,35 @@ func (s *chCorpusSource) query(ctx context.Context, sql string, args []any) (row
 	// driver buffers rows so it tolerated the premature cancel, masking the
 	// bug. Tie cancel to rows.Close() instead so the context spans the scan and
 	// is never leaked (every caller already defers Close).
+	//
+	// Both overflow modes are "throw", never ClickHouse's "break": "break"
+	// stops reading once the cap is hit and returns the PARTIAL result as if
+	// it were complete, so a corpus watermark would be fitted on a silently
+	// truncated population instead of failing loudly.
 	ctx, cancel := context.WithTimeout(ctx, chCorpusTimeout)
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"max_execution_time":    chCorpusMaxExecutionTime,
-		"timeout_overflow_mode": "throw",
-		"max_threads":           chCorpusMaxThreads,
-		"priority":              chCorpusPriority,
-		"max_rows_to_read":      chCorpusMaxRowsToRead,
-		"max_bytes_to_read":     chCorpusMaxBytesToRead,
-		"read_overflow_mode":    "break",
-		"readonly":              1,
-	}))
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(chCorpusSettings()))
 	r, err := s.conn.Query(ctx, sql, args...)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("routerrules: query %s: %w", CorpusTableName, err)
 	}
 	return &cancelRows{rows: r, cancel: cancel}, nil
+}
+
+// chCorpusSettings is the settings map query() stamps, split out from the ctx
+// plumbing so a test can assert the map itself — clickhouse-go exposes no
+// public reader for the settings it stores on a context.
+func chCorpusSettings() clickhouse.Settings {
+	return clickhouse.Settings{
+		"max_execution_time":    chCorpusMaxExecutionTime,
+		"timeout_overflow_mode": "throw",
+		"max_threads":           chCorpusMaxThreads,
+		"priority":              chCorpusPriority,
+		"max_rows_to_read":      chCorpusMaxRowsToRead,
+		"max_bytes_to_read":     chCorpusMaxBytesToRead,
+		"read_overflow_mode":    "throw",
+		"readonly":              1,
+	}
 }
 
 // rows is the subset of driver.Rows this source consumes.

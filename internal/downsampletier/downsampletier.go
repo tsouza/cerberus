@@ -67,17 +67,31 @@ const (
 // stamp the clickhouse-go client-side settings map itself rather than
 // route through chclient.WithTSGridSetting's composable per-request
 // carrier (which only chclient.Client's own query path reads).
+//
+// Both overflow modes are "throw", never ClickHouse's "break": "break" stops
+// reading once the cap is hit and returns the PARTIAL result as if it were
+// complete, so a tripped max_rows_to_read / max_bytes_to_read becomes silent
+// wrongness instead of a bound. Throwing makes a tripped read cap fail the
+// statement loudly, exactly as timeout_overflow_mode already did for
+// max_execution_time.
 func withCaps(ctx context.Context) context.Context {
-	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+	return clickhouse.Context(ctx, clickhouse.WithSettings(capSettings()))
+}
+
+// capSettings is the settings map withCaps stamps, split out from the ctx
+// plumbing so a test can assert the map itself — clickhouse-go exposes no
+// public reader for the settings it stores on a context.
+func capSettings() clickhouse.Settings {
+	return clickhouse.Settings{
 		"max_execution_time":               maxExecutionTimeSeconds,
 		"timeout_overflow_mode":            "throw",
 		"max_threads":                      maxThreads,
 		"priority":                         priority,
 		"max_rows_to_read":                 maxRowsToRead,
 		"max_bytes_to_read":                maxBytesToRead,
-		"read_overflow_mode":               "break",
+		"read_overflow_mode":               "throw",
 		settingExperimentalTSGridAggregate: 1,
-	}))
+	}
 }
 
 // Columns names the physical database/table/column identifiers the
