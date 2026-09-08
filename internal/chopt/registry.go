@@ -1860,11 +1860,37 @@ const (
 	// is a documented follow-up, see below) onto grouping by a deduplicated
 	// UInt64 id (timeSeriesTagsToGroup(Attributes)) instead of the raw
 	// Map(String,String) Attributes column, rehydrating Attributes via
-	// timeSeriesGroupToTags only in the wrapping output projection (cerberus
-	// issue #2750 — the grouping-keys-only slice of the tag-group family; label
-	// ops (by/without/label_replace/label_join/group_left via the purpose-built
-	// tag functions) are the second half of that staging and are still
-	// outstanding, tracked on cerberus issue #3195).
+	// timeSeriesGroupToTags only in the wrapping output projection.
+	//
+	// GROUPING KEYS ARE THE WHOLE FEATURE. The label ops the tag-group family
+	// also offers — by / without / label_replace / label_join / group_left
+	// through the purpose-built tag functions — are deliberately NOT part of
+	// it, and that exclusion is a conclusion rather than a staging note. They
+	// are unsound at the sites that would want them, for the same reason the SITE
+	// CHOICE below explains at length: timeSeriesTagsToGroup and
+	// timeSeriesGroupToTags are STATEFUL, backed by a per-query
+	// ContextTimeSeriesTagsCollector, so a group id means nothing outside the
+	// single query execution that produced it. Every label op reaches range
+	// mode, range mode is what the solver's route B shards, and route B
+	// concatenates K per-shard cursors in Go without re-aggregating on any key
+	// the shards produced — so a group id would have to cross a shard boundary
+	// to survive, which it cannot. Applying them would need a per-shard
+	// rehydration story that does not exist, and inventing one to chase an
+	// unmeasured win is not a trade this registry makes.
+	//
+	// The performance case is closed too, and by measurement rather than by
+	// argument — see PAYING-SITE SEARCH CLOSED, PERMANENT NEGATIVE below,
+	// which re-ran the real-ClickHouse A/B against the strongest multi-stage
+	// candidate in the codebase and found the group id paid once per SIDE
+	// rather than once per QUERY. A label-op conversion would extend a
+	// mechanism already measured negative at every site tried.
+	//
+	// So there is nothing outstanding to pick up. This paragraph used to say
+	// the label ops were "still outstanding, tracked on" an issue — first
+	// #2750, then #3195 — while the block below already recorded the search
+	// as permanently closed. Two citations rotted into closed issues before
+	// the contradiction was noticed, which is the argument for stating the
+	// conclusion here instead of pointing at a tracker.
 	//
 	// SITE CHOICE: guardNameDropCollision is the single most self-contained
 	// grouping site in the pipeline that groups on the raw Attributes Map —
