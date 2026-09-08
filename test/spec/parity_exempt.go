@@ -74,12 +74,27 @@ const (
 	ReasonNondeterministicSelection = "nondeterministic-selection"
 
 	// ReasonNoComparableOracle covers a fixture whose answer shape has
-	// no comparator wired into RunParity — a real Prometheus HTTP
-	// concept (a label-name list, a label-value list, an exemplar
-	// array) that simply is not one of the Sample-shaped,
-	// `endpoint:`-dispatched comparisons RunParity performs today. The
-	// upstream endpoint exists; RunParity's dispatch table does not
-	// reach it.
+	// no comparator wired into RunParity — a real upstream HTTP concept
+	// that simply is not one of the `endpoint:`-dispatched comparisons
+	// RunParity performs today. The upstream endpoint exists; RunParity's
+	// dispatch table does not reach it.
+	//
+	// On the Prometheus side that is a label-name list, a label-value
+	// list, or an exemplar array, none of which is Sample-shaped. On the
+	// Tempo side it is a query whose answer is not a SPANSET: a
+	// spanset-aggregation projection (`| count() > N`, whose rows carry a
+	// per-trace Value rather than a span) or a metrics-pipeline one
+	// (`| rate()`, `| compare(...)`), which produce a time series.
+	// runTempoParity compares WHICH SPANS matched and nothing else, so
+	// neither shape has a comparison to make — see
+	// spanIdentitiesOfExpectedRows, which errors on any row that is not
+	// the canonical four-column span shape rather than comparing a subset.
+	//
+	// A fixture in this class must not be enrolled just because its
+	// answer happens to be EMPTY today. A zero-row aggregate projection
+	// never reaches the shape check, so it would pass while asserting a
+	// comparison its projection cannot support, and would begin failing
+	// on the shape the moment its seed produced a matching row.
 	ReasonNoComparableOracle = "no-comparable-oracle"
 
 	// ReasonRejectionOnly covers a fixture whose query must be REJECTED
@@ -151,6 +166,97 @@ const (
 	// increase_duplicate_timestamp_dedup.txtar seeds exactly that, stays
 	// ENROLLED, and passes because the rate family deduplicates.
 	ReasonDuplicateTimestampSeed = "duplicate-timestamp-seed"
+
+	// ReasonReferenceFetchLayer covers a TraceQL fixture whose reference
+	// answer is produced partly OUTSIDE the spanset pipeline the oracle
+	// evaluates. test/spec/parityoracle/traceql runs upstream Tempo's
+	// pipeline over every span it is handed; reference `/api/search`
+	// additionally has a FETCH layer that narrows and, for some shapes,
+	// decides the answer outright. Where the two disagree they disagree
+	// about what was READ, not about the query.
+	//
+	// Two shapes fall in this class:
+	//
+	//   - `search_window:` and `search_limit:`, which bound which rows
+	//     cerberus reads and how many it returns. Upstream applies both
+	//     before the pipeline runs. parity_tempo_chdb_agpl_oracle.go's
+	//     rejectNarrowingSections already refuses this combination
+	//     outright rather than comparing across the difference.
+	//
+	//   - `{ !(<expr>) }` as the whole spanset filter, and a NOT operand
+	//     of a logical AND/OR wrapping a single comparison. Reference
+	//     `/api/search` matches ZERO traces for the first and silently
+	//     drops the operand for the second, established by differential
+	//     probing against a real instance (#1711/#1712) and implemented
+	//     in internal/traceql/lower.go's lowerUnaryNot. The in-process
+	//     engine, having no fetch layer, returns the logically correct
+	//     answer instead — so the oracle and the endpoint disagree, and
+	//     cerberus matches the endpoint, which is the contract it ships.
+	//
+	// This is NOT a reason for an ordinary disagreement about a query
+	// both layers evaluate the same way. It requires a NAMED mechanism
+	// outside the pipeline that accounts for the difference.
+	ReasonReferenceFetchLayer = "reference-fetch-layer"
+
+	// ReasonEmittedSQLOnly covers a fixture that carries neither `seed:`
+	// nor `expected_rows:`. What it pins is the emitted SQL — that a
+	// request window is folded into the leaf scan, say — and it never
+	// executes anything. There is no answer for a reference engine to
+	// compare against, so the exemption is not a limitation of any
+	// oracle but a fact about what the fixture asserts.
+	//
+	// RunParity already refuses such a fixture by name: a `parity:`
+	// section on a fixture with no executable round trip is a fatal
+	// error, because the parity check reads the seeded rows back out of
+	// chDB and there are none.
+	//
+	// This is NOT a licence to leave a fixture unseeded in order to
+	// avoid enrolling it. The claim is about a fixture whose PURPOSE is
+	// the emitted SQL; a fixture that asserts an answer needs a seed and
+	// an enrolment.
+	ReasonEmittedSQLOnly = "emitted-sql-only"
+
+	// ReasonDuplicateSpanSeed covers a TraceQL fixture whose seed
+	// DELIBERATELY delivers the same (TraceId, SpanId) on more than one
+	// row, in order to pin how cerberus's emitted shape treats the
+	// repeat — at-least-once redelivery, or the same span rewritten with
+	// its attribute Map keys in a different order. It is the TraceQL
+	// sibling of [ReasonDuplicateTimestampSeed], and like it a fact
+	// about the SEED rather than about the operator.
+	//
+	// Span identity IS the comparison key: runTempoParity compares two
+	// SETS of (TraceID, SpanID), and spanIdentitiesOfExpectedRows
+	// rejects a repeated identity outright because a set cannot express
+	// "the same span twice". The reference engine, handed the duplicate
+	// rows, has no answer to that question either — upstream's own
+	// storage deduplicates before the pipeline sees the spans, so it
+	// never observes the repeat these fixtures exist to provoke.
+	//
+	// This is NOT a reason for a fixture that merely HAPPENS to seed two
+	// spans with equal attributes under distinct span ids. Those are
+	// distinct spans on both sides, they compare normally, and any
+	// disagreement about them is an ordinary bug to fix at the source.
+	ReasonDuplicateSpanSeed = "duplicate-span-seed"
+
+	// ReasonOracleUntypedAttributes covers a TraceQL fixture whose query
+	// compares an attribute against a NON-STRING literal — a boolean, a
+	// bare integer, a float.
+	//
+	// test/spec/parityoracle/traceql's Span carries ResourceAttrs and
+	// SpanAttrs as map[string]string, so every attribute reaching the
+	// reference engine is a String static and a typed literal can never
+	// match on that side, whatever cerberus does. Cerberus is right here:
+	// OTel-CH stores a boolean span attribute as the string 'true' in a
+	// Map(String, String), which is exactly what such a fixture's seed
+	// models.
+	//
+	// Unlike the other reasons in this file, this one names a gap that
+	// COULD be closed — by carrying ClickHouse's declared column types
+	// through to a typed static instead of flattening every attribute to
+	// a string. It is recorded on #3183 so the gap is tracked rather
+	// than absorbed, and a fixture wearing this reason becomes
+	// enrollable the day that lands.
+	ReasonOracleUntypedAttributes = "oracle-untyped-attributes"
 )
 
 // parityExemptReasons is the single source of truth for the `reason`
@@ -163,6 +269,10 @@ var parityExemptReasons = []string{
 	ReasonRejectionOnly,
 	ReasonVacuousEmptyInput,
 	ReasonDuplicateTimestampSeed,
+	ReasonReferenceFetchLayer,
+	ReasonEmittedSQLOnly,
+	ReasonDuplicateSpanSeed,
+	ReasonOracleUntypedAttributes,
 }
 
 // ParityExemptReasons returns the accepted `reason` values, sorted.

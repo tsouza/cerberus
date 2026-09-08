@@ -17,3 +17,6 @@ Filter predicate=false
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE ?
+-- parity_exempt --
+reason: reference-fetch-layer
+detail: `{ !(span.flavor = "v1") }` is a whole-filter unary NOT: reference /api/search matches zero traces (probed in #1711/#1712, which is what lowerUnaryNot implements), while the pipeline-only oracle returns the logically correct answer

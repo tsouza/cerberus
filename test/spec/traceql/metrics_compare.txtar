@@ -186,3 +186,6 @@ INSERT INTO otel_traces VALUES
 MetricsCompare topN=10 selection=(StatusCode = "Error") rootLookup=true valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ } | compare({ status = error })` projects a per-trace aggregate rather than a spanset, so it carries no span identity for runTempoParity's WHICH-SPANS-MATCHED comparison

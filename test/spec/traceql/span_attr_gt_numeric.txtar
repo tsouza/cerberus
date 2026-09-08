@@ -14,3 +14,6 @@ Filter predicate=(FnToFloat64OrNull(SpanAttributes["a"]) > FnToFloat64OrNull(Spa
 -- args --
 [0] string = "a"
 [1] string = "b"
+-- parity_exempt --
+reason: emitted-sql-only
+detail: `{ span.a > span.b }` carries no `seed:` or `expected_rows:` — it pins the emitted SQL for this shape, and executes no answer for any oracle to compare

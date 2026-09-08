@@ -24,3 +24,6 @@ INSERT INTO otel_traces (TraceId, SpanId, _hit) VALUES
 -- chplan --
 Filter predicate=(SpanAttributes["cache.hit"] = "true")
   Scan(otel_traces)
+-- parity_exempt --
+reason: oracle-untyped-attributes
+detail: `{ span.cache.hit = true }` compares against a typed boolean literal; the oracle carries every attribute as a Go string, so the reference can never match, while OTel-CH really does store the value as the string this fixture seeds

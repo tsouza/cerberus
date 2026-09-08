@@ -21,3 +21,6 @@ SetOperation op=||
         Scan(otel_traces)
       Filter predicate=(SpanName = "b")
         Scan(otel_traces)
+-- parity_exempt --
+reason: emitted-sql-only
+detail: `({ name = "a" } | select(name)) || ({ name = "a" } &> { name = "b" })` carries no `seed:` or `expected_rows:` — it pins the emitted SQL for this shape, and executes no answer for any oracle to compare
