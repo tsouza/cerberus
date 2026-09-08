@@ -352,7 +352,7 @@ func TestDecodeTempoMetrics_PartialStatusErrors(t *testing.T) {
 // lane deliberately ignores, and rejecting them would fail every Tempo query.
 func TestDecodeTempoMetrics_ToleratesUnknownFields(t *testing.T) {
 	const body = `{"series":[{"labels":[],"samples":[{"timestampMs":"1700000000000","value":2}],
-		"exemplars":[{"value":1,"timestamp_ms":1700000000000,"traceID":"abc"}]}],
+		"exemplars":[{"value":1,"timestampMs":1700000000000,"traceID":"abc"}]}],
 		"metrics":{"inspectedBytes":"12345","completedJobs":3}}`
 	res, err := decodeTempoMetrics([]byte(body))
 	if err != nil {
