@@ -268,7 +268,17 @@ ConfigMap key via `subPath` into a directory another volume already
 populates fails on a real cluster) — replacing today's single hardcoded
 `<shard>01</shard>` literal — never a silent partial rename. `remote_servers.xml` (in the shared, cluster-global
 `cluster.xml` key) lists every shard's every replica identically on every
-pod. Keeper auto-enables from `dataShards.count > 1` alone, independent of
+pod, and carries a `<secret>` read from the environment so a Distributed
+query forwards the ORIGINATING user's identity to its peers. That secret is
+required: without it ClickHouse forwards as `default` with an empty
+password, so every cross-shard query fails `AUTHENTICATION_FAILED` on any
+deployment whose `default` user has a real password, while direct client
+connections to each node keep working and hide the cause. Supply it with
+`clickhouse.bundled.interserverSecret`, or name your own Secret with
+`interserverExistingSecret`; the render refuses `dataShards.count > 1`
+without one. A single shard with `replicas > 1` forwards across replicas the
+same way and should set it too — it is not required there only because
+requiring it would break an existing single-shard deployment on upgrade. Keeper auto-enables from `dataShards.count > 1` alone, independent of
 `replicas`: ClickHouse's own `ON CLUSTER` DDL-coordination mechanism (which
 every per-shard `CREATE ... ON CLUSTER` statement relies on) needs Keeper
 regardless of per-shard replica count. Each per-shard StatefulSet/Service

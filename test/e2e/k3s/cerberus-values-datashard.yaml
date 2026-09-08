@@ -37,6 +37,19 @@ clickhouse:
     # additional image import beyond what `just e2e-bwc-up` already pulls.
     image: clickhouse/clickhouse-server:26.3
     replicas: 1
+    # Cross-shard forwarding secret (cerberus issue #3190). The chart now
+    # REFUSES dataShards.count > 1 without one, because ClickHouse otherwise
+    # forwards a Distributed query as `default` with an EMPTY password and
+    # every cross-shard query fails AUTHENTICATION_FAILED on any deployment
+    # whose `default` user has a password.
+    #
+    # This lane could not have caught the original bug: the chart gives the
+    # CERBERUS user a password and leaves `default` password-less, which is
+    # the one configuration where the missing credentials still work. What
+    # closes that gap is the render REFUSING count > 1 without a secret, so
+    # the broken topology can no longer be deployed here or anywhere; the
+    # structure itself is pinned by chart-render-assert.mjs.
+    interserverSecret: e2e-datashard-interserver
     hotVolume:
       enabled: true
     objectStorage:

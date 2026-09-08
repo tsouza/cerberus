@@ -83,6 +83,9 @@
             "image": { "type": "string" },
             "replicas": { "type": "integer", "minimum": 1 },
             "experimentalDistributedMode": { "type": "boolean" },
+            "interserverSecret": { "type": ["string", "null"] },
+            "interserverExistingSecret": { "type": "string" },
+            "interserverSecretKey": { "type": "string" },
             "dataShards": {
               "type": "object",
               "additionalProperties": false,

@@ -271,6 +271,31 @@ clickhouse:
     # Keeper-coordination macros (see `schema.replicated.zookeeperPath`'s own
     # comment) and to `internal/solver`'s query-time-range "shard" — see
     # `internal/chopt/topology.go`'s terminology table for the full picture.
+    # -- Shared inter-server secret for cross-shard/cross-replica query
+    # forwarding (cerberus issue #3190). Renders `<secret>` inside
+    # `remote_servers.<bwc_cluster>`, which is ClickHouse's own mechanism
+    # for a Distributed query to carry the ORIGINATING user's identity to
+    # a peer node.
+    #
+    # Without it, ClickHouse forwards as `default` with an EMPTY password,
+    # so on any deployment whose `default` user has a real password every
+    # cross-node query fails `AUTHENTICATION_FAILED` while direct client
+    # connections to each node keep working. That is 100% of queries once
+    # `count > 1`, which is why the render REFUSES `count > 1` without
+    # this set. A single shard with `replicas > 1` has the same exposure
+    # through replica forwarding, so setting it there is recommended; it
+    # is not required, because requiring it would break an existing
+    # single-shard deployment on upgrade.
+    #
+    # PREFER `interserverExistingSecret` in production so the value never
+    # lands in values or release history.
+    interserverSecret: null
+    # -- Name of a pre-existing Secret holding the inter-server secret.
+    # Takes precedence over `interserverSecret` (no chart Secret is
+    # rendered).
+    interserverExistingSecret: ""
+    # -- Key within the inter-server Secret.
+    interserverSecretKey: interserver-secret
     dataShards:
       # -- Number of independent ClickHouse DATA shards. `1` (default)
       # renders EXACTLY today's single-StatefulSet/single-Service chart
