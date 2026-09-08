@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/config"
 )
 
 const (
@@ -65,7 +66,12 @@ func TestApplySpillSettings_Unconditional(t *testing.T) {
 func TestSpillThresholdBytes_MatchesDefaultCapThreshold(t *testing.T) {
 	t.Parallel()
 
-	const defaultMaxMemoryUsage = gib // mirrors config.defaultCHQueryMaxMemory
+	// Read from internal/config, not restated here: a package-local literal
+	// stays green through the very bump this test says it catches, which is
+	// what made the "derived value" claim above untrue. .go-arch-lint.yml
+	// forbids engine importing config in production code and excludes
+	// _test.go, so this is the one place the two can be compared.
+	const defaultMaxMemoryUsage = config.DefaultCHQueryMaxMemory
 	if want := defaultMaxMemoryUsage / spillCapDenominator; spillThresholdBytes != want {
 		t.Errorf("no-cap spill threshold %d; want %d (default max_memory_usage %d / %d)",
 			spillThresholdBytes, want, defaultMaxMemoryUsage, spillCapDenominator)
