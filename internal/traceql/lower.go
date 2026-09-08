@@ -2255,8 +2255,19 @@ func isNumericExpr(expr chplan.Expr) bool {
 		return isArithmeticOp(b.Op)
 	}
 	switch v := expr.(type) {
-	case *chplan.LitInt, *chplan.LitFloat, *chplan.FuncCall:
+	case *chplan.LitInt, *chplan.LitFloat:
 		return true
+	case *chplan.FuncCall:
+		// An UNSCOPED attribute read is itself a FuncCall — the
+		// `if(mapContains(span,'k'), span['k'], resource['k'])`
+		// span-then-resource coalesce unscopedAttributeExpr builds — and it
+		// is String-valued, exactly like the scoped FieldAccess it stands in
+		// for. Answering "numeric" for it made `{ .duration = "slow" }`
+		// coerce both sides through toFloat64OrNull, so the string compare
+		// became NULL = 'slow' and the query matched nothing where reference
+		// Tempo matches the span. Every other FuncCall reaching an operand
+		// position here is a numeric helper or arithmetic.
+		return !isAttributeRead(v)
 	case *chplan.FieldAccess:
 		return v.MaterializedColumnNumeric
 	}
