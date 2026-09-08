@@ -39,36 +39,31 @@ INSERT INTO otel_metrics_gauge VALUES
 [0] string = ""
 [1] string = "job"
 [2] string = "x"
-[3] string = "2026-01-01 00:00:01.000000000"
-[4] int64 = 9
-[5] float64 = 1
+[3] float64 = 1
+[4] string = "service_name"
+[5] string = "service.name"
 [6] string = "service_name"
 [7] string = "service.name"
 [8] string = "service_name"
-[9] string = "service.name"
+[9] string = ""
 [10] string = "service_name"
-[11] string = ""
-[12] string = "service_name"
-[13] string = "nonexistent_metric_name"
-[14] string = "nonexistent.metric.name"
-[15] string = "nonexistent.metric/name"
-[16] string = "nonexistent.metric_name"
-[17] string = "nonexistent/metric/name"
-[18] string = "nonexistent/metric_name"
-[19] string = "nonexistent_metric.name"
+[11] string = "nonexistent_metric_name"
+[12] string = "nonexistent.metric.name"
+[13] string = "nonexistent.metric/name"
+[14] string = "nonexistent.metric_name"
+[15] string = "nonexistent/metric/name"
+[16] string = "nonexistent/metric_name"
+[17] string = "nonexistent_metric.name"
+[18] string = "job"
+[19] string = ""
 [20] string = "job"
 [21] string = ""
-[22] string = "job"
-[23] string = ""
-[24] string = ""
-[25] string = "x"
-[26] int64 = 0
+[22] string = ""
+[23] string = "x"
 -- chplan --
-Project ["" AS MetricName, FnMap("job", "x") AS Attributes, FnToDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
-  Filter predicate=(_cerb_n = 0)
-    Aggregate groupBy=[] funcs=[FnCount() AS _cerb_n]
-      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-        Filter predicate=((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "x") AND (MetricName IN ("nonexistent_metric_name", "nonexistent.metric.name", "nonexistent.metric/name", "nonexistent.metric_name", "nonexistent/metric/name", "nonexistent/metric_name", "nonexistent_metric.name")))
-          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+AbsentOverTime range=5m0s step=0s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="x"] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+  Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Filter predicate=((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "x") AND (MetricName IN ("nonexistent_metric_name", "nonexistent.metric.name", "nonexistent.metric/name", "nonexistent.metric_name", "nonexistent/metric/name", "nonexistent/metric_name", "nonexistent_metric.name")))
+      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?)))) WHERE (`_cerb_n` = ?))
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT toDateTime64('2026-01-01 00:00:01.000000000', 9) AS `anchor_ts`, sample_ts_arr FROM (SELECT groupArray(`TimeUnix`) AS `sample_ts_arr` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9))) WHERE arrayCount(t -> t > anchor_ts - toIntervalNanosecond(300000000000) AND t <= anchor_ts, sample_ts_arr) = 0)
