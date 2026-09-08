@@ -511,10 +511,11 @@ func bucketGridGroupCountGuardFrag(probeCount *QueryBuilder, numAnchors, maxRows
 // A real production deployment on v1.16.1 was hitting this guard's throwIf
 // repeatedly on an ordinary dashboard panel (shape `cerb:project;agg=3;rbf;rbn`,
 // `decision_reason=not-sliceable`) even though axis1 (#2651/#2653) had
-// already been recalibrated. At the time, `RangeBucketGridNative` was
-// deliberately absent from `chplan.IsSliceInvariant`'s registry — never
-// sliceable, by design — so a slicing fallback for `not-sliceable` was not an
-// available fix shape and the guard's own calibration was the only lever.
+// already been recalibrated. At the time — a premise that NO LONGER HOLDS,
+// see the next paragraph — `RangeBucketGridNative` was deliberately absent
+// from `chplan.IsSliceInvariant`'s registry — never sliceable, by design — so
+// a slicing fallback for `not-sliceable` was not an available fix shape and
+// the guard's own calibration was the only lever.
 //
 // That premise was INVERTED by #2677, which registered the kind slice-invariant
 // (`chplan/sliceinvariant.go`; the test that pinned the old refusal is now

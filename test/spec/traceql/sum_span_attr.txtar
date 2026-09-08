@@ -29,3 +29,6 @@ SELECT * FROM (SELECT `TraceId` AS `TraceId`, sum(toFloat64OrZero(`SpanAttribute
 [
   ["span", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "1020000000", "__cerberus_traceID": "t1"}, "2024-01-01T00:00:00Z", 904]
 ]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ span.http.status_code >= 400 } | sum(span.http.status_code) > 0` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares

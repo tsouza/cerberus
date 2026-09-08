@@ -509,6 +509,23 @@ func histogramQuantileColumns(h *chplan.HistogramQuantile) []string {
 // silently omitted Having and rangeWindowColumns silently omitted
 // TemporalityColumn and the fused Variants arms: a field added to a plan
 // node was eight places to remember, not one.
+//
+// The Expr traversal is [chplan.InspectExpr], and that choice is
+// correctness-critical rather than a convenience: an Expr kind the walk
+// does not descend into silently hides the columns its subtree reads,
+// ProjectionPushdown then prunes them off the Scan, and ClickHouse fails
+// outer-scope resolution with error 47 (UNKNOWN_IDENTIFIER). That exact
+// escape — FieldAccess.Source unwalked, so `| select(span.http.method)`'s
+// SpanAttributes carrier was pruned on the plain-filter /api/search arm —
+// 502'd Grafana's showcase select panel; see
+// internal/api/tempo/search_select_plain_filter_chdb_test.go for the
+// end-to-end pin. InspectExpr's switch is exhaustive over the sealed Expr
+// set and is ratcheted by chplan's TestInspectExprExhaustive, so a newly
+// added Expr kind cannot reintroduce that class here without failing CI in
+// chplan first. Passing a nil nodeVisit keeps the traversal Expr-only: the
+// plan subtree embedded in a ScalarSubquery / InSubquery is a SEPARATE
+// relation whose column reads are satisfied inside its own scope, not off
+// the Scan this rule narrows.
 func stageColumns(bare []string, roots ...chplan.Expr) []string {
 	seen := map[string]struct{}{}
 	for _, c := range bare {
@@ -518,7 +535,7 @@ func stageColumns(bare []string, roots ...chplan.Expr) []string {
 	}
 	collect := collectColumn(seen)
 	for _, r := range roots {
-		walkExpr(r, collect)
+		chplan.InspectExpr(r, collect)
 	}
 	return sortedColumnSet(seen)
 }
@@ -607,17 +624,20 @@ func predicateColumns(e chplan.Expr) []string {
 	return stageColumns(nil, e)
 }
 
-// collectColumn returns a walkExpr visitor that records every column
-// name an expression node reads into seen. Three node kinds carry one:
-// ColumnRef (by definition), NestedArrayExists, whose Column field
+// collectColumn returns a [chplan.InspectExpr] visitor that records every
+// column name an expression node reads into seen. Three node kinds carry
+// one: ColumnRef (by definition), NestedArrayExists, whose Column field
 // names the Nested carrier (e.g. `Events`) as a plain string rather
 // than a child ColumnRef, and BoundedTraceScope, whose TraceIDColumn is
 // read as the LHS of its `<TraceId> IN (...)` predicate (a bare
 // outer-scope column, not a child ColumnRef) — omitting it would let
 // ProjectionPushdown prune TraceId off the Scan beneath a gated leaf and
-// emit an UNKNOWN_IDENTIFIER (the failure mode walkExpr's own doc names).
-func collectColumn(seen map[string]struct{}) func(chplan.Expr) {
-	return func(sub chplan.Expr) {
+// emit an UNKNOWN_IDENTIFIER (the failure mode stageColumns' own doc
+// names). The visitor always returns true: every sub-expression of a
+// projection or predicate is evaluated on the Scan's row shape, so there
+// is no subtree whose column reads may be skipped.
+func collectColumn(seen map[string]struct{}) func(chplan.Expr) bool {
+	return func(sub chplan.Expr) bool {
 		switch v := sub.(type) {
 		case *chplan.ColumnRef:
 			seen[v.Name] = struct{}{}
@@ -626,6 +646,7 @@ func collectColumn(seen map[string]struct{}) func(chplan.Expr) {
 		case *chplan.BoundedTraceScope:
 			seen[v.TraceIDColumn] = struct{}{}
 		}
+		return true
 	}
 }
 
@@ -657,59 +678,4 @@ func unionSortedColumns(a, b []string) []string {
 // in projs, deduped and sorted for deterministic emission.
 func referencedColumns(projs []chplan.Projection) []string {
 	return stageColumns(nil, projectionExprs(projs)...)
-}
-
-// walkExpr visits e and every Expr reachable from it. Every chplan
-// Expr kind that holds child Exprs must appear here: a missing case
-// silently hides the columns the subtree reads, ProjectionPushdown
-// then prunes them from the Scan, and ClickHouse fails outer-scope
-// resolution with error 47 (UNKNOWN_IDENTIFIER). That exact escape —
-// FieldAccess.Source unwalked, so `| select(span.http.method)`'s
-// SpanAttributes carrier was pruned on the plain-filter /api/search
-// arm — 502'd Grafana's showcase select panel; see
-// internal/api/tempo/search_select_plain_filter_chdb_test.go for the
-// end-to-end pin. There's no chplan-side helper for this yet because
-// the optimizer is so far the only caller; if we add a second consumer
-// it should graduate into chplan.
-func walkExpr(e chplan.Expr, visit func(chplan.Expr)) {
-	if e == nil {
-		return
-	}
-	visit(e)
-	switch v := e.(type) {
-	case *chplan.Binary:
-		walkExpr(v.Left, visit)
-		walkExpr(v.Right, visit)
-	case *chplan.InList:
-		walkExpr(v.Left, visit)
-		for _, e := range v.List {
-			walkExpr(e, visit)
-		}
-	case *chplan.FuncCall:
-		for _, a := range v.Args {
-			walkExpr(a, visit)
-		}
-	case *chplan.MapAccess:
-		walkExpr(v.Map, visit)
-		walkExpr(v.Key, visit)
-	case *chplan.FieldAccess:
-		walkExpr(v.Source, visit)
-	case *chplan.Subscript:
-		walkExpr(v.Container, visit)
-		walkExpr(v.Key, visit)
-	case *chplan.Lambda:
-		walkExpr(v.Body, visit)
-	case *chplan.LabelJoin:
-		walkExpr(v.Map, visit)
-	case *chplan.LabelReplace:
-		walkExpr(v.Map, visit)
-	case *chplan.LineContent:
-		walkExpr(v.Source, visit)
-	case *chplan.MapWithoutEmptyValues:
-		walkExpr(v.Map, visit)
-	case *chplan.MapWithoutKeys:
-		walkExpr(v.Map, visit)
-	case *chplan.NestedArrayExists:
-		walkExpr(v.Value, visit)
-	}
 }

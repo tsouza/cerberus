@@ -2,7 +2,6 @@ package schema
 
 import (
 	"testing"
-	"time"
 )
 
 // TestDefaultOTelMetricsPinsUpstreamColumns pins every column name
@@ -287,50 +286,6 @@ func TestHistogramCompanionColumn(t *testing.T) {
 					tc.input, col, tc.wantValueColumn)
 			}
 		})
-	}
-}
-
-// TestDefaultOTelMetricsRollups pins the canonical OTel sum rollups
-// the upstream exporter writes when rollup tables are enabled. No
-// optimizer rule consumes this registry today (the MV-substitution rule
-// that did was retired in 2026-06); the pin keeps the schema-side
-// contract stable for a future rollup-substitution rule.
-func TestDefaultOTelMetricsRollups(t *testing.T) {
-	t.Parallel()
-	m := DefaultOTelMetrics()
-
-	rollups := m.Rollups()
-	if len(rollups) == 0 {
-		t.Fatalf("DefaultOTelMetrics: expected at least the two canonical sum rollups; got none")
-	}
-
-	// The 1h rollup must come before 5m so a rollup-substitution rule
-	// walking the slice in order prefers the coarsest applicable window.
-	got1h := rollups[0]
-	if got1h.RollupTable != "otel_metrics_sum_1h" {
-		t.Errorf("first rollup: got RollupTable=%q, want otel_metrics_sum_1h (coarsest-first ordering broken)", got1h.RollupTable)
-	}
-	if got1h.Window != time.Hour {
-		t.Errorf("1h rollup Window: got %s, want 1h", got1h.Window)
-	}
-	if got1h.AggOp != RollupAggSum {
-		t.Errorf("1h rollup AggOp: got %q, want sum", got1h.AggOp)
-	}
-	if got1h.ValueColumn != "Sum" {
-		t.Errorf("1h rollup ValueColumn: got %q, want Sum", got1h.ValueColumn)
-	}
-	if got1h.BaseTable != m.SumTable {
-		t.Errorf("1h rollup BaseTable: got %q, want %q", got1h.BaseTable, m.SumTable)
-	}
-
-	// RollupsFor must filter by base table.
-	sumOnly := m.RollupsFor(m.SumTable)
-	if len(sumOnly) != 2 {
-		t.Errorf("RollupsFor(SumTable): expected 2 rollups, got %d", len(sumOnly))
-	}
-	gaugeOnly := m.RollupsFor(m.GaugeTable)
-	if len(gaugeOnly) != 0 {
-		t.Errorf("RollupsFor(GaugeTable): expected 0 rollups (no gauge rollups in default schema), got %d", len(gaugeOnly))
 	}
 }
 

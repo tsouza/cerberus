@@ -146,14 +146,12 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	ctx := context.Background()
 	opt := optimizer.Default()
 
+	dropBudget := n * maxDroppedPlansPerVerified
 	tried := 0
 	dropped := 0
+	var lastDropErr error
 	for tried < n {
 		plan := generatePlan(rng, 0)
-		if plan == nil {
-			dropped++
-			continue
-		}
 
 		gotPre, errPre := runPlan(ctx, db, plan)
 		if errPre != nil {
@@ -161,6 +159,14 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 			// (e.g. a degenerate Projection list). Skip — this is
 			// not what the property checks.
 			dropped++
+			lastDropErr = errPre
+			if dropped > dropBudget {
+				t.Fatalf("drop budget exhausted: %d generated plans failed their PRE-optimizer "+
+					"run after verifying only %d of %d (budget %d = %d x maxDroppedPlansPerVerified). "+
+					"Emission is broken for the generated shapes, so the property was never checked; "+
+					"last drop error: %v",
+					dropped, tried, n, dropBudget, n, lastDropErr)
+			}
 			continue
 		}
 
@@ -184,9 +190,25 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	}
 }
 
-// generatePlan builds a random plan tree with bounded depth. Returns
-// nil to signal "skip this iteration" when the generator picks a shape
-// that's known-ill (empty projection list, etc.).
+// maxDroppedPlansPerVerified bounds the generator's drop budget as a
+// multiple of the plans the property actually verifies, so the bound
+// scales with -short instead of being a second magic number beside n.
+//
+// A drop is a generated plan whose PRE-optimizer run failed to execute —
+// a generator/emitter mismatch, not a property violation, so the
+// iteration is discarded rather than failed. Under a healthy generator
+// drops are rare (the `SELECT *` column-count bug that made every
+// wildcard plan drop was fixed in runPlan), so any run that discards
+// twice as many plans as it verifies is reporting a regression in
+// emission, not sampling noise. Without the budget that regression made
+// the loop spin forever — `tried` only advances on a successful pre-run —
+// and a test that hangs reports nothing at all.
+const maxDroppedPlansPerVerified = 2
+
+// generatePlan builds a random plan tree with bounded depth. It always
+// returns a plan: every arm bottoms out in a Scan, and the Project arm
+// falls back to its own input when the projection list comes out empty,
+// so callers never have to handle a nil node.
 //
 // Depth budget: at depth 0 the generator picks any node type; once
 // depth ≥ 3 it bottoms out into a Scan to keep trees small. This

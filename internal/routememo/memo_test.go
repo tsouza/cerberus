@@ -39,6 +39,36 @@ func newTestMemo() (*Memo, *fakeClock) {
 	return m, clk
 }
 
+// admitFirstProbe drives k to the corroboration floor through the real
+// production admission path — MinCorroboratingFailures-1 plain route-A
+// resource failures, then the atomic record-and-admit call that contributes
+// the last one AND grants the probe token — and returns the admitted
+// probe's release. It t.Fatalf's if admission is declined, so a setup that
+// silently stopped being admit-eligible fails loudly here instead of
+// leaving the test's real assertion running against an un-probed key.
+func admitFirstProbe(t *testing.T, m *Memo, k Key) (release func()) {
+	t.Helper()
+	for i := 0; i < MinCorroboratingFailures-1; i++ {
+		m.Observe(k, RouteA, OutcomeResourceFailure)
+	}
+	release, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	if !ok {
+		t.Fatalf("setup: probe admission declined for a key at the corroboration floor (%d consecutive route-A resource failures)", MinCorroboratingFailures)
+	}
+	return release
+}
+
+// buildPreferBEntry drives m through the corroborate → probe → succeed
+// sequence so k ends up a fresh, non-stale PreferB verdict — the shared
+// setup every test whose real assertion starts from an established verdict
+// uses.
+func buildPreferBEntry(t *testing.T, m *Memo, k Key) {
+	t.Helper()
+	release := admitFirstProbe(t, m, k)
+	m.Observe(k, RouteB, OutcomeSuccess)
+	release()
+}
+
 // --- Non-negotiable: retry fires only after corroboration, memoized once ---
 
 func TestCorroborationRequiresTwoConsecutiveFailuresNoInterveningSuccess(t *testing.T) {
@@ -46,14 +76,12 @@ func TestCorroborationRequiresTwoConsecutiveFailuresNoInterveningSuccess(t *test
 	k := testKey("A")
 
 	// A single failure must NOT make the key probe-eligible.
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	if _, ok := m.BeginProbe(k); ok {
+	if _, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k); ok {
 		t.Fatalf("single resource failure must not grant probe eligibility")
 	}
 
 	// A second, consecutive failure DOES.
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, ok := m.BeginProbe(k)
+	release, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
 	if !ok {
 		t.Fatalf("two consecutive resource failures must grant probe eligibility")
 	}
@@ -66,9 +94,8 @@ func TestInterveningSuccessResetsCorroboration(t *testing.T) {
 
 	m.Observe(k, RouteA, OutcomeResourceFailure)
 	m.Observe(k, RouteA, OutcomeSuccess) // resets
-	m.Observe(k, RouteA, OutcomeResourceFailure)
 
-	if _, ok := m.BeginProbe(k); ok {
+	if _, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k); ok {
 		t.Fatalf("an intervening success must reset the corroboration counter — this failure is only the first since the reset")
 	}
 }
@@ -77,14 +104,7 @@ func TestSuccessfulRouteBRetryIsMemoizedAndSubsequentQueryRoutesDirectly(t *test
 	m, _ := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, ok := m.BeginProbe(k)
-	if !ok {
-		t.Fatalf("expected probe eligibility after corroboration")
-	}
-	m.Observe(k, RouteB, OutcomeSuccess)
-	release()
+	buildPreferBEntry(t, m, k)
 
 	state, stale := m.Lookup(k)
 	if state != PreferB || stale {
@@ -96,12 +116,7 @@ func TestFailedRouteBRetryIsMemoizedNegativelyAndNotRetriedAgain(t *testing.T) {
 	m, _ := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, ok := m.BeginProbe(k)
-	if !ok {
-		t.Fatalf("expected probe eligibility after corroboration")
-	}
+	release := admitFirstProbe(t, m, k)
 	m.Observe(k, RouteB, OutcomeResourceFailure)
 	release()
 
@@ -109,8 +124,9 @@ func TestFailedRouteBRetryIsMemoizedNegativelyAndNotRetriedAgain(t *testing.T) {
 	if state != BothFail {
 		t.Fatalf("Lookup(k) = %v, want BothFail", state)
 	}
-	// BothFail must never grant a second probe.
-	if _, ok := m.BeginProbe(k); ok {
+	// BothFail must never grant a second probe, however many further
+	// route-A failures the key accumulates.
+	if _, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k); ok {
 		t.Fatalf("a bothFail key must never be re-probed")
 	}
 }
@@ -121,12 +137,7 @@ func TestNoEvidenceOutcomeNeverWritesMemoState(t *testing.T) {
 	m, _ := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, ok := m.BeginProbe(k)
-	if !ok {
-		t.Fatalf("expected probe eligibility")
-	}
+	release := admitFirstProbe(t, m, k)
 	// A route-B failure that is NOT a resource failure (e.g. a solver
 	// timeout classified upstream as NoEvidence) must not flip the entry to
 	// bothFail.
@@ -137,9 +148,14 @@ func TestNoEvidenceOutcomeNeverWritesMemoState(t *testing.T) {
 	if state != Unknown {
 		t.Fatalf("Lookup(k) = %v after a NoEvidence probe outcome, want Unknown (still probe-eligible)", state)
 	}
-	if _, ok := m.BeginProbe(k); !ok {
+	// The "future attempt" is the next route-A resource failure on this key:
+	// the entry is still Unknown at the corroboration floor, so it must be
+	// admitted again.
+	retryRelease, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	if !ok {
 		t.Fatalf("a NoEvidence probe outcome must leave the key probe-eligible for a future attempt")
 	}
+	retryRelease()
 }
 
 // --- TTL / re-validation (Major-5) ---
@@ -148,11 +164,7 @@ func TestTTLExpiresFromCreationNotFromLookup(t *testing.T) {
 	m, clk := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, _ := m.BeginProbe(k)
-	m.Observe(k, RouteB, OutcomeSuccess)
-	release()
+	buildPreferBEntry(t, m, k)
 
 	// Repeated lookups before the TTL must NOT refresh the clock.
 	clk.advance(MemoEntryTTL - time.Second)
@@ -172,11 +184,7 @@ func TestReValidationAtMidpointSuccessDropsEntry(t *testing.T) {
 	m, clk := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, _ := m.BeginProbe(k)
-	m.Observe(k, RouteB, OutcomeSuccess)
-	release()
+	buildPreferBEntry(t, m, k)
 
 	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 	state, stale := m.Lookup(k)
@@ -200,17 +208,13 @@ func TestReValidationAtMidpointSuccessDropsEntry(t *testing.T) {
 // TestReValidationRescue_* below) — that method reuses this exact same
 // state transition internally. What this test does NOT cover is whether a
 // caller gets a RESCUE dispatch for the request that produced this
-// failure; see TestObserveThenBeginProbeSeparately_MissesStaleRescue and
-// TestReValidationRescue_AdmitsStalePreferBFailure for that half.
+// failure; see TestReValidationRescue_AdmitsStalePreferBFailure for that
+// half.
 func TestReValidationAtMidpointFailureRefreshesVerdictState(t *testing.T) {
 	m, clk := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, _ := m.BeginProbe(k)
-	m.Observe(k, RouteB, OutcomeSuccess)
-	release()
+	buildPreferBEntry(t, m, k)
 
 	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 	if state, stale := m.Lookup(k); state != PreferB || !stale {
@@ -229,53 +233,18 @@ func TestReValidationAtMidpointFailureRefreshesVerdictState(t *testing.T) {
 	}
 }
 
-// TestObserveThenBeginProbeSeparately_MissesStaleRescue documents the exact
-// ordering hazard ObserveRouteAFailureAndMaybeBeginProbe exists to close: a
-// caller that observes and admits as two SEPARATE calls can never rescue a
-// stale-PreferB re-validation failure, because Observe's own refresh of
-// createdAt un-stales the entry before BeginProbe (Unknown-only) ever looks
-// at it. This is a guard against "simplifying" the engine's call site back
-// to the two-call form — if this test ever starts passing with ok=true, the
-// atomic method has stopped being necessary or something has regressed the
-// separate calls' documented behavior.
-func TestObserveThenBeginProbeSeparately_MissesStaleRescue(t *testing.T) {
-	m, clk := newTestMemo()
-	k := testKey("A")
-
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, _ := m.BeginProbe(k)
-	m.Observe(k, RouteB, OutcomeSuccess)
-	release()
-
-	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
-	if state, stale := m.Lookup(k); state != PreferB || !stale {
-		t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
-	}
-
-	// The two-call sequence: Observe refreshes (un-stales) the entry, THEN
-	// BeginProbe looks — and refuses, because state is PreferB, not Unknown.
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	_, ok := m.BeginProbe(k)
-	if ok {
-		t.Fatal("BeginProbe admitted after a separate Observe call — the ordering hazard this test documents no longer reproduces; if the two-call form is now safe, ObserveRouteAFailureAndMaybeBeginProbe may be unnecessary and this test's premise should be revisited")
-	}
-}
-
-// TestReValidationRescue_AdmitsStalePreferBFailure pins the actual fix: the
-// atomic method rescues the request that triggers a stale PreferB entry's
-// re-validation, using the SAME setup as
-// TestObserveThenBeginProbeSeparately_MissesStaleRescue to make the
-// before/after contrast direct.
+// TestReValidationRescue_AdmitsStalePreferBFailure pins the rescue half of
+// the re-validation protocol: the atomic method rescues the request that
+// triggers a stale PreferB entry's re-validation. Its counterpart,
+// TestReValidationAtMidpointFailureRefreshesVerdictState above, pins what
+// the plain Observe call does to the same entry's STATE — together they
+// cover both halves of "record the failure AND decide the rescue on the
+// pre-transition snapshot".
 func TestReValidationRescue_AdmitsStalePreferBFailure(t *testing.T) {
 	m, clk := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, _ := m.BeginProbe(k)
-	m.Observe(k, RouteB, OutcomeSuccess)
-	release()
+	buildPreferBEntry(t, m, k)
 
 	clk.advance(MemoEntryTTL/reValidationFraction + time.Second)
 	if state, stale := m.Lookup(k); state != PreferB || !stale {
@@ -305,11 +274,7 @@ func TestReValidationRescue_FreshPreferBNotAdmitted(t *testing.T) {
 	m, _ := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, _ := m.BeginProbe(k)
-	m.Observe(k, RouteB, OutcomeSuccess)
-	release()
+	buildPreferBEntry(t, m, k)
 
 	if state, stale := m.Lookup(k); state != PreferB || stale {
 		t.Fatalf("expected a fresh (non-stale) PreferB entry, got (%v, stale=%v)", state, stale)
@@ -321,36 +286,11 @@ func TestReValidationRescue_FreshPreferBNotAdmitted(t *testing.T) {
 	}
 }
 
-// TestReValidationRescue_UnknownKeyCorroborationStillWorks pins that the
-// atomic method preserves the ORIGINAL first-probe contract for a fresh
-// Unknown key — the case ObserveRouteAFailureAndMaybeBeginProbe replaces
-// Observe+BeginProbe for, not just the new stale-rescue case.
-func TestReValidationRescue_UnknownKeyCorroborationStillWorks(t *testing.T) {
-	m, _ := newTestMemo()
-	k := testKey("A")
-
-	release1, ok1, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
-	if ok1 {
-		t.Fatal("admitted on the FIRST failure — corroboration requires more than one")
-	}
-	if release1 != nil {
-		release1()
-	}
-
-	release2, ok2, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
-	if !ok2 {
-		t.Fatal("did not admit on the 2nd consecutive failure (minCorroboratingFailures)")
-	}
-	release2()
-}
-
 func TestBothFailHasNoReValidationAndExpiresAtPlainTTL(t *testing.T) {
 	m, clk := newTestMemo()
 	k := testKey("A")
 
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, _ := m.BeginProbe(k)
+	release := admitFirstProbe(t, m, k)
 	m.Observe(k, RouteB, OutcomeResourceFailure)
 	release()
 
@@ -454,11 +394,7 @@ func TestLRUTouchesOnCorroborationBumpAndStaleRevalidation(t *testing.T) {
 		m, clk := newTestMemo()
 
 		first := testKey("oldest")
-		m.Observe(first, RouteA, OutcomeResourceFailure)
-		m.Observe(first, RouteA, OutcomeResourceFailure)
-		release, _ := m.BeginProbe(first)
-		m.Observe(first, RouteB, OutcomeSuccess)
-		release()
+		buildPreferBEntry(t, m, first)
 
 		fillDistinctPreferB(m, MemoMaxEntries-1, func(i int) Key { return Key{RootKind: testKeyName(i)} })
 
@@ -515,9 +451,12 @@ func TestPressureDamperSuppressesBothActionAndLearning(t *testing.T) {
 	// otherwise-eligible key, and no write happens.
 	hot := testKey("hot")
 	m.Observe(hot, RouteA, OutcomeResourceFailure)
-	m.Observe(hot, RouteA, OutcomeResourceFailure)
-	if _, ok := m.BeginProbe(hot); ok {
-		t.Fatalf("BeginProbe must be refused while UnderPressure()")
+	_, ok, pressureDeclined := m.ObserveRouteAFailureAndMaybeBeginProbe(hot)
+	if ok {
+		t.Fatalf("probe admission must be refused while UnderPressure()")
+	}
+	if !pressureDeclined {
+		t.Fatalf("a refusal caused by cluster-wide pressure must report pressureDeclined=true")
 	}
 
 	m.mu.Lock()
@@ -599,7 +538,7 @@ func TestConcurrentLookupObserveAdmitDispatchIsRace_free(t *testing.T) {
 					release()
 				}
 			case 3:
-				if release, ok := m.BeginProbe(k); ok {
+				if release, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k); ok {
 					m.Observe(k, RouteB, OutcomeSuccess)
 					release()
 				}
@@ -618,21 +557,6 @@ func TestConcurrentLookupObserveAdmitDispatchIsRace_free(t *testing.T) {
 }
 
 // --- SetEntryTTL / SetReValidationFraction: operator-configurable timing ---
-
-// buildPreferBEntry drives m through the corroborate → probe → succeed
-// sequence so k ends up a fresh, non-stale PreferB verdict — the shared
-// setup every re-validation/expiry timing test below starts from.
-func buildPreferBEntry(t *testing.T, m *Memo, k Key) {
-	t.Helper()
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	m.Observe(k, RouteA, OutcomeResourceFailure)
-	release, ok := m.BeginProbe(k)
-	if !ok {
-		t.Fatalf("expected probe eligibility after corroboration")
-	}
-	m.Observe(k, RouteB, OutcomeSuccess)
-	release()
-}
 
 // TestSetEntryTTLShortensExpiry proves SetEntryTTL actually changes
 // re-validation/expiry timing rather than being a purely cosmetic field: two

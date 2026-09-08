@@ -26,3 +26,6 @@ INSERT INTO otel_traces VALUES
 MetricsAggregate op=count_over_time groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | count_over_time() by (resource.service.name)` projects a per-trace aggregate rather than a spanset, so it carries no span identity for runTempoParity's WHICH-SPANS-MATCHED comparison

@@ -307,16 +307,16 @@ func (e *Engine) tryRouteMemoHit(
 // retried is true once Executor.Execute itself returns without a
 // pre-flight error — a cursor was opened, not that route B is known to have
 // succeeded. This retry IS the probe that decides the Key's very first
-// verdict (BeginProbe only ever admits an Unknown Key): a clean drain is
-// what CREATES a PreferB entry (Memo.Observe's OutcomeSuccess branch), so —
-// unlike a memo-hit, where the verdict already exists and a success needs
-// no re-confirmation — this dispatch's real outcome cannot be assumed and
-// must be reported from the caller's ACTUAL drain result, success or
-// failure alike. observeFn is that hook: the caller MUST call it exactly
-// once, with the drain error (nil on a clean finish), whenever retried is
-// true. Skipping it silently drops the one observation this probe exists to
-// make, leaving the Key permanently Unknown no matter how many times route A
-// goes on failing it.
+// verdict (first-probe admission only ever grants a token to an Unknown
+// Key): a clean drain is what CREATES a PreferB entry (Memo.Observe's
+// OutcomeSuccess branch), so — unlike a memo-hit, where the verdict already
+// exists and a success needs no re-confirmation — this dispatch's real
+// outcome cannot be assumed and must be reported from the caller's ACTUAL
+// drain result, success or failure alike. observeFn is that hook: the
+// caller MUST call it exactly once, with the drain error (nil on a clean
+// finish), whenever retried is true. Skipping it silently drops the one
+// observation this probe exists to make, leaving the Key permanently
+// Unknown no matter how many times route A goes on failing it.
 // responseShape is the dispatching adapter's engine.Meta.ResponseShape,
 // threaded for the same reason as on tryRouteMemoHit: this dispatch opens
 // route-B cursors, so it declares the shape through routeBExecCtx. It matters

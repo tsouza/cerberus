@@ -2028,22 +2028,26 @@ func queryMaxSamplesFromEnv(v *viper.Viper) (int64, error) {
 	return resolveQueryMaxSamples(n)
 }
 
-// defaultRBGNMaxRows / defaultRBGNMaxDensityUnits mirror
-// internal/chsql's own maxRangeBucketGridNativeRows (25,000,000) /
-// maxRangeBucketGridNativeDensityUnits (400,000,000) — kept as independent
-// constants, the same duplication defaultDeltaPrefixLookback's own doc
+// defaultRBGNMaxRows mirrors internal/chsql's own
+// maxRangeBucketGridNativeRows (25,000,000) — kept as an independent
+// constant, the same duplication defaultDeltaPrefixLookback's own doc
 // already establishes the precedent for (chsql may not import
-// internal/config; see .go-arch-lint.yml), so Config.RangeBucketGridNativeMaxRows
-// / Config.RangeBucketGridNativeMaxDensityUnits resolve to the SAME
-// real-ClickHouse-calibrated values chsql itself falls back to when
-// nothing threads a ctx override at all. See
+// internal/config; see .go-arch-lint.yml), so
+// Config.RangeBucketGridNativeMaxRows resolves to the SAME
+// real-ClickHouse-calibrated value chsql itself falls back to when nothing
+// threads a ctx override at all. See
 // internal/chsql/range_bucket_grid_native_bound.go's own calibration doc
-// for the real evidence grounding both numbers, and its "Operator
-// override" section for why raising either above these defaults forfeits
-// that evidence.
+// for the real evidence grounding the number, and its "Operator override"
+// section for why raising it above this default forfeits that evidence.
+//
+// The density axis has NO such mirrored default, deliberately: unlike rows,
+// resolveRBGNMaxDensityUnits derives the unset (0) case from
+// CERBERUS_CH_QUERY_MAX_MEMORY via rbgnDensityUnitsForMemory rather than
+// falling back to a fixed number. A defaultRBGNMaxDensityUnits constant sat
+// here claiming to be that fallback until #3188; nothing read it, and the
+// value it named (400,000,000) was not what an unset knob resolves to.
 const (
-	defaultRBGNMaxRows         int64 = 25_000_000
-	defaultRBGNMaxDensityUnits int64 = 400_000_000
+	defaultRBGNMaxRows int64 = 25_000_000
 
 	// rbgnDensityUnitsPerGiB is the density bound granted per GiB of
 	// CERBERUS_CH_QUERY_MAX_MEMORY, and rbgnDensityUnitsFloor is the bound a

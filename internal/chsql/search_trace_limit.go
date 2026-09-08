@@ -59,9 +59,12 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 		return fmt.Errorf("%w: SearchTraceLimit column names unset", ErrUnsupported)
 	}
 	if n.TraceLimit <= 0 {
-		// Defensive: the lowering never builds the node with a non-positive
-		// limit. Emit the input unchanged rather than a degenerate LIMIT.
-		return e.emitNode(n.Input)
+		// The lowering gates node construction on `limit > 0`
+		// (internal/traceql/search_limit.go::stampSearchTraceLimit), so the
+		// only path here is a programmer error in a lowering or rewrite.
+		// Reject it: emitting the input unchanged would silently drop the
+		// top-N restriction and drain every matching trace in the window.
+		return fmt.Errorf("%w: SearchTraceLimit with non-positive TraceLimit=%d", ErrUnsupported, n.TraceLimit)
 	}
 
 	outerSub, err := e.subqueryFrag(n.Input)

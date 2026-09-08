@@ -87,9 +87,9 @@ const DownsampleTierGaugeTemporalitySentinel int64 = -1
 
 // DownsampleTierBucket is the tier's single supported aggregation bucket —
 // fixed, not operator-configurable (cerberus issue #2751's deliberate v1
-// scope decision). It mirrors the retired otel_metrics_sum_5m rollup's own
-// granularity (see the retired MetricsRollups' defaultOTelRollups doc),
-// chosen because it suits PromQL query_range's common 5-minute step. A
+// scope decision). It is five minutes because that suits PromQL
+// query_range's common 5-minute step — the same reason the retired
+// otel_metrics_sum_5m rollup registry, deleted in #3188, used it. A
 // configurable bucket size would multiply the routing-eligibility surface
 // (internal/promql/lower_strategy.go's resolution-aware eligibility check)
 // for marginal v1 benefit; a deployment needing a different granularity can

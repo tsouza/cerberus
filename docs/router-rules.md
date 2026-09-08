@@ -37,11 +37,18 @@ confirm it by reading the shipped files.
   percentile cutoff) is **per-deployment** and resolved **at runtime from the
   database** (the deployment's own corpus aggregates) and/or the deployment's
   config. It is **never** a literal in the YAML or in Go.
-- Example generic rule: *"flag `route=A` queries whose `memory_usage` exceeds
-  `{memory_high_watermark}`"*, where `{memory_high_watermark}` is a **named
-  parameter** resolved per-deployment (a percentile of *this* deployment's own
-  `memory_usage` distribution). The file carries the **name** and the
-  **resolver kind**, never the number.
+- Example generic rule (`route_a_memory_near_cap`): *"flag `route=A` queries
+  whose `memory_usage` is at or above `{memory_near_cap}`"*, where
+  `{memory_near_cap}` is a **named parameter** resolved per-deployment (a
+  configured fraction of *this* deployment's own `query.max_memory_bytes`). The
+  file carries the **name** and the **resolver kind**, never the number.
+- A declared parameter that no rule reaches is a **load-time error**
+  (`validateEveryParamIsReached`), the dual of the dangling-`${param}` check.
+  Resolution walks the declared params, not the used ones, and each
+  corpus-derived param drives its own full aggregate pass — so an unreached one
+  costs a corpus scan per run and can never change a finding. Reachability is
+  transitive and includes a `finding` message placeholder, which is how a
+  MESSAGE-only param such as `{cerberus_reject_ratio}` stays legal.
 
 This mirrors the self-tuning generic-loop / local-constants split: the shipped
 catalog generalizes across all deployments; the numbers come from each
