@@ -83,19 +83,22 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 	// anchor timestamp is in the join key). Its instant-mode shape is held on
 	// route A not by this registry but by the solver's sawInstantVectorJoin
 	// fail-closed guard. VectorSetOp / NaryVectorSetOp are deliberately
-	// default-denied: set-op family nodes (and/or/unless), absent from
-	// sliceInvariantKinds until their own slice-invariance proof + §Parity
-	// lanes land. RangeWindowGridNative is now REGISTERED (issue #2117): the
-	// timeSeries*ToGrid aggregate evaluates grid point i from exactly the
-	// samples in that anchor's own window, which is the registry's criterion,
-	// and chplan.ReanchorRange re-grids it so a routed plan really is
-	// partitioned rather than repeated. InfoJoin is a join-family node whose
+	// default-denied: set-op family nodes (and/or/unless) carry no
+	// slice-invariance proof and no §Parity differential lane, and the
+	// registry admits a kind only on that evidence, so they are absent from
+	// sliceInvariantKinds. RangeWindowGridNative is now REGISTERED (issue
+	// #2117): the timeSeries*ToGrid aggregate evaluates grid point i from
+	// exactly the samples in that anchor's own window, which is the registry's
+	// criterion, and chplan.ReanchorRange re-grids it so a routed plan really
+	// is partitioned rather than repeated. InfoJoin is a join-family node whose
 	// Info arm is a point-in-time label lookup, not a sliced row stream, so it
-	// stays default-denied. RangeWindowStaleResample (a re-gridding range node whose
-	// grid ReanchorRange does not yet re-anchor) and SearchTraceLimit (a
-	// per-trace cap) are likewise default-denied — neither is a simple sliced
-	// row stream. HistogramProjection is default-denied
-	// too: like HistogramQuantileNative, it aggregates bucket columns per
+	// stays default-denied. RangeWindowStaleResample (a re-gridding range node
+	// that ReanchorRange has no case for, so it falls into that function's
+	// share-verbatim default and every shard would carry the FULL grid rather
+	// than its own slice) and SearchTraceLimit (a per-trace cap) are likewise
+	// default-denied — neither is a simple sliced row stream.
+	// HistogramProjection is default-denied too: like
+	// HistogramQuantileNative, it aggregates bucket columns per
 	// group from its input rather than passing a sliced row stream through
 	// unchanged, and no lowering builds it yet regardless.
 	wantUnregistered := len(planNodeImplementers(t)) - len(registered)

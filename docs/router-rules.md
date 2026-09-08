@@ -119,8 +119,9 @@ resolves to comes from the deployment at runtime.
 | `corpus_count_ratio` | scalar                  | `countIf(<numerator_scope>) / countIf(<denominator_scope>)` over the population.                                                                                                                                                                                                                                           |
 
 `scope`, `numerator_scope`, and `denominator_scope` are enum-equality filters
-(e.g. `{ route: A, exit_status: ok }`). They may reference only the three enum
-columns (`route`, `exit_status`, `language`) and are validated to carry a valid
+(e.g. `{ route: A, exit_status: ok }`). They may reference only the four enum
+columns (`route`, `exit_status`, `language`, `decision_reason` — the last a
+15-token closed vocabulary, see below) and are validated to carry a valid
 category token — never a number.
 
 `partition_by: [<column>]` makes a corpus param **partition-keyed**: one value
@@ -229,15 +230,15 @@ corpus moving.
 
 ### catalogVersion 1 — observed-cost / recorded-route pairs
 
-| id                                 | severity | what it flags                                                                                                                                                                                                                                        |
-| ---------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `oom_on_route_a`                   | critical | route-A OOMs (route B exists to avoid them; unconditional, no threshold).                                                                                                                                                                            |
-| `route_a_memory_near_cap`          | high     | route-A queries whose peak memory is at/above a fraction (`memory_near_cap_fraction`, default 0.8) of the configured cap (`query.max_memory_bytes`) — the leading indicator before an OOM. Gated on proximity to the actual cap, not the corpus p95. |
-| `route_a_high_fanout_should_shard` | medium   | route-A queries with fan-out in the range the deployment normally shards, restricted to the ones route B *could* have taken — `decision_reason` in {`below-threshold`, `high-D`}. A structural refusal cannot be un-refused by a threshold.          |
-| `route_a_timeout_should_shard`     | high     | route-A timeouts (time-slicing bounds per-shard wall-clock).                                                                                                                                                                                         |
-| `route_a_hit_sample_budget`        | high     | route-A queries that hit the sample budget (sharding keeps each shard under budget).                                                                                                                                                                 |
-| `route_b_overshard_low_fanout`     | medium   | route-B queries that paid k-shard overhead below the fan-out floor while finishing fast (route-B regret).                                                                                                                                            |
-| `route_a_slow_hot_shape`           | medium   | high-frequency route-A shapes that are slow **relative to their own language's duration norm** (the corpus p95) — a self-relative tail signal, not an absolute SLA breach; the highest aggregate payoff to re-route (grouped by decision reason).    |
+| id                                 | severity | what it flags                                                                                                                                                                                                                                                                                            |
+| ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oom_on_route_a`                   | critical | route-A OOMs (route B exists to avoid them; unconditional, no threshold).                                                                                                                                                                                                                                |
+| `route_a_memory_near_cap`          | high     | route-A queries whose peak memory is at/above a fraction (`memory_near_cap_fraction`, which the deployment must supply — there is no built-in default) of the configured cap (`query.max_memory_bytes`) — the leading indicator before an OOM. Gated on proximity to the actual cap, not the corpus p95. |
+| `route_a_high_fanout_should_shard` | medium   | route-A queries with fan-out in the range the deployment normally shards, restricted to the ones route B *could* have taken — `decision_reason` in {`below-threshold`, `high-D`}. A structural refusal cannot be un-refused by a threshold.                                                              |
+| `route_a_timeout_should_shard`     | high     | route-A timeouts (time-slicing bounds per-shard wall-clock).                                                                                                                                                                                                                                             |
+| `route_a_hit_sample_budget`        | high     | route-A queries that hit the sample budget (sharding keeps each shard under budget).                                                                                                                                                                                                                     |
+| `route_b_overshard_low_fanout`     | medium   | route-B queries that paid k-shard overhead below the fan-out floor while finishing fast (route-B regret).                                                                                                                                                                                                |
+| `route_a_slow_hot_shape`           | medium   | high-frequency route-A shapes that are slow **relative to their own language's duration norm** (the corpus p95) — a self-relative tail signal, not an absolute SLA breach; the highest aggregate payoff to re-route (grouped by decision reason).                                                        |
 
 ### catalogVersion 2 — reason-attributed and shape-geometry detectors
 
@@ -308,21 +309,68 @@ corpus's tokens to the same list so the fixtures never drift from production.
 
 ## Running it
 
+`--validate-only` loads and validates the catalog and resolves **nothing**, so
+it needs no configuration at all:
+
 ```sh
-# Against the per-pod JSONL fallback (no ClickHouse needed):
-just route-rules --source jsonl --corpus-path /var/lib/cerberus/router-corpus
-
-# Against the live corpus table (uses the deployment's own CERBERUS_CH_* env):
-just route-rules --source chtable --since 720h
-
 # Validate the catalog only (the invariant gate; CI-runnable, resolves nothing):
 just route-rules --validate-only
-
-# Supply a config-kind parameter inline:
-just route-rules --source jsonl --corpus-path ./corpus \
-  --param router_rules.watermark_percentile=0.95 \
-  --param router_rules.min_rows_per_class=50
 ```
+
+Every other invocation resolves the **whole** parameter registry before it
+evaluates a single rule (`ParamResolver.Resolve` walks the topo-sorted registry
+and resolves each param unconditionally), and a `config`-kind param whose key is
+unset is a hard error. So a run must supply **all six** config keys, from the
+environment or with `--param`, whichever is more convenient — a run missing one
+exits non-zero naming the key it wanted:
+
+```sh
+# Against the per-pod JSONL fallback (no ClickHouse needed), everything inline:
+just route-rules --source jsonl --corpus-path /var/lib/cerberus/router-corpus \
+  --param router_rules.watermark_percentile=0.95 \
+  --param router_rules.cumulative_d_percentile=0.95 \
+  --param router_rules.min_rows_per_class=50 \
+  --param router_rules.memory_near_cap_fraction=0.8 \
+  --param query.max_memory_bytes=1073741824 \
+  --param query.max_samples=50000000
+
+# Against the live corpus table. Any of the five MAPPED keys below can come
+# from the process environment instead of a --param; the sixth has no env
+# mapping, so it always needs one. --source chtable additionally reads the
+# deployment's own CERBERUS_CH_* env for the connection itself.
+ROUTER_RULES_WATERMARK_PERCENTILE=0.95 \
+ROUTER_RULES_MIN_ROWS_PER_CLASS=50 \
+ROUTER_RULES_MEMORY_NEAR_CAP_FRACTION=0.8 \
+CERBERUS_CH_QUERY_MAX_MEMORY=1073741824 \
+CERBERUS_QUERY_MAX_SAMPLES=50000000 \
+just route-rules --source chtable --since 720h \
+  --param router_rules.cumulative_d_percentile=0.95
+```
+
+Where each config key comes from. A `--param` override always wins over the
+env var; the CLI reads these with a plain `os.LookupEnv` of its own
+(`rrConfigEnvKeys` in `cmd/cerberus/cmd_routerules.go`) rather than through
+`internal/config`, which is why the router-rules knobs carry no `CERBERUS_`
+prefix. The two `query.*` keys reuse the names the running gateway binds for the
+same quantities, so an environment that already exports them needs no `--param`
+— but because the read is a raw environment lookup, a value that lives only in
+`cerberus.yaml`, or only as `internal/config`'s built-in default, is **not**
+seen: the variable has to be set in the process environment, or the key passed
+as a `--param`.
+
+| catalog config key                      | env var                                 |
+| --------------------------------------- | --------------------------------------- |
+| `router_rules.watermark_percentile`     | `ROUTER_RULES_WATERMARK_PERCENTILE`     |
+| `router_rules.min_rows_per_class`       | `ROUTER_RULES_MIN_ROWS_PER_CLASS`       |
+| `router_rules.memory_near_cap_fraction` | `ROUTER_RULES_MEMORY_NEAR_CAP_FRACTION` |
+| `router_rules.cumulative_d_percentile`  | none — `--param` only                   |
+| `query.max_memory_bytes`                | `CERBERUS_CH_QUERY_MAX_MEMORY`          |
+| `query.max_samples`                     | `CERBERUS_QUERY_MAX_SAMPLES`            |
+
+The `benchmark` verb is the one exception: it scores the catalog against a
+fabricated corpus and carries its own fixed operating point for all six keys
+(`rrBenchDefaultConfig`), so `just route-rules benchmark` runs with no
+configuration and `--param` only shifts that operating point.
 
 Flags:
 
@@ -563,11 +611,11 @@ own data, not the catalog.
   scalar (usable only as message context), not a per-group fraction.
 - **No time-windowed param kind.** Params resolve over the whole `--since`
   window; drift/regression rules that compare two windows are deferred.
-- **No arithmetic in params.** "0.8 × cap" cannot be expressed in the catalog;
-  a deployment that wants a self-relative warn-floor supplies the product as one
-  `config` number, or uses a `corpus_percentile` instead. This is why the
-  early-warning memory rule stays a `corpus_percentile` of the healthy
-  population rather than a hand-computed fraction of the hard cap.
+- **Only one arithmetic form.** `config_scaled` is the whole of the grammar's
+  arithmetic: exactly one fraction param multiplied by exactly one magnitude
+  param. There is no production for a sum, a ratio, a three-operand expression,
+  or a nested arithmetic tree, so a deployment that needs any of those supplies
+  the finished number as a single `config` value.
 
 ## Academic references
 

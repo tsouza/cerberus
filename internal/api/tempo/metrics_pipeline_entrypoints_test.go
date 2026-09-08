@@ -82,7 +82,7 @@ type metricsEntrypoint struct {
 // that return an error instead of writing a response.
 func errOutcome(err error) (int, string) {
 	if err != nil {
-		return httpErrStatus(err), err.Error()
+		return httpErrStatus(context.Background(), err), err.Error()
 	}
 	return http.StatusOK, ""
 }

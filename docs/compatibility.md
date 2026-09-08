@@ -150,7 +150,7 @@ of Prometheus, Loki, or Tempo has any concept of a ClickHouse data shard to
 diff against), so it is validated directly — with real `system.query_log`
 evidence these reference-diff harnesses have no way to produce — by the
 dedicated `datashard` e2e leg instead. See
-[`operations.md`](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard-cerberus-issue-3079)
+[`operations.md`](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard)
 for the full reasoning.
 
 ## Local run

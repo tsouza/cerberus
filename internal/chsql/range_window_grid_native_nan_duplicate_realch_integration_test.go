@@ -43,7 +43,9 @@
 // direction of failure is the point: they go red when ClickHouse's fold
 // changes. A red here is the signal to re-derive nativeTSGridFn's and
 // chopt.FeatureTSGrid*'s posture docs against the new behaviour — and, if
-// the fold became order-independent, to close #2798.
+// the fold became order-independent, to re-derive every doc that cites
+// cerberus issue #2798, whose characterisation records the fold as
+// order-DEPENDENT.
 //
 // Needs a real ClickHouse >= 25.9 and Docker; gated behind the `integration`
 // build tag, run by the `ts-grid-nan-duplicate-integration` Justfile recipe.
@@ -316,9 +318,9 @@ func nanDupGrid(ctx context.Context, t *testing.T, db *sql.DB, agg, extraParams,
 
 // TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH measures, for
 // every nativeTSGridFn member, which sample survives a NaN-bearing duplicate
-// timestamp under each encounter order — the finding cerberus issue #2798
-// tracks, established here family-wide rather than inferred from the two
-// members #2746's chDB sweep happened to probe.
+// timestamp under each encounter order — the upstream ClickHouse behaviour
+// cerberus issue #2798 characterised, established here family-wide rather
+// than inferred from the two members #2746's chDB sweep happened to probe.
 //
 // The survivor is DERIVED, not transcribed: each member is first run over the
 // two duplicate-free windows (the NaN alone at the shared timestamp, then the
@@ -411,9 +413,9 @@ func TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH(t *testing.T) 
 					agg.Fn, nanSecond, c.nanSecondSurvivor, c.why)
 			}
 			if got, want := nanFirst != nanSecond, c.orderDependent(); got != want {
-				t.Errorf("%s: order dependence = %v, case implies %v — if ClickHouse's fold became "+
-					"order-independent, cerberus issue #2798 can close and every doc citing it must be "+
-					"re-derived", agg.Fn, got, want)
+				t.Errorf("%s: order dependence = %v, case implies %v — a future ClickHouse whose fold is "+
+					"order-independent would invalidate cerberus issue #2798's characterisation, and every "+
+					"doc citing it must then be re-derived", agg.Fn, got, want)
 			}
 		})
 		if c.orderDependent() {
@@ -516,7 +518,7 @@ const (
 // TestRate_NativeGrid_NaNDuplicate_DivergesFromFanout_RealCH runs cerberus's
 // OWN emitted SQL for `rate(requests_total[1m])` down both lowerings over one
 // table holding two series with the identical sample multiset, and pins the
-// gap cerberus issue #2798 tracks:
+// divergence cerberus issue #2798 characterised:
 //
 //   - the fan-out answers the two series IDENTICALLY (its survivor is a
 //     function of the multiset), and
@@ -584,13 +586,14 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
 			"for both", nanDupJobNaNFirst, fFirst, nanDupJobNaNSecond, fSecond)
 	}
 
-	// The gap #2798 tracks: the native family's survivor follows physical row
-	// order, so the two series answer differently.
+	// The upstream behaviour #2798 characterised: the native family's survivor
+	// follows physical row order, so the two series answer differently.
 	nFirst, nSecond := native[nanDupJobNaNFirst], native[nanDupJobNaNSecond]
 	if math.IsNaN(nFirst) && math.IsNaN(nSecond) {
 		t.Fatalf("the native timeSeries*ToGrid path answered both duplicate-bearing series NaN — "+
-			"if ClickHouse's collapse became order-independent, cerberus issue #2798 can close and "+
-			"every doc citing it must be re-derived (native: %s=%v %s=%v)",
+			"a future ClickHouse whose collapse is order-independent would invalidate cerberus issue "+
+			"#2798's characterisation, and every doc citing it must then be re-derived "+
+			"(native: %s=%v %s=%v)",
 			nanDupJobNaNFirst, nFirst, nanDupJobNaNSecond, nSecond)
 	}
 	if !math.IsNaN(nFirst) {

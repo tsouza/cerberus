@@ -122,8 +122,8 @@ func TestLowerOuterRangeFnOverSubquery_WidensInnerByOffsetPlusRange(t *testing.T
 }
 
 // TestLowerSubqueryOverAbsent_ShiftsGridForSubqueryOffset covers the sibling
-// gap #1464's audit catalogued and issue #1732 tracks: lowerSubqueryOverAbsent
-// lowers `absent(<selector>)[range:step]` and never read the subquery's
+// gap #1464's audit catalogued and issue #1732 closed: lowerSubqueryOverAbsent
+// lowered `absent(<selector>)[range:step]` and never read the subquery's
 // `OriginalOffset` at all, so the `offset` modifier had NO effect on the
 // emitted plan — the offset-carrying and un-offset forms lowered
 // byte-identically. That is a total omission rather than the wrong-arithmetic

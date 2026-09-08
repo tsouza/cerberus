@@ -174,8 +174,14 @@ per-layer "catches X / misses Y" guidance.
     constructors in `internal/chsql/builder.go`. `verbatim(...)` is for emitter-chosen synthetic
     tokens (alias names, pre-quoted literals, pre-rendered subquery SQL), never for whole expression
     shapes. Self-check before any chsql change: `node .github/scripts/forbid-sql-raw.mjs` from the
-    repo root. CI catches the token-writing primitives; reviewer discipline catches the semantic
-    shape.
+    repo root. The rule binds everywhere; the mechanical half of it is narrower and knows it. That
+    gate scans `internal/chsql/**` only, for the `strings.Builder` / `sb.Write*` / `writeSQL(...)`
+    half of the prohibition, with `builder.go` excluded by the pathspec and `emit_node.go` /
+    `emit.go` exempted whole-file by its `KNOWN_GOOD` set — a wider pathspec would
+    flag every log line and HTTP body in the tree, since those use the same primitives.
+    `forbid-verbatim-concat.mjs` adds the one mechanically detectable `verbatim(...)` misuse.
+    Everything else — `fmt.Sprintf`-built SQL, `+`-concatenation outside chsql, and the semantic
+    question of whether a typed Frag could replace a write — is reviewer discipline, not CI.
 11. **No `unsafe.Pointer` / `reflect.FieldByName` against upstream parser internals.** When a parser
     does not expose what cerberus needs, add the accessor to the relevant `tsouza/*:cerberus-*` fork
     (`docs/upstream-forks.md`), bump the `replace` in `go.mod`, and consume the typed accessor. The
@@ -192,9 +198,13 @@ per-layer "catches X / misses Y" guidance.
     fits, the number is probably wrong. Out of scope: self-evident `+1` / `-1`, trivial `0` / `1` /
     `2` loop bounds, and slice-capacity hints.
 14. **No AGPL in the binary.** The upstream LogQL and TraceQL parsers are AGPLv3; the in-house
-    reimplementations exist so the Apache-2.0 binary never links them. They survive only as
-    test-only oracles behind the `agpl_oracle` build tag, quarantined in the `test/oracle` nested
-    module. The `agpl-clean` gate fails the build if any AGPL package reaches `cmd/cerberus`.
+    reimplementations exist so the Apache-2.0 binary never links them. What keeps the binary clean
+    is **reachability**, not module membership: the root `go.mod` does require `grafana/loki/v3`,
+    and `compatibility/` has no `go.mod` of its own, so the differential harnesses are root-module
+    packages — nothing under `compatibility/` or behind the `agpl_oracle` build tag is imported
+    from `./cmd/cerberus`. The `test/oracle` nested module is a second, stronger boundary used
+    where a hard module break is wanted, not the only one. The `agpl-clean` gate runs
+    `go list -deps ./cmd/cerberus` and fails the build if any AGPL package reaches the binary.
 15. **Non-trivial step logic — a CI workflow step or a Justfile recipe body — lives in
     `.github/scripts/*.mjs`, never inline.** Dependency-light Node ESM, `node:` builtins only,
     env-driven inputs documented at the top of the file, `::error::` / `::notice::` workflow

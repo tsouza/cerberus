@@ -442,9 +442,10 @@ func reanchorRangeLWR(v *RangeLWR, start, end time.Time) (Node, error) {
 // and re-anchoring it onto an arbitrary [start, end] sub-grid needs the
 // same three-bound predicted-grid check plus StepAlign-aware epoch-floor
 // re-derivation reanchorRangeLWR's StepAlign branch performs for its own
-// epoch-aligned leaf. That generalization has no slice-invariance proof or
-// differential fixture yet, so — per this file's own discipline of never
-// silently re-anchoring a shape that has not been proven correct — every
+// epoch-aligned leaf. That generalization carries no slice-invariance proof
+// and no differential fixture, and this file admits a shape only on that
+// evidence, so — per its own discipline of never silently re-anchoring a
+// shape that has not been proven correct — every
 // query reaching this node under the sharded-pushdown solver aborts to
 // route A instead. internal/promql's widenSubquerySpine (the head-side,
 // mutate-in-place twin of this pass) still re-grids an OuterRange fan-out
@@ -456,7 +457,18 @@ func reanchorRangeBucketFanout(v *RangeBucketFanout, start, end time.Time) (Node
 		return v, nil
 	}
 	if v.OuterRange > 0 {
-		return nil, fmt.Errorf("%w: RangeBucketFanout.OuterRange > 0 sharding is not yet supported", ErrReanchorGridMismatch)
+		// OuterRange mode derives its anchor grid from (End, OuterRange, Step)
+		// rather than from an explicit [start, end] pair, so an arbitrary
+		// sub-grid is not expressible by moving Start/End the way the ordinary
+		// grid mode below is re-gridded: it needs the three-bound
+		// predicted-grid check plus the StepAlign-aware epoch-floor
+		// re-derivation this file's header describes. The shape therefore stays
+		// on route A.
+		return nil, fmt.Errorf(
+			"%w: RangeBucketFanout in OuterRange mode derives its anchor grid from (End, OuterRange, Step), "+
+				"not from an explicit [start, end] pair, so it has no re-gridding onto a shard's sub-grid",
+			ErrReanchorGridMismatch,
+		)
 	}
 	if err := checkPredictedGridBucketFanout(v, start, end); err != nil {
 		return nil, err

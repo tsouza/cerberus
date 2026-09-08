@@ -130,7 +130,7 @@ Content-Type: application/json
   "clickhouse": {
     "address": "clickhouse:9000",
     "database": "otel",
-    "serverVersion": "25.8",
+    "serverVersion": "26.6",
     "serverVersionSource": "probe",
     "reachable": true,
     "breaker": "closed",
@@ -139,8 +139,36 @@ Content-Type: application/json
   "optimizations": {
     "selection": "auto,columnar_result_decode",
     "mode": "enforcing",
-    "resolvedAgainstVersion": "25.8",
-    "enabled": ["aggregation_in_order", "columnar_result_decode", "condition_cache"]
+    "resolvedAgainstVersion": "26.6",
+    "enabled": ["aggregation_in_order", "columnar_result_decode", "condition_cache"],
+    "queryWorkload": "cerberus"
+  },
+  "resultCache": {
+    "hits": 1204,
+    "misses": 318
+  },
+  "filesystemCache": {
+    "configured": true,
+    "caches": 1,
+    "maxSizeBytes": 10737418240,
+    "currentSizeBytes": 4183949312,
+    "currentElements": 2871
+  },
+  "lokiCatalogViewRefresh": {
+    "configured": true,
+    "status": "Scheduled",
+    "exception": "",
+    "lastSuccessTime": "2026-09-08 10:15:00",
+    "lastRefreshTime": "2026-09-08 10:15:00",
+    "retry": 0
+  },
+  "tempoTagCatalogViewRefresh": {
+    "configured": true,
+    "status": "Scheduled",
+    "exception": "",
+    "lastSuccessTime": "2026-09-08 10:15:00",
+    "lastRefreshTime": "2026-09-08 10:15:00",
+    "retry": 0
   },
   "ready": true
 }
@@ -195,6 +223,30 @@ Live fields, re-read on every request:
 - `optimizations.enabled` — **the headline field**: the effectively enabled
   optimization feature ids. Makes plain whether cerberus is running the
   optimizations it should.
+- `optimizations.queryWorkload` — the **effective** ClickHouse `workload`
+  name cerberus is stamping on its own queries, or `""` when
+  `CERBERUS_CH_QUERY_WORKLOAD` is unset, or was set but the live capability
+  probe found the server rejects the setting or the named workload.
+- `resultCache.hits` / `resultCache.misses` — the process-wide, since-boot
+  tally of ClickHouse's own server-side query-result cache, summed from the
+  `QueryCacheHits` / `QueryCacheMisses` ProfileEvents of every dispatch
+  cerberus stamped `use_query_cache=1`. Honest zeroes when `result_cache`
+  never resolved in, rather than an absent object.
+- `filesystemCache` — the **connected server's** named filesystem-cache
+  disks: `configured` (the headline — whether an operator wired one into
+  `storage_configuration` at all), `caches` (how many), `maxSizeBytes`
+  (their summed configured `max_size`) and `currentSizeBytes` /
+  `currentElements` (live occupied bytes and file segments). A failed read
+  degrades to all-zero with `configured: false`.
+- `lokiCatalogViewRefresh` — `system.view_refreshes` status for the Loki
+  label-cardinality catalog's refreshable materialized view, reported
+  verbatim with no cerberus-side healthy/unhealthy verdict: `configured`,
+  `status`, `exception`, `lastSuccessTime`, `lastRefreshTime`, `retry`. A
+  failed refresh reads as a non-empty `exception` with `lastRefreshTime`
+  ahead of `lastSuccessTime` — the catalog is still serving the previous
+  snapshot. `configured: false` when the view does not exist.
+- `tempoTagCatalogViewRefresh` — the identical reading for the Tempo
+  tag-catalog's refreshable materialized view.
 - `ready` — the same condition `/readyz` uses (CH reachable AND schema
   present AND schema ready).
 

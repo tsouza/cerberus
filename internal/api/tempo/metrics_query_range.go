@@ -339,12 +339,12 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// partition key — Tempo's per-timestamp topk semantics.
 	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsRangeHTTP, q)
 	if cerr != nil {
-		writeError(w, httpErrStatus(cerr), "", "", cerr)
+		writeError(w, httpErrStatus(r.Context(), cerr), "", "", cerr)
 		return
 	}
 	router := h.newMetricsRangeRouter(q, pipeline, start, end, step)
 	if rerr := pipeline.Route(ctx, router); rerr != nil {
-		writeError(w, httpErrStatus(rerr), "", "", rerr)
+		writeError(w, httpErrStatus(r.Context(), rerr), "", "", rerr)
 		return
 	}
 
