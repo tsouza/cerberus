@@ -4,6 +4,7 @@ package chopttest
 
 import (
 	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/choptwire"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -11,9 +12,10 @@ import (
 // BuildSettingsRules builds the per-query engine.SettingsRules an integration
 // test's mounted handler must carry to behave the way a real deployment's
 // does, from a resolved chopt.EnabledSet (ResolveEnabledSet). It is the
-// SettingsRules-axis sibling of BuildRangeLowerers, and mirrors
-// cmd/cerberus/main.go's own settingsRules field-for-field for every rule the
-// EnabledSet decides.
+// SettingsRules-axis sibling of BuildRangeLowerers, and — like it — is the
+// SAME function cmd/cerberus's boot path calls rather than a mirror of it:
+// both delegate to internal/choptwire.SettingsRules, which cmd overlays its
+// operator-configured knobs onto (cerberus issue #3186).
 //
 // Why this exists: prom.New / tempo.New leave Engine.Settings at its zero
 // value, which applies NOTHING — every SettingsRules mechanism
@@ -42,15 +44,5 @@ import (
 // cache repeat costs almost nothing and would silently hollow out a max-of-N
 // memory measurement.
 func BuildSettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.Traces, logs schema.Logs) engine.SettingsRules {
-	return engine.SettingsRules{
-		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
-		ConditionCache:             set.Has(chopt.FeatureConditionCache),
-		JoinSpill:                  set.Has(chopt.FeatureJoinSpill),
-		TraceIDBitmapFilter:        set.Has(chopt.FeatureTraceIDBitmapFilter),
-		ResultCache:                set.Has(chopt.FeatureResultCache),
-		LazyMaterialization:        set.Has(chopt.FeatureLazyMaterialization),
-		Metrics:                    metrics,
-		Traces:                     traces,
-		Logs:                       logs,
-	}
+	return choptwire.SettingsRules(set, metrics, traces, logs)
 }

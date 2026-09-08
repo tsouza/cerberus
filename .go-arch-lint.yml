@@ -178,6 +178,12 @@ components:
   # activation-proof assertion. Consumed by test/perf/smoke and
   # internal/api/prom's real-CH integration lanes (issue #2487).
   chopttest:      { in: chopttest }
+  # Turns a resolved chopt.EnabledSet into the two things the query stack is
+  # configured with from it — the promql.RangeLowerers dispatch table and the
+  # capability-decided half of engine.SettingsRules. Exists so cmd/cerberus's
+  # boot path and internal/chopttest's real-CH activation harness compose them
+  # from ONE function instead of two reviewed copies (issue #3186).
+  choptwire:      { in: choptwire }
   sealedscan:     { in: sealedscan }
   dispatchscan:   { in: dispatchscan }
   testsql:        { in: testsql }
@@ -567,6 +573,14 @@ deps:
   chopttest:
     mayDependOn:
       - chclient
+      - promql
+      - engine
+      - choptwire
+  # choptwire composes the boot-resolved capability set onto the query stack:
+  # the promql lowering table and the engine settings rules. Those two are its
+  # whole dependency set.
+  choptwire:
+    mayDependOn:
       - promql
       - engine
   # api-reqctx resolves the per-request query budget and threads it onto
