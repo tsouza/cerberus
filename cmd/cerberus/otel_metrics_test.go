@@ -49,7 +49,7 @@ func TestTelemetryInstall_ManualReader(t *testing.T) {
 
 	want := map[string]bool{
 		"cerberus_queries_total":                   false,
-		"cerberus_queries_duration_seconds":        false,
+		"cerberus_queries_duration_exp_hist":       false,
 		"cerberus_pipeline_stage_duration_seconds": false,
 		"cerberus_optimizer_rules_applied":         false,
 		"cerberus_clickhouse_rows_read":            false,

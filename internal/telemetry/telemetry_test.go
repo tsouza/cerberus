@@ -56,7 +56,7 @@ func TestQueryDurationNativeHistogramView(t *testing.T) {
 	)
 	t.Cleanup(func() { _ = mp.Shutdown(t.Context()) })
 
-	hist, err := mp.Meter("test").Float64Histogram("cerberus_queries_duration_seconds")
+	hist, err := mp.Meter("test").Float64Histogram("cerberus_queries_duration_exp_hist")
 	if err != nil {
 		t.Fatalf("Float64Histogram: %v", err)
 	}

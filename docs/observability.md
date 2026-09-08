@@ -217,7 +217,7 @@ each one so a rename cannot ship silently.
 | Metric                                     | Type               | Attributes                                                                                  |
 | ------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------- |
 | `cerberus_queries_total`                   | counter            | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
-| `cerberus_queries_duration_seconds`        | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
+| `cerberus_queries_duration_exp_hist`       | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
 | `cerberus_pipeline_stage_duration_seconds` | histogram          | `stage`, `cerberus_ql`                                                                      |
 | `cerberus_optimizer_rules_applied`         | histogram          | —                                                                                           |
 | `cerberus_clickhouse_rows_read`            | histogram          | `cerberus_ql`                                                                               |
@@ -227,11 +227,15 @@ each one so a rename cannot ship silently.
 
 `cerberus_tempo_exemplar_failures_total` counts Tempo `/api/metrics/query_range` (and its gRPC `MetricsQueryRange` counterpart) exemplar-enrichment failures, split by which half of the best-effort exemplar attach failed: `stage="emit"` for a `chsql.EmitMetricsExemplars` render failure, `stage="execute"` for a ClickHouse query failure on the rendered SQL. Both failures still return the matrix response with an empty `exemplars` array — the same wire shape as a window with genuinely no exemplars — so this counter is the only way to notice a systematic exemplar outage without reading logs.
 
-`cerberus_queries_duration_seconds` is collected as a native/exponential
+`cerberus_queries_duration_exp_hist` is collected as a native/exponential
 histogram (cerberus issue #3170), not the classic explicit-bucket shape
 `cerberus_pipeline_stage_duration_seconds` and the other histograms above
-still use. A PromQL query against it has no `_bucket` series or `le` label:
-`histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_seconds[5m])))`
+still use — the `_exp_hist` suffix is required, not cosmetic: cerberus's
+own PromQL read path has no wire-format way to tell a native histogram
+from a classic one, so it routes on that suffix alone
+(`schema.Metrics.ExpHistogramSuffix`). A PromQL query against it has no
+`_bucket` series or `le` label:
+`histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))`
 is the whole expression, not `sum by (le, cerberus_ql) (rate(..._bucket[5m]))`.
 The switch removes this metric from the class of risk a wide classic
 histogram carries under the `RangeBucketGridNative` query-time cost guard
@@ -407,7 +411,7 @@ separate processes — a property of that deployment, not of the metric.
 The stages (`parse` / `lower` / `optimize` / `emit` / `execute`) do not
 sum to the request duration: response materialisation and the row drain
 sit outside them, and on the streaming paths the drain runs while the
-response is being written. Use `cerberus_queries_duration_seconds` for
+response is being written. Use `cerberus_queries_duration_exp_hist` for
 the end-to-end number and the stage histogram for the breakdown within
 the engine.
 

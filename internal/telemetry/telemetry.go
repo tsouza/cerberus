@@ -261,7 +261,7 @@ const (
 	queryDurationExpoHistogramMaxScale = 20
 )
 
-// queryDurationNativeHistogramView collects cerberus_queries_duration_seconds
+// queryDurationNativeHistogramView collects cerberus_queries_duration_exp_hist
 // (internal/telemetry/metrics.go's QueryDuration) as a native/exponential
 // histogram instead of the classic explicit-bucket-boundary aggregation its
 // own WithExplicitBucketBoundaries construction would otherwise get by
@@ -275,13 +275,24 @@ const (
 // timestamp), so that class of risk does not apply to them at all — see
 // cerberus issue #3165's investigation for the full comparison.
 //
+// The instrument's own registered name carries the `_exp_hist` suffix —
+// not just its aggregation — because cerberus's own PromQL read path has
+// no wire-format way to tell a native histogram from a classic one by
+// type; it routes purely on that suffix
+// (schema.Metrics.ExpHistogramSuffix, internal/schema/otel.go). Overriding
+// only the Aggregation here while leaving the instrument named
+// `cerberus_queries_duration_seconds` would collect the data correctly
+// but leave every PromQL query against it silently resolving to nothing,
+// since the read path would still look for a `_bucket` series that no
+// longer exists.
+//
 // StageDuration and the other histograms in metrics.go stay classic for now
 // — this metric is the one with a real prior incident and the one queried
 // in test/e2e/grafana/dashboards/cerberus.json, so it is the one worth the
 // dashboard-query-shape migration (native histogram PromQL has no `_bucket`
 // series or `le` label) that came with this change.
 var queryDurationNativeHistogramView = sdkmetric.NewView(
-	sdkmetric.Instrument{Name: "cerberus_queries_duration_seconds"},
+	sdkmetric.Instrument{Name: "cerberus_queries_duration_exp_hist"},
 	sdkmetric.Stream{
 		Aggregation: sdkmetric.AggregationBase2ExponentialHistogram{
 			MaxSize:  queryDurationExpoHistogramMaxSize,

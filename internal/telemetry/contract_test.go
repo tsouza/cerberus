@@ -40,7 +40,7 @@ func TestMetricNames_PublicContract(t *testing.T) {
 
 	want := map[string]bool{
 		"cerberus_queries_total":                   false,
-		"cerberus_queries_duration_seconds":        false,
+		"cerberus_queries_duration_exp_hist":       false,
 		"cerberus_pipeline_stage_duration_seconds": false,
 		"cerberus_optimizer_rules_applied":         false,
 		"cerberus_clickhouse_rows_read":            false,
@@ -86,7 +86,7 @@ func TestMetricUnits_PublicContract(t *testing.T) {
 
 	wantUnits := map[string]string{
 		"cerberus_queries_total":                   "{query}",
-		"cerberus_queries_duration_seconds":        "s",
+		"cerberus_queries_duration_exp_hist":       "s",
 		"cerberus_pipeline_stage_duration_seconds": "s",
 		"cerberus_optimizer_rules_applied":         "{rule}",
 		"cerberus_clickhouse_rows_read":            "{row}",

@@ -122,14 +122,14 @@ func TestHistogramBucketBoundaries(t *testing.T) {
 		wantBounds []float64
 		value      float64 // representative observation recorded by record
 	}{
-		{
-			metricName: "cerberus_queries_duration_seconds",
-			record: func(ctx context.Context) {
-				telemetry.Get().QueryDuration.Record(ctx, 0.3)
-			},
-			wantBounds: telemetry.QueryDurationBoundaries,
-			value:      0.3, // a realistic query duration → (0.25, 0.5]
-		},
+		// cerberus_queries_duration_exp_hist is deliberately absent here: it
+		// is collected as a native/exponential histogram in production
+		// (telemetry.go's queryDurationNativeHistogramView), which has no
+		// fixed explicit-bucket ladder to pin — TestQueryDurationNativeHistogramView
+		// (telemetry_test.go) covers its real exported shape instead. This
+		// table's provider never installs that View (see installManualReader),
+		// so asserting classic bounds here would pin a configuration
+		// production never actually uses for this metric.
 		{
 			metricName: "cerberus_pipeline_stage_duration_seconds",
 			record: func(ctx context.Context) {
@@ -215,12 +215,10 @@ func TestDurationBoundaries_SlowTailIsResolvable(t *testing.T) {
 		record     func(ctx context.Context, v float64)
 		values     []float64
 	}{
-		{
-			metricName: "cerberus_queries_duration_seconds",
-			bounds:     telemetry.QueryDurationBoundaries,
-			record:     func(ctx context.Context, v float64) { telemetry.Get().QueryDuration.Record(ctx, v) },
-			values:     []float64{45, 90, 200},
-		},
+		// cerberus_queries_duration_exp_hist is deliberately absent here —
+		// see TestHistogramBucketBoundaries's own comment: it has no fixed
+		// bucket ladder in production, so a "slow tail lands in a finite
+		// bucket" property doesn't apply to it.
 		{
 			metricName: "cerberus_pipeline_stage_duration_seconds",
 			bounds:     telemetry.StageDurationBoundaries,
@@ -270,7 +268,7 @@ func TestDurationBoundaries_SlowTailIsResolvable(t *testing.T) {
 // TestObserveQuery_RecordsCounterAndDuration covers the QueryTimer
 // happy path: a single Done(ResultOK) call must bump
 // cerberus_queries_total by one and record a point on
-// cerberus_queries_duration_seconds with matching attributes.
+// cerberus_queries_duration_exp_hist with matching attributes.
 func TestObserveQuery_RecordsCounterAndDuration(t *testing.T) {
 	reader := installManualReader(t)
 
@@ -298,7 +296,7 @@ func TestObserveQuery_RecordsCounterAndDuration(t *testing.T) {
 		t.Errorf("result attr: got %v ok=%v", v.AsString(), ok)
 	}
 
-	dur := findMetric(t, sm, "cerberus_queries_duration_seconds")
+	dur := findMetric(t, sm, "cerberus_queries_duration_exp_hist")
 	hist, ok := dur.Data.(metricdata.Histogram[float64])
 	if !ok {
 		t.Fatalf("queries.duration: unexpected data type %T", dur.Data)
@@ -617,7 +615,7 @@ func TestQueryMiddleware_PanicRecovered_RendersEnvelopeAndCountsError(t *testing
 	}
 	// The duration histogram must also record the panicked query so its
 	// count stays balanced with the total counter.
-	dur := findMetric(t, sm, "cerberus_queries_duration_seconds")
+	dur := findMetric(t, sm, "cerberus_queries_duration_exp_hist")
 	dh := dur.Data.(metricdata.Histogram[float64])
 	if len(dh.DataPoints) != 1 || dh.DataPoints[0].Count != 1 {
 		t.Errorf("query_duration: got %+v want one DP with count=1", dh.DataPoints)

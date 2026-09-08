@@ -155,7 +155,7 @@ data:
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "P95 query latency per head (PromQL / LogQL / TraceQL), computed from cerberus_queries_duration_seconds (a native/exponential histogram, cerberus issue #3170) with histogram_quantile.",
+          "description": "P95 query latency per head (PromQL / LogQL / TraceQL), computed from cerberus_queries_duration_exp_hist (a native/exponential histogram, cerberus issue #3170) with histogram_quantile.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -232,7 +232,7 @@ data:
                 "uid": "cerberus-prometheus"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_seconds[5m])))",
+              "expr": "histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))",
               "legendFormat": "p95 {{cerberus_ql}}",
               "range": true,
               "refId": "A"
