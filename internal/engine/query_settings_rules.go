@@ -290,61 +290,6 @@ func (r SettingsRules) now() time.Time {
 	return time.Now()
 }
 
-// applySharedQuerySettings layers every plan-shape-gated per-query ClickHouse
-// setting that BOTH dispatch routes must carry onto ctx. It is the ONE list
-// the route-A seam (Engine.execContext) and the route-B seam (routeBExecCtx)
-// read, so a bound or rule added here reaches both routes by construction —
-// before this existed the two seams kept parallel hand-maintained lists and
-// route B silently missed SettingsRules.apply entirely (cerberus issue #3184):
-// a routed query carried no workload, no log_comment shape id, no result
-// cache, no aggregation-in-order, while observeRoutedQuery went on recording
-// enabledOpts() for its corpus row — so calibration compared an optimized
-// route A against an un-optimized route B and attributed the difference to a
-// posture that never rode the shards.
-//
-// memCap is the memory cap the STATEMENT will actually run under, which is the
-// only thing that legitimately differs between the two callers: route A passes
-// the whole-query cap, route B passes that cap apportioned to a single shard
-// (apportionShardMemoryCap). Every threshold below is sized from it, so each
-// route gets thresholds scaled to its own real allowance.
-//
-// Every rule reachable from here is RESULT-EQUIVALENT — each one changes only
-// how ClickHouse executes the statement, never which rows it returns (see the
-// individual settings' own docs) — which is what makes applying the identical
-// list on both routes safe rather than a behaviour change per route.
-//
-// The timeSeries*ToGrid setting is deliberately NOT here: route A reads it off
-// the plan (planHasTSGridNative) while route B reads it off the decision's
-// shard plans (decisionHasTSGridNative), so the two seams genuinely need
-// different predicates for it and each stamps it itself.
-func applySharedQuerySettings(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
-	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
-	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
-	ctx = applySpillSettings(ctx, memCap)
-	// Join-bearing plans only, and only when the join_spill feature resolved
-	// in (server >= 26.4): the same guardrail for a large join's hash build.
-	ctx = applyJoinSpillSettings(ctx, plan, memCap, rules.JoinSpill)
-	// Compare()-only: cap read parallelism so the concurrent S3 read buffers
-	// for the wide attribute Map columns can't blow the budget even after the
-	// aggregation spills.
-	ctx = applyCompareMemoryBound(ctx, plan, memCap)
-	// Native-histogram-only: disable ClickHouse's newer query analyzer, whose
-	// cost on the merge/window-fold machinery's deeply nested lambda/arrayMap
-	// expressions is wildly superlinear on the floor-pinned CH 24.8 relative
-	// to the older analyzer (cerberus issue #2355).
-	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
-	// Sorted-slab-eligible shapes only: cap max_block_size at 1 so the
-	// per-anchor arrayFilter/arrayMap intermediates the emitter builds per
-	// series row are freed row-by-row instead of retained across an entire
-	// vectorized block (cerberus issue #3046).
-	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
-	// The DARK, flag-gated rules (workload, log_comment shape id, result
-	// cache, aggregation-in-order, condition cache, lazy materialisation,
-	// trace-id bitmap filter). Each is OFF unless its CERBERUS_* flag is set,
-	// so a default deployment's ctx is unchanged on both routes.
-	return rules.apply(ctx, plan)
-}
-
 // apply layers the enabled settings rules onto ctx for plan. Each rule that
 // fires writes through chclient.WithQuerySetting so they accumulate on the
 // one per-request settings map. With both flags off, ctx is returned
