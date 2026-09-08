@@ -11,16 +11,16 @@ import "reflect"
 //
 // Why a registry, not a type switch. The marker is an explicit,
 // machine-checkable assertion the author must opt a node kind into — never
-// a `switch n.(type)` the caller updates implicitly. The hazard is the #92
-// lagInFrame interaction: if the A-prime cumulative-counter rewrite ever
-// ships a formulation whose per-anchor value depends on scan order
-// (a window function like lagInFrame seeded at the scan's first row), a
+// a `switch n.(type)` the caller updates implicitly. The hazard is the
+// lagInFrame scan-order interaction: if the A-prime cumulative-counter
+// rewrite ever ships a formulation whose per-anchor value depends on scan
+// order (a window function like lagInFrame seeded at the scan's first row), a
 // type-whitelist would route that scan-order-dependent shape SILENTLY into
 // K shards — each shard's scan starts at a different row, so each shard's
 // lagInFrame seed differs, and the concatenated result is wrong with no
 // compile-time or test-time signal. The registry forces every node kind
-// (including any #92-substituted shape, and every new node) to be proven
-// slice-invariant by the §Parity fixture family before it is admitted.
+// (including any such scan-order-dependent shape, and every new node) to be
+// proven slice-invariant by the §Parity fixture family before it is admitted.
 // Unregistered → false, always.
 func IsSliceInvariant(n Node) bool {
 	if n == nil {
@@ -51,11 +51,12 @@ func IsSliceInvariant(n Node) bool {
 //     reduce of exactly that anchor's `(anchor - Offset - Range, anchor -
 //     Offset]` window membership, independent of the scan lower bound.
 //
-//     RangeWindow.LagAdjacency=true (issue #2759) is the #92 hazard this
-//     doc's own opening paragraph warns about — a lagInFrame formulation
-//     seeded at the scan's first row — and it is admitted into this SAME
-//     entry (not a separate registration) because the hazard does not
-//     materialise here. lagInFrame runs over Input widened by
+//     RangeWindow.LagAdjacency=true (issue #2759) is the concrete instance
+//     of the lagInFrame scan-order hazard this doc's own opening paragraph
+//     warns about — a lagInFrame formulation seeded at the scan's first row
+//     — and it is admitted into this SAME entry (not a separate
+//     registration) because the hazard does not materialise here.
+//     lagInFrame runs over Input widened by
 //     RangeWindow.InputWindow (Offset + Range past the shard's own oldest
 //     anchor — the identical widening every RangeWindow shard already scans,
 //     proven by this entry's own criterion above), and every per-(series,
