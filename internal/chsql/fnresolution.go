@@ -288,3 +288,39 @@ func resolveAggFuncName(af chplan.AggFunc) (string, error) {
 	}
 	return name, nil
 }
+
+// arrayReduceParametricFrag renders ClickHouse's
+// `arrayReduce('<fn>(<params…>)', <arr>)` — the way a PARAMETRIC aggregate
+// (one carrying its own parameter list, like `quantileExactInclusive(phi)`)
+// is applied to an array expression rather than to a column.
+//
+// The aggregate's ClickHouse NAME is resolved through fnResolutions, the one
+// table that owns every plan symbol's ClickHouse spelling. Before this helper
+// the two `quantileExactInclusive` call sites in range_window.go retyped that
+// name and glued the parameter onto it with `+`, so the table's own entry and
+// the emitted token were two unpinned copies of one name, and a ClickHouse
+// function token was being assembled by string concatenation outside
+// builder.go.
+//
+// The spec is composed as a typed Call Frag and rendered once, then quoted
+// through InlineLit: arrayReduce takes the aggregate as a STRING argument, so
+// at the outer call site the rendered text is data, not SQL structure. Every
+// parameter must therefore render as an inline literal — a `?`-bound
+// parameter inside the quoted spec would bind at the wrong nesting level, so
+// one is rejected here rather than emitted.
+func arrayReduceParametricFrag(fn chplan.Fn, params []Frag, arr Frag) (Frag, error) {
+	name, render, err := resolveFn(fn)
+	if err != nil {
+		return nil, err
+	}
+	if render != nil {
+		return nil, fmt.Errorf("%w: chplan.Fn %q resolves via a render hook, "+
+			"which has no parametric-aggregate spelling", ErrUnsupported, fn)
+	}
+	spec, args := Render(Call(name, params...))
+	if len(args) != 0 {
+		return nil, fmt.Errorf("%w: the parametric-aggregate spec for chplan.Fn %q bound %d "+
+			"positional argument(s); its parameters must render as inline literals", ErrUnsupported, fn, len(args))
+	}
+	return Call("arrayReduce", InlineLit(spec), arr), nil
+}
