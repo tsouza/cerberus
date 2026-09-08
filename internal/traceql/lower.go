@@ -2058,9 +2058,7 @@ func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr, numericP
 	// legitimately-string ordering compare coerces to NULL and drops — the
 	// identical trade-off the literal-hint path already accepts.
 	if isOrderingComparisonOp(op) {
-		_, lhsField := lhs.(*chplan.FieldAccess)
-		_, rhsField := rhs.(*chplan.FieldAccess)
-		if lhsField && rhsField {
+		if isAttributeRead(lhs) && isAttributeRead(rhs) {
 			return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
 		}
 	}
@@ -2169,8 +2167,43 @@ func coerceFieldAccess(expr chplan.Expr) chplan.Expr {
 				Right: coerceFieldAccess(v.Right),
 			}
 		}
+	case *chplan.FuncCall:
+		// The unscoped-attribute coalesce (`.foo` — see
+		// unscopedAttributeExpr) is an `if(mapContains(span,'k'),
+		// span['k'], resource['k'])` whose two value arms are ordinary
+		// FieldAccess reads. Coerce the ARMS, not the if() itself, so an
+		// unscoped attribute compares numerically exactly as its scoped
+		// spellings do: without this, `.http.status_code > 400` reverts
+		// to a lexicographic string compare.
+		if v.Fn == chplan.FnIf && len(v.Args) == 3 {
+			return &chplan.FuncCall{
+				Fn: v.Fn,
+				Args: []chplan.Expr{
+					v.Args[0],
+					coerceFieldAccess(v.Args[1]),
+					coerceFieldAccess(v.Args[2]),
+				},
+			}
+		}
 	}
 	return expr
+}
+
+// isAttributeRead reports whether e reads an attribute value: either a
+// scoped FieldAccess or the unscoped span-then-resource coalesce
+// unscopedAttributeExpr builds. Both carry the same "bare attribute"
+// numeric intent under an ordering comparison, so both must answer yes or
+// `.a > .b` silently reverts to a lexicographic string compare while
+// `span.a > span.b` does not.
+func isAttributeRead(e chplan.Expr) bool {
+	switch v := e.(type) {
+	case *chplan.FieldAccess:
+		return true
+	case *chplan.FuncCall:
+		return v.Fn == chplan.FnIf && len(v.Args) == 3 &&
+			isAttributeRead(v.Args[1]) && isAttributeRead(v.Args[2])
+	}
+	return false
 }
 
 // isArithmeticOp reports whether op is one of the numeric arithmetic
@@ -2692,6 +2725,23 @@ func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	}
 	carrier := s.AttributesColumn
 	switch a.Scope {
+	case traceql.AttributeScopeNone:
+		// An UNSCOPED attribute (`.foo`) is not a span attribute. Reference
+		// Tempo's categorizeConditions appends a scope-none condition to
+		// BOTH the span and the resource collectors, and its
+		// span.AttributeFor resolves the value by NAME with span-first
+		// precedence, then resource. Reading only the span map made
+		// `{ .service.name = "gateway" }` — an entirely idiomatic query, and
+		// the form Grafana's query editor produces for a bare attribute —
+		// match nothing, because service.name is a RESOURCE attribute.
+		// Silent under-matching, not an error.
+		//
+		// So resolve the same way: span value when the span map carries the
+		// key, resource value otherwise. A coalesce rather than an OR of two
+		// predicates, because that is what reference computes — with span
+		// attrs {k: "a"} and resource attrs {k: "b"}, `.k = "b"` does NOT
+		// match there, and must not here.
+		return unscopedAttributeExpr(a.Name, s), nil
 	case traceql.AttributeScopeResource:
 		carrier = s.ResourceAttributesColumn
 	case traceql.AttributeScopeSpan:
@@ -2720,6 +2770,51 @@ func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 		// on a name that was never routed to a column at all).
 		MaterializedColumnNumeric: matCol != "" && schema.MaterializedAttributeColumnKindFor(a.Name) == schema.MaterializedColumnKindNumeric,
 	}, nil
+}
+
+// unscopedAttributeExpr renders reference Tempo's span-then-resource
+// name lookup for an unscoped attribute (`.foo`) as
+//
+//	if(mapContains(<span attrs>, 'foo'), <span attrs>['foo'], <resource attrs>['foo'])
+//
+// Each side is a FieldAccess so a materialized column, and the JSON
+// attribute strategy, still apply per scope exactly as they do for the
+// explicitly-scoped spellings.
+//
+// Event, link and instrumentation scopes come after resource in
+// reference's own order; the OTel-CH traces schema materialises no map for
+// them by default, so the two that exist here are the two that can carry a
+// value.
+func unscopedAttributeExpr(name string, s schema.Traces) chplan.Expr {
+	spanSide := attributeFieldAccess(traceql.AttributeScopeSpan, s.AttributesColumn, name, s)
+	resourceSide := attributeFieldAccess(traceql.AttributeScopeResource, s.ResourceAttributesColumn, name, s)
+	return &chplan.FuncCall{
+		Fn: chplan.FnIf,
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Fn: chplan.FnMapContainsKey,
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.AttributesColumn},
+					&chplan.LitString{V: name},
+				},
+			},
+			spanSide,
+			resourceSide,
+		},
+	}
+}
+
+// attributeFieldAccess builds the scoped map/materialized-column read
+// lowerAttribute returns for an explicitly-scoped attribute. Shared so the
+// unscoped coalesce above cannot drift from the scoped spellings.
+func attributeFieldAccess(scope traceql.AttributeScope, carrier, name string, s schema.Traces) chplan.Expr {
+	matCol := materializedAttributeColumnFor(scope, name, s)
+	return &chplan.FieldAccess{
+		Source:                    &chplan.ColumnRef{Name: carrier},
+		Path:                      name,
+		MaterializedColumn:        matCol,
+		MaterializedColumnNumeric: matCol != "" && schema.MaterializedAttributeColumnKindFor(name) == schema.MaterializedColumnKindNumeric,
+	}
 }
 
 // materializedAttributeColumnFor reports the schema-provisioned top-level
