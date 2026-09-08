@@ -37,12 +37,37 @@ import (
 // goleak ignores known persistent runtime goroutines (e.g. the Go HTTP
 // idle-conn cleaner) via opts.
 
+// verifyNoLeaksAfterCleanup registers the leak assertion so it runs AFTER
+// every other cleanup the test registers — in particular after
+// httptest.Server.Close.
+//
+// `defer goleak.VerifyNone(t, ...)` does the opposite: Go runs deferred
+// functions BEFORE registered cleanups, so the assertion fired while the
+// server was still serving. Every one of these tests was checking the
+// goroutine inventory of a LIVE server, which is why the ignore list had to
+// include internal/poll.runtime_pollWait — an entry that suppresses every
+// goroutine parked in network I/O, i.e. exactly the stuck-exporter and
+// stuck-WebSocket leaks this file names as its targets.
+//
+// t.Cleanup runs LIFO, so registering this FIRST makes it run LAST.
+func verifyNoLeaksAfterCleanup(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { goleak.VerifyNone(t, goleakOpts()...) })
+}
+
 // goleakOpts excludes the few intermittent goroutines that don't
 // constitute a real leak — the http.DefaultTransport idle-conn
 // goroutine and OTel's noop tracer background tasks.
+//
+// internal/poll.runtime_pollWait is deliberately NOT among them. It used to
+// be, and it suppressed every goroutine parked in network I/O — the whole
+// class this file exists to detect. It was only needed because the
+// assertion ran before httptest.Server.Close (see
+// verifyNoLeaksAfterCleanup); with the ordering fixed the suite passes
+// without it. Do not re-add it: an entry that broad makes the detector
+// unable to fail for its stated targets.
 func goleakOpts() []goleak.Option {
 	return []goleak.Option{
-		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
 		goleak.IgnoreTopFunction("net/http.(*Transport).getConn"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
@@ -106,7 +131,7 @@ func (c *goleakSliceCursor) Inspected() int64 {
 }
 
 func TestNoGoroutineLeak_PromQuery(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := prom.New(&promStub{samples: []chclient.Sample{
 		{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: time.Now(), Value: 1},
@@ -127,7 +152,7 @@ func TestNoGoroutineLeak_PromQuery(t *testing.T) {
 }
 
 func TestNoGoroutineLeak_PromQueryRange(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	start := time.Unix(1717995600, 0).UTC()
 	end := start.Add(2 * time.Minute)
@@ -153,7 +178,7 @@ func TestNoGoroutineLeak_PromQueryRange(t *testing.T) {
 }
 
 func TestNoGoroutineLeak_PromLabels(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := prom.New(&promStub{}, schema.DefaultOTelMetrics(), slog.Default())
 	mux := http.NewServeMux()
@@ -171,7 +196,7 @@ func TestNoGoroutineLeak_PromLabels(t *testing.T) {
 }
 
 func TestNoGoroutineLeak_PromSeries(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := prom.New(&promStub{}, schema.DefaultOTelMetrics(), slog.Default())
 	mux := http.NewServeMux()
@@ -189,7 +214,7 @@ func TestNoGoroutineLeak_PromSeries(t *testing.T) {
 }
 
 func TestNoGoroutineLeak_PromMetadata(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := prom.New(&promStub{}, schema.DefaultOTelMetrics(), slog.Default())
 	mux := http.NewServeMux()
@@ -245,7 +270,7 @@ func (s *lokiStub) QueryLabelCardinalities(_ context.Context, _ string, _ ...any
 var _ loki.Querier = (*lokiStub)(nil)
 
 func TestNoGoroutineLeak_LokiQuery(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := loki.New(&lokiStub{}, schema.DefaultOTelLogs(), slog.Default())
 	mux := http.NewServeMux()
@@ -263,7 +288,7 @@ func TestNoGoroutineLeak_LokiQuery(t *testing.T) {
 }
 
 func TestNoGoroutineLeak_LokiLabels(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := loki.New(&lokiStub{}, schema.DefaultOTelLogs(), slog.Default())
 	mux := http.NewServeMux()
@@ -281,7 +306,7 @@ func TestNoGoroutineLeak_LokiLabels(t *testing.T) {
 }
 
 func TestNoGoroutineLeak_LokiIndexStats(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := loki.New(&lokiStub{}, schema.DefaultOTelLogs(), slog.Default())
 	mux := http.NewServeMux()
@@ -313,7 +338,7 @@ func (s *tempoStub) QueryStrings(_ context.Context, _ string, _ ...any) ([]strin
 var _ tempo.Querier = (*tempoStub)(nil)
 
 func TestNoGoroutineLeak_TempoSearch(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := tempo.New(&tempoStub{}, schema.DefaultOTelTraces(), "v1.0.0", slog.Default())
 	mux := http.NewServeMux()
@@ -331,7 +356,7 @@ func TestNoGoroutineLeak_TempoSearch(t *testing.T) {
 }
 
 func TestNoGoroutineLeak_TempoTraceByID(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := tempo.New(&tempoStub{}, schema.DefaultOTelTraces(), "v1.0.0", slog.Default())
 	mux := http.NewServeMux()
@@ -361,7 +386,7 @@ func TestNoGoroutineLeak_TempoTraceByID(t *testing.T) {
 // would surface as a goroutine spawned per request by the metrics
 // engine path that the handler then forgets to tear down.
 func TestNoGoroutineLeak_TempoMetricsQueryInstant(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := tempo.New(&tempoStub{}, schema.DefaultOTelTraces(), "v1.0.0", slog.Default())
 	mux := http.NewServeMux()
@@ -385,7 +410,7 @@ func TestNoGoroutineLeak_TempoMetricsQueryInstant(t *testing.T) {
 // graph than the happy path (no streaming cursor open, immediate
 // envelope write); pinned separately.
 func TestNoGoroutineLeak_UnderError(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	failQ := &failingProm{err: errors.New("ch chaos")}
 	h := prom.New(failQ, schema.DefaultOTelMetrics(), slog.Default())
@@ -434,7 +459,7 @@ func (f *failingProm) QueryExemplars(_ context.Context, _ string, _ ...any) ([]c
 // TestNoGoroutineLeak_ConcurrentRequests — parallel requests must not
 // leak. Catches connection-pool leaks more reliably than serial.
 func TestNoGoroutineLeak_ConcurrentRequests(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	h := prom.New(&promStub{samples: []chclient.Sample{{MetricName: "up", Value: 1}}},
 		schema.DefaultOTelMetrics(), slog.Default())
@@ -486,7 +511,7 @@ const routeMemoTestPressureWindow = time.Minute
 // the same call shapes the solver's dispatch path drives in production,
 // just without a background goroutine anywhere to leak.
 func TestNoGoroutineLeak_RouteMemo(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakOpts()...)
+	verifyNoLeaksAfterCleanup(t)
 
 	m := routememo.New(routeMemoTestPressureWindow)
 	k := routememo.Key{RootKind: "*chplan.Aggregate"}
