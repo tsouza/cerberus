@@ -176,6 +176,23 @@ const (
 	// to be scored as a false negative rather than vanishing entirely.
 	minPathologyClassRows = 1
 
+	// benchSlowHotHashBase is the hash base of prom:slow_hot, the ONE planted
+	// class whose rule (route_a_slow_hot_shape) groups by
+	// normalized_query_hash rather than shape_id. Its two severities sit at
+	// benchSlowHotHashBase+1 and +2 — 17000000000000000001 and ...002, two
+	// adjacent UInt64 values above 2^63.
+	//
+	// The value is deliberately huge rather than another 3xxxx like its
+	// siblings. normalized_query_hash is a UInt64 and a real hash is uniform
+	// over that whole range, but every fixture in this package used to sit
+	// below 2^53, where a float64 still holds an integer exactly. That is the
+	// only reason rendering the column through float64 went unnoticed: at
+	// these two values it collapses both classes onto "1.7e+19", so the
+	// benchmark's own ground truth would fold two distinct classes into one.
+	// Keeping the hash-grouped class up here is what makes the cross-backend
+	// parity lane compare exact keys over the range production actually uses.
+	benchSlowHotHashBase = 17_000_000_000_000_000_000
+
 	// benchMemoryHardCapBytes is the deployment query memory cap the benchmark
 	// scores at (query.max_memory_bytes), and benchMemoryNearCapFraction is the
 	// fraction of it route_a_memory_near_cap gates on. Their product is the
@@ -636,7 +653,7 @@ func pathologyTailSpecs() []pathologySpec {
 		// Slow hot shape (route A, in the per-language duration tail):
 		// route_a_slow_hot_shape only. Grouped by normalized_query_hash.
 		{
-			shape: "prom:slow_hot", lang: "promql", hashBase: 39000,
+			shape: "prom:slow_hot", lang: "promql", hashBase: benchSlowHotHashBase,
 			expect:     always("route_a_slow_hot_shape"),
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
