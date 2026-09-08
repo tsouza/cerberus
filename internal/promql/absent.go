@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
@@ -67,28 +68,18 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		err   error
 	)
 	if vs, ok := arg.(*parser.VectorSelector); ok {
-		// Build the inner filtered Scan via lowerAbsencePresenceSelector,
-		// which skips the LWR wrap and only applies the matchers (plus the
-		// @/offset time bound when present). The wrapping Aggregate
-		// doesn't need a per-series collapse — it just counts rows.
-		//
-		// Strip the modifier so the inner Filter doesn't carry a
-		// duplicate time-bound predicate; absent() doesn't currently
-		// honour the @/offset modifiers (parity with the surrounding
-		// instant-vector callsites that the count-only check makes
-		// semantically equivalent until LWR is plumbed in).
-		vsNoMod := *vs
-		vsNoMod.Timestamp = nil
-		vsNoMod.OriginalOffset = 0
-		vsNoMod.Offset = 0
-		vsNoMod.StartOrEnd = 0
-		rangeCtx := ctx
-		rangeCtx.inRangeVector = true
-		inner, err = lowerAbsencePresenceSelector(&vsNoMod, s, rangeCtx)
-		if err != nil {
-			return nil, err
-		}
-		attrs = absentAttrsMap(vs.LabelMatchers)
+		// `absent(v)` IS `absent_over_time(v[<instantLookback>])`: an
+		// instant vector is the newest sample per series within the
+		// staleness lookback, and reference's funcAbsent only asks
+		// whether that vector is empty. Sharing lowerAbsentOverTime's
+		// body gives this arm the per-anchor staleness window, the
+		// `@`/`offset` handling and the range-mode per-step fan-out in
+		// one place, instead of the table-wide `count() = 0` it used to
+		// emit — which had no time bound at all, so a metric that had
+		// stopped reporting hours ago still read as present, every step
+		// of a range query got that same stale verdict, and `@`/`offset`
+		// were ignored outright.
+		return lowerAbsenceOverWindow(vs, instantLookback, s, ctx)
 	} else {
 		// General instant-vector expression — `absent(sum(up))`,
 		// `absent(up + up)`, `absent(rate(m[5m]))`, … . Reference
@@ -237,6 +228,29 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 		return nil, fmt.Errorf("promql: matrix selector's inner must be a VectorSelector, got %T", ms.VectorSelector)
 	}
 
+	return lowerAbsenceOverWindow(vs, ms.Range, s, ctx)
+}
+
+// lowerAbsenceOverWindow builds the "no sample matching vs in the trailing
+// `window` before each anchor" plan shared by `absent_over_time(v[range])`
+// and instant `absent(v)`.
+//
+// The two functions are the same question over a different window.
+// Reference's funcAbsent asks `len(vectorVals[0]) > 0` of the INSTANT
+// vector, and an instant vector is by definition the newest sample per
+// series within the staleness lookback — so `absent(v)` is exactly
+// `absent_over_time(v[<instantLookback>])`, including its label synthesis
+// (createLabelsForAbsentFunction lifts matchers off a Vector and a Matrix
+// selector identically). Sharing one body is what keeps the two from
+// drifting: absent() previously lowered to a table-wide `count() = 0` with
+// no time bound at all, so a metric that had stopped reporting hours ago
+// still read as present and `@`/`offset` were ignored outright.
+func lowerAbsenceOverWindow(
+	vs *parser.VectorSelector,
+	window time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
 	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {
 		return nil, err
@@ -261,8 +275,7 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	// Resolve the eval anchor: a non-zero `@`/`@start`/`@end` modifier
 	// pins `anchor.End` directly; otherwise fall through to ctx.end (the
 	// query's eval time for instant queries). Zero ctx.end + zero
-	// anchor.End falls back to CH's `now64(9)` at emit time — mirrors
-	// the lowerAbsent instant-mode contract.
+	// anchor.End falls back to CH's `now64(9)` at emit time.
 	endTime := anchor.End
 	if endTime.IsZero() && !ctx.end.IsZero() {
 		endTime = ctx.end.UTC()
@@ -271,7 +284,7 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	a := &chplan.AbsentOverTime{
 		Input:            inner,
 		SynthLabels:      synthLabelsFromMatchers(vs.LabelMatchers),
-		Range:            ms.Range,
+		Range:            window,
 		End:              endTime,
 		Offset:           anchor.Offset,
 		TimestampColumn:  s.TimestampColumn,
