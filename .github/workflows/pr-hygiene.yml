@@ -61,6 +61,45 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/scripts/pr-body-check.mjs
 
+      # ---- the squash subject (#3187) ----
+      # commitlint (ci.yml's `lint` job) reads the PR's COMMIT MESSAGES, which a
+      # squash merge discards. What GitHub writes onto `main` instead is the PR
+      # TITLE — this repository's `squash_merge_commit_title` is
+      # COMMIT_OR_PR_TITLE — and nothing had ever linted that. It is how subjects
+      # with a type outside `type-enum` and 119 subjects over the 100-character
+      # `header-max-length` reached `main` through a green `lint`.
+      #
+      # This lives HERE rather than beside commitlint in ci.yml for one concrete
+      # reason: this workflow declares `types: [… edited …]`, so correcting a
+      # title re-runs the gate and clears it. ci.yml's bare `pull_request:` has
+      # no `edited`, so a title-only violation there would be a red REQUIRED
+      # check that no code change could clear.
+      #
+      # pull_request only: a title exists only on that event. The merge_group
+      # and push paths carry the same required context, and by the time a commit
+      # reaches them its subject was already gated on the pull request.
+      - name: Set up Node for commitlint
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+
+      - name: Guard the squash-subject gate logic
+        if: github.event_name == 'pull_request'
+        run: node --test .github/scripts/commitlint-pr-title.test.mjs
+
+      # PR_TITLE is attacker-controlled, so it is passed via env and read by the
+      # script — never interpolated into a shell `run:` line, exactly as PR_BODY
+      # is above.
+      - name: Lint the subject this PR would squash onto main
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          npm install --no-save @commitlint/cli@19 @commitlint/config-conventional@19
+          node .github/scripts/commitlint-pr-title.mjs
+
       # cerberus#2739: prepare-release.mjs generates CHANGELOG.md's new
       # `[vX.Y.Z]` section exactly ONCE, at release-PR-creation time. A commit
       # landing on the release branch afterward (a hotfix pushed directly, or

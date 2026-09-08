@@ -39,6 +39,13 @@ const (
 // constraint above the package clause, and a later one is a comment.
 var buildConstraintLine = regexp.MustCompile(`(?m)^//go:build (.+)$`)
 
+// lintInvocation matches a Go-linter invocation in a hook command: `just lint`
+// as a WHOLE recipe name, or golangci-lint run directly. The word boundary is
+// the whole point — a bare `strings.Contains(hook, "just lint")` cannot tell
+// `just lint` from `just lint-actions` or `just lint-md`, which is how the
+// assertion this replaced came to be satisfied by the actionlint hook.
+var lintInvocation = regexp.MustCompile(`\bjust\s+lint(?:[^-\w]|$)|\bgolangci-lint\s+run\b`)
+
 // singleTermConstraint matches the one constraint shape the two-pass scheme
 // covers: a lone tag, or a lone negated tag.
 var singleTermConstraint = regexp.MustCompile(`^(!?)([a-z0-9_]+)$`)
@@ -279,12 +286,35 @@ func TestEveryLintSiteRunsBothBuildConfigurations(t *testing.T) {
 			"covers the negated-constraint stubs.", ciWorkflowPath, inert)
 	}
 
-	// pre-push exists to fail locally whatever CI would fail. Delegating to the
-	// recipe is what keeps it from drifting back to a single pass.
+	// The hook is the THIRD site, and the only one that must NOT run the linter.
+	//
+	// This assertion used to read `strings.Contains(hook, "just lint")` and
+	// claimed to prove pre-push runs the lint gate. It proved nothing: the only
+	// two matches in lefthook.yml are `just lint-actions` — of which "just lint"
+	// is a prefix — and a comment. The comment says the opposite of what the
+	// assertion claimed, and says it with a measurement: golangci-lint was
+	// removed from pre-push because it cost ~3 minutes per push and bought
+	// nothing, since from a fresh worktree it reports "0 issues" without having
+	// analysed the tree. So the test could not fail for the reason it named, and
+	// contradicted the file it read (#3187).
+	//
+	// The invariant that is actually true is the negative one, and it is worth
+	// holding: re-adding golangci-lint to a hook would reintroduce a three-minute
+	// tax that produces a local green which is not evidence. The "must not drift
+	// back to a single pass" concern the old comment raised is real, but it
+	// belongs to — and is already pinned at — the two sites above that DO run the
+	// linter: the `lint` recipe and ci.yml.
 	hook := readFileString(t, lefthookPath)
-	if !strings.Contains(hook, "just lint") {
-		t.Errorf("%s does not run `just lint`. A bare `golangci-lint run ./...` there analyses one "+
-			"build configuration, so a push passes the hook and fails the required check on exactly "+
-			"the tagged files the hook could not see.", lefthookPath)
+	for i, line := range strings.Split(hook, "\n") {
+		// Comments discuss the decision at length; only commands are invocations.
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		if lintInvocation.MatchString(line) {
+			t.Errorf("%s:%d invokes the Go linter (%q). golangci-lint is deliberately CI-only: from "+
+				"a fresh worktree it reports \"0 issues\" without analysing, so a local green is not "+
+				"evidence, and it cost ~3 minutes per push. See the `Intentionally NOT in any hook` "+
+				"block in that file.", lefthookPath, i+1, strings.TrimSpace(line))
+		}
 	}
 }

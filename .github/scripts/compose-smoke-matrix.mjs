@@ -49,6 +49,7 @@
 //
 // node: builtins only (via lib/gh.mjs) — no npm deps, no setup-node needed.
 
+import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { error, notice, log, setOutput, appendStepSummary } from './lib/gh.mjs';
 import { SHARD_NAME_RE, collectShardCoverageViolations, discoverSpecs } from './lib/shard-coverage.mjs';
@@ -138,6 +139,28 @@ const SHARDS = [
       'crawl/lints.spec.ts', //                 30.5s
     ],
   },
+  {
+    name: 'shard-twophase',
+    // The ONE shard that boots a docker-compose PROFILE. The Tempo structural
+    // two-phase A/B needs a SECOND cerberus head with the split OFF (:8081)
+    // plus a dense-descendant trace source, and both live behind the
+    // `twophase` profile — so the shard that runs the A/B is the shard that
+    // asks for them.
+    //
+    // Its own shard rather than a companion spec on an existing one: the
+    // profile's extra head and its telemetrygen would otherwise ride along for
+    // the WHOLE of a sibling shard's run, and shards are concurrent, so the
+    // lane's wall-clock is unchanged by paying for one more runner instead.
+    //
+    // Until this shard existed the spec ran in NO lane at all (#3181): it was
+    // named in BOTH planners' EXCLUDED lists, so the correctness argument for
+    // a default-ON split — that two-phase is result-identical to the single
+    // wide query — had never once been executed by CI.
+    composeProfiles: 'twophase',
+    specs: [
+      'tempo_two_phase_compare.spec.ts', //     ~1-3min — polls telemetrygen, then one frozen-window A≡B
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -169,24 +192,122 @@ const EXCLUDED = [
   'tempo_search_flow.spec.ts', //        head-specific flow; dashboard-lane only
   'tempo_traces.spec.ts', //             head-specific flow; dashboard-lane only
   'tempo_traces_drilldown.spec.ts', //   head-specific flow; dashboard-lane only
-  'tempo_two_phase_compare.spec.ts', //  opt-in structural two-phase A/B; needs `docker compose --profile twophase up` (cerberus-nosplit + telemetrygen-traces) + CERBERUS_NOSPLIT_URL, skipped otherwise — not a compose-smoke shard
   'tempo_ux.spec.ts', //                 *_ux lane; dashboard-lane only
 ];
 
 // discover() — the tracked compose-smoke spec universe (lib/shard-coverage.mjs).
 export const discover = discoverSpecs;
 
+// ---------------------------------------------------------------------------
+// Compose-profile coverage — the SPEC partition's rule, applied to the STACK.
+//
+// A spec that no shard lists is caught above as an UNASSIGNED silent coverage
+// gap. A compose PROFILE that no shard boots is the same defect one layer
+// down, and nothing caught it: `tempo_two_phase_compare.spec.ts` sat in both
+// planners' EXCLUDED lists for the whole life of the `twophase` profile, so
+// the profile's two services — the split-OFF cerberus head the A/B compares
+// against, and the trace source that feeds it — were declared, built, and
+// never once started by CI (#3181).
+//
+// So the profile set is a cover too: every profile docker-compose.yml defines
+// must be booted by exactly one shard, and every profile a shard names must
+// exist in docker-compose.yml. A new profile with no lane is now a red check
+// rather than a service nobody notices is dead.
+// ---------------------------------------------------------------------------
+export const COMPOSE_FILE = process.env.COMPOSE_FILE_PATH || 'docker-compose.yml';
+
+// composeProfilesDefined() — the profile names docker-compose.yml declares.
+//
+// Deliberately a text scan rather than `docker compose config`: this rule runs
+// on the cheap `node --test` lint lane, which has no Docker daemon, and the
+// whole value of the rule is that it costs milliseconds on every PR instead of
+// waiting for a stack boot. Both YAML sequence spellings are read — inline
+// flow (`profiles: [a, b]`) and a block sequence of `- name` items — and a
+// `profiles:` key whose value matches NEITHER shape throws, because a profile
+// this cannot read is a profile it would silently report as covered.
+export function composeProfilesDefined(composeFile = COMPOSE_FILE) {
+  const lines = readFileSync(composeFile, 'utf8').split('\n');
+  const found = new Set();
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = /^(\s*)profiles:(.*)$/.exec(lines[i]);
+    if (!m) continue;
+    const [, indent, rest] = m;
+    const inline = rest.trim();
+    if (inline.startsWith('[')) {
+      const close = inline.indexOf(']');
+      if (close < 0) {
+        throw new Error(`${composeFile}:${i + 1}: unterminated inline profiles list: ${inline}`);
+      }
+      for (const raw of inline.slice(1, close).split(',')) {
+        const name = raw.trim().replace(/^["']|["']$/g, '');
+        if (name) found.add(name);
+      }
+      continue;
+    }
+    if (inline === '') {
+      // Block sequence: consume the more-indented `- name` items that follow.
+      let consumed = 0;
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const item = /^(\s*)-\s*(.+?)\s*$/.exec(lines[j]);
+        if (!item || item[1].length <= indent.length) break;
+        found.add(item[2].replace(/^["']|["']$/g, ''));
+        consumed += 1;
+      }
+      if (consumed === 0) {
+        throw new Error(`${composeFile}:${i + 1}: profiles: key with no readable list`);
+      }
+      i += consumed;
+      continue;
+    }
+    throw new Error(`${composeFile}:${i + 1}: unreadable profiles value: ${inline}`);
+  }
+  return found;
+}
+
+// collectProfileViolations() — the profile cover, both directions.
+export function collectProfileViolations(defined, shards = SHARDS) {
+  const v = [];
+  const bootedBy = new Map();
+  for (const s of shards) {
+    if (!s.composeProfiles) continue;
+    for (const p of s.composeProfiles.split(',').map((x) => x.trim()).filter(Boolean)) {
+      bootedBy.set(p, [...(bootedBy.get(p) || []), s.name]);
+    }
+  }
+  for (const [profile, who] of bootedBy) {
+    if (!defined.has(profile)) {
+      v.push(
+        `phantom compose profile (booted but not defined in ${COMPOSE_FILE}): ${profile} [shard ${who.join(', ')}]`,
+      );
+    }
+    if (who.length > 1) {
+      v.push(`double-booted compose profile ${profile} -> shards [${who.join(', ')}]`);
+    }
+  }
+  for (const profile of defined) {
+    if (!bootedBy.has(profile)) {
+      v.push(
+        `UNBOOTED compose profile (silent coverage gap): ${profile} — its services are defined in ` +
+          `${COMPOSE_FILE} but no shard starts them, so nothing they exist for runs; give a shard ` +
+          `\`composeProfiles: '${profile}'\` in SHARDS`,
+      );
+    }
+  }
+  return v;
+}
+
 // collectViolations() — returns a string[] of human-readable violations
 // (empty == clean). The partition rules are shared with the dashboard lane so
-// a new rule guards both; this lane adds none of its own.
-export function collectViolations(discovered) {
+// a new rule guards both; this lane adds the compose-profile cover, which has
+// no k3d counterpart.
+export function collectViolations(discovered, opts = {}) {
   const { violations } = collectShardCoverageViolations({
     discovered,
     shards: SHARDS,
     excluded: EXCLUDED,
     emptySubstrate: 'a compose stack',
   });
-  return violations;
+  return [...violations, ...collectProfileViolations(opts.profilesDefined ?? composeProfilesDefined())];
 }
 
 function assertCoverageOrExit(discovered) {
@@ -254,11 +375,16 @@ export function shardTimeoutMinutes(shardName, opts = {}) {
 }
 
 // shardEntry() — the strategy.matrix `include` row for a shard.
-const shardEntry = (s, opts) => ({
+export const shardEntry = (s, opts) => ({
   name: s.name,
   specs: s.specs.join(' '),
   sweepDepth: shardSweepDepth(s.name, opts),
   timeoutMinutes: shardTimeoutMinutes(s.name, opts),
+  // COMPOSE_PROFILES for this shard's stack — empty for every shard that wants
+  // only the default services. e2e.yml sets it at JOB level so `pull`, `up` and
+  // `down` all agree on which services the stack has; a profile named on `up`
+  // alone would leave `down -v` orphaning the ones it started.
+  composeProfiles: s.composeProfiles ?? '',
 });
 
 export const crawlShardEntries = (s, opts) =>
