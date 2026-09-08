@@ -590,24 +590,22 @@ memo-hit and routing the request through plain route A instead, so the
 underlying premise ("route A still fails on this shape") gets honestly
 re-confirmed by real traffic rather than trusted forever.
 
-**The ordering bug `ObserveRouteAFailureAndMaybeBeginProbe` fixes.** The
+**Why `ObserveRouteAFailureAndMaybeBeginProbe` is one atomic step.** The
 re-validation path depends on a route-A dispatch actually failing again while
-the entry looks stale. A naive two-call sequence —
-`Observe(k, RouteA, OutcomeResourceFailure)` (which refreshes `createdAt`,
-un-staling the entry) followed by `BeginProbe(k)` (which admits only an
-`Unknown` entry) — loses exactly the request that should trigger the rescue:
-by the time `BeginProbe` looks, `Observe`'s own side effect has already made
-the entry look fresh again, so `BeginProbe`'s Unknown-only gate refuses it.
-The caller's actual HTTP request is then stuck on the very failure the memo
-already knows how to avoid, with no rescue, even though the memo has been
-confidently routing this shape to B for the entry's entire life.
-`ObserveRouteAFailureAndMaybeBeginProbe` closes the gap by combining
-record-and-decide into one critical section: it captures whether the entry
-WAS stale before the state transition, then decides admission on that
-pre-transition snapshot rather than the post-transition one. Callers on the
-route-A failure path (`retryOnRouteAResourceFailure`) MUST use this one atomic
-method — never the two separate calls — for a route-A resource-exhaustion
-failure.
+the entry looks stale. Recording that failure refreshes `createdAt`, which
+un-stales the entry — so an admission check that ran as a SEPARATE step
+afterwards would see a fresh `PreferB` entry and refuse, losing exactly the
+request that should have triggered the rescue. The caller's actual HTTP
+request would then be stuck on the very failure the memo already knows how to
+avoid, even though the memo has been confidently routing this shape to B for
+the entry's entire life. `ObserveRouteAFailureAndMaybeBeginProbe` holds the
+memo's mutex across both steps: it captures whether the entry WAS stale
+before the state transition, then decides admission on that pre-transition
+snapshot rather than the post-transition one. That snapshot is why the memo
+exposes no separate admission entry point for a route-A resource failure —
+this method is the only way route-A failure admission happens, so the
+record-then-admit sequence cannot be written any other way. The route-A
+failure path (`retryOnRouteAResourceFailure`) is its only production caller.
 
 ### Admission: one process-wide dispatch-token semaphore
 

@@ -138,11 +138,12 @@ func TestCardinalityProbeAdvisor_SkipsWhenRouteMemoHasVerdict(t *testing.T) {
 	key := cardinalityProbeTestKey()
 
 	memo := routememo.New(time.Hour)
-	memo.Observe(key, routememo.RouteA, routememo.OutcomeResourceFailure)
-	memo.Observe(key, routememo.RouteA, routememo.OutcomeResourceFailure)
-	release, ok := memo.BeginProbe(key)
+	for i := 0; i < routememo.MinCorroboratingFailures-1; i++ {
+		memo.Observe(key, routememo.RouteA, routememo.OutcomeResourceFailure)
+	}
+	release, ok, _ := memo.ObserveRouteAFailureAndMaybeBeginProbe(key)
 	if !ok {
-		t.Fatalf("BeginProbe declined admission for a corroborated key")
+		t.Fatalf("route memo declined probe admission for a corroborated key")
 	}
 	memo.Observe(key, routememo.RouteB, routememo.OutcomeSuccess)
 	release()
