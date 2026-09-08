@@ -664,9 +664,10 @@ INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attribu
 // TestLabelValues_DottedSource_ChDB's own two pins do NOT cover: an
 // UNMATCHED listing (no `match[]`, unionLabelValuesSQL) under an EXPLICIT
 // caller-supplied window. That combination takes the non-nowAnchored
-// attrs-arm branch, which (cerberus issue #3168's follow-up) collapses the
-// candidate powerset into one arrayFilter/arrayJoin scan per table instead
-// of the now-anchored branch's per-candidate GROUP BY/HAVING shape. Without
+// attrs-arm branch — resolved in this change (cerberus issue #3168) to
+// collapse the candidate powerset into one arrayFilter/arrayJoin scan per
+// table instead of the now-anchored branch's per-candidate GROUP BY/HAVING
+// shape. Without
 // this pin, a regression that broke the collapsed scan's candidate
 // expansion specifically under a caller-supplied window — the shape a
 // dashboard panel bound to its own time range actually sends — would pass

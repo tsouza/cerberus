@@ -2046,10 +2046,11 @@ func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 
 // collapsedMapValuesArmFrag builds ONE scan of table t surfacing every
 // candidate spelling's col values, replacing unionLabelValuesSQL's
-// historical one-full-scan-per-candidate shape (cerberus issue #3168, and
-// its follow-up: the attrs arm's own non-nowAnchored branch had the
-// identical shape, just gated on an explicit caller-supplied window rather
-// than the resource-label allowlist). It renders:
+// historical one-full-scan-per-candidate shape (cerberus issue #3168).
+// Resolved in this change: the attrs arm's own non-nowAnchored branch had
+// the identical shape, just gated on an explicit caller-supplied window
+// rather than the resource-label allowlist — it now shares this same
+// collapsed scan too. It renders:
 //
 //	SELECT arrayJoin(arrayFilter(v -> v != '', [<col>[k0], <col>[k1], …])) AS value
 //	FROM t [WHERE pred]
