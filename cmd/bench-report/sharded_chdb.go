@@ -216,7 +216,14 @@ func measureSharded(s *session, iters int) (shardedResult, error) {
 
 	n := int64(shardedOuterRange/shardedStep) + 1
 	f := int64(shardedRange / shardedStep)
-	series, _ := s.scalarCount("SELECT DISTINCT Attributes FROM bench_shard_sum")
+	// Published as the `Series` column of the sharded table in
+	// docs/benchmarks.md. Propagated for the same reason as the three dataset
+	// counts in e2e_chdb.go: a discarded error publishes a 0 that reads as a
+	// measurement (#3182). The pair count eleven lines above already does this.
+	series, err := s.scalarCount("SELECT DISTINCT Attributes FROM bench_shard_sum")
+	if err != nil {
+		return shardedResult{}, fmt.Errorf("shard series count: %w", err)
+	}
 
 	return shardedResult{
 		Query:                shardedQuery,
