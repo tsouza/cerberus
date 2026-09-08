@@ -43,3 +43,6 @@ SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContai
 [18] string = "query.kind"
 [19] string = "query/kind"
 [20] string = "Select"
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{service_name="clickhouse"} | query_kind="Select"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

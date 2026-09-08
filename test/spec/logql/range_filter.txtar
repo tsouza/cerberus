@@ -39,3 +39,6 @@ INSERT INTO otel_logs (Timestamp) VALUES
 -- chplan --
 Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], FnIf(FnMapContainsKey(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "api") AND ((Timestamp >= FnToDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp <= FnToDateTime64("2026-05-14 12:05:00.000000000", 9))))
   Scan(otel_logs)
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{service_name="api"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

@@ -112,3 +112,6 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContain
   [{"level": "error", "msg": "flat-hit", "user_id": "42"}],
   [{"level": "error", "msg": "nested-hit", "user": {"id": "42", "name": "ana"}}]
 ]
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api"} | json | user_id="42"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

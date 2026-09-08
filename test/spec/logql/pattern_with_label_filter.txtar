@@ -27,3 +27,6 @@ INSERT INTO otel_logs (Body) VALUES ('ts error oops'), ('ts error retry'), ('ts 
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "error"))
   Scan(otel_logs)
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api"} | pattern "<_> <level> <msg>" | level="error"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

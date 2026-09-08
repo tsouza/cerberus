@@ -34,3 +34,6 @@ Project ["" AS MetricName, FnMap("detected_level", gkey_0) AS Attributes, FnNow6
           Scan(otel_logs)
 -- sql --
 SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapFilter((k, v) -> not((k = ?)), `ResourceAttributes`)) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`) GROUP BY `gkey_0`)
+-- parity_exempt --
+reason: structured-metadata-unobservable
+detail: seed populates SeverityText (INFO), which upstream's in-process querier discards before the pipeline runs, so `sum by (detected_level) (count_over_time({job="api"} | drop detected_level [5m]))` would be answered over different data on the two sides

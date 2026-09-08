@@ -333,3 +333,6 @@ SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUni
 [296] string = "service.name"
 [297] string = "service/name"
 [298] string = "clickhouse"
+-- parity_exempt --
+reason: structured-metadata-unobservable
+detail: seed populates LogAttributes ({'query_kind':'Select'}), which upstream's in-process querier discards before the pipeline runs, so `sum by (query_kind) (count_over_time({service_name="clickhouse"}[5m]))` would be answered over different data on the two sides

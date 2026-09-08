@@ -25,3 +25,6 @@ Filter predicate=((ResourceAttributes["job"] = "api") AND FnArrayExists(_cerb_ip
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND arrayExists(_cerb_ip -> (isIPv6String(_cerb_ip) AND ifNull(((toIPv6OrNull(_cerb_ip) >= toIPv6(?)) AND (toIPv6OrNull(_cerb_ip) <= toIPv6(?))), ?)), extractAll(`Body`, ?))
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api"} |= ip("2001:db8::/32")` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

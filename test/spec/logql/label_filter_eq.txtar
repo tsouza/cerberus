@@ -27,3 +27,6 @@ INSERT INTO otel_logs (Body) VALUES ('e1'), ('e2'), ('e3-stg');
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod"))
   Scan(otel_logs)
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api"} | env="prod"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

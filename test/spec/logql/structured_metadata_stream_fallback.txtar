@@ -35,3 +35,6 @@ SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContai
 [8] string = "region"
 [9] string = "region"
 [10] string = "us-east"
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{service_name="clickhouse"} | region="us-east"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
