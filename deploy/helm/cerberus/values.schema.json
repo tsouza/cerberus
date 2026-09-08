@@ -260,6 +260,13 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "zookeeperPath": { "type": "string" }
+          },
+          "if": {
+            "properties": { "enabled": { "const": true } }
+          },
+          "then": {
+            "required": ["zookeeperPath"],
+            "properties": { "zookeeperPath": { "minLength": 1 } }
           }
         },
         "storagePolicy": { "type": "string" },
