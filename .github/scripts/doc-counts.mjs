@@ -11,8 +11,8 @@
 //
 //   1. forbid-skip CHECK count — the canonical number of discipline scans is
 //      the number of entries in the CHECKS registry in
-//      .github/scripts/forbid-skip.mjs (today: t-skip, soft-assert,
-//      should-skip, escape-hatch, feature-discipline = 5). The gate
+//      .github/scripts/forbid-skip.mjs (today: t-skip, playwright-skip,
+//      soft-assert, should-skip, escape-hatch, feature-discipline = 6). The gate
 //      asserts every "N ... checks/scans/patterns" claim in
 //      docs/forbid-skip.md matches that live registry size.
 //
@@ -352,8 +352,20 @@ function extractClaims(src, patterns) {
 // IS matched (that was the historical stale-count phrasing).
 const FORBID_SKIP_CLAIM_PATTERNS = [
   /(?:scan|check|pattern)\s+count[^.\n]*?[:*\s]\**(\d+)\**/i,
-  /\**(\d+)\**\s+(?:active\s+)?(?:CHECK\s+)?(?:checks?|scans?|categories|discipline scans?)\b/i,
+  // Up to two words may sit between the number and the noun. The extractor
+  // used to require them adjacent, so "**5** dispatched scans" was invisible —
+  // and it was one of THREE drifted counts this document carried while the gate
+  // whose whole purpose is "a count can never silently drift" reported clean
+  // (#3182). The intervening run is capped at two words and the noun set is
+  // unchanged, so "N regex pattern rows" still does not match: `rows` is not a
+  // scan noun, and the pattern-row count is deliberately not this gate's number.
+  /\**(\d+)\**\s+(?:[A-Za-z-]+\s+){0,2}(?:checks?|scans?|categories)\b/i,
   /\**(\d+)\**\s+patterns?\s+total\b/i,
+  // "…and that count is **6**:" — the noun is a whole clause away, on an
+  // earlier line, so no proximity pattern reaches it.
+  /\bcount\s+is\s+\**(\d+)\**/i,
+  // "…equals the live `CHECKS` registry size (6)".
+  /registry\s+size\s*\(\**(\d+)\**\)/i,
 ];
 
 // shape-divergence doc claims: docs/coverage.md must state the catalogue's live
@@ -682,15 +694,45 @@ function selfTest() {
   const claims7 = extractClaims(draftDoc, FORBID_SKIP_CLAIM_PATTERNS);
   check('forbid-skip claim extractor finds the "7 patterns" claim', claims7.some((c) => c.value === 7));
   check(
-    'forbid-skip gate would REJECT a doc claiming 7 against source 5',
-    claims7.some((c) => c.value !== 5),
+    'forbid-skip gate would REJECT a doc claiming 7 against source 6',
+    claims7.some((c) => c.value !== 6),
   );
   // And ACCEPT the corrected wording.
-  const fixedDoc = 'The gate has **5** CHECK categories total.';
-  const claims5 = extractClaims(fixedDoc, FORBID_SKIP_CLAIM_PATTERNS);
+  const fixedDoc = 'The gate has **6** CHECK categories total.';
+  const claims6 = extractClaims(fixedDoc, FORBID_SKIP_CLAIM_PATTERNS);
   check(
-    'forbid-skip gate would ACCEPT a doc claiming the real 5',
-    claims5.length > 0 && claims5.every((c) => c.value === 5),
+    'forbid-skip gate would ACCEPT a doc claiming the real 6',
+    claims6.length > 0 && claims6.every((c) => c.value === 6),
+  );
+
+  // 2b. The phrasings the extractor used to be BLIND to (#3182).
+  //
+  // docs/forbid-skip.md carried THREE drifted counts — "and that count is
+  // **5**", "**5** dispatched scans" and "registry size (5)" — against a live
+  // registry of 6, and this gate reported clean over all three. Each needed the
+  // scan noun immediately after the number, or needed a noun at all. A gate
+  // that exists so a count cannot silently drift must be able to read the
+  // sentences the document actually uses.
+  for (const [phrasing, want] of [
+    ['and that count is **5**:', 5],
+    ['the **8** pattern rows collapse to **5** dispatched scans.', 5],
+    ['equals the live `CHECKS` registry size (5), so it cannot drift.', 5],
+    ['so this **5** scan count can never drift.', 5],
+  ]) {
+    const found = extractClaims(phrasing, FORBID_SKIP_CLAIM_PATTERNS);
+    check(
+      `forbid-skip claim extractor reads ${JSON.stringify(phrasing)}`,
+      found.some((c) => c.value === want),
+    );
+  }
+
+  // The other half: the PATTERN-ROW count is a different number from the scan
+  // count (9 rows collapse to 6 scans), and reading it as a scan claim would
+  // fail the gate on a correct document. The widened proximity must not reach
+  // it — `rows` is not a scan noun.
+  check(
+    'forbid-skip claim extractor does NOT read a pattern-row count as a scan count',
+    extractClaims('together run the **9** regex pattern rows above', FORBID_SKIP_CLAIM_PATTERNS).length === 0,
   );
 
   // 3. The layer deriver collapses sub-letters to distinct integers.
@@ -906,9 +948,20 @@ function selfTest() {
   // ceiling. Both bounds are tripwires on the deriver itself: a silently-broken
   // reader returns 0 (and would let the doc reprint the false zero), and a
   // double-counting one exceeds the ceiling the Go ratchet enforces.
-  const realDiv = countShapeDivergences(readCatalogueShards()).count;
+  const realShards = readCatalogueShards();
+  const realDiv = countShapeDivergences(realShards).count;
   const ceiling = JSON.parse(readFileSync(DIVERGENCE_CEILING, 'utf8')).max_entries;
-  check('real rejection-parity catalogue derives a non-zero divergence count', realDiv > 0);
+  // The tripwire is on the READER, not on the population. This asserted
+  // `realDiv > 0`, which conflates "the deriver is broken" with "there are no
+  // divergences left" — and the second is the declared goal of #1956, whose
+  // "Done when" is that both catalogue entries drop their `divergence` class.
+  // Fixing that issue would therefore have turned the required `forbid-skip`
+  // context red for succeeding (#3187). Asserting the reader read the catalogue
+  // keeps the tripwire (a silently-broken reader returns an empty list and
+  // would let the doc reprint a false zero) and lets a legitimately empty
+  // divergence set through — at which point the ceiling drops to 0 in the same
+  // change that empties it, and `realDiv <= ceiling` still pins it exactly.
+  check('divergence deriver actually read the rejection-parity catalogue', realShards.length > 0);
   check(`real divergence count ${realDiv} is within the ratchet ceiling ${ceiling}`, realDiv <= ceiling);
 
   if (failures === 0) {

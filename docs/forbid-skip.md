@@ -46,25 +46,32 @@ the script directly) and as a step inside the `forbid-skip` CI job. The
 lefthook `forbid-skip-self-test` command runs the same script on
 pre-push.
 
-Rows 1–4 and 7–8 of the summary table below are carried by all three
-copies. Rows 5 and 6 are carried by CI **and** lefthook only —
-`scripts/test-forbid-skip.sh` has no case for either:
+Every row is carried by CI, and every row has a test that proves its scan
+can go RED — in `scripts/test-forbid-skip.sh` (a regex-level harness) or in
+`.github/scripts/forbid-skip.test.mjs` (end-to-end against the real CLI in a
+throwaway git repository), both of which run in the `forbid-skip` job:
 
-| Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command   | `scripts/test-forbid-skip.sh` |
-| ------ | ----------------------------------------------------------------------------- | ----------------------------- | ----------------------------- |
-| 1      | Reject t.Skip in test files (`t-skip`)                                        | `forbid-skip-t-skip`          | yes                           |
-| 2–4    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-soft-assert`          | yes                           |
-| 5      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-escape-hatch`         | no                            |
-| 6      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`         | no                            |
-| 7–8    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline`   | yes                           |
+| Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command | red-proving test        |
+| ------ | ----------------------------------------------------------------------------- | --------------------------- | ----------------------- |
+| 1      | Reject t.Skip in test files (`t-skip`)                                        | `forbid-skip-t-skip`        | both                    |
+| 2–4    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-soft-assert`        | `test-forbid-skip.sh`   |
+| 5      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-escape-hatch`       | `forbid-skip.test.mjs`  |
+| 6      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`       | `forbid-skip.test.mjs`  |
+| 7–8    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline` | `test-forbid-skip.sh`   |
+| 9      | Reject Playwright suppression routes (`playwright-skip`)                      | —                           | `forbid-skip.test.mjs`  |
 
 Row 5 rejects every non-empty `should_skip:` block in
 `compatibility/**/*.{yml,yaml}` outright. lefthook's
 `forbid-escape-hatch` command carries rows 5 and 6 together: the row-6
 ERE over `*.{ts,tsx,go}` plus the row-5 `perl -0777` slurp over the
 compatibility YAML, which the CI job splits across two `CHECK` arms.
-Rows 5 and 6 have no `scripts/test-forbid-skip.sh` case, so their
-regexes are pinned by the CI and lefthook copies alone.
+Rows 5, 6 and 9 are proved end-to-end in
+`.github/scripts/forbid-skip.test.mjs` rather than at the regex level. They
+used to be proved NOWHERE, and this section described that as a design: their
+regexes were said to be "pinned by the CI and lefthook copies alone", which
+pins nothing. Those two are RUNNERS of the regex, not assertions about it —
+neither can fail on a clean tree, so a regex mutated to match nothing stayed
+green in both, twice over (#3182).
 
 ## Patterns vs CHECK categories — the count that the gate pins
 
@@ -73,7 +80,7 @@ distinct regex shape, so that each shape has its own match-example and
 counter-example. The CI gate, however, dispatches by **CHECK category**:
 `.github/scripts/doc-counts.mjs` derives the canonical scan count LIVE
 from the keys of the `CHECKS` registry in
-`.github/scripts/forbid-skip.mjs`, and that count is **5**:
+`.github/scripts/forbid-skip.mjs`, and that count is **6**:
 
 | CHECK category       | Covers regex pattern row(s) |
 | -------------------- | --------------------------- |
@@ -82,14 +89,15 @@ from the keys of the `CHECKS` registry in
 | `should-skip`        | 5                           |
 | `escape-hatch`       | 6                           |
 | `feature-discipline` | 7, 8                        |
+| `playwright-skip`    | 9                           |
 
 The `soft-assert` scan runs three regex shapes (the two soft-assertion
 forms plus the silent-recover slurp) inside one CHECK, and
 `feature-discipline` runs two (the `.feature` tag scan plus the
-harness-Go skip scan), which is why the **8** pattern rows collapse to
-**5** dispatched scans. The `doc-counts.mjs` gate asserts every "N
+harness-Go skip scan), which is why the **9** pattern rows collapse to
+**6** dispatched scans. The `doc-counts.mjs` gate asserts every "N
 patterns/checks/scans" claim in this document equals the live `CHECKS`
-registry size (5), so the number can never drift from the source registry.
+registry size (6), so the number can never drift from the source registry.
 
 ## Adding a new pattern
 
@@ -104,8 +112,12 @@ When a new offender shape is discovered:
 2. Add a new row to the summary table below + a detailed subsection
    covering the regex, its intent, a match-example, and a
    counter-example.
-3. Add a matching `case_N_*` block to `scripts/test-forbid-skip.sh`
-   covering both directions.
+3. Add a test that proves the new scan can go RED, covering both
+   directions — a `case_N_*` block in `scripts/test-forbid-skip.sh` for a
+   regex-level shape, or a case in `.github/scripts/forbid-skip.test.mjs`
+   for one whose corpus or file scope makes an end-to-end fixture clearer.
+   A scan with neither is not pinned by having two copies of its regex in
+   CI and lefthook: those run it, they do not assert anything about it.
 4. Note the originating PR number.
 
 Never weaken an existing regex without a recorded rationale — every
@@ -123,8 +135,9 @@ shape.
 | 5   | Reject any non-empty `should_skip:` block                                                                   | `compatibility/**/*.{yml,yaml}`                                 | #596          |
 | 6   | Reject test escape-hatch primitives (allow-list / tolerance / soft-assert)                                  | `*.{ts,tsx,go}` (non-upstream, non-vendor)                      | #712          |
 <!-- #1538: @todo below is a Gherkin tag name documented here, not a work marker -->
-| 7 | Reject scenario-suppressing Gherkin tags (`@wip` / `@skip` / `@ignore` / `@manual` / `@todo` / `@pending`) | `*.feature`                  | #1268 |
-| 8 | Reject godog skip / pending routes (`godog.ErrSkip`, `godog.ErrPending`, `.Skip` / `.Skipf` / `.SkipNow`)  | `test/e2e/migration/**/*.go` | #1268 |
+| 7 | Reject scenario-suppressing Gherkin tags (`@wip` / `@skip` / `@ignore` / `@manual` / `@todo` / `@pending`) | `*.feature`                         | #1268 |
+| 8 | Reject godog skip / pending routes (`godog.ErrSkip`, `godog.ErrPending`, `.Skip` / `.Skipf` / `.SkipNow`)  | `test/e2e/migration/**/*.go`        | #1268 |
+| 9 | Reject Playwright suppression routes (`test`/`it`/`describe`/`suite` `.skip` / `.fixme` / `.only`)         | `*.spec.{ts,js}` (non-node_modules) | #3180 |
 
 Row 5 rejects any non-empty `should_skip:` block outright (see
 `.github/workflows/ci.yml` `forbid-skip` job step "Reject should_skip
@@ -355,13 +368,14 @@ redundancies — each catches a shape the others would miss:
 
 The gate dispatches **6** CHECK scans (`t-skip`, `playwright-skip`,
 `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`), which
-together run the **8** regex pattern rows above (the `soft-assert` scan carries rows
+together run the **9** regex pattern rows above (the `soft-assert` scan carries rows
 2, 3 and 4 and `feature-discipline` carries rows 7 and 8; see the
 "Patterns vs CHECK categories" mapping). Pattern 1 runs over Go test
 files; patterns 2–4 over Go test files for soft-assertion / silent-recover
 shapes; pattern 5 is the strict overlay-entry rejection over the
 compatibility YAML; pattern 6 is the escape-hatch scan over the TS / Go
 suites; patterns 7 and 8 are the Gherkin-scenario discipline over the
-migration harness. The canonical scan count is derived live from
-`.github/scripts/forbid-skip.mjs` by `.github/scripts/doc-counts.mjs`,
-so this **5** can never drift from the source registry.
+migration harness; pattern 9 is the Playwright suppression scan over the
+spec files. The canonical scan count is derived live from
+`.github/scripts/forbid-skip.mjs` by `.github/scripts/doc-counts.mjs`, so
+this **6** scan count can never drift from the source registry.
