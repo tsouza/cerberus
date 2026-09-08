@@ -145,10 +145,11 @@ func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chpl
 //
 // Every chplan Expr kind that holds a child Expr must appear here or in
 // foldExprSingleChild — a missing case silently strands any pure-literal
-// subtree nested inside it unfolded. This mirrors projection_pushdown.go's
-// walkExpr, which documents the same exhaustiveness requirement for
-// column-reference discovery; the switches should be kept in lockstep over
-// the chplan Expr vocabulary.
+// subtree nested inside it unfolded. This mirrors chplan.InspectExpr (the
+// traversal projection_pushdown.go's stageColumns uses for
+// column-reference discovery), whose own exhaustiveness is ratcheted by
+// chplan's TestInspectExprExhaustive; the switches should be kept in
+// lockstep over the chplan Expr vocabulary.
 func foldExprWith(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, bool)) (chplan.Expr, bool) {
 	switch v := e.(type) {
 	case *chplan.Binary:

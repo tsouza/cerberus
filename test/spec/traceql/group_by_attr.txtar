@@ -25,3 +25,6 @@ INSERT INTO otel_traces VALUES
 Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[FnAny(TraceId) AS TraceId, FnAny(SpanId) AS SpanId, FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
   Filter predicate=true
     Scan(otel_traces)
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | by(resource.service.name)` groups the spanset: its rows carry __cerberus_traceID and no __cerberus_spanID because each is a group representative, not a span, so there is no span set for runTempoParity to compare

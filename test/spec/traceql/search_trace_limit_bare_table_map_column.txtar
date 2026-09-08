@@ -45,3 +45,6 @@ SearchTraceLimit traceLimit=1
     Scan(otel_traces)
 -- sql --
 SELECT s.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 1)
+-- parity_exempt --
+reason: reference-fetch-layer
+detail: `{ resource.service.name = "frontend" }` carries `search_limit:`, which narrows cerberus's scan where upstream narrows in its FETCH layer before the pipeline the oracle runs

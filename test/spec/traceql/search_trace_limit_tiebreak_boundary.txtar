@@ -70,3 +70,6 @@ SearchTraceLimit traceLimit=2
     Scan(otel_traces)
 -- sql --
 SELECT s.* FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 2)
+-- parity_exempt --
+reason: reference-fetch-layer
+detail: `{ name = "checkout" }` carries `search_window:`, which narrows cerberus's scan where upstream narrows in its FETCH layer before the pipeline the oracle runs

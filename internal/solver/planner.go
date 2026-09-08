@@ -70,9 +70,6 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		if !perRung && int64(sig.outerN)*sig.maxFanout < int64(minAnchorPairs) {
 			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
-		if k < 2 {
-			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
-		}
 		// Last, so a plan that was already below threshold keeps THAT reason
 		// and the shipped route-A analyzer's population does not shift
 		// underneath it: only plans that would genuinely have routed change
@@ -82,8 +79,9 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		}
 		return p.sliceAndDecide(plan, meta, sig, k, perRung)
 	}
-	// "sharded": thresholds drop to the floor — every eligible plan routes
-	// at K_min = 2 (k is already clamped to >= 2 by classify when upper >= 2).
+	// "sharded": thresholds drop to the floor — every eligible plan routes at
+	// K_min = minRouteBShards (classify clamps k to that floor whenever it
+	// reports eligible).
 
 	return p.sliceAndDecide(plan, meta, sig, k, false)
 }
@@ -347,19 +345,25 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	if highBound < upper {
 		upper = highBound
 	}
-	lower := int64(2)
+	// If the high-D clamp ceiling fell below the floor there is no valid K —
+	// the documented high-D floor.
+	//
+	// Checked BEFORE the clamp below, which is what makes the floor
+	// structural: with upper >= minRouteBShards established here, kk is
+	// clamped up to minRouteBShards and then down to upper, so an ELIGIBLE
+	// classify can only ever return k >= minRouteBShards. Plan has no k <
+	// minRouteBShards arm because such an arm could never run — it had one,
+	// dead, until #3188.
+	if upper < minRouteBShards {
+		return sig, notRouted(ReasonHighD).withGrid(sig, meta), 0, false
+	}
+
 	kk := int64(n / p.Cfg.MinAnchorsPerSlice)
-	if kk < lower {
-		kk = lower
+	if kk < minRouteBShards {
+		kk = minRouteBShards
 	}
 	if kk > upper {
 		kk = upper
-	}
-
-	// If the high-D clamp ceiling fell below 2 there is no valid K — the
-	// documented high-D floor.
-	if upper < 2 {
-		return sig, notRouted(ReasonHighD).withGrid(sig, meta), 0, false
 	}
 	// (6) An end-phased nested grid is generated backward from its own End,
 	// so the slice quantum must preserve its phase — checked against the
@@ -868,6 +872,15 @@ type carrierGeometry struct {
 // than 0 because the samples ARE read — a zero would say the carrier touches no
 // data, which is StepGrid's answer, not this family's.
 const singlePassFanout = int64(1)
+
+// minRouteBShards is the smallest K a routed plan can carry. One shard is not
+// a shard: it re-runs the whole query as a single slice, paying route B's
+// coordination for exactly route A's scan. So a ceiling below it means there is
+// no valid K at all, and classify refuses (ReasonHighD) rather than routing.
+//
+// It is the floor for BOTH ends of classify's clamp, which is what lets Plan
+// and sliceAndDecide take k >= minRouteBShards as given.
+const minRouteBShards = int64(2)
 
 // minAnchorsForPerRungShard is the anchor count at or above which a per-rung
 // carrier (carrierGeometry.perRungIntermediate) is routed by ModeAuto without

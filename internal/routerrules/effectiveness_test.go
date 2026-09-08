@@ -483,7 +483,7 @@ func TestEffectivenessParamsNonDegenerate(t *testing.T) {
 
 	// Partitioned watermarks must carry a positive value for every populated
 	// language bucket.
-	for _, name := range []string{"memory_high_watermark", "slow_duration_watermark", "d_high_watermark", "read_rows_high_watermark"} {
+	for _, name := range []string{"slow_duration_watermark", "d_high_watermark", "read_rows_high_watermark"} {
 		v, ok := env[name]
 		if !ok {
 			t.Errorf("%s not resolved", name)

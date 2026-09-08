@@ -270,6 +270,16 @@ func (m *Memo) Lookup(k Key) (state LookupState, stale bool) {
 // dispatch finishes (success or failure). On denial, ok is false and
 // release is a no-op — callers must not call it, but it is safe to.
 func (m *Memo) AdmitDispatch() (release func(), ok bool) {
+	return m.tryReserveDispatchToken()
+}
+
+// tryReserveDispatchToken is the one place a dispatch token is taken from
+// the process-wide semaphore, shared by every admission path (AdmitDispatch
+// and both arms of ObserveRouteAFailureAndMaybeBeginProbe) so the
+// non-blocking, fall-back-to-route-A discipline cannot drift between them.
+// The token channel carries its own synchronization, so this is safe both
+// with and without m.mu held.
+func (m *Memo) tryReserveDispatchToken() (release func(), ok bool) {
 	select {
 	case m.dispatchTokens <- struct{}{}:
 		return m.releaseToken, true
@@ -282,63 +292,54 @@ func (m *Memo) releaseToken() { <-m.dispatchTokens }
 
 func noopRelease() {}
 
-// BeginProbe atomically checks probe-eligibility (corroboration met, not
-// under cluster-wide pressure) and reserves an AdmitDispatch token, inside
-// one critical section, for a route-A-failed Key that has never been
-// probed (Unknown, no verdict yet). It is the single-flight admission path
-// a caller uses right after observing route-A's Nth consecutive resource
-// failure. On success, release must be called exactly once when the probe
-// dispatch finishes.
-func (m *Memo) BeginProbe(k Key) (release func(), ok bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	now := m.now()
-	if m.pressure.countFresh(now, m.pressureWindow) > pressureFailureThreshold {
-		return noopRelease, false
-	}
+// admitProbeLocked is the FIRST-PROBE admission rule: a Key that has never
+// been probed (live, Unknown, no verdict yet) and whose consecutive route-A
+// resource failures have reached MinCorroboratingFailures earns a dispatch
+// token; anything else is refused. The caller must already hold m.mu and
+// must already have applied this failure's state transition, so the
+// corroboration count read here includes it.
+//
+// It deliberately does NOT cover the stale-PreferB re-validation rescue,
+// which is a different rule on a different snapshot (see
+// ObserveRouteAFailureAndMaybeBeginProbe): that arm admits a PreferB entry
+// on the basis of staleness captured BEFORE the state transition, precisely
+// the case this Unknown-only rule refuses.
+func (m *Memo) admitProbeLocked(k Key, now time.Time) (release func(), ok bool) {
 	v, live := m.getLiveLocked(k, now)
 	if !live || v.state != Unknown || v.corroboration < MinCorroboratingFailures {
 		return noopRelease, false
 	}
-	select {
-	case m.dispatchTokens <- struct{}{}:
-		return m.releaseToken, true
-	default:
-		return noopRelease, false
-	}
+	return m.tryReserveDispatchToken()
 }
 
 // ObserveRouteAFailureAndMaybeBeginProbe records a route-A resource-
 // exhaustion failure for k AND, in the SAME atomic step, decides whether
 // THIS failure earns an immediate rescue dispatch on route B — either
 // because it is the Nth consecutive failure on a fresh Unknown key (the
-// original first-probe admission BeginProbe alone already granted), or
-// because it is the failure a STALE PreferB entry's re-validation dispatch
-// produced.
+// first-probe rule, admitProbeLocked), or because it is the failure a STALE
+// PreferB entry's re-validation dispatch produced.
 //
-// The second case is why this method exists as one atomic operation rather
-// than two calls to the existing Observe + BeginProbe primitives. Lookup
-// correctly declines to memo-hit a stale PreferB verdict — the caller
-// routes through plain route A instead, "as if the Key were unknown", so
-// the verdict can be honestly re-confirmed by real traffic rather than
-// trusted forever. But if that route-A dispatch then fails for real (the
-// expected outcome, if the underlying premise still holds), a caller that
-// separately calls Observe(k, RouteA, OutcomeResourceFailure) — which
-// refreshes a PreferB entry's createdAt, un-staling it — and THEN calls
-// BeginProbe(k) finds BeginProbe's Unknown-only gate refuses: the entry no
-// longer LOOKS stale, because Observe already cleared that flag before
-// BeginProbe got to look at it. The caller's actual HTTP request is then
-// stuck on the very failure the memo already knows how to avoid, with no
-// rescue, even though the memo has been confidently routing this shape to
-// B for the entire life of the entry. Combining record-and-decide into one
-// critical section lets the admission check see staleness as it stood
-// BEFORE this call's own side effects, closing that gap.
+// The second case is why recording and deciding must happen inside ONE
+// critical section rather than as two steps. Lookup correctly declines to
+// memo-hit a stale PreferB verdict — the caller routes through plain route
+// A instead, "as if the Key were unknown", so the verdict can be honestly
+// re-confirmed by real traffic rather than trusted forever. But if that
+// route-A dispatch then fails for real (the expected outcome, if the
+// underlying premise still holds), recording that failure refreshes the
+// PreferB entry's createdAt, which un-stales it. An admission check that
+// ran AFTER the record would therefore see a fresh PreferB entry and refuse
+// — never the stale one that earned the rescue — leaving the caller's
+// actual HTTP request stuck on the very failure the memo already knows how
+// to avoid, even though the memo has been confidently routing this shape to
+// B for the entire life of the entry. Holding m.mu across both steps lets
+// admission decide on the staleness snapshot taken BEFORE this call's own
+// side effects, closing that gap.
 //
-// Callers MUST use this method — never a separate Observe(k, RouteA,
-// OutcomeResourceFailure) followed by BeginProbe(k) — for a route-A
-// resource-exhaustion failure. release must be called exactly once,
-// whenever ok is true, when the resulting probe/rescue dispatch finishes.
+// That snapshot is also why no separate exported admission entry point
+// exists: this method is the only way a route-A resource failure is
+// admitted, so the record-then-admit sequence cannot be written any other
+// way. release must be called exactly once, whenever ok is true, when the
+// resulting probe/rescue dispatch finishes.
 func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok, pressureDeclined bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -367,26 +368,14 @@ func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok
 	if wasStalePreferB {
 		// The re-validation rescue path: admit regardless of the (now
 		// refreshed, no longer "stale") post-transition state.
-		select {
-		case m.dispatchTokens <- struct{}{}:
-			return m.releaseToken, true, false
-		default:
-			return noopRelease, false, false
-		}
+		release, ok = m.tryReserveDispatchToken()
+		return release, ok, false
 	}
 
-	// The original first-probe path: admit only a fresh Unknown entry that
-	// has now reached the corroboration floor.
-	v, live = m.getLiveLocked(k, now)
-	if !live || v.state != Unknown || v.corroboration < MinCorroboratingFailures {
-		return noopRelease, false, false
-	}
-	select {
-	case m.dispatchTokens <- struct{}{}:
-		return m.releaseToken, true, false
-	default:
-		return noopRelease, false, false
-	}
+	// The first-probe path: admit only a fresh Unknown entry that has now
+	// reached the corroboration floor.
+	release, ok = m.admitProbeLocked(k, now)
+	return release, ok, false
 }
 
 // UnderPressure reports whether more than pressureFailureThreshold distinct

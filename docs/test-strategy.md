@@ -1036,12 +1036,13 @@ successfully.
 
 ### Exact semantic-shape roster
 
-`test/property/gen/shapes.go` is the executable source of truth. Its 81 stable
+`test/property/gen/shapes.go` is the executable source of truth. Its 83 stable
 IDs are grouped as follows (brace notation below denotes the exact listed
 expansion, not an open-ended prefix):
 
-- **PromQL instant — 5.** `promql.instant.{selector,sum,sum-by,rate,sum-rate}`.
-- **PromQL range — 3.** `promql.range.{selector,sum-by,rate}`.
+- **PromQL instant — 6.**
+  `promql.instant.{selector,sum,sum-by,rate,sum-rate,label-replace}`.
+- **PromQL range — 4.** `promql.range.{selector,sum-by,rate,label-replace}`.
 - **PromQL native histogram — 20.**
   `promql.native-histogram.{function.count,function.sum,function.avg,`
   `function.stddev,function.stdvar,fraction,selector,sum,sum-by,rate,increase,`

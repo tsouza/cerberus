@@ -13,3 +13,6 @@ Aggregate groupBy=[Events.Name AS GroupKey] funcs=[FnAny(TraceId) AS TraceId, Fn
     Scan(otel_traces)
 -- sql --
 SELECT `Events.Name` AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `GroupKey`
+-- parity_exempt --
+reason: emitted-sql-only
+detail: `{ } | by(event:name)` carries no `seed:` or `expected_rows:` — it pins the emitted SQL for this shape, and executes no answer for any oracle to compare
