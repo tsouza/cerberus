@@ -28,7 +28,9 @@ import (
 //
 // Cerberus already has both halves of this for the PURE (non-mixed)
 // cases: [lowerCountValues] (lower.go) stringifies an ordinary float
-// Value via `toString(Value)`, and [nativeHistogramStringExpr]
+// Value via [promFixedFloatStringExpr], which reproduces that
+// `strconv.FormatFloat(f, 'f', -1, 64)` spelling, and
+// [nativeHistogramStringExpr]
 // (histogram_native_count_values.go, cerberus issue #2470) reproduces
 // Go's `FloatHistogram.String()` layout byte-for-byte from the
 // thirteen-column histogram row contract. Composing count_values() over a
@@ -59,8 +61,8 @@ import (
 //     float aggregand and [lowerExpHistogramCountValuesOverPlan]
 //     (histogram_native_count_values.go) already uses for a PURE
 //     native-histogram aggregand — with [nativeHistogramStringExpr] as
-//     the histogram arm's value-key and the ordinary `toString(Value)`
-//     as the float arm's.
+//     the histogram arm's value-key and [promFixedFloatStringExpr] as
+//     the float arm's.
 //  3. The two branches are combined with a plain (non-Mixed,
 //     non-Histogram) [chplan.VectorSetOp] OR — matching on the FULL
 //     reconstructed Attributes (an empty [chplan.VectorMatch], mirroring
@@ -104,10 +106,11 @@ func lowerCountValuesOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *pa
 	}
 
 	histBranch := lowerCountValuesOverPlan(agg, label, histForAgg, nativeHistogramStringExpr(s), s, ctx)
-	floatBranch := lowerCountValuesOverPlan(agg, label, floatForAgg, &chplan.FuncCall{
-		Fn:   chplan.FnToString,
-		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
-	}, s, ctx)
+	floatBranch := lowerCountValuesOverPlan(
+		agg, label, floatForAgg,
+		promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn}),
+		s, ctx,
+	)
 
 	return combineMixedCountValuesBranches(histBranch, floatBranch, s, ctx), nil
 }

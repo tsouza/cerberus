@@ -772,25 +772,26 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 		}
 	}
 
-	// The trailing default branch is the lowercased pass-through —
-	// `lower(<source>)`, where <source> is the detected_level
-	// precedence cascade. A mutation on the hint's trailing `+1` that
-	// dropped the default slot would shorten Args by one and trip the
-	// len check above; this assertion pins the SHAPE of the default
-	// branch so a refactor that swaps it for something else (e.g. an
-	// empty string fall-through) still trips a test.
+	// The trailing default branch is the UNCHANGED source — the
+	// detected_level precedence cascade itself, with no `lower()` wrap.
+	// Upstream Loki's normalizeLogLevel matches case-insensitively
+	// (bytes.EqualFold) but its default branch is `return level`, the
+	// caller's own string: a SeverityText of `NOTICE` stays `NOTICE`.
+	// Every comparison ABOVE this slot still reads `lower(<source>)`,
+	// and the per-group assertions in the loop above would fail if the
+	// folding were dropped there — so this pins the asymmetry rather
+	// than merely the absence of a call.
+	//
+	// A mutation on the hint's trailing `+1` that dropped the default
+	// slot would shorten Args by one and trip the len check above; this
+	// assertion pins the SHAPE of the default branch so a refactor that
+	// swaps it for something else (e.g. an empty-string fall-through)
+	// still trips a test.
 	defaultIdx := 2 * (len(canonicalLevelGroups) + 1)
-	defaultCall, ok := fn.Args[defaultIdx].(*chplan.FuncCall)
-	if !ok {
-		t.Fatalf("default branch at args[%d] = %T; want *chplan.FuncCall (lower(...))", defaultIdx, fn.Args[defaultIdx])
+	if defaultCall, ok := fn.Args[defaultIdx].(*chplan.FuncCall); ok && defaultCall.Fn == chplan.FnLower {
+		t.Fatalf("default branch at args[%d] is lower(...); upstream normalizeLogLevel returns the original value unchanged", defaultIdx)
 	}
-	if defaultCall.Fn != chplan.FnLower {
-		t.Errorf("default branch FuncCall.Fn = %q; want %q", defaultCall.Fn, chplan.FnLower)
-	}
-	if len(defaultCall.Args) != 1 {
-		t.Fatalf("default branch lower() args = %d; want 1", len(defaultCall.Args))
-	}
-	assertSourceCascade(t, defaultCall.Args[0], s)
+	assertSourceCascade(t, fn.Args[defaultIdx], s)
 }
 
 // assertSourceCascade verifies that `e` is the detected_level source

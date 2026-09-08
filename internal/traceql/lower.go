@@ -1008,9 +1008,12 @@ const (
 //     link:traceID / link:spanID) `!= nil` ≡ the span has at least
 //     one event/link: the sub-fields are required within each
 //     element, so any element answers the probe.
-//   - `childCount` conditions (any op, including != nil) error in
-//     reference vparquet4 (checkConditions: "intrinsic 'childCount'
-//     not supported in vParquet4") — keep rejecting.
+//   - `childCount` has no OTel-CH carrier, so it is absent from every
+//     span: `!= nil` folds to constant-false, the same answer the
+//     comparison path already gives `{ childCount > 2 }` via
+//     [attributeHasNoBacking]. `= nil` is rejected by the OpNotExists
+//     guard that covers every intrinsic (upstream ast_validate.go:
+//     "intrinsics cannot be = nil"), not by anything childCount-specific.
 func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (chplan.Expr, error) {
 	switch u.Op {
 	case traceql.OpExists, traceql.OpNotExists:
@@ -1247,11 +1250,31 @@ func lowerIntrinsicNilComparison(op traceql.Operator, attr traceql.Attribute, s 
 	}
 	switch attr.Intrinsic {
 	case traceql.IntrinsicChildCount:
-		// Reference errors on every childCount condition (vparquet4
-		// checkConditions: "not supported in vParquet4").
-		return nil, fmt.Errorf(
-			"traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise", attr.Intrinsic,
-		)
+		// The OTel-CH span row carries no child count, so the intrinsic
+		// is absent from every span — exactly the state
+		// [attributeHasNoBacking] already classifies it into for the
+		// COMPARISON path, where `{ childCount > 2 }` folds to
+		// constant-false. `!= nil` (OpExists) is
+		// `static.Type != TypeNil`, which is false for an absent
+		// operand, so it folds to the same constant.
+		//
+		// This arm used to reject instead, on the grounds that reference
+		// vparquet4's `checkConditions` errors on any childCount
+		// condition. That reasoning is real but it does not single out
+		// `!= nil`: it applies to `> 2` identically, so the two arms
+		// disagreed about the SAME query family — one 4xx, one
+		// 2xx-empty. Cerberus already settled which way that resolves
+		// when it burned the loud-422 down to the constant fold (see
+		// TestUnbackedIntrinsicComparisonsLowerConstant): the surface-
+		// parity oracle is upstream Parse+Validate, which accepts
+		// `{ span:childCount > 0 }`, and Tempo's own live-block search
+		// path downgrades the fetch-time ErrUnsupported to "skip this
+		// block" rather than surfacing it. So the 2xx-empty class is the
+		// one to be consistent about, and `= nil` stays rejected via the
+		// OpNotExists guard above — that rejection is upstream's own
+		// validate rule for EVERY intrinsic, not a childCount special
+		// case.
+		return &chplan.LitBool{V: false}, nil
 	case traceql.IntrinsicEventName, traceql.IntrinsicEventTimeSinceStart:
 		if s.EventsColumn == "" {
 			return nil, fmt.Errorf("traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no events column", attr.Intrinsic)

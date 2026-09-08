@@ -111,9 +111,17 @@ func TestNormalizeDetectedLevel(t *testing.T) {
 		"dbg":         "debug",
 		"CRITICAL":    "critical",
 		"Fatal":       "fatal",
-		// An unknown variant falls through as its lowercased self, matching
-		// upstream normalizeLogLevel's default branch.
-		"NOTICE": "notice",
+		// An unknown variant falls through UNCHANGED, case and all —
+		// upstream normalizeLogLevel matches with bytes.EqualFold but its
+		// default branch is `return level`, "Return the original value if
+		// it doesn't match any known level". The lowercase spelling of the
+		// same word is listed beside it so a fix that lowercases only
+		// SOME inputs cannot pass either.
+		"NOTICE":    "NOTICE",
+		"notice":    "notice",
+		"Audit":     "Audit",
+		"SEVERE":    "SEVERE",
+		"Emergency": "Emergency",
 	}
 	for in, want := range cases {
 		if got := NormalizeDetectedLevel(in); got != want {

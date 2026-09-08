@@ -247,3 +247,52 @@ func TestUnaryNotReferenceBugParity(t *testing.T) {
 		}
 	}
 }
+
+// TestChildCountAnswersOneStatusClassForEveryOperator pins that
+// `childCount` gives ONE answer across operators instead of two.
+//
+// The OTel-CH span row carries no child count, so the intrinsic is
+// absent from every span. Cerberus resolves that the way it resolves
+// every other unbacked carrier — a constant-false predicate, i.e. a
+// 2xx empty result — which is the class
+// TestUnbackedIntrinsicComparisonsLowerConstant already pins for
+// `{ span:childCount > 0 }` and which the surface-parity oracle
+// (upstream traceql.Parse + traceql.Validate, which accepts the shape)
+// agrees with.
+//
+// `!= nil` used to be the one operator that errored instead, so the
+// same query family answered 4xx or 2xx depending on which comparison
+// the user wrote. `= nil` is asserted alongside as the case that
+// legitimately still rejects: upstream's own validate rule forbids
+// `<intrinsic> = nil` for EVERY intrinsic, so it is not a childCount
+// inconsistency — and keeping it here stops a "fix" that simply
+// accepted everything from passing.
+func TestChildCountAnswersOneStatusClassForEveryOperator(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelTraces()
+
+	for _, q := range []string{
+		`{ span:childCount > 2 }`,
+		`{ span:childCount = 2 }`,
+		`{ span:childCount != 2 }`,
+		`{ 2 < span:childCount }`,
+		`{ span:childCount != nil }`,
+	} {
+		expr, err := tempo.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", q, err)
+		}
+		if _, err := traceql.Lower(context.Background(), expr, s); err != nil {
+			t.Errorf("Lower(%q): want a constant-false lowering (2xx empty), got error: %v", q, err)
+		}
+	}
+
+	const rejected = `{ span:childCount = nil }`
+	expr, err := tempo.Parse(rejected)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", rejected, err)
+	}
+	if _, err := traceql.Lower(context.Background(), expr, s); err == nil {
+		t.Errorf("Lower(%q): want a rejection (upstream forbids `<intrinsic> = nil`), got none", rejected)
+	}
+}

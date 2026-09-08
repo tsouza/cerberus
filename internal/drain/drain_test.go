@@ -243,3 +243,49 @@ func TestDrain_SplitsAcrossBuckets(t *testing.T) {
 		t.Fatalf("sample sum = %d, want 2", sum)
 	}
 }
+
+// TestDrain_BucketsAreEpochRelative pins the bucket floor to the Unix
+// epoch rather than to Go's zero time.
+//
+// Upstream Loki's `drain.TruncateTimestamp`
+// (pkg/pattern/drain/chunk.go) is `ts - ts%step` over milliseconds
+// since the Unix epoch. `time.Time.Truncate` rounds "down to a multiple
+// of d (since the zero time)", and Go's zero time is Jan 1 year 1 —
+// 62135596800 s before the epoch. The two agree only when that offset
+// is a multiple of the resolution.
+//
+// 62135596800 = 2^8 · 3^3 · 5^2 · 359581, so 10s (the default, and the
+// resolution every other test in this file uses) divides it and the
+// difference is invisible; 13s does not — `62135596800 mod 13 == 4`, so
+// `Truncate` lands every bucket 4 s early. The case list therefore
+// carries both, and the 10s row is what keeps the assertion from
+// passing on a formula that is right only for the divisor case.
+func TestDrain_BucketsAreEpochRelative(t *testing.T) {
+	t.Parallel()
+	for _, res := range []time.Duration{10 * time.Second, 13 * time.Second, 25 * time.Second} {
+		t.Run(res.String(), func(t *testing.T) {
+			t.Parallel()
+			cfg := drain.DefaultConfig()
+			cfg.SampleResolution = res
+			d := drain.New(cfg)
+			const observedUnix = int64(1786836195)
+			ts := time.Unix(observedUnix, 0).UTC()
+			d.Train("GET /x/1 ok done", ts.UnixNano())
+
+			clusters := d.Clusters()
+			if len(clusters) != 1 {
+				t.Fatalf("expected 1 cluster, got %d", len(clusters))
+			}
+			samples := clusters[0].Samples()
+			if len(samples) != 1 {
+				t.Fatalf("expected 1 bucket, got %d: %+v", len(samples), samples)
+			}
+			resSec := int64(res / time.Second)
+			want := observedUnix - observedUnix%resSec
+			if got := samples[0].TimestampUnixSec; got != want {
+				t.Fatalf("bucket ts = %d, want %d (ts - ts%%%d); Truncate would give %d",
+					got, want, resSec, ts.Truncate(res).Unix())
+			}
+		})
+	}
+}

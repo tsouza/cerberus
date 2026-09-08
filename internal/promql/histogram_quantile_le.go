@@ -28,6 +28,18 @@ const bucketBoundInfLabel = "+Inf"
 // would let the array domain and the float domain disagree about which
 // bucket a given `le` names, and no single query exercises both halves —
 // the divergence would only surface once a query mixed them.
+//
+// The bound is spelled with [promFixedFloatStringExpr] rather than
+// ClickHouse's own `toString`, because the reference for this synthesis
+// is Prometheus's OTLP receiver — the code that explodes the SAME OTel
+// explicit-bucket histogram into classic `le` series — and it stamps the
+// bound with `strconv.FormatFloat(bound, 'f', -1, 64)`
+// (`storage/remote/otlptranslator/prometheusremotewrite/helper.go`). CH's
+// `toString` agrees with that over most of the range and parts company
+// once the bound leaves roughly `[1e-7, 1e21)`, where it switches to
+// scientific notation and `'f'` never does: a 1e-7 bound Prometheus
+// spells `0.0000001` came out `1e-7`, so a dashboard selecting
+// `{le="0.0000001"}` matched nothing.
 func classicBucketLeStringExpr(idx, bounds chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
 		Fn: chplan.FnIf,
@@ -38,9 +50,7 @@ func classicBucketLeStringExpr(idx, bounds chplan.Expr) chplan.Expr {
 				Right: &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{bounds}},
 			},
 			&chplan.LitString{V: bucketBoundInfLabel},
-			&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{
-				&chplan.Subscript{Container: bounds, Key: idx},
-			}},
+			promFixedFloatStringExpr(&chplan.Subscript{Container: bounds, Key: idx}),
 		},
 	}
 }

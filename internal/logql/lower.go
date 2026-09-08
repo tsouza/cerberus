@@ -89,6 +89,35 @@ type lowerCtx struct {
 	// at the top level.
 	LogLineLimit    int64
 	LogLineBackward bool
+
+	// logLineWindow marks a lowering whose top-level expression returns
+	// LOG LINES rather than a numeric series, which decides whether the
+	// pre-scan clamp [andFoldTimeWindow] folds treats `End` as inclusive.
+	//
+	// The two halves of reference Loki disagree on that, deliberately:
+	//
+	//   - The LOG path is `[start, end)`. The bound lands on the chunk
+	//     iterator, `pkg/iter/entry_iterator.go` — "The mint is
+	//     inclusive" / "The maxt is exclusive" — and again in
+	//     `pkg/chunkenc/memchunk.go` (`if e.t < mint || e.t >= maxt`).
+	//     `pkg/querier/queryrange/splitters.go` states it as the request
+	//     property it is: `case *LokiRequest: endTimeInclusive = false`.
+	//   - The METRIC path is end-INCLUSIVE. `pkg/logql/evaluator.go` adds
+	//     a nanosecond to the evaluated end for exactly that reason —
+	//     "add leap nanosecond to endTs to include lines exactly at
+	//     endTs" — and each step then reduces over `(t - range, t]`.
+	//
+	// Metadata/discovery requests keep the inclusive end too
+	// (`splitters.go` leaves `endTimeInclusive = true` for them), which is
+	// why this is set from the expression's own shape rather than from
+	// the endpoint.
+	//
+	// [lowerWithCtx] is the single place it is set, from
+	// [IsMetricQuery] over the TOP-LEVEL expression: a metric query's
+	// inner log range is part of a metric evaluation and keeps the
+	// inclusive bound, so the classification cannot be re-derived per
+	// recursion level.
+	logLineWindow bool
 }
 
 // withOuterByLabels returns a copy of c with OuterByLabels set to
@@ -155,9 +184,11 @@ func Lower(ctx context.Context, expr syntax.Expr, s schema.Logs) (chplan.Node, e
 }
 
 // LowerAt is the time-aware variant of [Lower]: it AND-folds a
-// `<TimestampColumn> >= start AND <TimestampColumn> <= end` predicate
-// above every Scan(LogsTable) the lowering produces, so the emitted
-// SQL honours the request's window. For an instant query the caller
+// `<TimestampColumn> >= start AND <TimestampColumn> {< | <=} end`
+// predicate above every Scan(LogsTable) the lowering produces, so the
+// emitted SQL honours the request's window. The upper bound is strict
+// for a log-line query and inclusive for a metric one, matching
+// reference Loki's own split ([andFoldTimeWindow]). For an instant query the caller
 // passes start == end == ts (or [time-step, time] per Loki convention).
 func LowerAt(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end time.Time) (chplan.Node, error) {
 	return lowerWithCtx(ctx, expr, s, lowerCtx{Start: start, End: end})
@@ -208,6 +239,7 @@ func LowerAtRangeOpts(ctx context.Context, expr syntax.Expr, s schema.Logs, star
 func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("logql")))
 	defer span.End()
+	lc.logLineWindow = !IsMetricQuery(expr)
 	plan, err := lower(expr, s, lc)
 	if err != nil {
 		span.RecordError(err)
@@ -351,9 +383,10 @@ func lower(expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 // lowerMatchers turns `{job="api", env=~"prod|stg"}` into Scan + Filter.
 // Stream-selector label matchers go against the ResourceAttributes map
 // since OTel-CH stores stream-identity labels there. When the context
-// carries a [start, end] window, a `TimestampColumn BETWEEN start AND end`
-// predicate is AND-folded above the Scan so the emitted SQL honours
-// the request's wire-format window.
+// carries a [start, end] window, a `TimestampColumn >= start AND
+// TimestampColumn {< | <=} end` predicate is AND-folded above the Scan so
+// the emitted SQL honours the request's wire-format window — see
+// [andFoldTimeWindow] for which upper bound each query shape gets.
 func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.Node {
 	scan := &chplan.Scan{Table: s.LogsTable}
 	pred := buildMatchersPredicate(e.Mts, s)
@@ -2629,12 +2662,20 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 }
 
 // andFoldTimeWindow AND-folds a `<TimestampColumn> >= start AND
-// <TimestampColumn> <= end` predicate onto pred when the lowering context
-// carries a non-zero window. The bounds render as
+// <TimestampColumn> {<|<=} end` predicate onto pred when the lowering
+// context carries a non-zero window. The bounds render as
 // `toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)` so the placeholders
 // land on the DateTime64(9) Timestamp column without an implicit
 // conversion. Mirror of the prom-side anchor rendering in
 // internal/promql/modifiers.go::anchorBaseExpr.
+//
+// The upper bound is STRICT for a log-line query and inclusive for a
+// metric one, because reference Loki's two paths differ exactly there —
+// see [lowerCtx.logLineWindow] for the upstream sites. A log-line query
+// that kept the inclusive bound returned one extra line, the one whose
+// timestamp equals `end` — and since `/query_range` pages by feeding the
+// previous page's last timestamp back as the next page's `start`, that
+// line is the one a paging client then sees TWICE.
 func andFoldTimeWindow(pred chplan.Expr, s schema.Logs, lc lowerCtx) chplan.Expr {
 	if !lc.hasTimeWindow() {
 		return pred
@@ -2645,8 +2686,12 @@ func andFoldTimeWindow(pred chplan.Expr, s schema.Logs, lc lowerCtx) chplan.Expr
 		Left:  tsCol,
 		Right: timeLiteralExpr(lc.Start),
 	}
+	upperOp := chplan.OpLe
+	if lc.logLineWindow {
+		upperOp = chplan.OpLt
+	}
 	upperBound := &chplan.Binary{
-		Op:    chplan.OpLe,
+		Op:    upperOp,
 		Left:  tsCol,
 		Right: timeLiteralExpr(lc.End),
 	}

@@ -194,10 +194,22 @@ func TestAllocs_Lower(t *testing.T) {
 		// + Lambda + Binary + map(2) subtree. Re-baselined: instant 181,
 		// range 158, binary 195, aggregation 225, subquery 162. Ceilings keep
 		// ~1.2× headroom over the new baseline so a future slip still trips.
+		//
+		// Prometheus-faithful `le` spelling: the classic-bucket fanout used
+		// to render the bound with a bare `toString(ExplicitBounds[i])` —
+		// two nodes. It now renders promFixedFloatStringExpr, which
+		// reproduces `strconv.FormatFloat(bound, 'f', -1, 64)` (the verb
+		// Prometheus's own OTLP receiver stamps `le` with) out of CH's
+		// rendering, and that is ~60 nodes behind eight hqLet bindings.
+		// ONLY the aggregation case moves — it is the only query here whose
+		// selector is a `_bucket` one; the other four are unchanged, which
+		// is what confirms the growth is confined to the `le` path rather
+		// than being a slip in a shared fast path. Re-baselined: aggregation
+		// 429, same ~1.2× headroom.
 		{"instant", `up`, 220},
 		{"range", `rate(http_requests_total[5m])`, 195},
 		{"binary", `(up * 2) > 1`, 240},
-		{"aggregation", `sum by (le)(rate(http_request_duration_seconds_bucket[1m]))`, 275},
+		{"aggregation", `sum by (le)(rate(http_request_duration_seconds_bucket[1m]))`, 515},
 		{"subquery", `max_over_time(rate(http_requests_total[1m])[5m:30s])`, 200},
 	}
 	for _, tc := range cases {

@@ -607,7 +607,8 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 // the expression reads the digits and the decimal exponent back out of
 // CH's rendering — exactly, from the string, never via log10 — and
 // re-lays them out under Go's rule: scientific iff the decimal exponent
-// falls outside [-4, 21), exponent always signed and at least two
+// falls outside [-4, 6) ([goShortestGSciLowerBound,
+// goShortestGSciUpperBound)), exponent always signed and at least two
 // digits wide.
 //
 // `newPhi` mints the phi expression; it is called twice (the value and
@@ -623,14 +624,6 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 		// rendering of its magnitude.
 		valueParam  = "v"
 		digitsParam = "u"
-		// Go's %g uses scientific notation exactly when the decimal
-		// exponent leaves [-4, 21) — equivalently when the magnitude
-		// leaves [1e-4, 1e21).
-		sciLowerBound = 1e-4
-		sciUpperBound = 1e21
-		// Exponents below this get a leading zero: Go writes at least
-		// two exponent digits ("1e-05", never "1e-5").
-		expPadBelow = 10
 	)
 
 	call := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
@@ -693,7 +686,7 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 	// The decimal exponent: read straight off CH's exponent when it used
 	// scientific notation, else derived from where the first significant
 	// digit sits relative to the decimal point. Both forms are exact —
-	// no floating-point log is involved, so the [-4, 21) boundaries
+	// no floating-point log is involved, so the [-4, 6) boundaries
 	// cannot be misclassified.
 	expVal := func() chplan.Expr {
 		leadingZeros := bin(chplan.OpSub, countOf(chplan.FnLength, digitsAll()), countOf(chplan.FnLength, digitsLead()))
@@ -712,7 +705,7 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 	expSuffix := func() chplan.Expr {
 		return call(chplan.FnConcat,
 			call(chplan.FnIf, bin(chplan.OpLt, expVal(), i(0)), str("-"), str("+")),
-			call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, expVal()), i(expPadBelow)),
+			call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, expVal()), i(goSciExpPadBelow)),
 				call(chplan.FnConcat, str("0"), expDigits()),
 				expDigits()))
 	}
@@ -722,7 +715,7 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 		return call(chplan.FnIf, bin(chplan.OpLt, v(), f(0)), str("-"), str(""))
 	}
 	sci := call(chplan.FnConcat, sign(), mantissa(), str("e"), expSuffix())
-	// CH's fixed notation already matches Go's over the whole [-4, 21)
+	// CH's fixed notation already matches Go's over the whole [-4, 6)
 	// exponent range; only Go's trailing `.0` for integral values is
 	// missing.
 	fixed := call(chplan.FnConcat, sign(),
@@ -736,8 +729,8 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 		bin(chplan.OpAnd, call(chplan.FnIsInfinite, v()), bin(chplan.OpGt, v(), f(0))), str("+Inf"),
 		call(chplan.FnIsInfinite, v()), str("-Inf"),
 		bin(chplan.OpOr,
-			bin(chplan.OpLt, call(chplan.FnAbs, v()), f(sciLowerBound)),
-			bin(chplan.OpGe, call(chplan.FnAbs, v()), f(sciUpperBound))), sci,
+			bin(chplan.OpLt, call(chplan.FnAbs, v()), f(goShortestGSciLowerBound)),
+			bin(chplan.OpGe, call(chplan.FnAbs, v()), f(goShortestGSciUpperBound))), sci,
 		fixed)
 
 	phiValue, err := newPhi()

@@ -5,7 +5,7 @@
 # only arm that derives an exponent.
 #
 # Prometheus formats the label with strconv.FormatFloat(f, 'g', -1, 64):
-# 1e-05 has decimal exponent -5, outside [-4, 21), so Go writes scientific
+# 1e-05 has decimal exponent -5, outside [-4, 6), so Go writes scientific
 # notation and pads the exponent to two digits — "1e-05", never "1e-5".
 # The mantissa is a single digit, so no ".0" is appended (the string
 # already carries an 'e').

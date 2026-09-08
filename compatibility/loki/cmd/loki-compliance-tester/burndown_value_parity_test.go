@@ -117,12 +117,12 @@ func TestBurndownCases_Shape(t *testing.T) {
 			if tc.Step != 0 {
 				t.Fatalf("log case %q carries step %v; a log query has no step grid", tc.QueryDesc, tc.Step)
 			}
-			// The log window sits OFF the per-minute seed grid on both
-			// edges so reference Loki's exclusive `end` cannot turn into
-			// a spurious one-entry diff.
-			const logWindowOffset = 30 * time.Second
-			if !tc.Start.Equal(start.Add(logWindowOffset)) || !tc.End.Equal(start.Add(burndownLength).Add(logWindowOffset)) {
-				t.Fatalf("log case %q window = [%v, %v], want both edges shifted %v off the seed grid", tc.QueryDesc, tc.Start, tc.End, logWindowOffset)
+			// The log window is the SAME seed-grid-aligned window the
+			// metric cases use, so an entry sits exactly on `end` and
+			// reference Loki's exclusive entry bound is exercised rather
+			// than stepped around.
+			if !tc.Start.Equal(start) || !tc.End.Equal(start.Add(burndownLength)) {
+				t.Fatalf("log case %q window = [%v, %v], want the anchor-aligned [start, start+%v]", tc.QueryDesc, tc.Start, tc.End, burndownLength)
 			}
 			if tc.Direction != logproto.BACKWARD {
 				t.Fatalf("log case %q direction = %v, want BACKWARD", tc.QueryDesc, tc.Direction)

@@ -156,18 +156,17 @@ func burndownCases(metadata *bench.DatasetMetadata) ([]bench.TestCase, error) {
 		{"pattern line filter negated: embedded literal", fmt.Sprintf(`%s !> "<_>error<_>"`, selJSON), "log"},
 	}
 
-	// Log (entry-returning) queries use a window whose edges sit OFF the
-	// per-minute seed grid (+30s on both ends). Reference Loki's
-	// query_range treats `end` as exclusive (`[start, end)`) for entry
-	// queries; with a whole-minute window aligned to the seed an entry
-	// lands exactly on `end` and the inclusive/exclusive edge becomes a
-	// spurious one-entry diff that has nothing to do with the operator
-	// under test. The metric (range) cases keep the anchor-aligned
-	// window — the step grid IS their subject and they agree on every
-	// anchor.
-	logStart := start.Add(30 * time.Second)
-	logEnd := end.Add(30 * time.Second)
-
+	// Log (entry-returning) and metric (range) cases share ONE window,
+	// aligned to the per-minute seed grid, so an entry lands exactly on
+	// `end`. That entry is the point: reference Loki's entry path is
+	// `[start, end)` (pkg/iter/entry_iterator.go — "The maxt is
+	// exclusive") while its metric path is end-inclusive
+	// (pkg/logql/evaluator.go's "add leap nanosecond to endTs"), and the
+	// aligned window is what makes the two disagree observably. The log
+	// cases previously ran on a window shifted 30s off the seed grid so
+	// that edge could not produce a diff — which meant this pass could
+	// not see cerberus emitting an inclusive `end` on the entry path
+	// either.
 	cases := make([]bench.TestCase, 0, len(queries))
 	for _, def := range queries {
 		tc := bench.TestCase{
@@ -182,8 +181,6 @@ func burndownCases(metadata *bench.DatasetMetadata) ([]bench.TestCase, error) {
 		if def.kind == "metric" {
 			tc.Step = burndownStep
 		} else {
-			tc.Start = logStart
-			tc.End = logEnd
 			tc.Direction = logproto.BACKWARD
 		}
 		cases = append(cases, tc)

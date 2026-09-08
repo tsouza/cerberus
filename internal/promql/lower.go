@@ -5309,20 +5309,20 @@ func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema
 // SQL shape (no grouping):
 //
 //	SELECT '' AS MetricName,
-//	       CAST(map('<label>', toString(Value)), 'Map(String,String)') AS Attributes,
+//	       CAST(map('<label>', <fmtValue>), 'Map(String,String)') AS Attributes,
 //	       now64(9) AS TimeUnix,
 //	       count() AS Value
 //	FROM (<inner>)
-//	GROUP BY toString(Value)
+//	GROUP BY <fmtValue>
 //
 // SQL shape (with `by(g)`):
 //
 //	SELECT '' AS MetricName,
-//	       mapWithoutEmpty(map('g', gkey_0, '<label>', toString(Value))) AS Attributes,
+//	       mapWithoutEmpty(map('g', gkey_0, '<label>', <fmtValue>)) AS Attributes,
 //	       now64(9) AS TimeUnix,
 //	       count() AS Value
 //	FROM (<inner>)
-//	GROUP BY Attributes['g'], toString(Value)
+//	GROUP BY Attributes['g'], <fmtValue>
 //
 // SQL shape (with `without(g1, g2)`):
 //
@@ -5332,11 +5332,11 @@ func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema
 //	       count() AS Value
 //	FROM (<inner>)
 //	GROUP BY mapFilter((k, v) -> NOT (k IN ('g1', 'g2')), Attributes) AS gkey_0,
-//	         toString(Value) AS cv_val
+//	         <fmtValue> AS cv_val
 //
 // SQL shape (with `without()` — degenerate empty without-set):
 //
-//	GROUP BY Attributes AS gkey_0, toString(Value) AS cv_val
+//	GROUP BY Attributes AS gkey_0, <fmtValue> AS cv_val
 //
 // The without variant follows the same template as `sum without (...)`
 // (see aggregateGroupBy / wrapAggregateForSample): the partition key is
@@ -5388,10 +5388,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		a,
 		label,
 		input,
-		&chplan.FuncCall{
-			Fn:   chplan.FnToString,
-			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
-		},
+		promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn}),
 		s,
 		ctx,
 	), nil
