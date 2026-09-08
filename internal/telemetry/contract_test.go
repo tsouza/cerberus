@@ -2,6 +2,7 @@ package telemetry_test
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 
@@ -39,14 +40,19 @@ func TestMetricNames_PublicContract(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"cerberus_queries_total":                   false,
-		"cerberus_queries_duration_exp_hist":       false,
+		"cerberus_queries_total":             false,
+		"cerberus_queries_duration_exp_hist": false,
+		// Deprecated, dual-emitted for one release: this is the name the
+		// histogram carried through v1.20.0. Remove it here and in
+		// metrics.go together, one release after the rename ships.
+		"cerberus_queries_duration_seconds":        false,
 		"cerberus_pipeline_stage_duration_seconds": false,
 		"cerberus_optimizer_rules_applied":         false,
 		"cerberus_clickhouse_rows_read":            false,
 		"cerberus_clickhouse_bytes_read":           false,
 		"cerberus_query_inflight":                  false,
 	}
+	var unexpected []string
 	for _, sm := range rm.ScopeMetrics {
 		if !strings.HasSuffix(sm.Scope.Name, "internal/telemetry") {
 			continue
@@ -54,13 +60,25 @@ func TestMetricNames_PublicContract(t *testing.T) {
 		for _, m := range sm.Metrics {
 			if _, ok := want[m.Name]; ok {
 				want[m.Name] = true
+				continue
 			}
+			unexpected = append(unexpected, m.Name)
 		}
 	}
 	for name, seen := range want {
 		if !seen {
 			t.Errorf("metric %q not emitted; rename breaks dashboards", name)
 		}
+	}
+	// The set is EXACT in both directions. Checking only that the wanted
+	// names appear let a rename pass as long as the author edited this map
+	// in the same commit, which is how cerberus_queries_duration_seconds
+	// disappeared from a shipped release with no dual-emit period. An
+	// unexpected name now fails here, so adding one is a deliberate edit
+	// to this list rather than a silent side effect.
+	sort.Strings(unexpected)
+	for _, name := range unexpected {
+		t.Errorf("metric %q is emitted but not in the pinned public contract; add it here deliberately", name)
 	}
 }
 
