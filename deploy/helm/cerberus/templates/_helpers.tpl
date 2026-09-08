@@ -195,6 +195,41 @@ true
 {{- end }}
 
 {{/*
+Whether a bundled-ClickHouse inter-server secret is configured at all, by
+either route. "true" or "".
+*/}}
+{{- define "cerberus.clickhouse.hasInterserverSecret" -}}
+{{- $b := .Values.clickhouse.bundled -}}
+{{- if or $b.interserverSecret $b.interserverExistingSecret -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether the chart should RENDER the inter-server Secret (inline value given
+and no pre-existing Secret named). "true" or "".
+*/}}
+{{- define "cerberus.clickhouse.createInterserverSecret" -}}
+{{- $b := .Values.clickhouse.bundled -}}
+{{- if and $b.interserverSecret (not $b.interserverExistingSecret) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Name of the Secret holding the inter-server secret: the operator's own when
+`interserverExistingSecret` is set, else the chart-managed one.
+*/}}
+{{- define "cerberus.clickhouse.interserverSecretName" -}}
+{{- $b := .Values.clickhouse.bundled -}}
+{{- if $b.interserverExistingSecret -}}
+{{ $b.interserverExistingSecret }}
+{{- else -}}
+{{ include "cerberus.clickhouse.fullname" . }}-interserver
+{{- end -}}
+{{- end }}
+
+{{/*
 Whether the ClickHouse TLS cert files should be volume-mounted from a Secret.
 */}}
 {{- define "cerberus.tlsMount" -}}

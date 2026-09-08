@@ -13,13 +13,16 @@
 
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
-import { error, log, lsFiles } from './lib/gh.mjs';
+import { error, log, lsFilesRequired } from './lib/gh.mjs';
 
 const RESOLUTION_BOUNDARY = /^internal\/chsql\/fnresolution(?:_completeness)?(?:_test)?\.go$/;
 const RAW_FN_LITERAL = /\b(?:chplan\.)?Fn\s*\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`)/g;
 
 let violations = 0;
-for (const file of lsFiles(['*.go', ':!:vendor/**', ':!:.claude/**'])) {
+for (const file of lsFilesRequired(
+  ['*.go', ':!:vendor/**', ':!:.claude/**'],
+  'forbid-chplan-fn-literal',
+)) {
   const rel = file.replace(/\\/g, '/');
   if (RESOLUTION_BOUNDARY.test(rel)) continue;
 

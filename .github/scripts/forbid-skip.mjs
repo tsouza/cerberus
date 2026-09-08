@@ -24,7 +24,7 @@
 //
 // Exit codes: 0 = clean, 1 = a banned pattern was found (or bad $CHECK).
 
-import { lsFiles, error, log, capture } from './lib/gh.mjs';
+import { lsFilesRequired, error, log, capture } from './lib/gh.mjs';
 import process from 'node:process';
 
 const CHECK = process.env.CHECK || '';
@@ -34,9 +34,8 @@ const CHECK = process.env.CHECK || '';
 // Returns { matched, output }. We shell out to grep (not a JS regex) so
 // the ERE semantics + multi-file `-H` line addressing match the original
 // byte-for-byte.
-function grepFiles({ pathspecs, grepFlags, regex }) {
-  const files = lsFiles(pathspecs);
-  if (files.length === 0) return { matched: false, output: '' };
+function grepFiles({ pathspecs, grepFlags, regex, scan }) {
+  const files = lsFilesRequired(pathspecs, `forbid-skip: ${scan}`);
   const res = capture('grep', [...grepFlags, '-e', regex, '--', ...files]);
   // grep exit 0 = match found, 1 = no match, >1 = real error.
   if (res.status > 1) {
@@ -49,8 +48,8 @@ function grepFiles({ pathspecs, grepFlags, regex }) {
 // perlSlurp — replicate the `git ls-files -z | xargs -0 perl -0777 -ne` shape.
 // Runs the perl program once per matched file (xargs would batch, but per
 // $ARGV the line-number arithmetic is identical) and concatenates output.
-function perlSlurp({ pathspecs, program }) {
-  const files = lsFiles(pathspecs);
+function perlSlurp({ pathspecs, program, scan }) {
+  const files = lsFilesRequired(pathspecs, `forbid-skip: ${scan}`);
   let out = '';
   for (const f of files) {
     const res = capture('perl', ['-0777', '-ne', program, f]);
@@ -76,6 +75,7 @@ function fail(message) {
 const CHECKS = {
   't-skip': () => {
     const { matched, output } = grepFiles({
+      scan: 't-skip',
       pathspecs: ['*_test.go', ':!:compatibility/*/upstream/**'],
       grepFlags: ['-nE'],
       regex: 't\\.Skip[fN]?\\(',
@@ -95,6 +95,7 @@ const CHECKS = {
     // OTHER spec in the file, so a lane can report green having run one
     // test. All three are t.Skip in TypeScript.
     const skips = grepFiles({
+      scan: 'playwright-skip',
       pathspecs: ['*.spec.ts', '*.spec.js', ':!:**/node_modules/**'],
       grepFlags: ['-nEH'],
       regex: '(^|[^A-Za-z0-9_$.])(test|it|describe|suite)(\\.describe)?\\.(skip|fixme|only)\\s*\\(',
@@ -110,6 +111,7 @@ const CHECKS = {
   'soft-assert': () => {
     let bad = false;
     const softAssert = grepFiles({
+      scan: 'soft-assert',
       pathspecs: ['*_test.go', ':!:compatibility/*/upstream/**'],
       grepFlags: ['-nEH'],
       regex:
@@ -121,6 +123,7 @@ const CHECKS = {
     }
     // Multi-line silent-recover scan — identical perl program to ci.yml.
     const matches = perlSlurp({
+      scan: 'soft-assert',
       pathspecs: ['*_test.go', ':!:compatibility/*/upstream/**'],
       program:
         'while (/defer\\s+recover\\s*\\(\\s*\\)|defer\\s+func\\s*\\(\\s*\\)\\s*\\{[^{}]*_\\s*=\\s*recover\\s*\\(\\s*\\)/g) {\n  my $pre = substr($_, 0, $-[0]);\n  my $line = ($pre =~ tr/\\n//) + 1;\n  print "$ARGV:$line: silent-recover pattern\\n";\n}',
@@ -138,6 +141,7 @@ const CHECKS = {
 
   'should-skip': () => {
     const matches = perlSlurp({
+      scan: 'should-skip',
       pathspecs: [
         'compatibility/**/*.yml',
         'compatibility/**/*.yaml',
@@ -156,6 +160,7 @@ const CHECKS = {
 
   'escape-hatch': () => {
     const { matched, output } = grepFiles({
+      scan: 'escape-hatch',
       pathspecs: [
         '*.ts',
         '*.tsx',
@@ -189,6 +194,7 @@ const CHECKS = {
     // needs mixed case — `-i` closes a scan gap (`@WIP`, `@Skip`, ...) without
     // risking a false positive on unrelated text.
     const tags = grepFiles({
+      scan: 'feature-discipline',
       pathspecs: ['*.feature', ':!:**/node_modules/**'],
       grepFlags: ['-nEHi'],
       regex: '(^|[ \\t])@(wip|skip|ignore|manual|todo|pending)([ \\t]|$)',
@@ -203,6 +209,7 @@ const CHECKS = {
     // calling Skip / Skipf / SkipNow on the TestingT godog hands it, would
     // suppress the assertion with the gate none the wiser.
     const goSkips = grepFiles({
+      scan: 'feature-discipline',
       pathspecs: ['test/e2e/migration/**/*.go'],
       grepFlags: ['-nEH'],
       regex: 'godog\\.(ErrSkip|ErrPending)|\\.Skip(f|Now)?\\(',

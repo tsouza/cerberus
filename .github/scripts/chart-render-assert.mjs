@@ -49,7 +49,14 @@ const HOT_ONLY = [
   '--set', 'clickhouse.bundled.objectStorage.enabled=false',
   '--set', 'schema.ttl=30d',
 ]
-const SHARD_OPT_IN = ['--set', 'clickhouse.bundled.dataShards.count=2', '--set', 'clickhouse.bundled.experimentalDistributedMode=true']
+// Cross-shard forwarding needs an inter-server secret and the render refuses
+// count>1 without one (cerberus issue #3190), so every sharded fixture below
+// carries it. The refusal itself is asserted separately.
+const SHARD_OPT_IN = [
+  '--set', 'clickhouse.bundled.dataShards.count=2',
+  '--set', 'clickhouse.bundled.experimentalDistributedMode=true',
+  '--set', 'clickhouse.bundled.interserverSecret=render-assert-secret',
+]
 const SHARDED = [...OBJECT_STORE, ...SHARD_OPT_IN]
 
 function tpl(args) {
@@ -486,6 +493,93 @@ function count(haystack, needle) {
   // <i>.xml keys that configmap-config.yaml only emits when Keeper is
   // enabled (ACPR finding: this combination previously left pods stuck in
   // ContainerCreating with no render-time signal at all).
+  // Cross-shard forwarding with no inter-server secret (cerberus issue #3190):
+  // ClickHouse forwards a Distributed query as `default` with an EMPTY
+  // password, so on any deployment whose `default` user has a password EVERY
+  // cross-shard query fails AUTHENTICATION_FAILED while direct connections to
+  // each node keep working. The render refuses count>1 without one.
+  const shardsNoSecret = tplFail([
+    '--set', 'clickhouse.bundled.enabled=true',
+    '--set', 'clickhouse.bundled.objectStorage.enabled=true',
+    '--set', 'clickhouse.bundled.objectStorage.backend=s3',
+    '--set', 'schema.ttl=30d',
+    '--set', 'clickhouse.bundled.dataShards.count=2',
+    '--set', 'clickhouse.bundled.experimentalDistributedMode=true',
+  ])
+  check(shardsNoSecret !== null, 'dataShards.count=2 with no inter-server secret: render FAILS')
+  check(
+    shardsNoSecret !== null && /interserverSecret/.test(shardsNoSecret),
+    'the rejection names the values key that fixes it',
+  )
+
+  // Set it, and every node learns the same secret by env — never as a
+  // ConfigMap literal — and the cluster definition reads it.
+  const sharded = tpl(SHARDED)
+  check(
+    sharded.includes('<secret from_env="CH_INTERSERVER_SECRET" />'),
+    'remote_servers carries <secret> so forwarding keeps the originating identity',
+  )
+  check(
+    count(sharded, 'name: CH_INTERSERVER_SECRET') === 2,
+    'both per-shard StatefulSets receive the inter-server secret by env',
+  )
+  check(
+    !sharded.includes('render-assert-secret\n') || sharded.includes('kind: Secret'),
+    'the inter-server value lands in a Secret, never inline in the ConfigMap',
+  )
+  const shardedCfg = sharded.slice(sharded.indexOf('cluster.xml'), sharded.indexOf('macros-datashard'))
+  check(
+    !shardedCfg.includes('render-assert-secret'),
+    'the cluster.xml ConfigMap never carries the secret value itself',
+  )
+
+  // An existing Secret is honoured and no chart Secret is rendered for it.
+  const shardedExisting = tpl([
+    ...OBJECT_STORE,
+    '--set', 'clickhouse.bundled.dataShards.count=2',
+    '--set', 'clickhouse.bundled.experimentalDistributedMode=true',
+    '--set', 'clickhouse.bundled.interserverExistingSecret=my-own-secret',
+  ])
+  check(
+    shardedExisting.includes('name: my-own-secret'),
+    'interserverExistingSecret is referenced by the StatefulSets',
+  )
+  check(
+    !shardedExisting.includes('-clickhouse-interserver\n'),
+    'interserverExistingSecret renders no chart-managed Secret',
+  )
+
+  // ClickHouse's own Prometheus endpoint (cerberus issue #3193). The chart
+  // ships Keeper, tiering, replication and shard fan-out, whose failure modes
+  // are visible only in these system.* metrics; before this there was no
+  // scrape target for the data tier at all.
+  const withMetrics = tpl(OBJECT_STORE)
+  check(withMetrics.includes('<port>9363</port>'), 'bundled ClickHouse renders its Prometheus endpoint by default')
+  check(
+    count(withMetrics, 'containerPort: 9363') === 1,
+    'the ClickHouse container exposes the metrics port',
+  )
+  check(
+    count(withMetrics, 'targetPort: metrics') === 2,
+    'both the ClusterIP and headless Services route to it',
+  )
+
+  // Opting out renders as the chart did before the endpoint existed.
+  const noMetrics = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.metrics.enabled=false'])
+  check(!noMetrics.includes('9363'), 'metrics.enabled=false renders no endpoint, port or Service entry')
+  check(!noMetrics.includes('metrics.xml'), 'metrics.enabled=false renders no metrics.xml ConfigMap key')
+
+  // Every per-shard Service pair gets it too, not just shard 0.
+  const shardedMetrics = tpl(SHARDED)
+  check(
+    count(shardedMetrics, 'targetPort: metrics') === 4,
+    'dataShards.count=2: all four per-shard Services route to the metrics port',
+  )
+  check(
+    count(shardedMetrics, 'containerPort: 9363') === 2,
+    'dataShards.count=2: both per-shard StatefulSets expose the metrics port',
+  )
+
   const keeperOffWithShards = tplFail([...SHARDED, '--set', 'clickhouse.bundled.keeper.enabled=false'])
   check(keeperOffWithShards !== null, 'keeper.enabled=false + dataShards.count=2: render FAILS')
   check(keeperOffWithShards && /keeper\.enabled/.test(keeperOffWithShards) && /dataShards\.count/.test(keeperOffWithShards), 'the keeper-off-with-shards failure names BOTH keeper.enabled and dataShards.count')

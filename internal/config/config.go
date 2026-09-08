@@ -2276,7 +2276,18 @@ const defaultQueryTimeout time.Duration = 2 * time.Minute
 // gets a deterministic resource-exhausted rejection instead of racing
 // ClickHouse's server-total cap mid-stream and 502-ing. 0 disables the
 // setting entirely (ClickHouse server defaults apply).
-const defaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
+const defaultCHQueryMaxMemory int64 = DefaultCHQueryMaxMemory
+
+// DefaultCHQueryMaxMemory is defaultCHQueryMaxMemory's exported twin, so a
+// package that DERIVES a value from this default can pin itself to it
+// rather than restate the number.
+//
+// internal/engine's no-cap spill threshold is exactly this divided by its
+// own denominator, and .go-arch-lint.yml forbids engine importing config —
+// but it excludes _test.go, so the derivation is pinned where it belongs,
+// in engine's own test, against this constant instead of a local literal
+// that a bump to the default would leave behind.
+const DefaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
 
 // ClickHouse connection-pool defaults (#81). MaxIdleConns / MaxOpenConns
 // reproduce clickhouse-go/v2's previously-implicit defaults verbatim so the

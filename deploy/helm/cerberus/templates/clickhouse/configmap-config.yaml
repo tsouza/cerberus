@@ -14,6 +14,24 @@ metadata:
   labels:
     {{- include "cerberus.clickhouse.labels" . | nindent 4 }}
 data:
+  {{- if $b.metrics.enabled }}
+  {{- /* ClickHouse's own Prometheus endpoint (cerberus issue #3193). The
+         chart ships Keeper, hot/cold tiering, replication and multi-shard
+         fan-out; parts count, merge activity, replication lag, background
+         pool depth and cache hit rates live only in these `system.*`
+         metrics. cerberus's own /metrics covers the query-serving side and
+         says nothing about the storage layer beneath it. */}}
+  metrics.xml: |
+    <clickhouse>
+      <prometheus>
+        <endpoint>{{ $b.metrics.path }}</endpoint>
+        <port>{{ $b.metrics.port }}</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+      </prometheus>
+    </clickhouse>
+  {{- end }}
   storage.xml: |
     {{- include "cerberus.clickhouse.storageXML" . | nindent 4 }}
   tuning.xml: |
@@ -54,6 +72,15 @@ data:
       </zookeeper>
       <remote_servers>
         <bwc_cluster>
+          {{- if eq (include "cerberus.clickhouse.hasInterserverSecret" $) "true" }}
+          <!-- Cross-node query forwarding carries the ORIGINATING user's
+               identity (cerberus issue #3190). Without it ClickHouse
+               forwards as `default` with an empty password, so every
+               cross-node query fails AUTHENTICATION_FAILED wherever
+               `default` has a real password, while direct connections to
+               each node keep working. -->
+          <secret from_env="CH_INTERSERVER_SECRET" />
+          {{- end }}
           <shard>
             <internal_replication>true</internal_replication>
             {{- range $i := until (int $b.replicas) }}
@@ -94,6 +121,15 @@ data:
       </zookeeper>
       <remote_servers>
         <bwc_cluster>
+          {{- if eq (include "cerberus.clickhouse.hasInterserverSecret" $) "true" }}
+          <!-- Cross-node query forwarding carries the ORIGINATING user's
+               identity (cerberus issue #3190). Without it ClickHouse
+               forwards as `default` with an empty password, so every
+               cross-node query fails AUTHENTICATION_FAILED wherever
+               `default` has a real password, while direct connections to
+               each node keep working. -->
+          <secret from_env="CH_INTERSERVER_SECRET" />
+          {{- end }}
           {{- range $shard := until $dataShardCount }}
           <!-- DATA shard {{ $shard }} (cerberus issue #3077 — ClickHouse's own shard tag, one per bundled.dataShards.count). -->
           <shard>

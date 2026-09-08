@@ -269,6 +269,25 @@ clickhouse:
     # `replicaCount`. `replicas` above (plain replication, N copies of the
     # SAME data) is a supported path and never needs this.
     experimentalDistributedMode: false
+    # -- ClickHouse's own Prometheus endpoint (cerberus issue #3193).
+    # Enabled by default: the chart ships Keeper, hot/cold tiering,
+    # replication and multi-shard fan-out, and those subsystems' failure
+    # modes — parts count, merge activity, replication lag, background pool
+    # depth, cache hit rates — are visible ONLY in ClickHouse's own
+    # `system.*` metrics. cerberus's own `/metrics` reports the
+    # query-serving side and says nothing about the storage layer beneath
+    # it, so a bundled deployment had no scrape target for the data tier at
+    # all.
+    #
+    # `enabled: false` renders exactly as this chart did before the endpoint
+    # existed: no `<prometheus>` block, no container port, no Service port.
+    metrics:
+      enabled: true
+      # -- Port for the ClickHouse Prometheus endpoint. 9363 is ClickHouse's
+      # own documented default for it.
+      port: 9363
+      # -- Path the endpoint serves.
+      path: /metrics
     # -- ClickHouse cluster DATA-shard topology (cerberus issue #3077, epic
     # #3074). DISAMBIGUATION: this is a DIFFERENT "shard" than `replicas`
     # above — replicas are copies of the SAME data; a DATA shard is a
@@ -277,6 +296,31 @@ clickhouse:
     # Keeper-coordination macros (see `schema.replicated.zookeeperPath`'s own
     # comment) and to `internal/solver`'s query-time-range "shard" — see
     # `internal/chopt/topology.go`'s terminology table for the full picture.
+    # -- Shared inter-server secret for cross-shard/cross-replica query
+    # forwarding (cerberus issue #3190). Renders `<secret>` inside
+    # `remote_servers.<bwc_cluster>`, which is ClickHouse's own mechanism
+    # for a Distributed query to carry the ORIGINATING user's identity to
+    # a peer node.
+    #
+    # Without it, ClickHouse forwards as `default` with an EMPTY password,
+    # so on any deployment whose `default` user has a real password every
+    # cross-node query fails `AUTHENTICATION_FAILED` while direct client
+    # connections to each node keep working. That is 100% of queries once
+    # `count > 1`, which is why the render REFUSES `count > 1` without
+    # this set. A single shard with `replicas > 1` has the same exposure
+    # through replica forwarding, so setting it there is recommended; it
+    # is not required, because requiring it would break an existing
+    # single-shard deployment on upgrade.
+    #
+    # PREFER `interserverExistingSecret` in production so the value never
+    # lands in values or release history.
+    interserverSecret: null
+    # -- Name of a pre-existing Secret holding the inter-server secret.
+    # Takes precedence over `interserverSecret` (no chart Secret is
+    # rendered).
+    interserverExistingSecret: ""
+    # -- Key within the inter-server Secret.
+    interserverSecretKey: interserver-secret
     dataShards:
       # -- Number of independent ClickHouse DATA shards. `1` (default)
       # renders EXACTLY today's single-StatefulSet/single-Service chart
