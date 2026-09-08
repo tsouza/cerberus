@@ -469,7 +469,7 @@ func TestRetryOnRouteAResourceFailure_RecordsProbeDeclineReasons(t *testing.T) {
 		seed := memoWiringNotRoutedDecision(t)
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineProbeNotAdmitted]
 		// First resource failure on a fresh Unknown key: corroboration=1,
-		// below minCorroboratingFailures — ObserveRouteAFailureAndMaybeBeginProbe
+		// below MinCorroboratingFailures — ObserveRouteAFailureAndMaybeBeginProbe
 		// itself refuses, for a reason OTHER than cluster-wide pressure.
 		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0, nil); retried {
 			t.Fatal("retried on the first route-A resource failure")
@@ -742,7 +742,7 @@ func TestTryRouteMemoHit_StaleVerdictFallsBackToCaller(t *testing.T) {
 	d := eng.deriveRouteMemoDispatch(plan, seed, fixedNow)
 	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 
-	// Advance past the re-validation midpoint (memoEntryTTL/2) without
+	// Advance past the re-validation midpoint (MemoEntryTTL/2) without
 	// crossing the TTL itself.
 	memo.SetNowForTest(func() time.Time { return fixedNow.Add(20 * time.Minute) })
 
@@ -871,7 +871,7 @@ func TestTryRouteMemoHit_MidDrainResourceFailure_ObserveViaClassify(t *testing.T
 
 // TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration pins the A->B
 // retry's core contract: a route-A resource failure alone is NOT enough —
-// it takes minCorroboratingFailures consecutive failures with no
+// it takes MinCorroboratingFailures consecutive failures with no
 // intervening success before a probe (retry) is admitted.
 func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 	t.Parallel()
@@ -892,7 +892,7 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 	}
 
 	// Second consecutive resource failure, same key, no intervening
-	// success: corroboration=2 (the default minCorroboratingFailures) —
+	// success: corroboration=2 (the default MinCorroboratingFailures) —
 	// NOW a probe is admitted and route B dispatches.
 	cur, info, usedDecision, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0, nil)
 	if !retried {

@@ -2928,13 +2928,20 @@ func overTimeArrayValueFrag(fn string, vals Frag) (Frag, error) {
 		// applied twice: once over window_vals for the inner median, once
 		// over the absolute deviations. Empty windows are dropped by the
 		// shared outer WHERE length(window_vals) >= 1 below.
-		med := medianOverArrayFrag(vals)
+		med, err := medianOverArrayFrag(vals)
+		if err != nil {
+			return nil, err
+		}
 		devs := Call(
 			"arrayMap",
 			Lambda1("x", Call("abs", Sub(BareIdent("x"), med))),
 			vals,
 		)
-		inner = nonEmptyWindowOrNaNFrag(vals, medianOverArrayFrag(devs))
+		devMed, err := medianOverArrayFrag(devs)
+		if err != nil {
+			return nil, err
+		}
+		inner = nonEmptyWindowOrNaNFrag(vals, devMed)
 	case "stddev_over_time":
 		// Empty window → drop the series (Prom returns no sample).
 		// We mirror with NaN; the engine layer treats NaN as "drop"
@@ -3017,9 +3024,9 @@ func varPopTwoPassFrag(vals Frag) Frag {
 // this replaced, whose unwrapped sum silently rebound into the
 // subtraction (mad_over_time_even_window.txtar pins the correct
 // result).
-func medianOverArrayFrag(arr Frag) Frag {
+func medianOverArrayFrag(arr Frag) (Frag, error) {
 	const medianPhi = 0.5
-	return Call("arrayReduce", InlineLit("quantileExactInclusive("+formatFloat(medianPhi)+")"), arr)
+	return arrayReduceParametricFrag(chplan.FnQuantile, []Frag{InlineLit(medianPhi)}, arr)
 }
 
 // emitRangeWindowTsOfOverTime emits SQL for the experimental timestamp
@@ -3734,14 +3741,18 @@ func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
 	}
 	phi := r.Scalars[0]
 	// arrayReduce('quantileExactInclusive(<phi>)', window_vals) — the
-	// literal-phi path; the aggregate name carries phi inline (formatFloat
-	// keeps it stable across driver float formatting), so it rides
-	// InlineLit as a single quoted string. Empty window drops the series
-	// (nan).
+	// literal-phi path; the aggregate name carries phi inline, so it rides
+	// InlineLit as a single quoted string. The name itself comes from the
+	// FnQuantile resolution entry via arrayReduceParametricFrag rather than
+	// being retyped here. Empty window drops the series (nan).
+	q, err := arrayReduceParametricFrag(chplan.FnQuantile, []Frag{InlineLit(phi)}, BareIdent("window_vals"))
+	if err != nil {
+		return err
+	}
 	frag := Call(
 		"if",
 		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(0))),
-		Call("arrayReduce", InlineLit("quantileExactInclusive("+formatFloat(phi)+")"), BareIdent("window_vals")),
+		q,
 		BareIdent("nan"),
 	)
 	return e.emitWindowedArray(r, frag, 1)
@@ -5518,6 +5529,7 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 		// straight into GroupBy must not silently mis-render against a
 		// JSON-typed column.
 		sub := NewBuilderWithAttrStrategies(e.attrStrategies)
+		sub.env = e
 		if err := sub.Expr(g); err != nil {
 			return nil, err
 		}

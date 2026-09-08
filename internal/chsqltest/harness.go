@@ -87,28 +87,3 @@ func isolatedDBName(testName string) string {
 	}
 	return fmt.Sprintf("%s_%d", b.String(), isolatedDBSeq.Add(1))
 }
-
-// MetricsSeedDDL renders the OTel-CH metric-table shape internal/chsql's chDB
-// round-trip tests seed. It is ONE definition rather than a copy per test file
-// because the read path decides which columns a selector projects, and a
-// column added there has to reach every seed at once: `ServiceName` was added
-// to the selector's label projection and eight identical inline CREATEs each
-// had to learn about it, which is exactly the drift a shared renderer removes.
-// A ninth seed that never adopted it — a hand-rolled three-column
-// `otel_metrics_sum` — is what #2074 was.
-//
-// `ResourceAttributes` and `ServiceName` carry DEFAULTs so the tests' explicit
-// INSERT column lists stay short — the read path only needs them to RESOLVE,
-// not to be populated.
-func MetricsSeedDDL(table string) string {
-	return fmt.Sprintf(`
-CREATE OR REPLACE TABLE %s (
-    MetricName String,
-    Attributes Map(String, String),
-    ResourceAttributes Map(String, String) DEFAULT map(),
-    ServiceName LowCardinality(String) DEFAULT '',
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-`, table)
-}

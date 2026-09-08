@@ -249,8 +249,11 @@ jobs:
       # Cache the pinned libchdb.so so the install step is a no-op cache
       # hit on the common path (the recipe is idempotent — it skips the
       # download when the file already exists at CHDB_INSTALL_PATH). The
-      # key is pinned to the recipe's CHDB_VERSION so a version bump busts
-      # the cache automatically.
+      # key names the recipe's CHDB_VERSION explicitly. It is NOT derived:
+      # .github/scripts/chdb-version-sync.mjs is what keeps every copy equal
+      # to the recipe, because the install step SKIPS when the file already
+      # exists, so a key left behind on a bump silently restores the old
+      # engine and keeps it.
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
@@ -701,7 +704,9 @@ jobs:
       # and that fixed setup cost would eat much of the wall-clock the split is
       # buying. The recipe is idempotent — it skips the download when the file
       # is already at CHDB_INSTALL_PATH — so a cache hit makes the next step a
-      # no-op. Key pinned to the recipe's CHDB_VERSION so a bump busts it.
+      # no-op. The key names the recipe's CHDB_VERSION explicitly; it is not
+      # derived, and .github/scripts/chdb-version-sync.mjs is what keeps the
+      # two equal.
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:

@@ -50,7 +50,7 @@ import (
 // only once evidence says the shape does not need it.
 
 // perRungEvidenceMinObservations mirrors routememo's own
-// minCorroboratingFailures: a single clean-and-cheap drain cannot, by
+// MinCorroboratingFailures: a single clean-and-cheap drain cannot, by
 // itself, teach the learner anything — a low-traffic blip or an
 // unrepresentative first sample must not flip a shape's verdict alone.
 const perRungEvidenceMinObservations = 2
@@ -70,7 +70,7 @@ const perRungEvidenceMinObservations = 2
 const perRungCheapRowsPerAnchor = 20
 
 // perRungEvidenceTTL bounds how long a learned verdict is trusted, mirroring
-// routememo's own memoEntryTTL (30m): a metric's real cardinality can grow
+// routememo's own MemoEntryTTL (30m): a metric's real cardinality can grow
 // (a new label value, a service scaling out), and a verdict computed against
 // yesterday's shape must not silently suppress predictive routing forever
 // once that has happened. An observation older than this resets the state as
@@ -78,7 +78,7 @@ const perRungCheapRowsPerAnchor = 20
 // default, not a fresh strike against the shape.
 const perRungEvidenceTTL = 30 * time.Minute
 
-// perRungLearnerCapacity mirrors routememo's own memoMaxEntries: a bound
+// perRungLearnerCapacity mirrors routememo's own MemoMaxEntries: a bound
 // resident size so unbounded key cardinality cannot grow this cache without
 // limit. Eviction here is coarser than routememo's true LRU (any single
 // entry may be evicted once at capacity, not necessarily the oldest) because

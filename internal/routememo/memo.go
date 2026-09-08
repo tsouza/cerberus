@@ -58,22 +58,29 @@ const (
 )
 
 // Named, meaning-bearing constants — see docs/solver.md for the full
-// rationale of each. memoEntryTTL and reValidationFraction are DEFAULT
+// rationale of each. MemoEntryTTL and reValidationFraction are DEFAULT
 // values only: New seeds them into the per-Memo entryTTL /
 // reValidationFraction fields, which SetEntryTTL / SetReValidationFraction
 // can override per instance without changing New's signature.
 const (
-	// memoMaxEntries bounds the memo's resident size. A bounded LRU evicts
+	// MemoMaxEntries bounds the memo's resident size. A bounded LRU evicts
 	// the least-recently-touched entry once this is exceeded, so the memo
-	// cannot grow without bound under high key cardinality.
-	memoMaxEntries = 4096
+	// cannot grow without bound under high key cardinality. Exported for the
+	// same reason MinCorroboratingFailures below is: internal/engine's
+	// per-rung learner documents its own capacity as mirroring this one, and
+	// an unexported constant cannot be pinned against from there, which left
+	// the two copies free to drift (cerberus issue #3186).
+	MemoMaxEntries = 4096
 
-	// memoEntryTTL is the default for how long any verdict is trusted at
+	// MemoEntryTTL is the default for how long any verdict is trusted at
 	// all, counted from creation. It is never refreshed by a lookup, nor by
 	// a plain confirming route-A success on an Unknown/bookkeeping entry —
 	// only a route-A ResourceFailure against a PreferB entry (the stale
-	// re-validation path) or a fresh route-B Observe restamps it.
-	memoEntryTTL = 30 * time.Minute
+	// re-validation path) or a fresh route-B Observe restamps it. Exported
+	// for the same cross-package pinning reason as MemoMaxEntries above:
+	// internal/engine's perRungEvidenceTTL and internal/actuals's own
+	// EntryTTL default both document themselves as mirroring this value.
+	MemoEntryTTL = 30 * time.Minute
 
 	// reValidationFraction is the default divisor that places
 	// re-validation at the TTL midpoint — a fixed relationship to entryTTL
@@ -177,7 +184,7 @@ type Memo struct {
 	pressure       *pressureTracker
 
 	// entryTTL and reValidationFraction are seeded from the package-level
-	// defaults (memoEntryTTL, reValidationFraction) inside New and are
+	// defaults (MemoEntryTTL, reValidationFraction) inside New and are
 	// mutable only through the SetEntryTTL / SetReValidationFraction
 	// setters below, so New's signature and default behaviour for every
 	// existing caller stay unchanged.
@@ -199,14 +206,14 @@ func New(pressureWindow time.Duration) *Memo {
 		dispatchTokens:       make(chan struct{}, maxConcurrentRoutedDispatches),
 		pressureWindow:       pressureWindow,
 		pressure:             newPressureTracker(),
-		entryTTL:             memoEntryTTL,
+		entryTTL:             MemoEntryTTL,
 		reValidationFraction: reValidationFraction,
 		now:                  time.Now,
 	}
 }
 
 // SetEntryTTL overrides how long a recorded verdict is trusted before it
-// ages out, replacing the memoEntryTTL default. A non-positive ttl is a
+// ages out, replacing the MemoEntryTTL default. A non-positive ttl is a
 // no-op: zero or negative would make every verdict expire the instant it is
 // written (getLiveLocked's expiry check trips immediately), silently
 // disabling the memo rather than tuning it, so a misconfigured operator
@@ -544,7 +551,7 @@ func (m *Memo) touchLRULocked(k Key) {
 }
 
 func (m *Memo) evictIfNeededLocked() {
-	for len(m.entries) > memoMaxEntries {
+	for len(m.entries) > MemoMaxEntries {
 		front := m.lruList.Front()
 		if front == nil {
 			return
