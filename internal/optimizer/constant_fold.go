@@ -116,12 +116,16 @@ func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chpl
 					anyChange = true
 				}
 			}
-			newFuncs[i] = chplan.AggFunc{
-				Fn:     af.Fn,
-				Params: newParams,
-				Args:   newArgs,
-				Alias:  af.Alias,
-			}
+			// Copy-on-write from af, never a composite literal: a
+			// literal enumerating the fields it knows about silently
+			// drops any other, and AggFunc.Combinators is one — folding
+			// an argument of argMinIf would have rewritten it to a
+			// three-argument argMin ClickHouse rejects outright. Same
+			// rule, and the same reason, as chplan/clone.go states.
+			nf := af
+			nf.Params = newParams
+			nf.Args = newArgs
+			newFuncs[i] = nf
 		}
 		if !anyChange {
 			return n, false
