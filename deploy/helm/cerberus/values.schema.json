@@ -83,6 +83,18 @@
             "image": { "type": "string" },
             "replicas": { "type": "integer", "minimum": 1 },
             "experimentalDistributedMode": { "type": "boolean" },
+            "interserverSecret": { "type": ["string", "null"] },
+            "interserverExistingSecret": { "type": "string" },
+            "interserverSecretKey": { "type": "string" },
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "path": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
             "dataShards": {
               "type": "object",
               "additionalProperties": false,

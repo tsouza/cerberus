@@ -21,6 +21,38 @@ Two independent toggles pick the storage tier — **both default `true`**, so
   round-trips to object storage — so a hot tier that were "a cache too" would
   collapse straight back into object-store mode.
 
+## ClickHouse's own metrics
+
+The bundled ClickHouse serves ClickHouse's Prometheus endpoint on port 9363 at
+`/metrics`, enabled by default (`clickhouse.bundled.metrics`). It is a separate
+scrape target from cerberus's own `/metrics`, and it is the only place the data
+tier's health is visible: parts count, merge activity, replication lag,
+background pool depth, and cache hit rates all live in `system.*` and are
+exported here. cerberus's own metrics describe the query-serving side and say
+nothing about the storage beneath it.
+
+The port is exposed on the ClickHouse container and on both the ClusterIP and
+headless Services, and on every per-shard Service pair when
+`dataShards.count > 1`.
+
+Point a scrape job at it:
+
+```yaml
+scrape_configs:
+  - job_name: clickhouse
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        action: keep
+        regex: metrics
+```
+
+`metrics.enabled: false` renders exactly as the chart did before the endpoint
+existed — no `<prometheus>` block, no container port, no Service entry — so an
+operator who scrapes ClickHouse another way, or who does not want the port open,
+opts out and gets a byte-identical render.
+
 ## The four-cell matrix
 
 | `hotVolume.enabled`  | `objectStorage.enabled`  | Mode                     | `storage_policy`    | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -268,7 +300,17 @@ ConfigMap key via `subPath` into a directory another volume already
 populates fails on a real cluster) — replacing today's single hardcoded
 `<shard>01</shard>` literal — never a silent partial rename. `remote_servers.xml` (in the shared, cluster-global
 `cluster.xml` key) lists every shard's every replica identically on every
-pod. Keeper auto-enables from `dataShards.count > 1` alone, independent of
+pod, and carries a `<secret>` read from the environment so a Distributed
+query forwards the ORIGINATING user's identity to its peers. That secret is
+required: without it ClickHouse forwards as `default` with an empty
+password, so every cross-shard query fails `AUTHENTICATION_FAILED` on any
+deployment whose `default` user has a real password, while direct client
+connections to each node keep working and hide the cause. Supply it with
+`clickhouse.bundled.interserverSecret`, or name your own Secret with
+`interserverExistingSecret`; the render refuses `dataShards.count > 1`
+without one. A single shard with `replicas > 1` forwards across replicas the
+same way and should set it too — it is not required there only because
+requiring it would break an existing single-shard deployment on upgrade. Keeper auto-enables from `dataShards.count > 1` alone, independent of
 `replicas`: ClickHouse's own `ON CLUSTER` DDL-coordination mechanism (which
 every per-shard `CREATE ... ON CLUSTER` statement relies on) needs Keeper
 regardless of per-shard replica count. Each per-shard StatefulSet/Service

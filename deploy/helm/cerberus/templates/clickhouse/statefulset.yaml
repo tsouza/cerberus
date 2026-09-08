@@ -68,6 +68,10 @@ spec:
               protocol: TCP
             - name: interserver
               containerPort: 9009
+            {{- if $b.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ $b.metrics.port }}
+            {{- end }}
               protocol: TCP
           env:
             # The users config is mounted from a (read-only) ConfigMap at
@@ -86,6 +90,13 @@ spec:
                 secretKeyRef:
                   name: {{ $passwordSecret }}
                   key: {{ $ch.passwordKey }}
+            {{- end }}
+            {{- if eq (include "cerberus.clickhouse.hasInterserverSecret" $) "true" }}
+            - name: CH_INTERSERVER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cerberus.clickhouse.interserverSecretName" $ }}
+                  key: {{ $b.interserverSecretKey }}
             {{- end }}
             {{- with $osEnv }}
             {{- . | nindent 12 }}
@@ -243,6 +254,10 @@ spec:
               protocol: TCP
             - name: interserver
               containerPort: 9009
+            {{- if $b.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ $b.metrics.port }}
+            {{- end }}
               protocol: TCP
           env:
             # The users config is mounted from a (read-only) ConfigMap at
@@ -261,6 +276,13 @@ spec:
                 secretKeyRef:
                   name: {{ $passwordSecret }}
                   key: {{ $ch.passwordKey }}
+            {{- end }}
+            {{- if eq (include "cerberus.clickhouse.hasInterserverSecret" $) "true" }}
+            - name: CH_INTERSERVER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cerberus.clickhouse.interserverSecretName" $ }}
+                  key: {{ $b.interserverSecretKey }}
             {{- end }}
             {{- with $osEnv }}
             {{- . | nindent 12 }}

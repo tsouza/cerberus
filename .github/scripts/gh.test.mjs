@@ -14,11 +14,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { closeSync, existsSync, lstatSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { assertSafeArg, capture, createFreshFileFd, lsFiles, writeFreshFile } from './lib/gh.mjs';
+import { assertSafeArg, capture, createFreshFileFd, lsFiles, lsFilesRequired, writeFreshFile } from './lib/gh.mjs';
 
 test('capture forwards the options it documents', () => {
   const res = capture('sh', ['-c', 'printf "%s" "$MARKER"'], {
@@ -153,6 +154,8 @@ test('writeFreshFile is fine when nothing exists at the path yet', () => {
 // scan reported clean on content it would reject the moment it was staged.
 // `newRepo()` builds a throwaway git repository so the assertion is against
 // the real CLI, not a mock.
+const SCRIPT_DIR = fileURLToPath(new URL('.', import.meta.url));
+
 function newRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'gh-lsfiles-'));
   const run = (args) => {
@@ -199,5 +202,34 @@ test('lsFiles honours an exclude pathspec against an untracked file, same as a t
   assert.ok(
     !files.some((f) => f.includes('upstream')),
     `exclude pathspec did not apply to an untracked path: ${JSON.stringify(files)}`,
+  );
+});
+
+// lsFilesRequired is what makes a discipline scan able to FAIL. A scan whose
+// pathspec matches nothing reports success having examined nothing, and that
+// success is indistinguishable from a real pass — the shape the whole-tree
+// audit found in five forbid-skip arms and in forbid-chplan-fn-literal, while
+// their sibling forbid-sql-raw had always guarded against it.
+test('lsFilesRequired returns the files when the pathspec matches', () => {
+  const { dir } = newRepo();
+  const files = lsFilesRequired(['*.go'], 'probe', { cwd: dir });
+  assert.ok(files.length > 0, 'a matching pathspec must return its files');
+});
+
+test('lsFilesRequired exits non-zero when the pathspec matches nothing', () => {
+  const { dir } = newRepo();
+  // Run in a child so the process.exit(1) is observable rather than fatal.
+  const lib = pathToFileURL(join(SCRIPT_DIR, 'lib', 'gh.mjs')).href;
+  const script =
+    `const { lsFilesRequired } = await import(${JSON.stringify(lib)});\n` +
+    `lsFilesRequired(['*.nonesuch'], 'probe', { cwd: ${JSON.stringify(dir)} });`;
+  const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+  });
+  assert.notEqual(res.status, 0, 'a pathspec matching zero files must fail the scan');
+  assert.match(
+    `${res.stdout}${res.stderr}`,
+    /matched zero files/,
+    'the failure must say the scan is broken, not the tree',
   );
 });

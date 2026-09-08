@@ -108,6 +108,20 @@ func TestRegressionFloorSaneRange(t *testing.T) {
 					p.Overall.Precision, saneRangePrecisionFloor, p.WatermarkPctile, p.MinSupport, p.Prevalence)
 			}
 		}
+		// A recall floor over an EMPTY population is satisfied by nothing
+		// existing: severityRecall returns 1.0 when a severity has no
+		// planted classes, which reads identically to "everything was
+		// caught". Assert the population first, so a generator change that
+		// stopped planting severe classes fails here instead of sailing
+		// through a perfect score.
+		if p.SeverePositives == 0 {
+			t.Errorf("no severe (class, expected-rule) pairs planted at wm=%.2f msup=%d prev=%.2f — the severe-recall floor would pass vacuously",
+				p.WatermarkPctile, p.MinSupport, p.Prevalence)
+		}
+		if p.MarginalPositives == 0 {
+			t.Errorf("no marginal (class, expected-rule) pairs planted at wm=%.2f msup=%d prev=%.2f — the marginal-recall figure is vacuous",
+				p.WatermarkPctile, p.MinSupport, p.Prevalence)
+		}
 		// Severe recall stays perfect everywhere, including off-nominal prevalence.
 		if p.SevereRecall < severeRecallFloor {
 			t.Errorf("severe recall %.3f below floor %.3f at wm=%.2f msup=%d prev=%.2f",

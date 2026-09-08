@@ -43,6 +43,17 @@ range, no rename, nothing new evaluated. Input is the root context.
 {{- if and (gt $n 1) (not .Values.clickhouse.bundled.experimentalDistributedMode) -}}
 {{- fail "clickhouse.bundled.dataShards.count > 1 is EXPERIMENTAL and off by default: set clickhouse.bundled.experimentalDistributedMode=true to opt in (cerberus epic #3074). It is not production-supported; bound its cluster-wide fan-out ceiling with clickhouse.bundled.dataShards.fanoutCap. The default single-data-shard path and plain replication (clickhouse.bundled.replicas) do not need it." -}}
 {{- end -}}
+{{- /* Cross-shard forwarding needs an inter-server secret (cerberus issue
+       #3190). Without one ClickHouse forwards a Distributed query as
+       `default` with an EMPTY password, so every cross-shard query fails
+       AUTHENTICATION_FAILED wherever `default` has a real password — 100%
+       of queries, on the very topology this count exists to enable, while
+       direct connections to each node keep working and hide it. Refused
+       here rather than warned about, in the same one place every per-shard
+       template reads the count from. */ -}}
+{{- if and (gt $n 1) (ne (include "cerberus.clickhouse.hasInterserverSecret" .) "true") -}}
+{{- fail "clickhouse.bundled.dataShards.count > 1 requires a cross-node inter-server secret: set clickhouse.bundled.interserverSecret (or interserverExistingSecret). Without it ClickHouse forwards every cross-shard query as the `default` user with an EMPTY password, so on any deployment whose `default` user has a password EVERY cross-shard query fails AUTHENTICATION_FAILED while direct connections to each node keep working (cerberus issue #3190)." -}}
+{{- end -}}
 {{- $n -}}
 {{- else -}}
 1

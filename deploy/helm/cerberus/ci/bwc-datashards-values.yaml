@@ -20,6 +20,12 @@ clickhouse:
     # dataShards.count > 1 is EXPERIMENTAL and off by default (epic #3074);
     # the chart refuses to render it without this opt-in.
     experimentalDistributedMode: true
+    # Cross-shard forwarding secret (cerberus issue #3190). The chart also
+    # refuses count > 1 without one, because ClickHouse otherwise forwards a
+    # Distributed query as `default` with an empty password and every
+    # cross-shard query fails AUTHENTICATION_FAILED. THROWAWAY, render-only,
+    # exactly like the S3 credentials below.
+    interserverSecret: render-only-interserver-secret
     dataShards:
       count: 2
     objectStorage:

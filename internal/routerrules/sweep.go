@@ -26,6 +26,17 @@ type SweepPoint struct {
 	// SevereRecall is recall over SevSevere classes — these should stay caught
 	// far longer than marginal ones.
 	SevereRecall float64
+
+	// MarginalPositives and SeverePositives are how many (class,
+	// expected-rule) pairs each recall was computed OVER.
+	//
+	// A recall of 1.0 means two different things — everything was caught, or
+	// there was nothing to catch — and only this count separates them. The
+	// severe-recall floor asserts perfection at every swept point, so without
+	// the population size a generator change that stopped planting severe
+	// classes would satisfy the floor with no severe class present.
+	MarginalPositives int
+	SeverePositives   int
 }
 
 // SweepAxes declares the grid to sweep. Each axis is varied independently
@@ -96,17 +107,17 @@ func scorePoint(ctx context.Context, cat *Catalog, seed int64, wm float64, ms in
 	m := scoreReport(rep, corpus)
 	pt := SweepPoint{
 		WatermarkPctile: wm, MinSupport: ms, Prevalence: prev,
-		Overall:        m.Overall,
-		MarginalRecall: severityRecall(rep, corpus, SevMarginal),
-		SevereRecall:   severityRecall(rep, corpus, SevSevere),
+		Overall: m.Overall,
 	}
+	pt.MarginalRecall, pt.MarginalPositives = severityRecall(rep, corpus, SevMarginal)
+	pt.SevereRecall, pt.SeverePositives = severityRecall(rep, corpus, SevSevere)
 	return pt, nil
 }
 
 // severityRecall computes recall restricted to classes of one planted severity:
 // of all (class, expected-rule) positive pairs at that severity, the fraction
 // the catalog actually fired.
-func severityRecall(rep *Report, corpus *BenchCorpus, sev PathologySeverity) float64 {
+func severityRecall(rep *Report, corpus *BenchCorpus, sev PathologySeverity) (recall float64, positives int) {
 	fired := map[string]map[string]struct{}{}
 	for _, f := range rep.Findings {
 		id := matchClassID(f, corpus)
@@ -136,9 +147,12 @@ func severityRecall(rep *Report, corpus *BenchCorpus, sev PathologySeverity) flo
 		}
 	}
 	if want == 0 {
-		return 1 // no positives at this severity: vacuously perfect.
+		// No positives at this severity. 1.0 would read as "everything was
+		// caught"; the caller has to be able to tell that apart, which is
+		// what the returned count is for.
+		return 1, 0
 	}
-	return float64(got) / float64(want)
+	return float64(got) / float64(want), want
 }
 
 // FormatSweepTable renders the sensitivity grid as an aligned text table.

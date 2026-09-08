@@ -203,6 +203,32 @@ export function lsFiles(pathspecs, opts = {}) {
   return res.stdout.split('\0').filter((p) => p.length > 0);
 }
 
+// lsFilesRequired() — lsFiles for a SCAN, where matching nothing is a
+// broken pathspec rather than a clean tree.
+//
+// A discipline scan whose pathspec matches zero files reports success having
+// examined nothing, and that success is indistinguishable from a real pass.
+// It is the failure mode `forbid-sql-raw` has always guarded against with
+// "pathspec matched zero files — the scan is broken, not the tree", and the
+// one the whole-tree audit found the other scans lacked: five `forbid-skip`
+// arms and `forbid-chplan-fn-literal` all exited 0 on an empty input.
+//
+// The guard is on the pathspec SET, not on each element: a set may name a
+// pattern with no files today (`*.spec.js` beside `*.spec.ts`) and still be
+// scanning a real corpus. What must never be empty is what the scan actually
+// reads.
+export function lsFilesRequired(pathspecs, scanName, opts = {}) {
+  const files = lsFiles(pathspecs, opts);
+  if (files.length === 0) {
+    error(
+      `${scanName}: pathspec matched zero files — the scan is broken, not the tree ` +
+        `(pathspecs: ${pathspecs.join(' ')})`,
+    );
+    process.exit(1);
+  }
+  return files;
+}
+
 // appendStepSummary() — append markdown to the job summary, when the
 // runner exposes $GITHUB_STEP_SUMMARY. No-op (logged) off-runner.
 export function appendStepSummary(markdown) {
