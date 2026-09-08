@@ -19,22 +19,6 @@
     },
     {
       "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#284df75f",
-      "message": "traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise",
-      "class": "internal",
-      "rationale": "the pinned tempo parser rejects the childCount spelling (\"unexpected childCount\"), so the arm is unreachable from a parseable query",
-      "evidence": {
-        "guard": [
-          "past returning if op == traceql.OpNotExists",
-          "case traceql.IntrinsicChildCount of switch attr.Intrinsic"
-        ],
-        "callers": [
-          "lowerNilComparison"
-        ]
-      }
-    },
-    {
-      "head": "traceql",
       "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#5c445f2a",
       "message": "traceql: %s = nil is not valid because intrinsics cannot be nil",
       "class": "rejection",
