@@ -715,6 +715,12 @@ jobs:
         run: node .github/scripts/forbid-skip.mjs
         env:
           CHECK: t-skip
+      # Playwright's own suppression routes live in .spec.ts, which the Go
+      # scan above structurally cannot see.
+      - name: Reject test.skip / test.fixme / test.only in Playwright specs
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: playwright-skip
       # Reject soft-assertion patterns that look like real verification
       # but pass tautologically — a discipline pin against fake-pass
       # regressions.
