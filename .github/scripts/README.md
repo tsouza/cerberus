@@ -829,6 +829,23 @@ what actually runs.
   - Exit: `0` consistent (or self-test green), `1` on any drift.
   - The CHECK-arm count here is the source of truth for the "N checks"
     claim in `docs/forbid-skip.md`, asserted live by `doc-counts.mjs`.
+- **`chdb-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's chDB
+  substrate pin gate. The `libchdb.so` every chdb-tagged lane runs on is
+  pinned in three places that must agree: `versions.yaml`'s `chdb_substrate`,
+  `just/chdb.just`'s `CHDB_VERSION` (the chdb-core release tag the installer
+  downloads), and every `actions/cache` key of the form
+  `libchdb-<os>-<arch>-<tag>` across `.github/workflows`. Nothing read them
+  against each other, and the cache keys sat under a comment claiming they
+  were derived. They were nine hand-typed copies in front of an installer that
+  SKIPS when the file already exists, so a bump that missed one restored the
+  old engine and the recipe declined to replace it — the lane kept running on
+  the previous ClickHouse while the repository believed it had moved (issue
+  #3186). The gate also fails when it finds no cache key at all, so the scan
+  cannot report success after silently stopping matching.
+  - Args: `--self-test` pins each assertion by proving it FAILS on a
+    deliberate mismatch (run as a CI step before the gate); no args runs the
+    gate over the tree.
+  - Exit: `0` consistent (or self-test green), `1` on any drift.
 - **`doc-refs.mjs`** — `ci.yml`, the `doc-to-code reference check` step in
   the `lint` job. The GATE that keeps prose docs honest about the code they
   cite: greps `docs/**/*.md` for inline `(internal|cmd|test|deploy)/<path>.go`
