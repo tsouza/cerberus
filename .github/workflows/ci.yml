@@ -667,6 +667,7 @@ jobs:
       # against.
       - name: Self-test the e2e-up family .mjs helpers
         run: |
+          node --test .github/scripts/lib/poll.test.mjs
           node --test .github/scripts/lib/k8s.test.mjs
           node --test .github/scripts/k3d-image-import.test.mjs
           node --test .github/scripts/e2e-datasource-sync.test.mjs
