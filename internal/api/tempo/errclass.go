@@ -8,6 +8,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // This file owns the ONE error classification the Tempo head has. Every
@@ -74,11 +75,14 @@ const (
 	// (code 241). The query asked for too much; the server is healthy.
 	ErrClassResourceExhausted
 	// ErrClassUnavailable is transient downstream saturation the client
-	// should back off from: the chclient circuit breaker is OPEN, or a
+	// should back off from: the chclient circuit breaker is OPEN, a
 	// wall-clock cap fired (CERBERUS_QUERY_TIMEOUT → ClickHouse
-	// max_execution_time code 159, or the request context deadline).
-	// ClickHouse is healthy when it aborts an over-long query — the
-	// breaker treats code 159 as a success for the same reason.
+	// max_execution_time code 159, or the request context deadline), or one
+	// shard behind a Distributed table is not answering. ClickHouse is
+	// healthy when it aborts an over-long query — the breaker treats code
+	// 159 as a success for the same reason — which is why a timeout that
+	// lands in this class still reports cerberus_error_reason=timeout
+	// rather than backend_unavailable; see httperr.TelemetryReason.
 	ErrClassUnavailable
 	// ErrClassCanceled is the client walking away mid-query. Not a fault on
 	// either side.
@@ -155,8 +159,15 @@ func (c ErrClass) HTTPStatus() int {
 }
 
 // httpErrStatus is the shorthand every HTTP handler in this package uses on
-// its error path.
-func httpErrStatus(err error) int { return ClassifyErr(err).HTTPStatus() }
+// its error path. It also records the error's telemetry reason on ctx, so
+// the one call that already renders the status is the one that tells
+// QueryMiddleware what to label it — there is no way to add an error path
+// that reports a status without a reason. See httperr.TelemetryReason for
+// why the status alone is not enough.
+func httpErrStatus(ctx context.Context, err error) int {
+	telemetry.SetReason(ctx, httperr.TelemetryReason(err))
+	return ClassifyErr(err).HTTPStatus()
+}
 
 // tagsErrStatus is httpErrStatus for the /search/tags and
 // /search/tag/.../values metadata endpoints, which reach ClickHouse through

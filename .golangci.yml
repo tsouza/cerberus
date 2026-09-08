@@ -1,35 +1,60 @@
 # ---------------------------------------------------------------------------
 # Quality-metric linters (see `enable:` block below).
 #
-# Each linter measures a structural code-quality signal. Every threshold
-# sits ONE step above the tree's measured worst case, so the linted maximum
-# is also the budget: a function that gets more complex than today's worst
-# is a build failure, not a slow slide anyone has to notice in review. A
-# threshold is therefore never headroom to grow into — it is a ratchet, and
-# it drops again whenever the outlier it was sized around is refactored.
+# Each linter measures a structural code-quality signal. The thresholds are
+# NOT set by one uniform rule, and claiming they are would misread every
+# number below. Two kinds live here:
+#
+#   * RATCHETS — sized against the tree's own measured worst case, so the
+#     linted maximum IS the budget: growing past today's worst is a build
+#     failure, not a slow slide nobody has to notice in review. gocognit,
+#     funlen's statement axis and lll currently have ZERO margin — the worst
+#     function / line in the tree sits exactly ON the threshold — while
+#     cyclop, nestif, maintidx and funlen's line axis sit a few steps clear.
+#     A ratchet is never headroom to grow into: it drops again whenever the
+#     outlier it was sized around is refactored.
+#   * BACKSTOPS — dupl and goconst, deliberately loose. Nothing in the tree
+#     fires them, and tightening either to its measured worst case would
+#     report structure that is not a defect. They exist to catch a genuine
+#     outlier, not to ratchet.
+#
+# Every number below was measured over `./...` in both build configurations
+# `just lint` runs, with this file's own exclusions applied, by lowering the
+# threshold in a scratch copy of this config and reading the reported values.
+# Re-measure the same way before moving one; do not carry a number forward.
 #
 # - gocognit (cognitive complexity per function). Counts how hard a fn is
-#   to read: nesting, switches, jumps. `min-complexity: 57` sits one above
-#   the SQL emitter dispatcher (`(*QueryBuilder).writeInto`, 56), which is
-#   intrinsically shaped like a big switch over node kinds; the next
-#   function down is `renderCase` at 43.
+#   to read: nesting, switches, jumps. `min-complexity: 57` is EXACTLY the
+#   SQL emitter dispatcher (`(*QueryBuilder).writeInto`,
+#   internal/chsql/builder.go, 57), which is intrinsically shaped like a big
+#   switch over node kinds — zero margin, so one more branch in it fails the
+#   build. The runner-up is 43, shared by `renderCase`
+#   (compatibility/tempo/driver/diff.go) and `newLabelProjectionStep`
+#   (internal/api/loki/post_process.go).
 #
 # - cyclop (cyclomatic complexity per function + package average). Counts
-#   branches. `max-complexity: 31` sits one above the solver's plan walker
-#   (`(*Planner).walkNode`, 30); `writeInto` scores 29 here, so the two
-#   linters have different worst cases and neither threshold is set by the
-#   other's outlier. `package-average: 10.0` covers `engine` at ~4.
+#   branches. `max-complexity: 31` sits one above the emitter's Frag
+#   dispatcher (`Expr`, internal/chsql/builder.go, 30); the solver's plan
+#   walker (`(*Planner).walkNode`) is 28. The two complexity linters have
+#   DIFFERENT worst cases — gocognit's outlier `writeInto` does not even
+#   reach 21 branches — so neither threshold is set by the other's outlier.
+#   `package-average: 10.0`: no package in the tree reaches it.
 #
 # - funlen (function length: lines + statements). Catches the "this got
-#   too long, split it" review comment. 150 lines / 80 statements clears
-#   the biggest production fn (`histogramQuantileValueFrag`, 91 lines /
-#   79 stmts) with breathing room.
+#   too long, split it" review comment. The two axes sit differently:
+#   `lines: 150` leaves six lines over the longest fn (`mustBuild`,
+#   internal/telemetry/metrics.go, 144), while `statements: 80` is hit
+#   EXACTLY, by `(*emitter).emitWindowedArrayExtrapolatedMatrix`
+#   (internal/chsql/range_window.go) and `newDefaults`
+#   (internal/config/config.go) — zero margin on that axis.
 #
-# - nestif (max nested-if depth). Currently max 5; threshold 6 leaves a
+# - nestif (max nested-if depth). Worst in the tree is 5 (several sites,
+#   `internal/chsql` and `internal/promql` among them); threshold 6 leaves a
 #   one-step buffer.
 #
-# - dupl (token-stream duplication). Threshold 190 tokens; no production
-#   clone currently reaches it. Tightened from 220 after the
+# - dupl (token-stream duplication). Threshold 190 tokens; nothing in the
+#   tree reaches it, and lowering it to 150 surfaces nine reports, so this
+#   arm is a backstop rather than a ratchet. Tightened from 220 after the
 #   internal/optimizer/constant_fold.go foldIntInt/foldFloatFloat clone
 #   (the only one that fired between 190 and 220) was collapsed into a
 #   shared foldNumeric generic helper.
@@ -38,23 +63,28 @@
 #   ignore-tests: true` — the defaults (no min-len, 3 occurrences) fire
 #   thousands of times on test-table string literals; this threshold keeps
 #   the signal to genuine cross-file/cross-function duplication a shared
-#   constant would actually guard. No production literal currently reaches
-#   it.
+#   constant would actually guard. Nothing in the tree reaches it: this arm
+#   is a backstop too, not a ratchet.
 #
 # - maintidx (composite Maintainability Index). Halstead-based score;
-#   warns when a fn's MI < 20. Production minimum currently 47 (no fires).
+#   warns when a fn's MI < 20. The tree's minimum is 23
+#   (`lowerMixedExpHistogramFamily` and `lowerVectorSelector`, both
+#   internal/promql/lower.go), so this is a close ratchet — three points of
+#   margin — rather than an unreachable floor.
 #
-# - lll (line length). 280 chars. Cerberus emits long CH SQL strings and
-#   `INSERT VALUES` seed data in `test/e2e/seed/cmd/seed/main.go` reaches
-#   264 chars. 140 would fire on ~30 legitimate SQL/seed lines; 280 keeps
-#   the linter useful for accidental 500-char monsters without rewriting
-#   readable SQL.
+# - lll (line length). 280 chars, hit EXACTLY by two `Doc:` strings in the
+#   `internal/chopt` feature registry — zero margin. Cerberus also emits
+#   long CH SQL strings and `INSERT VALUES` seed data
+#   (`test/e2e/seed/cmd/seed/main.go` peaks at 265). Lowering the cap to 200
+#   already fires on 88 lines of legitimate registry prose, SQL and seed
+#   data; 280 keeps the linter useful for accidental 500-char monsters
+#   without rewriting readable SQL.
 #
 # The `test/spec/` and `test/property/` paths are excluded from the
 # complexity linters because they hold deterministic-IR pretty-printers
-# (`chplan_print.go`, 142 cognitive complexity by design — covers every
-# IR node) and oracle evaluators that mirror PromQL semantics; they're
-# test infrastructure, not production code.
+# (`chplan_print.go`'s `printNode`, 375 cognitive complexity by design —
+# it covers every IR node) and oracle evaluators that mirror PromQL
+# semantics; they're test infrastructure, not production code.
 # ---------------------------------------------------------------------------
 
 version: "2"

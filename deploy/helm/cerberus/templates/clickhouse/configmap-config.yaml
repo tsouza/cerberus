@@ -14,6 +14,24 @@ metadata:
   labels:
     {{- include "cerberus.clickhouse.labels" . | nindent 4 }}
 data:
+  {{- if $b.metrics.enabled }}
+  {{- /* ClickHouse's own Prometheus endpoint (cerberus issue #3193). The
+         chart ships Keeper, hot/cold tiering, replication and multi-shard
+         fan-out; parts count, merge activity, replication lag, background
+         pool depth and cache hit rates live only in these `system.*`
+         metrics. cerberus's own /metrics covers the query-serving side and
+         says nothing about the storage layer beneath it. */}}
+  metrics.xml: |
+    <clickhouse>
+      <prometheus>
+        <endpoint>{{ $b.metrics.path }}</endpoint>
+        <port>{{ $b.metrics.port }}</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+      </prometheus>
+    </clickhouse>
+  {{- end }}
   storage.xml: |
     {{- include "cerberus.clickhouse.storageXML" . | nindent 4 }}
   tuning.xml: |

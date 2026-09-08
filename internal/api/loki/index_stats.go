@@ -57,7 +57,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 
 	sqlStr, args, err := buildIndexStatsSQL(h.Schema, matchers, start, end)
 	if err != nil {
-		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
+		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
 	h.Logger.Debug("cerberus loki index_stats", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
@@ -65,7 +65,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 	row, err := h.Client.QueryIndexStats(r.Context(), sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki index_stats CH query failed", "err", err, "sql", sqlStr)
-		h.respondError(w, classifyMetadataErr(err))
+		h.respondError(r.Context(), w, classifyMetadataErr(err))
 		return
 	}
 

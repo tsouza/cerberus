@@ -363,7 +363,7 @@ type Config struct {
 	// NewDataShardFanoutGate's own doc for the full derivation.
 	DataShardFanoutCapOverride *int64
 
-	// QueryTimeoutSeconds caps the server-side wall-clock duration of a
+	// QueryTimeout caps the server-side wall-clock duration of a
 	// single data-plane query: it is stamped as the per-query
 	// `max_execution_time` setting (with `timeout_overflow_mode=throw`)
 	// on every read-path query, so a pathological query is ABORTED by
@@ -489,7 +489,7 @@ type Client struct {
 	// per-head.
 	dataShardFanoutGate *semaphore.Weighted
 	dataShardFanoutCap  int64
-	// queryTimeout is Config.QueryTimeoutSeconds as a time.Duration —
+	// queryTimeout is Config.QueryTimeout as a time.Duration —
 	// the per-query `max_execution_time` ClickHouse setting applied to
 	// every data-plane query via queryContext (overridable per-request,
 	// min'd, via WithQueryTimeout). 0 = setting not sent.
@@ -912,7 +912,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 //     apportionment closes for a K-shard fan-out. See
 //     chclient.ApportionMemoryBytes, the helper both call sites share.
 //   - `max_execution_time` + `timeout_overflow_mode=throw` — the
-//     per-query wall-clock cap from Config.QueryTimeoutSeconds (when the
+//     per-query wall-clock cap from Config.QueryTimeout (when the
 //     effective timeout, after any per-request WithQueryTimeout override,
 //     is > 0). `throw` aborts an over-long query with TIMEOUT_EXCEEDED
 //     (code 159) rather than returning partial results.

@@ -39,7 +39,7 @@ cardinality.
 **Scope: this tool makes no assumption about your ClickHouse's own data-shard
 topology.** Step 10's verify pass replays your real queries through cerberus's
 query engine and diffs the answers against Prometheus — the same engine
-[`operations.md`'s multi-data-shard e2e leg](operations.md#multi-data-shard-e2e-hardening-leg-cerberus-issue-3079)
+[`operations.md`'s multi-data-shard e2e leg](operations.md#multi-data-shard-e2e-hardening-leg)
 validates directly against a real `Distributed` target, so `cerberus
 migrate` inherits that correctness rather than needing a topology-aware
 verify path of its own. Whether the ClickHouse you are migrating onto is

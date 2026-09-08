@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"log/slog"
 	"net"
@@ -133,6 +132,12 @@ func QueryMiddleware(ql string, renderPanic PanicRenderer, next http.Handler) ht
 		}
 		t := ObserveQuery(ql, route)
 		sr := &statusRecorder{ResponseWriter: w}
+		// The handler classifies its own failure into the reason enum where
+		// the status code cannot (every head answers a query wall-clock
+		// timeout with a compatibility-mandated 503). The cell rides the
+		// request context; see reason_ctx.go.
+		ctx, reasons := WithReasonCell(r.Context())
+		r = r.WithContext(ctx)
 		// panicked is set by the recover defer so the metric defer can
 		// bucket the query as an error even when the handler had already
 		// committed a 2xx status line before panicking (a truncated
@@ -158,22 +163,13 @@ func QueryMiddleware(ql string, renderPanic PanicRenderer, next http.Handler) ht
 				status = http.StatusInternalServerError
 			}
 			out := ClassifyStatus(status)
-			// The one fact the status cannot carry: the caller went away.
-			// Tempo answers 499 and prom/loki answer 503 for the very same
-			// event, so a status-derived reason calls it bad_request on one
-			// head and backend_unavailable on the others — neither true
-			// (cerberus issue #3197). The request context is cancelled
-			// exactly when the client disconnects, and it is still readable
-			// here because this defer runs INSIDE the handler, before
-			// net/http tears the request down. A per-head query deadline
-			// cannot be mistaken for it: ApplyQueryTimeout derives a CHILD
-			// context, and its expiry is DeadlineExceeded, not Canceled — so
-			// a timeout still classifies as a timeout.
-			//
-			// Skipped on a recovered panic: a defect stays ReasonInternal
-			// whatever the client did afterwards.
-			if !panicked && errors.Is(r.Context().Err(), context.Canceled) {
-				out = out.AsCanceled()
+			// A recovered panic stays pinned to ReasonInternal whatever the
+			// handler had recorded before it panicked: the defect is the
+			// panic, not whatever the handler was classifying at the time.
+			if !panicked {
+				if handlerReason := reasons.reasonFor(); handlerReason != "" && out.Result == ResultError {
+					out.Reason = handlerReason
+				}
 			}
 			t.Done(r.Context(), out)
 		}()

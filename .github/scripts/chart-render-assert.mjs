@@ -549,6 +549,37 @@ function count(haystack, needle) {
     'interserverExistingSecret renders no chart-managed Secret',
   )
 
+  // ClickHouse's own Prometheus endpoint (cerberus issue #3193). The chart
+  // ships Keeper, tiering, replication and shard fan-out, whose failure modes
+  // are visible only in these system.* metrics; before this there was no
+  // scrape target for the data tier at all.
+  const withMetrics = tpl(OBJECT_STORE)
+  check(withMetrics.includes('<port>9363</port>'), 'bundled ClickHouse renders its Prometheus endpoint by default')
+  check(
+    count(withMetrics, 'containerPort: 9363') === 1,
+    'the ClickHouse container exposes the metrics port',
+  )
+  check(
+    count(withMetrics, 'targetPort: metrics') === 2,
+    'both the ClusterIP and headless Services route to it',
+  )
+
+  // Opting out renders as the chart did before the endpoint existed.
+  const noMetrics = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.metrics.enabled=false'])
+  check(!noMetrics.includes('9363'), 'metrics.enabled=false renders no endpoint, port or Service entry')
+  check(!noMetrics.includes('metrics.xml'), 'metrics.enabled=false renders no metrics.xml ConfigMap key')
+
+  // Every per-shard Service pair gets it too, not just shard 0.
+  const shardedMetrics = tpl(SHARDED)
+  check(
+    count(shardedMetrics, 'targetPort: metrics') === 4,
+    'dataShards.count=2: all four per-shard Services route to the metrics port',
+  )
+  check(
+    count(shardedMetrics, 'containerPort: 9363') === 2,
+    'dataShards.count=2: both per-shard StatefulSets expose the metrics port',
+  )
+
   const keeperOffWithShards = tplFail([...SHARDED, '--set', 'clickhouse.bundled.keeper.enabled=false'])
   check(keeperOffWithShards !== null, 'keeper.enabled=false + dataShards.count=2: render FAILS')
   check(keeperOffWithShards && /keeper\.enabled/.test(keeperOffWithShards) && /dataShards\.count/.test(keeperOffWithShards), 'the keeper-off-with-shards failure names BOTH keeper.enabled and dataShards.count')

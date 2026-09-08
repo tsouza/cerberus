@@ -152,7 +152,7 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		// Bare err so respondError reclassifies a drain sample-budget overage
 		// (chclient.drainBudgetExceeded) to the 422 limit rejection, like the
 		// other metadata drains; a generic CH fault falls through to 500.
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 

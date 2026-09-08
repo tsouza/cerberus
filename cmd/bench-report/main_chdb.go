@@ -75,6 +75,11 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 	}
 	defer s.close()
 
+	engineVersion, err := s.engineVersion()
+	if err != nil {
+		return fmt.Errorf("read engine version: %w", err)
+	}
+
 	fmt.Fprintln(os.Stderr, "bench-report: measuring headline wins…")
 	wins, err := measureHeadlines(s, iters)
 	if err != nil {
@@ -112,23 +117,24 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 	}
 
 	doc, err := renderDoc(docInput{
-		wins:       wins,
-		curves:     curves,
-		sharded:    sharded,
-		e2e:        e2e,
-		matrix:     matrix,
-		micro:      micro,
-		iters:      iters,
-		benchtime:  benchtime,
-		metricRows: metricRows,
-		logRows:    logRows,
-		traceRows:  traceRows,
-		goVersion:  runtime.Version(),
-		goarch:     runtime.GOARCH,
-		goos:       runtime.GOOS,
-		numCPU:     runtime.NumCPU(),
-		host:       captureHost(),
-		outPath:    outPath,
+		wins:          wins,
+		curves:        curves,
+		sharded:       sharded,
+		e2e:           e2e,
+		matrix:        matrix,
+		micro:         micro,
+		iters:         iters,
+		benchtime:     benchtime,
+		metricRows:    metricRows,
+		logRows:       logRows,
+		traceRows:     traceRows,
+		goVersion:     runtime.Version(),
+		goarch:        runtime.GOARCH,
+		goos:          runtime.GOOS,
+		numCPU:        runtime.NumCPU(),
+		host:          captureHost(),
+		engineVersion: engineVersion,
+		outPath:       outPath,
 	})
 	if err != nil {
 		return fmt.Errorf("render: %w", err)

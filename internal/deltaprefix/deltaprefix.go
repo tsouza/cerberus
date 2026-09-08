@@ -128,6 +128,15 @@ func dayBucket(col string) chsql.Frag {
 	return chsql.Call("toStartOfDay", chsql.Col(col))
 }
 
+// cutoverDay is the start of before's own calendar day, in UTC — the day the
+// MV was created on, and the one day whose aggregate bucket carries both
+// backfilled and MV-captured contributions. Verify's two totals reads are
+// both bounded strictly below it; see aggregateTotalsSQL.
+func cutoverDay(before time.Time) time.Time {
+	utc := before.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+}
+
 // BackfillSQL renders the one-time `INSERT INTO ... SELECT` that populates
 // c.DeltaPrefixTable for c.SumTable history strictly older than before — the
 // MV's own exact creation instant, NOT rounded to a calendar-day boundary
@@ -291,23 +300,36 @@ func Backfill(ctx context.Context, conn Conn, c Columns, before time.Time, reten
 // aggregateTotalsSQL renders the per-metric-name sum(PartialSum) read from
 // the DELTA-prefix table, bounded the same exact instant BackfillSQL bounds
 // its own write — strictly before before, not before's calendar day. Using
-// the exact instant here (rather than rounding down to the cutover day, as
-// an earlier revision did) is what makes this comparison actually capable of
-// catching a backfill/MV coverage gap confined to the cutover day itself:
-// rounding both this and baseTotalsSQL's bound to the SAME calendar day
-// excluded that day's bucket from the comparison entirely, so a gap inside
-// it was invisible to Verify no matter how badly BackfillSQL under-covered
-// it. DeltaPrefixBucketColumn is calendar-day granularity, so this compares
-// a day-truncated column against an exact instant — that is fine: a bucket
-// whose day-start is before the instant is still "< before" even when the
-// instant itself falls partway through that same day.
+// The bound is the START OF before's calendar day, not the exact instant,
+// and this is the one place in the package where that is right.
+// DeltaPrefixBucketColumn is calendar-day granularity, so the cutover day's
+// bucket holds BOTH halves of that day: the rows BackfillSQL wrote (strictly
+// before the instant) AND every row the live MV has captured since. The base
+// table can only be filtered by the exact instant, so bounding the two sides
+// differently compares an entire day against a morning: on any deployment
+// still receiving DELTA traffic, the aggregate side over-counts the cutover
+// day by exactly the afternoon's writes and Verify FAILS no matter how
+// perfect the backfill was. Bounding both sides at the day start compares
+// whole days the MV never touched — the population BackfillSQL alone is
+// responsible for, which is precisely what "did the backfill cover
+// everything" asks.
+//
+// The cutover day is therefore outside this comparison, and is reported as
+// its own labeled note (Report.CutoverDay) rather than silently dropped. It
+// is not left unguarded by the omission: the backfill covers everything
+// strictly before the instant and the MV covers everything from the instant
+// onward, so the two windows meet exactly by construction — the property the
+// exact-instant --before bound exists to establish, argued in full in
+// docs/operations.md's DELTA-prefix backfill runbook. Comparing sums over
+// that day cannot check it anyway: both sides would be racing the same live
+// inserts.
 //
 // When retentionActive, an additional `DeltaPrefixBucketColumn >= boundary`
 // bound excludes every day already outside the aggregate table's own TTL as
 // of now (cerberus issue #2652) — those days are reported separately via
 // queryOutsideRetentionDays, never folded into this total.
 func aggregateTotalsSQL(c Columns, before, boundary time.Time, retentionActive bool) (string, []any) {
-	conds := []chsql.Frag{chsql.Lt(chsql.Col(c.DeltaPrefixBucketColumn), chsql.Lit(before))}
+	conds := []chsql.Frag{chsql.Lt(chsql.Col(c.DeltaPrefixBucketColumn), chsql.Lit(cutoverDay(before)))}
 	if retentionActive {
 		conds = append(conds, chsql.Gte(chsql.Col(c.DeltaPrefixBucketColumn), chsql.Lit(boundary)))
 	}
@@ -320,10 +342,12 @@ func aggregateTotalsSQL(c Columns, before, boundary time.Time, retentionActive b
 }
 
 // baseTotalsSQL renders the per-metric-name sum(Value) read from the base
-// sum table, restricted to DELTA-temporality rows strictly before before —
-// the exact population BackfillSQL writes into the DELTA-prefix table, so a
-// correct backfill makes this total and aggregateTotalsSQL's total agree per
-// metric name.
+// sum table, restricted to DELTA-temporality rows falling strictly before
+// before's own calendar day — the same window aggregateTotalsSQL reads, and
+// a subset of the population BackfillSQL writes, so a correct backfill makes
+// the two totals agree per metric name. See aggregateTotalsSQL for why the
+// day start rather than the exact instant is the comparable bound on both
+// sides.
 //
 // When retentionActive, an additional `toStartOfDay(TimestampColumn) >=
 // boundary` bound excludes the same already-outside-retention days
@@ -335,7 +359,7 @@ func aggregateTotalsSQL(c Columns, before, boundary time.Time, retentionActive b
 func baseTotalsSQL(c Columns, before, boundary time.Time, retentionActive bool) (string, []any) {
 	conds := []chsql.Frag{
 		chsql.Eq(chsql.Col(c.AggregationTemporalityColumn), chsql.InlineLit(schema.AggregationTemporalityDelta)),
-		chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before)),
+		chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(cutoverDay(before))),
 	}
 	if retentionActive {
 		conds = append(conds, chsql.Gte(dayBucket(c.TimestampColumn), chsql.Lit(boundary)))
@@ -399,6 +423,24 @@ type Report struct {
 	// would be indistinguishable from a real bug. See docs/operations.md's
 	// DELTA-prefix backfill runbook.
 	OutsideRetentionDays []time.Time
+
+	// CutoverDay is the start of Before's own calendar day — the single day
+	// whose aggregate bucket carries BOTH the rows Backfill wrote (strictly
+	// before Before) and every row the live MV has captured since, because
+	// DeltaPrefixBucketColumn is calendar-day granularity. It is EXCLUDED
+	// from AggregateTotals / BaseTotals / Mismatches: the base table can
+	// only be filtered by the exact instant, so including it would compare
+	// a whole day against a morning and fail every deployment still taking
+	// DELTA traffic, no matter how complete the backfill was.
+	//
+	// Excluding it costs no coverage. Backfill covers everything strictly
+	// before Before and the MV covers everything from Before onward, so the
+	// two windows meet exactly by construction — which is the whole point
+	// of the exact-instant `--before` bound. A sum comparison could not
+	// check that day in any case: both sides would be racing the same live
+	// inserts. Rendered as its own labeled note, never folded into the
+	// PASS/FAIL verdict.
+	CutoverDay time.Time
 }
 
 // Pass reports whether every metric's totals agreed within tolerance.
@@ -443,6 +485,7 @@ func Verify(ctx context.Context, conn Conn, c Columns, before time.Time, toleran
 		rep.RetentionBoundary = boundary
 	}
 	rep.OutsideRetentionDays = outsideDays
+	rep.CutoverDay = cutoverDay(before)
 	return rep, nil
 }
 

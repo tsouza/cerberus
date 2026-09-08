@@ -23,8 +23,10 @@ auto-enabled on capable servers, because they are validated result-correct
 and run at flat memory — auto picks them once the server meets their floor
 **and** the server permits the experimental setting they need (see
 [Capability probe](#capability-probe-experimental-ts_grid-setting)).
-The lone opt-in-only feature is `columnar_result_decode` (`autoSelect: no`),
-a perf tradeoff that auto never selects.
+23 of the registry's 43 features are `autoSelect: no` and are reachable only by
+explicit listing — `columnar_result_decode` (a perf tradeoff) and
+`ts_grid_changes` (a correctness gap) among them. The generated table below is
+the authoritative per-feature answer; the `autoSelect` column carries it.
 
 ## The two configuration knobs
 
@@ -49,11 +51,11 @@ feature id, and they **compose**:
   provided that server also **permits the experimental setting** they require;
   a server that forbids it silently keeps the native family on the fan-out path
   (see [Capability probe](#capability-probe-experimental-ts_grid-setting)).
-  The only feature `auto` never picks is `columnar_result_decode`
-  (`autoSelect: no`, a perf tradeoff), which requires explicit listing.
-  `auto` may appear **alongside** explicit ids, so
+  The features `auto` never picks are the 23 of 43 features carrying `autoSelect: no`
+  in the generated table below, which is the authoritative list; each requires
+  explicit listing. `auto` may appear **alongside** explicit ids, so
   `auto,columnar_result_decode` means "the auto-selected set **plus**
-  `columnar_result_decode`" — the way to add the opt-in feature without giving
+  `columnar_result_decode`" — the way to add an opt-in feature without giving
   up version-aware auto-selection of the rest.
 - **`off`** — enable nothing. The empty set. Every optimization stays dark.
   `off` is **absolute** and may not be combined with any other token.
@@ -170,11 +172,14 @@ column is informational -- where a feature needs an `allow_experimental_*`
 setting, that setting is co-stamped by the **engine plan path** (it inspects the
 post-optimize plan and stamps the setting on exactly the queries that use the
 native node), not carried as a registry field — so the co-stamp fires whether
-the feature was reached via `auto` or by explicit listing. Two features are
-`autoSelect: no`, opt-in only: `columnar_result_decode` (a perf tradeoff) and
-`ts_grid_changes` (a correctness gap — the native builtin diverges from
-reference Prometheus on NaN-adjacent windows, tracked as
-[#1721](https://github.com/tsouza/cerberus/issues/1721)).
+the feature was reached via `auto` or by explicit listing. 23 of the 43 features are
+`autoSelect: no`, opt-in only — the generated table above is the authoritative
+list, one row per feature. Two representative reasons a feature lands there:
+`columnar_result_decode` (a perf tradeoff), and `ts_grid_changes` (a correctness
+gap — the native builtin diverges from reference Prometheus on NaN-adjacent
+windows; the divergence and its reproduction are recorded in
+[#1721](https://github.com/tsouza/cerberus/issues/1721), and the posture lifts
+when a ClickHouse release fixes the builtin, not on a cerberus-side change).
 
 | id                           | experimental setting                                 | effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -644,11 +649,13 @@ Notes:
   rows. This replaces cerberus's own hand-rolled late-materialisation
   rewrite (formerly `late_mat.go`, deleted alongside this
   feature): that structural `Project(Limit(Filter?(Scan)))` matcher never
-  fired on any production query path, because all three production `Limit`
-  constructions wrap an `OrderBy` directly under `Limit` (the matcher's
-  switch only accepted `Filter`/`Scan` there) and the Loki line path builds
-  no SQL `Limit` at all (the request limit is applied Go-side in
-  `buildRangeData`). **The knob is sized to the request's own LIMIT**, never
+  fired on any production query path, because at the time all three
+  production `Limit` constructions wrapped an `OrderBy` directly under
+  `Limit` (the matcher's switch only accepted `Filter`/`Scan` there) and the
+  Loki line path built no SQL `Limit` at all, applying the request limit
+  Go-side in `buildRangeData` — the gap since closed by
+  `maybePushLogLineLimit`, described below. **The knob is sized to the
+  request's own LIMIT**, never
   a fixed ceiling: verified on a live chDB 26.5 probe that a max-limit knob
   BELOW the query's actual LIMIT silently falls back to eager reads (no
   `LazilyReadFromMergeTree` step in `EXPLAIN PLAN`), so a fixed constant
@@ -663,10 +670,14 @@ Notes:
   interaction. The setting is gated behind the analyzer — forcing
   `enable_analyzer=0` on the same probe made the `LazilyReadFromMergeTree`
   step disappear entirely — so cerberus co-stamps `enable_analyzer=1`
-  alongside it, mirroring `condition_cache`'s own co-stamp. Loki's line path
-  does not benefit yet: it builds no SQL `LIMIT` today (the request limit is
-  applied Go-side), tracked as a separate SQL LIMIT-pushdown follow-up
-  ([#2829](https://github.com/tsouza/cerberus/issues/2829)).
+  alongside it, mirroring `condition_cache`'s own co-stamp. Loki's log-line path
+  benefits too: `internal/logql/lower.go`'s `maybePushLogLineLimit` wraps the
+  plan in `Limit(OrderBy(plan))` — a real SQL `ORDER BY Timestamp {DESC|ASC}
+  LIMIT N` carrying the request's own `limit` — for every log-line pipeline
+  shape proven incapable of dropping a row in Go after the SQL executes
+  (`pipelineCanDropRowsInGo`). That is precisely the shape
+  `engine.EligibleForLazyMaterialization` matches, so those queries reach the
+  stamp on the same head-agnostic path Tempo's do.
 - **Window-slide anchor injection** is a second ClickHouse-native lowering of
   the per-series window stage under
   `histogram_quantile(phi, <agg> by(le) (sum_over_time(<bucket>[range])))` in
@@ -717,7 +728,7 @@ entry. Recording an audit that found nothing to stamp is itself the useful
 artifact — the alternative is the same family getting silently re-reviewed
 by a future pass with no memory of this one.
 
-### S3/remote-filesystem read tuning (cerberus issue #2780)
+### S3/remote-filesystem read tuning (prefetch + concurrent-read thresholds)
 
 Production is a single node with S3-backed storage, so the working
 hypothesis was that cerberus's cold dashboard scans need explicit tuning of

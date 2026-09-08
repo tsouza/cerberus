@@ -45,7 +45,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 
 	sqlStr, args, err := buildLabelsSQL(h.Schema, h.AttrStrategies, matchers, start, end)
 	if err != nil {
-		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
+		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
 	h.Logger.Debug("cerberus loki labels", "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
@@ -53,7 +53,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	vals, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki labels CH query failed", "err", err, "sql", sqlStr)
-		h.respondError(w, classifyMetadataErr(err))
+		h.respondError(r.Context(), w, classifyMetadataErr(err))
 		return
 	}
 

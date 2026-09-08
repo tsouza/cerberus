@@ -149,47 +149,34 @@ func TestClassifyStatus_ReasonVocabularyIsClosed(t *testing.T) {
 	}
 }
 
-// TestAsCanceled_StaysInsideTheEnumAndOnlyRelabelsErrors pins the one reason
-// no status code can produce, so it is the one member the walk above cannot
-// reach.
+// TestSetReasonAcceptsEveryErrorReason pins the accept-list that gates
+// SetReason against the enum's authoritative membership, END TO END — the
+// label the counter actually records, never the helper's own return value.
 //
-// A client cancellation surfaces as 499 on Tempo and 503 on Prometheus/Loki —
-// the same event under two statuses, which reasonForStatus reads as
-// bad_request and backend_unavailable respectively. Neither is true, and
-// neither status can move (Tempo's 499 keeps a client hang-up out of the 5xx
-// band; prom/loki's 503 is upstream wire parity). AsCanceled is what makes the
-// three heads agree (cerberus issue #3197).
-func TestAsCanceled_StaysInsideTheEnumAndOnlyRelabelsErrors(t *testing.T) {
-	reasons := map[string]bool{}
-	for _, r := range telemetry.ErrorReasons() {
-		reasons[r] = true
-	}
-
-	// Every status a head actually answers a cancellation with must land on
-	// the SAME reason, which is the whole point of the change.
-	for _, status := range []int{
-		tempoClientClosedRequest,
-		http.StatusServiceUnavailable,
-	} {
-		got := telemetry.ClassifyStatus(status).AsCanceled()
-		if got.Reason != telemetry.ReasonCanceled {
-			t.Errorf("ClassifyStatus(%d).AsCanceled() reason = %q; want %q — a cancellation must read the same on every head",
-				status, got.Reason, telemetry.ReasonCanceled)
+// knownReason fails CLOSED: a value it does not recognise is silently ignored,
+// not reported. So a hand-written copy of the enum that fell behind
+// ErrorReasons would make a newly added reason vanish at runtime with nothing
+// failing anywhere — which is exactly how `canceled` could be threaded through
+// every head and still never reach the metric (cerberus issue #3184 found four
+// hand-written copies of this enum; this is the only one whose staleness is
+// invisible).
+func TestSetReasonAcceptsEveryErrorReason(t *testing.T) {
+	for _, reason := range telemetry.ErrorReasons() {
+		if reason == telemetry.ReasonNone {
+			// The success value is excluded on purpose: a handler must not be
+			// able to override a failure into a success.
+			continue
 		}
-		if !reasons[got.Reason] {
-			t.Errorf("AsCanceled produced %q, outside the closed enum", got.Reason)
-		}
-		if got.Result != telemetry.ResultError {
-			t.Errorf("ClassifyStatus(%d).AsCanceled() result = %q; want error", status, got.Result)
-		}
-	}
-
-	// A successful query whose client disconnected during the write was still
-	// answered: it must stay ok/none, or the ok-vs-error ratio starts counting
-	// successes as failures.
-	ok := telemetry.ClassifyStatus(http.StatusOK).AsCanceled()
-	if ok.Result != telemetry.ResultOK || ok.Reason != telemetry.ReasonNone {
-		t.Errorf("ClassifyStatus(200).AsCanceled() = %+v; want ok/none unchanged", ok)
+		t.Run(reason, func(t *testing.T) {
+			got := serveWithMiddleware(t, func(w http.ResponseWriter, r *http.Request) {
+				telemetry.SetReason(r.Context(), reason)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			})
+			if got != reason {
+				t.Errorf("recorded reason = %q, want %q — the SetReason accept-list has fallen behind "+
+					"ErrorReasons, and it drops unknown values SILENTLY", got, reason)
+			}
+		})
 	}
 }
 

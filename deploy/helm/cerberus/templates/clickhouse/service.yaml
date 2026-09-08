@@ -1,5 +1,6 @@
 {{- if .Values.clickhouse.bundled.enabled }}
 {{- $svc := .Values.clickhouse.bundled.service }}
+{{- $b := .Values.clickhouse.bundled }}
 {{- /* dataShardCount: the number of independent ClickHouse DATA shards
        (cerberus issue #3077) — see cerberus.clickhouse.dataShardCount's own
        disambiguation. <= 1 renders the ORIGINAL, untouched Service pair
@@ -36,6 +37,12 @@ spec:
       port: 8123
       targetPort: http
       protocol: TCP
+    {{- if $b.metrics.enabled }}
+    - name: metrics
+      port: {{ $b.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "cerberus.clickhouse.selectorLabels" . | nindent 4 }}
 ---
@@ -64,6 +71,12 @@ spec:
       port: 9009
       targetPort: interserver
       protocol: TCP
+    {{- if $b.metrics.enabled }}
+    - name: metrics
+      port: {{ $b.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "cerberus.clickhouse.selectorLabels" . | nindent 4 }}
 {{- else }}
@@ -112,6 +125,12 @@ spec:
       port: 8123
       targetPort: http
       protocol: TCP
+    {{- if $b.metrics.enabled }}
+    - name: metrics
+      port: {{ $b.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 4 }}
 ---
@@ -140,6 +159,12 @@ spec:
       port: 9009
       targetPort: interserver
       protocol: TCP
+    {{- if $b.metrics.enabled }}
+    - name: metrics
+      port: {{ $b.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 4 }}
 {{- end }}

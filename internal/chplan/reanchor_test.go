@@ -578,9 +578,12 @@ func TestReanchorRange_NilInput(t *testing.T) {
 // TestReanchorRange_BucketFanoutOuterRangeFailsClosed asserts a
 // RangeBucketFanout in OuterRange mode (cerberus issue #2726's doubly-nested
 // subquery composition) is rejected by ReanchorRange rather than silently
-// re-gridded: that mode's slicing-safety has no proof or differential
-// fixture yet, so every query reaching this shape under the sharded-pushdown
-// solver must fall back to route A instead.
+// re-gridded. That mode derives its anchor grid from (End, OuterRange, Step)
+// rather than from an explicit [start, end] pair, so a shard's sub-grid is
+// not expressible by moving Start/End the way the ordinary grid mode is; the
+// registry admits a shape only on a slice-invariance proof, and this one has
+// none, so every query reaching it under the sharded-pushdown solver falls
+// back to route A.
 func TestReanchorRange_BucketFanoutOuterRangeFailsClosed(t *testing.T) {
 	t.Parallel()
 

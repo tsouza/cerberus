@@ -2,6 +2,7 @@ package grpc_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/grpc/codes"
 
+	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	tempogrpc "github.com/tsouza/cerberus/internal/api/tempo/grpc"
 	"github.com/tsouza/cerberus/internal/telemetry"
@@ -179,7 +181,7 @@ func TestGRPCCodeToHTTPStatus(t *testing.T) {
 	}
 }
 
-// TestOutcomeForCode_CancellationAgreesWithTheOtherHeads is the cross-transport
+// TestTelemetryReason_CancellationAgreesAcrossHeads is the cross-transport
 // half of cerberus issue #3197's fix.
 //
 // A client cancellation reaches cerberus three ways and used to be recorded
@@ -189,38 +191,32 @@ func TestGRPCCodeToHTTPStatus(t *testing.T) {
 // and neither true — the request was not malformed and the backend was not
 // unavailable.
 //
-// The assertion is deliberately made AGAINST the reason the HTTP heads record
-// rather than against a hard-coded literal: what #3197 asks for is agreement,
-// so a fix that renamed the value on one transport only would still fail here.
-func TestOutcomeForCode_CancellationAgreesWithTheOtherHeads(t *testing.T) {
+// All three now take the reason from the ONE shared classifier rather than
+// from their own status, which is what makes them agree by construction: the
+// gRPC interceptor calls httperr.TelemetryReason on the error it holds
+// directly, and both HTTP heads call it from their single respondError seam.
+func TestTelemetryReason_CancellationAgreesAcrossHeads(t *testing.T) {
 	t.Parallel()
 
-	gotGRPC := tempogrpc.OutcomeForCodeTest(codes.Canceled)
+	// The raw failure every head unwinds with when the caller goes away.
+	if got := httperr.TelemetryReason(context.Canceled); got != telemetry.ReasonCanceled {
+		t.Errorf("TelemetryReason(context.Canceled) = %q, want %q — the shared classifier is what "+
+			"makes all three heads agree; without it each falls back to its own status", got, telemetry.ReasonCanceled)
+	}
+	// Wrapped, as it actually arrives through a head's error chain.
+	if got := httperr.TelemetryReason(fmt.Errorf("engine: execute: %w", context.Canceled)); got != telemetry.ReasonCanceled {
+		t.Errorf("TelemetryReason(wrapped context.Canceled) = %q, want %q", got, telemetry.ReasonCanceled)
+	}
+	// Non-vacuity: a deadline is NOT a cancellation. Nothing ran out of time
+	// when a caller hangs up, and folding the two together would hide real
+	// query timeouts inside the reason that means "nobody was waiting".
+	if got := httperr.TelemetryReason(context.DeadlineExceeded); got != telemetry.ReasonTimeout {
+		t.Errorf("TelemetryReason(context.DeadlineExceeded) = %q, want %q", got, telemetry.ReasonTimeout)
+	}
 
-	// What the HTTP QueryMiddleware records for the same event: Tempo's own
-	// 499 and prom/loki's 503, each re-labelled by the cancellation the
-	// request context carries.
-	for _, httpStatus := range []int{tempo.StatusClientClosedRequest, http.StatusServiceUnavailable} {
-		wantHTTP := telemetry.ClassifyStatus(httpStatus).AsCanceled()
-		if gotGRPC.Reason != wantHTTP.Reason {
-			t.Errorf("gRPC cancellation reason = %q, but the HTTP head answering %d records %q — "+
-				"one event must not be three reasons", gotGRPC.Reason, httpStatus, wantHTTP.Reason)
-		}
-	}
-	if gotGRPC.Reason != telemetry.ReasonCanceled {
-		t.Errorf("gRPC cancellation reason = %q, want %q", gotGRPC.Reason, telemetry.ReasonCanceled)
-	}
-	if gotGRPC.Result != telemetry.ResultError {
-		t.Errorf("result = %q, want error — the query was not answered", gotGRPC.Result)
-	}
-	// status_class is deliberately NOT unified: 499 is genuinely the status
-	// this transport reports, and the label reports what was sent.
-	if gotGRPC.StatusClass != telemetry.StatusClass4xx {
-		t.Errorf("status_class = %q, want %q — only the REASON is re-labelled", gotGRPC.StatusClass, telemetry.StatusClass4xx)
-	}
-	// Non-vacuity: an ordinary error code must NOT pick up the cancellation
-	// reason, or the assertions above would pass for a blanket re-label.
-	if other := tempogrpc.OutcomeForCodeTest(codes.Unavailable); other.Reason == telemetry.ReasonCanceled {
-		t.Error("codes.Unavailable classified as a cancellation; only codes.Canceled may be")
+	// The gRPC transport still reports 499's own status family: only the
+	// REASON is unified, because status_class reports what was actually sent.
+	if got := telemetry.ClassifyStatus(tempogrpc.GRPCCodeToHTTPStatusTest(codes.Canceled)).StatusClass; got != telemetry.StatusClass4xx {
+		t.Errorf("gRPC cancellation status_class = %q, want %q", got, telemetry.StatusClass4xx)
 	}
 }

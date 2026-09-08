@@ -35,10 +35,14 @@ min_clickhouse: "24.8"
 min_native_rate: "25.9"
 
 # quickstart_clickhouse - the ClickHouse image tag the root docker-compose.yml
-# quickstart ships. It MUST be new enough to actually demo every optimization
-# the quickstart enables via CERBERUS_CH_OPTIMIZATIONS (today:
-# aggregation_in_order, condition_cache, ts_grid_range -> highest floor 25.9).
-# The check asserts quickstart_clickhouse >= that derived highest floor.
+# quickstart ships, and the DEPLOYMENT-surface pin the Helm chart's bundled
+# ClickHouse and the migration lane's Tier-1 stack both track. It MUST be new
+# enough to actually demo every optimization the quickstart enables via
+# CERBERUS_CH_OPTIMIZATIONS. The quickstart sets that to "auto", so the enabled
+# set is every AutoSelect feature in internal/chopt/registry.go and the derived
+# requirement is the highest AutoSelect floor. That floor is DERIVED, never
+# restated here - check (d) of .github/scripts/clickhouse-version-sync.mjs
+# asserts quickstart_clickhouse >= it.
 quickstart_clickhouse: "26.6"
 
 # chdb_substrate - the ClickHouse version of the test substrate: the in-process

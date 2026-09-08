@@ -116,9 +116,12 @@ func newConnMetrics(mp metric.MeterProvider) *connMetrics {
 		"cerberus_ch_cursor_teardown_total",
 		metric.WithDescription(
 			"Cumulative ClickHouse cursor teardowns by outcome. "+
-				"outcome=drained: the cursor reached its terminal state within "+
-				"the drain budget, so the driver returned the connection to "+
-				"the idle pool. outcome=abandoned: the drain budget expired and "+
+				"outcome=drained: Close returned within the drain budget on a "+
+				"still-live query context, so teardown ran on cerberus's terms "+
+				"rather than being aborted. It does not assert the driver "+
+				"reached end-of-stream, and so does not promise a pool "+
+				"release: an early Close on a partially-read cursor lands here "+
+				"too and has its socket destroyed. outcome=abandoned: the drain budget expired and "+
 				"cerberus cancelled, so the driver destroyed the socket. "+
 				"outcome=cancelled: the query context was already dead when "+
 				"teardown began, so the socket was destroyed by that "+

@@ -333,12 +333,16 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 // recognised by [mixedExpHistogramSetOp] (histogram_native_mixed_or.go)
 // — but registered as its OWN direct dispatch just below, not inside
 // [lowerExpHistogramValuedShape]: unlike the both-histogram case, its
-// result does not get the same GENERAL recursive reach — every wrapper
-// OTHER than the two sibling recognizers just below it (`sum`/`avg`,
-// cerberus issue #2346; `label_replace`/`label_join`, cerberus issue
-// #2449) still falls through to internal/promql/binary.go's
-// lowerVectorSetOp rejection, tracked as an open divergence in
-// test/rejection-parity/catalogue under #2449.
+// result does not get the same GENERAL recursive reach. Each wrapper
+// family that composes over a Mixed node therefore registers its own
+// root-only recognizer in the dispatch list below — `sum`/`avg` first
+// (cerberus issue #2346), then the families cerberus issue #2449 added,
+// each in its own `histogram_native_mixed_or_*.go` file. That list is the
+// authoritative set; it is deliberately not restated here, because a
+// second copy is what goes stale when a family is added. A wrapper with no
+// recognizer of its own falls through to internal/promql/binary.go's
+// lowerVectorSetOp rejection, which is what
+// test/rejection-parity/catalogue records for this site.
 func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
 	// A bare top-level range-vector selector over an exp-histogram
 	// metric (`demo_latency_exp_hist[5m]`, cerberus issue #2548) —

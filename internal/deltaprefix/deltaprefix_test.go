@@ -51,10 +51,18 @@ func TestBackfillSQL(t *testing.T) {
 }
 
 // TestAggregateAndBaseTotalsSQL pins the two verify reads: both group by
-// MetricName only, both bound to the same exact-instant cutoff (NOT rounded
-// to a day boundary — see the package doc comment for why that used to mask
-// a real backfill/MV coverage gap), and the base read additionally filters
-// to DELTA temporality — exactly the population BackfillSQL writes.
+// MetricName only, both bound strictly below the START OF the cutover day
+// (NOT the exact --before instant BackfillSQL uses), and the base read
+// additionally filters to DELTA temporality.
+//
+// The SAME bound on both sides is the whole point. BucketStart is
+// calendar-day granularity, so the cutover day's aggregate bucket holds
+// both the backfilled morning and every row the live MV has captured since,
+// while the base table can only be filtered by the instant — bounding the
+// aggregate side at the instant therefore compares a whole day against a
+// morning, and FAILS on any deployment still taking DELTA traffic no matter
+// how complete the backfill was. See aggregateTotalsSQL's own comment for
+// why excluding that one day costs no coverage.
 func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 	c := testColumns()
 
@@ -64,8 +72,9 @@ func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 	if aggSQL != wantAgg {
 		t.Errorf("aggregateTotalsSQL sql =\n%s\nwant\n%s", aggSQL, wantAgg)
 	}
-	if len(aggArgs) != 1 || aggArgs[0] != testBefore {
-		t.Errorf("aggregateTotalsSQL args = %v; want [%v]", aggArgs, testBefore)
+	wantDay := cutoverDay(testBefore)
+	if len(aggArgs) != 1 || aggArgs[0] != wantDay {
+		t.Errorf("aggregateTotalsSQL args = %v; want [%v]", aggArgs, wantDay)
 	}
 
 	baseSQL, baseArgs := baseTotalsSQL(c, testBefore, time.Time{}, false)
@@ -74,8 +83,13 @@ func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 	if baseSQL != wantBase {
 		t.Errorf("baseTotalsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
 	}
-	if len(baseArgs) != 1 || baseArgs[0] != testBefore {
-		t.Errorf("baseTotalsSQL args = %v; want [%v]", baseArgs, testBefore)
+	if len(baseArgs) != 1 || baseArgs[0] != wantDay {
+		t.Errorf("baseTotalsSQL args = %v; want [%v]", baseArgs, wantDay)
+	}
+	// The bug this pins: two DIFFERENT upper bounds is what made a clean
+	// PASS unreachable on a live deployment.
+	if aggArgs[0] != baseArgs[0] {
+		t.Errorf("verify reads bound differently: aggregate < %v, base < %v", aggArgs[0], baseArgs[0])
 	}
 }
 
@@ -84,9 +98,8 @@ func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 // (cerberus issue #2652): aggregateTotalsSQL bounds
 // DeltaPrefixBucketColumn >= boundary directly (it is already
 // day-granularity storage), baseTotalsSQL bounds
-// toStartOfDay(TimestampColumn) >= boundary (day-truncated, so it excludes
-// exactly the same set of days aggregateTotalsSQL excludes, even though
-// its OTHER bound — TimestampColumn < before — stays exact-instant).
+// toStartOfDay(TimestampColumn) >= boundary (day-truncated), so the two
+// exclude exactly the same set of days — as their upper bounds also do.
 func TestAggregateAndBaseTotalsSQL_RetentionActive(t *testing.T) {
 	c := testColumns()
 	boundary := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
@@ -97,8 +110,9 @@ func TestAggregateAndBaseTotalsSQL_RetentionActive(t *testing.T) {
 	if aggSQL != wantAgg {
 		t.Errorf("aggregateTotalsSQL sql =\n%s\nwant\n%s", aggSQL, wantAgg)
 	}
-	if len(aggArgs) != 2 || aggArgs[0] != testBefore || aggArgs[1] != boundary {
-		t.Errorf("aggregateTotalsSQL args = %v; want [%v %v]", aggArgs, testBefore, boundary)
+	wantDay := cutoverDay(testBefore)
+	if len(aggArgs) != 2 || aggArgs[0] != wantDay || aggArgs[1] != boundary {
+		t.Errorf("aggregateTotalsSQL args = %v; want [%v %v]", aggArgs, wantDay, boundary)
 	}
 
 	baseSQL, baseArgs := baseTotalsSQL(c, testBefore, boundary, true)
@@ -107,8 +121,8 @@ func TestAggregateAndBaseTotalsSQL_RetentionActive(t *testing.T) {
 	if baseSQL != wantBase {
 		t.Errorf("baseTotalsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
 	}
-	if len(baseArgs) != 2 || baseArgs[0] != testBefore || baseArgs[1] != boundary {
-		t.Errorf("baseTotalsSQL args = %v; want [%v %v]", baseArgs, testBefore, boundary)
+	if len(baseArgs) != 2 || baseArgs[0] != wantDay || baseArgs[1] != boundary {
+		t.Errorf("baseTotalsSQL args = %v; want [%v %v]", baseArgs, wantDay, boundary)
 	}
 }
 
@@ -765,5 +779,26 @@ func TestScanTotals_PropagatesRowsErr(t *testing.T) {
 	conn := &singleRowsConn{rows: &erroringRows{finalErr: errors.New("stream reset")}}
 	if _, err := scanTotals(context.Background(), conn, "SELECT 1", nil); err == nil {
 		t.Fatal("expected an error from a failing rows.Err()")
+	}
+}
+
+// TestCutoverDay pins the day-start derivation both verify reads bound by:
+// UTC, midnight, and idempotent on an instant already at a day boundary
+// (the case where the new bound coincides with the old exact-instant one).
+func TestCutoverDay(t *testing.T) {
+	midDay := time.Date(2026, 8, 20, 14, 32, 10, 0, time.UTC)
+	midnight := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	if got := cutoverDay(midDay); !got.Equal(midnight) {
+		t.Errorf("cutoverDay(%v) = %v; want %v", midDay, got, midnight)
+	}
+	if got := cutoverDay(midnight); !got.Equal(midnight) {
+		t.Errorf("cutoverDay is not idempotent at a day boundary: %v", got)
+	}
+	// A non-UTC instant must resolve to the UTC day BucketStart is stored
+	// in, not to the caller's local calendar day.
+	east := time.FixedZone("UTC+10", 10*60*60)
+	lateLocal := time.Date(2026, 8, 21, 6, 0, 0, 0, east) // = 2026-08-20T20:00:00Z
+	if got := cutoverDay(lateLocal); !got.Equal(midnight) {
+		t.Errorf("cutoverDay(%v) = %v; want the UTC day %v", lateLocal, got, midnight)
 	}
 }

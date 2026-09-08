@@ -23,18 +23,17 @@ const (
 //   - ReasonBackendUnavailable — the gateway could not reach a working
 //     ClickHouse (dial failure, circuit breaker open, upstream 5xx).
 //     The query is fine; the dependency is not.
-//   - ReasonResourceExhausted — the server refused for capacity
-//     reasons: rate limited, out of storage. Capacity, not
-//     correctness.
-//   - ReasonTimeout         — the request ran out of time, on either
-//     side of the gateway.
+//   - ReasonResourceExhausted — a per-query budget refused the work: the
+//     sample budget, the wide-projection byte budget, or ClickHouse's own
+//     memory-limit abort. Capacity, not correctness.
+//   - ReasonTimeout         — the request ran out of time: the ClickHouse
+//     max_execution_time cap, or the request's own deadline.
 //   - ReasonCanceled       — the CALLER went away before the answer was
-//     ready. Nothing was wrong with the query and nothing was wrong
-//     with the gateway, so this is the one error reason that is never
-//     worth acting on: a Grafana panel re-render, a query edit or a tab
-//     switch cancels every in-flight request, which makes this a hot
-//     path rather than an incident. It exists precisely so those do not
-//     inflate the reasons that ARE worth acting on.
+//     ready. Nothing ran out of time and nothing failed; the client simply
+//     stopped waiting. It is the one error reason never worth acting on —
+//     Grafana cancels every in-flight request on a panel re-render, a query
+//     edit or a tab switch — and it exists so those do not inflate the
+//     reasons that ARE.
 //   - ReasonInternal        — a defect in cerberus itself: a recovered
 //     panic or an unclassified 5xx. Always worth a page.
 const (
@@ -59,9 +58,9 @@ const (
 // place where membership is stated in code and one deliberate literal pin (the
 // public-contract test) that a contract change is supposed to touch.
 //
-// It is NOT the list of reasons ClassifyStatus can produce: ReasonCanceled is
-// only ever reached through Outcome.AsCanceled, since no HTTP status
-// identifies a client hanging up.
+// It is NOT the list of reasons ClassifyStatus can produce: ReasonCanceled,
+// ReasonTimeout and ReasonResourceExhausted are reached only through
+// SetReason, because no status the heads actually write identifies them.
 func ErrorReasons() []string {
 	return []string{
 		ReasonNone,
@@ -136,37 +135,6 @@ func ClassifyStatus(status int) Outcome {
 	return out
 }
 
-// AsCanceled re-labels an ERROR outcome as a client cancellation.
-//
-// It exists because a cancellation is the one query outcome the HTTP status
-// cannot express, and the three heads prove it by disagreeing: Tempo answers
-// 499 (a 4xx, so reasonForStatus says bad_request) while Prometheus and Loki
-// answer 503 to stay byte-compatible with upstream's own errorCanceled
-// envelope (a 5xx, so reasonForStatus says backend_unavailable). Same event,
-// two verdicts, and neither is true — the request was not malformed and the
-// backend was not unavailable (cerberus issue #3197).
-//
-// Neither status can move: Tempo's 499 is deliberately outside the 5xx band
-// so dashboards do not read a client hanging up as "cerberus is unhealthy",
-// and prom/loki's 503 is pinned by upstream wire parity that the compat
-// harnesses assert. So the reason has to come from something other than the
-// status, and the caller supplies it: each transport knows independently that
-// its client went away — HTTP from the request context, gRPC from
-// codes.Canceled — without any per-head error plumbing that a wrapped or
-// re-created error could lose.
-//
-// A non-error outcome is returned unchanged, so a request whose client
-// disconnected after a clean 200 stays ok/none: the query WAS answered.
-// Callers must also not apply this to a recovered panic — a defect is a
-// defect whatever the client did afterwards.
-func (o Outcome) AsCanceled() Outcome {
-	if o.Result != ResultError {
-		return o
-	}
-	o.Reason = ReasonCanceled
-	return o
-}
-
 // statusClass collapses a status code to its family label.
 func statusClass(status int) string {
 	switch {
@@ -189,6 +157,13 @@ func statusClass(status int) string {
 // Codes that carry a specific meaning are matched exactly; everything
 // else falls back to its family — a 4xx the caller must fix, a 5xx
 // cerberus must fix.
+//
+// This is the DEFAULT, not the whole story. Upstream wire parity collides
+// distinct failures onto one status — every head answers a query
+// wall-clock timeout with 503 and a per-query budget refusal with 422 —
+// so a handler that knows better overrides the result through
+// SetReason (reason_ctx.go). Without that override a timeout would read
+// as backend_unavailable and a capacity refusal as bad_request.
 func reasonForStatus(status int) string {
 	switch status {
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:

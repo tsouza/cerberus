@@ -46,9 +46,14 @@ const (
 	// — subject to re-checking every structural/freshness/admission gate
 	// itself; Lookup makes no promise about any of those.
 	PreferB
-	// BothFail: route B was tried for this Key and itself failed with a
-	// resource failure. The caller stays on route A; no further probing is
-	// warranted until the entry ages out at the memo's entryTTL.
+	// BothFail: route B was tried for this Key and failed with a resource
+	// failure MinCorroboratingFailures consecutive times, with no route-B
+	// success in between. A single route-B resource failure does NOT reach
+	// this state — it demotes to Unknown carrying the incremented
+	// corroboration count, so the next dispatch may probe again (see
+	// observeRouteBLocked). Once here, the caller stays on route A; no
+	// further probing is warranted and no route-A failure refreshes the
+	// entry, until it ages out at the memo's entryTTL.
 	BothFail
 )
 

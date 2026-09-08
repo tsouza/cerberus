@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -47,28 +48,22 @@ func queryTelemetryInterceptor(ql string) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		t := telemetry.ObserveQuery(ql, info.FullMethod)
 		err := handler(srv, ss)
-		t.Done(ss.Context(), outcomeForCode(status.Code(err)))
+		out := telemetry.ClassifyStatus(grpcCodeToHTTPStatus(status.Code(err)))
+		// The gRPC code, like the HTTP status, collides distinct failures
+		// onto one value (codes.Unavailable carries both a real backend
+		// outage and a wall-clock timeout; ResourceExhausted renders as
+		// the 422 that also carries a lowering rejection), so the reason
+		// comes from the error itself through the same shared classifier
+		// the HTTP heads use. This interceptor holds the error directly
+		// and needs no request-scoped cell to reach it.
+		if out.Result == telemetry.ResultError {
+			if reason := httperr.TelemetryReason(err); reason != "" {
+				out.Reason = reason
+			}
+		}
+		t.Done(ss.Context(), out)
 		return err
 	}
-}
-
-// outcomeForCode is the interceptor's whole classification: a gRPC status
-// code onto the telemetry triple, through the SAME telemetry.ClassifyStatus
-// the HTTP QueryMiddleware uses, plus the one refinement no status can carry.
-//
-// codes.Canceled IS the client hanging up — this transport needs no context
-// inspection to know it, unlike HTTP, which reads the request context. Without
-// the refinement a cancelled stream classifies through 499 as bad_request,
-// which is the very disagreement cerberus issue #3197 reports: the identical
-// event reads bad_request here and backend_unavailable on Prometheus/Loki's
-// 503. Only the REASON is re-labelled; status_class stays 4xx, because 499 is
-// genuinely the status this transport reports.
-func outcomeForCode(code codes.Code) telemetry.Outcome {
-	out := telemetry.ClassifyStatus(grpcCodeToHTTPStatus(code))
-	if code == codes.Canceled {
-		out = out.AsCanceled()
-	}
-	return out
 }
 
 // grpcCodeToHTTPStatus reverses grpcCodeFor's table (see errclass.go's
@@ -91,8 +86,9 @@ func outcomeForCode(code codes.Code) telemetry.Outcome {
 //
 // codes.Canceled is the one code whose recorded reason is NOT what this
 // table's status implies: it maps to 499 for status_class purposes, but the
-// interceptor above re-labels the reason ReasonCanceled so a client hanging
-// up reads the same on this transport as on HTTP, rather than bad_request.
+// interceptor above takes its reason from httperr.TelemetryReason, which
+// names a client cancellation ReasonCanceled — so a client hanging up reads
+// the same on this transport as on HTTP, rather than bad_request.
 //
 // codes.OK needs no case — status.Code(nil) already returns codes.OK,
 // and http.StatusOK classifies as ResultOK via ClassifyStatus's

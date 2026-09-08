@@ -287,7 +287,7 @@ table shows only the initiator's own dispatch, never a remote shard's
 actual execution plan. The one place this repository collects real
 per-DATA-shard evidence is
 `system.query_log`, read directly by the `datashard` e2e leg described in
-[`operations.md`'s DATA-shard topology section](operations.md#clickhouse-cluster-data-shard-topology-distributed-tables-cerberus-issue-3077) —
+[`operations.md`'s DATA-shard topology section](operations.md#clickhouse-cluster-data-shard-topology-distributed-engine-tables) —
 a runtime correctness/admission-control check, not a perf-harness one; a
 shard-aware EXPLAIN/perf-introspection path remains unbuilt.
 
@@ -613,7 +613,7 @@ before the 14 ms scan vs ~98%-arithmetic split was measured.
   lanes sit inside.
 - [`operations.md`](operations.md) — runtime memory, admission control, and
   scaling contract; its
-  [DATA-shard topology section](operations.md#clickhouse-cluster-data-shard-topology-distributed-tables-cerberus-issue-3077)
+  [DATA-shard topology section](operations.md#clickhouse-cluster-data-shard-topology-distributed-engine-tables)
   covers the ClickHouse cluster data-PARTITION sense of "shard" (epic
   [#3074](https://github.com/tsouza/cerberus/issues/3074)) this document's
   fan-out "shard" is unrelated to, and this framework's own blind spot
