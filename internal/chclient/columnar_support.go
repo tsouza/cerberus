@@ -79,16 +79,13 @@ func chSettings(s clickhouse.Settings) []ch.Setting {
 }
 
 // progressBridge adapts ch-go's OnProgress (which reports per-packet DELTAS)
-// onto the existing progressRecorder (which latches running totals). It
-// accumulates the deltas into a running total and feeds the recorder the same
-// max-of-snapshot shape its clickhouse-go onProgress path sees, so the
-// rows/bytes histograms observe the per-query totals identically.
+// onto the existing progressRecorder. Both transports deliver per-packet
+// INCREMENTS and the recorder accumulates them, so this bridge forwards each
+// delta unchanged rather than pre-summing it — pre-summing here and summing
+// again in the recorder would count every packet once per subsequent packet.
 func progressBridge(rec *progressRecorder) func(context.Context, chproto.Progress) error {
-	var rows, bytes uint64
 	return func(_ context.Context, p chproto.Progress) error {
-		rows += p.Rows
-		bytes += p.Bytes
-		rec.onProgress(&clickhouse.Progress{Rows: rows, Bytes: bytes})
+		rec.onProgress(&clickhouse.Progress{Rows: p.Rows, Bytes: p.Bytes})
 		return nil
 	}
 }

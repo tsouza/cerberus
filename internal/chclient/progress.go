@@ -32,11 +32,18 @@ import (
 // because the driver guarantees a single in-flight Progress dispatcher
 // per query.
 //
-// The recorder is invoked from a finalizer-like helper rather than
-// from the progress callback itself: each Progress packet is a
-// snapshot, not a delta, so summing every packet would double-count.
-// Instead the closure latches the latest snapshot and the per-query
-// flush captures it once at end-of-query.
+// Each Progress packet carries an INCREMENT, not a running total:
+// ClickHouse resets its counter every time it sends one, and neither
+// clickhouse-go's Progress.Decode nor its progress dispatcher
+// accumulates. The recorder therefore sums them, and the per-query
+// flush reads the total once at end-of-query.
+//
+// Latching the maximum instead reported the largest single packet as
+// the whole query's work — measured against ClickHouse 26.6, a scan of
+// 20,000,000 rows arrived as 2,528 packets summing to exactly
+// 20,000,000 and latched at 15,360, a 1302x under-report. The ch-go
+// transport's bridge below feeds the same increments into the same
+// accumulator, so both dials of one Client report the same quantity.
 func WithProgressFor(ctx context.Context, ql string) context.Context {
 	rec := &progressRecorder{ql: ql, ctx: ctx}
 	// Issue #2789: a route-B dispatch calls WithProgressFor TWICE on the
@@ -152,18 +159,14 @@ type progressRecorder struct {
 	tracker    *actuals.Tracker
 }
 
-// onProgress is the driver-facing callback. It overwrites the latched
-// snapshot — see the recorder docstring for why we don't accumulate.
+// onProgress is the driver-facing callback. Each packet is an
+// increment, so it accumulates — see the recorder docstring.
 func (r *progressRecorder) onProgress(p *clickhouse.Progress) {
 	if p == nil {
 		return
 	}
-	if p.Rows > r.rows {
-		r.rows = p.Rows
-	}
-	if p.Bytes > r.bytes {
-		r.bytes = p.Bytes
-	}
+	r.rows += p.Rows
+	r.bytes += p.Bytes
 }
 
 // profileEventMemoryTrackerPeakUsage is the ClickHouse ProfileEvents counter
