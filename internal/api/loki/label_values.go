@@ -50,7 +50,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 
 	sqlStr, args, physicalScans, err := buildLabelValuesSQL(h.Schema, h.AttrStrategies, name, matchers, start, end)
 	if err != nil {
-		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
+		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
 	h.Logger.Debug("cerberus loki label values", "name", telemetry.SanitizeForLog(name), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
@@ -64,7 +64,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	vals, err := h.Client.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki label values CH query failed", "err", err, "sql", sqlStr)
-		h.respondError(w, classifyMetadataErr(err))
+		h.respondError(r.Context(), w, classifyMetadataErr(err))
 		return
 	}
 

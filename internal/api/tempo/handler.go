@@ -536,7 +536,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// two transports cannot diverge on eligibility.
 	res, err := h.SearchResult(ctx, q, limit)
 	if err != nil {
-		writeError(w, httpErrStatus(err), "", "", err)
+		writeError(w, httpErrStatus(r.Context(), err), "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo search", "traceql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
@@ -697,7 +697,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	// benefits from the seed optimizer's projection-pushdown pass.
 	res, err := h.Engine.QueryPlan(ctx, h.lang, plan, engine.Meta{ResponseShape: "tempo-trace"})
 	if err != nil {
-		writeError(w, httpErrStatus(err), "", "", err)
+		writeError(w, httpErrStatus(r.Context(), err), "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
@@ -802,7 +802,7 @@ func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool
 	})
 	if err != nil {
 		h.Logger.Error("cerberus tempo traceByID CH query failed", "err", err, "trace_id", traceID)
-		writeError(w, httpErrStatus(err), traceID, "", err)
+		writeError(w, httpErrStatus(r.Context(), err), traceID, "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))

@@ -119,12 +119,12 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 	// LIMIT K`), matching Tempo's translateQueryRangeToInstant collapse.
 	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsInstantHTTP, q)
 	if cerr != nil {
-		writeError(w, httpErrStatus(cerr), "", "", cerr)
+		writeError(w, httpErrStatus(r.Context(), cerr), "", "", cerr)
 		return
 	}
 	router := h.newMetricsInstantRouter(q, pipeline, end, step)
 	if rerr := pipeline.Route(ctx, router); rerr != nil {
-		writeError(w, httpErrStatus(rerr), "", "", rerr)
+		writeError(w, httpErrStatus(r.Context(), rerr), "", "", rerr)
 		return
 	}
 

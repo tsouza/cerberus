@@ -57,7 +57,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 
 	sqlStr, args, err := buildSeriesSQL(h.Schema, h.AttrStrategies, selectorGroups, start, end)
 	if err != nil {
-		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
+		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
 	h.Logger.Debug("cerberus loki series", "selectors", len(selectorGroups), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
@@ -65,7 +65,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Client.QueryLabelSets(r.Context(), sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki series CH query failed", "err", err, "sql", sqlStr)
-		h.respondError(w, classifyMetadataErr(err))
+		h.respondError(r.Context(), w, classifyMetadataErr(err))
 		return
 	}
 

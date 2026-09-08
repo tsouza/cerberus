@@ -392,7 +392,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// four result types on /api/v1/query.
 	expr, err := h.parseExpr(ctx, q)
 	if err != nil {
-		h.respondError(w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
+		h.respondError(r.Context(), w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
 		return
 	}
 
@@ -420,7 +420,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	samples, hdr, err := h.executeInstant(ctx, q, ts, ts)
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 
@@ -613,7 +613,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// web/api/v1.queryRange ordering (parse → type check → engine).
 	expr, err := h.parseExpr(ctx, q)
 	if err != nil {
-		h.respondError(w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
+		h.respondError(r.Context(), w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
 		return
 	}
 
@@ -651,7 +651,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.executeRangeStreaming(queryCtx, q, start, end, step)
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 	// Cursor ownership: sync.OnceFunc guards the close so whichever of (this
@@ -706,7 +706,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// existed. See the comment on h.respondRangeRetry's own drain-failure
 	// path for why this is stamped onto the corpus the same way.
 	h.Engine.ObserveDrainOutcome(result.QueryID, "promql", time.Since(drainStart), drainErr)
-	h.respondError(w, classifyDrainError(drainErr))
+	h.respondError(r.Context(), w, classifyDrainError(drainErr))
 }
 
 // respondRangeMatrix writes the 200 success envelope for a drained
@@ -775,7 +775,7 @@ func (h *Handler) respondRangeRetry(
 	// terminally so the corpus does not depend on the query_log join
 	// landing a row.
 	h.Engine.ObserveDrainOutcome(retryResult.QueryID, "promql", time.Since(drainStart), retryErr)
-	h.respondError(w, classifyDrainError(retryErr))
+	h.respondError(queryCtx, w, classifyDrainError(retryErr))
 }
 
 // applyQueryTimeout derives the request context every query handler runs
@@ -1029,6 +1029,10 @@ func tooManySamplesAPIError() *apiError {
 		Kind:   ErrExecution,
 		Err:    errors.New(promMaxSamplesMessage),
 		Status: http.StatusUnprocessableEntity,
+		// The 422 is shared with every lowering / guard rejection, which
+		// is a different thing to act on. Say which this was; see
+		// httperr.TelemetryReason.
+		Reason: telemetry.ReasonResourceExhausted,
 	}
 }
 
@@ -1063,6 +1067,10 @@ func memoryLimitAPIError(e *chclient.MemoryLimitError) *apiError {
 		Kind:   ErrExecution,
 		Err:    errors.New(promMemoryLimitMessage(e.Limit)),
 		Status: http.StatusUnprocessableEntity,
+		// The 422 is shared with every lowering / guard rejection, which
+		// is a different thing to act on. Say which this was; see
+		// httperr.TelemetryReason.
+		Reason: telemetry.ReasonResourceExhausted,
 	}
 }
 
@@ -1090,6 +1098,10 @@ func drainBytesAPIError(e *chclient.DrainByteBudgetError) *apiError {
 		Kind:   ErrExecution,
 		Err:    errors.New(promDrainBytesMessage(e.Limit)),
 		Status: http.StatusUnprocessableEntity,
+		// The 422 is shared with every lowering / guard rejection, which
+		// is a different thing to act on. Say which this was; see
+		// httperr.TelemetryReason.
+		Reason: telemetry.ReasonResourceExhausted,
 	}
 }
 
@@ -1112,6 +1124,9 @@ func queryTimeoutAPIError(err error) *apiError {
 		Kind:   ErrTimeout,
 		Err:    errors.New(msg),
 		Status: http.StatusServiceUnavailable,
+		// The 503 is upstream Prometheus's, and it collides with a real
+		// backend outage. Say which this was; see httperr.TelemetryReason.
+		Reason: telemetry.ReasonTimeout,
 	}
 }
 
@@ -2021,7 +2036,14 @@ func sortMatrixSamplePoints(ms *MatrixSample) {
 // carrier so the existing in-package callsites can stay literal.
 type apiError = httperr.Error
 
-func (h *Handler) respondError(w http.ResponseWriter, err error) {
+// respondError is the single error-envelope writer for this head. Every
+// error path funnels through it, which is why it is also where the
+// `cerberus_error_reason` label is decided: one classification, recorded
+// before any envelope is written, so no error path can report a status
+// without a reason. See httperr.TelemetryReason for why the status alone
+// cannot name a timeout or a per-query budget refusal.
+func (h *Handler) respondError(ctx context.Context, w http.ResponseWriter, err error) {
+	telemetry.SetReason(ctx, httperr.TelemetryReason(err))
 	// Circuit-breaker fast-fail short-circuit applies regardless of
 	// whether the callsite pre-wrapped the chclient error in its own
 	// *apiError. The inner ErrCircuitOpen would otherwise be masked
