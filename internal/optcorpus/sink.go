@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 )
 
 // JSONLSink is the v1 durable sink: it appends each reconciled Row as one JSON
@@ -19,6 +20,23 @@ type JSONLSink struct {
 	mu sync.Mutex
 	f  *os.File
 	w  *bufio.Writer
+	// now is the write-time clock, overridable in tests. It stamps event_time
+	// on every line for the same reason CHTableSink.Write stamps the table's
+	// event_time column from time.Now(): the corpus keys recency on the
+	// reconcile instant, and a reader windowing the corpus (routerrules'
+	// --since) has nothing else to window on.
+	now func() time.Time
+}
+
+// jsonlRecord is the JSONL wire form: a Row plus the write-time event_time the
+// CH table carries as its first column. Row is embedded, so its fields stay
+// flattened into the same JSON object and the two sinks remain
+// column-for-column comparable — event_time is the field the table always had
+// and the JSONL form used to be missing, which silently made a reader's
+// event-time window a no-op over this file.
+type jsonlRecord struct {
+	EventTime int64 `json:"event_time"`
+	Row
 }
 
 // NewJSONLSink opens (creating if absent, appending if present) the JSONL
@@ -37,12 +55,18 @@ func NewJSONLSink(path string) (*JSONLSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("optcorpus: open sink %q: %w", path, err)
 	}
-	return &JSONLSink{f: f, w: bufio.NewWriter(f)}, nil
+	return &JSONLSink{f: f, w: bufio.NewWriter(f), now: time.Now}, nil
 }
 
 // Write appends each row as one JSON line and flushes so the corpus is durable
 // at interval granularity (a crash loses at most the in-flight buffer, not
 // already-flushed lines). An empty slice is a no-op.
+//
+// Every line carries event_time, stamped once per batch from the write-time
+// clock — the same instant, from the same source, that CHTableSink.Write binds
+// to the table's event_time column. Both sinks therefore date a row identically,
+// which is what lets a reader's event-time window mean the same thing over the
+// JSONL corpus as over the table.
 func (s *JSONLSink) Write(rows []Row) error {
 	if len(rows) == 0 {
 		return nil
@@ -50,8 +74,9 @@ func (s *JSONLSink) Write(rows []Row) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	enc := json.NewEncoder(s.w)
+	stamp := s.now().Unix()
 	for i := range rows {
-		if err := enc.Encode(rows[i]); err != nil {
+		if err := enc.Encode(jsonlRecord{EventTime: stamp, Row: rows[i]}); err != nil {
 			return fmt.Errorf("optcorpus: encode row: %w", err)
 		}
 	}

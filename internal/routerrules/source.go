@@ -87,23 +87,19 @@ type CorpusSource interface {
 // aggregator. Numeric columns are widened to float64 so a single comparison
 // path serves every numeric column; enum/group columns stay strings.
 type corpusRow struct {
-	eventTimeUnix float64
-	numeric       map[string]float64
-	str           map[string]string
+	numeric map[string]float64
+	str     map[string]string
 }
 
 func (r corpusRow) numericValue(col string) float64 { return r.numeric[col] }
 
 func (r corpusRow) enumValue(col string) string { return r.str[col] }
 
-func (r corpusRow) groupValue(col string) string {
-	if v, ok := r.str[col]; ok {
-		return v
-	}
-	// Group columns that are numeric (normalized_query_hash) render through the
-	// numeric map; format as an integer for a stable group key.
-	if v, ok := r.numeric[col]; ok {
-		return formatNumeric(v)
-	}
-	return ""
-}
+// groupValue returns the group key for a group column. Every group column
+// (shape_id, normalized_query_hash) is carried in str already rendered — the
+// hash by formatQueryHash, which matches the ClickHouse backend's
+// toString(normalized_query_hash) exactly. There is deliberately no fallback
+// through the float64 numeric map: that is the path that used to round every
+// hash at or above 2^53 into a neighbouring class, and reinstating it would
+// reintroduce the same silent collapse.
+func (r corpusRow) groupValue(col string) string { return r.str[col] }
