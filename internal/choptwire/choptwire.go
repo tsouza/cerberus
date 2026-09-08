@@ -160,6 +160,23 @@ func RangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	// so it can never make a Native*Lowerer's instant arm reachable on its
 	// own.
 	tsGridInstant := optSet.Has(chopt.FeatureTSGridInstant)
+	extrapolatedLowerers(&l, optSet, argAndMaxFusion, tsGridInstant)
+	adjacencyLowerers(&l, optSet, tsGridInstant)
+	gridScalarLowerers(&l, optSet, tsGridInstant)
+	histogramLowerers(&l, optSet)
+	// downsample_tier WRAPS strategies the calls above resolved, and
+	// sorted_slab_over_time is independent of every one of them, so this
+	// pair runs last.
+	downsampleAndSlabLowerers(&l, optSet)
+	return l
+}
+
+// extrapolatedLowerers resolves rate / increase / delta / staleness — the
+// family whose three fallbacks share the fixed_accumulator_extrapolated
+// narrowing. delta is resolved here rather than beside deriv and
+// predict_linear because deltaFallback is built here and has no other
+// consumer.
+func extrapolatedLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet, argAndMaxFusion, tsGridInstant bool) {
 	// fixed_accumulator_extrapolated (issue #2760) layers BENEATH
 	// rate/increase/delta's own native ts_grid strategy, exactly like
 	// laginframe_adjacency layers inside changes/resets below: it is the
@@ -192,6 +209,16 @@ func RangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.Staleness = promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion}
 	}
+	if optSet.Has(chopt.FeatureTSGridDelta) {
+		l.Delta = promql.NativeDeltaLowerer{Fallback: deltaFallback}
+	} else {
+		l.Delta = deltaFallback
+	}
+}
+
+// adjacencyLowerers resolves changes / resets / irate / idelta — the four
+// whose fallbacks share the laginframe_adjacency narrowing.
+func adjacencyLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet, tsGridInstant bool) {
 	// laginframe_adjacency (issue #2759) layers BENEATH changes/resets' own
 	// native ts_grid strategy, exactly like ts_grid_recollapse layers inside
 	// ts_grid_range above: it is the improved fan-out a shape-ineligible or
@@ -234,6 +261,11 @@ func RangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.Idelta = ideltaFallback
 	}
+}
+
+// gridScalarLowerers resolves deriv and predict_linear, the two ts_grid
+// members whose fallback is the plain fan-out with no narrowing beneath it.
+func gridScalarLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet, tsGridInstant bool) {
 	if optSet.Has(chopt.FeatureTSGridDeriv) {
 		l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}, Instant: tsGridInstant}
 	} else {
@@ -244,11 +276,12 @@ func RangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
 	}
-	if optSet.Has(chopt.FeatureTSGridDelta) {
-		l.Delta = promql.NativeDeltaLowerer{Fallback: deltaFallback}
-	} else {
-		l.Delta = deltaFallback
-	}
+}
+
+// histogramLowerers resolves the histogram-shaped strategies: the classic
+// histogram range window, the quantile rank walk, last_over_time, and the two
+// bucket-merge families.
+func histogramLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet) {
 	// The anchor-injection window-slide mechanism (#2408 follow-up, #2493)
 	// was removed by #2511's root-cause investigation: its anchor-injection
 	// UNION structurally requires the per-series canonical-bound subquery to
@@ -293,6 +326,40 @@ func RangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.LastOverTime = promql.FanoutLastOverTimeLowerer{}
 	}
+	// classic_bucket_merge_summap (issue #2756) has no version floor to
+	// probe. #2817 closed its original correctness blocker; issue #2923's
+	// real-ClickHouse re-measurement against the resulting (post-#2817)
+	// construction then found its real cost within ~1% of the fold's, not
+	// the estimated ~50x win — so AutoSelect stays false, a measured
+	// negative result rather than an open question. See
+	// promql.NativeClassicBucketMergeLowerer's own doc and
+	// classic_bucket_merge_summap.go's header.
+	if optSet.Has(chopt.FeatureClassicBucketMergeSumMap) {
+		l.ClassicBucketMerge = promql.NativeClassicBucketMergeLowerer{
+			Fallback: promql.FanoutClassicBucketMergeLowerer{},
+		}
+	} else {
+		l.ClassicBucketMerge = promql.FanoutClassicBucketMergeLowerer{}
+	}
+	// exp_histogram_merge_summap (issue #2757) has no version floor to
+	// probe, but ships AutoSelect: false: it now covers every shape —
+	// instant AND range mode (cerberus issue #3027), any by()/without()
+	// grouping (#2865), SUM or AVG fold (#2866) — each with its own
+	// real-ClickHouse-calibrated budget guard rather than a reuse of the
+	// classic fold's rows-dominated one — see
+	// promql.NativeExpHistogramMergeLowerer's own doc.
+	if optSet.Has(chopt.FeatureExpHistogramMergeSumMap) {
+		l.ExpHistogramMerge = promql.NativeExpHistogramMergeLowerer{}
+	} else {
+		l.ExpHistogramMerge = promql.FanoutExpHistogramMergeLowerer{}
+	}
+}
+
+// downsampleAndSlabLowerers applies the two resolutions that must come after
+// the rest: downsample_tier WRAPS whichever irate / idelta / last_over_time
+// strategy was already resolved, and sorted_slab_over_time resolves over_time
+// on its own.
+func downsampleAndSlabLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet) {
 	// downsample_tier (cerberus issue #2751) WRAPS whatever irate/idelta/
 	// last_over_time strategy was just resolved above — it is a genuinely
 	// different mechanism (an operator-provisioned, pre-populated table, not
@@ -325,34 +392,6 @@ func RangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.OverTime = promql.FanoutOverTimeLowerer{}
 	}
-	// classic_bucket_merge_summap (issue #2756) has no version floor to
-	// probe. #2817 closed its original correctness blocker; issue #2923's
-	// real-ClickHouse re-measurement against the resulting (post-#2817)
-	// construction then found its real cost within ~1% of the fold's, not
-	// the estimated ~50x win — so AutoSelect stays false, a measured
-	// negative result rather than an open question. See
-	// promql.NativeClassicBucketMergeLowerer's own doc and
-	// classic_bucket_merge_summap.go's header.
-	if optSet.Has(chopt.FeatureClassicBucketMergeSumMap) {
-		l.ClassicBucketMerge = promql.NativeClassicBucketMergeLowerer{
-			Fallback: promql.FanoutClassicBucketMergeLowerer{},
-		}
-	} else {
-		l.ClassicBucketMerge = promql.FanoutClassicBucketMergeLowerer{}
-	}
-	// exp_histogram_merge_summap (issue #2757) has no version floor to
-	// probe, but ships AutoSelect: false: it now covers every shape —
-	// instant AND range mode (cerberus issue #3027), any by()/without()
-	// grouping (#2865), SUM or AVG fold (#2866) — each with its own
-	// real-ClickHouse-calibrated budget guard rather than a reuse of the
-	// classic fold's rows-dominated one — see
-	// promql.NativeExpHistogramMergeLowerer's own doc.
-	if optSet.Has(chopt.FeatureExpHistogramMergeSumMap) {
-		l.ExpHistogramMerge = promql.NativeExpHistogramMergeLowerer{}
-	} else {
-		l.ExpHistogramMerge = promql.FanoutExpHistogramMergeLowerer{}
-	}
-	return l
 }
 
 // SettingsRules builds the CAPABILITY-decided half of the per-query
