@@ -1419,9 +1419,22 @@ jobs:
   agpl-clean:
     name: agpl-clean
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    # `always()` is load-bearing, exactly as it is on ci.yml's `check`
+    # aggregator: with a plain `needs:` this job is SKIPPED when `changes`
+    # fails, and a skipped required check reports GREEN to branch
+    # protection. The condition below runs the job whenever `changes` did
+    # not succeed, and the first step then fails it loudly. A docs-only
+    # change still skips by design.
+    if: >-
+      always() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
     runs-on: ubuntu-latest
     steps:
+      - name: gate on the changes job
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes did not succeed (${{ needs.changes.result }}); a required check must not be skipped into green."
+          exit 1
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-go
