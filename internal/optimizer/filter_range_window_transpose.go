@@ -54,6 +54,10 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //     else), so the rule never needs to reason about the computed key's
 //     shape at all.
 //   - `ColumnRef` with a non-empty `Qualifier` in the predicate.
+//   - A `DownsampleTier` RangeWindow. See
+//     `rangeWindowReadsInput` for why that arm has to be declined
+//     rather than merely rewired, and why the OTHER optional side-scan,
+//     `DeltaPrefixAggregateInput`, needs no guard.
 //   - Mixed predicates (one safe AND one unsafe sub-clause): we keep
 //     the *entire* Filter above the RangeWindow. Splitting an AND
 //     into push-safe / hold-back halves is conceptually simple but
@@ -95,6 +99,10 @@ func transposeFilterRangeWindow(b Bindings) chplan.Node {
 		return nil
 	}
 
+	if !rangeWindowReadsInput(r) {
+		return nil
+	}
+
 	passthrough := seriesIdentifyingColumns(r)
 	if passthrough == nil {
 		return nil
@@ -111,6 +119,44 @@ func transposeFilterRangeWindow(b Bindings) chplan.Node {
 	newRW := *r
 	newRW.Input = &newFilter
 	return &newRW
+}
+
+// rangeWindowReadsInput reports whether the emitter renders r by reading
+// r.Input at all.
+//
+// The transpose moves the Filter from above r to underneath it, into
+// r.Input. That relocation only preserves the answer if the emitter goes
+// on to read r.Input — and for one RangeWindow mode it does not.
+// `emitRangeWindow` (internal/chsql/range_window.go) checks
+// `r.DownsampleTier` before any other dispatch and hands the node to
+// `emitRangeWindowDownsampleTier`, which answers the query entirely from
+// r.DownsampleTierInput's bucketed aggregate state; its own doc states
+// "r.Input is UNUSED here". A predicate transposed into r.Input in that
+// mode is therefore not pushed down, it is DELETED: the emitted SQL loses
+// the WHERE clause and its bound argument outright, so a query that must
+// return no rows returns every row instead.
+//
+// r.DownsampleTier is the right thing to test rather than
+// r.DownsampleTierInput being non-nil: lowering populates the side-scan
+// whenever the schema offers a tier table, and the node is only read from
+// it when the flag is also set (internal/chplan/range_window.go).
+// Declining on the populated-but-inert shape would give up a sound
+// pushdown for nothing.
+//
+// The other optional side-scan, r.DeltaPrefixAggregateInput, needs no
+// guard, and the reason is worth stating because the transform's silence
+// about it reads like an oversight. The emitter drives that join from the
+// r.Input-derived side with a LEFT JOIN keyed on the group columns
+// (internal/chsql/range_window.go's instant and matrix arms both build
+// `FROM <window> LEFT JOIN <agg> ON <group cols>`). This rule only ever
+// pushes a predicate over bare `GroupBy` ColumnRefs — exactly those join
+// keys. So the rows an unfiltered aggregate side still contributes are
+// rows whose key the predicate rejects, and those keys are by
+// construction absent from the filtered driving side: they find no
+// partner and reach no output. The answer is unchanged; only some
+// needless scan work on the side-scan survives.
+func rangeWindowReadsInput(r *chplan.RangeWindow) bool {
+	return !r.DownsampleTier
 }
 
 // seriesIdentifyingColumns returns the set of bare-column series-identity
