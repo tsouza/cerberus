@@ -599,7 +599,7 @@ data:
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Error rate split by the closed cerberus_error_reason enum on cerberus_queries_total — bad_request, backend_unavailable, resource_exhausted, timeout, internal. Names WHY the errors in the status-class panel happened; internal is the page-worthy one. Admission-control rejections are absent by construction: the limiter sits outside the query pipeline and reports on the Admission rejections panel instead.",
+          "description": "Error rate split by the closed cerberus_error_reason enum on cerberus_queries_total — bad_request, backend_unavailable, resource_exhausted, timeout, canceled, internal. Names WHY the errors in the status-class panel happened; internal is the page-worthy one and canceled is the one to ignore — a caller hanging up, which Grafana itself does on every panel re-render. Admission-control rejections are absent by construction: the limiter sits outside the query pipeline and reports on the Admission rejections panel instead.",
           "fieldConfig": {
             "defaults": {
               "color": {

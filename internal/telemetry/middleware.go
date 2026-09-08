@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"log/slog"
 	"net"
@@ -156,7 +157,25 @@ func QueryMiddleware(ql string, renderPanic PanicRenderer, next http.Handler) ht
 			if panicked {
 				status = http.StatusInternalServerError
 			}
-			t.Done(r.Context(), ClassifyStatus(status))
+			out := ClassifyStatus(status)
+			// The one fact the status cannot carry: the caller went away.
+			// Tempo answers 499 and prom/loki answer 503 for the very same
+			// event, so a status-derived reason calls it bad_request on one
+			// head and backend_unavailable on the others — neither true
+			// (cerberus issue #3197). The request context is cancelled
+			// exactly when the client disconnects, and it is still readable
+			// here because this defer runs INSIDE the handler, before
+			// net/http tears the request down. A per-head query deadline
+			// cannot be mistaken for it: ApplyQueryTimeout derives a CHILD
+			// context, and its expiry is DeadlineExceeded, not Canceled — so
+			// a timeout still classifies as a timeout.
+			//
+			// Skipped on a recovered panic: a defect stays ReasonInternal
+			// whatever the client did afterwards.
+			if !panicked && errors.Is(r.Context().Err(), context.Canceled) {
+				out = out.AsCanceled()
+			}
+			t.Done(r.Context(), out)
 		}()
 
 		// Inner defer: recover a handler panic, log it via the OTLP slog

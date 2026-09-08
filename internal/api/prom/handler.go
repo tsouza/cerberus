@@ -1158,11 +1158,19 @@ func isQueryCanceled(err error) bool {
 // queryCanceledAPIError is the head-idiomatic reply for a cancelled
 // query — HTTP 503, errorType "canceled", mirroring upstream
 // Prometheus's web/api/v1 handling of promql.ErrQueryCanceled
-// (errorCanceled → 503) down to the message text. It is emphatically
-// NOT a 5xx server fault: cerberus and ClickHouse are both healthy and
-// nothing failed, so it is breaker-neutral. Counting these as server
-// errors inflates the 5xx rate with events that are not server errors,
-// which is what makes the signal unusable for alerting.
+// (errorCanceled → 503) down to the message text.
+//
+// The 503 is upstream wire parity, not a claim about fault: cerberus and
+// ClickHouse are both healthy and nothing failed, so this is breaker-neutral.
+// The status genuinely IS in the 5xx band and cannot leave it without breaking
+// the compatibility harnesses' byte-parity assertion — an earlier version of
+// this comment asserted the opposite ("emphatically NOT a 5xx") while
+// returning 503, which is what let the wrong telemetry reason go unnoticed.
+// What keeps the signal usable for alerting is the REASON, not the status:
+// telemetry.Outcome.AsCanceled records cerberus_error_reason="canceled" for
+// these, so an alert on the 5xx rate can exclude them explicitly
+// (cerberus issue #3197, docs/observability.md). Tempo answers 499 for the
+// same event; only the reason is unified.
 func queryCanceledAPIError() *apiError {
 	return &apiError{
 		Kind:   ErrCanceled,
@@ -1533,9 +1541,10 @@ func classifyEngineError(err error) error {
 	if httperr.IsDistributedShardErr(err) {
 		return distributedShardAPIError(err)
 	}
-	// Caller-initiated cancellation (open path): the client hung up
-	// before the cursor opened. 503 errorType=canceled; never a 5xx —
-	// nothing failed, the caller stopped waiting.
+	// Caller-initiated cancellation (open path): the client hung up before
+	// the cursor opened. 503 errorType=canceled for upstream parity; the
+	// telemetry reason is "canceled" rather than backend_unavailable, since
+	// nothing failed — the caller stopped waiting.
 	if isQueryCanceled(err) {
 		return queryCanceledAPIError()
 	}

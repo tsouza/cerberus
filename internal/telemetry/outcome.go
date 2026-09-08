@@ -28,6 +28,13 @@ const (
 //     correctness.
 //   - ReasonTimeout         — the request ran out of time, on either
 //     side of the gateway.
+//   - ReasonCanceled       — the CALLER went away before the answer was
+//     ready. Nothing was wrong with the query and nothing was wrong
+//     with the gateway, so this is the one error reason that is never
+//     worth acting on: a Grafana panel re-render, a query edit or a tab
+//     switch cancels every in-flight request, which makes this a hot
+//     path rather than an incident. It exists precisely so those do not
+//     inflate the reasons that ARE worth acting on.
 //   - ReasonInternal        — a defect in cerberus itself: a recovered
 //     panic or an unclassified 5xx. Always worth a page.
 const (
@@ -36,8 +43,36 @@ const (
 	ReasonBackendUnavailable = "backend_unavailable"
 	ReasonResourceExhausted  = "resource_exhausted"
 	ReasonTimeout            = "timeout"
+	ReasonCanceled           = "canceled"
 	ReasonInternal           = "internal"
 )
+
+// ErrorReasons returns every member of the cerberus_error_reason closed enum,
+// in a stable order.
+//
+// This is the ONE authoritative membership list. Before it existed the set was
+// re-typed by hand in four places — the vocabulary test, the public-contract
+// test, the metrics status table, and (on the request-scoped-override path) an
+// accept-list that SILENTLY DROPPED anything missing from it — so adding a
+// member compiled, passed, and simply went unrecorded in whichever copies were
+// missed. Every consumer now derives from this function, leaving exactly one
+// place where membership is stated in code and one deliberate literal pin (the
+// public-contract test) that a contract change is supposed to touch.
+//
+// It is NOT the list of reasons ClassifyStatus can produce: ReasonCanceled is
+// only ever reached through Outcome.AsCanceled, since no HTTP status
+// identifies a client hanging up.
+func ErrorReasons() []string {
+	return []string{
+		ReasonNone,
+		ReasonBadRequest,
+		ReasonBackendUnavailable,
+		ReasonResourceExhausted,
+		ReasonTimeout,
+		ReasonCanceled,
+		ReasonInternal,
+	}
+}
 
 // Status families for AttrStatusClass. Bounded by construction — the
 // status code is collapsed to its family before it ever reaches a label.
@@ -99,6 +134,37 @@ func ClassifyStatus(status int) Outcome {
 	out.Result = ResultError
 	out.Reason = reasonForStatus(status)
 	return out
+}
+
+// AsCanceled re-labels an ERROR outcome as a client cancellation.
+//
+// It exists because a cancellation is the one query outcome the HTTP status
+// cannot express, and the three heads prove it by disagreeing: Tempo answers
+// 499 (a 4xx, so reasonForStatus says bad_request) while Prometheus and Loki
+// answer 503 to stay byte-compatible with upstream's own errorCanceled
+// envelope (a 5xx, so reasonForStatus says backend_unavailable). Same event,
+// two verdicts, and neither is true — the request was not malformed and the
+// backend was not unavailable (cerberus issue #3197).
+//
+// Neither status can move: Tempo's 499 is deliberately outside the 5xx band
+// so dashboards do not read a client hanging up as "cerberus is unhealthy",
+// and prom/loki's 503 is pinned by upstream wire parity that the compat
+// harnesses assert. So the reason has to come from something other than the
+// status, and the caller supplies it: each transport knows independently that
+// its client went away — HTTP from the request context, gRPC from
+// codes.Canceled — without any per-head error plumbing that a wrapped or
+// re-created error could lose.
+//
+// A non-error outcome is returned unchanged, so a request whose client
+// disconnected after a clean 200 stays ok/none: the query WAS answered.
+// Callers must also not apply this to a recovered panic — a defect is a
+// defect whatever the client did afterwards.
+func (o Outcome) AsCanceled() Outcome {
+	if o.Result != ResultError {
+		return o
+	}
+	o.Reason = ReasonCanceled
+	return o
 }
 
 // statusClass collapses a status code to its family label.

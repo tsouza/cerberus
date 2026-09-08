@@ -12,3 +12,9 @@ var GRPCStatusForTest = grpcStatusFor
 // the HTTP QueryMiddleware uses — so the mapping table can be pinned
 // directly.
 var GRPCCodeToHTTPStatusTest = grpcCodeToHTTPStatus
+
+// OutcomeForCodeTest exposes outcomeForCode — the query-telemetry
+// interceptor's full gRPC-code-to-telemetry-triple classification, including
+// the client-cancellation re-label — so cross-transport agreement can be
+// pinned without standing up a streaming RPC and racing a real cancellation.
+var OutcomeForCodeTest = outcomeForCode

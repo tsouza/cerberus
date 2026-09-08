@@ -220,11 +220,28 @@ func TestErrorReasonValues_PublicContract(t *testing.T) {
 		"backend_unavailable": telemetry.ReasonBackendUnavailable,
 		"resource_exhausted":  telemetry.ReasonResourceExhausted,
 		"timeout":             telemetry.ReasonTimeout,
+		"canceled":            telemetry.ReasonCanceled,
 		"internal":            telemetry.ReasonInternal,
 	}
 	for v, got := range want {
 		if got != v {
 			t.Errorf("reason const for %q = %q; want %q", v, got, v)
+		}
+	}
+	// MEMBERSHIP, not just values. The map above is the deliberate literal
+	// pin a contract change is meant to edit; ErrorReasons is what every
+	// other consumer derives from. Asserting they agree is what stops a
+	// member being added to the code and never reaching the published
+	// contract (or the reverse) — the drift that let a reason exist in the
+	// enum while the docs table, the dashboards and this pin all still
+	// listed six.
+	if len(want) != len(telemetry.ErrorReasons()) {
+		t.Errorf("ErrorReasons has %d members but the public contract pins %d; every member is a published label value and must appear in both",
+			len(telemetry.ErrorReasons()), len(want))
+	}
+	for _, r := range telemetry.ErrorReasons() {
+		if _, ok := want[r]; !ok {
+			t.Errorf("ErrorReasons includes %q, which the public contract does not pin — add it here AND to docs/observability.md's table", r)
 		}
 	}
 }

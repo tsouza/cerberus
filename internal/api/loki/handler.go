@@ -719,9 +719,12 @@ func classifyEngineErr(err error) error {
 	// refresh superseding its own in-flight request), so net/http cancels
 	// the request context and the in-flight query unwinds with
 	// context.Canceled. HTTP 503 errorType=canceled, mirroring the Prom
-	// head — emphatically NOT a 5xx: nothing failed, the caller simply
-	// stopped waiting, and counting these as server faults inflates the
-	// 5xx rate with events that are not server errors.
+	// head and upstream Loki's own envelope. The status really is in the 5xx
+	// band and stays there for wire parity; what stops these inflating the
+	// server-fault signal is the telemetry REASON, which
+	// telemetry.Outcome.AsCanceled records as "canceled" rather than
+	// backend_unavailable (cerberus issue #3197). Nothing failed — the caller
+	// simply stopped waiting.
 	if errors.Is(err, context.Canceled) {
 		return &apiError{
 			Kind:   ErrCanceled,

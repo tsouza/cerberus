@@ -47,9 +47,28 @@ func queryTelemetryInterceptor(ql string) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		t := telemetry.ObserveQuery(ql, info.FullMethod)
 		err := handler(srv, ss)
-		t.Done(ss.Context(), telemetry.ClassifyStatus(grpcCodeToHTTPStatus(status.Code(err))))
+		t.Done(ss.Context(), outcomeForCode(status.Code(err)))
 		return err
 	}
+}
+
+// outcomeForCode is the interceptor's whole classification: a gRPC status
+// code onto the telemetry triple, through the SAME telemetry.ClassifyStatus
+// the HTTP QueryMiddleware uses, plus the one refinement no status can carry.
+//
+// codes.Canceled IS the client hanging up — this transport needs no context
+// inspection to know it, unlike HTTP, which reads the request context. Without
+// the refinement a cancelled stream classifies through 499 as bad_request,
+// which is the very disagreement cerberus issue #3197 reports: the identical
+// event reads bad_request here and backend_unavailable on Prometheus/Loki's
+// 503. Only the REASON is re-labelled; status_class stays 4xx, because 499 is
+// genuinely the status this transport reports.
+func outcomeForCode(code codes.Code) telemetry.Outcome {
+	out := telemetry.ClassifyStatus(grpcCodeToHTTPStatus(code))
+	if code == codes.Canceled {
+		out = out.AsCanceled()
+	}
+	return out
 }
 
 // grpcCodeToHTTPStatus reverses grpcCodeFor's table (see errclass.go's
@@ -69,6 +88,11 @@ func queryTelemetryInterceptor(ql string) grpc.StreamServerInterceptor {
 // reason bucket under telemetry.ClassifyStatus (4xx -> ReasonBadRequest,
 // 5xx's 502/503 -> ReasonBackendUnavailable), so the choice of
 // representative never changes the recorded Outcome.
+//
+// codes.Canceled is the one code whose recorded reason is NOT what this
+// table's status implies: it maps to 499 for status_class purposes, but the
+// interceptor above re-labels the reason ReasonCanceled so a client hanging
+// up reads the same on this transport as on HTTP, rather than bad_request.
 //
 // codes.OK needs no case — status.Code(nil) already returns codes.OK,
 // and http.StatusOK classifies as ResultOK via ClassifyStatus's

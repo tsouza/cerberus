@@ -178,3 +178,49 @@ func TestGRPCCodeToHTTPStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestOutcomeForCode_CancellationAgreesWithTheOtherHeads is the cross-transport
+// half of cerberus issue #3197's fix.
+//
+// A client cancellation reaches cerberus three ways and used to be recorded
+// three different ways: this gRPC stream and Tempo's HTTP handler answer 499,
+// which reasonForStatus reads as bad_request, while Prometheus and Loki answer
+// 503, which it reads as backend_unavailable. Same event, opposite verdicts,
+// and neither true — the request was not malformed and the backend was not
+// unavailable.
+//
+// The assertion is deliberately made AGAINST the reason the HTTP heads record
+// rather than against a hard-coded literal: what #3197 asks for is agreement,
+// so a fix that renamed the value on one transport only would still fail here.
+func TestOutcomeForCode_CancellationAgreesWithTheOtherHeads(t *testing.T) {
+	t.Parallel()
+
+	gotGRPC := tempogrpc.OutcomeForCodeTest(codes.Canceled)
+
+	// What the HTTP QueryMiddleware records for the same event: Tempo's own
+	// 499 and prom/loki's 503, each re-labelled by the cancellation the
+	// request context carries.
+	for _, httpStatus := range []int{tempo.StatusClientClosedRequest, http.StatusServiceUnavailable} {
+		wantHTTP := telemetry.ClassifyStatus(httpStatus).AsCanceled()
+		if gotGRPC.Reason != wantHTTP.Reason {
+			t.Errorf("gRPC cancellation reason = %q, but the HTTP head answering %d records %q — "+
+				"one event must not be three reasons", gotGRPC.Reason, httpStatus, wantHTTP.Reason)
+		}
+	}
+	if gotGRPC.Reason != telemetry.ReasonCanceled {
+		t.Errorf("gRPC cancellation reason = %q, want %q", gotGRPC.Reason, telemetry.ReasonCanceled)
+	}
+	if gotGRPC.Result != telemetry.ResultError {
+		t.Errorf("result = %q, want error — the query was not answered", gotGRPC.Result)
+	}
+	// status_class is deliberately NOT unified: 499 is genuinely the status
+	// this transport reports, and the label reports what was sent.
+	if gotGRPC.StatusClass != telemetry.StatusClass4xx {
+		t.Errorf("status_class = %q, want %q — only the REASON is re-labelled", gotGRPC.StatusClass, telemetry.StatusClass4xx)
+	}
+	// Non-vacuity: an ordinary error code must NOT pick up the cancellation
+	// reason, or the assertions above would pass for a blanket re-label.
+	if other := tempogrpc.OutcomeForCodeTest(codes.Unavailable); other.Reason == telemetry.ReasonCanceled {
+		t.Error("codes.Unavailable classified as a cancellation; only codes.Canceled may be")
+	}
+}

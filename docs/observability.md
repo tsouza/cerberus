@@ -356,9 +356,11 @@ counted separately instead, and the pair is what makes triage decidable:
 it" — and those demand opposite responses. A 4xx means the caller sent
 something cerberus cannot answer; a 5xx means cerberus could not answer
 something valid. `cerberus_error_reason` and `cerberus_status_class`
-carry that distinction on the counter. Both are closed enums derived
-from the response's status family, never from an error string or a raw
-status code, so the label cardinality is fixed:
+carry that distinction on the counter. Both are closed enums, never an
+error string or a raw status code, so the label cardinality is fixed.
+`cerberus_status_class` is derived purely from the response's status
+family; `cerberus_error_reason` is too, with one deliberate exception
+noted under `canceled` below:
 
 | `cerberus_error_reason` | Meaning                                                                                                       |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
@@ -367,7 +369,35 @@ status code, so the label cardinality is fixed:
 | `backend_unavailable`   | ClickHouse could not be reached or refused the work.                                                          |
 | `resource_exhausted`    | The server refused for capacity reasons: rate limited, out of storage.                                        |
 | `timeout`               | The request ran out of time, on either side of the gateway.                                                   |
+| `canceled`              | The caller went away before the answer was ready. Never worth acting on.                                      |
 | `internal`              | A defect in cerberus — a recovered panic or an unclassified 5xx. Worth a page.                                |
+
+`canceled` is the one reason not derived from the status, and it has to
+be. The three heads answer a client cancellation with different codes —
+Tempo replies `499`, deliberately outside the 5xx band so a client
+hanging up is never read as "cerberus is unhealthy", while Prometheus
+and Loki reply `503` to stay byte-compatible with upstream's own
+`errorCanceled` envelope. Deriving the reason from the status therefore
+recorded the SAME event as `bad_request` on Tempo and
+`backend_unavailable` on the other two, and neither is true: the request
+was not malformed and the backend was not unavailable. Neither status
+can move, so the reason comes from the transport instead — the request
+context on HTTP, `codes.Canceled` on the Tempo gRPC stream — and all
+three heads now record `canceled`.
+
+A cancellation still counts as `result="error"`, because the query was
+not answered. It is the one error reason that is expected in normal
+operation rather than a fault: Grafana cancels every in-flight request
+on a panel re-render, a query edit or a tab switch. Exclude it before
+alerting on an error ratio, or a healthy dashboard reads as an
+incident.
+
+Note that `cerberus_status_class` is NOT unified the same way — a
+cancellation stays `4xx` on Tempo and `5xx` on Prometheus/Loki, since
+that label reports the status actually sent and those statuses are
+fixed by the compatibility contract. Alerts that key on
+`cerberus_status_class="5xx"` should exclude
+`cerberus_error_reason="canceled"` for that reason.
 
 Admission-control rejections are not in this counter at all: the
 limiter middleware sits OUTSIDE `telemetry.QueryMiddleware`, so a

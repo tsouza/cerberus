@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/sdk/metric"
@@ -474,6 +475,13 @@ func TestQueryMiddleware_ResultError(t *testing.T) {
 		{"502_bad_gateway", http.StatusBadGateway, telemetry.ReasonBackendUnavailable, telemetry.StatusClass5xx},
 		{"503_service_unavailable", http.StatusServiceUnavailable, telemetry.ReasonBackendUnavailable, telemetry.StatusClass5xx},
 		{"504_gateway_timeout", http.StatusGatewayTimeout, telemetry.ReasonTimeout, telemetry.StatusClass5xx},
+		// 499 is what Tempo answers a client cancellation with. Its reason
+		// is NOT bad_request even though 499 is a 4xx: the middleware
+		// re-labels a cancelled request via Outcome.AsCanceled, which is
+		// exercised end-to-end by TestQueryMiddleware_ClientCancellation
+		// below. Here the request context is NOT cancelled, so this row
+		// pins the status-derived fallback for a bare 499.
+		{"499_client_closed_request", tempoClientClosedRequest, telemetry.ReasonBadRequest, telemetry.StatusClass4xx},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -760,5 +768,74 @@ func TestObserveQueryInflight_PerLanguageLabels(t *testing.T) {
 		if got := inflightValue(t, reader, ql); got != 1 {
 			t.Errorf("inflight[%s]: got %d want 1", ql, got)
 		}
+	}
+}
+
+// TestQueryMiddleware_ClientCancellation pins the fix for cerberus issue
+// #3197: the same event — a caller hanging up — must record the same
+// cerberus_error_reason on every head, even though the heads answer it with
+// different HTTP statuses.
+//
+// Tempo replies 499 (a 4xx, which reasonForStatus reads as bad_request) and
+// Prometheus/Loki reply 503 (which it reads as backend_unavailable). Neither is
+// true, and neither status is free to move: Tempo's 499 deliberately keeps a
+// client hang-up out of the 5xx band, and prom/loki's 503 is byte-parity with
+// upstream's errorCanceled envelope, asserted by the compat harnesses. So the
+// middleware reads the cancellation off the request context instead.
+//
+// The bare-499 row in TestQueryMiddleware_ResultError is the control: an
+// uncancelled 499 still classifies bad_request, so this test cannot pass by
+// the reason having been hard-wired to the status.
+func TestQueryMiddleware_ClientCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		cancel     bool
+		expire     bool
+		wantReason string
+	}{
+		{"tempo_499_canceled", tempoClientClosedRequest, true, false, telemetry.ReasonCanceled},
+		{"prom_loki_503_canceled", http.StatusServiceUnavailable, true, false, telemetry.ReasonCanceled},
+		// A per-request DEADLINE is not a cancellation: cerberus's own query
+		// timeout must keep reading as a timeout, not get swallowed into the
+		// reason that means "nobody was waiting".
+		{"504_deadline_is_still_a_timeout", http.StatusGatewayTimeout, false, true, telemetry.ReasonTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := installManualReader(t)
+
+			status := tc.status
+			h := telemetry.QueryMiddleware("promql", noopPanicRenderer,
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(status)
+				}))
+
+			ctx := context.Background()
+			var cancel context.CancelFunc
+			switch {
+			case tc.cancel:
+				ctx, cancel = context.WithCancel(ctx)
+				cancel() // the caller went away
+			case tc.expire:
+				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer cancel()
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/query", nil).WithContext(ctx)
+			req.Pattern = "GET /api/v1/query"
+			h.ServeHTTP(httptest.NewRecorder(), req)
+
+			sm := collect(t, reader)
+			sum := findMetric(t, sm, "cerberus_queries_total").Data.(metricdata.Sum[int64])
+			if len(sum.DataPoints) != 1 {
+				t.Fatalf("queries.total DPs: got %d want 1", len(sum.DataPoints))
+			}
+			if v, _ := sum.DataPoints[0].Attributes.Value("result"); v.AsString() != telemetry.ResultError {
+				t.Errorf("result: got %q want error — an unanswered query is still a failed query", v.AsString())
+			}
+			if v, _ := sum.DataPoints[0].Attributes.Value("cerberus.error_reason"); v.AsString() != tc.wantReason {
+				t.Errorf("cerberus.error_reason: got %q want %q", v.AsString(), tc.wantReason)
+			}
+		})
 	}
 }
