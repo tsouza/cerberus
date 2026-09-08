@@ -548,6 +548,7 @@ async function main() {
             c.query_kind, c.initial_query_id,
             if(i.client_hostname != '', i.client_hostname, c.client_hostname) AS cerberus_host,
             c.Settings['max_memory_usage'] AS mem,
+            c.memory_usage AS mem_used,
             replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log) AS c
      GLOBAL LEFT JOIN (
@@ -561,8 +562,8 @@ async function main() {
        AND c.event_time >= toDateTime(${windowStart}) AND c.event_time <= toDateTime(${windowEnd})`,
   );
   const shardStmts = shardStmtRows.map((r) => {
-    const [s, d, kind, qid, host, mem, snippet] = r.split('\t');
-    return { startUs: Number(s), durUs: Number(d), kind, qid, host, mem, snippet };
+    const [s, d, kind, qid, host, mem, memUsed, snippet] = r.split('\t');
+    return { startUs: Number(s), durUs: Number(d), kind, qid, host, mem, memUsed: Number(memUsed), snippet };
   });
   const peakConcurrentShardStatements = maxConcurrent(shardStmts);
   const kindCounts = {};
@@ -719,16 +720,43 @@ async function main() {
     }
   }
 
+  // Real-usage headroom diagnostic, logged on EVERY run, pass or fail, so a
+  // MEMORY_LIMIT_EXCEEDED failure is never the first time this lane learns
+  // how close the tightest apportioned tier (highest observed kEff x
+  // DataShardCount) actually runs to a real query's measured memory_usage.
+  // Grouped by kEff, not by trace, since the question this answers is "does
+  // headroom shrink as kEff grows" — exactly the axis perShardMemoryBytes
+  // divides on.
+  const usageByKEff = new Map();
+  for (const r of selectRows) {
+    if (!(r.memUsed > 0)) continue;
+    const kEff = kEffByTrace.get(r.qid.slice(0, 32)) || 1;
+    const ceiling = Math.max(1, Math.floor(queryMaxMemoryBytes / (kEff * DATA_SHARD_COUNT)));
+    if (!usageByKEff.has(kEff)) usageByKEff.set(kEff, { max: 0, ceiling });
+    const bucket = usageByKEff.get(kEff);
+    if (r.memUsed > bucket.max) bucket.max = r.memUsed;
+  }
+  for (const [kEff, { max, ceiling }] of [...usageByKEff].sort((a, b) => a[0] - b[0])) {
+    log(`kEff=${kEff}: peak real memory_usage observed=${max} against configured ceiling=${ceiling} (headroom=${(((ceiling - max) / ceiling) * 100).toFixed(1)}%)`);
+  }
+
   const exceptionRows = chQueryTSV(
     initiatorPod,
-    `SELECT count() FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
-     WHERE type = 'ExceptionWhileProcessing'
-       AND (exception_code = 241 OR exception ILIKE '%Memory limit%')
-       AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
+    `SELECT c.initial_query_id, c.Settings['max_memory_usage'] AS mem,
+            replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
+     FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log) AS c
+     WHERE c.type = 'ExceptionWhileProcessing'
+       AND (c.exception_code = 241 OR c.exception ILIKE '%Memory limit%')
+       AND c.event_time >= toDateTime(${windowStart}) AND c.event_time <= toDateTime(${windowEnd})`,
   );
-  const exceptionCount = Number(exceptionRows[0] || '0');
+  const exceptionCount = exceptionRows.length;
   if (exceptionCount > 0) {
     error(`${exceptionCount} MEMORY_LIMIT_EXCEEDED exception(s) recorded in system.query_log during the burst — perShardMemoryBytes did not bound memory pressure as predicted`);
+    for (const row of exceptionRows) {
+      const [qid, mem, snippet] = row.split('\t');
+      const kEff = kEffByTrace.get((qid || '').slice(0, 32)) || 1;
+      log(`  exception: initial_query_id=${qid}, kEff=${kEff}, configured max_memory_usage=${mem}, query=${snippet}`);
+    }
     failures++;
   }
 

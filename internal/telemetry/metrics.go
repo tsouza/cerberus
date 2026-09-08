@@ -365,7 +365,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		panic("telemetry: build queries_total: " + err.Error())
 	}
 	queryDuration, err := meter.Float64Histogram(
-		"cerberus_queries_duration_seconds",
+		"cerberus_queries_duration_exp_hist",
 		metric.WithDescription("End-to-end query wall-clock, seconds."),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(QueryDurationBoundaries...),
