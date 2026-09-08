@@ -413,7 +413,7 @@ export function findMarkers(text) {
 // unquoted marker after one would be skipped — which is why each quote
 // style is counted independently and a marker is only excused when the
 // style that encloses it is balanced-open around it. Prose apostrophes
-// almost never co-occur with a bare TODO on the same line, and the failure
+// almost never share a line with an unquoted marker word, and the failure
 // direction of a miscount is a missed marker on that one line, never a
 // false accusation.
 function insideQuotedString(src, index) {
