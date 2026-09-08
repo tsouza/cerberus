@@ -108,8 +108,10 @@ const (
 	// floor): auto-selecting this feature emits a wrong answer the instant a
 	// NaN-bearing series is queried. AutoSelect is false — like
 	// FeatureColumnarResultDecode, it's reachable only via an explicit
-	// CERBERUS_CH_OPTIMIZATIONS=ts_grid_changes listing — until ClickHouse
-	// fixes the builtin's NaN handling upstream and #1721 closes.
+	// CERBERUS_CH_OPTIMIZATIONS=ts_grid_changes listing. The gate is
+	// ClickHouse's own NaN handling inside the builtin: the posture lifts
+	// when a ClickHouse release fixes it, not on any cerberus-side change.
+	// Cerberus issue #1721 records the divergence and the reproduction.
 	FeatureTSGridChanges = "ts_grid_changes"
 
 	// FeatureTSGridResets opts eligible resets(<counter>[<range>]) query_range

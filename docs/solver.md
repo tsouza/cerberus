@@ -534,9 +534,16 @@ normalized `query_log` text.
   re-validation midpoint is reported with `stale=true`, and the caller must
   NOT memo-hit it — it routes through plain route A instead, "as if the Key
   were unknown", so the verdict can be honestly re-confirmed by real traffic.
-- **`BothFail`** — route B was tried for this Key and itself failed with a
-  resource failure. The caller stays on route A; no further probing is
-  attempted until the entry ages out at the memo's TTL.
+- **`BothFail`** — route B was tried for this Key and failed with a resource
+  failure `MinCorroboratingFailures` (2) consecutive times, with no route-B
+  success in between. A *single* route-B resource failure does not mint this
+  state: it demotes the entry to `Unknown` carrying the incremented
+  corroboration count, so the next dispatch re-derives eligibility and may probe
+  again; only the second consecutive one (or a failure against an entry already
+  `BothFail`) writes `BothFail`. A route-B success anywhere replaces the entry
+  with `PreferB` outright, resetting the count. Once `BothFail`, the caller
+  stays on route A; no further probing is attempted, and no route-A failure
+  refreshes the entry, until it ages out at the memo's TTL.
 
 Requiring `MinCorroboratingFailures = 2` consecutive failures (not one) exists
 so a single transient rejection never mints a verdict on its own: probing
@@ -762,7 +769,7 @@ route-A-cheap can still end up on route B for that specific shape once it
 has actually failed enough times to prove the classification wrong — no
 threshold anywhere has to change for that to happen.
 
-## Advisory EXPLAIN ESTIMATE (issue #2787)
+## Advisory EXPLAIN ESTIMATE: granule-resolution row bounds for K clamping
 
 Every mechanism above — the K clamp, the failure-driven route memo, per-rung
 admission — reasons from either pure PLAN geometry (`N`, `F`, `D`) or
@@ -901,7 +908,7 @@ governs `MinFanout` / `MinAnchorPairs` today.
 | `CERBERUS_SHARD_MAX_K_WITH_ESTIMATE`                     | int   | 32      | `Config.MaxKWithEstimate`. Must be `>= CERBERUS_SHARD_MAX_K`.                                                            |
 | `CERBERUS_SHARD_ESTIMATE_MIN_ROWS_PER_ADDITIONAL_SHARD`  | int64 | 50,000  | `Config.EstimateMinRowsPerAdditionalShard`.                                                                              |
 
-## Bounded cardinality pre-probe (issue #2788)
+## Bounded cardinality pre-probe (`uniqUpTo`) for routing decisions
 
 `EXPLAIN ESTIMATE` (above) answers "how many marks did the index analysis
 fail to prune" — a granule-resolution SCAN-side upper bound. It has no
@@ -1071,7 +1078,7 @@ fixed Go constants pending real-world calibration evidence, mirroring
 `per_rung_admission.go`'s own unexported constants (`perRungCheapRowsPerAnchor`
 et al.) rather than growing a `Config` surface ahead of that evidence.
 
-## Query actuals: predicted-vs-actual drift detection (issue #2789)
+## Query actuals: predicted-vs-actual drift detection from ProfileEvents
 
 Both advisory pre-flight signals above — `EXPLAIN ESTIMATE` and the
 cardinality pre-probe — predict a plan's scan cost BEFORE dispatch and are
