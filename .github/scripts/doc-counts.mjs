@@ -31,10 +31,12 @@
 //      to hand-carry two files, and two such PRs conflicted in files neither
 //      changed the meaning of, which is how the table drifted below the
 //      baseline three corpus moves running (#1686 → #1717 → #1746). Both sites
-//      now state the counts BY REFERENCE, so this assertion inverts: neither
-//      may write a baseline integer down as its own standalone number, and each
-//      must still name compatibility/parity-baseline/ so a reader can reach
-//      the numbers it stopped printing. The .mjs is scanned through its `//`
+//      now state the counts BY REFERENCE, so this assertion inverts: none of
+//      them may write a baseline integer down as its own standalone number, and
+//      each must still name compatibility/parity-baseline/ so a reader can
+//      reach the numbers it stopped printing. README.md is scanned on the same
+//      terms — it is the third hand-written description and the one a reader
+//      meets first. The .mjs is scanned through its `//`
 //      comment prose only, because a code literal (an exit code, an array
 //      index) restates nothing.
 //
@@ -53,6 +55,18 @@
 //      intentionally rejected, wrong-reject -> wrong-rejected). The gate
 //      re-derives all sixteen cells from the ledger, so the headline
 //      "wrong-rejections" figure a reader acts on cannot be hand-typed.
+//
+//   7. chopt registry auto-vs-opt-in split — internal/chopt/registry.go is the
+//      source of truth for which optimizations `auto` picks. Prose in
+//      docs/clickhouse-optimizations.md states the split as "N of M features"
+//      three times, next to a generated table that already carries it per
+//      feature. The prose is what a reader meets first and what nothing else
+//      re-derives, so this gate counts the registry's `AutoSelect: false`
+//      entries and its entries in total, and asserts both stated integers.
+//      The registry is read by SPLITTING on each `ID: FeatureX,` rather than
+//      with one cross-entry regex: a lazy match between an entry's ID and a
+//      later field runs past the end of its own entry when that field is
+//      absent, silently attributing a neighbour's value.
 //
 //   6. rejection-parity shape divergences — the surface-parity ledger is
 //      SYMBOL-level, so its wrong-rejection column says nothing about which
@@ -93,6 +107,7 @@ const CLAUDE_DOC = join(REPO, 'CLAUDE.md');
 const README_DOC = join(REPO, 'README.md');
 const COMPAT_RATCHET_MJS = join(HERE, 'compat-ratchet.mjs');
 const COMPAT_DOC = join(REPO, 'docs', 'compatibility.md');
+const README = join(REPO, 'README.md');
 const PARITY_BASELINE = join(REPO, 'compatibility', 'parity-baseline');
 const WORKFLOWS_DIR = join(REPO, '.github', 'workflows');
 
@@ -106,6 +121,8 @@ const PARITY_BASELINE_REF = 'compatibility/parity-baseline/';
 // not a count.
 const PARITY_BASELINE_FIELDS = ['passed', 'total'];
 const COVERAGE_DOC = join(REPO, 'docs', 'coverage.md');
+const CHOPT_REGISTRY = join(REPO, 'internal', 'chopt', 'registry.go');
+const CH_OPT_DOC = join(REPO, 'docs', 'clickhouse-optimizations.md');
 const SURFACE_INVENTORY_DIR = join(REPO, 'test', 'surface-parity', 'inventory');
 const REJECTION_CATALOGUE_DIR = join(REPO, 'test', 'rejection-parity', 'catalogue');
 const DIVERGENCE_CEILING = join(REPO, 'test', 'rejection-parity', 'divergence-ceiling.json');
@@ -371,6 +388,32 @@ const FORBID_SKIP_CLAIM_PATTERNS = [
 // shape-divergence doc claims: docs/coverage.md must state the catalogue's live
 // `divergence` count in the same breath as the ledger's symbol-level zero, so a
 // reader cannot take one number for the other.
+// chopt split claims: "N of the registry's M features", "N of M features".
+// Two patterns over the same sentence, one per captured integer, so a doc
+// that updated only one of the two integers still fails.
+const CHOPT_OPT_IN_CLAIM_PATTERNS = [
+  /\**(\d+)\**\s+of\s+(?:the\s+registry's\s+|the\s+)?\d+\s+features\b/i,
+];
+const CHOPT_TOTAL_CLAIM_PATTERNS = [
+  /\b\d+\s+of\s+(?:the\s+registry's\s+|the\s+)?\**(\d+)\**\s+features\b/i,
+];
+
+// choptRegistryCensus — the live auto/opt-in split, derived by splitting the
+// registry source on each `ID: FeatureX,`. A missing AutoSelect field reads
+// as false, matching Go's zero value for the struct field.
+export function choptRegistryCensus(src) {
+  const chunks = src.split(/ID:\s*Feature[A-Za-z0-9]+,/);
+  let total = 0;
+  let optIn = 0;
+  // chunks[0] is the preamble before the first entry.
+  for (let i = 1; i < chunks.length; i += 1) {
+    total += 1;
+    const m = /AutoSelect:\s*(true|false)/.exec(chunks[i]);
+    if (!m || m[1] === 'false') optIn += 1;
+  }
+  return { total, optIn };
+}
+
 const SHAPE_DIVERGENCE_CLAIM_PATTERNS = [
   /\**(\d+)\**\s+open\s+argument-shape\s+divergences?/i,
 ];
@@ -496,9 +539,13 @@ function assertSurfaceParityGlance() {
   return compareGlance(live, glanceTableRows(readFileSync(COVERAGE_DOC, 'utf8')), error);
 }
 
-// readParityReferenceSites loads the two hand-written descriptions of the
-// parity gate. `proseOnly` marks the .mjs, whose numbers live in comments —
-// its code literals are exit codes, not restatements.
+// readParityReferenceSites loads the hand-written descriptions of the parity
+// gate. `proseOnly` marks the .mjs, whose numbers live in comments — its code
+// literals are exit codes, not restatements. README.md is here because it is
+// the most-read of the three and was the one that drifted furthest: it
+// advertised a passed/total headline that the baseline had left behind by
+// hundreds of cases, uncovered because this site list named only the two
+// files that had already been fixed.
 function readParityReferenceSites() {
   return [
     {
@@ -507,6 +554,7 @@ function readParityReferenceSites() {
       proseOnly: true,
     },
     { name: 'docs/compatibility.md', src: readFileSync(COMPAT_DOC, 'utf8'), proseOnly: false },
+    { name: 'README.md', src: readFileSync(README, 'utf8'), proseOnly: false },
   ];
 }
 
@@ -600,6 +648,22 @@ function runAssertions() {
     patterns: SHAPE_DIVERGENCE_CLAIM_PATTERNS,
   });
 
+  const chopt = choptRegistryCensus(readFileSync(CHOPT_REGISTRY, 'utf8'));
+  log(`chopt registry (live): ${chopt.total} features, ${chopt.optIn} opt-in-only (AutoSelect: false)`);
+  const choptDocs = [{ path: CH_OPT_DOC, name: 'docs/clickhouse-optimizations.md' }];
+  const choptOptInOk = assertClaims({
+    label: 'chopt-opt-in-count',
+    expected: chopt.optIn,
+    docs: choptDocs,
+    patterns: CHOPT_OPT_IN_CLAIM_PATTERNS,
+  });
+  const choptTotalOk = assertClaims({
+    label: 'chopt-feature-count',
+    expected: chopt.total,
+    docs: choptDocs,
+    patterns: CHOPT_TOTAL_CLAIM_PATTERNS,
+  });
+
   const callers = forbidSkipCallers(readWorkflows());
   log(
     `forbid-skip workflow callers (live): ${callers.length} ` +
@@ -607,12 +671,13 @@ function runAssertions() {
   );
   const callersOk = assertForbidSkipCallers(fsNames, callers);
 
-  if (forbidOk && layerOk && parityOk && glanceOk && divergenceOk && callersOk) {
+  if (forbidOk && layerOk && parityOk && glanceOk && divergenceOk && callersOk && choptOptInOk && choptTotalOk) {
     notice(
       `doc-counts: all doc-stated counts match source ` +
         `(forbid-skip=${fsCount}, test-layers=${layerCount}, ` +
-        `compat-ratchet.mjs and docs/compatibility.md state the per-head parity ` +
+        `compat-ratchet.mjs, docs/compatibility.md and README.md state the per-head parity ` +
         `counts by reference to ${PARITY_BASELINE_REF} rather than restating them, ` +
+        `chopt=${chopt.optIn}/${chopt.total} opt-in-only, ` +
         `the coverage glance table matches the surface-parity ledger, ` +
         `shape-divergences=${divCount}, ` +
         `${callers.length} workflow CHECK callers all name a live scan)`,
@@ -846,7 +911,7 @@ function selfTest() {
   );
   // The REAL sites must hold — the assertion the gate runs.
   check(
-    'real compat-ratchet.mjs and docs/compatibility.md state the parity counts by reference',
+    'real compat-ratchet.mjs, docs/compatibility.md and README.md state the parity counts by reference',
     assertParityByReference(
       loadParityBaseline(PARITY_BASELINE),
       readParityReferenceSites(),
@@ -922,6 +987,50 @@ function selfTest() {
     !compareGlance(fakeTotals, {}, () => {}),
   );
   // The REAL ledger must match the REAL doc — the assertion the gate runs.
+  // 7. The chopt auto/opt-in split is derived per ENTRY, not with one
+  // cross-entry regex — the failure mode that would otherwise credit an
+  // entry with its neighbour's AutoSelect value.
+  const fakeChoptRegistry = [
+    'var registry = []Feature{',
+    '  { ID: FeatureA, MinVersion: AlwaysAvailable, AutoSelect: true, },',
+    '  { ID: FeatureB, MinVersion: AlwaysAvailable, },',
+    '  { ID: FeatureC, MinVersion: AlwaysAvailable, AutoSelect: false, },',
+    '}',
+  ].join('\n');
+  const fakeCensus = choptRegistryCensus(fakeChoptRegistry);
+  check('chopt census counts every registry entry', fakeCensus.total === 3);
+  check(
+    'chopt census reads a MISSING AutoSelect as opt-in (Go zero value) and does not borrow the next entry\'s',
+    fakeCensus.optIn === 2,
+  );
+  check(
+    'chopt census on an empty registry finds nothing to protect',
+    choptRegistryCensus('var registry = []Feature{}').total === 0,
+  );
+  check(
+    'chopt claim pattern reads the OPT-IN integer out of both doc phrasings',
+    extractClaims(
+      "23 of the registry's 43 features are opt-in.\nthe 23 of 43 features carrying autoSelect: no",
+      CHOPT_OPT_IN_CLAIM_PATTERNS,
+    ).every((c) => c.value === 23),
+  );
+  check(
+    'chopt claim pattern reads the TOTAL integer out of both doc phrasings',
+    extractClaims(
+      "23 of the registry's 43 features are opt-in.\nthe 23 of 43 features carrying autoSelect: no",
+      CHOPT_TOTAL_CLAIM_PATTERNS,
+    ).every((c) => c.value === 43),
+  );
+  check(
+    'chopt gate would REJECT a doc that updated only one of the two integers',
+    extractClaims('20 of the 43 features are opt-in.', CHOPT_OPT_IN_CLAIM_PATTERNS).some((c) => c.value !== 23),
+  );
+  const realChopt = choptRegistryCensus(readFileSync(CHOPT_REGISTRY, 'utf8'));
+  check(
+    'real chopt registry derives a non-empty, non-degenerate split',
+    realChopt.total > 0 && realChopt.optIn > 0 && realChopt.optIn < realChopt.total,
+  );
+
   check('real docs/coverage.md glance table matches test/surface-parity/inventory/', assertSurfaceParityGlance());
 
   // 7. The shape-divergence count is a SECOND measurement, and the doc must

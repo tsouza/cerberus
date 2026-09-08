@@ -30,6 +30,10 @@ type docInput struct {
 	numCPU    int
 	host      hostInfo
 
+	// engineVersion is the major.minor the embedded chDB engine reports,
+	// not a literal — see session.engineVersion.
+	engineVersion string
+
 	// outPath is where benchmarks.md is written; charts are emitted into a
 	// sibling benchmarks/ directory and referenced relative to it.
 	outPath string
@@ -231,8 +235,12 @@ func environmentRows(in docInput) [][]string {
 	rows = append(rows, []string{"Go platform", platform})
 	rows = append(rows, []string{"runtime.NumCPU", fmt.Sprintf("%d", in.numCPU)})
 
-	// The query engine the SQL actually executes on.
-	rows = append(rows, []string{"Query engine", "ClickHouse 25.8 (via chDB / chdb-go, in-process)"})
+	// The query engine the SQL actually executes on, read back from the
+	// engine itself rather than typed in — see session.engineVersion.
+	rows = append(rows, []string{
+		"Query engine",
+		fmt.Sprintf("ClickHouse %s (via chDB / chdb-go, in-process)", in.engineVersion),
+	})
 
 	return rows
 }
@@ -359,8 +367,10 @@ func renderMatrix(b *strings.Builder, in docInput) error {
 	b.WriteString("grid point's rate in a single pass with **no row fan-out at all** — it never ")
 	b.WriteString("builds the `(sample, anchor)` matrix. It is auto-enabled on ClickHouse ≥ 25.9 ")
 	b.WriteString("(the aggregate shipped at 25.6 but used a closed membership window that ")
-	b.WriteString("diverged from PromQL until the 25.9 left-open fix, PR #86588; the 25.8 ")
-	b.WriteString("substrate here forces the native path explicitly to isolate the engine cost).\n\n")
+	b.WriteString("diverged from PromQL until the 25.9 left-open fix, PR #86588). The matrix ")
+	b.WriteString("below selects the native lowerer directly rather than through the auto-picker, ")
+	b.WriteString("so its two rows compare the strategies themselves rather than a version ")
+	b.WriteString("probe.\n\n")
 
 	b.WriteString("Because native rate *removes* the fan-out, the two levers do not stack: with ")
 	b.WriteString("native rate on there is no fan-out spine left for the sharded solver to slice, ")

@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -47,7 +48,20 @@ func queryTelemetryInterceptor(ql string) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		t := telemetry.ObserveQuery(ql, info.FullMethod)
 		err := handler(srv, ss)
-		t.Done(ss.Context(), telemetry.ClassifyStatus(grpcCodeToHTTPStatus(status.Code(err))))
+		out := telemetry.ClassifyStatus(grpcCodeToHTTPStatus(status.Code(err)))
+		// The gRPC code, like the HTTP status, collides distinct failures
+		// onto one value (codes.Unavailable carries both a real backend
+		// outage and a wall-clock timeout; ResourceExhausted renders as
+		// the 422 that also carries a lowering rejection), so the reason
+		// comes from the error itself through the same shared classifier
+		// the HTTP heads use. This interceptor holds the error directly
+		// and needs no request-scoped cell to reach it.
+		if out.Result == telemetry.ResultError {
+			if reason := httperr.TelemetryReason(err); reason != "" {
+				out.Reason = reason
+			}
+		}
+		t.Done(ss.Context(), out)
 		return err
 	}
 }

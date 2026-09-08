@@ -28,7 +28,7 @@ These numbers were captured on the host below — read directly from `/proc` and
 | Go toolchain   | go1.26.2                                                 |
 | Go platform    | linux/amd64                                              |
 | runtime.NumCPU | 8                                                        |
-| Query engine   | ClickHouse 25.8 (via chDB / chdb-go, in-process)         |
+| Query engine   | ClickHouse 26.5 (via chDB / chdb-go, in-process)         |
 
 > **Your numbers will differ.** Absolute timings depend on the CPU, the Go build, and the machine's load at the time. Treat the millisecond figures as *order-of-magnitude*; the **ratios** between shapes (and the deterministic row / granule counts) are what carry across hardware. Regenerate on your own box with `just bench-report`.
 
@@ -85,7 +85,7 @@ Four of the five shapes land in the tens of milliseconds. The outlier is the **r
 The rate range query is where cerberus's two performance levers come into play. They are **not independent dials** — they are two *alternative* remedies for the same row fan-out:
 
 - **Sharding** (the [sharded-pushdown solver](solver.md), route B) makes the fan-out *fit*. It re-anchors the *same* plan onto **K disjoint anchor-grid shards**, each a separate statement over a slice of the grid; no shard sees more than ~1/K of the fan-out, so each one stays under the per-query memory cap.
-- **Native rate** (`ts_grid_range` in `CERBERUS_CH_OPTIMIZATIONS`, or the soft-deprecated `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` alias) makes the fan-out *vanish*. ClickHouse's native `timeSeriesRateToGrid` aggregate computes every grid point's rate in a single pass with **no row fan-out at all** — it never builds the `(sample, anchor)` matrix. It is auto-enabled on ClickHouse ≥ 25.9 (the aggregate shipped at 25.6 but used a closed membership window that diverged from PromQL until the 25.9 left-open fix, PR #86588; the 25.8 substrate here forces the native path explicitly to isolate the engine cost).
+- **Native rate** (`ts_grid_range` in `CERBERUS_CH_OPTIMIZATIONS`, or the soft-deprecated `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` alias) makes the fan-out *vanish*. ClickHouse's native `timeSeriesRateToGrid` aggregate computes every grid point's rate in a single pass with **no row fan-out at all** — it never builds the `(sample, anchor)` matrix. It is auto-enabled on ClickHouse ≥ 25.9 (the aggregate shipped at 25.6 but used a closed membership window that diverged from PromQL until the 25.9 left-open fix, PR #86588). The matrix below selects the native lowerer directly rather than through the auto-picker, so its two rows compare the strategies themselves rather than a version probe.
 
 Because native rate *removes* the fan-out, the two levers do not stack: with native rate on there is no fan-out spine left for the sharded solver to slice, so any route collapses to a single statement. That leaves exactly **three genuinely distinct strategies** for this query, not a route × native-rate grid.
 

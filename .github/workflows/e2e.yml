@@ -73,10 +73,16 @@ name: e2e
 #     surface crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
 #     crawl lane, this stack's config + inventory — see
 #     test/e2e/playwright/crawl/stacks.ts) at SWEEP_DEPTH=full,
-#     CONCURRENTLY with the smoke shards. The ~50min crawl BFS is a single
-#     indivisible test(); splitting its frontier across shards (see
-#     tsouza/cerberus#2005) is the follow-up that beats the 50min
-#     wall-clock floor.
+#     CONCURRENTLY with the smoke shards. The crawl BFS is a single
+#     Playwright test(), so native `--shard` cannot split it; the crawl
+#     ENGINE partitions its own audit frontier instead
+#     (tsouza/cerberus#2005), driven by the CRAWL_SHARD_INDEX /
+#     CRAWL_SHARD_COUNT the matrix stamps onto each crawl job. Every
+#     crawl shard keeps full link discovery, writes only its owned
+#     visited slice, and `dashboard-crawl-merge` applies the inventory
+#     ratchet once over their union — so the lane's wall-clock is one
+#     slice rather than the whole ~50min BFS. `compose-crawl-merge` is
+#     the Compose lane's identical merge step.
 #   - `startup-bench` — startup-speed bench (cerberus to /healthz in
 #     <2s). Same trigger set as `dashboard`; informational only.
 #

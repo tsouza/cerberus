@@ -274,9 +274,12 @@ that outran its drain budget, and the driver's own age eviction at
 own share directly, and its three outcomes are the three fates a pooled
 connection can meet:
 
-- `drained` — the cursor reached end-of-stream inside its budget while
-  the query context was still live. This is the only outcome that
-  returns the connection to the pool; everything else costs a redial.
+- `drained` — `Close` returned inside the drain budget on a still-live
+  query context, so teardown ran on cerberus's terms rather than being
+  aborted. It does **not** assert that the driver reached end-of-stream,
+  and so does not by itself promise a pool release: an early `Close` on a
+  partially-read cursor lands here too, and the driver destroys that
+  socket instead of pooling it.
 - `abandoned` — the cursor did not finish inside the drain budget, so
   teardown cancelled it. Bounded by design: an unread remainder must not
   pin a pool slot, and paying a dial is the cheaper of the two.
@@ -327,8 +330,12 @@ label would orphan the previous phase's series and leave a recovered breaker
 still exporting `state="open"=1` forever.
 
 A trip is the highest-blast-radius event cerberus has — it fast-fails every
-query behind that head with a 503 and flips `/readyz` — so `cause` names which
-kind of backend trouble caused it:
+query behind that head with a 503. It does not by itself flip `/readyz`:
+readiness pings through a dedicated `probe` breaker, reports the tripped head
+in its `heads` object, and goes 503 only when EVERY enabled head is open — so
+under combined mode one tripped head leaves the pod in its Service, while
+under split mode, where a Deployment serves one head, that head's trip *is*
+exhaustion. `cause` names which kind of backend trouble caused the trip:
 
 - `no-server-answer` — ClickHouse never answered: a refused dial, a dropped
   connection, a socket timeout, an unrecognised driver failure.
@@ -356,18 +363,32 @@ counted separately instead, and the pair is what makes triage decidable:
 it" — and those demand opposite responses. A 4xx means the caller sent
 something cerberus cannot answer; a 5xx means cerberus could not answer
 something valid. `cerberus_error_reason` and `cerberus_status_class`
-carry that distinction on the counter. Both are closed enums derived
-from the response's status family, never from an error string or a raw
-status code, so the label cardinality is fixed:
+carry that distinction on the counter. Both are closed enums, so the
+label cardinality is fixed:
 
-| `cerberus_error_reason` | Meaning                                                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `none`                  | The query succeeded. Carried so ok and error series share one label set.                                      |
-| `bad_request`           | Not answerable as written — unparseable, unsupported, or over a per-query budget. Caller has to change it.    |
-| `backend_unavailable`   | ClickHouse could not be reached or refused the work.                                                          |
-| `resource_exhausted`    | The server refused for capacity reasons: rate limited, out of storage.                                        |
-| `timeout`               | The request ran out of time, on either side of the gateway.                                                   |
-| `internal`              | A defect in cerberus — a recovered panic or an unclassified 5xx. Worth a page.                                |
+| `cerberus_error_reason` | Meaning                                                                                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `none`                  | The query succeeded. Carried so ok and error series share one label set.                                                                                                              |
+| `bad_request`           | Not answerable as written — unparseable, unsupported, or an unevaluable shape. Caller has to change it.                                                                               |
+| `backend_unavailable`   | ClickHouse could not be reached or refused the work, or a head's circuit breaker is open.                                                                                             |
+| `resource_exhausted`    | A per-query budget refused the work: the sample budget, the wide-projection byte budget, or ClickHouse's own memory-limit abort. The query asked for too much; the server is healthy. |
+| `timeout`               | The request ran out of time — the ClickHouse `max_execution_time` cap, or the request's own deadline.                                                                                 |
+| `internal`              | A defect in cerberus — a recovered panic or an unclassified 5xx. Worth a page.                                                                                                        |
+
+`cerberus_status_class` is derived purely from the response's status
+family. `cerberus_error_reason` is not, and cannot be: upstream wire
+parity pins two statuses onto three meanings. Every head answers a query
+wall-clock timeout with **503** because upstream Prometheus and Loki do,
+and answers a per-query budget refusal with **422** — so a status-derived
+reason would file every timeout under `backend_unavailable`,
+indistinguishable from a real ClickHouse outage, and every capacity
+refusal under `bad_request`, indistinguishable from a malformed query.
+The handler that already classified the failure therefore records the
+reason directly (`telemetry.SetReason`, on a request-scoped cell the query
+middleware installs), and the middleware prefers it over its
+status-derived default. The wire bytes are unchanged; a handler that
+records nothing is classified from its status exactly as before. A
+recovered panic stays pinned to `internal` whatever the handler recorded.
 
 Admission-control rejections are not in this counter at all: the
 limiter middleware sits OUTSIDE `telemetry.QueryMiddleware`, so a

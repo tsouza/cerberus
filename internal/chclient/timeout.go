@@ -12,7 +12,7 @@ import (
 // chCodeTimeoutExceeded is ClickHouse's TIMEOUT_EXCEEDED server error
 // code (ErrorCodes.cpp: 159). The server raises it when a query crosses
 // the per-query `max_execution_time` setting cerberus stamps on
-// data-plane queries (see Config.QueryTimeoutSeconds) while
+// data-plane queries (see Config.QueryTimeout) while
 // `timeout_overflow_mode` is `throw` (the cerberus default). It is the
 // wall-clock sibling of MEMORY_LIMIT_EXCEEDED (code 241): a per-query
 // resource cap the server enforces, NOT a transport failure — ClickHouse
@@ -21,7 +21,7 @@ const chCodeTimeoutExceeded = 159
 
 // settingMaxExecutionTime is the ClickHouse per-query wall-clock cap
 // (seconds). Stamped on every data-plane query when a query timeout is
-// configured (Config.QueryTimeoutSeconds > 0) so a pathological query
+// configured (Config.QueryTimeout > 0) so a pathological query
 // gets a server-side deadline instead of holding a pooled connection +
 // admit slot for its full unbounded duration.
 const settingMaxExecutionTime = "max_execution_time"
@@ -59,7 +59,7 @@ var ErrQueryTimeout = errors.New("query execution timeout exceeded")
 // head-idiomatic over-budget messages.
 type QueryTimeoutError struct {
 	// Timeout is the per-query `max_execution_time` cap the query ran
-	// under (Config.QueryTimeoutSeconds, or a smaller per-request
+	// under (Config.QueryTimeout, or a smaller per-request
 	// ?timeout= override). 0 means no cap was configured on the Client —
 	// the rejection came from a ClickHouse server-side limit instead.
 	Timeout time.Duration

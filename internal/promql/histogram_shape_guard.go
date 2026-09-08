@@ -66,19 +66,27 @@ const mixedDiscriminatorColumn = chplan.MixedDiscriminatorColumn
 // the fix, instead of quietly returning zeros.
 //
 // [chplan.MixedRowShape] (cerberus issue #2330, histogram_native_mixed_or.go)
-// earns the identical structural guarantee the same way: its lowering
-// (lowerMixedExpHistogramSetOp) is registered only at the query ROOT, never
-// inside [lowerExpHistogramValuedShape]'s recursive dispatch table, so no
-// wrapper OTHER than the two exceptions below ever reaches a generic
-// forwarder with a Mixed node — a query that tries `abs(a or b)` for a
-// mixed `a`/`b` keeps falling through to [expHistogramSelectorRouting]'s
-// existing rejection, exactly as it did before this file learned the
-// Mixed shape (cerberus issue #2449 tracks the remaining wrapper
-// families as an open divergence in test/rejection-parity/catalogue).
+// earns the identical structural guarantee, by a slightly different route:
+// its lowering (lowerMixedExpHistogramSetOp) is registered only at the query
+// ROOT, never inside [lowerExpHistogramValuedShape]'s recursive dispatch
+// table, so a Mixed node is never produced implicitly underneath a wrapper
+// that knows nothing about the shape. Composition over a Mixed node is
+// therefore always explicit: every wrapper family that composes — sum/avg,
+// count/group, min/max/stddev/stdvar, topk/bottomk, count_values,
+// label_replace/label_join, the single-arg instant math functions,
+// round()'s to_nearest form, the clamp family, scalar and vector
+// arithmetic and comparison, timestamp(), sort_by_label, limitk /
+// limit_ratio, unary +/-, a further vector set operator, and the subquery
+// families — registers its OWN root-only recognizer in
+// [lowerMixedExpHistogramFamily] (lower.go) and builds its own lowering,
+// rather than inheriting composition through a generic forwarder. Exactly
+// one of those families hands a Mixed node to a forwarder at all, and it
+// hands it to the one forwarder taught to carry the shape.
 //
-// `sum(a or b)` / `avg(a or b)` for a mixed `a`/`b` is one exception,
-// and a deliberate one (cerberus issue #2346,
-// histogram_native_mixed_or_aggregate.go): its own root-only recognizer
+// `sum(a or b)` / `avg(a or b)` for a mixed `a`/`b` was the first family
+// to compose (cerberus issue #2346,
+// histogram_native_mixed_or_aggregate.go), and it shows the ordinary
+// pattern the rest follow: its own root-only recognizer
 // ([sumOrAvgOverMixedExpHistogramSetOp]) builds a dedicated reduction —
 // two independent SUM/AVG branches (one through the SAME histogram-valued
 // machinery this guard protects, one through the ordinary float aggregate
@@ -86,20 +94,25 @@ const mixedDiscriminatorColumn = chplan.MixedDiscriminatorColumn
 // rule — instead of ever routing a Mixed node through a generic forwarder.
 //
 // `label_replace(a or b, ...)` / `label_join(a or b, ...)` for a mixed
-// `a`/`b` are the SECOND exception, since cerberus issue #2449:
-// histogram_native_mixed_or_label.go's own root-only recognizer
-// ([labelCallOverMixedExpHistogramSetOp]) routes the SAME Mixed node the
-// leaf case builds through [projectAttributesOverInner] itself — unlike
-// the sum/avg case, this one DOES hand a Mixed node to a generic
-// forwarder, because a label rewrite touches only Attributes and needs
-// no per-payload branching: [projectAttributesOverInner] carries its own
-// [chplan.MixedRowShape] branch (see that function's doc comment,
-// label_fns.go) instead of taking the panic below.
-// [projectValueOverInner] has grown no such branch — a value transform
-// genuinely differs by payload and would need a discriminator-keyed
-// `chplan.Case`/CH `if()` this issue's PR did not build — so the panic
-// below still holds for it, and for every wrapper family neither
-// exception recognises.
+// `a`/`b` are the one family that departs from that pattern, since
+// cerberus issue #2449: histogram_native_mixed_or_label.go's own
+// root-only recognizer ([labelCallOverMixedExpHistogramSetOp]) routes the
+// SAME Mixed node the leaf case builds through
+// [projectAttributesOverInner] itself — unlike the sum/avg case, this one
+// DOES hand a Mixed node to a generic forwarder, because a label rewrite
+// touches only Attributes and needs no per-payload branching:
+// [projectAttributesOverInner] carries its own [chplan.MixedRowShape]
+// branch (see that function's doc comment, label_fns.go) instead of
+// taking the panic below.
+// [projectValueOverInner] has grown no such branch: a value transform
+// genuinely differs by payload, so no family routes a Mixed node into it.
+// The families that reduce the union to its float rows and then transform
+// the value (the single-arg instant math functions, round(), clamp)
+// project through histogram_native_mixed_or_math_fn.go's own
+// projectCanonicalFloatValue, which MIRRORS [projectValueOverInner]'s
+// canonical-shape branch instead of calling it. The panic below therefore
+// still holds for that forwarder, and it is what would fire the day a
+// value transform routed a Mixed node into it instead.
 
 // assertValueShapedInput panics when inner publishes
 // [chplan.HistogramRowShape] or [chplan.MixedRowShape] — the two shapes

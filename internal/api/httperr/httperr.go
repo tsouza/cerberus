@@ -40,6 +40,17 @@ type Error struct {
 	Kind string
 	// Err is the underlying error. Required.
 	Err error
+	// Reason, when non-empty, is the cerberus_error_reason label this
+	// failure should be counted under — one of the telemetry.Reason*
+	// values. It exists because a head's own rejection constructors
+	// restate the failure in the upstream's wording, which replaces the
+	// sentinel the error carried: a Prom query timeout becomes a plain
+	// `errors.New("query timed out after 2m")` with Status 503, and no
+	// amount of errors.Is on the result can tell it from a real backend
+	// outage afterwards. The constructor that knew records the fact here
+	// instead. Empty means "derive it" — see TelemetryReason, which reads
+	// this field first and falls back to the sentinels for a bare error.
+	Reason string
 	// RetryAfterSeconds, when > 0, instructs the per-handler error
 	// writer to stamp a `Retry-After: N` response header alongside
 	// the JSON envelope. Used for the 503 fast-fail responses emitted

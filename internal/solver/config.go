@@ -249,9 +249,17 @@ const (
 	// own grid asks for K>8 is clipped again, and one of those was measured
 	// 0.4% over the density ceiling. An operator hitting it raises
 	// CERBERUS_SHARD_MAX_K, which is the knob that exists for exactly this.
-	// The durable fix is to bound K by the work available rather than by the
-	// grid quantum, so neither deployment size has to be traded for the other —
-	// tracked in #2709.
+	// The durable answer to that trade — bound K by the WORK AVAILABLE rather
+	// than by the grid quantum, so neither deployment size has to be traded
+	// for the other — shipped under issue #2787 as the advisory
+	// EXPLAIN ESTIMATE path: when a RequestMeta.Estimate is present, classify
+	// raises the ceiling to floor(Estimate.Rows /
+	// EstimateMinRowsPerAdditionalShard), clamped to MaxKWithEstimate
+	// (planner.go's K clamp, and MaxKWithEstimate's own doc above). That path
+	// is opt-in, gated on the chopt FeatureExplainEstimate capability, and it
+	// only ever RAISES the ceiling — never lowers it. So this constant is the
+	// structural backstop underneath it: the ceiling a deployment with no
+	// estimate uses unchanged, and the floor an estimate may raise K above.
 	defaultMaxK               = 8
 	defaultMinAnchorsPerSlice = 16
 	defaultParallel           = 3

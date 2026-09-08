@@ -159,7 +159,12 @@ const SelectionAuto = selectionAuto
 //     Auto-eligibility (Feature.AutoSelect) is a separate axis from maturity
 //     (Feature.Stability): most native timeSeries*ToGrid aggregates are
 //     Experimental in maturity yet AutoSelect=true, so auto picks them on a
-//     capable server. Two features are opt-in-only (AutoSelect=false):
+//     capable server. Most of the registry, however, carries AutoSelect=false
+//     and is reachable only by explicit listing; the registry itself is the
+//     authoritative per-feature answer (each Feature's own doc comment states
+//     why it sits where it does), and the generated feature table in
+//     docs/clickhouse-optimizations.md renders the same split for operators.
+//     Two representative reasons a feature lands there:
 //     columnar_result_decode (a perf tradeoff, never auto) and ts_grid_changes
 //     (a correctness gap -- the native builtin diverges from reference
 //     Prometheus on NaN-adjacent windows, #1721 -- never auto until upstream
