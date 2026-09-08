@@ -1799,47 +1799,44 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 	resCol := h.Schema.ResourceAttributesColumn
 	resourceArm := h.resourceLabelValueArmActive(name)
 	pred := h.metadataWindowPred(start, end)
-	// withWindow ANDs the closed metadata window onto an arm's not-empty
-	// predicate so the per-table scan prunes by partition when a window is
-	// present; with no window it returns the not-empty predicate unchanged
-	// (byte-identical to the prior emit).
-	withWindow := func(notEmpty chsql.Frag) chsql.Frag {
-		if pred == nil {
-			return notEmpty
-		}
-		return chsql.And(notEmpty, pred)
-	}
-	// attrsArm builds the Attributes-map arm. In the now-anchored case it
-	// emits the grouped form `GROUP BY MetricName, Attributes HAVING
-	// max(TimeUnix) >= start` so the leading-key DISTINCT routes onto the
-	// proj_series aggregating projection (Attributes is a grouping key, the
-	// time bound an aggregate predicate — both materialized on the
-	// projection). The not-empty sentinel filter is also a per-group
-	// predicate (Attributes[k] is constant within a (MetricName, Attributes)
-	// group), so it rides in HAVING and the projection still serves the read.
-	// A user-supplied finite window keeps the exact WHERE-bounded DISTINCT.
-	attrsArm := func(t, k string) chsql.Frag {
-		if nowAnchored {
-			arm := chsql.NewQuery().
-				Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
-				From(chsql.PhysicalTable(t)).
-				GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol)).
-				Having(mapAtNotEmptyFrag(attrsCol, k))
-			if !start.IsZero() {
-				arm.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
-			}
-			return arm.Frag()
-		}
-		return chsql.NewQuery().
+	// nowAnchoredAttrsArm builds the Attributes-map arm for the windowless
+	// (Grafana variable-refresh) request shape: the grouped form
+	// `GROUP BY MetricName, Attributes HAVING max(TimeUnix) >= start` routes
+	// the leading-key DISTINCT onto the proj_series aggregating projection
+	// (Attributes is a grouping key, the time bound an aggregate predicate —
+	// both materialized on the projection). The not-empty sentinel filter is
+	// also a per-group predicate (Attributes[k] is constant within a
+	// (MetricName, Attributes) group), so it rides in HAVING and the
+	// projection still serves the read — cheap enough to repeat once per
+	// candidate, unlike the non-nowAnchored shape below.
+	nowAnchoredAttrsArm := func(t, k string) chsql.Frag {
+		arm := chsql.NewQuery().
 			Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
 			From(chsql.PhysicalTable(t)).
-			Where(withWindow(mapAtNotEmptyFrag(attrsCol, k))).
-			Frag()
+			GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol)).
+			Having(mapAtNotEmptyFrag(attrsCol, k))
+		if !start.IsZero() {
+			arm.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
+		}
+		return arm.Frag()
 	}
 	parts := make([]chsql.Frag, 0, len(tables)*(len(candidates)+1))
 	for _, t := range tables {
-		for _, k := range candidates {
-			parts = append(parts, attrsArm(t, k))
+		if nowAnchored {
+			for _, k := range candidates {
+				parts = append(parts, nowAnchoredAttrsArm(t, k))
+			}
+		} else {
+			// A user-supplied finite window does NOT route onto proj_series
+			// (the HAVING trick above only applies to the now-anchored
+			// aggregate shape), so this arm is a plain WHERE-bounded DISTINCT
+			// over the raw table — the same per-candidate-scan shape the
+			// resource arm below had before issue #3168/#3169: a
+			// 7-spelling candidate powerset multiplied into 7 full scans of
+			// the same table for a perfectly ordinary Grafana panel bound to
+			// the dashboard's own time range, not just the rare resource-arm
+			// path. ONE collapsed scan per table covers every candidate.
+			parts = append(parts, collapsedMapValuesArmFrag(attrsCol, t, candidates, pred))
 		}
 		// Resource arm: read the same candidate keys out of the
 		// ResourceAttributes map so a value stored only under a resource
@@ -1848,13 +1845,14 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 		// proj_series, so this arm cannot route onto the projection — by
 		// design, not a regression (it is allowlist-gated and rare). ONE
 		// scan per table covers every candidate (issue #3168): a per-candidate
-		// scan here, like the attrs arm above, multiplied a 7-spelling
-		// candidate powerset into 7 full unaccelerated table scans — the
-		// combination this arm's own "rare, one scan" design and
-		// PromLabelToOTelCandidates' own "cheap, it's a per-row coalesce"
-		// design each assumed the other wouldn't compound with.
+		// scan here, like the attrs arm's non-nowAnchored shape above,
+		// multiplied a 7-spelling candidate powerset into 7 full
+		// unaccelerated table scans — the combination this arm's own "rare,
+		// one scan" design and PromLabelToOTelCandidates' own "cheap, it's a
+		// per-row coalesce" design each assumed the other wouldn't compound
+		// with.
 		if resourceArm {
-			parts = append(parts, resourceLabelValuesArmFrag(resCol, t, candidates, pred))
+			parts = append(parts, collapsedMapValuesArmFrag(resCol, t, candidates, pred))
 		}
 	}
 	outer := chsql.NewQuery().
@@ -2046,10 +2044,13 @@ func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 	return chsql.Neq(mapAtFrag(col, key), chsql.Lit(""))
 }
 
-// resourceLabelValuesArmFrag builds ONE scan of table t surfacing every
-// candidate spelling's ResourceAttributes values, replacing
-// unionLabelValuesSQL's historical one-full-scan-per-candidate shape
-// (cerberus issue #3168). It renders:
+// collapsedMapValuesArmFrag builds ONE scan of table t surfacing every
+// candidate spelling's col values, replacing unionLabelValuesSQL's
+// historical one-full-scan-per-candidate shape (cerberus issue #3168).
+// Resolved in this change: the attrs arm's own non-nowAnchored branch had
+// the identical shape, just gated on an explicit caller-supplied window
+// rather than the resource-label allowlist — it now shares this same
+// collapsed scan too. It renders:
 //
 //	SELECT arrayJoin(arrayFilter(v -> v != '', [<col>[k0], <col>[k1], …])) AS value
 //	FROM t [WHERE pred]
@@ -2058,13 +2059,13 @@ func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 // key BEFORE arrayJoin explodes the survivors into rows, so a row missing
 // every candidate contributes zero rows — arrayJoin on an empty array
 // yields none — with no separate not-empty predicate needed, unlike the
-// per-candidate mapAtNotEmptyFrag arm above. pred is the caller's window
-// bound alone (h.metadataWindowPred), not withWindow's row-content filter:
-// this arm's not-empty check already lives inside the SELECT.
-func resourceLabelValuesArmFrag(resCol, t string, candidates []string, pred chsql.Frag) chsql.Frag {
+// per-candidate mapAtNotEmptyFrag arm used elsewhere. pred is the caller's
+// window bound alone (h.metadataWindowPred), not withWindow's row-content
+// filter: this arm's not-empty check already lives inside the SELECT.
+func collapsedMapValuesArmFrag(col, t string, candidates []string, pred chsql.Frag) chsql.Frag {
 	lookups := make([]chsql.Frag, len(candidates))
 	for i, k := range candidates {
-		lookups[i] = mapAtFrag(resCol, k)
+		lookups[i] = mapAtFrag(col, k)
 	}
 	notEmpty := chsql.Lambda1("v", chsql.Neq(chsql.BareIdent("v"), chsql.Lit("")))
 	values := chsql.Call("arrayJoin", chsql.Call("arrayFilter", notEmpty, chsql.Array(lookups...)))

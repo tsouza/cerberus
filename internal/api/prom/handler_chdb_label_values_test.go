@@ -659,3 +659,53 @@ INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attribu
 		t.Errorf("matched listing: expected %v, got %v", want, values)
 	}
 }
+
+// TestLabelValues_DottedSource_WindowedUnmatched_ChDB pins the branch
+// TestLabelValues_DottedSource_ChDB's own two pins do NOT cover: an
+// UNMATCHED listing (no `match[]`, unionLabelValuesSQL) under an EXPLICIT
+// caller-supplied window. That combination takes the non-nowAnchored
+// attrs-arm branch — resolved in this change (cerberus issue #3168) to
+// collapse the candidate powerset into one arrayFilter/arrayJoin scan per
+// table instead of the now-anchored branch's per-candidate GROUP BY/HAVING
+// shape. Without
+// this pin, a regression that broke the collapsed scan's candidate
+// expansion specifically under a caller-supplied window — the shape a
+// dashboard panel bound to its own time range actually sends — would pass
+// every other test in this file.
+func TestLabelValues_DottedSource_WindowedUnmatched_ChDB(t *testing.T) {
+	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	ts := seedTime.Format("2006-01-02 15:04:05.000")
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
+    ('cerberus_queries_total', '', '', map('cerberus.ql', 'promql',  'route', '/api/v1/query'),  toDateTime64('%s', 9), 1.0),
+    ('cerberus_queries_total', '', '', map('cerberus.ql', 'logql',   'route', '/loki/api/query'), toDateTime64('%s', 9), 1.0),
+    ('cerberus_queries_total', '', '', map('cerberus.ql', 'traceql', 'route', '/api/traces'),     toDateTime64('%s', 9), 1.0);`,
+		ts, ts, ts)
+	srv, _ := newChDBServer(t, seed)
+
+	start := seedTime.Add(-5 * time.Minute).Unix()
+	end := seedTime.Add(5 * time.Minute).Unix()
+	url := srv.URL + "/api/v1/label/cerberus_ql/values?" +
+		fmt.Sprintf("start=%d&end=%d", start, end)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed metadataResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	var values []string
+	if err := json.Unmarshal(parsed.Data, &values); err != nil {
+		t.Fatalf("decode data: %v\nbody=%s", err, body)
+	}
+	sort.Strings(values)
+	want := []string{"logql", "promql", "traceql"}
+	if !equalStringSlice(values, want) {
+		t.Errorf("windowed unmatched listing: expected %v, got %v", want, values)
+	}
+}
