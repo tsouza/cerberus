@@ -1863,8 +1863,8 @@ const (
 	// timeSeriesGroupToTags only in the wrapping output projection (cerberus
 	// issue #2750 — the grouping-keys-only slice of the tag-group family; label
 	// ops (by/without/label_replace/label_join/group_left via the purpose-built
-	// tag functions) are explicit follow-up, tracked on #2750 itself per the
-	// issue's own "grouping keys first, label ops later" staging).
+	// tag functions) are the second half of that staging and are still
+	// outstanding, tracked on cerberus issue #3195).
 	//
 	// SITE CHOICE: guardNameDropCollision is the single most self-contained
 	// grouping site in the pipeline that groups on the raw Attributes Map —
