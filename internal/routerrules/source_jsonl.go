@@ -15,8 +15,9 @@ import (
 // jsonlCorpusSource reads the per-pod JSONL corpus (the default fallback sink)
 // and implements aggregation, percentiles, and rule evaluation in-Go. It needs
 // no ClickHouse, so the catalog is testable against a seeded fixture file. The
-// JSON shape matches optcorpus.Row (column-for-column with the CH table), plus
-// an optional event_time field for --since windowing.
+// JSON shape matches optcorpus.Row (column-for-column with the CH table),
+// including the event_time the JSONL sink stamps on every line, which is what
+// --since windows on.
 type jsonlCorpusSource struct {
 	path  string
 	since float64 // event_time floor (unix seconds); 0 disables windowing
@@ -30,47 +31,51 @@ func NewJSONLCorpusSource(path string, sinceUnix float64) CorpusSource {
 
 // jsonlRow mirrors optcorpus.Row's JSON tags plus event_time. Numeric corpus
 // columns are decoded as float64 so the in-Go matcher shares one comparison
-// path. event_time is optional (the JSONL sink may omit it; the CH table always
-// has it) and accepted as a unix-seconds number when present.
+// path.
+//
+// EventTime is a POINTER so an absent event_time is distinguishable from a
+// present zero. That distinction is load-bearing: every line the JSONL sink
+// writes carries event_time, so a line without one predates that stamping, and
+// a --since window cannot be honoured over it. Decoding into a plain float64
+// would collapse "undatable" into "dated 1970", which is what silently turned
+// --since into a no-op over the whole file.
 type jsonlRow struct {
-	EventTime           float64 `json:"event_time"`
-	ShapeID             string  `json:"shape_id"`
-	Language            string  `json:"language"`
-	NormalizedQueryHash uint64  `json:"normalized_query_hash"`
-	NAnchors            float64 `json:"n_anchors"`
-	Fanout              float64 `json:"fanout"`
-	CumulativeD         float64 `json:"cumulative_d"`
-	OuterRange          float64 `json:"outer_range"`
-	Step                float64 `json:"step"`
-	Route               string  `json:"route"`
-	KShards             float64 `json:"k_shards"`
-	DecisionReason      string  `json:"decision_reason"`
-	ReadRows            float64 `json:"read_rows"`
-	ReadBytes           float64 `json:"read_bytes"`
-	QueryDurationMS     float64 `json:"query_duration_ms"`
-	MemoryUsage         float64 `json:"memory_usage"`
-	ExitStatus          string  `json:"exit_status"`
-	ShardsObserved      float64 `json:"shards_observed"`
-	Parallelism         float64 `json:"parallelism"`
+	EventTime           *float64 `json:"event_time"`
+	ShapeID             string   `json:"shape_id"`
+	Language            string   `json:"language"`
+	NormalizedQueryHash uint64   `json:"normalized_query_hash"`
+	NAnchors            float64  `json:"n_anchors"`
+	Fanout              float64  `json:"fanout"`
+	CumulativeD         float64  `json:"cumulative_d"`
+	OuterRange          float64  `json:"outer_range"`
+	Step                float64  `json:"step"`
+	Route               string   `json:"route"`
+	KShards             float64  `json:"k_shards"`
+	DecisionReason      string   `json:"decision_reason"`
+	ReadRows            float64  `json:"read_rows"`
+	ReadBytes           float64  `json:"read_bytes"`
+	QueryDurationMS     float64  `json:"query_duration_ms"`
+	MemoryUsage         float64  `json:"memory_usage"`
+	ExitStatus          string   `json:"exit_status"`
+	ShardsObserved      float64  `json:"shards_observed"`
+	Parallelism         float64  `json:"parallelism"`
 }
 
 func (r jsonlRow) toCorpusRow() corpusRow {
 	return corpusRow{
-		eventTimeUnix: r.EventTime,
 		numeric: map[string]float64{
-			"n_anchors":             r.NAnchors,
-			"fanout":                r.Fanout,
-			"cumulative_d":          r.CumulativeD,
-			"outer_range":           r.OuterRange,
-			"step":                  r.Step,
-			"k_shards":              r.KShards,
-			"read_rows":             r.ReadRows,
-			"read_bytes":            r.ReadBytes,
-			"query_duration_ms":     r.QueryDurationMS,
-			"memory_usage":          r.MemoryUsage,
-			"shards_observed":       r.ShardsObserved,
-			"parallelism":           r.Parallelism,
-			"normalized_query_hash": float64(r.NormalizedQueryHash),
+			"n_anchors":         r.NAnchors,
+			"fanout":            r.Fanout,
+			"cumulative_d":      r.CumulativeD,
+			"outer_range":       r.OuterRange,
+			"step":              r.Step,
+			"k_shards":          r.KShards,
+			"read_rows":         r.ReadRows,
+			"read_bytes":        r.ReadBytes,
+			"query_duration_ms": r.QueryDurationMS,
+			"memory_usage":      r.MemoryUsage,
+			"shards_observed":   r.ShardsObserved,
+			"parallelism":       r.Parallelism,
 		},
 		str: map[string]string{
 			"shape_id":              r.ShapeID,
@@ -78,7 +83,7 @@ func (r jsonlRow) toCorpusRow() corpusRow {
 			"route":                 r.Route,
 			"decision_reason":       r.DecisionReason,
 			"exit_status":           r.ExitStatus,
-			"normalized_query_hash": formatNumeric(float64(r.NormalizedQueryHash)),
+			"normalized_query_hash": formatQueryHash(r.NormalizedQueryHash),
 		},
 	}
 }
@@ -108,17 +113,33 @@ func (s *jsonlCorpusSource) streamFile(path string, fn func(corpusRow) error) er
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, corpusScanInitial), corpusScanMax)
+	lineNo := 0
 	for sc.Scan() {
+		lineNo++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
 		var jr jsonlRow
 		if err := json.Unmarshal([]byte(line), &jr); err != nil {
-			return fmt.Errorf("routerrules: decode corpus line in %q: %w", path, err)
+			return fmt.Errorf("routerrules: decode corpus line %s: %w", corpusAt(path, lineNo), err)
 		}
-		if s.since > 0 && jr.EventTime > 0 && jr.EventTime < s.since {
-			continue
+		if s.since > 0 {
+			// An undatable row cannot be placed inside or outside the window,
+			// so it is refused rather than admitted. Admitting it is what made
+			// --since a silent no-op: the operator got findings over the whole
+			// file history while believing the window applied, and the
+			// ClickHouse backend — which windows in SQL on the table's own
+			// event_time — answered the same flag over a different population.
+			if jr.EventTime == nil {
+				return fmt.Errorf("routerrules: corpus line %s has no event_time, so --since cannot "+
+					"window it; this corpus predates event-time stamping — re-run without --since to "+
+					"scan the whole file, or roll the corpus file so new lines carry event_time",
+					corpusAt(path, lineNo))
+			}
+			if *jr.EventTime < s.since {
+				continue
+			}
 		}
 		if err := fn(jr.toCorpusRow()); err != nil {
 			return err
@@ -128,6 +149,12 @@ func (s *jsonlCorpusSource) streamFile(path string, fn func(corpusRow) error) er
 		return fmt.Errorf("routerrules: scan corpus %q: %w", path, err)
 	}
 	return nil
+}
+
+// corpusAt renders a corpus file position for an error message, so a bad line
+// in a multi-file corpus directory is locatable rather than merely reported.
+func corpusAt(path string, lineNo int) string {
+	return fmt.Sprintf("%s:%d", path, lineNo)
 }
 
 func (s *jsonlCorpusSource) files() ([]string, error) {

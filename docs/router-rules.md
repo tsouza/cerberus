@@ -385,6 +385,17 @@ Flags:
 | `--validate-only`                | off       | load + validate the catalog, resolve nothing, exit |
 | `--experimental`                 | off       | also evaluate `status: experimental` rules         |
 
+`--since` windows on `event_time`, and means the same thing on both sources: the
+`chtable` source bounds the SELECT on the table's own `event_time`, and the
+`jsonl` source filters on the `event_time` the JSONL sink stamps on every line at
+write time — the same instant, from the same clock, that the CH-table sink binds
+to the column. A corpus line carrying no `event_time` at all predates that
+stamping and can be placed neither inside nor outside the window, so under
+`--since` it is REFUSED with the offending `file:line` rather than admitted:
+admitting it silently degrades the flag to a full-history scan while the operator
+believes a window applied. Without `--since` nothing is being windowed and such a
+line is read normally.
+
 The CLI exits non-zero only on an operational or validation error — **never on
 findings** (findings are the expected output). The conservative ClickHouse scan
 settings (single-threaded, deprioritised, read-only, row/byte/time-capped) make
@@ -407,6 +418,18 @@ The evaluator never branches on backend: a rule's condition lowers to a typed
 *same* AST, so the two backends produce identical findings. A `chdb`-tagged
 parity test seeds one fixture as JSONL and as a CH table and asserts the findings
 match.
+
+Identical findings requires identical GROUP KEYS, which is a narrower contract
+than it looks. `normalized_query_hash` is a `UInt64`: the CH path groups by
+`toString(normalized_query_hash)`, and the in-Go paths must render the same exact
+decimal. Widening the column to a `float64` first — the obvious way to share one
+numeric path across every column — rounds every value at or above 2^53 and
+collapses distinct hot shapes into one class, so the backends disagree about what
+a class even is while every individual rule still lowers from the same AST. A
+fixture cannot detect that below 2^53, where the two renderings agree; the
+benchmark's one hash-grouped class therefore sits at
+`17000000000000000001`/`...002`, adjacent values above 2^63, and the parity lane
+compares exact keys over the range a real hash occupies.
 
 ### Why parity-on-chDB is not enough: the strict-scan integration lane
 
@@ -470,18 +493,27 @@ deployment lacks — OOM / timeout / sample-budget / breaker / rejected clusters
 route-B failing cluster with non-zero `k_shards`, a route-B overshard-regret
 class, a high-fanout route-A class, and a high-geometry sub-population.
 
-Every fixture is constrained to states the production solver can actually reach,
-and `test/regression/router_corpus_seed_test.go` pins that: a `decision_reason` is
-a `solver.Reasons` member, the corpus-only `non-promql` token, or absent;
-`route == "B"` and the `routed` reason are the
-same event, and only a PromQL row carries a route or geometry at all —
-the router classifies nothing else, so on every other head those columns are
-absent rather than small. That last invariant is the load-bearing one. A fixture
-that fakes geometry onto a LogQL row makes a `cumulative_d >= p(cumulative_d)`
-leaf look selective, while on real data that language's whole geometry population
-is zero, the fitted percentile is zero, and the leaf matches every failing row it
-has. The fixtures also carry both populations — classified and unclassified — so
-neither the route-scoped rules nor the two non-PromQL heads go untested.
+The JSONL fixtures are constrained to states the production solver can actually
+reach, and `test/regression/router_corpus_seed_test.go` pins that with three
+invariants: a `decision_reason` is a `solver.Reasons` member, the corpus-only
+`non-promql` token, or absent; `route == "B"` and the `routed` reason are the
+same event; and only a PromQL row carries a route or geometry at all — the router
+classifies nothing else, so on every other head those columns are absent rather
+than small. That last invariant is the load-bearing one. A fixture that fakes
+geometry onto a LogQL row makes a `cumulative_d >= p(cumulative_d)` leaf look
+selective, while on real data that language's whole geometry population is zero,
+the fitted percentile is zero, and the leaf matches every failing row it has. The
+fixtures also carry both populations — classified and unclassified — so neither
+the route-scoped rules nor the two non-PromQL heads go untested.
+
+The GENERATED benchmark corpus is a separate population and is pinned separately,
+because that test globs `testdata/*.jsonl` and the benchmark corpus is built in
+Go and handed to the evaluator in memory, never touching a file. It is held to
+the first two invariants by `TestRouterBenchCorpusIsProducible` in the same file.
+It does not yet satisfy the third: it plants classified LogQL and TraceQL classes
+that a PromQL-gated solver cannot emit, which is tracked in issue #3204 —
+correcting them moves the labeled ground truth and the regression floors, so it
+is its own change rather than a fixture edit.
 
 It proves
 the catalog is **effective**, not just well-formed: default-lane tests assert that

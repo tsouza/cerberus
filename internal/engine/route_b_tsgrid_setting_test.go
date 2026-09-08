@@ -117,7 +117,7 @@ func TestRouteBExecCtx_StampsTSGridSettingForNativeShards(t *testing.T) {
 			t.Parallel()
 
 			ctx := routeBExecCtx(context.Background(), "promql",
-				chclient.ResponseShapeMatrix, tsGridRouteBDecision(tc.wrap), routeBTestPlan(), 0, false, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+				chclient.ResponseShapeMatrix, tsGridRouteBDecision(tc.wrap), routeBTestPlan(), 0, SettingsRules{}, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
 
 			settings := chclient.QuerySettingsFromContext(ctx)
 			_, got := settings[chclient.SettingExperimentalTSGridAggregate]
@@ -154,7 +154,7 @@ func routeBTestPlan() chplan.Node {
 func TestRouteBExecCtx_NilDecisionStampsNothing(t *testing.T) {
 	t.Parallel()
 
-	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, nil, routeBTestPlan(), 0, false, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, nil, routeBTestPlan(), 0, SettingsRules{}, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
 	if _, got := chclient.QuerySettingsFromContext(ctx)[chclient.SettingExperimentalTSGridAggregate]; got {
 		t.Fatalf("nil decision stamped %s", chclient.SettingExperimentalTSGridAggregate)
 	}
@@ -175,7 +175,7 @@ func TestRouteBExecCtx_SpillThresholdsSizedFromTheShardCap(t *testing.T) {
 		k      = 4
 	)
 	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, &solver.Decision{K: k},
-		routeBTestPlan(), memCap, false, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+		routeBTestPlan(), memCap, SettingsRules{}, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
 	settings := chclient.QuerySettingsFromContext(ctx)
 	want := spillThreshold(memCap / k)
 	for _, name := range []string{settingMaxBytesBeforeExternalGroupBy, settingMaxBytesBeforeExternalSort} {

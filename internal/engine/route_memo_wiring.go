@@ -81,6 +81,54 @@ func routeMemoHitObserveDrainOutcome(memo *routememo.Memo, key routememo.Key, cu
 	}
 }
 
+// dispatchTokenCursor holds a route-memo dispatch admission token — and the
+// routed-dispatch inflight gauge that shadows it — for exactly as long as the
+// composed shard cursor it wraps stays open, releasing both on Close.
+//
+// This is the ONE place either non-baseline route-B dispatch site releases its
+// token, so the memo-hit and the A->B retry cannot disagree about when a
+// dispatch is over. They used to: the memo-hit deferred release() at the
+// instant Executor.Execute returned, which is when the K shard cursors are
+// OPENED, not when their ClickHouse work is done — so the shards ran entirely
+// outside the token's span and maxConcurrentRoutedDispatches bounded nothing
+// on what route_memo_wiring.go itself calls the single most common route-B
+// dispatch shape (cerberus issue #3184). The retry path held to drain end via
+// its observeFn, which was correct but rested on the caller choosing to invoke
+// an optional hook.
+//
+// Close is the right seam for both, and stronger than either: CursorResult's
+// contract already makes the caller responsible for Close, every handler
+// defers it through a sync.OnceFunc, and the shards' ClickHouse work is over
+// precisely when the composed cursor is closed. Tying the release to the
+// OPTIONAL ObserveDrainOutcome hook instead would leak a token from any
+// caller that skipped it — a convention, where this is structure.
+//
+// once-guarded because a defensive caller may Close more than once, and a
+// double release would hand back a token this dispatch never held.
+type dispatchTokenCursor struct {
+	chclient.Cursor
+	release func()
+	once    sync.Once
+}
+
+func (c *dispatchTokenCursor) Close() error {
+	err := c.Cursor.Close()
+	c.once.Do(c.release)
+	return err
+}
+
+// holdDispatchTokenUntilClose wraps cur so release and dispatchDone both fire
+// when the cursor is closed rather than when the dispatch was merely opened.
+func holdDispatchTokenUntilClose(cur chclient.Cursor, release, dispatchDone func()) chclient.Cursor {
+	return &dispatchTokenCursor{
+		Cursor: cur,
+		release: func() {
+			release()
+			dispatchDone()
+		},
+	}
+}
+
 // routeMemoActive reports whether the failure-driven route memo is wired
 // and has something to consult. A nil RouteMemo or a nil Solver both mean
 // the mechanism is off, matching e.classify's own "Solver nil -> no
@@ -225,13 +273,11 @@ func (e *Engine) tryRouteMemoHit(
 		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineNoDispatchToken)
 		return nil, nil, nil, routememo.Key{}, false
 	}
-	defer release()
 	dispatchDone := telemetry.ObserveRoutedDispatchInflight(ctx)
-	defer dispatchDone()
 
 	cur, execInfo, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
-			ctx, langName, responseShape, d.decision, plan, e.queryMemoryCap(), e.settings().JoinSpill,
+			ctx, langName, responseShape, d.decision, plan, e.queryMemoryCap(), e.settings(),
 			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(),
 			e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals, attrStrategies,
 		), langName, d.decision, budget,
@@ -241,9 +287,14 @@ func (e *Engine) tryRouteMemoHit(
 		// NoEvidence by construction — Observe is a documented no-op for it,
 		// called here only for completeness, not because it changes state.
 		e.RouteMemo.Observe(d.key, routememo.RouteB, classifyRouteOutcome(routememo.RouteB, err))
+		// No cursor was opened, so there is no later Close to release on.
+		release()
+		dispatchDone()
 		return nil, nil, nil, routememo.Key{}, false
 	}
-	return cur, execInfo, d.decision, d.key, true
+	// Hold the token until the caller closes the composed cursor — the shards
+	// are only now STARTING their ClickHouse work. See dispatchTokenCursor.
+	return holdDispatchTokenUntilClose(cur, release, dispatchDone), execInfo, d.decision, d.key, true
 }
 
 // retryOnRouteAResourceFailure is the A->B retry: called after a route-A
@@ -400,7 +451,7 @@ func (e *Engine) retryOnRouteAResourceFailure(
 
 	cur, execInfo, dispatchErr := e.Solver.Executor.Execute(
 		routeBExecCtx(
-			ctx, langName, responseShape, d.decision, plan, e.queryMemoryCap(), e.settings().JoinSpill,
+			ctx, langName, responseShape, d.decision, plan, e.queryMemoryCap(), e.settings(),
 			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(),
 			e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals, attrStrategies,
 		), langName, d.decision, budget,
@@ -420,8 +471,11 @@ func (e *Engine) retryOnRouteAResourceFailure(
 	var once sync.Once
 	observeFn = func(drainErr error) {
 		// once-guarded: a caller invoking observeFn more than once (a bug
-		// on its side) must not double-release the admission token or
-		// double-flip the verdict on a second, possibly-different drainErr.
+		// on its side) must not double-flip the verdict on a second,
+		// possibly-different drainErr. The admission token is no longer
+		// released here at all — dispatchTokenCursor releases it on Close,
+		// so a caller that skips this optional hook entirely still gives
+		// the token back.
 		once.Do(func() {
 			drainOutcome := classifyRouteOutcome(routememo.RouteB, drainErr)
 			e.RouteMemo.Observe(key, routememo.RouteB, drainOutcome)
@@ -438,9 +492,10 @@ func (e *Engine) retryOnRouteAResourceFailure(
 				// drain the failure-driven route memo itself dispatches.
 				recordRouteMemoMagnitude(e.RouteMemo, key, cur)
 			}
-			release()
-			dispatchDone()
 		})
 	}
-	return cur, execInfo, d.decision, observeFn, true
+	// The token is released by the cursor's Close, not by observeFn — the
+	// same seam the memo-hit above uses, so the two sibling paths agree on
+	// when a dispatch is over. See dispatchTokenCursor.
+	return holdDispatchTokenUntilClose(cur, release, dispatchDone), execInfo, d.decision, observeFn, true
 }

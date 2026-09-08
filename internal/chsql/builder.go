@@ -40,6 +40,24 @@ type Builder struct {
 	// byte-identical SQL.
 	attrStrategies AttrStrategies
 
+	// env is the emitter this Builder is rendering inside, or nil for a
+	// free-standing Builder (an ad-hoc query, a test). It exists for ONE
+	// purpose: chplan.ScalarSubquery and chplan.InSubquery embed a whole
+	// plan subtree that has to be rendered through an emitter of its own,
+	// and that sub-emitter must inherit the outer emission's ctx-seeded
+	// bounds and strategies plus its CTE-name counter. Before this field
+	// those two sites built a bare `&emitter{}`, so a rate() over a DELTA
+	// counter inside scalar(...) read the metric's whole retention, a
+	// JSON-typed attribute column rendered Map syntax, and a nested
+	// structural closure re-emitted `_struct_closure_1` inside a statement
+	// that already used it — ClickHouse error 49 (cerberus issue #3186).
+	//
+	// It rides the same path attrStrategies already does: stamped onto a
+	// QueryBuilder by emitSelect and handed to each Builder that renders
+	// it. nil is the ordinary free-standing case and keeps the previous
+	// behaviour exactly.
+	env *emitter
+
 	// err is the first error Expr encountered while rendering into this
 	// Builder, first-error-wins. It exists because Frag has no error
 	// return (`func(b *Builder)`), so an expression embedded via a
@@ -592,7 +610,7 @@ func (b *Builder) exprScalarSubquery(s *chplan.ScalarSubquery) error {
 	if s.Input == nil {
 		return fmt.Errorf("%w: chplan.ScalarSubquery has nil Input", ErrUnsupported)
 	}
-	e := &emitter{}
+	e := b.subEmitter()
 	if err := e.emitSubquery(s.Input); err != nil {
 		return err
 	}
@@ -616,7 +634,7 @@ func (b *Builder) exprInSubquery(v *chplan.InSubquery) error {
 	if v.Subquery == nil {
 		return fmt.Errorf("%w: chplan.InSubquery has nil Subquery", ErrUnsupported)
 	}
-	e := &emitter{}
+	e := b.subEmitter()
 	if err := e.emitSubquery(v.Subquery); err != nil {
 		return err
 	}
@@ -3235,6 +3253,13 @@ type QueryBuilder struct {
 	// strategies throughout without each node's lowering/emit code having
 	// to know about it.
 	attrStrategies AttrStrategies
+
+	// env is the emitter this statement is being rendered inside, threaded
+	// onto every Builder that renders it so an embedded ScalarSubquery /
+	// InSubquery can derive its sub-emitter from the outer emission rather
+	// than from a bare zero value — see Builder.env (cerberus issue #3186).
+	// nil for every QueryBuilder built outside an emitter.
+	env *emitter
 }
 
 // WithAttrStrategies sets the AttrStrategies this QueryBuilder's Build /
@@ -3497,14 +3522,20 @@ func (s *QueryBuilder) LimitBy(exprs ...Frag) *QueryBuilder {
 func (s *QueryBuilder) Frag() Frag {
 	return func(b *Builder) {
 		b.sb.WriteByte('(')
+		// env rides the same swap as attrStrategies: a QueryBuilder that
+		// carries its own emitter (emitSelect stamped one on it) renders
+		// its embedded subqueries inside THAT emission, and the parent's
+		// is restored afterwards. A QueryBuilder with neither keeps
+		// inheriting the parent Builder's, exactly as before.
+		prevStrategies, prevEnv := b.attrStrategies, b.env
 		if s.attrStrategies != nil {
-			prev := b.attrStrategies
 			b.attrStrategies = s.attrStrategies
-			s.writeInto(b)
-			b.attrStrategies = prev
-		} else {
-			s.writeInto(b)
 		}
+		if s.env != nil {
+			b.env = s.env
+		}
+		s.writeInto(b)
+		b.attrStrategies, b.env = prevStrategies, prevEnv
 		b.sb.WriteByte(')')
 	}
 }
@@ -3536,6 +3567,7 @@ func (s *QueryBuilder) BuildCounted() (sql string, args []any, physicalScans int
 // every non-chsql caller already depends on.
 func (s *QueryBuilder) subquerySQL() (string, []any, error) {
 	b := NewBuilderWithAttrStrategies(s.attrStrategies)
+	b.env = s.env
 	s.writeInto(b)
 	s.lastPhysicalScans = b.physicalScans
 	return b.Build()

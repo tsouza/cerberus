@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -536,5 +537,76 @@ func TestExecuteRoutedCursor_NoObserverStillSucceeds(t *testing.T) {
 	}
 	if rows == 0 {
 		t.Error("routed query with no observer streamed no rows")
+	}
+}
+
+// drainFailingCursorClient opens cursors that stream no rows and then report
+// a SAMPLE-BUDGET failure from Err() — the shape a route-B drain takes when
+// the request-scoped budget trips mid-fan-out. It carries the same shard
+// query-id capture idCapturingCursorClient does, so the stamped outcome has a
+// real join key to land on.
+type drainFailingCursorClient struct{ ids idCapturingCursorClient }
+
+func (c *drainFailingCursorClient) QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error) {
+	if _, err := c.ids.QueryCursor(ctx, sql, args...); err != nil {
+		return nil, err
+	}
+	return drainFailingCursor{}, nil
+}
+
+func (c *drainFailingCursorClient) MaxQueryMemoryBytes() int64 { return 0 }
+
+type drainFailingCursor struct{}
+
+func (drainFailingCursor) Next() bool              { return false }
+func (drainFailingCursor) Sample() chclient.Sample { return chclient.Sample{} }
+func (drainFailingCursor) Err() error              { return chclient.ErrTooManySamples }
+func (drainFailingCursor) Close() error            { return nil }
+func (drainFailingCursor) Inspected() int64        { return 0 }
+
+// TestExecuteRouted_StampsTheDrainOutcome pins the route-B eager path's
+// terminal-outcome stamping against route A's.
+//
+// Route A's eager path calls observeOutcomeForErr the moment Client.Query
+// returns an error, so a sample-budget 422, a byte budget, an OOM or an open
+// breaker lands on the corpus as a real exit_status. Before cerberus issue
+// #3184 observeOutcomeForErr was called at exactly two sites, BOTH route A —
+// so a routed eager drain that hit any of those was never recorded and the
+// corpus kept it as an "ok"-by-join, biasing every calibration that keys on
+// exit_status by route.
+//
+// The streaming route-B sibling is not affected: its drain happens in the
+// handler, which stamps via Engine.ObserveDrainOutcome. This test therefore
+// covers the one route-B path that has no other site able to record it.
+func TestExecuteRouted_StampsTheDrainOutcome(t *testing.T) {
+	t.Parallel()
+
+	cq := &drainFailingCursorClient{}
+	obs := &routedCorpusObserver{}
+	eng := newRoutedCorpusEngine(t, cq, obs)
+	plan := memoWiringEligiblePlan()
+	d := routedDecision(t, eng, plan)
+
+	_, err := eng.executeRouted(routedCorpusTraceCtx(), routedCorpusLang{}, Meta{IsMetric: true}, plan, d)
+	if err == nil {
+		t.Fatal("executeRouted returned no error although every shard cursor reports a sample-budget failure")
+	}
+	if !errors.Is(err, chclient.ErrTooManySamples) {
+		t.Fatalf("executeRouted error = %v; want it to wrap ErrTooManySamples", err)
+	}
+
+	obs.mu.Lock()
+	outcomes := append([][2]string(nil), obs.outcomes...)
+	obs.mu.Unlock()
+
+	if len(outcomes) != 1 {
+		t.Fatalf("corpus outcomes recorded = %d, want exactly 1 — a routed drain that tripped the sample budget "+
+			"must be stamped exactly as route A's eager path stamps its own", len(outcomes))
+	}
+	if got := outcomes[0][1]; got != optcorpusExitSampleBudget {
+		t.Errorf("exit token = %q, want %q", got, optcorpusExitSampleBudget)
+	}
+	if outcomes[0][0] == "" {
+		t.Error("outcome stamped with an empty query id; it cannot be joined onto the routed corpus record")
 	}
 }

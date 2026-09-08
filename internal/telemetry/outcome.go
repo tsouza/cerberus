@@ -28,6 +28,12 @@ const (
 //     memory-limit abort. Capacity, not correctness.
 //   - ReasonTimeout         — the request ran out of time: the ClickHouse
 //     max_execution_time cap, or the request's own deadline.
+//   - ReasonCanceled       — the CALLER went away before the answer was
+//     ready. Nothing ran out of time and nothing failed; the client simply
+//     stopped waiting. It is the one error reason never worth acting on —
+//     Grafana cancels every in-flight request on a panel re-render, a query
+//     edit or a tab switch — and it exists so those do not inflate the
+//     reasons that ARE.
 //   - ReasonInternal        — a defect in cerberus itself: a recovered
 //     panic or an unclassified 5xx. Always worth a page.
 const (
@@ -36,8 +42,36 @@ const (
 	ReasonBackendUnavailable = "backend_unavailable"
 	ReasonResourceExhausted  = "resource_exhausted"
 	ReasonTimeout            = "timeout"
+	ReasonCanceled           = "canceled"
 	ReasonInternal           = "internal"
 )
+
+// ErrorReasons returns every member of the cerberus_error_reason closed enum,
+// in a stable order.
+//
+// This is the ONE authoritative membership list. Before it existed the set was
+// re-typed by hand in four places — the vocabulary test, the public-contract
+// test, the metrics status table, and (on the request-scoped-override path) an
+// accept-list that SILENTLY DROPPED anything missing from it — so adding a
+// member compiled, passed, and simply went unrecorded in whichever copies were
+// missed. Every consumer now derives from this function, leaving exactly one
+// place where membership is stated in code and one deliberate literal pin (the
+// public-contract test) that a contract change is supposed to touch.
+//
+// It is NOT the list of reasons ClassifyStatus can produce: ReasonCanceled,
+// ReasonTimeout and ReasonResourceExhausted are reached only through
+// SetReason, because no status the heads actually write identifies them.
+func ErrorReasons() []string {
+	return []string{
+		ReasonNone,
+		ReasonBadRequest,
+		ReasonBackendUnavailable,
+		ReasonResourceExhausted,
+		ReasonTimeout,
+		ReasonCanceled,
+		ReasonInternal,
+	}
+}
 
 // Status families for AttrStatusClass. Bounded by construction — the
 // status code is collapsed to its family before it ever reaches a label.

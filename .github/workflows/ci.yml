@@ -815,6 +815,19 @@ jobs:
         run: node .github/scripts/clickhouse-version-sync.mjs --self-test
       - name: ClickHouse version-sync gate
         run: node .github/scripts/clickhouse-version-sync.mjs
+      # chDB substrate pin gate. The libchdb.so every chdb-tagged lane runs
+      # on is pinned in three places — versions.yaml chdb_substrate,
+      # just/chdb.just CHDB_VERSION, and every actions/cache libchdb key —
+      # and nothing read them against each other. The install recipe is
+      # idempotent, so a cache key left on the old tag restores the previous
+      # engine and the recipe declines to replace it: the bump appears to
+      # land while every lane keeps running on the old ClickHouse. The
+      # `--self-test` run proves each assertion still FAILS on a deliberate
+      # mismatch — see .github/scripts/README.md.
+      - name: chDB version-sync self-test
+        run: node .github/scripts/chdb-version-sync.mjs --self-test
+      - name: chDB version-sync gate
+        run: node .github/scripts/chdb-version-sync.mjs
       # Assert-from-source doc-count gate. Doc prose states integer counts
       # that DESCRIBE source structures ("N forbid-skip checks", "N-layer
       # test map"); those literals rot the moment the structure grows. This

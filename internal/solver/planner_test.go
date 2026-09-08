@@ -877,6 +877,48 @@ func TestPlan_ScalarNativeAnchorCompatibleRoutes(t *testing.T) {
 	}
 }
 
+// TestPlan_ScalarBucketGridNativeAnchorCompatibleRoutes is the positive
+// counterpart for the RangeBucketGridNative arm, and it is what stops that arm
+// from degenerating into "refuse every classic-histogram interior".
+//
+// The two negative rows below would be satisfied by a bare `return false`, the
+// policy its fan-out sibling RangeBucketFanout genuinely gets. This kind earns
+// the same equality the other grid families get instead: a ladder sitting
+// EXACTLY on the grid and cadence predicted where it is embedded is bounded to
+// one value per outer anchor, so replicating it per shard costs a slice, not a
+// full span.
+func TestPlan_ScalarBucketGridNativeAnchorCompatibleRoutes(t *testing.T) {
+	t.Parallel()
+	anchoredInner := &chplan.RangeBucketGridNative{
+		Input:             leafScan(),
+		Start:             gridStart,
+		End:               gridEnd,
+		Step:              gridStep,
+		Range:             5 * time.Minute,
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		GroupByAliases:    []string{"Attributes"},
+		AnchorAlias:       "anchor_ts",
+		TimestampCol:      "TimeUnix",
+		BucketCountsCol:   "BucketCounts",
+		ExplicitBoundsCol: "ExplicitBounds",
+	}
+	plan := &chplan.Filter{
+		Input: oomWindow().(*chplan.Aggregate),
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  &chplan.ColumnRef{Name: "Value"},
+			Right: &chplan.ScalarSubquery{Input: anchoredInner},
+		},
+	}
+	d, routed := (&Planner{Cfg: autoCfg()}).Plan(plan, oomMeta())
+	if !routed {
+		t.Fatalf("an anchor-compatible classic-histogram scalar interior must route; reason=%q", d.Reason)
+	}
+	if d.Reason != ReasonRouted {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
+	}
+}
+
 // TestPlan_ScalarAnchorIncompatibleRejected is the negative table for the
 // anchor-compatibility carve-out: each case builds a windowed interior that
 // resembles TestPlan_ScalarAnchorCompatibleRoutes's admitted shape in every
@@ -960,11 +1002,59 @@ func TestPlan_ScalarAnchorIncompatibleRejected(t *testing.T) {
 			},
 		},
 		{
+			// A classic-histogram native rate grid whose span is independent
+			// of the outer grid. Like RangeWindowGridNative above it is
+			// registered slice-invariant (issue #2677), so walkScalarInterior's
+			// sweep no longer refuses it and scalarInteriorAnchorCompatible's
+			// own arm is the only thing between this and replicating a 30-day
+			// classic-histogram ladder K times — the heaviest shape in this
+			// repo's incident history (cerberus issue #3184).
+			name: "RangeBucketGridNative, span diverges",
+			inner: &chplan.RangeBucketGridNative{
+				Input:             leafScan(),
+				Start:             gridStart.Add(-30 * 24 * time.Hour),
+				End:               gridEnd.Add(-30 * 24 * time.Hour),
+				Step:              gridStep,
+				Range:             5 * time.Minute,
+				GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+				GroupByAliases:    []string{"Attributes"},
+				AnchorAlias:       "anchor_ts",
+				TimestampCol:      "TimeUnix",
+				BucketCountsCol:   "BucketCounts",
+				ExplicitBoundsCol: "ExplicitBounds",
+			},
+		},
+		{
+			// The same ladder on the outer grid's exact span but at a coarser
+			// cadence: not provably one value per OUTER anchor, so it stays
+			// heavy for the same reason its RangeWindowGridNative sibling does.
+			name: "RangeBucketGridNative, grid matches, step diverges",
+			inner: &chplan.RangeBucketGridNative{
+				Input:             leafScan(),
+				Start:             gridStart,
+				End:               gridEnd,
+				Step:              time.Minute,
+				Range:             5 * time.Minute,
+				GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+				GroupByAliases:    []string{"Attributes"},
+				AnchorAlias:       "anchor_ts",
+				TimestampCol:      "TimeUnix",
+				BucketCountsCol:   "BucketCounts",
+				ExplicitBoundsCol: "ExplicitBounds",
+			},
+		},
+		{
 			// A RangeBucketFanout sitting EXACTLY on the outer grid and
-			// cadence — still never admitted, because it is outside the
-			// routable spine family on the main spine too (signal 1b) and
-			// this package has no argument that makes it safe here that it
-			// does not already have there.
+			// cadence — still never admitted. NOT because it is unroutable on
+			// the main spine: since the classic-histogram OOM fix it IS
+			// routable there (signal 1b, carrierGeometry.reanchorable), and the
+			// comment here used to claim the opposite of what planner.go says.
+			// The real reason is narrower and is about this position only:
+			// route B never re-anchors an Expr-embedded interior, so admitting
+			// one here would replicate its full unsliced grid K times, and no
+			// equality argument bounding that replication has been built for
+			// this kind — unlike the RangeWindow / RangeLWR / RangeWindowGridNative
+			// / RangeBucketGridNative arms, which have one.
 			name: "RangeBucketFanout, grid AND step match",
 			inner: &chplan.RangeBucketFanout{
 				Input:        leafScan(),

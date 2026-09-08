@@ -176,7 +176,7 @@ func classMatchesFinding(c *LabeledClass, gk map[string]string) bool {
 	if v, ok := gk["decision_reason"]; ok && v != c.DecisionReason {
 		return false
 	}
-	if v, ok := gk["normalized_query_hash"]; ok && v != formatNumeric(float64(c.QueryHash)) {
+	if v, ok := gk["normalized_query_hash"]; ok && v != formatQueryHash(c.QueryHash) {
 		return false
 	}
 	// At least one identifying dimension (shape_id or query hash) must be present

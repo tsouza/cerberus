@@ -511,12 +511,22 @@ func bucketGridGroupCountGuardFrag(probeCount *QueryBuilder, numAnchors, maxRows
 // A real production deployment on v1.16.1 was hitting this guard's throwIf
 // repeatedly on an ordinary dashboard panel (shape `cerb:project;agg=3;rbf;rbn`,
 // `decision_reason=not-sliceable`) even though axis1 (#2651/#2653) had
-// already been recalibrated. `internal/solver/planner.go`'s own
-// `walkRangeBucketGridNative` doc confirms `RangeBucketGridNative` is
-// deliberately absent from `chplan.IsSliceInvariant`'s registry — it is
-// never sliceable, by design (`TestRangeBucketGridNative_SlicingRefusedAtBothGates`
-// pins both refusals) — so a slicing fallback for `not-sliceable` is not an
-// available fix shape here; the guard's own calibration is the only lever.
+// already been recalibrated. At the time, `RangeBucketGridNative` was
+// deliberately absent from `chplan.IsSliceInvariant`'s registry — never
+// sliceable, by design — so a slicing fallback for `not-sliceable` was not an
+// available fix shape and the guard's own calibration was the only lever.
+//
+// That premise was INVERTED by #2677, which registered the kind slice-invariant
+// (`chplan/sliceinvariant.go`; the test that pinned the old refusal is now
+// `TestRangeBucketGridNative_SlicingAdmittedAtBothGates`). The recalibration
+// below stands on its own measurements and is unaffected — but note that
+// slicing still does not relieve THIS guard, for a different and stronger
+// reason than "the kind is unsliceable": route B apportions both of these
+// ceilings by K (#2705), so the pass/fail verdict is K-invariant and an
+// escalation reproduces the same rejection. See
+// `internal/engine/route_outcome.go`'s `timeSliceableResourceBoundMessages`
+// doc (cerberus issue #3184). The guard's own calibration remains the lever;
+// only the reason has changed.
 //
 // Direct real-ClickHouse 25.9-alpine re-measurement (fresh `docker run`,
 // 1 GiB `max_memory_usage` cap) found the root cause: every point in the

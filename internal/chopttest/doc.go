@@ -21,11 +21,16 @@
 // boot (docker-compose / e2e / compose-smoke, none of which assert a
 // specific native family actually activated) — issue #2487.
 //
-// BuildRangeLowerers is a deliberate, reviewed duplicate of
-// nativeRangeLowerers's dispatch-table formula, not an import (it cannot be
-// one). Keeping the two in lockstep is a reviewer-discipline concern, the
-// same way nightlyClassicHistogramLowerer's own doc comment already flags
-// for the one field it duplicates.
+// BuildRangeLowerers and BuildSettingsRules are thin delegators to
+// internal/choptwire, the package cmd/cerberus's own boot path composes both
+// tables from. They used to be reviewed DUPLICATES of that formula, on the
+// stated grounds that an unexported `package main` function cannot be
+// imported — true of the function, false of the formula, which depends only
+// on chopt, promql and engine and so always belonged in an importable
+// package. While they were copies, every real-CH activation lane validated
+// the copy rather than the production wiring, so a feature wired in one and
+// forgotten in the other passed every activation test and shipped inert
+// (cerberus issue #3186).
 //
 // AssertNativeFunctionFired is the activation-proof half: an HTTP 200 alone
 // is indistinguishable from a silent fall-back to the fan-out path, so it

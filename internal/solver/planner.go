@@ -1589,7 +1589,11 @@ func (p *Planner) checkScalarHeavy(inner chplan.Node, predStart, predEnd time.Ti
 // registered (issue #2117), so that sweep no longer covers it and this function
 // answers for it directly — under the same equality the fan-out RangeWindow
 // gets, since a full-span native grid replicated K× is exactly as wide a scan
-// as a full-span fan-out one. StepGrid IS registered
+// as a full-span fan-out one. RangeBucketGridNative IS
+// registered too (issue #2677) and gets its own arm below for the same
+// reason, held to the same equality — the omission of that arm was issue
+// #3184's finding, and it is the one kind this audit had no line for.
+// StepGrid IS registered
 // slice-invariant and falls through the switch below to the generic
 // Children() walk unchecked — deliberately: it is the bare, data-free anchor
 // axis behind `time()` / `vector(scalar)` / the zero-arg date functions, it
@@ -1630,6 +1634,30 @@ func scalarInteriorAnchorCompatible(n chplan.Node, predStart, predEnd time.Time,
 		}
 		inStart, inEnd := v.InputWindow(predStart, predEnd)
 		return scalarInteriorAnchorCompatible(v.Input, inStart, inEnd, predStep)
+	case *chplan.RangeBucketGridNative:
+		// The classic-histogram native rate grid, held to the SAME equality as
+		// RangeWindowGridNative above and in the same two-bound form (this kind
+		// carries no OuterRange either, so its whole grid is Start/End/Step).
+		//
+		// This arm is load-bearing for exactly the reason the
+		// RangeWindowGridNative one is, and became so at #2677 when the kind
+		// entered chplan.IsSliceInvariant's registry: before that,
+		// walkScalarInterior's slice-invariance sweep refused any plan whose
+		// interior carried one, so the switch never had to answer for it.
+		// Afterwards the sweep went silent and the generic Children()
+		// fall-through below admitted a full-span classic-histogram ladder
+		// inside a scalar or IN subquery as CHEAP, whatever its bounds — and
+		// route B then replicated it K times unsliced, since route B never
+		// re-anchors an Expr-embedded interior. That is the heaviest shape in
+		// this repo's incident history, and its fan-out sibling
+		// RangeBucketFanout is refused just below for precisely this reason
+		// (cerberus issue #3184).
+		if v.Step <= 0 || v.Step != predStep || !rangeBucketGridNativeGridMatches(v, predStart, predEnd) {
+			return false
+		}
+		// Widen by the membership window the same way reanchorRangeBucketGridNative
+		// does: each anchor reads (anchor - Offset - Range, anchor - Offset].
+		return scalarInteriorAnchorCompatible(v.Input, predStart.Add(-v.Offset-v.Range), predEnd.Add(-v.Offset), predStep)
 	case *chplan.RangeBucketFanout:
 		return false
 	}

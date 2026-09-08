@@ -84,6 +84,12 @@ func queryTelemetryInterceptor(ql string) grpc.StreamServerInterceptor {
 // 5xx's 502/503 -> ReasonBackendUnavailable), so the choice of
 // representative never changes the recorded Outcome.
 //
+// codes.Canceled is the one code whose recorded reason is NOT what this
+// table's status implies: it maps to 499 for status_class purposes, but the
+// interceptor above takes its reason from httperr.TelemetryReason, which
+// names a client cancellation ReasonCanceled — so a client hanging up reads
+// the same on this transport as on HTTP, rather than bad_request.
+//
 // codes.OK needs no case — status.Code(nil) already returns codes.OK,
 // and http.StatusOK classifies as ResultOK via ClassifyStatus's
 // status < http.StatusBadRequest short-circuit — so the default arm

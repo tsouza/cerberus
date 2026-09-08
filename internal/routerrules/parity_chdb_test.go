@@ -342,6 +342,20 @@ func seedParityTableFromRows(t *testing.T, db *sql.DB, rows []jsonlRow) {
 	}
 }
 
+// parityEventTime renders a seed row's event_time for the parity table. The
+// column is a non-nullable DateTime, and jsonlRow.EventTime is a pointer so an
+// ABSENT event_time stays distinguishable from a present zero (a row without
+// one cannot be windowed, so the JSONL source refuses it under --since). The
+// parity fixtures all carry an event_time; a row built from a BenchRow, which
+// has no event time at all, seeds the epoch — the parity assertions compare
+// findings, and no rule in the catalog reads this column.
+func parityEventTime(r jsonlRow) int64 {
+	if r.EventTime == nil {
+		return 0
+	}
+	return int64(*r.EventTime)
+}
+
 // parityRowTuple renders one VALUES tuple in the table's own column order. The
 // per-column literals are looked up by name, so adding a column to the corpus
 // table fails here loudly instead of shifting every later value one position left.
@@ -349,7 +363,7 @@ func parityRowTuple(t *testing.T, cols []chsql.ColumnDef, r jsonlRow) string {
 	t.Helper()
 
 	byName := map[string]string{
-		"event_time":            fmt.Sprintf("toDateTime(%d)", int64(r.EventTime)),
+		"event_time":            fmt.Sprintf("toDateTime(%d)", parityEventTime(r)),
 		"shape_id":              chLiteral(r.ShapeID),
 		"language":              chLiteral(r.Language),
 		"normalized_query_hash": strconv.FormatUint(r.NormalizedQueryHash, 10),

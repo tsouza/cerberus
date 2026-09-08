@@ -474,6 +474,13 @@ func TestQueryMiddleware_ResultError(t *testing.T) {
 		{"502_bad_gateway", http.StatusBadGateway, telemetry.ReasonBackendUnavailable, telemetry.StatusClass5xx},
 		{"503_service_unavailable", http.StatusServiceUnavailable, telemetry.ReasonBackendUnavailable, telemetry.StatusClass5xx},
 		{"504_gateway_timeout", http.StatusGatewayTimeout, telemetry.ReasonTimeout, telemetry.StatusClass5xx},
+		// 499 is what Tempo answers a client cancellation with. Its reason
+		// is NOT bad_request even though 499 is a 4xx: the middleware
+		// re-labels a cancelled request via Outcome.AsCanceled, which is
+		// exercised end-to-end by TestQueryMiddleware_ClientCancellation
+		// below. Here the request context is NOT cancelled, so this row
+		// pins the status-derived fallback for a bare 499.
+		{"499_client_closed_request", tempoClientClosedRequest, telemetry.ReasonBadRequest, telemetry.StatusClass4xx},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -760,5 +767,47 @@ func TestObserveQueryInflight_PerLanguageLabels(t *testing.T) {
 		if got := inflightValue(t, reader, ql); got != 1 {
 			t.Errorf("inflight[%s]: got %d want 1", ql, got)
 		}
+	}
+}
+
+// TestQueryMiddleware_ClientCancellation pins the fix for cerberus issue
+// #3197: the same event — a caller hanging up — must record the same
+// cerberus_error_reason on every head, even though the heads answer it with
+// different HTTP statuses.
+//
+// Tempo replies 499 (a 4xx, which reasonForStatus reads as bad_request) and
+// Prometheus/Loki reply 503 (which it reads as backend_unavailable). Neither
+// is true, and neither status is free to move: Tempo's 499 deliberately keeps
+// a client hang-up out of the 5xx band, and prom/loki's 503 is byte-parity
+// with upstream's errorCanceled envelope, asserted by the compat harnesses. So
+// the reason travels out of band, on the request-scoped cell.
+//
+// Both status families are exercised precisely because the bug WAS the status:
+// a fix that only worked for one family would leave the heads disagreeing,
+// just differently. The bare-499 row in TestQueryMiddleware_ResultError is the
+// control — an uncancelled 499 still classifies bad_request — so this cannot
+// pass by the reason having been hard-wired to the status.
+func TestQueryMiddleware_ClientCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"tempo_499", tempoClientClosedRequest},
+		{"prom_loki_503", http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := tc.status
+			got := serveWithMiddleware(t, func(w http.ResponseWriter, r *http.Request) {
+				// What every head's respondError does:
+				// SetReason(ctx, httperr.TelemetryReason(err)) for an error
+				// that is (or carries) context.Canceled.
+				telemetry.SetReason(r.Context(), telemetry.ReasonCanceled)
+				w.WriteHeader(status)
+			})
+			if got != telemetry.ReasonCanceled {
+				t.Errorf("cerberus.error_reason = %q, want %q — a cancellation answered with %d must read "+
+					"the same as one answered with any other status", got, telemetry.ReasonCanceled, status)
+			}
+		})
 	}
 }

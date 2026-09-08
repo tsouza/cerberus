@@ -78,7 +78,7 @@ type Config struct {
 	// MinObservations (CERBERUS_QUERY_ACTUALS_MIN_OBSERVATIONS) is the
 	// corroboration floor before a shape's drift verdict is trusted at all —
 	// mirroring internal/engine's own perRungEvidenceMinObservations /
-	// routememo's minCorroboratingFailures: a single anomalous actual must
+	// routememo's MinCorroboratingFailures: a single anomalous actual must
 	// never, by itself, flip a shape's verdict. This is the anti-autotune
 	// bound on OBSERVATION COUNT; EMAAlpha below is the matching bound on
 	// per-observation INFLUENCE.
@@ -97,7 +97,7 @@ type Config struct {
 
 	// EntryTTL (CERBERUS_QUERY_ACTUALS_ENTRY_TTL) bounds how long a shape's
 	// tracked state is trusted before it ages out — mirroring
-	// routememo.memoEntryTTL / the per-rung admission learner's
+	// routememo.MemoEntryTTL / the per-rung admission learner's
 	// perRungEvidenceTTL: a shape's real cardinality can grow, and a verdict
 	// computed against a stale window must not silently suppress recalibration
 	// forever once that has happened.
@@ -145,7 +145,7 @@ const (
 	defaultDriftUpperRatio = 3.0
 
 	// defaultMinObservations mirrors internal/engine's own
-	// perRungEvidenceMinObservations and routememo's minCorroboratingFailures
+	// perRungEvidenceMinObservations and routememo's MinCorroboratingFailures
 	// (both 2): a single observation is never enough evidence to flip a
 	// shape's advisory verdict.
 	defaultMinObservations = 2
@@ -158,7 +158,7 @@ const (
 	// requires.
 	defaultEMAAlpha = 0.2
 
-	// defaultEntryTTL mirrors routememo.memoEntryTTL / the per-rung admission
+	// defaultEntryTTL mirrors routememo.MemoEntryTTL / the per-rung admission
 	// learner's perRungEvidenceTTL (both 30m).
 	defaultEntryTTL = 30 * time.Minute
 

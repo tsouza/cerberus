@@ -88,19 +88,18 @@ type BenchRow struct {
 func (r BenchRow) toCorpusRow() corpusRow {
 	return corpusRow{
 		numeric: map[string]float64{
-			"n_anchors":             r.NAnchors,
-			"fanout":                r.Fanout,
-			"cumulative_d":          r.CumulativeD,
-			"outer_range":           r.OuterRange,
-			"step":                  r.Step,
-			"k_shards":              r.KShards,
-			"read_rows":             r.ReadRows,
-			"read_bytes":            r.ReadBytes,
-			"query_duration_ms":     r.QueryDurationMS,
-			"memory_usage":          r.MemoryUsage,
-			"shards_observed":       r.ShardsObserved,
-			"parallelism":           r.Parallelism,
-			"normalized_query_hash": float64(r.NormalizedQueryHash),
+			"n_anchors":         r.NAnchors,
+			"fanout":            r.Fanout,
+			"cumulative_d":      r.CumulativeD,
+			"outer_range":       r.OuterRange,
+			"step":              r.Step,
+			"k_shards":          r.KShards,
+			"read_rows":         r.ReadRows,
+			"read_bytes":        r.ReadBytes,
+			"query_duration_ms": r.QueryDurationMS,
+			"memory_usage":      r.MemoryUsage,
+			"shards_observed":   r.ShardsObserved,
+			"parallelism":       r.Parallelism,
 		},
 		str: map[string]string{
 			"shape_id":              r.ShapeID,
@@ -108,7 +107,7 @@ func (r BenchRow) toCorpusRow() corpusRow {
 			"route":                 r.Route,
 			"decision_reason":       r.DecisionReason,
 			"exit_status":           r.ExitStatus,
-			"normalized_query_hash": formatNumeric(float64(r.NormalizedQueryHash)),
+			"normalized_query_hash": formatQueryHash(r.NormalizedQueryHash),
 		},
 	}
 }
@@ -176,6 +175,23 @@ const (
 	// but it must keep at least one row so the class is still present in the corpus
 	// to be scored as a false negative rather than vanishing entirely.
 	minPathologyClassRows = 1
+
+	// benchSlowHotHashBase is the hash base of prom:slow_hot, the ONE planted
+	// class whose rule (route_a_slow_hot_shape) groups by
+	// normalized_query_hash rather than shape_id. Its two severities sit at
+	// benchSlowHotHashBase+1 and +2 — 17000000000000000001 and ...002, two
+	// adjacent UInt64 values above 2^63.
+	//
+	// The value is deliberately huge rather than another 3xxxx like its
+	// siblings. normalized_query_hash is a UInt64 and a real hash is uniform
+	// over that whole range, but every fixture in this package used to sit
+	// below 2^53, where a float64 still holds an integer exactly. That is the
+	// only reason rendering the column through float64 went unnoticed: at
+	// these two values it collapses both classes onto "1.7e+19", so the
+	// benchmark's own ground truth would fold two distinct classes into one.
+	// Keeping the hash-grouped class up here is what makes the cross-backend
+	// parity lane compare exact keys over the range production actually uses.
+	benchSlowHotHashBase = 17_000_000_000_000_000_000
 
 	// benchMemoryHardCapBytes is the deployment query memory cap the benchmark
 	// scores at (query.max_memory_bytes), and benchMemoryNearCapFraction is the
@@ -357,7 +373,7 @@ func plantRouteBFloor(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 				KShards:             k,
 				ShardsObserved:      k,
 				Parallelism:         benchRouteBParallelism,
-				DecisionReason:      "sliceable",
+				DecisionReason:      "routed",
 				ReadRows:            jitter(rng, healthyReadBase, healthyReadSpread),
 				ReadBytes:           jitter(rng, 1_000_000, 40_000_000),
 				QueryDurationMS:     jitter(rng, routeBFloorDurBase, routeBFloorDurSpread),
@@ -366,7 +382,7 @@ func plantRouteBFloor(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 			})
 		}
 		bc.Classes = append(bc.Classes, LabeledClass{
-			ShapeID: shape, Language: lang, DecisionReason: "sliceable",
+			ShapeID: shape, Language: lang, DecisionReason: "routed",
 			QueryHash: hash, Expect: nil, Severity: SevHealthy,
 		})
 	}
@@ -487,7 +503,7 @@ func pathologyFailureSpecs() []pathologySpec {
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "A", ExitStatus: "oom", DecisionReason: "high-cardinality",
+					Route: "A", ExitStatus: "oom", DecisionReason: "high-D",
 					MemoryUsage: pick(sev, sevMemSevere, sevMemMarg),
 					CumulativeD: pick(sev, sevDSevere, sevDMarg),
 					NAnchors:    jitter(rng, 5, 20), Fanout: jitter(rng, 20, 40),
@@ -513,7 +529,7 @@ func pathologyFailureSpecs() []pathologySpec {
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "A", ExitStatus: "timeout", DecisionReason: "high-cardinality",
+					Route: "A", ExitStatus: "timeout", DecisionReason: "high-D",
 					QueryDurationMS: pick(sev, sevDurSevere, sevDurMarg),
 					CumulativeD:     pick(sev, sevDSevere, sevDMarg),
 					NAnchors:        jitter(rng, 5, 20), Fanout: jitter(rng, 20, 40),
@@ -566,7 +582,7 @@ func pathologyFailureSpecs() []pathologySpec {
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "B", ExitStatus: "oom", DecisionReason: "not-sliceable",
+					Route: "B", ExitStatus: "oom", DecisionReason: "routed",
 					KShards: jitter(rng, 8, 32), CumulativeD: sevDSevere,
 					// The OOM cancels the fan-out, so only the resident wave ever
 					// reached ClickHouse: shards_observed falls short of k_shards.
@@ -592,7 +608,7 @@ func pathologyTailSpecs() []pathologySpec {
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "B", ExitStatus: "ok", DecisionReason: "sliceable",
+					Route: "B", ExitStatus: "ok", DecisionReason: "routed",
 					Fanout: regretFanout, QueryDurationMS: regretDur, KShards: regretShards,
 					ShardsObserved: regretShards, Parallelism: benchRouteBParallelism,
 					CumulativeD: jitter(rng, healthyDBase, healthyDSpread),
@@ -637,7 +653,7 @@ func pathologyTailSpecs() []pathologySpec {
 		// Slow hot shape (route A, in the per-language duration tail):
 		// route_a_slow_hot_shape only. Grouped by normalized_query_hash.
 		{
-			shape: "prom:slow_hot", lang: "promql", hashBase: 39000,
+			shape: "prom:slow_hot", lang: "promql", hashBase: benchSlowHotHashBase,
 			expect:     always("route_a_slow_hot_shape"),
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
@@ -695,7 +711,7 @@ func max(a, b int) int {
 // classID is a stable identifier for a labeled class across its group_by
 // dimensions, used to order classes and to look one up from a fired finding.
 func classID(c LabeledClass) string {
-	return c.Language + "|" + c.ShapeID + "|" + c.DecisionReason + "|" + formatNumeric(float64(c.QueryHash))
+	return c.Language + "|" + c.ShapeID + "|" + c.DecisionReason + "|" + formatQueryHash(c.QueryHash)
 }
 
 func sortBenchRows(rows []BenchRow) {

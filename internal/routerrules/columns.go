@@ -1,6 +1,9 @@
 package routerrules
 
-import "sort"
+import (
+	"sort"
+	"strconv"
+)
 
 // CorpusTableName is the ClickHouse table the router corpus is written to. It is
 // re-declared here verbatim rather than imported from internal/optcorpus so this
@@ -242,6 +245,17 @@ var enumDomains = map[string]map[string]struct{}{
 		"non-promql",
 	),
 }
+
+// formatQueryHash renders a normalized_query_hash value as its group key. The
+// column is UInt64, and the ClickHouse backend groups by
+// toString(normalized_query_hash) — the exact decimal. Rendering it through a
+// generic float64 numeric formatter instead silently rounds every value at or
+// above 2^53, so distinct hot shapes collapse into a single class and the
+// backends stop agreeing on what a class even IS: 9007199254740993 comes back
+// as ...992, and 17000000000000000001 and ...002 both come back as "1.7e+19".
+// Formatting the uint64 directly is what keeps the JSONL, in-memory and
+// ClickHouse group keys identical across the whole domain of the column.
+func formatQueryHash(h uint64) string { return strconv.FormatUint(h, 10) }
 
 func setOf(xs ...string) map[string]struct{} {
 	m := make(map[string]struct{}, len(xs))

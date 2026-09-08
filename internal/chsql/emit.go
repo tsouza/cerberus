@@ -162,23 +162,8 @@ func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, ph
 	// node past the canonicalising projection — cannot emit SQL that splits one
 	// series across two Map key orders.
 	n = chplan.CanonicalizeSeriesIdentityKeys(n, attributeMapColumns)
-	e := &emitter{
-		spansTable:             spansTable,
-		ctxSpansTable:          spansTable,
-		deltaPrefixLookbackNS:  deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
-		deltaPrefixReadEnabled: deltaPrefixReadEnabledFromCtx(ctx),
-
-		rangeBucketFanoutMaxRows: rangeBucketFanoutMaxRowsFromCtx(ctx),
-		rangeLWRFanoutMaxRows:    rangeLWRFanoutMaxRowsFromCtx(ctx),
-		rateWindowFanoutMaxRows:  rateWindowFanoutMaxRowsFromCtx(ctx),
-
-		rangeBucketGridNativeMaxRows:         rangeBucketGridNativeMaxRowsFromCtx(ctx),
-		rangeBucketGridNativeMaxDensityUnits: rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx),
-
-		emittedSQLMaxBytes: maxEmittedSQLBytesFromCtx(ctx),
-		rootPlan:           n,
-		attrStrategies:     attrStrategiesFromCtx(ctx),
-	}
+	e := newEmitter(ctx)
+	e.rootPlan = n
 	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
 	// single-evaluation scalar binding hoisted to the outermost statement
 	// (#1672). No-op — returns nil, leaves the tree untouched — for every
@@ -403,14 +388,96 @@ type emitter struct {
 	// renders as a subquery of the outer one, and CH would bind the
 	// inner arm CTE in the outer scope. One counter across both
 	// emitters keeps every name in a single statement distinct.
-	cteSeq int
+	// It is a POINTER so a sub-emitter (sub, below) shares the outer
+	// emission's counter rather than restarting at 0: a ScalarSubquery /
+	// InSubquery renders its plan through its own emitter, but the SQL it
+	// produces is spliced into the SAME statement, where a repeated
+	// `_struct_closure_1` is ClickHouse error 49 — the exact collision this
+	// counter exists to prevent (cerberus issue #3186). nil is the ordinary
+	// zero value; nextCTESeq allocates on first use so an emitter built
+	// without newEmitter still hands out unique names within itself.
+	cteSeq *int
+}
+
+// newEmitter seeds an emitter from the emit context: the spans table under
+// resource-bound enforcement, the delta-prefix lookback and read gate, the
+// three sample-fanout ceilings, RangeBucketGridNative's two, the emitted-SQL
+// byte ceiling, and the resolved attribute-map strategies.
+//
+// It is the ONLY constructor any production emission path uses. Four sites
+// used to build a bare `&emitter{}` instead — exprScalarSubquery,
+// exprInSubquery, EmitMetricsExemplars and EmitCompareRootLeg — and each
+// therefore discarded every one of those bounds: a rate() over a DELTA
+// counter inside scalar(...) read the metric's whole retention because a
+// zero deltaPrefixLookbackNS is the explicit "no lower bound" opt-out, a
+// JSON-typed attribute column rendered Map syntax and failed at query time,
+// and the operator's CERBERUS_CH_* overrides did not apply (cerberus issue
+// #3186).
+//
+// rootPlan is NOT seeded here: it is the whole plan a top-level Emit was
+// started on, stamped by that caller so an emitted-SQL-size rejection can
+// name the composition the USER wrote. A sub-emitter has no such plan of its
+// own and leaves it nil, exactly as before.
+func newEmitter(ctx context.Context) *emitter {
+	spansTable := spansTableFromCtx(ctx)
+	return &emitter{
+		spansTable:             spansTable,
+		ctxSpansTable:          spansTable,
+		deltaPrefixLookbackNS:  deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
+		deltaPrefixReadEnabled: deltaPrefixReadEnabledFromCtx(ctx),
+
+		rangeBucketFanoutMaxRows: rangeBucketFanoutMaxRowsFromCtx(ctx),
+		rangeLWRFanoutMaxRows:    rangeLWRFanoutMaxRowsFromCtx(ctx),
+		rateWindowFanoutMaxRows:  rateWindowFanoutMaxRowsFromCtx(ctx),
+
+		rangeBucketGridNativeMaxRows:         rangeBucketGridNativeMaxRowsFromCtx(ctx),
+		rangeBucketGridNativeMaxDensityUnits: rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx),
+
+		emittedSQLMaxBytes: maxEmittedSQLBytesFromCtx(ctx),
+		attrStrategies:     attrStrategiesFromCtx(ctx),
+		cteSeq:             new(int),
+	}
 }
 
 // nextCTESeq returns the next unique CTE sequence number, advancing the
 // counter.
 func (e *emitter) nextCTESeq() int {
-	e.cteSeq++
-	return e.cteSeq
+	if e.cteSeq == nil {
+		e.cteSeq = new(int)
+	}
+	*e.cteSeq++
+	return *e.cteSeq
+}
+
+// sub returns a fresh emitter for a plan subtree that renders into its own
+// buffer but belongs to THIS emission: it carries every ctx-seeded bound and
+// strategy over and SHARES the CTE-name counter, so names stay unique across
+// the whole statement the two halves are spliced into.
+//
+// rootPlan is deliberately not carried: it names the composition the user
+// wrote for an emitted-SQL-size rejection, and a subtree is not that
+// composition.
+func (e *emitter) sub() *emitter {
+	if e.cteSeq == nil {
+		e.cteSeq = new(int)
+	}
+	return &emitter{
+		spansTable:             e.spansTable,
+		ctxSpansTable:          e.ctxSpansTable,
+		deltaPrefixLookbackNS:  e.deltaPrefixLookbackNS,
+		deltaPrefixReadEnabled: e.deltaPrefixReadEnabled,
+
+		rangeBucketFanoutMaxRows: e.rangeBucketFanoutMaxRows,
+		rangeLWRFanoutMaxRows:    e.rangeLWRFanoutMaxRows,
+		rateWindowFanoutMaxRows:  e.rateWindowFanoutMaxRows,
+
+		rangeBucketGridNativeMaxRows:         e.rangeBucketGridNativeMaxRows,
+		rangeBucketGridNativeMaxDensityUnits: e.rangeBucketGridNativeMaxDensityUnits,
+
+		emittedSQLMaxBytes: e.emittedSQLMaxBytes,
+		attrStrategies:     e.attrStrategies,
+		cteSeq:             e.cteSeq,
+	}
 }
 
 // emitNode writes a `SELECT ...` statement for n into e.b.
@@ -520,4 +587,19 @@ func (e *emitter) emitSubquery(n chplan.Node) error {
 	}
 	e.b.WriteByte(')')
 	return nil
+}
+
+// subEmitter returns the emitter a chplan.ScalarSubquery / chplan.InSubquery
+// embedded in this Builder renders its plan subtree through: a sub-emitter of
+// the emission this Builder belongs to, so the subtree inherits its
+// ctx-seeded bounds and strategies and shares its CTE-name counter.
+//
+// A free-standing Builder — an ad-hoc query composed outside any emitter, or
+// a test — has no emission to inherit from and gets a bare emitter, which is
+// exactly what every such site got before this existed.
+func (b *Builder) subEmitter() *emitter {
+	if b.env != nil {
+		return b.env.sub()
+	}
+	return &emitter{}
 }

@@ -373,6 +373,7 @@ label cardinality is fixed:
 | `backend_unavailable`   | ClickHouse could not be reached or refused the work, or a head's circuit breaker is open.                                                                                             |
 | `resource_exhausted`    | A per-query budget refused the work: the sample budget, the wide-projection byte budget, or ClickHouse's own memory-limit abort. The query asked for too much; the server is healthy. |
 | `timeout`               | The request ran out of time — the ClickHouse `max_execution_time` cap, or the request's own deadline.                                                                                 |
+| `canceled`              | The caller went away before the answer was ready. Nothing failed and nothing ran out of time; the client stopped waiting. Never worth acting on.                                      |
 | `internal`              | A defect in cerberus — a recovered panic or an unclassified 5xx. Worth a page.                                                                                                        |
 
 `cerberus_status_class` is derived purely from the response's status
@@ -389,6 +390,31 @@ middleware installs), and the middleware prefers it over its
 status-derived default. The wire bytes are unchanged; a handler that
 records nothing is classified from its status exactly as before. A
 recovered panic stays pinned to `internal` whatever the handler recorded.
+
+A client cancellation is the third meaning those two statuses collide,
+and the one where the heads disagreed outright: Tempo answers **499**,
+deliberately outside the 5xx band so a client hanging up is never read as
+"cerberus is unhealthy", while Prometheus and Loki answer **503** to stay
+byte-compatible with upstream's own `errorCanceled` envelope. Derived
+from the status, the same event read `bad_request` on one head and
+`backend_unavailable` on the other two, and neither is true. It now
+travels the same route as the other two: `httperr.TelemetryReason` names
+a `context.Canceled` failure `canceled` for every head, and the two
+constructors that restate the message in upstream's wording — and so
+destroy the sentinel — carry the reason on the error itself.
+
+A cancellation still counts as `result="error"`, because the query was
+not answered. It is the one error reason expected in normal operation
+rather than a fault: Grafana cancels every in-flight request on a panel
+re-render, a query edit or a tab switch. Exclude it before alerting on an
+error ratio, or a healthy dashboard reads as an incident.
+
+Note that `cerberus_status_class` is NOT unified the same way — a
+cancellation stays `4xx` on Tempo and `5xx` on Prometheus/Loki, because
+that label reports the status actually sent and those statuses are fixed
+by the compatibility contract. Alerts keyed on
+`cerberus_status_class="5xx"` should exclude
+`cerberus_error_reason="canceled"` for that reason.
 
 Admission-control rejections are not in this counter at all: the
 limiter middleware sits OUTSIDE `telemetry.QueryMiddleware`, so a
