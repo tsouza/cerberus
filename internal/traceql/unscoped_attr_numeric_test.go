@@ -128,3 +128,45 @@ func TestIsNumericExprRejectsTheUnscopedAttributeShape(t *testing.T) {
 		t.Fatal("a non-attribute-read FuncCall must still classify as numeric")
 	}
 }
+
+// TestIsAttributeReadRequiresBothCoalesceArms pins the conjunction in
+// isAttributeRead's FuncCall arm: BOTH branches of the span-then-resource
+// coalesce must themselves be attribute reads. A half-matching FnIf — one arm
+// an attribute read, the other any other expression — is not the shape
+// unscopedAttributeExpr builds, and treating it as one would extend the
+// "bare attribute" numeric intent to a call this lowering never produced.
+//
+// The `&&` between the two arm checks survived mutation to `||` because every
+// existing case supplied two attribute reads or none. These cases supply
+// exactly one, on each side in turn, so the operator is pinned in both
+// directions.
+func TestIsAttributeReadRequiresBothCoalesceArms(t *testing.T) {
+	t.Parallel()
+
+	attr := func() chplan.Expr {
+		return &chplan.FieldAccess{Source: &chplan.ColumnRef{Name: "SpanAttributes"}, Path: "k"}
+	}
+	notAttr := func() chplan.Expr { return &chplan.LitString{V: "not an attribute read"} }
+	contains := &chplan.FuncCall{Fn: chplan.FnMapContainsKey, Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: "SpanAttributes"}, &chplan.LitString{V: "k"},
+	}}
+
+	for _, c := range []struct {
+		name      string
+		then, els chplan.Expr
+		want      bool
+	}{
+		{"both arms are attribute reads", attr(), attr(), true},
+		{"only the then-arm is an attribute read", attr(), notAttr(), false},
+		{"only the else-arm is an attribute read", notAttr(), attr(), false},
+		{"neither arm is an attribute read", notAttr(), notAttr(), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			e := &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{contains, c.then, c.els}}
+			if got := isAttributeRead(e); got != c.want {
+				t.Fatalf("isAttributeRead(%s) = %v, want %v", c.name, got, c.want)
+			}
+		})
+	}
+}
