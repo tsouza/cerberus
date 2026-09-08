@@ -313,6 +313,36 @@ func expHistogramWindowFactorStage(
 	return &chplan.Project{Input: input, Projections: projs}, histogramWindowFold(windowFn, hoisted)
 }
 
+// expHistogramWindowStages threads base through stages in order, each one
+// receiving the PREVIOUS stage's output rather than base.
+//
+// It exists because doing this inline is a trap that costs a debugging
+// session to find. [expHistogramWindowReshape] used to read
+//
+//	input := group
+//	if resets != nil {
+//	    input = expHistogramResetMaskStage(group, ...)
+//	}
+//
+// — the conditional stage re-reading `group`, not `input`. That is
+// invisible while the mask is the FIRST stage (input still IS group at
+// that point), and silently discards anything a later change inserts
+// beneath it: the inserted stage is built, its projections are correct,
+// and it never reaches the emitted SQL. Cerberus issue #3178 hit exactly
+// that — a stage added below the mask measured as a complete no-op, and
+// the discard was only found by dumping the emitted SQL and observing
+// that no trace of the stage was in it.
+//
+// Composing through this helper makes the mistake unspellable: there is
+// no second name in scope for a stage to read the wrong one of.
+func expHistogramWindowStages(base chplan.Node, stages ...func(chplan.Node) chplan.Node) chplan.Node {
+	out := base
+	for _, stage := range stages {
+		out = stage(out)
+	}
+	return out
+}
+
 // expHistogramWindowReshape wraps the per-series grouping in the Project
 // that turns it back into the exponential-histogram row contract
 // (Attributes + Scale + ZeroCount + {Positive,Negative}{Offset,
@@ -369,12 +399,15 @@ func expHistogramWindowReshape(
 	scalars []chplan.Projection,
 	s schema.Metrics,
 ) chplan.Node {
-	input := group
 	var extraFactorAliases []string
+	var stages []func(chplan.Node) chplan.Node
 	if resets != nil {
-		input = expHistogramResetMaskStage(group, aggs, keyAliases)
+		stages = append(stages, func(n chplan.Node) chplan.Node {
+			return expHistogramResetMaskStage(n, aggs, keyAliases)
+		})
 		extraFactorAliases = []string{hqWindowResetsAlias}
 	}
+	input := expHistogramWindowStages(group, stages...)
 	input, effectiveFold := expHistogramWindowFactorStage(input, aggs, keyAliases, extraFactorAliases, windowFn, in, fold)
 
 	projs := make([]chplan.Projection, 0, len(keyAliases)+len(scalars)+7)
