@@ -14,11 +14,18 @@ import (
 
 // classifyRouteOutcome maps a dispatch's terminal error (nil on success)
 // into exactly one of the three routememo.Outcome buckets the
-// failure-driven route memo consumes (internal/routememo). Detection stays
-// typed — every check is a sentinel already defined elsewhere for a
-// different purpose (chclient's driver-level errors, the solver's own
-// typed rejections) — never a string match, and never a NEW sentinel
-// invented just for this classification.
+// failure-driven route memo consumes (internal/routememo). Detection is
+// sentinel-based wherever a sentinel exists — every such check reuses one
+// already defined elsewhere for a different purpose (chclient's driver-level
+// errors, the solver's own typed rejections), never a NEW sentinel invented
+// just for this classification.
+//
+// The one exception is deliberate and documented at its own site: cerberus's
+// EMITTED throwIf guards cross the wire as a ClickHouse exception message and
+// carry no sentinel to match, so isTimeSliceableResourceBound decodes the
+// guard text via chclient.ThrowIfMessage and matches by containment. See that
+// function for why containment rather than a prefix, and why the dial shapes
+// force it.
 //
 // Only OutcomeSuccess and OutcomeResourceFailure are ever written into memo
 // state (routememo.Memo.Observe); every other error classifies
@@ -118,18 +125,57 @@ func classifyRouteOutcomeAfter(route routememo.Route, err error, elapsed time.Du
 // shard's cost below the same bound, which is exactly what makes the memo's
 // A->B escalation the right response.
 //
-// Deliberately EXCLUDED, and the exclusion is the load-bearing half: the
-// histogram-merge budgets (chplan.HistogramMergeBudgetMessage and its classic
-// sibling) bound an ACROSS-SERIES merge whose cost is driven by series
+// The three that remain are the FANOUT guards, and what qualifies them is not
+// that their cost shrinks — it is that their CEILING does not. routeBExecCtx
+// threads RangeBucketFanoutMaxRows / RangeLWRFanoutMaxRows /
+// RateWindowFanoutMaxRows to the shards verbatim (applyResourceBoundOverrides),
+// un-apportioned, while each shard's cost falls with its narrower window. Cost
+// down, ceiling unchanged: a shard really can pass a bound the whole query
+// failed, so the escalation can succeed.
+//
+// Deliberately EXCLUDED, and the exclusion is the load-bearing half.
+//
+// The histogram-merge budgets (chplan.HistogramMergeBudgetMessage and its
+// classic sibling) bound an ACROSS-SERIES merge whose cost is driven by series
 // cardinality and bucket width, not by the time range. Time-slicing splits
 // anchors, never series, so every shard would carry the same merged bucket
-// range and trip the identical bound — an escalation that cannot succeed,
-// spending a dispatch to fail again. Shape-fault guards (info() conflicting
+// range and trip the identical bound. Shape-fault guards (info() conflicting
 // label, duplicate labelset, many-to-many match) are excluded for a stronger
 // reason still: they are user errors that no execution strategy resolves.
+//
+// The two RangeBucketGridNative budgets are excluded for a THIRD reason, and
+// it is a reason that did not exist when this list was written (cerberus issue
+// #3184). Since #2705, routeBExecCtx apportions BOTH RBGN ceilings by K
+// (apportionRangeBucketGridNativeBounds) — it has to, or a shard would be
+// guarded against a whole-query ceiling while running under 1/K of the memory.
+// But that makes the pass/fail verdict K-INVARIANT, because the ceiling now
+// shrinks in lockstep with the cost:
+//
+//	route A rejects iff   groups x anchors       >  maxRows
+//	a shard rejects iff   groups x anchors / K   >  maxRows / K
+//
+// which is the same inequality. `groups` (series x rung cardinality) does not
+// shrink under a TIME cut the way `anchors` (window/step) does, so the cost is
+// a product of one K-invariant factor and one 1/K factor against a budget that
+// is purely 1/K. The density bound behaves the same way — both its terms scale
+// ~1/K against a ceiling that scales exactly 1/K — and is if anything worse on
+// route B, since each shard's scan is widened by Offset+Range so its raw rows
+// exceed a clean 1/K share.
+//
+// So every RBGN escalation is a guaranteed re-failure that spends one of
+// maxConcurrentRoutedDispatches to reproduce the verdict route A just
+// produced. That is precisely the "escalation that cannot succeed, spending a
+// dispatch to fail again" this exclusion list exists to prevent — the same
+// test the merge budgets were excluded under, applied to a bound that only
+// became K-invariant later. engine.go's own apportionment doc reaches the
+// identical conclusion ("the pass/fail verdict is mathematically invariant to
+// K ... for that shape sharding is not an escape valve"); the two statements
+// disagreed until this exclusion landed.
+//
+// The operator remedy is unchanged and is not routing: size
+// CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_{ROWS,DENSITY_UNITS} for the metric's
+// real, un-apportioned cost.
 var timeSliceableResourceBoundMessages = []string{
-	chsql.RangeBucketGridNativeBudgetMessage,
-	chsql.RangeBucketGridNativeDensityBudgetMessage,
 	chsql.RangeBucketFanoutBudgetMessage,
 	chsql.RangeLWRFanoutBudgetMessage,
 	chsql.RateWindowFanoutBudgetMessage,
