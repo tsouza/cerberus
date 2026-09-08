@@ -11,8 +11,8 @@
 //
 //   1. forbid-skip CHECK count — the canonical number of discipline scans is
 //      the number of entries in the CHECKS registry in
-//      .github/scripts/forbid-skip.mjs (today: t-skip, soft-assert,
-//      should-skip, escape-hatch, feature-discipline = 5). The gate
+//      .github/scripts/forbid-skip.mjs (today: t-skip, playwright-skip,
+//      soft-assert, should-skip, escape-hatch, feature-discipline = 6). The gate
 //      asserts every "N ... checks/scans/patterns" claim in
 //      docs/forbid-skip.md matches that live registry size.
 //
@@ -31,10 +31,12 @@
 //      to hand-carry two files, and two such PRs conflicted in files neither
 //      changed the meaning of, which is how the table drifted below the
 //      baseline three corpus moves running (#1686 → #1717 → #1746). Both sites
-//      now state the counts BY REFERENCE, so this assertion inverts: neither
-//      may write a baseline integer down as its own standalone number, and each
-//      must still name compatibility/parity-baseline/ so a reader can reach
-//      the numbers it stopped printing. The .mjs is scanned through its `//`
+//      now state the counts BY REFERENCE, so this assertion inverts: none of
+//      them may write a baseline integer down as its own standalone number, and
+//      each must still name compatibility/parity-baseline/ so a reader can
+//      reach the numbers it stopped printing. README.md is scanned on the same
+//      terms — it is the third hand-written description and the one a reader
+//      meets first. The .mjs is scanned through its `//`
 //      comment prose only, because a code literal (an exit code, an array
 //      index) restates nothing.
 //
@@ -53,6 +55,18 @@
 //      intentionally rejected, wrong-reject -> wrong-rejected). The gate
 //      re-derives all sixteen cells from the ledger, so the headline
 //      "wrong-rejections" figure a reader acts on cannot be hand-typed.
+//
+//   7. chopt registry auto-vs-opt-in split — internal/chopt/registry.go is the
+//      source of truth for which optimizations `auto` picks. Prose in
+//      docs/clickhouse-optimizations.md states the split as "N of M features"
+//      three times, next to a generated table that already carries it per
+//      feature. The prose is what a reader meets first and what nothing else
+//      re-derives, so this gate counts the registry's `AutoSelect: false`
+//      entries and its entries in total, and asserts both stated integers.
+//      The registry is read by SPLITTING on each `ID: FeatureX,` rather than
+//      with one cross-entry regex: a lazy match between an entry's ID and a
+//      later field runs past the end of its own entry when that field is
+//      absent, silently attributing a neighbour's value.
 //
 //   6. rejection-parity shape divergences — the surface-parity ledger is
 //      SYMBOL-level, so its wrong-rejection column says nothing about which
@@ -93,6 +107,7 @@ const CLAUDE_DOC = join(REPO, 'CLAUDE.md');
 const README_DOC = join(REPO, 'README.md');
 const COMPAT_RATCHET_MJS = join(HERE, 'compat-ratchet.mjs');
 const COMPAT_DOC = join(REPO, 'docs', 'compatibility.md');
+const README = join(REPO, 'README.md');
 const PARITY_BASELINE = join(REPO, 'compatibility', 'parity-baseline');
 const WORKFLOWS_DIR = join(REPO, '.github', 'workflows');
 
@@ -106,6 +121,8 @@ const PARITY_BASELINE_REF = 'compatibility/parity-baseline/';
 // not a count.
 const PARITY_BASELINE_FIELDS = ['passed', 'total'];
 const COVERAGE_DOC = join(REPO, 'docs', 'coverage.md');
+const CHOPT_REGISTRY = join(REPO, 'internal', 'chopt', 'registry.go');
+const CH_OPT_DOC = join(REPO, 'docs', 'clickhouse-optimizations.md');
 const SURFACE_INVENTORY_DIR = join(REPO, 'test', 'surface-parity', 'inventory');
 const REJECTION_CATALOGUE_DIR = join(REPO, 'test', 'rejection-parity', 'catalogue');
 const DIVERGENCE_CEILING = join(REPO, 'test', 'rejection-parity', 'divergence-ceiling.json');
@@ -352,13 +369,51 @@ function extractClaims(src, patterns) {
 // IS matched (that was the historical stale-count phrasing).
 const FORBID_SKIP_CLAIM_PATTERNS = [
   /(?:scan|check|pattern)\s+count[^.\n]*?[:*\s]\**(\d+)\**/i,
-  /\**(\d+)\**\s+(?:active\s+)?(?:CHECK\s+)?(?:checks?|scans?|categories|discipline scans?)\b/i,
+  // Up to two words may sit between the number and the noun. The extractor
+  // used to require them adjacent, so "**5** dispatched scans" was invisible —
+  // and it was one of THREE drifted counts this document carried while the gate
+  // whose whole purpose is "a count can never silently drift" reported clean
+  // (#3182). The intervening run is capped at two words and the noun set is
+  // unchanged, so "N regex pattern rows" still does not match: `rows` is not a
+  // scan noun, and the pattern-row count is deliberately not this gate's number.
+  /\**(\d+)\**\s+(?:[A-Za-z-]+\s+){0,2}(?:checks?|scans?|categories)\b/i,
   /\**(\d+)\**\s+patterns?\s+total\b/i,
+  // "…and that count is **6**:" — the noun is a whole clause away, on an
+  // earlier line, so no proximity pattern reaches it.
+  /\bcount\s+is\s+\**(\d+)\**/i,
+  // "…equals the live `CHECKS` registry size (6)".
+  /registry\s+size\s*\(\**(\d+)\**\)/i,
 ];
 
 // shape-divergence doc claims: docs/coverage.md must state the catalogue's live
 // `divergence` count in the same breath as the ledger's symbol-level zero, so a
 // reader cannot take one number for the other.
+// chopt split claims: "N of the registry's M features", "N of M features".
+// Two patterns over the same sentence, one per captured integer, so a doc
+// that updated only one of the two integers still fails.
+const CHOPT_OPT_IN_CLAIM_PATTERNS = [
+  /\**(\d+)\**\s+of\s+(?:the\s+registry's\s+|the\s+)?\d+\s+features\b/i,
+];
+const CHOPT_TOTAL_CLAIM_PATTERNS = [
+  /\b\d+\s+of\s+(?:the\s+registry's\s+|the\s+)?\**(\d+)\**\s+features\b/i,
+];
+
+// choptRegistryCensus — the live auto/opt-in split, derived by splitting the
+// registry source on each `ID: FeatureX,`. A missing AutoSelect field reads
+// as false, matching Go's zero value for the struct field.
+export function choptRegistryCensus(src) {
+  const chunks = src.split(/ID:\s*Feature[A-Za-z0-9]+,/);
+  let total = 0;
+  let optIn = 0;
+  // chunks[0] is the preamble before the first entry.
+  for (let i = 1; i < chunks.length; i += 1) {
+    total += 1;
+    const m = /AutoSelect:\s*(true|false)/.exec(chunks[i]);
+    if (!m || m[1] === 'false') optIn += 1;
+  }
+  return { total, optIn };
+}
+
 const SHAPE_DIVERGENCE_CLAIM_PATTERNS = [
   /\**(\d+)\**\s+open\s+argument-shape\s+divergences?/i,
 ];
@@ -484,9 +539,13 @@ function assertSurfaceParityGlance() {
   return compareGlance(live, glanceTableRows(readFileSync(COVERAGE_DOC, 'utf8')), error);
 }
 
-// readParityReferenceSites loads the two hand-written descriptions of the
-// parity gate. `proseOnly` marks the .mjs, whose numbers live in comments —
-// its code literals are exit codes, not restatements.
+// readParityReferenceSites loads the hand-written descriptions of the parity
+// gate. `proseOnly` marks the .mjs, whose numbers live in comments — its code
+// literals are exit codes, not restatements. README.md is here because it is
+// the most-read of the three and was the one that drifted furthest: it
+// advertised a passed/total headline that the baseline had left behind by
+// hundreds of cases, uncovered because this site list named only the two
+// files that had already been fixed.
 function readParityReferenceSites() {
   return [
     {
@@ -495,6 +554,7 @@ function readParityReferenceSites() {
       proseOnly: true,
     },
     { name: 'docs/compatibility.md', src: readFileSync(COMPAT_DOC, 'utf8'), proseOnly: false },
+    { name: 'README.md', src: readFileSync(README, 'utf8'), proseOnly: false },
   ];
 }
 
@@ -588,6 +648,22 @@ function runAssertions() {
     patterns: SHAPE_DIVERGENCE_CLAIM_PATTERNS,
   });
 
+  const chopt = choptRegistryCensus(readFileSync(CHOPT_REGISTRY, 'utf8'));
+  log(`chopt registry (live): ${chopt.total} features, ${chopt.optIn} opt-in-only (AutoSelect: false)`);
+  const choptDocs = [{ path: CH_OPT_DOC, name: 'docs/clickhouse-optimizations.md' }];
+  const choptOptInOk = assertClaims({
+    label: 'chopt-opt-in-count',
+    expected: chopt.optIn,
+    docs: choptDocs,
+    patterns: CHOPT_OPT_IN_CLAIM_PATTERNS,
+  });
+  const choptTotalOk = assertClaims({
+    label: 'chopt-feature-count',
+    expected: chopt.total,
+    docs: choptDocs,
+    patterns: CHOPT_TOTAL_CLAIM_PATTERNS,
+  });
+
   const callers = forbidSkipCallers(readWorkflows());
   log(
     `forbid-skip workflow callers (live): ${callers.length} ` +
@@ -595,12 +671,13 @@ function runAssertions() {
   );
   const callersOk = assertForbidSkipCallers(fsNames, callers);
 
-  if (forbidOk && layerOk && parityOk && glanceOk && divergenceOk && callersOk) {
+  if (forbidOk && layerOk && parityOk && glanceOk && divergenceOk && callersOk && choptOptInOk && choptTotalOk) {
     notice(
       `doc-counts: all doc-stated counts match source ` +
         `(forbid-skip=${fsCount}, test-layers=${layerCount}, ` +
-        `compat-ratchet.mjs and docs/compatibility.md state the per-head parity ` +
+        `compat-ratchet.mjs, docs/compatibility.md and README.md state the per-head parity ` +
         `counts by reference to ${PARITY_BASELINE_REF} rather than restating them, ` +
+        `chopt=${chopt.optIn}/${chopt.total} opt-in-only, ` +
         `the coverage glance table matches the surface-parity ledger, ` +
         `shape-divergences=${divCount}, ` +
         `${callers.length} workflow CHECK callers all name a live scan)`,
@@ -682,15 +759,45 @@ function selfTest() {
   const claims7 = extractClaims(draftDoc, FORBID_SKIP_CLAIM_PATTERNS);
   check('forbid-skip claim extractor finds the "7 patterns" claim', claims7.some((c) => c.value === 7));
   check(
-    'forbid-skip gate would REJECT a doc claiming 7 against source 5',
-    claims7.some((c) => c.value !== 5),
+    'forbid-skip gate would REJECT a doc claiming 7 against source 6',
+    claims7.some((c) => c.value !== 6),
   );
   // And ACCEPT the corrected wording.
-  const fixedDoc = 'The gate has **5** CHECK categories total.';
-  const claims5 = extractClaims(fixedDoc, FORBID_SKIP_CLAIM_PATTERNS);
+  const fixedDoc = 'The gate has **6** CHECK categories total.';
+  const claims6 = extractClaims(fixedDoc, FORBID_SKIP_CLAIM_PATTERNS);
   check(
-    'forbid-skip gate would ACCEPT a doc claiming the real 5',
-    claims5.length > 0 && claims5.every((c) => c.value === 5),
+    'forbid-skip gate would ACCEPT a doc claiming the real 6',
+    claims6.length > 0 && claims6.every((c) => c.value === 6),
+  );
+
+  // 2b. The phrasings the extractor used to be BLIND to (#3182).
+  //
+  // docs/forbid-skip.md carried THREE drifted counts — "and that count is
+  // **5**", "**5** dispatched scans" and "registry size (5)" — against a live
+  // registry of 6, and this gate reported clean over all three. Each needed the
+  // scan noun immediately after the number, or needed a noun at all. A gate
+  // that exists so a count cannot silently drift must be able to read the
+  // sentences the document actually uses.
+  for (const [phrasing, want] of [
+    ['and that count is **5**:', 5],
+    ['the **8** pattern rows collapse to **5** dispatched scans.', 5],
+    ['equals the live `CHECKS` registry size (5), so it cannot drift.', 5],
+    ['so this **5** scan count can never drift.', 5],
+  ]) {
+    const found = extractClaims(phrasing, FORBID_SKIP_CLAIM_PATTERNS);
+    check(
+      `forbid-skip claim extractor reads ${JSON.stringify(phrasing)}`,
+      found.some((c) => c.value === want),
+    );
+  }
+
+  // The other half: the PATTERN-ROW count is a different number from the scan
+  // count (9 rows collapse to 6 scans), and reading it as a scan claim would
+  // fail the gate on a correct document. The widened proximity must not reach
+  // it — `rows` is not a scan noun.
+  check(
+    'forbid-skip claim extractor does NOT read a pattern-row count as a scan count',
+    extractClaims('together run the **9** regex pattern rows above', FORBID_SKIP_CLAIM_PATTERNS).length === 0,
   );
 
   // 3. The layer deriver collapses sub-letters to distinct integers.
@@ -804,7 +911,7 @@ function selfTest() {
   );
   // The REAL sites must hold — the assertion the gate runs.
   check(
-    'real compat-ratchet.mjs and docs/compatibility.md state the parity counts by reference',
+    'real compat-ratchet.mjs, docs/compatibility.md and README.md state the parity counts by reference',
     assertParityByReference(
       loadParityBaseline(PARITY_BASELINE),
       readParityReferenceSites(),
@@ -880,6 +987,50 @@ function selfTest() {
     !compareGlance(fakeTotals, {}, () => {}),
   );
   // The REAL ledger must match the REAL doc — the assertion the gate runs.
+  // 7. The chopt auto/opt-in split is derived per ENTRY, not with one
+  // cross-entry regex — the failure mode that would otherwise credit an
+  // entry with its neighbour's AutoSelect value.
+  const fakeChoptRegistry = [
+    'var registry = []Feature{',
+    '  { ID: FeatureA, MinVersion: AlwaysAvailable, AutoSelect: true, },',
+    '  { ID: FeatureB, MinVersion: AlwaysAvailable, },',
+    '  { ID: FeatureC, MinVersion: AlwaysAvailable, AutoSelect: false, },',
+    '}',
+  ].join('\n');
+  const fakeCensus = choptRegistryCensus(fakeChoptRegistry);
+  check('chopt census counts every registry entry', fakeCensus.total === 3);
+  check(
+    'chopt census reads a MISSING AutoSelect as opt-in (Go zero value) and does not borrow the next entry\'s',
+    fakeCensus.optIn === 2,
+  );
+  check(
+    'chopt census on an empty registry finds nothing to protect',
+    choptRegistryCensus('var registry = []Feature{}').total === 0,
+  );
+  check(
+    'chopt claim pattern reads the OPT-IN integer out of both doc phrasings',
+    extractClaims(
+      "23 of the registry's 43 features are opt-in.\nthe 23 of 43 features carrying autoSelect: no",
+      CHOPT_OPT_IN_CLAIM_PATTERNS,
+    ).every((c) => c.value === 23),
+  );
+  check(
+    'chopt claim pattern reads the TOTAL integer out of both doc phrasings',
+    extractClaims(
+      "23 of the registry's 43 features are opt-in.\nthe 23 of 43 features carrying autoSelect: no",
+      CHOPT_TOTAL_CLAIM_PATTERNS,
+    ).every((c) => c.value === 43),
+  );
+  check(
+    'chopt gate would REJECT a doc that updated only one of the two integers',
+    extractClaims('20 of the 43 features are opt-in.', CHOPT_OPT_IN_CLAIM_PATTERNS).some((c) => c.value !== 23),
+  );
+  const realChopt = choptRegistryCensus(readFileSync(CHOPT_REGISTRY, 'utf8'));
+  check(
+    'real chopt registry derives a non-empty, non-degenerate split',
+    realChopt.total > 0 && realChopt.optIn > 0 && realChopt.optIn < realChopt.total,
+  );
+
   check('real docs/coverage.md glance table matches test/surface-parity/inventory/', assertSurfaceParityGlance());
 
   // 7. The shape-divergence count is a SECOND measurement, and the doc must
@@ -906,9 +1057,20 @@ function selfTest() {
   // ceiling. Both bounds are tripwires on the deriver itself: a silently-broken
   // reader returns 0 (and would let the doc reprint the false zero), and a
   // double-counting one exceeds the ceiling the Go ratchet enforces.
-  const realDiv = countShapeDivergences(readCatalogueShards()).count;
+  const realShards = readCatalogueShards();
+  const realDiv = countShapeDivergences(realShards).count;
   const ceiling = JSON.parse(readFileSync(DIVERGENCE_CEILING, 'utf8')).max_entries;
-  check('real rejection-parity catalogue derives a non-zero divergence count', realDiv > 0);
+  // The tripwire is on the READER, not on the population. This asserted
+  // `realDiv > 0`, which conflates "the deriver is broken" with "there are no
+  // divergences left" — and the second is the declared goal of #1956, whose
+  // "Done when" is that both catalogue entries drop their `divergence` class.
+  // Fixing that issue would therefore have turned the required `forbid-skip`
+  // context red for succeeding (#3187). Asserting the reader read the catalogue
+  // keeps the tripwire (a silently-broken reader returns an empty list and
+  // would let the doc reprint a false zero) and lets a legitimately empty
+  // divergence set through — at which point the ceiling drops to 0 in the same
+  // change that empties it, and `realDiv <= ceiling` still pins it exactly.
+  check('divergence deriver actually read the rejection-parity catalogue', realShards.length > 0);
   check(`real divergence count ${realDiv} is within the ratchet ceiling ${ceiling}`, realDiv <= ceiling);
 
   if (failures === 0) {

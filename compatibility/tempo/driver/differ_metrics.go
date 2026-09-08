@@ -203,13 +203,19 @@ func decodeMetrics(body []byte) (MetricsResponse, error) {
 // missing-on-either-side reasons, and for matched series diffs the
 // sample stream (or instant value) under the configured epsilon.
 //
-// Exemplar counts are reported as a reason when they diverge but they
-// do not by themselves drive Equal=false; the structural-diff layer
-// is intentionally lenient on exemplars because both backends may
-// sample exemplars differently (Tempo caps at 100 by default, cerberus
-// emits zero today). The structural-equality contract is "same series
-// label sets + same sample stream"; exemplar parity is a follow-up
-// goal tracked in the open questions section of the plan.
+// Exemplar COUNTS are reported as a reason when they diverge but do not
+// by themselves drive Equal=false: both backends may sample exemplars
+// differently (Tempo caps at 100 by default), so a count difference is a
+// sampling difference rather than a defect.
+//
+// Exemplar SHAPE is not lenient, and the distinction matters. Comparing
+// counts alone was the whole of the exemplar check, and it let a real wire
+// divergence through: cerberus emitted the exemplar timestamp as
+// `timestamp_ms` where reference Tempo emits `timestampMs`, so this differ's
+// own decoder read zero on the cerberus side while the counts still matched
+// and the case scored PASS (#3182). A sampling difference changes how MANY
+// exemplars a side emits; it never changes the spelling of a field, so every
+// exemplar a side does emit must carry a timestamp that decodes.
 func CompareMetrics(aBody, bBody []byte, aLabel, bLabel string, opts DiffOptions) (Diff, error) {
 	if opts.AbsEpsilon == 0 && opts.RelEpsilon == 0 {
 		opts = DefaultDiffOptions()
@@ -384,7 +390,38 @@ func compareMetricsSeries(key string, a, b MetricsSeriesEntry, aLabel, bLabel st
 		})
 	}
 
+	// Exemplar SHAPE is blocking, on each side independently. An exemplar
+	// whose timestamp decodes to zero was serialised under a key this decoder
+	// does not read — the field is `timestampMs` on the wire — and that is a
+	// wire divergence, not a sampling one. Checking each side separately is
+	// what makes it survive a legitimate count difference: it asks "is this
+	// exemplar well-formed", never "do the two sides agree on how many".
+	reasons = append(reasons, malformedExemplarReasons(key, a.Exemplars, aLabel)...)
+	reasons = append(reasons, malformedExemplarReasons(key, b.Exemplars, bLabel)...)
+
 	return reasons, informational
+}
+
+// malformedExemplarReasons reports every exemplar on one side whose timestamp
+// did not decode. Zero is the right sentinel: the field is a millisecond epoch,
+// so a real exemplar's timestamp is never zero, and an absent-or-misspelled key
+// is exactly what leaves it zero.
+func malformedExemplarReasons(key string, exemplars []MetricsExemplar, label string) []DiffReason {
+	var out []DiffReason
+	for i, ex := range exemplars {
+		if ex.TimestampMs != 0 {
+			continue
+		}
+		out = append(out, DiffReason{
+			Kind: reasonKindFieldMismatch,
+			Detail: fmt.Sprintf(
+				"key %s: %s exemplar[%d] has no decodable timestampMs (value=%g) — the field is "+
+					"`timestampMs` on the wire; a zero here means it was emitted under another key",
+				key, label, i, ex.Value,
+			),
+		})
+	}
+	return out
 }
 
 // AssertMetricsCase runs the per-side cardinality / samples-per-series

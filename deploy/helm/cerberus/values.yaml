@@ -240,7 +240,13 @@ clickhouse:
     # -- Render the bundled ClickHouse data tier and default cerberus at it.
     enabled: false
     # -- ClickHouse server image (also provides the clickhouse-keeper binary).
-    image: clickhouse/clickhouse-server:25.8
+    # Tracks versions.yaml `quickstart_clickhouse`, the DEPLOYMENT-surface pin,
+    # not `chdb_substrate` — the same rule the migration lane's Tier-1 stack
+    # follows. A bundled server below the highest auto-selected optimization's
+    # floor would ship a default deployment on which `CERBERUS_CH_OPTIMIZATIONS=auto`
+    # silently resolves less than the docs promise; check (g) of
+    # `.github/scripts/clickhouse-version-sync.mjs` holds the two together.
+    image: clickhouse/clickhouse-server:26.6
     # -- ClickHouse replica count. `1` (default) renders a single-node plain
     # MergeTree on object storage. `>1` auto-enables a Keeper ensemble +
     # ReplicatedMergeTree + zero-copy replication, and defaults cerberus's

@@ -91,6 +91,21 @@ pre-push:
           echo "lefthook: t.Skip / t.Skipf / t.SkipNow in test files — fix the bug, do not skip"
           exit 1
         fi
+    # Mirrors the CI `forbid-skip` gate's `playwright-skip` arm. Playwright
+    # spells its own suppression routes in `.spec.ts`, which the Go scan
+    # above structurally cannot see; `.only` is here for the mirror-image
+    # reason, since it silences every OTHER spec in its file.
+    forbid-skip-playwright:
+      tags: discipline
+      run: |
+        if git ls-files -z -- \
+            '*.spec.ts' \
+            '*.spec.js' \
+            ':!:**/node_modules/**' \
+            | xargs -0 grep -nEH '(^|[^A-Za-z0-9_$.])(test|it|describe|suite)(\.describe)?\.(skip|fixme|only)\s*\(' --; then
+          echo "lefthook: test.skip / test.fixme / test.only in a Playwright spec — a spec runs and asserts, or it is deleted"
+          exit 1
+        fi
     # Mirrors the CI `forbid-skip` gate's Gherkin-scenario discipline.
     # A `@wip`-style tag filters a Scenario out of the migration lane
     # while the run still reports green, and godog's Go-side skip

@@ -254,7 +254,7 @@ Prometheus / Loki / Tempo on the same seeded data. Each head has a
 the responses case-for-case — pinning observed behaviour on real ClickHouse
 against an upstream oracle, not just the emitted SQL.
 
-| Head    | Reference + corpus                                                  | Required check             | Conformance leg                           |
+| Head    | Reference + corpus                                                  | Release-gate check         | Conformance leg                           |
 | ------- | ------------------------------------------------------------------- | -------------------------- | ----------------------------------------- |
 | PromQL  | real `prom/prometheus` vs `prometheus/compliance` (PromLabs / CNCF) | `compatibility/prometheus` | third-party conformance suite (strongest) |
 | LogQL   | real Loki vs `grafana/loki:pkg/logql/bench` corpus                  | `compatibility/loki`       | real-backend diff, Grafana bench corpus   |
@@ -262,8 +262,12 @@ against an upstream oracle, not just the emitted SQL.
 
 PromQL is the strongest leg: the third-party **PromQL Compliance Tester**
 (PromLabs / CNCF Prometheus Conformance Program tooling) against a real
-`prom/prometheus`, seeded identically on both sides via remote-write —
-**747/747 cases pass, no allow-list.** LogQL is solid but measured on a
+`prom/prometheus`, seeded identically on both sides via remote-write — **every
+recorded case passes, with no allow-list.** The per-head roster and its size
+are generated, and live in
+[`compatibility/parity-baseline/`](compatibility/parity-baseline/manifest.json);
+this file deliberately does not restate them, because a hand-typed copy of a
+generated count is exactly what drifts. LogQL is solid but measured on a
 Grafana bench corpus rather than a standardised conformance suite. TraceQL
 is the lightest leg: no third-party TraceQL conformance suite exists, so its
 corpus is author-written TXTAR and its numerical confidence is
@@ -280,11 +284,16 @@ drivers, local reproduction, rejection parity, the sole pinned
 [`docs/compatibility.md`](docs/compatibility.md).
 
 <details>
-<summary><b>How those badges double as a merge gate</b></summary>
+<summary><b>How those badges double as a release gate</b></summary>
 
 <br>
 
-The three `compatibility/<head>` checks run on every PR in two layers.
+The three `compatibility/<head>` checks are release-tier lanes. On an
+ordinary pull request they short-circuit to a fast no-op, so the context
+still appears in the rollup without paying for a real run; they execute for
+real on push to `main`, nightly, on dispatch, and on a `release/*` PR, where
+`release.yml`'s preflight refuses to publish past a red one. A real run has
+two layers.
 
 The harness itself is _scored_
 ([#503](https://github.com/tsouza/cerberus/pull/503)): it accumulates
@@ -310,7 +319,10 @@ the sharded solver route is byte-identical to reference Prometheus over the
 whole corpus.
 
 So each head badge is both a continuously re-measured conformance score and
-— through the ratchet floor — a merge gate.
+— through the ratchet floor — a gate on every commit that lands on `main`
+and on every release. It is detection on the landed commit rather than
+prevention of the landing; the checks that block a merge are inventoried in
+[`docs/test-strategy.md`](docs/test-strategy.md).
 [`docs/compatibility.md`](docs/compatibility.md#parity-regression-ratchet-the-gate)
 is the canonical reference.
 

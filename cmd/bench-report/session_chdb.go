@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -134,6 +135,51 @@ func (s *session) explainSelectedGranules(query string) (selected, total int, er
 		}
 	}
 	return selected, total, nil
+}
+
+// engineVersion asks the embedded engine what it is, and returns the
+// major.minor prefix of `SELECT version()` — "26.5" out of "26.5.1.1".
+// The environment table reports this rather than a literal because a
+// hand-typed engine version is a claim the document then argues from:
+// the rate-range matrix reads differently above and below the 25.9
+// left-open membership fix, so an engine string that has drifted below
+// the pinned substrate does not merely look stale, it invites the wrong
+// reading of the numbers underneath it.
+func (s *session) engineVersion() (string, error) {
+	res, err := s.sess.Query("SELECT version()", "JSON")
+	if err != nil {
+		return "", err
+	}
+	if e := res.Error(); e != nil {
+		return "", e
+	}
+	full, err := parseSingleString(res.String())
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Split(full, ".")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("engine version %q is not major.minor-shaped", full)
+	}
+	return parts[0] + "." + parts[1], nil
+}
+
+// parseSingleString pulls the single string value out of a chDB JSON
+// result body, the string counterpart of parseSingleNumber.
+func parseSingleString(jsonBody string) (string, error) {
+	var parsed struct {
+		Data []map[string]string `json:"data"`
+	}
+	if err := json.NewDecoder(strings.NewReader(jsonBody)).Decode(&parsed); err != nil {
+		return "", fmt.Errorf("decode string json: %w", err)
+	}
+	if len(parsed.Data) == 0 {
+		return "", errors.New("chdb returned no rows")
+	}
+	for _, v := range parsed.Data[0] {
+		return v, nil
+	}
+	return "", errors.New("chdb returned a row with no columns")
 }
 
 // parseSingleNumber pulls the single numeric value out of a chDB JSON

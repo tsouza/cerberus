@@ -534,9 +534,16 @@ normalized `query_log` text.
   re-validation midpoint is reported with `stale=true`, and the caller must
   NOT memo-hit it — it routes through plain route A instead, "as if the Key
   were unknown", so the verdict can be honestly re-confirmed by real traffic.
-- **`BothFail`** — route B was tried for this Key and itself failed with a
-  resource failure. The caller stays on route A; no further probing is
-  attempted until the entry ages out at the memo's TTL.
+- **`BothFail`** — route B was tried for this Key and failed with a resource
+  failure `MinCorroboratingFailures` (2) consecutive times, with no route-B
+  success in between. A *single* route-B resource failure does not mint this
+  state: it demotes the entry to `Unknown` carrying the incremented
+  corroboration count, so the next dispatch re-derives eligibility and may probe
+  again; only the second consecutive one (or a failure against an entry already
+  `BothFail`) writes `BothFail`. A route-B success anywhere replaces the entry
+  with `PreferB` outright, resetting the count. Once `BothFail`, the caller
+  stays on route A; no further probing is attempted, and no route-A failure
+  refreshes the entry, until it ages out at the memo's TTL.
 
 Requiring `MinCorroboratingFailures = 2` consecutive failures (not one) exists
 so a single transient rejection never mints a verdict on its own: probing
@@ -762,13 +769,13 @@ route-A-cheap can still end up on route B for that specific shape once it
 has actually failed enough times to prove the classification wrong — no
 threshold anywhere has to change for that to happen.
 
-## Advisory EXPLAIN ESTIMATE (issue #2787)
+## Advisory EXPLAIN ESTIMATE: granule-resolution row bounds for K clamping
 
 Every mechanism above — the K clamp, the failure-driven route memo, per-rung
 admission — reasons from either pure PLAN geometry (`N`, `F`, `D`) or
 FAILURE-DRIVEN evidence (a real route-A resource exhaustion). Neither one
 ever asks ClickHouse what its own index analysis already knows about the
-window before routing decides anything. Issue #2787 closes that gap with one
+window before routing decides anything. That gap is closed with one
 more input, strictly advisory: `EXPLAIN ESTIMATE`, ClickHouse's no-execution
 scan estimator (parts / rows / marks after index analysis, available since
 21.9 — well below cerberus's own 24.8 floor).
@@ -781,7 +788,7 @@ bias input to a COST decision, never as a correctness gate: it can only ever
 make the solver more conservative (skip a route the pure-geometry thresholds
 would have taken) or less conservative WITHIN the same cost-decision
 machinery (raise the `K` ceiling) — it never changes which rows a query
-returns, and the pre-#2787 pure-geometry path remains the permanent,
+returns, and the pure-geometry path remains the permanent,
 fully-supported fallback (a nil estimate — the default, until the chopt
 `explain_estimate` feature is explicitly enabled — reproduces it exactly).
 
@@ -901,12 +908,12 @@ governs `MinFanout` / `MinAnchorPairs` today.
 | `CERBERUS_SHARD_MAX_K_WITH_ESTIMATE`                     | int   | 32      | `Config.MaxKWithEstimate`. Must be `>= CERBERUS_SHARD_MAX_K`.                                                            |
 | `CERBERUS_SHARD_ESTIMATE_MIN_ROWS_PER_ADDITIONAL_SHARD`  | int64 | 50,000  | `Config.EstimateMinRowsPerAdditionalShard`.                                                                              |
 
-## Bounded cardinality pre-probe (issue #2788)
+## Bounded cardinality pre-probe (`uniqUpTo`) for routing decisions
 
 `EXPLAIN ESTIMATE` (above) answers "how many marks did the index analysis
 fail to prune" — a granule-resolution SCAN-side upper bound. It has no
 comparable answer for a different, equally real question: how many DISTINCT
-SERIES actually back a window. Issue #2788 closes that gap with a second,
+SERIES actually back a window. That gap is closed with a second,
 independent advisory input — a bounded, REAL aggregate (`count()`,
 `uniqUpTo(100)(...)`, and — issue #2840 — `uniqCombined64(...)`) run over
 the plan's already-pruned scan window, gated and cached by
@@ -916,7 +923,7 @@ exactly the way `ScanEstimateAdvisor` gates and caches `EXPLAIN ESTIMATE`.
 **Real execution, not estimation — and that is the whole point.** Unlike
 `EXPLAIN ESTIMATE`, this probe DOES read data: `count()` is an exact row
 count, `uniqUpTo(100)(...)` is an exact distinct-series count up to 100
-(ClickHouse's own hard cap on `uniqUpTo`'s parameter — issue #2788 verified
+(ClickHouse's own hard cap on `uniqUpTo`'s parameter — verified
 `uniqUpTo(K_max*16)` throws rather than saturating past it — see
 `chplan.FnUniqUpTo`'s own doc for the "reports 101" saturation contract),
 and `uniqCombined64(...)` is an APPROXIMATE, uncapped distinct-series count
@@ -952,7 +959,7 @@ probe returns.
    itself uses) — but compares `DistinctSeries`, not a raw scan-row upper
    bound. A per-rung carrier fans a classic-histogram bucket ladder out per
    SERIES, so the composed output `Observe()` measures scales with distinct
-   series far more directly than with raw scanned rows — issue #2788's own
+   series far more directly than with raw scanned rows — the probe's own
    "answer per-rung admission's rows/anchor question directly" phrase.
 3. **Route memo corroboration — deliberately NOT wired**, for the identical
    reason `EXPLAIN ESTIMATE` is not: see "Why the failure-driven route memo
@@ -971,7 +978,7 @@ documented at length on `cardinality_probe_wiring.go`'s own top-level doc:
 
 - **Carrier kind:** six recognised `chplan.GridCarrier` kinds — the
   "matrix" family `*chplan.RangeWindow` (by far the most common ModeAuto
-  shape, and the one issue #2709's own incident and issue #2788's own
+  shape, and the one the incident and the probe's own
   dashboard-panel example both concern) plus, as of issue #2840,
   `*chplan.RangeWindowGridNative`, `*chplan.RangeBucketFanout`,
   `*chplan.RangeBucketGridNative` and `*chplan.RangeLWR`, and —
@@ -1034,11 +1041,11 @@ that this probe's `(Start - Offset - Span, End - Offset]` bound is the
 same window the granule-upper-bound probe already reasons about. Every dense
 real window this sample carries saturates `uniqUpTo(100)` at 101 — this
 sample's own real per-panel cardinality already exceeds the cap throughout
-its captured span, confirming issue #2788's own verified constraint (a K
+its captured span, confirming the verified constraint (a K
 above 100 throws rather than silently under-counting) matters in practice,
 not only in theory.
 
-Issue #2788's own landing reasoned that neither of this file's two
+The probe's landing reasoned that neither of this file's two
 consumers (K-clamp `Rows`, per-rung `cheap` seeding) needed an exact count
 above the 100-series threshold `uniqUpTo` already answers, and left
 `uniqCombined`/`uniqCombined64` (its own named alternative) for a follow-up.
@@ -1071,7 +1078,7 @@ fixed Go constants pending real-world calibration evidence, mirroring
 `per_rung_admission.go`'s own unexported constants (`perRungCheapRowsPerAnchor`
 et al.) rather than growing a `Config` surface ahead of that evidence.
 
-## Query actuals: predicted-vs-actual drift detection (issue #2789)
+## Query actuals: predicted-vs-actual drift detection from ProfileEvents
 
 Both advisory pre-flight signals above — `EXPLAIN ESTIMATE` and the
 cardinality pre-probe — predict a plan's scan cost BEFORE dispatch and are
@@ -1152,7 +1159,7 @@ whether or not the operator separately opted into it.
    threshold.
 3. **Per-rung admission tightening** (`maybeSeedPerRungAdmissionFromActuals`):
    reuses `PerRungAdmissionLearner.SeedPriorFromEstimate` — the SAME
-   one-directional (`cheap=true` only) seeding mechanism issue #2787's own
+   one-directional (`cheap=true` only) seeding mechanism the actuals path's own
    `maybeSeedPerRungPrior` uses for a live `EXPLAIN ESTIMATE` round trip —
    applied to a ZERO-I/O read of a shape's tracked actuals instead. Same
    safety argument as that mechanism's own doc: it can only ever DOWNGRADE

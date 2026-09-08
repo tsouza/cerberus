@@ -45,13 +45,26 @@
 // midnight and the MV's real creation instant excluded from BOTH sides —
 // backfill's day-truncated bound skipped them, and the MV had not been
 // created yet when they were inserted — a permanent, silent under-count of
-// that window, invisible to Verify because it applied the identical
-// day-truncated bound to both comparison sides. Both Backfill and Verify
-// now bound strictly by the exact `before` instant, with no day-rounding:
-// everything strictly older than the MV's own creation
-// instant is backfilled / compared, and the live MV captures everything
-// from that instant onward, so the two windows meet with no gap and no
-// overlap.
+// that window. Backfill now bounds strictly by the exact `before` instant,
+// with no day-rounding: everything strictly older than the MV's own
+// creation instant is backfilled, and the live MV captures everything from
+// that instant onward, so the two windows meet with no gap and no overlap.
+//
+// Verify is the one place that still bounds by the cutover DAY, and for the
+// opposite reason. It has to compare two reads, and the aggregate side is
+// stored at day granularity: the cutover day's single bucket holds both the
+// backfilled morning and everything the live MV has captured since, while
+// the base table can only be filtered by the instant. Bounding the two
+// sides differently compares a whole day against a morning, so on any
+// deployment still receiving DELTA traffic the aggregate side over-counts
+// the cutover day by exactly the afternoon's writes and a clean pass is
+// unreachable however perfect the backfill was. Both of Verify's reads are
+// therefore bounded strictly below the start of the cutover day, and the
+// day is reported on Report.CutoverDay rather than silently dropped.
+// Excluding it costs no coverage — the backfill and the MV meet exactly at
+// the instant by construction, which is what the exact `before` bound
+// above establishes — and a sum comparison could not check that day in any
+// case, since both sides would be racing the same live inserts.
 //
 // # One-time backfill vs. the aggregate table's own steady-state TTL
 //

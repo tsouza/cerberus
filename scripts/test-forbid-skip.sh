@@ -108,6 +108,24 @@ expect_match    "case1 t.Skip"        "$RE1" "$tmpdir/case1_match.txt"
 expect_no_match "case1 tx.Skipper()"  "$RE1" "$tmpdir/case1_nomatch.txt"
 
 # --------------------------------------------------------------------
+# case 1b — Playwright's own suppression routes (cerberus issue #3181)
+#
+# `test.skip` / `test.fixme` silence a spec while the lane reports
+# green, and `.only` is the mirror image: it silences every OTHER spec
+# in the file, so a lane can pass having run one test. All three live
+# in .spec.ts, which case 1's Go scan structurally cannot see.
+# --------------------------------------------------------------------
+RE1B='(^|[^A-Za-z0-9_$.])(test|it|describe|suite)(\.describe)?\.(skip|fixme|only)\s*\('
+printf "test.skip('flaky', () => {});\n"        >"$tmpdir/case1b_skip.txt"
+printf "test.fixme('broken', () => {});\n"      >"$tmpdir/case1b_fixme.txt"
+printf "test.describe.only('just this', () => {});\n" >"$tmpdir/case1b_only.txt"
+printf "test('real', async () => { await page.skipNothing(); });\n" >"$tmpdir/case1b_nomatch.txt"
+expect_match    "case1b test.skip"           "$RE1B" "$tmpdir/case1b_skip.txt"
+expect_match    "case1b test.fixme"          "$RE1B" "$tmpdir/case1b_fixme.txt"
+expect_match    "case1b test.describe.only"  "$RE1B" "$tmpdir/case1b_only.txt"
+expect_no_match "case1b ordinary test()"     "$RE1B" "$tmpdir/case1b_nomatch.txt"
+
+# --------------------------------------------------------------------
 # (former case 2 — bare discipline-erosion wording, PR #461)
 #
 # Removed: the `wording-tests` scan banned prose vocabulary

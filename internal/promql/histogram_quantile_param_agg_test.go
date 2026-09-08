@@ -51,9 +51,13 @@ func foldRungs(t *testing.T, fold classicBucketRungFold) (chplan.Expr, bool) {
 // `quantile` belongs here because it reduces each group to one value like
 // any other reducer. `topk` / `bottomk` / `count_values` do not: the first
 // two SELECT a subset of the input series keeping their full label sets,
-// and the third MINTS a label from sample values. They are tracked in
-// #1626, and this test pins that they are absent BY OPERATOR rather than
-// by the blanket "carries a parameter" rejection that also excluded
+// and the third MINTS a label from sample values. Issue #1626 settled
+// their exclusion as a permanent one rather than as pending work: a
+// per-rung fold reduces a group to one value per rung, which cannot
+// express a reshaping operator, and folding one anyway would emit a
+// plausible wrong number — the `no_fold` subtests below assert exactly
+// that. This test pins that they are absent BY OPERATOR rather than by
+// the blanket "carries a parameter" rejection that also excluded
 // `quantile`.
 func TestClassicBucketLadderFold_OperatorTable(t *testing.T) {
 	t.Parallel()

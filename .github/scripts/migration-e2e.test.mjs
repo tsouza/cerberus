@@ -25,6 +25,7 @@ import {
   collectViolations,
   collectAttestations,
   outcomesFromReports,
+  scenarioNameMatches,
   attestedCount,
   reportPathFor,
   requestedTiers,
@@ -682,7 +683,10 @@ test('V21 fires on a malformed section-6 row rather than hashing the wrong cell'
 // prepends the FEATURE's tags to every element, which is where the migration
 // features declare @MIG-nn / @tierN, so the tags alone carry the (story, tier)
 // key the coverage ratchet counts on.
-function element(story, tier, { statuses = ['passed'], name = `${story} scenario`, line = 9 } = {}) {
+// `name` defaults to the name `scenario()` gives the enumerated node, because a
+// real cucumber element's name IS its scenario's name — that identity is what
+// the attester matches on now, rather than counting elements per (story, tier).
+function element(story, tier, { statuses = ['passed'], name = `${story} offline`, line = 9 } = {}) {
   return {
     id: `${story};${name}`,
     keyword: 'Scenario',
@@ -781,27 +785,80 @@ test('A2 fires for a scenario whose report records no steps at all', () => {
   assert.ok(collectAttestations(w).some((x) => x.code === 'A2' && x.message.includes('MIG-01')));
 });
 
-test('A1 fires when fewer nodes ran than the enumeration declares', () => {
+test('A1 fires when an enumerated node produced no report element, naming it', () => {
   const w = attestWorld({ tiers: ['tier0'] });
   w.scenarios = [scenario('MIG-01'), scenario('MIG-01', { name: 'MIG-01 second' }), scenario('MIG-03')];
   const a = collectAttestations(w);
   assert.ok(
-    a.some((x) => x.code === 'A1' && x.message.includes('never executed')),
-    `expected an under-count A1, got ${JSON.stringify(a)}`,
+    a.some((x) => x.code === 'A1' && x.message.includes('MIG-01 second')),
+    `expected an A1 naming the node that never ran, got ${JSON.stringify(a)}`,
   );
 });
 
+// A Scenario Outline expands to ONE report element per Examples row, all under
+// the same tags and the same scenario name. More elements than nodes is normal
+// and must stay clean.
 test('a Scenario Outline expanding to more elements than nodes is not a violation', () => {
   const w = attestWorld({
     tiers: ['tier0'],
     elements: [
-      element('MIG-01', 'tier0', { name: 'outline row one', line: 9 }),
-      element('MIG-01', 'tier0', { name: 'outline row two', line: 10 }),
+      element('MIG-01', 'tier0', { line: 9 }),
+      element('MIG-01', 'tier0', { line: 10 }),
       element('MIG-03', 'tier0'),
     ],
   });
   w.scenarios = [scenario('MIG-01'), scenario('MIG-03')];
   assert.deepEqual(collectAttestations(w), []);
+});
+
+// THE HOLE (#3182). One Scenario Outline with two Examples rows, plus a sibling
+// scenario under the SAME (story, tier) that never ran. Counting elements
+// against nodes gives want=2, got=2 — clean — while a whole scenario is
+// unproven. Identity matching sees the sibling has no element of its own.
+test('an Outline\'s extra rows do not cover for a sibling scenario that never ran', () => {
+  const w = attestWorld({
+    tiers: ['tier0'],
+    elements: [
+      element('MIG-01', 'tier0', { line: 9 }),
+      element('MIG-01', 'tier0', { line: 10 }),
+    ],
+  });
+  w.scenarios = [scenario('MIG-01'), scenario('MIG-01', { name: 'MIG-01 sibling', line: 20 })];
+  const a = collectAttestations(w);
+  assert.ok(
+    a.some((x) => x.code === 'A1' && x.message.includes('MIG-01 sibling')),
+    `the never-run sibling must be named; a count would have read as covered. Got ${JSON.stringify(a)}`,
+  );
+});
+
+// A Scenario Outline whose NAME carries a placeholder: godog substitutes the
+// Examples row into the pickle name, so the element name is not the enumerated
+// name verbatim. Matching must still attribute it, or every such outline would
+// report as never having run.
+test('an Outline whose name carries a placeholder is still matched to its rows', () => {
+  const w = attestWorld({
+    tiers: ['tier0'],
+    elements: [
+      element('MIG-01', 'tier0', { name: 'render the schema for default' }),
+      element('MIG-01', 'tier0', { name: 'render the schema for metrics-ttl-override' }),
+      element('MIG-03', 'tier0'),
+    ],
+  });
+  w.scenarios = [
+    scenario('MIG-01', { name: 'render the schema for <case>', keyword: 'Scenario Outline' }),
+    scenario('MIG-03'),
+  ];
+  assert.deepEqual(collectAttestations(w), []);
+});
+
+test('scenarioNameMatches is literal outside placeholders', () => {
+  assert.equal(scenarioNameMatches('render a schema', 'render a schema'), true);
+  assert.equal(scenarioNameMatches('render a schema', 'render a schema twice'), false);
+  assert.equal(scenarioNameMatches('render <x>', 'render default'), true);
+  assert.equal(scenarioNameMatches('render <x>', 'apply default'), false);
+  // Regex metacharacters in the literal parts must not be interpreted.
+  assert.equal(scenarioNameMatches('render (a|b) <x>', 'render (a|b) default'), true);
+  assert.equal(scenarioNameMatches('render (a|b) <x>', 'render a default'), false);
 });
 
 test('A3 fires when a report attests a scenario the enumeration does not list', () => {

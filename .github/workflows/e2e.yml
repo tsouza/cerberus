@@ -73,10 +73,16 @@ name: e2e
 #     surface crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
 #     crawl lane, this stack's config + inventory — see
 #     test/e2e/playwright/crawl/stacks.ts) at SWEEP_DEPTH=full,
-#     CONCURRENTLY with the smoke shards. The ~50min crawl BFS is a single
-#     indivisible test(); splitting its frontier across shards (see
-#     tsouza/cerberus#2005) is the follow-up that beats the 50min
-#     wall-clock floor.
+#     CONCURRENTLY with the smoke shards. The crawl BFS is a single
+#     Playwright test(), so native `--shard` cannot split it; the crawl
+#     ENGINE partitions its own audit frontier instead
+#     (tsouza/cerberus#2005), driven by the CRAWL_SHARD_INDEX /
+#     CRAWL_SHARD_COUNT the matrix stamps onto each crawl job. Every
+#     crawl shard keeps full link discovery, writes only its owned
+#     visited slice, and `dashboard-crawl-merge` applies the inventory
+#     ratchet once over their union — so the lane's wall-clock is one
+#     slice rather than the whole ~50min BFS. `compose-crawl-merge` is
+#     the Compose lane's identical merge step.
 #   - `startup-bench` — startup-speed bench (cerberus to /healthz in
 #     <2s). Same trigger set as `dashboard`; informational only.
 #
@@ -309,6 +315,15 @@ jobs:
     # partition — means the timeout policy can't drift from the shard it
     # applies to.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
+    # Which docker-compose PROFILES this shard's stack boots, carried on the
+    # matrix entry from the same manifest as the spec list. Set at JOB level so
+    # the pre-pull, `up --wait`, the failure dump and `down -v` all agree on
+    # which services the stack has — a profile named on `up` alone would leave
+    # `down` orphaning the containers it started. Empty for every shard that
+    # wants only the default services, which is what an unset COMPOSE_PROFILES
+    # already means to compose.
+    env:
+      COMPOSE_PROFILES: ${{ matrix.composeProfiles }}
     concurrency:
       # Per-run and per-shard: sibling shards stay independent, and release or
       # manual qualification from separate runs can never replace one another.
@@ -416,6 +431,15 @@ jobs:
           GRAFANA_BASE_URL: http://localhost:3000
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
+          # The split-OFF cerberus head the Tempo structural two-phase A/B
+          # compares against. It exists only in the `twophase` profile, which
+          # publishes it on :8081, so this is set exactly when the shard booted
+          # that profile and empty otherwise. Empty is deliberate rather than a
+          # default: tempo_two_phase_compare.spec.ts FAILS on an empty
+          # CERBERUS_NOSPLIT_URL, so scheduling the A/B onto a shard that never
+          # started the second head reports a red check instead of comparing a
+          # head against itself.
+          CERBERUS_NOSPLIT_URL: ${{ contains(matrix.composeProfiles, 'twophase') && 'http://localhost:8081' || '' }}
           # Depth doctrine: PR/push = lean (release gate, fewest
           # states), nightly schedule = full (every dashboard's
           # browser render, showcase family included). The depth
@@ -517,6 +541,13 @@ jobs:
     # while still sitting above the spec's own budget so the SPEC times out
     # first and the crawl can report a verdict with evidence.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
+    # Same manifest-carried profile selection as the required matrix. No
+    # informational shard names a profile today, so this reads empty — it is
+    # wired anyway because both matrices come from the SAME shardEntry(), and
+    # leaving it off here is how a future profile-carrying coverage shard would
+    # boot the default stack and report green having exercised nothing.
+    env:
+      COMPOSE_PROFILES: ${{ matrix.composeProfiles }}
     concurrency:
       group: compose-smoke-info-${{ github.run_id }}-${{ matrix.name }}
       cancel-in-progress: false
@@ -602,6 +633,9 @@ jobs:
           GRAFANA_BASE_URL: http://localhost:3000
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
+          # Mirrors the required matrix: derived from the profile this shard
+          # actually booted, so it can never point at a head that is not up.
+          CERBERUS_NOSPLIT_URL: ${{ contains(matrix.composeProfiles, 'twophase') && 'http://localhost:8081' || '' }}
           SWEEP_DEPTH: ${{ matrix.sweepDepth }}
           CRAWL_STACK: compose
           CRAWL_SHARD_INDEX: ${{ matrix.crawlShardIndex }}

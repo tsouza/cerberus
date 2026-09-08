@@ -60,10 +60,24 @@ type MetricsSeries struct {
 }
 
 // Exemplar is one trace-anchored sample point in MetricsSeries.Exemplars.
+//
+// `timestampMs`, not `timestamp_ms`. Reference Tempo serialises tempopb
+// through gogo/protobuf jsonpb, which honours the proto `json=` orig-name
+// rather than the Go struct tag, and `tempopb.Exemplar.TimestampMs` carries
+// `name=timestamp_ms,json=timestampMs` — exactly like `tempopb.Sample`, whose
+// spelling MetricsSample below already matches.
+//
+// The exemplar was the one field that got the Go-side spelling, so cerberus
+// emitted a key reference Tempo never emits and Grafana's Tempo datasource
+// does not read (#3182). It was invisible because the compat differ compared
+// exemplar COUNTS only: its own decoder reads `timestampMs`, so cerberus's
+// value silently decoded to zero on one side while the counts still matched
+// and the case scored PASS. Two failures compounding — a wrong field name, and
+// a comparison that would not have looked at the field even spelled right.
 type Exemplar struct {
 	Labels    []MetricsLabel `json:"labels"`
 	Value     float64        `json:"value"`
-	Timestamp int64          `json:"timestamp_ms"`
+	Timestamp int64          `json:"timestampMs"`
 	TraceID   string         `json:"traceID"`
 	SpanID    string         `json:"spanID,omitempty"`
 }
@@ -339,12 +353,12 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// partition key — Tempo's per-timestamp topk semantics.
 	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsRangeHTTP, q)
 	if cerr != nil {
-		writeError(w, httpErrStatus(cerr), "", "", cerr)
+		writeError(w, httpErrStatus(r.Context(), cerr), "", "", cerr)
 		return
 	}
 	router := h.newMetricsRangeRouter(q, pipeline, start, end, step)
 	if rerr := pipeline.Route(ctx, router); rerr != nil {
-		writeError(w, httpErrStatus(rerr), "", "", rerr)
+		writeError(w, httpErrStatus(r.Context(), rerr), "", "", rerr)
 		return
 	}
 

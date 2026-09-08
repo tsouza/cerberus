@@ -242,11 +242,24 @@ async function main() {
   // --- stale base (blocking) -------------------------------------------------
   let collisions = [];
   if (!revExists(targetRef)) {
-    summary.push(
-      `Stale-base check skipped: \`${targetRef}\` does not resolve in this checkout, which is what a`
-        + ' push to that same branch looks like — there is no other base to race.',
-      '',
+    // This used to push a step-summary line and carry on, leaving `collisions`
+    // empty — so the run then printed "no golden shard collides" and exited 0,
+    // having compared nothing. Nothing gates on a summary line, so the only
+    // BLOCKING half of this gate could disable itself in silence (#3187).
+    //
+    // Its two sibling failure paths below already fail rather than degrade, and
+    // the reasoning that justified degrading here — "this is what a push to that
+    // same branch looks like" — stopped applying once the caller resolves the
+    // target from the event instead of hardcoding `origin/main`. An
+    // unresolvable target now means the workflow did not fetch what it said it
+    // fetched, which is a broken gate, not an absent race.
+    error(
+      `merge-risk: the merge target \`${targetRef}\` does not resolve in this checkout, so the `
+        + 'stale-base comparison examined nothing. That is the fetch step or MERGE_TARGET_REF '
+        + 'being wrong, not an absence of risk — a check that compared nothing must not report '
+        + 'that nothing collides.',
     );
+    process.exit(1);
   } else {
     const mergeBase = revParse(['merge-base', head, targetRef]);
     const theirs = changedFiles(`${mergeBase}..${targetRef}`);

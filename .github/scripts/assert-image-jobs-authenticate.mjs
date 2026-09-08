@@ -1015,6 +1015,23 @@ class Resolver {
         findings.logins.push({ registry: (w.registry ?? '').trim() });
         return;
       }
+      // `uses: docker://<image>` is a Docker container action: the runner PULLS
+      // that image before running the step, anonymously from Docker Hub when
+      // the ref carries no registry host. That is an image acquisition exactly
+      // like `docker pull`, and this scanner was blind to it — the `return`
+      // below treats every non-login, non-composite `uses:` as acquiring
+      // nothing. It is how the REQUIRED `chart-validate` job pulled
+      // `docker://jnorwood/helm-docs:v1.14.2` from Docker Hub with no registry
+      // login while this gate reported "26 jobs, all authenticated" without
+      // chart-validate among them (#3187). The identical shape was removed from
+      // prepare-release.yml in #3100 and left standing in the required lane —
+      // which is the argument for closing the blindness rather than only the
+      // one call site.
+      if (uses.startsWith('docker://')) {
+        findings.acquisitions.push('uses: docker://');
+        this.noteRef(uses.slice('docker://'.length), inner, findings);
+        return;
+      }
       if (uses.startsWith('./')) {
         const actionPath = ['action.yml', 'action.yaml']
           .map((f) => join(uses.slice(2), f))

@@ -68,11 +68,18 @@ import (
 // [assertValueShapedInput] (histogram_shape_guard.go), which panics if a
 // Mixed node reaches [projectValueOverInner] or bypasses
 // [projectAttributesOverInner]'s own MixedRowShape branch. `abs(a or b)`
-// for a mixed `a or b` still falls through to
-// [expHistogramSelectorRouting]'s pre-existing rejection — tracked as an
-// open divergence under cerberus issue #2449 in
-// test/rejection-parity/catalogue — exactly as it did before this file
-// existed.
+// for a mixed `a or b` is one of those explicitly recognized wrappers
+// rather than a fall-through: histogram_native_mixed_or_math_fn.go's own
+// root-only recognizer ([mathFnOverMixedExpHistogramSetOp]) covers every
+// entry in instant_fns.go's instantFnCH table — abs(), ceil(), floor(),
+// sqrt(), the log/trig/deg-rad families, sgn(), and round()'s default
+// one-arg form — by filtering the union down to its float-shaped rows
+// and applying the CH function there, which is exactly what reference's
+// own simpleFloatFunc does when it skips histogram-valued samples. It
+// READS the payload and still never hands a Mixed node to a generic
+// forwarder: it builds its own projection mirroring
+// [projectValueOverInner]'s canonical-shape branch instead of calling
+// it.
 //
 // `sum`/`avg` [by/without] wrapping a mixed `or` DOES compose, since
 // cerberus issue #2346: histogram_native_mixed_or_aggregate.go's own

@@ -23,11 +23,11 @@ const (
 //   - ReasonBackendUnavailable — the gateway could not reach a working
 //     ClickHouse (dial failure, circuit breaker open, upstream 5xx).
 //     The query is fine; the dependency is not.
-//   - ReasonResourceExhausted — the server refused for capacity
-//     reasons: rate limited, out of storage. Capacity, not
-//     correctness.
-//   - ReasonTimeout         — the request ran out of time, on either
-//     side of the gateway.
+//   - ReasonResourceExhausted — a per-query budget refused the work: the
+//     sample budget, the wide-projection byte budget, or ClickHouse's own
+//     memory-limit abort. Capacity, not correctness.
+//   - ReasonTimeout         — the request ran out of time: the ClickHouse
+//     max_execution_time cap, or the request's own deadline.
 //   - ReasonInternal        — a defect in cerberus itself: a recovered
 //     panic or an unclassified 5xx. Always worth a page.
 const (
@@ -123,6 +123,13 @@ func statusClass(status int) string {
 // Codes that carry a specific meaning are matched exactly; everything
 // else falls back to its family — a 4xx the caller must fix, a 5xx
 // cerberus must fix.
+//
+// This is the DEFAULT, not the whole story. Upstream wire parity collides
+// distinct failures onto one status — every head answers a query
+// wall-clock timeout with 503 and a per-query budget refusal with 422 —
+// so a handler that knows better overrides the result through
+// SetReason (reason_ctx.go). Without that override a timeout would read
+// as backend_unavailable and a capacity refusal as bad_request.
 func reasonForStatus(status int) string {
 	switch status {
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:

@@ -8,6 +8,7 @@
 //   - internal/config/config.go (comment) the chDB substrate version
 //   - test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml
 //                                         the migration lane's deployment-surface tag
+//   - deploy/helm/cerberus/values.yaml    the bundled-ClickHouse chart image
 //   - .github/workflows/compatibility.yml the prometheus-floor lane's CH_IMAGE
 //                                         override (the ONE lane that deliberately
 //                                         runs BELOW chdb_substrate — see (f))
@@ -35,6 +36,13 @@
 //       compatibility harnesses run on; quickstart_clickhouse is the
 //       deployment surface operators run. The migration lane models the
 //       operator deployment, so it tracks the quickstart pin.
+//   (g) the Helm chart's bundled ClickHouse image == quickstart_clickhouse.
+//       Same role as (e): the chart IS the deployment surface, so it tracks
+//       the quickstart pin, not chdb_substrate. This tag was the one pin no
+//       check read, and it drifted a full minor below the floor of the
+//       optimizations `CERBERUS_CH_OPTIMIZATIONS=auto` is documented to
+//       select — invisibly, because every CI lane overrides the chart's image,
+//       so the shipped default was exercised nowhere.
 //   (f) compatibility.yml's `prometheus-floor` job's CH_IMAGE == min_clickhouse.
 //       That job (see #1500) exists specifically to run the prometheus
 //       differential corpus against cerberus's declared floor instead of
@@ -159,14 +167,23 @@ function readFloorJobCHImage(text) {
   return m ? m[1] : null;
 }
 
-// The quickstart's enabled optimization list from CERBERUS_CH_OPTIMIZATIONS.
+// The quickstart's CERBERUS_CH_OPTIMIZATIONS setting, as a discriminated
+// value: { mode: 'auto' } | { mode: 'off' } | { mode: 'explicit', ids: [...] }.
+//
+// `auto` is NOT "no features". It is the setting the quickstart actually
+// ships, and it selects every AutoSelect feature the server is new enough
+// for — so reading it as an empty list (which an earlier `.filter(s => s !==
+// 'auto')` did) made check (d), the one this file calls THE CRITICAL ONE,
+// pass vacuously on the real repository: it derived a floor from nothing.
 function readComposeOptimizations(text) {
   const m = /CERBERUS_CH_OPTIMIZATIONS:\s*"([^"]*)"/.exec(text);
   if (!m) return null;
-  return m[1]
+  const raw = m[1]
     .split(',')
     .map((s) => s.trim())
-    .filter((s) => s.length > 0 && s !== 'auto' && s !== 'off');
+    .filter((s) => s.length > 0);
+  if (raw.length === 1 && (raw[0] === 'auto' || raw[0] === 'off')) return { mode: raw[0] };
+  return { mode: 'explicit', ids: raw.filter((s) => s !== 'auto' && s !== 'off') };
 }
 
 // preflight minCHBase / minCHNativeRate from their Version struct literals:
@@ -177,28 +194,36 @@ function readPreflightFloor(text, name) {
   return m ? { major: Number(m[1]), minor: Number(m[2]) } : null;
 }
 
-// The per-feature floors from internal/chopt/registry.go. Returns a map of
-// feature id -> { major, minor } | null (null = AlwaysAvailable / no floor).
-// Parses the registry literal block: each entry is an `ID: FeatureX,` line
-// followed by a `MinVersion: Version{Major: M, Minor: N}` (or
-// `MinVersion: AlwaysAvailable`) line. The id-constant -> string mapping is
-// read from the `const ( FeatureX = "x" )` block so the registry stays the
-// only place the floor literals live.
-function readRegistryFloors(text) {
+// The per-feature registry from internal/chopt/registry.go. Returns a map of
+// feature id -> { floor, autoSelect } where floor is { major, minor } or null
+// (AlwaysAvailable / no floor). The id-constant -> string mapping is read from
+// the `const ( FeatureX = "x" )` block so the registry stays the only place
+// the floor literals live.
+//
+// The text is SPLIT on each `ID: FeatureX,` rather than scanned with one
+// cross-entry regex: a lazy `[\s\S]*?` between ID and a later field will
+// happily run past the end of its own entry into the next one when a field is
+// absent, silently attributing a neighbour's value.
+function readRegistryEntries(text) {
   // id constant -> string literal, e.g. FeatureTSGridRange -> "ts_grid_range".
   const idToString = {};
   const constRe = /(\bFeature[A-Za-z0-9]+)\s*=\s*"([^"]+)"/g;
   for (let m; (m = constRe.exec(text)); ) idToString[m[1]] = m[2];
 
-  const floors = {};
-  // Each registry entry: ID: FeatureX, ... MinVersion: <Version{...}|AlwaysAvailable>.
-  const entryRe =
-    /ID:\s*(Feature[A-Za-z0-9]+),[\s\S]*?MinVersion:\s*(?:Version\{Major:\s*(\d+),\s*Minor:\s*(\d+)\}|(AlwaysAvailable))/g;
-  for (let m; (m = entryRe.exec(text)); ) {
-    const id = idToString[m[1]] ?? m[1];
-    floors[id] = m[4] === 'AlwaysAvailable' ? null : { major: Number(m[2]), minor: Number(m[3]) };
+  const entries = {};
+  const chunks = text.split(/ID:\s*(Feature[A-Za-z0-9]+),/);
+  // chunks = [preamble, id1, body1, id2, body2, ...].
+  for (let i = 1; i + 1 < chunks.length; i += 2) {
+    const id = idToString[chunks[i]] ?? chunks[i];
+    const body = chunks[i + 1];
+    const mv = /MinVersion:\s*(?:Version\{Major:\s*(\d+),\s*Minor:\s*(\d+)\}|(AlwaysAvailable))/.exec(body);
+    const auto = /AutoSelect:\s*(true|false)/.exec(body);
+    entries[id] = {
+      floor: !mv || mv[3] === 'AlwaysAvailable' ? null : { major: Number(mv[1]), minor: Number(mv[2]) },
+      autoSelect: auto ? auto[1] === 'true' : false,
+    };
   }
-  return floors;
+  return entries;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,36 +294,53 @@ export function runChecks(sources) {
   if (substrate) notes.push(`(c) chdb_substrate == ${vstr(substrate)} (compatibility lanes pinned to it)`);
 
   // (d) THE CRITICAL ONE: quickstart >= highest floor among enabled features.
-  const floors = readRegistryFloors(sources.registry);
+  // With CERBERUS_CH_OPTIMIZATIONS="auto" (what the quickstart ships) the
+  // enabled set is every AutoSelect feature in the registry, so the derived
+  // floor is the highest AutoSelect floor: the quickstart must be able to
+  // demonstrate everything `auto` is documented to turn on.
+  const registry = readRegistryEntries(sources.registry);
   const enabled = readComposeOptimizations(sources.compose);
+  let selected = null;
   if (!enabled) {
     failures.push('docker-compose.yml: could not read CERBERUS_CH_OPTIMIZATIONS');
-  } else if (quickstart) {
+  } else if (enabled.mode === 'auto') {
+    selected = Object.keys(registry).filter((id) => registry[id].autoSelect);
+    if (selected.length === 0) {
+      failures.push('(d) CERBERUS_CH_OPTIMIZATIONS="auto" but the chopt registry declares no AutoSelect feature');
+      selected = null;
+    }
+  } else if (enabled.mode === 'off') {
+    notes.push('(d) quickstart sets CERBERUS_CH_OPTIMIZATIONS="off" — no feature floor to satisfy');
+  } else {
+    selected = enabled.ids;
+  }
+  if (selected && quickstart) {
     let highest = null;
     let highestFeature = null;
-    for (const id of enabled) {
-      if (!(id in floors)) {
+    for (const id of selected) {
+      if (!(id in registry)) {
         failures.push(`(d) docker-compose enables "${id}", which is not a known chopt registry feature`);
         continue;
       }
-      const floor = floors[id]; // null = AlwaysAvailable (no floor)
+      const floor = registry[id].floor; // null = AlwaysAvailable (no floor)
       if (floor && (highest === null || atLeast(floor, highest))) {
         highest = floor;
         highestFeature = id;
       }
     }
+    const how = enabled.mode === 'auto' ? `auto-selected (${selected.length} features)` : 'explicitly enabled';
     if (highest && !atLeast(quickstart, highest)) {
       failures.push(
-        `(d) quickstart_clickhouse ${vstr(quickstart)} is TOO OLD for enabled feature "${highestFeature}" ` +
+        `(d) quickstart_clickhouse ${vstr(quickstart)} is TOO OLD for ${how} feature "${highestFeature}" ` +
           `(floor ${vstr(highest)}). Bump the quickstart (docker-compose + compatibility image tags) and ` +
           `versions.yaml to a ClickHouse that supports it - see docs/optimization-rules.md (Rule 1, step 4).`,
       );
     } else if (highest) {
       notes.push(
-        `(d) quickstart ${vstr(quickstart)} >= highest enabled floor ${vstr(highest)} ("${highestFeature}")`,
+        `(d) quickstart ${vstr(quickstart)} >= highest ${how} floor ${vstr(highest)} ("${highestFeature}")`,
       );
     } else {
-      notes.push('(d) quickstart enables no version-gated feature (all AlwaysAvailable)');
+      notes.push(`(d) quickstart enables no version-gated feature (${how}, all AlwaysAvailable)`);
     }
   }
 
@@ -314,6 +356,22 @@ export function runChecks(sources) {
     );
   } else if (quickstart) {
     notes.push(`(e) migration tier-1 image == quickstart ${vstr(quickstart)}`);
+  }
+
+  // (g) the Helm chart's bundled ClickHouse tracks the DEPLOYMENT surface too.
+  const chartTag = parseVersion(readComposeCHTag(sources.chartValues));
+  if (!chartTag) {
+    failures.push('deploy/helm/cerberus/values.yaml: could not read clickhouse.bundled.image');
+  } else if (quickstart && !sameMM(chartTag, quickstart)) {
+    failures.push(
+      `(g) chart clickhouse.bundled.image ${vstr(chartTag)} != versions.yaml quickstart_clickhouse ` +
+        `${vstr(quickstart)}. The chart is the deployment surface operators run, so its bundled server ` +
+        `tracks quickstart_clickhouse - not chdb_substrate. A lower tag ships a default install on which ` +
+        `CERBERUS_CH_OPTIMIZATIONS=auto resolves fewer optimizations than the docs promise, and no CI lane ` +
+        `would notice because every lane overrides this image.`,
+    );
+  } else if (quickstart) {
+    notes.push(`(g) chart bundled image == quickstart ${vstr(quickstart)}`);
   }
 
   // (f) the prometheus-floor lane's CH_IMAGE == min_clickhouse. This is the
@@ -351,6 +409,7 @@ function loadSources() {
       'compatibility/tempo/docker-compose.yml': readFile('compatibility/tempo/docker-compose.yml'),
     },
     migrationTier1: readFile('test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml'),
+    chartValues: readFile('deploy/helm/cerberus/values.yaml'),
     compatibilityWorkflow: readFile('.github/workflows/compatibility.yml'),
   };
 }
@@ -370,7 +429,7 @@ function main() {
 // self-test - pins the parse / compare / drift-detection logic against
 // synthetic fixtures, the same contract scripts/test-forbid-skip.sh provides
 // for forbid-skip.mjs. Asserts a consistent fixture passes and that each of
-// the checks (a)/(b)/(c)/(d)/(e) FAILS when its source is deliberately
+// the checks (a)/(b)/(c)/(d)/(e)/(f)/(g) FAILS when its source is deliberately
 // drifted - so a future refactor that breaks a reader is caught here.
 // ---------------------------------------------------------------------------
 
@@ -397,15 +456,43 @@ const (
   FeatureColumnarResultDecode = "columnar_result_decode"
 )
 var registry = []Feature{
-  { ID: FeatureAggregationInOrder, MinVersion: Version{Major: 24, Minor: 8}, },
-  { ID: FeatureConditionCache, MinVersion: Version{Major: 25, Minor: 3}, },
-  { ID: FeatureTSGridRange, MinVersion: Version{Major: 25, Minor: 6}, },
-  { ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, },
+  { ID: FeatureAggregationInOrder, MinVersion: Version{Major: 24, Minor: 8}, AutoSelect: true, },
+  { ID: FeatureConditionCache, MinVersion: Version{Major: 25, Minor: 3}, AutoSelect: true, },
+  { ID: FeatureTSGridRange, MinVersion: Version{Major: 25, Minor: 6}, AutoSelect: true, },
+  { ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, AutoSelect: false, },
 }`;
-  const floors = readRegistryFloors(fakeRegistry);
-  ok('registry ts_grid_range floor 25.6', floors['ts_grid_range']?.major === 25 && floors['ts_grid_range']?.minor === 6);
-  ok('registry condition_cache floor 25.3', floors['condition_cache']?.minor === 3);
-  ok('registry columnar_result_decode AlwaysAvailable -> null floor', floors['columnar_result_decode'] === null);
+  const entries = readRegistryEntries(fakeRegistry);
+  ok(
+    'registry ts_grid_range floor 25.6',
+    entries['ts_grid_range']?.floor?.major === 25 && entries['ts_grid_range']?.floor?.minor === 6,
+  );
+  ok('registry condition_cache floor 25.3', entries['condition_cache']?.floor?.minor === 3);
+  ok('registry columnar_result_decode AlwaysAvailable -> null floor', entries['columnar_result_decode'].floor === null);
+  ok('registry reads AutoSelect true', entries['ts_grid_range']?.autoSelect === true);
+  ok('registry reads AutoSelect false', entries['columnar_result_decode']?.autoSelect === false);
+  ok(
+    'registry does not attribute a neighbour AutoSelect to an entry that declares none',
+    readRegistryEntries(
+      'const (\n  FeatureA = "a"\n  FeatureB = "b"\n)\n' +
+        'var registry = []Feature{\n' +
+        '  { ID: FeatureA, MinVersion: AlwaysAvailable, },\n' +
+        '  { ID: FeatureB, MinVersion: AlwaysAvailable, AutoSelect: true, },\n}',
+    )['a'].autoSelect === false,
+  );
+
+  // --- unit: CERBERUS_CH_OPTIMIZATIONS reader ---
+  ok(
+    'readComposeOptimizations reads "auto" as a mode, not an empty list',
+    readComposeOptimizations('CERBERUS_CH_OPTIMIZATIONS: "auto"\n')?.mode === 'auto',
+  );
+  ok(
+    'readComposeOptimizations reads "off" as a mode',
+    readComposeOptimizations('CERBERUS_CH_OPTIMIZATIONS: "off"\n')?.mode === 'off',
+  );
+  ok(
+    'readComposeOptimizations reads an explicit list',
+    readComposeOptimizations('CERBERUS_CH_OPTIMIZATIONS: "a, b"\n')?.ids?.join(',') === 'a,b',
+  );
 
   // --- unit: readComposeCHTag handles both the literal and the
   // parametrised-default forms (the floor lane needs the latter) ---
@@ -464,6 +551,9 @@ var registry = []Feature{
     // The migration tier-1 stack tracks the quickstart tag (26.5 here), NOT
     // the 25.8 chDB substrate the compatibility lanes pin.
     migrationTier1: 'image: clickhouse/clickhouse-server:26.5\n',
+    // The chart's bundled ClickHouse tracks the quickstart tag for the same
+    // deployment-surface reason.
+    chartValues: '  bundled:\n    image: clickhouse/clickhouse-server:26.5\n',
     compatibilityWorkflow:
       'jobs:\n  prometheus-floor:\n    steps:\n      - run: echo seed\n        env:\n          CH_IMAGE: "clickhouse/clickhouse-server:24.8"\n',
   };
@@ -500,6 +590,26 @@ var registry = []Feature{
     }).some((f) => f.startsWith('(d)')),
   );
   ok(
+    '(d) "auto" derives the floor from the registry\'s AutoSelect set, not from nothing',
+    // Quickstart 25.3 with auto: ts_grid_range (AutoSelect, floor 25.6) still binds.
+    drift((s) => {
+      s.versionsYaml = s.versionsYaml.replace('quickstart_clickhouse: "26.5"', 'quickstart_clickhouse: "25.3"');
+      s.compose = s.compose
+        .replace('clickhouse-server:26.5', 'clickhouse-server:25.3')
+        .replace('"aggregation_in_order,condition_cache,ts_grid_range"', '"auto"');
+      s.migrationTier1 = 'image: clickhouse/clickhouse-server:25.3\n';
+      s.chartValues = '  bundled:\n    image: clickhouse/clickhouse-server:25.3\n';
+    }).some((f) => f.startsWith('(d)') && f.includes('auto-selected')),
+  );
+  ok(
+    '(d) "auto" ignores an opt-in-only feature\'s floor',
+    // columnar_result_decode is AutoSelect:false, so a 25.3 quickstart under
+    // "auto" is bounded by ts_grid_range's 25.6 and nothing higher.
+    drift((s) => {
+      s.compose = s.compose.replace('"aggregation_in_order,condition_cache,ts_grid_range"', '"auto"');
+    }).length === 0,
+  );
+  ok(
     '(d) unknown enabled feature is caught',
     drift((s) => (s.compose = s.compose.replace('ts_grid_range', 'ts_grid_bogus'))).some((f) =>
       f.startsWith('(d)') && f.includes('not a known'),
@@ -514,6 +624,19 @@ var registry = []Feature{
     '(e) migration tier-1 pinned to the chDB substrate instead of the quickstart is caught',
     // 25.8 is chdb_substrate in the fixture - the exact wrong-role mistake (e) exists to reject.
     drift((s) => (s.migrationTier1 = 'image: clickhouse/clickhouse-server:25.8\n')).some((f) => f.startsWith('(e)')),
+  );
+  ok(
+    '(g) chart bundled-ClickHouse tag drift is caught',
+    drift((s) => (s.chartValues = '  bundled:\n    image: clickhouse/clickhouse-server:25.3\n')).some((f) =>
+      f.startsWith('(g)'),
+    ),
+  );
+  ok(
+    '(g) chart pinned to the chDB substrate instead of the quickstart is caught',
+    // 25.8 is chdb_substrate in the fixture - the exact wrong-role mistake (g) rejects.
+    drift((s) => (s.chartValues = '  bundled:\n    image: clickhouse/clickhouse-server:25.8\n')).some((f) =>
+      f.startsWith('(g)'),
+    ),
   );
   ok(
     '(f) prometheus-floor CH_IMAGE drifting from min_clickhouse is caught',

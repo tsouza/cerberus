@@ -18,6 +18,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -337,4 +338,55 @@ test('the job sets Go up through the hardened wrapper, which the attribution nee
   // Without a toolchain in this job the derivation cannot read the import graph
   // and merge-risk.mjs exits 1 rather than falling back to the declared globs.
   assert.match(forbidDeferralWorkflow, /uses: \.\/\.github\/actions\/setup-go/);
+});
+
+// ---------------------------------------------------------------------------
+// The merge target, and what happens when it does not resolve (#3187).
+// ---------------------------------------------------------------------------
+
+test('the workflow resolves the merge target from the event, not hardcoded main', () => {
+  // A maintenance-line backport is based on `release/*.x`. Comparing it against
+  // `main` made the gate blame the backport for every golden shard `main` had
+  // regenerated since the line forked, and tell the author to merge `main` in —
+  // the one thing a backport must not do.
+  assert.match(
+    forbidDeferralWorkflow,
+    /MERGE_TARGET_REF: origin\/\$\{\{ github\.event\.pull_request\.base\.ref/,
+    'merge-risk must be told which branch this change would land on',
+  );
+  // The fetch and the scan must name the SAME branch, or the ref the scanner
+  // asks for is not the ref the job fetched.
+  assert.match(
+    forbidDeferralWorkflow,
+    /MERGE_TARGET_BRANCH: \$\{\{ github\.event\.pull_request\.base\.ref/,
+    'the fetch step must resolve the branch from the same expression',
+  );
+  assert.doesNotMatch(
+    forbidDeferralWorkflow,
+    /\+refs\/heads\/main:refs\/remotes\/origin\/main/,
+    'the fetch must no longer hardcode main',
+  );
+});
+
+test('an unresolvable merge target fails rather than silently skipping the blocking half', () => {
+  // The stale-base comparison is this gate's only BLOCKING half. It used to
+  // push a step-summary line and continue with an empty collision list, so the
+  // run reported "no golden shard collides" having compared nothing — and
+  // nothing gates on a step summary. Its two sibling failure paths already
+  // exit 1; this one now matches them.
+  const res = spawnSync(process.execPath, [resolve('.github/scripts/merge-risk.mjs')], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      MERGE_TARGET_REF: 'origin/no-such-branch-for-this-test',
+      BASE_SHA: '',
+      HEAD_SHA: 'HEAD',
+    },
+  });
+  assert.equal(res.status, 1, `expected a hard failure; got ${res.status}:\n${res.stdout}${res.stderr}`);
+  assert.match(
+    `${res.stdout}${res.stderr}`,
+    /does not resolve in this checkout, so the stale-base comparison examined nothing/,
+    'the failure must say the comparison examined nothing',
+  );
 });

@@ -46,7 +46,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 LABEL org.opencontainers.image.title="cerberus-tempo-compat-driver"
 LABEL org.opencontainers.image.description="Tempo / TraceQL compatibility driver (seed + diff subcommands)"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=build /out/driver /usr/local/bin/driver
 

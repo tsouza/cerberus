@@ -108,8 +108,10 @@ const (
 	// floor): auto-selecting this feature emits a wrong answer the instant a
 	// NaN-bearing series is queried. AutoSelect is false — like
 	// FeatureColumnarResultDecode, it's reachable only via an explicit
-	// CERBERUS_CH_OPTIMIZATIONS=ts_grid_changes listing — until ClickHouse
-	// fixes the builtin's NaN handling upstream and #1721 closes.
+	// CERBERUS_CH_OPTIMIZATIONS=ts_grid_changes listing. The gate is
+	// ClickHouse's own NaN handling inside the builtin: the posture lifts
+	// when a ClickHouse release fixes it, not on any cerberus-side change.
+	// Cerberus issue #1721 records the divergence and the reproduction.
 	FeatureTSGridChanges = "ts_grid_changes"
 
 	// FeatureTSGridResets opts eligible resets(<counter>[<range>]) query_range
@@ -1861,8 +1863,8 @@ const (
 	// timeSeriesGroupToTags only in the wrapping output projection (cerberus
 	// issue #2750 — the grouping-keys-only slice of the tag-group family; label
 	// ops (by/without/label_replace/label_join/group_left via the purpose-built
-	// tag functions) are explicit follow-up, tracked on #2750 itself per the
-	// issue's own "grouping keys first, label ops later" staging).
+	// tag functions) are the second half of that staging and are still
+	// outstanding, tracked on cerberus issue #3195).
 	//
 	// SITE CHOICE: guardNameDropCollision is the single most self-contained
 	// grouping site in the pipeline that groups on the raw Attributes Map —

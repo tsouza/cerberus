@@ -428,7 +428,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// matching log in the table.
 	res, err := h.Engine.Query(ctx, h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts, limit, dir), q)
 	if err != nil {
-		h.respondError(w, classifyEngineErr(err))
+		h.respondError(r.Context(), w, classifyEngineErr(err))
 		return
 	}
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
@@ -436,7 +436,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	data, err := buildInstantData(expr, res.Samples, ts, h.Schema, limit, dir, wantsCategorizedLabels(r))
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 
@@ -514,7 +514,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.Engine.Query(ctx, h.langForRangeRequest(start, end, step, limit, dir), q)
 	if err != nil {
-		h.respondError(w, classifyEngineErr(err))
+		h.respondError(r.Context(), w, classifyEngineErr(err))
 		return
 	}
 	if h.onQueryRangeDrain != nil {
@@ -525,7 +525,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 
 	data, err := buildRangeData(expr, res.Samples, start, end, step, h.Schema, limit, dir, wantsCategorizedLabels(r))
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 
@@ -639,6 +639,10 @@ func classifyEngineErr(err error) error {
 				tooMany.Limit,
 			),
 			Status: http.StatusBadRequest,
+			// The 400 is upstream Loki's limit-violation shape, which it
+			// shares with a malformed query. Say which this was; see
+			// httperr.TelemetryReason.
+			Reason: telemetry.ReasonResourceExhausted,
 		}
 	}
 	// Line-peek byte budget: a /detected_fields or /patterns drain buffered
@@ -655,6 +659,10 @@ func classifyEngineErr(err error) error {
 				bytesLimit.Limit,
 			),
 			Status: http.StatusBadRequest,
+			// The 400 is upstream Loki's limit-violation shape, which it
+			// shares with a malformed query. Say which this was; see
+			// httperr.TelemetryReason.
+			Reason: telemetry.ReasonResourceExhausted,
 		}
 	}
 	// ClickHouse memory-limit abort (code 241, MEMORY_LIMIT_EXCEEDED):
@@ -678,6 +686,10 @@ func classifyEngineErr(err error) error {
 			Kind:   ErrBadData,
 			Err:    errors.New(msg),
 			Status: http.StatusBadRequest,
+			// The 400 is upstream Loki's limit-violation shape, which it
+			// shares with a malformed query. Say which this was; see
+			// httperr.TelemetryReason.
+			Reason: telemetry.ReasonResourceExhausted,
 		}
 	}
 	// Wall-clock timeout: the data-plane query hit its max_execution_time
@@ -699,6 +711,10 @@ func classifyEngineErr(err error) error {
 			Kind:   ErrTimeout,
 			Err:    errors.New(msg),
 			Status: http.StatusServiceUnavailable,
+			// The 503 is upstream Loki's, and it collides with a real
+			// backend outage. Say which this was; see
+			// httperr.TelemetryReason.
+			Reason: telemetry.ReasonTimeout,
 		}
 	}
 	// ClickHouse Distributed-query partial-shard-failure / stale-replica
@@ -1270,7 +1286,14 @@ func normalizeMetadata(in map[string]string) map[string]string {
 // carrier so the existing in-package callsites can stay literal.
 type apiError = httperr.Error
 
-func (h *Handler) respondError(w http.ResponseWriter, err error) {
+// respondError is the single error-envelope writer for this head. Every
+// error path funnels through it, which is why it is also where the
+// `cerberus_error_reason` label is decided: one classification, recorded
+// before any envelope is written, so no error path can report a status
+// without a reason. See httperr.TelemetryReason for why the status alone
+// cannot name a timeout or a per-query budget refusal.
+func (h *Handler) respondError(ctx context.Context, w http.ResponseWriter, err error) {
+	telemetry.SetReason(ctx, httperr.TelemetryReason(err))
 	// Circuit-breaker fast-fail short-circuit applies regardless of
 	// whether the callsite pre-wrapped the chclient error in its own
 	// *apiError — many Loki sub-handlers do (`&apiError{Status: 502,

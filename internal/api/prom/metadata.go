@@ -341,7 +341,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 		names, err = h.fetchLabelNamesMatched(r.Context(), matchers, startT, endT, nowAnchored)
 	}
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 
@@ -413,7 +413,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers, startT, endT, nowAnchored)
 	}
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 
@@ -464,7 +464,7 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	// the aggregate-only HAVING bound (see metricMetaSQL).
 	rows, err := h.fetchMetricMeta(r.Context(), metricName, startT, endT, true)
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 
@@ -738,12 +738,12 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	// bounded queries (still ≪ N); see fetchSeries.
 	variants, err := h.expandMetadataMatchers(r.Context(), matchers, startT, endT, nowAnchored)
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 	sets, err := h.fetchSeries(r.Context(), variants, startT, endT)
 	if err != nil {
-		h.respondError(w, err)
+		h.respondError(r.Context(), w, err)
 		return
 	}
 
