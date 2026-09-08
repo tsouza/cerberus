@@ -36,6 +36,11 @@ jobs:
   chart-validate:
     name: chart-validate
     runs-on: ubuntu-latest
+    # `packages: read` is for the GHCR login below, which fronts the
+    # mirror-first acquisition of the helm-docs image (#3187).
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -66,11 +71,38 @@ jobs:
         if: steps.changes.outputs.chart == 'true'
         run: helm lint "$CHART_DIR"
 
+      # helm-docs used to run here as `uses: docker://jnorwood/helm-docs:v1.14.2`
+      # — a Docker container action, so the runner pulled that image ANONYMOUSLY
+      # from Docker Hub on a required check. The same step was removed from
+      # prepare-release.yml in #3100 and left standing here, because
+      # assert-image-jobs-authenticate.mjs was blind to the `docker://` form and
+      # never reported this job as acquiring anything (#3187).
+      #
+      # Two logins first, GHCR then Docker Hub, the same idiom every other
+      # image-pulling job in this repo uses (that scanner's R5 requires the
+      # order), then the render through lib/helm-docs.mjs's shared mirror-first,
+      # transport-retrying acquisition.
+      - name: Log in to GHCR
+        if: steps.changes.outputs.chart == 'true'
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
+      # Gated on the secret being present so a fork run degrades to anonymous
+      # rather than erroring on an empty password.
+      - name: Log in to Docker Hub
+        if: steps.changes.outputs.chart == 'true' && env.DOCKER_HUB_PAT_SET == 'true'
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+        run: node .github/scripts/registry-login.mjs
+
       - name: helm-docs drift check
         if: steps.changes.outputs.chart == 'true'
-        uses: docker://jnorwood/helm-docs:v1.14.2
-        with:
-          args: --chart-search-root=deploy/helm --template-files=README.md.gotmpl
+        run: node .github/scripts/render-helm-docs.mjs
 
       - name: Fail on README drift
         if: steps.changes.outputs.chart == 'true'
