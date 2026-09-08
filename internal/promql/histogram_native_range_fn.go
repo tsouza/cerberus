@@ -307,7 +307,7 @@ func lowerExpHistogramRangeFnOverSubqueryInput(input chplan.Node, sub *parser.Su
 	// An @-pinned subquery is evaluated once even on query_range, then the
 	// same histogram is broadcast across the request grid.
 	if ctx.rangeMode() && subqueryPinned(sub) {
-		windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema)
+		windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema, ctx)
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 		return aggregatedHistogramProjection(
 			&chplan.CrossJoin{Left: grid, Right: windowed},
@@ -319,7 +319,7 @@ func lowerExpHistogramRangeFnOverSubqueryInput(input chplan.Node, sub *parser.Su
 	if ctx.rangeMode() {
 		return lowerExpHistogramSubqueryRangeFnRange(input, windowShape, anchor.Offset, histSchema, ctx), nil
 	}
-	windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema)
+	windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema, ctx)
 	tsExpr := chplan.NowNano()
 	if !anchor.End.IsZero() {
 		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
@@ -332,12 +332,12 @@ func lowerExpHistogramRangeFnOverSubqueryInput(input chplan.Node, sub *parser.Su
 // include the subquery offset exactly as the ordinary RangeWindow subquery
 // path does; the group identity is the published Attributes map rather than
 // physical-table resource columns that no longer exist above the projection.
-func expHistogramValuedSubqueryWindowStage(input chplan.Node, shape histogramAggShape, anchor evalAnchor, s schema.Metrics) chplan.Node {
+func expHistogramValuedSubqueryWindowStage(input chplan.Node, shape histogramAggShape, anchor evalAnchor, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	rangeEnd := windowRightBoundExpr(anchor)
 	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)
 	return expHistogramValuedWindowStageBy(
 		input, shape, rangeStart, rangeEnd, s,
-		&chplan.ColumnRef{Name: s.AttributesColumn},
+		&chplan.ColumnRef{Name: s.AttributesColumn}, ctx,
 	)
 }
 
@@ -351,6 +351,7 @@ func lowerExpHistogramSubqueryRangeFnRange(input chplan.Node, shape histogramAgg
 	win := histogramWindow{lookback: shape.windowRange, offset: offset, minSamples: shape.minSamples()}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
 	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 	grouped := &chplan.RangeBucketFanout{
 		Input:          input,
@@ -444,7 +445,7 @@ func expHistogramRangeFnWindowed(shape histogramAggShape, s schema.Metrics, ctx 
 	if pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
-	return expHistogramValuedWindowStage(input, shape, rangeStart, rangeEnd, s), nil
+	return expHistogramValuedWindowStage(input, shape, rangeStart, rangeEnd, s, ctx), nil
 }
 
 // lowerExpHistogramRangeFnRange is the query_range shape: the per-anchor
@@ -463,6 +464,7 @@ func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ct
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
 	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
 
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 	grouped := buildHistogramBucketFanout(
@@ -493,12 +495,13 @@ func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ct
 // two-sample floor, the same reshape — with Sum collected alongside the
 // fields the quantile path already collects, and Count / Sum folded into
 // the reshaped row.
-func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
-	return expHistogramValuedWindowStageBy(input, shape, rangeStart, rangeEnd, s, histogramIdentityExpr(s))
+func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	return expHistogramValuedWindowStageBy(input, shape, rangeStart, rangeEnd, s, histogramIdentityExpr(s), ctx)
 }
 
-func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, identity chplan.Expr) chplan.Node {
+func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, identity chplan.Expr, ctx lowerCtx) chplan.Node {
 	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 	group := &chplan.Aggregate{
 		Input:              input,
