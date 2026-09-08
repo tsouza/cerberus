@@ -138,8 +138,28 @@ func newOrLineFilterExpr(left, right *LineFilterExpr) *LineFilterExpr {
 		right.IsOrChild = true
 		return left
 	}
-	// !(left or right) == (!left and !right).
-	return newNestedLineFilterExpr(left, right)
+	// !(left or r1 or r2 ...) == !left AND !r1 AND !r2 ...
+	//
+	// De Morgan distributes over the WHOLE alternate chain, not just its
+	// head. The alternates arrive here as an Or chain because
+	// parseOrFilter builds them before the head operator is known: they
+	// default to LineMatchEqual and so take the positive branch above,
+	// and the loop over Or at the top of this function only retypes them.
+	// Folding just `right` and leaving `right.Or` attached emitted
+	// `!a AND (!b OR !c)`, which admits a line containing "b" but not
+	// "c" — a row the reference engine drops. An alternate never carries
+	// a Left of its own (newLineFilterExpr sets none, and the positive
+	// branch returns the head it hung the alternate off), so flattening
+	// the Or chain is the whole rewrite.
+	node := left
+	for cur := right; cur != nil; {
+		next := cur.Or
+		cur.Or = nil
+		cur.IsOrChild = false
+		node = newNestedLineFilterExpr(node, cur)
+		cur = next
+	}
+	return node
 }
 
 // newNestedLineFilterExpr chains right after left in the same pipeline
