@@ -54,6 +54,15 @@ data:
       </zookeeper>
       <remote_servers>
         <bwc_cluster>
+          {{- if eq (include "cerberus.clickhouse.hasInterserverSecret" $) "true" }}
+          <!-- Cross-node query forwarding carries the ORIGINATING user's
+               identity (cerberus issue #3190). Without it ClickHouse
+               forwards as `default` with an empty password, so every
+               cross-node query fails AUTHENTICATION_FAILED wherever
+               `default` has a real password, while direct connections to
+               each node keep working. -->
+          <secret from_env="CH_INTERSERVER_SECRET" />
+          {{- end }}
           <shard>
             <internal_replication>true</internal_replication>
             {{- range $i := until (int $b.replicas) }}
@@ -94,6 +103,15 @@ data:
       </zookeeper>
       <remote_servers>
         <bwc_cluster>
+          {{- if eq (include "cerberus.clickhouse.hasInterserverSecret" $) "true" }}
+          <!-- Cross-node query forwarding carries the ORIGINATING user's
+               identity (cerberus issue #3190). Without it ClickHouse
+               forwards as `default` with an empty password, so every
+               cross-node query fails AUTHENTICATION_FAILED wherever
+               `default` has a real password, while direct connections to
+               each node keep working. -->
+          <secret from_env="CH_INTERSERVER_SECRET" />
+          {{- end }}
           {{- range $shard := until $dataShardCount }}
           <!-- DATA shard {{ $shard }} (cerberus issue #3077 — ClickHouse's own shard tag, one per bundled.dataShards.count). -->
           <shard>

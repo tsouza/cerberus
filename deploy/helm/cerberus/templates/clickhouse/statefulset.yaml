@@ -87,6 +87,13 @@ spec:
                   name: {{ $passwordSecret }}
                   key: {{ $ch.passwordKey }}
             {{- end }}
+            {{- if eq (include "cerberus.clickhouse.hasInterserverSecret" $) "true" }}
+            - name: CH_INTERSERVER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cerberus.clickhouse.interserverSecretName" $ }}
+                  key: {{ $b.interserverSecretKey }}
+            {{- end }}
             {{- with $osEnv }}
             {{- . | nindent 12 }}
             {{- end }}
@@ -261,6 +268,13 @@ spec:
                 secretKeyRef:
                   name: {{ $passwordSecret }}
                   key: {{ $ch.passwordKey }}
+            {{- end }}
+            {{- if eq (include "cerberus.clickhouse.hasInterserverSecret" $) "true" }}
+            - name: CH_INTERSERVER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cerberus.clickhouse.interserverSecretName" $ }}
+                  key: {{ $b.interserverSecretKey }}
             {{- end }}
             {{- with $osEnv }}
             {{- . | nindent 12 }}
