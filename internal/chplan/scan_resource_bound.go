@@ -357,6 +357,23 @@ func RequireSpansScansBounded(spansTable string, root Node) error {
 				descend(c, pred, underLimit)
 			}
 		}
+
+		// A plan embedded in an Expr slot — an InSubquery's or a
+		// ScalarSubquery's input — is NOT reachable through Children(),
+		// so descending the spine alone left every spans scan inside one
+		// unexamined and this gate passed vacuously on it. That is where
+		// TraceQL puts a spanset aggregate's cohort and its trace-scoped
+		// intrinsics, so the blind spot covered the shapes most likely to
+		// read the whole table.
+		//
+		// Each embedded plan is its own root: the outer spine's window and
+		// top-N do not govern what the subquery reads, so it is descended
+		// with a FRESH context and must carry its own bound.
+		nodeExprs(n, func(e Expr) {
+			InspectExprNodes(e, func(Expr) bool { return true }, func(sub Node) {
+				descend(sub, nil, false)
+			})
+		})
 	}
 	descend(root, nil, false)
 	return firstErr
