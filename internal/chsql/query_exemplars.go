@@ -255,6 +255,17 @@ func queryExemplarsSelect(
 		err := fmt.Errorf("%w: schema.Metrics.TimestampColumn is empty", ErrUnsupported)
 		return nil, err
 	}
+	// A zero bound is rejected rather than formatted: dateTime64Frag would
+	// render Go's zero time as the literal `0001-01-01 00:00:00.000000000`,
+	// a silently-unbounded lower edge (or an empty-by-construction upper
+	// edge) that reads as a real window in the emitted SQL. The HTTP
+	// handler already rejects a missing/unparseable start or end
+	// (internal/api/prom/exemplars.go::handleQueryExemplars); this guard
+	// closes the same hole for any other caller of the emitter.
+	if start.IsZero() || end.IsZero() {
+		err := fmt.Errorf("%w: exemplars time range has a zero bound (start zero: %t, end zero: %t)", ErrUnsupported, start.IsZero(), end.IsZero())
+		return nil, err
+	}
 
 	// Inner SELECT — fans out via `arrayJoin(arrayEnumerate(...))` and
 	// applies all predicates ahead of the fan-out so the cross product
@@ -333,8 +344,10 @@ func queryExemplarsSelect(
 // section in fixtures across the codebase stays uniform: a string
 // "2026-01-01 00:00:00.000000000" followed by an int64 9.
 //
-// Zero `t` panics — callers must validate the time range before
-// reaching this emitter.
+// It formats whatever it is handed, including Go's zero time — the
+// bound is validated by its one caller, queryExemplarsSelect, which
+// rejects a zero start or end with ErrUnsupported before reaching here,
+// so this never renders `0001-01-01 00:00:00.000000000`.
 func dateTime64Frag(t time.Time) Frag {
 	return Call(
 		"toDateTime64",

@@ -182,20 +182,21 @@ func (r *RangeBucketFanout) AnchorGridDivides() bool { return !r.PeakIndependent
 
 // AnchorGridDivides: the native aggregate materialises one Array of N grid
 // points per (series, `le` rung), so its intermediate is linear in the grid
-// width exactly as RangeWindowGridNative's is. It is reported honestly even
-// though slicing never reaches this node.
+// width exactly as RangeWindowGridNative's is.
 //
-// TRUE here is the solver's LICENCE TO SHARD, so what keeps the honest answer
-// safe is that two independent refusals stop the plan before any threshold
-// reads it: the kind is deliberately absent from sliceInvariantKinds (no
-// slice-invariance proof has been argued for it), and internal/solver's
-// carrierGeometryOf reports it non-re-anchorable (ReanchorRange has no arm
-// that re-grids it). Neither is left as prose — both, and the routing outcome
-// they produce, are pinned by internal/solver's
-// TestRangeBucketGridNative_SlicingRefusedAtBothGates /
-// _NeverRoutesUnderAuto, which fail if either refusal is removed. Registering
-// this kind as slice-invariant therefore fails loudly rather than silently
-// handing the solver a licence nobody re-derived.
+// TRUE here is the solver's LICENCE TO SHARD, and that licence is LIVE: #2677
+// argued the stage-by-stage slice-invariance proof (recorded on this kind's
+// entry in sliceInvariantKinds — internal/chplan/sliceinvariant.go) and added
+// the re-gridding arm (reanchorRangeBucketGridNative, dispatched by
+// ReanchorRange), so a wide-window classic-histogram quantile that busts one
+// query's memory cap is time-sliced across K shards instead of having no
+// relief at all. Both mechanisms are load-bearing and admitted together or not
+// at all: the registry entry alone lets the whole-plan walk accept the plan
+// with nothing able to re-grid the carrier, and the reanchor arm alone is
+// never reached. internal/solver's
+// TestRangeBucketGridNative_SlicingAdmittedAtBothGates pins each separately
+// (along with this method's answer), so withdrawing either fails there naming
+// which one, rather than silently stranding the carrier back on route A.
 func (r *RangeBucketGridNative) AnchorGridDivides() bool { return true }
 
 // AnchorGridDivides: absent_over_time emits one row per anchor.
