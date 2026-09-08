@@ -96,7 +96,7 @@ func Classifiers(dir string, sealed map[string]bool) ([]Classifier, error) {
 	for _, pf := range files {
 		for _, decl := range pf.file.Decls {
 			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Body == nil || !returnsOnlyBool(fd.Type) {
+			if !ok || fd.Body == nil || !returnsOnlyAnswer(fd.Type) {
 				continue
 			}
 			params := ifaceParams(fd.Type, pkg, sealed)
@@ -277,15 +277,34 @@ func parseDir(dir string) ([]parsedFile, string, error) {
 	return out, pkg, nil
 }
 
-// returnsOnlyBool reports whether every result of ft is a bare bool. A
-// classifier answers yes or no and nothing else: a function also
-// returning the node it found is an unwrapper, whose arms legitimately
-// differ per caller.
-func returnsOnlyBool(ft *ast.FuncType) bool {
+// returnsOnlyAnswer reports whether ft's results carry an answer and
+// nothing else: every result is a bare bool, except that a trailing
+// `error` is allowed alongside them.
+//
+// A function also returning the node it found is an unwrapper, whose
+// arms legitimately differ per caller, so `(*Filter, bool)` is refused —
+// the node is a result the caller consumes, not part of the yes/no.
+// An `error` is not: it reports that the answer could not be produced,
+// which leaves the function a classifier that can fail. Refusing it
+// hid internal/chsql's emitMetricNode, a sixteen-arm type switch over
+// chplan.Node answering "does this node belong to the metric family",
+// from the mirrored-dispatch regression test entirely.
+//
+// The error must come last, matching Go's own convention, so a
+// `(error, bool)` shape stays unread rather than being guessed at.
+func returnsOnlyAnswer(ft *ast.FuncType) bool {
 	if ft.Results == nil || len(ft.Results.List) == 0 {
 		return false
 	}
-	for _, r := range ft.Results.List {
+	results := ft.Results.List
+	if last, ok := results[len(results)-1].Type.(*ast.Ident); ok && last.Name == "error" {
+		// A single `error` result is not an answer at all.
+		if len(results) == 1 {
+			return false
+		}
+		results = results[:len(results)-1]
+	}
+	for _, r := range results {
 		id, ok := r.Type.(*ast.Ident)
 		if !ok || id.Name != "bool" {
 			return false
