@@ -1,11 +1,13 @@
 -- query.traceql --
 { .a * 2 > 10 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE ((toFloat64OrNull(`SpanAttributes`[?]) * ?) > ?)
+SELECT * FROM `otel_traces` WHERE ((if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) * ?) > ?)
 -- args --
 [0] string = "a"
-[1] int64 = 2
-[2] int64 = 10
+[1] string = "a"
+[2] string = "a"
+[3] int64 = 2
+[4] int64 = 10
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
@@ -17,5 +19,5 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1);
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
-Filter predicate=((FnToFloat64OrNull(SpanAttributes["a"]) * 2) > 10)
+Filter predicate=((FnIf(FnMapContainsKey(SpanAttributes, "a"), FnToFloat64OrNull(SpanAttributes["a"]), FnToFloat64OrNull(ResourceAttributes["a"])) * 2) > 10)
   Scan(otel_traces)

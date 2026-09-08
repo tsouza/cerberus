@@ -1,10 +1,12 @@
 -- query.traceql --
 { .attempt = 1 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE (toFloat64OrNull(`SpanAttributes`[?]) = ?)
+SELECT * FROM `otel_traces` WHERE (if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) = ?)
 -- args --
 [0] string = "attempt"
-[1] int64 = 1
+[1] string = "attempt"
+[2] string = "attempt"
+[3] int64 = 1
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
@@ -16,5 +18,5 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1);
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
-Filter predicate=(FnToFloat64OrNull(SpanAttributes["attempt"]) = 1)
+Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "attempt"), FnToFloat64OrNull(SpanAttributes["attempt"]), FnToFloat64OrNull(ResourceAttributes["attempt"])) = 1)
   Scan(otel_traces)

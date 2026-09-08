@@ -2,9 +2,11 @@
 { .path =~ "/api/.*" }
 -- args --
 [0] string = "path"
-[1] string = "^(?:/api/.*)$"
+[1] string = "path"
+[2] string = "path"
+[3] string = "^(?:/api/.*)$"
 -- sql --
-SELECT * FROM `otel_traces` WHERE match(`SpanAttributes`[?], ?)
+SELECT * FROM `otel_traces` WHERE match(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?]), ?)
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64,
@@ -20,5 +22,5 @@ INSERT INTO otel_traces (Duration) VALUES
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 20000000]
 ]
 -- chplan --
-Filter predicate=(SpanAttributes["path"] =~ "/api/.*")
+Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "path"), SpanAttributes["path"], ResourceAttributes["path"]) =~ "/api/.*")
   Scan(otel_traces)
