@@ -1977,6 +1977,16 @@ func (e *Engine) executeRouted(
 	)
 	if err != nil {
 		execT.Done(ctx)
+		// Same stamping route A's eager path does at its own dispatch
+		// failure (cerberus issue #3184): a breaker rejection or a
+		// memory-cap 241 that kills the fan-out before any shard opens is a
+		// cerberus-side outcome, and without this the corpus never learns
+		// it — the row is left to be joined from query_log, which for a
+		// dispatch that never ran has nothing to join. No query id exists
+		// yet at this site, which observeOutcomeForErr handles: the
+		// decision-only rejection rows it writes carry the routing read-out
+		// rather than a join key.
+		e.observeOutcomeForErr("", lang.Name(), plan, decision, err)
 		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), "", err)
 		return Result{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
@@ -1993,6 +2003,15 @@ func (e *Engine) executeRouted(
 	}
 	if cerr := cursor.Err(); cerr != nil {
 		execT.Done(ctx)
+		// The route-B eager path drains inside this function, so this is the
+		// ONLY site that can stamp a drain outcome for it — the streaming
+		// sibling gets its stamp from the handler via ObserveDrainOutcome,
+		// and route A's eager path from engine.go's own Client.Query branch.
+		// Without it a routed drain that hit a sample budget, a byte budget,
+		// an OOM or an open breaker was never recorded and the corpus kept
+		// it as an "ok"-by-join, biasing every calibration that keys on
+		// exit_status by route (cerberus issue #3184).
+		e.observeOutcomeForErr(routedQueryID(info), lang.Name(), plan, decision, cerr)
 		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), routedQueryID(info), cerr)
 		return Result{}, fmt.Errorf("engine: solver drain: %w", cerr)
 	}
