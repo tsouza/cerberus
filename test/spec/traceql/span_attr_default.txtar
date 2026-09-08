@@ -1,7 +1,7 @@
 -- query.traceql --
 { .http.method = "GET" }
 -- sql --
-SELECT * FROM `otel_traces` WHERE (if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) = ?)
+SELECT * FROM `otel_traces` WHERE (if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?]) = ?)
 -- args --
 [0] string = "http.method"
 [1] string = "http.method"
@@ -14,7 +14,9 @@ CREATE TABLE otel_traces (
 ) ENGINE = MergeTree ORDER BY _idx;
 INSERT INTO otel_traces (_idx) VALUES (0), (1);
 -- expected_rows --
-[]
+[
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
+]
 -- chplan --
-Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "http.method"), FnToFloat64OrNull(SpanAttributes["http.method"]), FnToFloat64OrNull(ResourceAttributes["http.method"])) = "GET")
+Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "http.method"), SpanAttributes["http.method"], ResourceAttributes["http.method"]) = "GET")
   Scan(otel_traces)
