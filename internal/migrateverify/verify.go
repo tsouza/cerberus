@@ -498,15 +498,28 @@ type QueryResult struct {
 // lines. Limitations names, across the whole run, the dimensions no comparator
 // could judge.
 type Summary struct {
-	Total          int          `json:"total"`
-	Match          int          `json:"match"`
-	Diverge        int          `json:"diverge"`
-	Undecidable    int          `json:"undecidable"`
-	Unsupported    int          `json:"unsupported"`
-	Error          int          `json:"error"`
-	Unconfigured   int          `json:"unconfigured"`
-	ComparedSeries int          `json:"compared_series"`
-	ComparedUnits  int          `json:"compared_units"`
+	Total          int `json:"total"`
+	Match          int `json:"match"`
+	Diverge        int `json:"diverge"`
+	Undecidable    int `json:"undecidable"`
+	Unsupported    int `json:"unsupported"`
+	Error          int `json:"error"`
+	Unconfigured   int `json:"unconfigured"`
+	ComparedSeries int `json:"compared_series"`
+	ComparedUnits  int `json:"compared_units"`
+
+	// EmptyMatch counts queries that matched having compared NOTHING —
+	// both backends returned an empty result, so the verdict is a
+	// tautology rather than evidence.
+	//
+	// ComparedUnits is a SUM, so one query that diffed three series
+	// satisfies every aggregate and per-family evidence rule for the
+	// whole family; twenty-nine siblings that returned empty on both
+	// sides still counted as matches and the banner still said "all 30
+	// queries matched". That is the realistic shape of a stale dashboard
+	// corpus, a wrong tenant header, or a replay window before ingest
+	// started. This counter is what makes the split visible.
+	EmptyMatch     int          `json:"empty_match"`
 	OutOfScope     int          `json:"out_of_scope"`
 	HarvestSkipped int          `json:"harvest_skipped"`
 	Limitations    []Limitation `json:"limitations,omitempty"`
@@ -519,15 +532,17 @@ type Summary struct {
 // Families are carried as a KIND-SORTED SLICE, not a map: the report's
 // byte-determinism is a pinned contract and a map would break it.
 type FamilySummary struct {
-	Kind        string       `json:"kind"`
-	Unit        string       `json:"unit"`
-	Total       int          `json:"total"`
-	Match       int          `json:"match"`
-	Diverge     int          `json:"diverge"`
-	Undecidable int          `json:"undecidable"`
-	Unsupported int          `json:"unsupported"`
-	Error       int          `json:"error"`
-	Compared    int          `json:"compared"`
+	Kind        string `json:"kind"`
+	Unit        string `json:"unit"`
+	Total       int    `json:"total"`
+	Match       int    `json:"match"`
+	Diverge     int    `json:"diverge"`
+	Undecidable int    `json:"undecidable"`
+	Unsupported int    `json:"unsupported"`
+	Error       int    `json:"error"`
+	Compared    int    `json:"compared"`
+	// EmptyMatch is Summary.EmptyMatch for this family — see there.
+	EmptyMatch  int          `json:"empty_match"`
 	Limitations []Limitation `json:"limitations,omitempty"`
 }
 
@@ -931,6 +946,14 @@ func (rr *reportRun) record(res QueryResult) {
 		rr.rep.Summary.Match++
 		h.summary.Match++
 		f.Match++
+		if res.ComparedUnits == 0 {
+			// A match over two empty results proves nothing. Counted
+			// here so the banner and the gate can say how much of the
+			// agreement rests on evidence.
+			rr.rep.Summary.EmptyMatch++
+			h.summary.EmptyMatch++
+			f.EmptyMatch++
+		}
 	case VerdictDiverge:
 		rr.rep.Summary.Diverge++
 		h.summary.Diverge++
@@ -1107,10 +1130,11 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	} else if r.Summary.Unsupported > 0 {
 		// Unsupported queries pass the gate but are NOT matches; the banner must
 		// not equate Total with matched or it overstates what agreed.
-		bw.Printf("VERIFICATION PASSED — %d matched, %d unsupported, 0 diverged (of %d)\n\n",
-			r.Summary.Match, r.Summary.Unsupported, r.Summary.Total)
+		bw.Printf("VERIFICATION PASSED — %d matched (%s), %d unsupported, 0 diverged (of %d)\n\n",
+			r.Summary.Match, matchEvidencePhrase(r.Summary), r.Summary.Unsupported, r.Summary.Total)
 	} else {
-		bw.Printf("VERIFICATION PASSED — all %d queries matched\n\n", r.Summary.Total)
+		bw.Printf("VERIFICATION PASSED — all %d queries matched (%s)\n\n",
+			r.Summary.Total, matchEvidencePhrase(r.Summary))
 	}
 
 	bw.Printf("# cerberus migrate verify\n")
@@ -1422,5 +1446,22 @@ func (r Report) writeBugReport(bw *migrate.ErrWriter, g *TextGuidance) {
 	} else {
 		bw.Printf("   Re-run with --report verify-report.json to capture the full JSON\n")
 		bw.Printf("   diagnostic, and attach it to the issue.\n")
+	}
+}
+
+// matchEvidencePhrase describes how much of a run's agreement rests on an
+// actual comparison. "all N queries matched" is true and misleading when
+// most of those queries compared nothing: both backends returned empty, so
+// the verdict is a tautology. The banner is what an operator reads before
+// a cutover, so it says which it is.
+func matchEvidencePhrase(s Summary) string {
+	withEvidence := s.Match - s.EmptyMatch
+	switch {
+	case s.EmptyMatch == 0:
+		return "all over compared results"
+	case withEvidence == 0:
+		return "NONE over compared results — every match was empty on both backends"
+	default:
+		return fmt.Sprintf("%d over compared results, %d over empty ones", withEvidence, s.EmptyMatch)
 	}
 }
