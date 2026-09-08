@@ -54,3 +54,6 @@ StructuralJoin op=>> maxDepth=128
     Scan(otel_traces)
   Filter predicate=((FnToFloat64OrNull(SpanAttributes["http.status_code"]) = 500) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
     Scan(otel_traces)
+-- parity_exempt --
+reason: emitted-sql-only
+detail: `{ resource.service.name = "a" } >> { span.http.status_code = 500 }` carries no `seed:` or `expected_rows:` — it pins the emitted SQL for this shape, and executes no answer for any oracle to compare

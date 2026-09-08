@@ -30,3 +30,6 @@ Filter predicate=(Value > 500000000)
       Scan(otel_traces)
 -- sql --
 SELECT * FROM (SELECT `TraceId` AS `TraceId`, avg(`Duration`) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ resource.service.name = "x" && status = error } | avg(duration) > 500ms` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares

@@ -25,3 +25,6 @@ INSERT INTO otel_traces (SpanId, ParentSpanId, SpanKind) VALUES
 MetricsAggregate op=rate groupBy=[FnLower(SpanKind) AS kind] valueAlias=Value
   Filter predicate=(ParentSpanId = "")
     Scan(otel_traces)
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{nestedSetParent<0 && true && kind != nil} | rate() by(kind)` projects a per-trace aggregate rather than a spanset, so it carries no span identity for runTempoParity's WHICH-SPANS-MATCHED comparison

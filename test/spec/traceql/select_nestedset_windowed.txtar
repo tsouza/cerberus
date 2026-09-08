@@ -53,3 +53,6 @@ Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent, __
       Project [TraceId, SpanId, ParentSpanId, SpanName, Duration, Timestamp, ResourceAttributes, SpanAttributes, StatusCode, StatusMessage, SpanKind, ScopeName, ScopeVersion]
         Filter predicate=(((ParentSpanId = "") AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
           Scan(otel_traces)
+-- parity_exempt --
+reason: emitted-sql-only
+detail: `({ nestedSetParent < 0 } &>> { kind = server }) || ({ nestedSetParent < 0 }) | select(nestedSetParent, nestedSetLeft, nestedSetRight)` carries no `seed:` or `expected_rows:` — it pins the emitted SQL for this shape, and executes no answer for any oracle to compare

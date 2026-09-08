@@ -29,3 +29,6 @@ SELECT * FROM (SELECT `TraceId` AS `TraceId`, max(toFloat64OrZero(`SpanAttribute
 [
   ["span", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "2200000000", "__cerberus_traceID": "t1", "service.name": "x"}, "2024-01-01T00:00:00Z", 200]
 ]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ resource.service.name = "x" } | max(span.latency_ms) > 100` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares

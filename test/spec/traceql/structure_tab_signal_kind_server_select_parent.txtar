@@ -108,3 +108,6 @@ SELECT `TraceId`, `SpanId`, `Timestamp`, `__cerberus_ns_parent` AS `nestedSetPar
   ["root", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_spanID": "1000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2026-06-27T14:50:00.000000001Z", 300],
   ["root", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_spanID": "2000000000000001", "__cerberus_traceID": "b0000000000000000000000000000001"}, "2026-06-27T14:51:00.000000001Z", 300]
 ]
+-- parity_exempt --
+reason: reference-fetch-layer
+detail: `({ kind = server } &>> { }) || ({ kind = server }) | select(nestedSetParent)` carries `search_window:`, which narrows cerberus's scan where upstream narrows in its FETCH layer before the pipeline the oracle runs

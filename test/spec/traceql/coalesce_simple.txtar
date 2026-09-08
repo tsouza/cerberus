@@ -25,3 +25,6 @@ INSERT INTO otel_traces VALUES
 Aggregate groupBy=[TraceId AS TraceId, SpanId AS SpanId] funcs=[FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
   Filter predicate=true
     Scan(otel_traces)
+-- parity_exempt --
+reason: duplicate-span-seed
+detail: seed delivers the same (TraceId, SpanId) on more than one row on purpose, and span identity is the comparison key, so `{} | coalesce()` cannot be matched against a SET of matched spans
