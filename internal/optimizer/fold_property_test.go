@@ -3,11 +3,37 @@
 // The fold helpers (`foldIntInt`, `foldFloatFloat`) are the analyzer rule's
 // hot path: every pure-literal Binary subtree in a Filter predicate,
 // Project expression, or Aggregate group-by / arg expression flows through
-// them. They must be drop-in replacements for the Go-native operator on
-// the underlying scalar type — there is no other ground truth to compare
-// against. A divergence here would silently flip the row set of any plan
-// that contained a literal arithmetic subtree (`metric{} - 1` after a
+// them. A divergence here would silently flip the row set of any plan that
+// contained a literal arithmetic subtree (`metric{} - 1` after a
 // `LitInt - LitInt` fold, etc.).
+//
+// The INT oracle is arbitrary-precision, not the Go operator. This file used to
+// assert `foldIntInt(OpAdd, l, r) == l + r`, restating the implementation with
+// a second copy of the same Go operator (#3188). That form does catch a change
+// to foldIntInt itself, but it can only ever conclude "the fold agrees with
+// Go" — and agreeing with Go is not the requirement. Folding `LitInt op LitInt`
+// REPLACES arithmetic ClickHouse would otherwise have performed, so the fold is
+// correct only if it matches CLICKHOUSE. Over the overflow region that is a
+// substantive claim, and an oracle spelled `l + r` asserts it vacuously: it
+// reads as if wraparound had been verified when nothing about ClickHouse was
+// consulted.
+//
+// wrappedInt64 computes the exact result in math/big and reduces it into
+// int64's range, so it states the owed contract outright — ClickHouse Int64
+// arithmetic wraps two's-complement, it neither saturates nor throws — rather
+// than deferring to whatever Go happens to do.
+//
+// That the contract HOLDS against a real engine is settled where it can only be
+// settled, against ClickHouse itself:
+// test/property/int_fold_ch_agreement_test.go (build tag chdb) drives these
+// same operand pairs through the shipped ConstantFoldSemantic rule and through
+// chDB, and requires them to agree.
+//
+// The FLOAT oracle is still Go's own operator, and that is not the same
+// mistake: IEEE-754 double semantics are the contract, ClickHouse Float64
+// evaluates them, and Go evaluates the same hardware ones. There is no
+// higher-precision oracle for NaN / signed-zero / Inf propagation, and
+// math/big has no NaN or Inf at all.
 //
 // The audit at PR #375 Round 4 flagged `foldFloatFloat` at 0% line
 // coverage and `foldIntInt` at 21%. These property tests close that gap
@@ -38,6 +64,7 @@ package optimizer
 
 import (
 	"math"
+	"math/big"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -46,17 +73,53 @@ import (
 )
 
 // arithIntOps enumerates the integer arithmetic ops the fold helper
-// supports. Each op must produce a *chplan.LitInt with the same value
-// as the native Go operator. `OpDiv` is handled separately so the
+// supports. Each must produce a *chplan.LitInt holding the value
+// wrappedInt64 derives independently. `OpDiv` is handled separately so the
 // property can guard against division-by-zero (the helper declines the
 // rewrite — returns `(nil, false)`).
-var arithIntOps = []struct {
-	op chplan.BinaryOp
-	fn func(a, b int64) int64
-}{
-	{chplan.OpAdd, func(a, b int64) int64 { return a + b }},
-	{chplan.OpSub, func(a, b int64) int64 { return a - b }},
-	{chplan.OpMul, func(a, b int64) int64 { return a * b }},
+var arithIntOps = []chplan.BinaryOp{chplan.OpAdd, chplan.OpSub, chplan.OpMul}
+
+// int64Bits is the width wrappedInt64 reduces into, and int64SignBit is the
+// bit whose value decides whether that reduction is a negative number in
+// two's-complement.
+const (
+	int64Bits    = 64
+	int64SignBit = int64Bits - 1
+)
+
+// wrappedInt64 is the independent oracle for foldIntInt's arithmetic: it
+// computes a op b EXACTLY in arbitrary precision and only then reduces the
+// result into int64, so it shares no arithmetic with the implementation.
+//
+// The reduction is modulo 2^64 with the high half reinterpreted as negative —
+// two's-complement wraparound, which is what ClickHouse's Int64 `+`/`-`/`*`
+// do (they neither saturate nor raise). Stating it this way means a fold that
+// saturated at MaxInt64, promoted to a wider type, or declined on overflow
+// would each be caught, where comparing against Go's own operator could catch
+// none of them.
+func wrappedInt64(op chplan.BinaryOp, a, b int64) int64 {
+	x := new(big.Int).SetInt64(a)
+	y := new(big.Int).SetInt64(b)
+	z := new(big.Int)
+	switch op {
+	case chplan.OpAdd:
+		z.Add(x, y)
+	case chplan.OpSub:
+		z.Sub(x, y)
+	case chplan.OpMul:
+		z.Mul(x, y)
+	default:
+		panic("wrappedInt64: " + string(op) + " is not an arithmetic op this oracle models")
+	}
+
+	modulus := new(big.Int).Lsh(big.NewInt(1), int64Bits)
+	// big.Int.Mod is Euclidean, so the result lands in [0, 2^64) whatever the
+	// sign of z — which is exactly the unsigned bit pattern to reinterpret.
+	z.Mod(z, modulus)
+	if z.Cmp(new(big.Int).Lsh(big.NewInt(1), int64SignBit)) >= 0 {
+		z.Sub(z, modulus)
+	}
+	return z.Int64()
 }
 
 // arithFloatOps mirrors arithIntOps for float64. `OpDiv` is again
@@ -159,24 +222,24 @@ func drawFloat64(t *rapid.T, label string) float64 {
 func TestFoldIntInt_Arithmetic(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range arithIntOps {
-		tc := tc
-		t.Run(string(tc.op), func(t *testing.T) {
+	for _, op := range arithIntOps {
+		t.Run(string(op), func(t *testing.T) {
 			t.Parallel()
 			rapid.Check(t, func(t *rapid.T) {
 				l := drawInt64(t, "l")
 				r := drawInt64(t, "r")
-				got, ok := foldIntInt(tc.op, l, r)
+				got, ok := foldIntInt(op, l, r)
 				if !ok {
-					t.Fatalf("foldIntInt(%v, %d, %d) declined the fold; expected a LitInt", tc.op, l, r)
+					t.Fatalf("foldIntInt(%v, %d, %d) declined the fold; expected a LitInt", op, l, r)
 				}
 				lit, isInt := got.(*chplan.LitInt)
 				if !isInt {
-					t.Fatalf("foldIntInt(%v, %d, %d) = %T; want *chplan.LitInt", tc.op, l, r, got)
+					t.Fatalf("foldIntInt(%v, %d, %d) = %T; want *chplan.LitInt", op, l, r, got)
 				}
-				want := tc.fn(l, r)
+				want := wrappedInt64(op, l, r)
 				if lit.V != want {
-					t.Fatalf("foldIntInt(%v, %d, %d) = %d; want %d", tc.op, l, r, lit.V, want)
+					t.Fatalf("foldIntInt(%v, %d, %d) = %d; want %d (exact big.Int result reduced "+
+						"into int64 two's-complement)", op, l, r, lit.V, want)
 				}
 			})
 		})
@@ -511,4 +574,105 @@ func floatEqualIEEE(a, b float64) bool {
 		return true
 	}
 	return a == b
+}
+
+// saturatingInt64 is a DELIBERATELY WRONG fold: it clamps at the int64
+// boundaries instead of wrapping. It exists only for the meta-test below.
+//
+// It is the most plausible way foldIntInt could actually be got wrong: a
+// well-meaning overflow guard.
+func saturatingInt64(op chplan.BinaryOp, a, b int64) int64 {
+	x := new(big.Int).SetInt64(a)
+	y := new(big.Int).SetInt64(b)
+	z := new(big.Int)
+	switch op {
+	case chplan.OpAdd:
+		z.Add(x, y)
+	case chplan.OpSub:
+		z.Sub(x, y)
+	case chplan.OpMul:
+		z.Mul(x, y)
+	default:
+		panic("saturatingInt64: unsupported op " + string(op))
+	}
+	if z.Cmp(big.NewInt(math.MaxInt64)) > 0 {
+		return math.MaxInt64
+	}
+	if z.Cmp(big.NewInt(math.MinInt64)) < 0 {
+		return math.MinInt64
+	}
+	return z.Int64()
+}
+
+// TestWrappedInt64OracleIsIndependent proves the oracle
+// TestFoldIntInt_Arithmetic compares against can actually reject a wrong fold.
+//
+// Two claims, and both are needed:
+//
+//   - On operands that do NOT overflow, the oracle agrees with the Go operator.
+//     Without this the oracle could be arbitrary and the property would fail on
+//     correct code.
+//   - On operands that DO overflow, the oracle disagrees with a saturating
+//     fold — the most plausible way this could actually be got wrong, a
+//     well-meaning overflow guard. An oracle that cannot separate wrapping from
+//     saturating is not an oracle for the thing this file claims to pin.
+func TestWrappedInt64OracleIsIndependent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("agrees with the Go operator below overflow", func(t *testing.T) {
+		t.Parallel()
+		rapid.Check(t, func(t *rapid.T) {
+			// Half-width operands: no int64 product or sum can overflow.
+			l := int64(rapid.Int32().Draw(t, "l"))
+			r := int64(rapid.Int32().Draw(t, "r"))
+			for _, op := range arithIntOps {
+				var want int64
+				switch op {
+				case chplan.OpAdd:
+					want = l + r
+				case chplan.OpSub:
+					want = l - r
+				case chplan.OpMul:
+					want = l * r
+				}
+				if got := wrappedInt64(op, l, r); got != want {
+					t.Fatalf("wrappedInt64(%v, %d, %d) = %d; want %d — the oracle disagrees with "+
+						"the Go operator on operands that cannot overflow", op, l, r, got, want)
+				}
+			}
+		})
+	})
+
+	t.Run("rejects a saturating fold on overflow", func(t *testing.T) {
+		t.Parallel()
+		overflowing := []struct {
+			op   chplan.BinaryOp
+			l, r int64
+		}{
+			{chplan.OpAdd, math.MaxInt64, 1},
+			{chplan.OpSub, math.MinInt64, 1},
+			{chplan.OpMul, math.MaxInt64, 2},
+			{chplan.OpMul, math.MinInt64, -1},
+		}
+		for _, c := range overflowing {
+			wrapped := wrappedInt64(c.op, c.l, c.r)
+			saturated := saturatingInt64(c.op, c.l, c.r)
+			if wrapped == saturated {
+				t.Errorf("wrappedInt64(%v, %d, %d) = saturatingInt64(...) = %d — the oracle cannot "+
+					"tell a wrapping fold from a saturating one here, so the property it backs "+
+					"could not catch that regression", c.op, c.l, c.r, wrapped)
+			}
+			// And the real implementation is the wrapping one.
+			got, ok := foldIntInt(c.op, c.l, c.r)
+			if !ok {
+				t.Fatalf("foldIntInt(%v, %d, %d) declined an overflowing fold; ClickHouse Int64 "+
+					"arithmetic wraps rather than refusing", c.op, c.l, c.r)
+			}
+			lit, isInt := got.(*chplan.LitInt)
+			if !isInt || lit.V != wrapped {
+				t.Errorf("foldIntInt(%v, %d, %d) = %v; want the wrapped value %d",
+					c.op, c.l, c.r, got, wrapped)
+			}
+		}
+	})
 }

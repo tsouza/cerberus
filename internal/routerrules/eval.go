@@ -242,24 +242,38 @@ func parseEvidence(ev *Evidence) ([]evidenceExpr, error) {
 // sees concrete numbers. An unresolved placeholder is left as-is.
 func substituteMessage(msg string, groupKey map[string]string, env Env) string {
 	var sb strings.Builder
+	scanMessage(msg,
+		func(lit string) { sb.WriteString(lit) },
+		func(name string) { sb.WriteString(resolvePlaceholder(name, groupKey, env)) })
+	return sb.String()
+}
+
+// scanMessage walks a finding template, handing each literal run to lit and
+// each {name} placeholder to ph.
+//
+// substituteMessage renders those placeholders at report time;
+// validateEveryParamIsReached counts them as param references at load time. A
+// message is the only place a param can be reached without appearing in a
+// condition or a min_support ref, so the two must agree exactly on what a
+// placeholder is — hence one scanner rather than a second parser in validate.go
+// that could drift from this one.
+func scanMessage(msg string, lit func(string), ph func(name string)) {
 	for {
 		open := strings.IndexByte(msg, '{')
 		if open < 0 {
-			sb.WriteString(msg)
-			break
+			lit(msg)
+			return
 		}
-		close := strings.IndexByte(msg[open:], '}')
-		if close < 0 {
-			sb.WriteString(msg)
-			break
+		closing := strings.IndexByte(msg[open:], '}')
+		if closing < 0 {
+			lit(msg)
+			return
 		}
-		close += open
-		sb.WriteString(msg[:open])
-		name := msg[open+1 : close]
-		sb.WriteString(resolvePlaceholder(name, groupKey, env))
-		msg = msg[close+1:]
+		closing += open
+		lit(msg[:open])
+		ph(msg[open+1 : closing])
+		msg = msg[closing+1:]
 	}
-	return sb.String()
 }
 
 // unclassifiedLabel is what an absent classification reads as in a finding

@@ -71,8 +71,10 @@ func NewParamResolver(cfg ConfigLookup, src CorpusSource) *ParamResolver {
 	return &ParamResolver{cfg: cfg, src: src}
 }
 
-// Resolve resolves every parameter referenced by the catalog (transitively)
-// into an Env. It fails closed on a dependency cycle, a missing config key, or a
+// Resolve resolves every parameter DECLARED by the catalog into an Env — not
+// only the ones the rules use. validateEveryParamIsReached makes the two sets
+// identical at load time, which is what stops this loop paying for a corpus
+// pass no rule can consume. It fails closed on a dependency cycle, a missing config key, or a
 // corpus read error.
 func (r *ParamResolver) Resolve(ctx context.Context, cat *Catalog) (Env, error) {
 	specs := make(map[string]ParamSpec, len(cat.Params))

@@ -126,6 +126,7 @@ const CH_OPT_DOC = join(REPO, 'docs', 'clickhouse-optimizations.md');
 const SURFACE_INVENTORY_DIR = join(REPO, 'test', 'surface-parity', 'inventory');
 const REJECTION_CATALOGUE_DIR = join(REPO, 'test', 'rejection-parity', 'catalogue');
 const DIVERGENCE_CEILING = join(REPO, 'test', 'rejection-parity', 'divergence-ceiling.json');
+const SHAPES_GO = join(REPO, 'test', 'property', 'gen', 'shapes.go');
 
 // The dispatch mode that runs every registered scan; a legal CHECK value that is
 // deliberately not a registry entry. Mirrors `ALL` in forbid-skip.mjs.
@@ -599,6 +600,151 @@ function readWorkflows() {
     }));
 }
 
+// --- 8. property-shape roster -------------------------------------------
+//
+// docs/test-strategy.md's "Exact semantic-shape roster" enumerates every
+// stable ID test/property/gen/shapes.go publishes, grouped, with a per-group
+// count and a total. Nothing derived it, and it had drifted: the doc said 81
+// while the generator published 83, having gained promql.instant.label-replace
+// and promql.range.label-replace without the manifest following.
+//
+// A count alone would be the weaker gate — two compensating edits keep a total
+// right while naming the wrong shapes — so this asserts the SET. The doc's own
+// sentence licenses that reading: brace notation "denotes the exact listed
+// expansion, not an open-ended prefix".
+
+const SHAPE_ROSTER_HEADING = '### Exact semantic-shape roster';
+
+// liveShapeIDs reads the roster's source of truth: every
+// `<name> ShapeID = "<id>"` constant in test/property/gen/shapes.go.
+function liveShapeIDs(src) {
+  return [...src.matchAll(/ShapeID\s*=\s*"([^"]+)"/g)].map((m) => m[1]);
+}
+
+// expandBraceTerm expands one `a.{x,y}.{p,q}` term into its Cartesian product,
+// which is how the roster writes the instant-window family.
+function expandBraceTerm(term) {
+  let out = [''];
+  let rest = term;
+  while (rest.length > 0) {
+    const open = rest.indexOf('{');
+    if (open < 0) {
+      out = out.map((prefix) => prefix + rest);
+      break;
+    }
+    const close = rest.indexOf('}', open);
+    if (close < 0) {
+      out = out.map((prefix) => prefix + rest);
+      break;
+    }
+    const literal = rest.slice(0, open);
+    const alts = rest.slice(open + 1, close).split(',').filter((a) => a.length > 0);
+    out = out.flatMap((prefix) => alts.map((alt) => prefix + literal + alt));
+    rest = rest.slice(close + 1);
+  }
+  return out;
+}
+
+// braceTermsIn recovers the brace terms from one roster bullet.
+//
+// A term is written inside inline-code spans and a long one is split across
+// several of them to respect the line-length limit, so the spans have to be
+// rejoined — but only where the split is real, or two independent terms
+// separated by prose would fuse into one bogus Cartesian product. A split is
+// real in exactly two shapes: the accumulated text still has an unclosed brace,
+// or it ends in `.` and the next span opens a brace (the instant-window
+// family's `{a,b,c}.{d,e}` product). Prose outside the code spans is never
+// read, and a span with no brace is not a term.
+function braceTermsIn(chunk) {
+  const spans = [...chunk.matchAll(/`([^`]*)`/g)].map((m) => m[1].replace(/\s+/g, ''));
+  const unclosed = (t) => (t.match(/\{/g) || []).length > (t.match(/\}/g) || []).length;
+  const terms = [];
+  let cur = '';
+  for (const span of spans) {
+    if (cur === '') {
+      cur = span;
+    } else if (unclosed(cur) || (cur.endsWith('.') && span.startsWith('{'))) {
+      cur += span;
+    } else {
+      terms.push(cur);
+      cur = span;
+    }
+  }
+  if (cur !== '') terms.push(cur);
+  return terms.filter((t) => t.includes('{')).map((t) => t.replace(/\.+$/, ''));
+}
+
+// docShapeGroups parses the roster section into one entry per `- **Name — N.**`
+// bullet, carrying the stated count and the IDs its brace terms expand to.
+function docShapeGroups(src) {
+  const start = src.indexOf(SHAPE_ROSTER_HEADING);
+  if (start < 0) return { total: null, groups: [] };
+  const after = src.slice(start + SHAPE_ROSTER_HEADING.length);
+  const end = after.search(/\n#{2,3} /);
+  const section = end < 0 ? after : after.slice(0, end);
+
+  const totalMatch = section.match(/Its\s+(\d+)\s+stable\s+IDs/);
+  const total = totalMatch ? Number(totalMatch[1]) : null;
+
+  const groups = [];
+  for (const chunk of section.split(/\n- \*\*/).slice(1)) {
+    const head = chunk.match(/^([^—]+)—\s*(\d+)\.\*\*/);
+    if (!head) continue;
+    const ids = braceTermsIn(chunk).flatMap(expandBraceTerm);
+    groups.push({ name: head[1].trim(), stated: Number(head[2]), ids });
+  }
+  return { total, groups };
+}
+
+// assertShapeRoster compares the doc's expanded roster against the generator's
+// live IDs, both as a set and per stated group count.
+function assertShapeRoster() {
+  const live = liveShapeIDs(readFileSync(SHAPES_GO, 'utf8'));
+  const { total, groups } = docShapeGroups(readFileSync(TEST_STRATEGY_DOC, 'utf8'));
+  const docIDs = groups.flatMap((g) => g.ids);
+  log(
+    `property-shape roster (live): ${live.length} IDs in test/property/gen/shapes.go; ` +
+      `docs/test-strategy.md enumerates ${docIDs.length} across ${groups.length} groups`,
+  );
+
+  let ok = true;
+  if (total === null) {
+    error('doc-counts: docs/test-strategy.md states no "Its N stable IDs" total for the shape roster');
+    ok = false;
+  } else if (total !== live.length) {
+    error(
+      `doc-counts: docs/test-strategy.md says the roster has ${total} stable IDs, ` +
+        `test/property/gen/shapes.go publishes ${live.length}`,
+    );
+    ok = false;
+  }
+
+  for (const g of groups) {
+    if (g.ids.length !== g.stated) {
+      error(
+        `doc-counts: shape-roster group "${g.name}" states ${g.stated} but enumerates ${g.ids.length} IDs`,
+      );
+      ok = false;
+    }
+  }
+
+  const liveSet = new Set(live);
+  const docSet = new Set(docIDs);
+  for (const id of live) {
+    if (!docSet.has(id)) {
+      error(`doc-counts: shape ${id} is published by shapes.go and absent from the roster in docs/test-strategy.md`);
+      ok = false;
+    }
+  }
+  for (const id of docIDs) {
+    if (!liveSet.has(id)) {
+      error(`doc-counts: the roster in docs/test-strategy.md names ${id}, which shapes.go does not publish`);
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 function runAssertions() {
   const forbidSrc = readFileSync(FORBID_SKIP_MJS, 'utf8');
   const { count: fsCount, names: fsNames } = countForbidSkipChecks(forbidSrc);
@@ -664,6 +810,8 @@ function runAssertions() {
     patterns: CHOPT_TOTAL_CLAIM_PATTERNS,
   });
 
+  const rosterOk = assertShapeRoster();
+
   const callers = forbidSkipCallers(readWorkflows());
   log(
     `forbid-skip workflow callers (live): ${callers.length} ` +
@@ -671,7 +819,10 @@ function runAssertions() {
   );
   const callersOk = assertForbidSkipCallers(fsNames, callers);
 
-  if (forbidOk && layerOk && parityOk && glanceOk && divergenceOk && callersOk && choptOptInOk && choptTotalOk) {
+  if (
+    forbidOk && layerOk && parityOk && glanceOk && divergenceOk &&
+    callersOk && choptOptInOk && choptTotalOk && rosterOk
+  ) {
     notice(
       `doc-counts: all doc-stated counts match source ` +
         `(forbid-skip=${fsCount}, test-layers=${layerCount}, ` +
@@ -680,6 +831,7 @@ function runAssertions() {
         `chopt=${chopt.optIn}/${chopt.total} opt-in-only, ` +
         `the coverage glance table matches the surface-parity ledger, ` +
         `shape-divergences=${divCount}, ` +
+        `the semantic-shape roster matches test/property/gen/shapes.go, ` +
         `${callers.length} workflow CHECK callers all name a live scan)`,
     );
     return 0;
@@ -1032,6 +1184,65 @@ function selfTest() {
   );
 
   check('real docs/coverage.md glance table matches test/surface-parity/inventory/', assertSurfaceParityGlance());
+
+  // 8. The shape roster is asserted as a SET, so the brace-term reader is what
+  // has to be trustworthy: it must rejoin a term the doc wrapped across code
+  // spans, expand a Cartesian product, and NOT fuse two independent terms that
+  // merely sit next to each other in one bullet.
+  check(
+    'brace expander expands a single group',
+    expandBraceTerm('a.{x,y,z}').join(',') === 'a.x,a.y,a.z',
+  );
+  check(
+    'brace expander expands a Cartesian product of two groups',
+    expandBraceTerm('a.{p,q}.{m,n}').join(',') === 'a.p.m,a.p.n,a.q.m,a.q.n',
+  );
+  check(
+    'brace-term reader rejoins a term the doc wrapped mid-list across code spans',
+    braceTermsIn('- **G — 3.** `a.{x,`\n  `y,z}`.').join(',') === 'a.{x,y,z}',
+  );
+  check(
+    'brace-term reader rejoins a Cartesian product split at the dot',
+    braceTermsIn('`a.{p,q}.`\n`{m,n}`').join(',') === 'a.{p,q}.{m,n}',
+  );
+  check(
+    'brace-term reader keeps two adjacent independent terms apart',
+    braceTermsIn('`a.{x,y}`; `b.{z}`').length === 2,
+  );
+  check(
+    'brace-term reader ignores a code span that is prose, not a term',
+    braceTermsIn('`a.{x,y}` where `duration-aggregate` is the average').length === 1,
+  );
+  const fakeRoster = [
+    '### Exact semantic-shape roster',
+    '',
+    'source of truth. Its 3 stable',
+    'IDs are grouped as follows:',
+    '',
+    '- **G1 — 2.** `a.{x,y}`.',
+    '- **G2 — 1.** `b.{z}`.',
+    '',
+    '## Next section',
+  ].join('\n');
+  const fakeGroups = docShapeGroups(fakeRoster);
+  check('roster reader reads the stated total', fakeGroups.total === 3);
+  check(
+    'roster reader reads each group and its IDs',
+    fakeGroups.groups.length === 2 &&
+      fakeGroups.groups[0].stated === 2 &&
+      fakeGroups.groups.flatMap((g) => g.ids).join(',') === 'a.x,a.y,b.z',
+  );
+  check(
+    'roster reader stops at the next heading rather than swallowing the rest of the doc',
+    !fakeGroups.groups.some((g) => g.name.includes('Next')),
+  );
+  const liveIDs = liveShapeIDs(readFileSync(SHAPES_GO, 'utf8'));
+  check('shapes.go reader found the live stable IDs', liveIDs.length > 0);
+  check(
+    'shapes.go reader returns the ID string, not the Go constant name',
+    liveIDs.every((id) => id.includes('.') && id === id.toLowerCase()),
+  );
+  check('real semantic-shape roster matches test/property/gen/shapes.go', assertShapeRoster());
 
   // 7. The shape-divergence count is a SECOND measurement, and the doc must
   //    state it rather than let the symbol-level zero stand in for it.

@@ -248,3 +248,139 @@ func TestAggregateColumns_Having(t *testing.T) {
 		t.Errorf("aggregateColumns() = %v, want %v", got, want)
 	}
 }
+
+// --- Expr-traversal exhaustiveness: the columns a pruned Scan must keep.
+//
+// stageColumns delegates its Expr walk to chplan.InspectExpr precisely so
+// that the "an unwalked Expr kind hides the columns its subtree reads,
+// ProjectionPushdown prunes them, ClickHouse answers error 47" class cannot
+// reopen. The three tests below pin that contract behaviourally, one per
+// Expr kind whose children the optimizer's former hand-rolled walk did NOT
+// descend into (WindowExpr, InSubquery) plus the one whose embedded plan it
+// deliberately must NOT descend into (ScalarSubquery). Each is a real
+// pruning shape: the surviving projection supplies at least one OTHER
+// column, so the rule fires and produces a narrowed Scan.Columns — a set
+// the missing column is absent from unless the traversal reaches it.
+
+// TestProjectionPushdown_KeepsWindowExprColumns pins that a column read
+// only from inside a WindowExpr (its Args or its PartitionBy) survives the
+// narrowing. `max(TimeUnix) OVER (PARTITION BY MetricName)` reads both off
+// the Scan the rule is about to prune.
+func TestProjectionPushdown_KeepsWindowExprColumns(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "v"},
+			{
+				Expr: &chplan.WindowExpr{
+					Fn:          chplan.FnMax,
+					Args:        []chplan.Expr{&chplan.ColumnRef{Name: "TimeUnix"}},
+					PartitionBy: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}},
+				},
+				Alias: "series_end",
+			},
+		},
+	}
+
+	out, changed := ProjectionPushdown{}.Apply(plan)
+	if !changed {
+		t.Fatal("ProjectionPushdown did not fire on Project(Scan)")
+	}
+	got := narrowedScanColumns(t, out)
+	want := []string{"MetricName", "TimeUnix", "Value"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("narrowed Scan.Columns = %v, want %v — a column read only inside a WindowExpr was pruned", got, want)
+	}
+}
+
+// TestProjectionPushdown_KeepsInSubqueryLeftColumn pins that the LHS of an
+// `<col> IN (<subquery>)` predicate survives the narrowing. The predicate
+// is evaluated on the narrowed Scan's row shape, so pruning TraceId off it
+// emits SQL ClickHouse rejects with UNKNOWN_IDENTIFIER.
+func TestProjectionPushdown_KeepsInSubqueryLeftColumn(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.Project{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_traces"},
+			Predicate: &chplan.InSubquery{
+				Left:     &chplan.ColumnRef{Name: "TraceId"},
+				Subquery: &chplan.Scan{Table: "otel_traces", Columns: []string{"TraceId"}},
+			},
+		},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "SpanName"}, Alias: "name"},
+		},
+	}
+
+	out, changed := ProjectionPushdown{}.Apply(plan)
+	if !changed {
+		t.Fatal("ProjectionPushdown did not fire on Project(Filter(Scan))")
+	}
+	got := narrowedScanColumns(t, out)
+	want := []string{"SpanName", "TraceId"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("narrowed Scan.Columns = %v, want %v — the IN-subquery's LHS column was pruned", got, want)
+	}
+}
+
+// TestProjectionPushdown_IgnoresScalarSubqueryPlanColumns pins the other
+// half of the boundary: InspectExpr is called WITHOUT a node visitor, so a
+// ScalarSubquery's embedded plan — a separate relation whose column reads
+// are satisfied in its own scope — contributes nothing to the outer Scan's
+// column set. Widening the traversal to InspectExprNodes would leak
+// `InnerOnly` (a column of a different table) into this Scan.
+func TestProjectionPushdown_IgnoresScalarSubqueryPlanColumns(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Projections: []chplan.Projection{
+			{
+				Expr: &chplan.Binary{
+					Op:   chplan.OpDiv,
+					Left: &chplan.ColumnRef{Name: "Value"},
+					Right: &chplan.ScalarSubquery{
+						Input: &chplan.Project{
+							Input:       &chplan.Scan{Table: "otel_metrics_sum"},
+							Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "InnerOnly"}}},
+						},
+					},
+				},
+				Alias: "ratio",
+			},
+		},
+	}
+
+	out, changed := ProjectionPushdown{}.Apply(plan)
+	if !changed {
+		t.Fatal("ProjectionPushdown did not fire on Project(Scan)")
+	}
+	got := narrowedScanColumns(t, out)
+	want := []string{"Value"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("narrowed Scan.Columns = %v, want %v — the ScalarSubquery's own relation leaked into the outer Scan", got, want)
+	}
+}
+
+// narrowedScanColumns digs the (single) Scan out of a rewritten Project
+// tree and returns its Columns. Fails the test if the shape is not the
+// Project(Scan) / Project(Filter(Scan)) the pushdown produces.
+func narrowedScanColumns(t *testing.T, n chplan.Node) []string {
+	t.Helper()
+	p, ok := n.(*chplan.Project)
+	if !ok {
+		t.Fatalf("expected *chplan.Project at the root, got %T", n)
+	}
+	inner := p.Input
+	if f, isFilter := inner.(*chplan.Filter); isFilter {
+		inner = f.Input
+	}
+	s, ok := inner.(*chplan.Scan)
+	if !ok {
+		t.Fatalf("expected a *chplan.Scan under the Project, got %T", inner)
+	}
+	return s.Columns
+}

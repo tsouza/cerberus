@@ -42,8 +42,80 @@ func Validate(cat *Catalog) error {
 	}
 
 	validateRules(cat, paramNames, specs, add)
+	validateEveryParamIsReached(cat, specs, add)
 
 	return errors.Join(errs...)
+}
+
+// validateEveryParamIsReached is the dual of the dangling-ref check: a declared
+// param that no rule reaches is rejected.
+//
+// It is not tidiness. ParamResolver.Resolve walks cat.Params, not the params
+// the rules actually use, and every corpus-kind param drives its own full
+// corpus pass. An unreached corpus param therefore costs a complete aggregate
+// scan on every run and can never influence a finding — waste no other check
+// could see, because the dangling-ref check only looks the other way (a rule
+// naming a param that does not exist).
+//
+// Reachability is transitive: a rule reaches the params in its condition and
+// its min_support, and each reached param reaches the params it refs (a
+// percentile's fraction, a config_scaled ref and scale_by). watermark_pctile is
+// reached that way; no rule names it directly.
+func validateEveryParamIsReached(cat *Catalog, specs map[string]ParamSpec, add func(string, ...any)) {
+	reached := map[string]struct{}{}
+
+	var reach func(name string)
+	reach = func(name string) {
+		if _, done := reached[name]; done {
+			return
+		}
+		spec, ok := specs[name]
+		if !ok {
+			return // undeclared: already reported as a dangling ref.
+		}
+		reached[name] = struct{}{}
+		if spec.Percentile != nil && spec.Percentile.Ref != "" {
+			reach(spec.Percentile.Ref)
+		}
+		if spec.Ref != "" {
+			reach(spec.Ref)
+		}
+		if spec.ScaleBy != "" {
+			reach(spec.ScaleBy)
+		}
+	}
+
+	for i := range cat.Rules {
+		r := &cat.Rules[i]
+		if r.MinSupport != nil && r.MinSupport.Ref != "" {
+			reach(r.MinSupport.Ref)
+		}
+		// A finding message reaches a param too: {cerberus_reject_ratio} is
+		// deliberately MESSAGE-only context and gates nothing. reach ignores a
+		// placeholder that is a group-key column rather than a param.
+		scanMessage(r.Finding, func(string) {}, reach)
+		cond, err := lowerPredicate(r.Condition)
+		if err != nil {
+			continue // a malformed condition is already reported by validateCondition.
+		}
+		refs := map[string]struct{}{}
+		cond.paramRefs(refs)
+		for name := range refs {
+			reach(name)
+		}
+	}
+
+	for i := range cat.Params {
+		name := cat.Params[i].Name
+		if name == "" {
+			continue // already reported by validateParams.
+		}
+		if _, ok := reached[name]; !ok {
+			add("param %q is declared but no rule reaches it: it is resolved on every "+
+				"run (a corpus param costs a full aggregate scan) and can never affect "+
+				"a finding", name)
+		}
+	}
 }
 
 // validateParams checks each param spec and returns the set of declared param

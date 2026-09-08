@@ -1254,3 +1254,83 @@ func TestPlan_NativeFanoutStillRoutes(t *testing.T) {
 		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
 	}
 }
+
+// TestClassifyNeverReportsEligibleBelowTheShardFloor pins the invariant that
+// makes Plan's k-below-floor arm unnecessary rather than merely absent.
+//
+// Plan carried `if k < 2 { return notRouted(ReasonBelowThreshold) }` until
+// #3188. It could never run: classify clamps kk UP to minRouteBShards and only
+// then DOWN to upper, and refuses with ReasonHighD when upper is below the
+// floor, so every eligible classify already returns k >= minRouteBShards. A
+// branch that cannot execute is not a safety net — it reads as one while
+// pinning nothing, and it made the real floor look like it lived in Plan.
+//
+// The floor now lives in exactly one place, so this sweep is what guards it.
+// floorClamped counts the cases where the anchor-derived kk was itself below
+// the floor, i.e. where the clamp is the only thing keeping k legal; requiring
+// it to be non-zero is what stops this test passing over a sweep that never
+// reached the clamp at all.
+func TestClassifyNeverReportsEligibleBelowTheShardFloor(t *testing.T) {
+	t.Parallel()
+
+	// A sweep wide enough that MinAnchorsPerSlice ranges from far below the
+	// anchor count to far above it, which is the axis that drives kk below the
+	// floor.
+	steps := []time.Duration{15 * time.Second, time.Minute, 5 * time.Minute}
+	outers := []time.Duration{30 * time.Minute, time.Hour, 6 * time.Hour}
+	perSlice := []int{1, 4, 30, 240, 5000}
+
+	var eligible, floorClamped int
+	for _, step := range steps {
+		for _, outer := range outers {
+			for _, mps := range perSlice {
+				cfg := autoCfg()
+				cfg.MinAnchorsPerSlice = mps
+				p := &Planner{Cfg: cfg}
+
+				start := gridStart
+				end := start.Add(outer)
+				rw := &chplan.RangeWindow{
+					Input:           leafScan(),
+					Func:            "rate",
+					Range:           5 * time.Minute,
+					Step:            step,
+					OuterRange:      outer,
+					Start:           start,
+					End:             end,
+					TimestampColumn: "TimeUnix",
+					ValueColumn:     "Value",
+					GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+				}
+				plan := &chplan.Aggregate{
+					Input:    rw,
+					AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+				}
+				meta := RequestMeta{Lang: LangPromQL, Start: start, End: end, Step: step}
+
+				sig, _, k, ok := p.classify(plan, meta)
+				if !ok {
+					continue
+				}
+				eligible++
+				if k < minRouteBShards {
+					t.Errorf("classify(step=%s outer=%s minAnchorsPerSlice=%d) reported eligible with k=%d, "+
+						"below the minRouteBShards=%d floor — Plan and sliceAndDecide take that floor as given",
+						step, outer, mps, k, minRouteBShards)
+				}
+				if int64(sig.outerN/mps) < minRouteBShards {
+					floorClamped++
+				}
+			}
+		}
+	}
+
+	if eligible == 0 {
+		t.Fatal("no swept shape classified eligible: the sweep asserts nothing")
+	}
+	if floorClamped == 0 {
+		t.Fatalf("swept %d eligible shapes but none had an anchor-derived kk below the floor: "+
+			"the clamp this test exists to pin was never exercised", eligible)
+	}
+	t.Logf("swept %d eligible shapes, %d of them relying on the floor clamp", eligible, floorClamped)
+}

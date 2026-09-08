@@ -371,15 +371,20 @@ func cardinalityProbeEffectiveDistinctSeries(est chclient.CardinalityEstimate) u
 // ESTIMATE's granule-resolution upper bound for the SAME K-clamp arithmetic
 // planner.go already applies (solver.ScanEstimate.Rows' own doc) — while
 // Parts/Marks (EXPLAIN-ESTIMATE-only, unread by classify()) pass through
-// untouched. DistinctSeries is always set from the probe: base never
-// carries one (ScanEstimateAdvisor has no comparable per-series signal).
+// untouched.
+//
+// The distinct-series reading is deliberately NOT folded in. It has exactly
+// one consumer, maybeSeedPerRungPrior, which reads it off the
+// chclient.CardinalityEstimate directly and through
+// cardinalityProbeEffectiveDistinctSeries — the saturation-aware resolver a
+// raw copy would bypass. solver.ScanEstimate carried a DistinctSeries field
+// that this function wrote and nothing ever read (#3188).
 func mergeCardinalityEstimate(base *solver.ScanEstimate, est chclient.CardinalityEstimate) *solver.ScanEstimate {
 	merged := solver.ScanEstimate{}
 	if base != nil {
 		merged = *base
 	}
 	merged.Rows = est.Rows
-	merged.DistinctSeries = est.DistinctSeries
 	return &merged
 }
 

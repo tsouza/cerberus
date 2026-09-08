@@ -50,9 +50,18 @@ import (
 // stuck-WebSocket leaks this file names as its targets.
 //
 // t.Cleanup runs LIFO, so registering this FIRST makes it run LAST.
+//
+// The options are built HERE and captured, never inside the cleanup closure.
+// goleak.IgnoreCurrent snapshots the live goroutine set at OPTION-CREATION
+// time; building the options inside the closure takes that snapshot at
+// verification time, so every goroutine the test leaked is in the snapshot and
+// is ignored, and VerifyNone cannot fail for any reason. Call this as the first
+// statement of the test, before anything spawns a goroutine, so the baseline is
+// the inventory the test inherited rather than the one it created.
 func verifyNoLeaksAfterCleanup(t *testing.T) {
 	t.Helper()
-	t.Cleanup(func() { goleak.VerifyNone(t, goleakOpts()...) })
+	opts := goleakOpts()
+	t.Cleanup(func() { goleak.VerifyNone(t, opts...) })
 }
 
 // goleakOpts excludes the few intermittent goroutines that don't
@@ -66,14 +75,18 @@ func verifyNoLeaksAfterCleanup(t *testing.T) {
 // verifyNoLeaksAfterCleanup); with the ordering fixed the suite passes
 // without it. Do not re-add it: an entry that broad makes the detector
 // unable to fail for its stated targets.
+//
+// IgnoreCurrent must be evaluated before the test body runs — see
+// verifyNoLeaksAfterCleanup — which is why this returns options rather than
+// running the verification itself.
 func goleakOpts() []goleak.Option {
 	return []goleak.Option{
 		goleak.IgnoreTopFunction("net/http.(*Transport).getConn"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
-		// Some tests use httptest.Server which spawns its own conn-tracking
-		// goroutines that linger briefly after Close — ignore the standard
-		// tail.
+		// Goroutines the test inherited from the ones that ran before it in
+		// this binary: another test's lingering conn-tracking tail is not this
+		// test's leak.
 		goleak.IgnoreCurrent(),
 	}
 }
@@ -559,5 +572,81 @@ func TestNoGoroutineLeak_RouteMemo(t *testing.T) {
 
 	if state, _ := m.Lookup(other); state != routememo.BothFail {
 		t.Fatalf("Lookup(other) = %v, want BothFail", state)
+	}
+}
+
+// recordingLeakT is a goleak.TestingT that records failure instead of failing
+// the surrounding test, so a test can assert that the leak detector DOES fire.
+type recordingLeakT struct {
+	mu     sync.Mutex
+	failed bool
+}
+
+func (r *recordingLeakT) Error(...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failed = true
+}
+
+// TestGoleakDetectorCanFail is the meta-test for the 14 leak tests above: it
+// proves the guard they all call actually reports a leaked goroutine.
+//
+// The whole suite was vacuous before this test existed. goleak.IgnoreCurrent
+// snapshots the live goroutine set when the OPTION is constructed, and
+// verifyNoLeaksAfterCleanup built its options inside the cleanup closure — so
+// the snapshot was taken at verification time, contained every goroutine the
+// test had leaked, and ignored all of them. A goroutine deliberately parked for
+// 30s passed all 14 tests.
+//
+// Both arms below run the identical leak against the identical options, and
+// differ only in WHEN the options are built. That is the entire mechanism, so
+// the "after" arm is asserted too: if goleak ever changed IgnoreCurrent to
+// snapshot lazily, the "after" arm would start failing and tell us the
+// ordering rule this file is built on no longer holds.
+func TestGoleakDetectorCanFail(t *testing.T) {
+	tests := []struct {
+		name string
+		// buildBeforeLeak mirrors verifyNoLeaksAfterCleanup: options are
+		// constructed before the test body spawns anything.
+		buildBeforeLeak bool
+		wantDetected    bool
+	}{
+		{name: "options built before the leak detect it", buildBeforeLeak: true, wantDetected: true},
+		{name: "options built after the leak ignore it", buildBeforeLeak: false, wantDetected: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts []goleak.Option
+			if tc.buildBeforeLeak {
+				opts = goleakOpts()
+			}
+
+			// A goroutine that outlives the body, released only on cleanup so
+			// this test leaks nothing of its own.
+			release := make(chan struct{})
+			running := make(chan struct{})
+			t.Cleanup(func() { close(release) })
+			go func() {
+				close(running)
+				<-release
+			}()
+			<-running
+
+			if !tc.buildBeforeLeak {
+				opts = goleakOpts()
+			}
+
+			rec := &recordingLeakT{}
+			goleak.VerifyNone(rec, opts...)
+
+			rec.mu.Lock()
+			got := rec.failed
+			rec.mu.Unlock()
+			if got != tc.wantDetected {
+				t.Fatalf("leak detected = %v, want %v — the Layer 11 detector's "+
+					"IgnoreCurrent ordering no longer behaves as this file assumes", got, tc.wantDetected)
+			}
+		})
 	}
 }

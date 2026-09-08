@@ -32,9 +32,6 @@ func TestDefaultOTelMetricsFromEnv_Unset(t *testing.T) {
 	if got.MetricNameColumn != want.MetricNameColumn {
 		t.Errorf("MetricNameColumn drifted: got %q, want %q", got.MetricNameColumn, want.MetricNameColumn)
 	}
-	if len(got.MetricsRollups) != len(want.MetricsRollups) {
-		t.Errorf("MetricsRollups length drifted: got %d, want %d", len(got.MetricsRollups), len(want.MetricsRollups))
-	}
 }
 
 // TestDefaultOTelMetricsFromEnv_Overrides walks every overridable

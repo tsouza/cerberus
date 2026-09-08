@@ -98,16 +98,16 @@ func TestCardinalityProbeAdvisor_SkipsSecondProbeForSameShapeAndMetric(t *testin
 	baseline := cardinalityProbeTestBaseline(solver.ReasonRouted)
 
 	first := a.Advise(context.Background(), nil, plan, baseline, nil)
-	if first == nil || first.Rows != 500_000 || first.DistinctSeries != 40 {
-		t.Fatalf("first probe: got %+v, want Rows=500000, DistinctSeries=40", first)
+	if first == nil || first.Rows != 500_000 {
+		t.Fatalf("first probe: got %+v, want Rows=500000", first)
 	}
 	if probe.calls != 1 {
 		t.Fatalf("first probe issued %d round trips, want 1", probe.calls)
 	}
 
 	second := a.Advise(context.Background(), nil, plan, baseline, nil)
-	if second == nil || second.Rows != 500_000 || second.DistinctSeries != 40 {
-		t.Fatalf("second probe (cached): got %+v, want Rows=500000, DistinctSeries=40", second)
+	if second == nil || second.Rows != 500_000 {
+		t.Fatalf("second probe (cached): got %+v, want Rows=500000", second)
 	}
 	if probe.calls != 1 {
 		t.Fatalf("second probe for the SAME (shape, metric) issued %d round trips, want 1 (cache hit)", probe.calls)
@@ -138,11 +138,12 @@ func TestCardinalityProbeAdvisor_SkipsWhenRouteMemoHasVerdict(t *testing.T) {
 	key := cardinalityProbeTestKey()
 
 	memo := routememo.New(time.Hour)
-	memo.Observe(key, routememo.RouteA, routememo.OutcomeResourceFailure)
-	memo.Observe(key, routememo.RouteA, routememo.OutcomeResourceFailure)
-	release, ok := memo.BeginProbe(key)
+	for i := 0; i < routememo.MinCorroboratingFailures-1; i++ {
+		memo.Observe(key, routememo.RouteA, routememo.OutcomeResourceFailure)
+	}
+	release, ok, _ := memo.ObserveRouteAFailureAndMaybeBeginProbe(key)
 	if !ok {
-		t.Fatalf("BeginProbe declined admission for a corroborated key")
+		t.Fatalf("route memo declined probe admission for a corroborated key")
 	}
 	memo.Observe(key, routememo.RouteB, routememo.OutcomeSuccess)
 	release()
@@ -351,8 +352,8 @@ func TestCardinalityProbeAdvisor_ProbesNewCarrierKinds(t *testing.T) {
 			baseline := cardinalityProbeTestBaseline(solver.ReasonRouted)
 
 			got := a.Advise(context.Background(), nil, plan, baseline, nil)
-			if got == nil || got.Rows != 500_000 || got.DistinctSeries != 40 {
-				t.Fatalf("%s: got %+v, want Rows=500000, DistinctSeries=40", name, got)
+			if got == nil || got.Rows != 500_000 {
+				t.Fatalf("%s: got %+v, want Rows=500000", name, got)
 			}
 			if probe.calls != 1 {
 				t.Fatalf("%s: issued %d round trips, want 1", name, probe.calls)
@@ -411,9 +412,6 @@ func TestCardinalityProbeAdvisor_MergesWithExistingEstimate(t *testing.T) {
 	}
 	if got.Rows != 900_000 {
 		t.Fatalf("got Rows=%d, want the REAL probe count (900000) to supersede the granule upper bound", got.Rows)
-	}
-	if got.DistinctSeries != 12 {
-		t.Fatalf("got DistinctSeries=%d, want 12", got.DistinctSeries)
 	}
 	if current.Rows != 500_000 {
 		t.Fatalf("merge must not mutate the caller's current estimate in place; got Rows=%d", current.Rows)
