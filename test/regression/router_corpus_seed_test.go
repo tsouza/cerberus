@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/routerrules"
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
@@ -184,4 +185,88 @@ func checkCorpusFixture(t *testing.T, path string, valid map[string]struct{}) (c
 		t.Fatalf("scan %s: %v", path, err)
 	}
 	return classified, unclassified
+}
+
+// TestRouterBenchCorpusIsProducible extends the reachable-states pin above from
+// the JSONL fixtures to the GENERATED benchmark corpus, which
+// TestRouterCorpusFixturesAreProducible never saw: it globs *.jsonl, and the
+// benchmark corpus is built in Go by routerrules.GenerateBenchCorpus and handed
+// straight to the evaluator through the in-memory seam, never touching a file.
+//
+// That gap is not hypothetical. The benchmark corpus used to plant
+// decision_reason tokens no production path can emit — "sliceable" on its
+// route-B rows and "high-cardinality" on its route-A OOM and timeout rows —
+// neither of which is a solver.Reasons member. Three catalog rules group by
+// decision_reason, so the regression floors, the sweep and the ClickHouse
+// parity lane all scored a corpus whose reason column was fiction, and the
+// route-B rows additionally claimed a refusal reason while carrying route B.
+//
+// Two of the three invariants documented on TestRouterCorpusFixturesAreProducible
+// are asserted here, both derived from the production consts rather than
+// restated:
+//
+//  1. decision_reason is a solver.Reasons member or the corpus-only non-PromQL
+//     token.
+//
+//  3. route == "B" iff decision_reason == solver.ReasonRouted.
+//
+// Invariant 2 (only PromQL rows carry a classification) is NOT asserted here,
+// and deliberately so rather than silently: the benchmark corpus plants
+// classified LogQL and TraceQL classes — route A with real geometry — which the
+// solver cannot produce, because solver.Classify is PromQL-gated. Making those
+// classes honest changes which rules can fire on them and therefore the labeled
+// ground truth and the regression floors, so it is its own change, tracked in
+// issue #3204. Asserting the two invariants that DO hold is what keeps the
+// remaining gap visible instead of letting the whole corpus go unpinned.
+func TestRouterBenchCorpusIsProducible(t *testing.T) {
+	t.Parallel()
+
+	corpus := routerrules.GenerateBenchCorpus(routerrules.BenchParams{})
+	if len(corpus.Rows) == 0 {
+		t.Fatal("benchmark corpus generated no rows — this pin would assert nothing")
+	}
+	if len(corpus.Classes) == 0 {
+		t.Fatal("benchmark corpus generated no labeled classes — this pin would assert nothing")
+	}
+
+	valid := validRouterDecisionReasons()
+
+	// Both sides of invariant 3 must be exercised, or a corpus that happened to
+	// contain only route-A rows would satisfy it vacuously.
+	var routeB, routeA int
+	for i, r := range corpus.Rows {
+		if _, ok := valid[r.DecisionReason]; !ok {
+			t.Errorf("bench row %d (%s/%s) has decision_reason %q, which is no token production can emit",
+				i, r.ShapeID, r.Language, r.DecisionReason)
+		}
+		if routed := r.DecisionReason == solver.ReasonRouted; (r.Route == "B") != routed {
+			t.Errorf("bench row %d (%s/%s) has route=%q with decision_reason=%q; route B and %q are the same event",
+				i, r.ShapeID, r.Language, r.Route, r.DecisionReason, solver.ReasonRouted)
+		}
+		switch r.Route {
+		case "B":
+			routeB++
+		case "A":
+			routeA++
+		}
+	}
+	if routeB == 0 {
+		t.Error("no route-B bench row — the route-B half of the routed-reason invariant is untested")
+	}
+	if routeA == 0 {
+		t.Error("no route-A bench row — the refusal half of the routed-reason invariant is untested")
+	}
+
+	// The labeled ground truth carries decision_reason too, and a finding is
+	// matched back to its class by that column: a class labeled with an
+	// unproducible reason scores rules against a class no row can belong to.
+	for i, c := range corpus.Classes {
+		if c.DecisionReason == "" {
+			continue // a class may group on shape_id alone
+		}
+		if _, ok := valid[c.DecisionReason]; !ok {
+			t.Errorf("bench class %d (%s/%s) has decision_reason %q, which is no token production can emit",
+				i, c.ShapeID, c.Language, c.DecisionReason)
+		}
+	}
 }

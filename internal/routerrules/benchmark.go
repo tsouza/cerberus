@@ -88,19 +88,18 @@ type BenchRow struct {
 func (r BenchRow) toCorpusRow() corpusRow {
 	return corpusRow{
 		numeric: map[string]float64{
-			"n_anchors":             r.NAnchors,
-			"fanout":                r.Fanout,
-			"cumulative_d":          r.CumulativeD,
-			"outer_range":           r.OuterRange,
-			"step":                  r.Step,
-			"k_shards":              r.KShards,
-			"read_rows":             r.ReadRows,
-			"read_bytes":            r.ReadBytes,
-			"query_duration_ms":     r.QueryDurationMS,
-			"memory_usage":          r.MemoryUsage,
-			"shards_observed":       r.ShardsObserved,
-			"parallelism":           r.Parallelism,
-			"normalized_query_hash": float64(r.NormalizedQueryHash),
+			"n_anchors":         r.NAnchors,
+			"fanout":            r.Fanout,
+			"cumulative_d":      r.CumulativeD,
+			"outer_range":       r.OuterRange,
+			"step":              r.Step,
+			"k_shards":          r.KShards,
+			"read_rows":         r.ReadRows,
+			"read_bytes":        r.ReadBytes,
+			"query_duration_ms": r.QueryDurationMS,
+			"memory_usage":      r.MemoryUsage,
+			"shards_observed":   r.ShardsObserved,
+			"parallelism":       r.Parallelism,
 		},
 		str: map[string]string{
 			"shape_id":              r.ShapeID,
@@ -108,7 +107,7 @@ func (r BenchRow) toCorpusRow() corpusRow {
 			"route":                 r.Route,
 			"decision_reason":       r.DecisionReason,
 			"exit_status":           r.ExitStatus,
-			"normalized_query_hash": formatNumeric(float64(r.NormalizedQueryHash)),
+			"normalized_query_hash": formatQueryHash(r.NormalizedQueryHash),
 		},
 	}
 }
@@ -357,7 +356,7 @@ func plantRouteBFloor(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 				KShards:             k,
 				ShardsObserved:      k,
 				Parallelism:         benchRouteBParallelism,
-				DecisionReason:      "sliceable",
+				DecisionReason:      "routed",
 				ReadRows:            jitter(rng, healthyReadBase, healthyReadSpread),
 				ReadBytes:           jitter(rng, 1_000_000, 40_000_000),
 				QueryDurationMS:     jitter(rng, routeBFloorDurBase, routeBFloorDurSpread),
@@ -366,7 +365,7 @@ func plantRouteBFloor(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 			})
 		}
 		bc.Classes = append(bc.Classes, LabeledClass{
-			ShapeID: shape, Language: lang, DecisionReason: "sliceable",
+			ShapeID: shape, Language: lang, DecisionReason: "routed",
 			QueryHash: hash, Expect: nil, Severity: SevHealthy,
 		})
 	}
@@ -487,7 +486,7 @@ func pathologyFailureSpecs() []pathologySpec {
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "A", ExitStatus: "oom", DecisionReason: "high-cardinality",
+					Route: "A", ExitStatus: "oom", DecisionReason: "high-D",
 					MemoryUsage: pick(sev, sevMemSevere, sevMemMarg),
 					CumulativeD: pick(sev, sevDSevere, sevDMarg),
 					NAnchors:    jitter(rng, 5, 20), Fanout: jitter(rng, 20, 40),
@@ -513,7 +512,7 @@ func pathologyFailureSpecs() []pathologySpec {
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "A", ExitStatus: "timeout", DecisionReason: "high-cardinality",
+					Route: "A", ExitStatus: "timeout", DecisionReason: "high-D",
 					QueryDurationMS: pick(sev, sevDurSevere, sevDurMarg),
 					CumulativeD:     pick(sev, sevDSevere, sevDMarg),
 					NAnchors:        jitter(rng, 5, 20), Fanout: jitter(rng, 20, 40),
@@ -566,7 +565,7 @@ func pathologyFailureSpecs() []pathologySpec {
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "B", ExitStatus: "oom", DecisionReason: "not-sliceable",
+					Route: "B", ExitStatus: "oom", DecisionReason: "routed",
 					KShards: jitter(rng, 8, 32), CumulativeD: sevDSevere,
 					// The OOM cancels the fan-out, so only the resident wave ever
 					// reached ClickHouse: shards_observed falls short of k_shards.
@@ -592,7 +591,7 @@ func pathologyTailSpecs() []pathologySpec {
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "B", ExitStatus: "ok", DecisionReason: "sliceable",
+					Route: "B", ExitStatus: "ok", DecisionReason: "routed",
 					Fanout: regretFanout, QueryDurationMS: regretDur, KShards: regretShards,
 					ShardsObserved: regretShards, Parallelism: benchRouteBParallelism,
 					CumulativeD: jitter(rng, healthyDBase, healthyDSpread),
@@ -695,7 +694,7 @@ func max(a, b int) int {
 // classID is a stable identifier for a labeled class across its group_by
 // dimensions, used to order classes and to look one up from a fired finding.
 func classID(c LabeledClass) string {
-	return c.Language + "|" + c.ShapeID + "|" + c.DecisionReason + "|" + formatNumeric(float64(c.QueryHash))
+	return c.Language + "|" + c.ShapeID + "|" + c.DecisionReason + "|" + formatQueryHash(c.QueryHash)
 }
 
 func sortBenchRows(rows []BenchRow) {
