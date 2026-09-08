@@ -415,7 +415,7 @@ func expHistogramWindowReshape(
 		})
 		extraFactorAliases = []string{hqWindowResetsAlias}
 	}
-	closedForm := expHistogramWindowClosedFormApplies(windowFn, resets)
+	closedForm := in.closedFormEligible && expHistogramWindowClosedFormApplies(windowFn, resets)
 	if closedForm {
 		maskAliases := extraFactorAliases
 		stages = append(stages, func(n chplan.Node) chplan.Node {
@@ -501,7 +501,7 @@ func expHistogramWindowReshape(
 //
 // rangeStart / rangeEnd are the window's own edges — see
 // classicBucketWindowStage's twin doc.
-func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
+func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	// Widened by expHistogramValuedWindowAggs / expHistogramValuedWindowScalars
 	// — the same Sum-collecting widening rate()/increase() apply for their
 	// histogram-VALUED output — so the quantile kernel's rankBase /
@@ -545,6 +545,7 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 		resets:      resets,
 		perSecond:   perSecond,
 	}
+	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
 	fold := histogramWindowFold(shape.windowFn, winIn)
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),

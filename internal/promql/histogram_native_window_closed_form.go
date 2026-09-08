@@ -374,3 +374,64 @@ func (r expHistogramWindowRowSource) array(alias string) chplan.Expr {
 	}
 	return &chplan.ColumnRef{Name: alias}
 }
+
+// ExpHistogramWindowFoldLowerer decides whether an exponential-histogram
+// rate()/increase() window folds its bucket ladders in closed form.
+//
+// Unlike the other lowerer strategies in [RangeLowerers], this one is not
+// an operator-facing capability and carries no chopt feature id: both
+// arms compute the same values bit-for-bit over the stored integer bucket
+// counts, so there is nothing for a deployment to choose. It exists so a
+// test can run one query through both renderings and compare — see
+// [ClosedFormExpHistogramWindowFoldLowerer] and
+// [TelescopingExpHistogramWindowFoldLowerer].
+type ExpHistogramWindowFoldLowerer interface {
+	// ClosedFormWindowFoldEligible reports whether a window whose
+	// extrapolation factor was hoisted may use the closed-form fold.
+	// Returning true is permission, not a demand: the reshape still
+	// declines for any shape the closed form does not cover (see
+	// [expHistogramWindowClosedFormApplies]) and for a window whose
+	// factor could not be hoisted, since the closed form scales by that
+	// factor's own column.
+	ClosedFormWindowFoldEligible() bool
+}
+
+// ClosedFormExpHistogramWindowFoldLowerer is the DEFAULT: fold the bucket
+// ladders through the coefficient vector, reading only the rows whose
+// coefficient is non-zero.
+type ClosedFormExpHistogramWindowFoldLowerer struct{}
+
+// ClosedFormWindowFoldEligible returns true.
+func (ClosedFormExpHistogramWindowFoldLowerer) ClosedFormWindowFoldEligible() bool { return true }
+
+// TelescopingExpHistogramWindowFoldLowerer keeps the shared
+// per-consecutive-pair fold ([counterIncreaseFold]) for the bucket
+// ladders — the rendering the closed form replaced.
+//
+// It is the differential oracle, not a fallback: no deployment wires it,
+// because there is no shape the closed form answers differently. A test
+// selects it to obtain the same query rendered the old way.
+type TelescopingExpHistogramWindowFoldLowerer struct{}
+
+// ClosedFormWindowFoldEligible returns false.
+func (TelescopingExpHistogramWindowFoldLowerer) ClosedFormWindowFoldEligible() bool { return false }
+
+// expHistogramClosedFormEligible reads the ExpHistogramWindowFold
+// strategy off a lowering table, treating an UNRESOLVED table — one whose
+// caller never ran [RangeLowerers.withDefaults] — as the conservative
+// telescoping reading rather than dereferencing a nil interface.
+//
+// Every other strategy field is read on the assumption withDefaults
+// already ran, which holds at the real lowering entries. This one is read
+// from the window-input builders, which several unit tests reach through
+// a hand-built lowerCtx carrying no table at all, so the assumption does
+// not hold there. Answering "telescoping" is the same posture
+// [ResourceBounds.withDefaults]'s own doc takes for an unresolved bound:
+// an unresolved knob resolves to the SAFE reading, never to a panic and
+// never to the permissive one.
+func expHistogramClosedFormEligible(l RangeLowerers) bool {
+	if l.ExpHistogramWindowFold == nil {
+		return false
+	}
+	return l.ExpHistogramWindowFold.ClosedFormWindowFoldEligible()
+}
