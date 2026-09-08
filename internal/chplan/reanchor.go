@@ -137,8 +137,15 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Projections are off-grid immutable: share the slice header.
-		return &Project{Input: input, Projections: v.Projections}, nil
+		// Projections and Replacements are off-grid immutable: share the
+		// slice headers. Copy-on-write from *v rather than a composite
+		// literal, per clone.go's rule — a literal here silently dropped
+		// Replacements, so a sharded classic-histogram plan lost its `le`
+		// and finite-bounds restrictions and answered over the whole
+		// bucket ladder.
+		c := *v
+		c.Input = input
+		return &c, nil
 	case *Aggregate:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {
@@ -164,8 +171,13 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Predicate is off-grid immutable: share.
-		return &Filter{Input: input, Predicate: v.Predicate}, nil
+		// Predicate is off-grid immutable: share. Copy-on-write from *v
+		// rather than a composite literal, per clone.go's rule — a literal
+		// here dropped Histogram / Mixed, so RowShapeOf read a re-anchored
+		// shard's histogram-valued Filter as plain float rows.
+		c := *v
+		c.Input = input
+		return &c, nil
 	case *VectorJoin:
 		return reanchorVectorJoin(v, start, end)
 	default:

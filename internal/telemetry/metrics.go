@@ -163,6 +163,23 @@ type Instruments struct {
 	// series count without answering a latency question.
 	QueryDuration metric.Float64Histogram
 
+	// QueryDurationLegacy emits the SAME measurement under the name this
+	// histogram carried through v1.20.0, `cerberus_queries_duration_seconds`.
+	//
+	// #3170 changed the instrument's AGGREGATION to a native/exponential
+	// histogram and #3174 renamed it to match. The aggregation change had
+	// not shipped, but the NAME had — in every release up to and including
+	// v1.20.0 — so every operator dashboard and alert rule referencing it
+	// would silently return no data on upgrade. This package's own contract
+	// test states the rule: add the new instrument first and keep the old
+	// one for one release.
+	//
+	// It keeps the classic explicit-bucket aggregation it has always had:
+	// the native-histogram View selects by instrument name, so only the new
+	// name is re-aggregated. Delete this field, its instrument and its
+	// Record call one release after the rename ships.
+	QueryDurationLegacy metric.Float64Histogram
+
 	// StageDuration is the per-pipeline-stage timing distribution.
 	// Attributes: stage, cerberus.ql. Seconds. Without the language
 	// dimension a process serving more than one head cannot say WHICH
@@ -373,6 +390,15 @@ func mustBuild(meter metric.Meter) *Instruments {
 	if err != nil {
 		panic("telemetry: build queries_duration: " + err.Error())
 	}
+	queryDurationLegacy, err := meter.Float64Histogram(
+		"cerberus_queries_duration_seconds",
+		metric.WithDescription("End-to-end query wall-clock, seconds. Deprecated: renamed to cerberus_queries_duration_exp_hist; emitted for one release."),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(QueryDurationBoundaries...),
+	)
+	if err != nil {
+		panic("telemetry: build queries_duration_legacy: " + err.Error())
+	}
 	stageDuration, err := meter.Float64Histogram(
 		"cerberus_pipeline_stage_duration_seconds",
 		metric.WithDescription("Per-stage pipeline wall-clock, seconds."),
@@ -477,6 +503,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 	return &Instruments{
 		QueriesTotal:             queriesTotal,
 		QueryDuration:            queryDuration,
+		QueryDurationLegacy:      queryDurationLegacy,
 		StageDuration:            stageDuration,
 		RulesApplied:             rulesApplied,
 		ClickHouseRowsRead:       chRows,
@@ -587,11 +614,16 @@ func (t *QueryTimer) Done(ctx context.Context, out Outcome) {
 		AttrErrorReason.String(out.Reason),
 		AttrStatusClass.String(out.StatusClass),
 	))
-	inst.QueryDuration.Record(ctx, time.Since(t.start).Seconds(), metric.WithAttributes(
+	elapsed := time.Since(t.start).Seconds()
+	durationAttrs := metric.WithAttributes(
 		AttrQL.String(t.ql),
 		AttrRoute.String(t.route),
 		AttrResult.String(out.Result),
-	))
+	)
+	inst.QueryDuration.Record(ctx, elapsed, durationAttrs)
+	// Dual-emit under the pre-rename name for one release — see
+	// Instruments.QueryDurationLegacy.
+	inst.QueryDurationLegacy.Record(ctx, elapsed, durationAttrs)
 }
 
 // RecordRulesApplied records n (the optimizer's per-query change

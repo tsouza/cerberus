@@ -538,6 +538,21 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 		return plan
 	}
 
+	// A trace-scoped intrinsic (traceDuration / rootName / rootServiceName)
+	// carries its per-trace aggregate in an InSubquery inside this
+	// predicate — a Node behind an Expr slot, invisible to every
+	// RewriteChildren-based walk. stampSearchWindow's cohort descent cannot
+	// reach it either: that pass does not enter a SearchTraceLimit, which is
+	// exactly what this function is about to build. Left unstamped, the
+	// aggregate GROUPs BY TraceId over full retention behind a membership
+	// test that looks bounded — the traces-drilldown unbounded-scan class.
+	//
+	// Stamp it before the outer fold, using the same leaf push the
+	// spanset-aggregate cohort already goes through.
+	if window := andWindow(nil, start, end, s.TimestampColumn); window != nil {
+		pushLeafPredicateIntoCohort(pred, window)
+	}
+
 	// Fold the request window into the predicate so both the inner ranking
 	// subquery and the outer drain scan only [start, end].
 	pred = andWindow(pred, start, end, s.TimestampColumn)

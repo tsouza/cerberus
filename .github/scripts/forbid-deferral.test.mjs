@@ -68,6 +68,8 @@ const LATER_PR = lit('in a later ', 'PR');
 const LEFT_FOR_LATER = lit('left for ', 'later');
 const PUNTED_ON = lit('punted ', 'on');
 const HOUSE_MARKER = lit('pony', 'tail');
+const CODE_MARKER = lit('FIX', 'ME');
+const TODO_MARKER = lit('TO', 'DO');
 
 const REPO = 'tsouza/cerberus';
 
@@ -83,6 +85,31 @@ const RESOLVED = new Map([
 ]);
 
 // --- the marker table itself -------------------------------------------------
+
+test('a marker reached through a member access is an API name, not a deferral', () => {
+  // Playwright spells its own suppression routes `test.fixme` /
+  // `describe.fixme`. A scan whose whole job is to FORBID them has to name
+  // the token, and the commit message explaining why names it too. Neither
+  // defers anything.
+  assert.deepEqual(ids(`test.${CODE_MARKER.toLowerCase()}(`), []);
+  assert.deepEqual(ids(`describe.${CODE_MARKER.toLowerCase()}(`), []);
+  assert.deepEqual(ids(`obj.${TODO_MARKER}`), []);
+
+  // The bare words still fire wherever they appear as prose.
+  assert.deepEqual(ids(`// ${CODE_MARKER}: handle the nil case`), ['code-work-marker']);
+  assert.deepEqual(ids(`// ${TODO_MARKER} lift this to a CTE`), ['code-work-marker']);
+});
+
+test('a marker inside a quoted string is data, not prose', () => {
+  // A detector naming the token in its own pattern, and a fixture that
+  // legitimately contains the word, are both data.
+  assert.deepEqual(ids(`regex: '(skip|${CODE_MARKER.toLowerCase()}|only)'`), []);
+  assert.deepEqual(ids(`const want = "${TODO_MARKER}";`), []);
+  assert.deepEqual(ids('pattern: `' + TODO_MARKER + '`'), []);
+
+  // Unquoted in the same shapes, it is a deferral again.
+  assert.deepEqual(ids(`// ${TODO_MARKER}: still owed`), ['code-work-marker']);
+});
 
 test('the marker table is non-empty, uniquely keyed, and compiles', () => {
   assert.ok(DEFERRAL_MARKERS.length > 0, 'an empty table makes every scan vacuous');

@@ -9,8 +9,13 @@ import { test, expect, type APIRequestContext } from '@playwright/test';
 // set is identical.
 //
 // Requires `docker compose --profile twophase up` (telemetrygen-traces +
-// cerberus-nosplit). Skipped when CERBERUS_NOSPLIT_URL is unset, so it no-ops in
-// the normal compose-smoke shards.
+// cerberus-nosplit) and CERBERUS_NOSPLIT_URL pointing at the split-OFF head.
+//
+// A missing CERBERUS_NOSPLIT_URL is a hard failure, not a skip. The conditional
+// skip this used to carry is what let the spec look healthy while running in no
+// lane at all: it is excluded from both shard planners, so the A/B behind the
+// default-on two-phase split had never actually run. Wiring it into a lane is
+// tracked in cerberus issue #3181.
 
 const ON_URL = process.env.CERBERUS_URL || 'http://localhost:8080';
 const OFF_URL = process.env.CERBERUS_NOSPLIT_URL || '';
@@ -25,10 +30,12 @@ const QUERY =
 const LIMIT = 5;
 
 test.describe('tempo structural two-phase A/B', () => {
-  test.skip(
-    !OFF_URL,
-    'set CERBERUS_NOSPLIT_URL (docker compose --profile twophase up) to run the A/B',
-  );
+  test.beforeAll(() => {
+    expect(
+      OFF_URL,
+      'CERBERUS_NOSPLIT_URL must point at the split-OFF cerberus head — bring it up with `docker compose --profile twophase up`',
+    ).not.toBe('');
+  });
 
   test('split ON and OFF return an identical trace set for a structural search', async ({
     request,

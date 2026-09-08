@@ -41,7 +41,7 @@ func TestNumericAttrCoercion(t *testing.T) {
 		{
 			name:       "int_eq_wraps_field_access",
 			query:      `{ .attempt = 1 }`,
-			wantSubstr: "toFloat64OrNull(`SpanAttributes`[?]) = ?",
+			wantSubstr: "if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) = ?",
 		},
 		{
 			name:       "int_ge_wraps_field_access",
@@ -61,12 +61,12 @@ func TestNumericAttrCoercion(t *testing.T) {
 		{
 			name:       "arithmetic_add_coerces_both_sides",
 			query:      `{ .a + .b > 10 }`,
-			wantSubstr: "(toFloat64OrNull(`SpanAttributes`[?]) + toFloat64OrNull(`SpanAttributes`[?])) > ?",
+			wantSubstr: "(if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) + if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?]))) > ?",
 		},
 		{
 			name:       "arithmetic_mul_with_literal_coerces_field",
 			query:      `{ .a * 2 > 10 }`,
-			wantSubstr: "(toFloat64OrNull(`SpanAttributes`[?]) * ?) > ?",
+			wantSubstr: "(if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) * ?) > ?",
 		},
 		{
 			name:      "string_eq_leaves_field_access_bare",

@@ -11,6 +11,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/qlcommon"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -72,23 +73,32 @@ func TestLower_ExpHistogram_AbsentIsPresenceOnly(t *testing.T) {
 				t.Fatalf("presence scan = %#v, want table %q", scan, s.ExpHistogramTable)
 			}
 
-			var agg *chplan.Aggregate
+			// absent() lowers to the same AbsentOverTime node
+			// absent_over_time(v[5m]) does — the presence check IS the
+			// node's per-anchor empty-window test, so there is no
+			// count() aggregate to find. What matters here is unchanged:
+			// the presence input reads the exp-histogram table and never
+			// its nonexistent scalar Value column.
+			var absent *chplan.AbsentOverTime
 			chplan.Walk(plan, func(n chplan.Node) bool {
-				if candidate, ok := n.(*chplan.Aggregate); ok && agg == nil {
-					agg = candidate
+				if candidate, ok := n.(*chplan.AbsentOverTime); ok && absent == nil {
+					absent = candidate
 				}
 				return true
 			})
-			if agg == nil || len(agg.AggFuncs) != 1 || agg.AggFuncs[0].Fn != chplan.FnCount {
-				t.Fatalf("presence aggregate = %#v, want a single count() aggregate", agg)
+			if absent == nil {
+				t.Fatalf("plan carries no *chplan.AbsentOverTime presence check:\n%#v", plan)
+			}
+			if absent.Range != qlcommon.InstantLookback {
+				t.Errorf("presence window = %v, want the instant staleness lookback %v", absent.Range, qlcommon.InstantLookback)
 			}
 
 			// The presence stream must never reference the exp-histogram
-			// table's absent scalar Value column: absent() only counts
+			// table's absent scalar Value column: absent() only tests for
 			// rows, so a Value reference would mean the lowering fell
 			// back onto the ordinary float selector pipeline this fix
 			// bypasses.
-			chplan.Walk(agg, func(n chplan.Node) bool {
+			chplan.Walk(absent.Input, func(n chplan.Node) bool {
 				chplan.InspectNodeExprs(n, func(e chplan.Expr) {
 					chplan.InspectExpr(e, func(inner chplan.Expr) bool {
 						if col, ok := inner.(*chplan.ColumnRef); ok && col.Name == s.ValueColumn {
@@ -240,28 +250,13 @@ func TestLower_ExpHistogram_AbsentLabelsMirrorMatchers(t *testing.T) {
 		t.Fatalf("Lower: %v", err)
 	}
 
-	proj, ok := plan.(*chplan.Project)
+	absent, ok := plan.(*chplan.AbsentOverTime)
 	if !ok {
-		t.Fatalf("plan = %T, want *chplan.Project", plan)
-	}
-	var attrsExpr chplan.Expr
-	for _, p := range proj.Projections {
-		if p.Alias == s.AttributesColumn {
-			attrsExpr = p.Expr
-		}
-	}
-	call, ok := attrsExpr.(*chplan.FuncCall)
-	if !ok || call.Fn != chplan.FnMap {
-		t.Fatalf("Attributes projection = %#v, want a map() FuncCall", attrsExpr)
+		t.Fatalf("plan = %T, want *chplan.AbsentOverTime", plan)
 	}
 	got := map[string]string{}
-	for i := 0; i+1 < len(call.Args); i += 2 {
-		k, kok := call.Args[i].(*chplan.LitString)
-		v, vok := call.Args[i+1].(*chplan.LitString)
-		if !kok || !vok {
-			t.Fatalf("map() arg pair %d/%d = %#v/%#v, want string literals", i, i+1, call.Args[i], call.Args[i+1])
-		}
-		got[k.V] = v.V
+	for _, l := range absent.SynthLabels {
+		got[l.Key] = l.Value
 	}
 	want := map[string]string{"job": "api", "env": "prod"}
 	if len(got) != len(want) {

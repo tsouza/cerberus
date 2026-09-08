@@ -253,7 +253,17 @@ jobs:
   prometheus:
     name: compatibility/prometheus
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
+    # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
+    # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
+    # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
+    # as green — so a release could publish with this differential never
+    # executed. The condition runs the job whenever a planner did not
+    # succeed, and the first step fails it loudly; a docs-only or
+    # not-heavy change still skips by design.
+    if: >-
+      always() &&
+      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+       (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was REMOVED here on
@@ -271,6 +281,11 @@ jobs:
     # crashed, so the workflow badge / GH Project status correctly
     # turns red.
     steps:
+      - name: gate on the planner jobs
+        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
+          exit 1
       - uses: actions/checkout@v7
         with:
           submodules: recursive
@@ -441,10 +456,25 @@ jobs:
     # on the flip PR.
     name: compatibility/prometheus-forced-route
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
+    # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
+    # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
+    # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
+    # as green — so a release could publish with this differential never
+    # executed. The condition runs the job whenever a planner did not
+    # succeed, and the first step fails it loudly; a docs-only or
+    # not-heavy change still skips by design.
+    if: >-
+      always() &&
+      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+       (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: gate on the planner jobs
+        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
+          exit 1
       - uses: actions/checkout@v7
         with:
           submodules: recursive
@@ -574,10 +604,25 @@ jobs:
     # schema-integration.yml's schema-ddl lane started from.
     name: compatibility/prometheus-floor
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
+    # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
+    # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
+    # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
+    # as green — so a release could publish with this differential never
+    # executed. The condition runs the job whenever a planner did not
+    # succeed, and the first step fails it loudly; a docs-only or
+    # not-heavy change still skips by design.
+    if: >-
+      always() &&
+      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+       (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: gate on the planner jobs
+        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
+          exit 1
       - uses: actions/checkout@v7
         with:
           submodules: recursive
@@ -741,10 +786,25 @@ jobs:
     # it has soaked on main — its green status on this PR is the proof.
     name: compatibility/promql-surface
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
+    # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
+    # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
+    # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
+    # as green — so a release could publish with this differential never
+    # executed. The condition runs the job whenever a planner did not
+    # succeed, and the first step fails it loudly; a docs-only or
+    # not-heavy change still skips by design.
+    if: >-
+      always() &&
+      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+       (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: gate on the planner jobs
+        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
+          exit 1
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/registry-login
@@ -763,10 +823,25 @@ jobs:
   tempo:
     name: compatibility/tempo
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
+    # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
+    # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
+    # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
+    # as green — so a release could publish with this differential never
+    # executed. The condition runs the job whenever a planner did not
+    # succeed, and the first step fails it loudly; a docs-only or
+    # not-heavy change still skips by design.
+    if: >-
+      always() &&
+      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+       (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: gate on the planner jobs
+        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
+          exit 1
       - uses: actions/checkout@v7
 
       # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
@@ -886,7 +961,17 @@ jobs:
   loki:
     name: compatibility/loki
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
+    # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
+    # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
+    # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
+    # as green — so a release could publish with this differential never
+    # executed. The condition runs the job whenever a planner did not
+    # succeed, and the first step fails it loudly; a docs-only or
+    # not-heavy change still skips by design.
+    if: >-
+      always() &&
+      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+       (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was removed here.
@@ -898,6 +983,11 @@ jobs:
     # the end re-raises a non-zero exit when the harness step
     # diverged or crashed, so the workflow badge correctly turns red.
     steps:
+      - name: gate on the planner jobs
+        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
+          exit 1
       - uses: actions/checkout@v7
 
       # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----

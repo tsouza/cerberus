@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/ClickHouse/ch-go"
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
@@ -39,13 +40,32 @@ func SafeMessage(err error) string {
 		return ""
 	}
 	msg := err.Error()
+
+	// BOTH server-exception types, mirroring serverExceptionCode's own dual
+	// lookup in breaker_classify.go. The row dial (clickhouse-go) yields a
+	// *clickhouse.Exception; the columnar dial (ch-go) yields a
+	// *proto.Exception, whose Error() renders `<code>: <name>: <message>`
+	// with the same server text — including the
+	// `while executing 'FUNCTION …(__table1.attrs…)'` trailer that names
+	// the emitted SQL's internal aliases. Scrubbing only the first left
+	// every columnar-path failure disclosing exactly what #2033 removed
+	// from the row path.
+	var scrubbed bool
 	var ex *clickhouse.Exception
-	if !errors.As(err, &ex) {
+	if errors.As(err, &ex) {
+		msg = strings.ReplaceAll(msg, ex.Error(), serverExceptionPlaceholder)
+		scrubbed = true
+	}
+	if chEx, ok := ch.AsException(err); ok {
+		msg = strings.ReplaceAll(msg, chEx.Error(), serverExceptionPlaceholder)
+		scrubbed = true
+	}
+	if !scrubbed {
 		return msg
 	}
 	// A classified failure (memory limit, execution timeout) carries the
 	// exception for errors.As but renders its own cerberus-authored
 	// message, in which the exception text does not appear — ReplaceAll
 	// then correctly changes nothing.
-	return strings.ReplaceAll(msg, ex.Error(), serverExceptionPlaceholder)
+	return msg
 }

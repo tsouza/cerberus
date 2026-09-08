@@ -964,14 +964,31 @@ func eligibleForResultCache(plan chplan.Node, now time.Time, ingestLag time.Dura
 			return true
 		}
 		start, end, step := gc.EvalGrid()
+
+		// The DATA edge, not the request grid's End. A selector's
+		// `offset` moves the rows a carrier reads, and PromQL accepts a
+		// NEGATIVE offset, which shifts evaluation FORWARD — `foo offset
+		// -1h` over a request grid ending at 11:50 reads up to 12:50.
+		// Judging End alone stamped the cache on a window that had not
+		// closed and could not have, which is the whole property this
+		// gate exists to prove.
+		dataEnd := gc.DataWindowEnd()
+		if dataEnd.IsZero() || !dataEnd.Before(threshold) {
+			closed = false
+			return false
+		}
+
 		if step <= 0 {
-			// Instant-mode carrier: Start/End carry no request-grid meaning
-			// (chplan.GridCarrier's own doc), so it says nothing about
-			// whether the query's window is closed.
+			// Instant-mode carrier: Start carries no request-grid meaning
+			// (chplan.GridCarrier's own doc) and this carrier alone does
+			// not make the query range-mode. Its data edge was still
+			// checked above, because an `@`-pinned window rides an
+			// instant-shape carrier beside the request's own closed
+			// StepGrid and is exactly as able to sit at the live edge.
 			return true
 		}
 		foundRangeCarrier = true
-		if start.IsZero() || end.IsZero() || !end.Before(threshold) {
+		if start.IsZero() || end.IsZero() {
 			closed = false
 			return false
 		}

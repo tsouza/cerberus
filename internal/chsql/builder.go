@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -1730,16 +1731,54 @@ func textIndexLikeTokens(literal string) []string {
 // deliberately NOT attempted — this package does not compile RE2 semantics
 // into index predicates, only recognizes the special case where a "regex"
 // carries none.
-func textIndexRegexLiteral(pattern string) (string, bool) {
+func textIndexRegexLiteral(pattern string) (literal string, foldCase, ok bool) {
 	re, err := syntax.Parse(pattern, syntax.Perl)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	re = re.Simplify()
 	if re.Op != syntax.OpLiteral {
-		return "", false
+		return "", false, false
 	}
-	return string(re.Rune), true
+	return string(re.Rune), re.Flags&syntax.FoldCase != 0, true
+}
+
+// asciiFoldSafe reports whether every rune of s is ASCII AND its entire
+// RE2 case-folding orbit stays ASCII — the exact condition under which the
+// ASCII-only `lower(<Source>) LIKE '%<asciiLower(tok)>%'` conjunct is a
+// sound superset of a case-INSENSITIVE match of tok.
+//
+// Two independent ways a fold-case literal breaks that guarantee, both of
+// which this predicate rejects:
+//
+//   - A non-ASCII rune in the literal. regexp/syntax stores a fold-case
+//     OpLiteral as the MINIMUM rune of each fold orbit, so `(?i)café`
+//     arrives here as "CAFÉ"; asciiLower leaves the 'É' alone and the
+//     needle becomes 'cafÉ', which `lower(Body)` — itself ASCII-only, see
+//     asciiLower's doc — never contains for a Body holding 'café'. The
+//     conjunct would then drop a row match() DOES match.
+//   - An ASCII rune whose orbit reaches OUT of ASCII: 'k'/'K' fold with
+//     U+212A KELVIN SIGN and 's'/'S' with U+017F LATIN SMALL LETTER LONG
+//     S. A Body carrying either of those characters matches the RE2
+//     pattern, but `lower()` leaves the non-ASCII rune untouched, so the
+//     ASCII needle misses it.
+//
+// Only the fold-case path needs this test. A case-SENSITIVE literal is
+// already sound for any rune: the row predicate demands the literal's own
+// bytes, and ASCII-lowering both sides of a byte-exact containment test
+// preserves it (see asciiLower).
+func asciiFoldSafe(s string) bool {
+	for _, r := range s {
+		if r >= utf8.RuneSelf {
+			return false
+		}
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f >= utf8.RuneSelf {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // textIndexPrefilterArgs returns the fully-escaped `%tok%` LIKE needles
@@ -1761,20 +1800,29 @@ func textIndexPrefilterArgs(l *chplan.LineContent) []string {
 		return nil
 	}
 	literal := l.Pattern
+	foldCase := false
 	if l.IsRegex {
-		lit, ok := textIndexRegexLiteral(l.Pattern)
+		lit, fold, ok := textIndexRegexLiteral(l.Pattern)
 		if !ok {
 			return nil
 		}
-		literal = lit
+		literal, foldCase = lit, fold
 	}
 	words := textIndexLikeTokens(literal)
-	if len(words) == 0 {
-		return nil
+	args := make([]string, 0, len(words))
+	for _, w := range words {
+		// A fold-case word whose folding escapes ASCII has no sound
+		// ASCII-lower needle (asciiFoldSafe). Dropping just that word
+		// keeps the remaining conjuncts: each one is independently a
+		// superset test, so a SMALLER conjunct set is always still
+		// sound — it only prunes fewer granules.
+		if foldCase && !asciiFoldSafe(w) {
+			continue
+		}
+		args = append(args, "%"+escapeLikeLiteral(asciiLower(w))+"%")
 	}
-	args := make([]string, len(words))
-	for i, w := range words {
-		args[i] = "%" + escapeLikeLiteral(asciiLower(w)) + "%"
+	if len(args) == 0 {
+		return nil
 	}
 	return args
 }

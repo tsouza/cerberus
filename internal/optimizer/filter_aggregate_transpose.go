@@ -87,12 +87,13 @@ func transposeFilterAggregate(b Bindings) chplan.Node {
 		return nil
 	}
 
-	newFilter := &chplan.Filter{
-		Input:     a.Input,
-		Predicate: f.Predicate,
-	}
+	// Copy-on-write from f so Histogram / Mixed ride down with the
+	// predicate, matching the newAgg := *a / newRW := *r discipline just
+	// below and chplan/clone.go's rule.
+	newFilter := *f
+	newFilter.Input = a.Input
 	newAgg := *a
-	newAgg.Input = newFilter
+	newAgg.Input = &newFilter
 	return &newAgg
 }
 

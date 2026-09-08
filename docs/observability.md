@@ -218,6 +218,7 @@ each one so a rename cannot ship silently.
 | ------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------- |
 | `cerberus_queries_total`                   | counter            | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
 | `cerberus_queries_duration_exp_hist`       | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
+| `cerberus_queries_duration_seconds`        | histogram          | `cerberus_ql`, `cerberus_route`, `result`                                                   |
 | `cerberus_pipeline_stage_duration_seconds` | histogram          | `stage`, `cerberus_ql`                                                                      |
 | `cerberus_optimizer_rules_applied`         | histogram          | —                                                                                           |
 | `cerberus_clickhouse_rows_read`            | histogram          | `cerberus_ql`                                                                               |
@@ -226,6 +227,13 @@ each one so a rename cannot ship silently.
 | `cerberus_tempo_exemplar_failures_total`   | counter            | `stage`                                                                                     |
 
 `cerberus_tempo_exemplar_failures_total` counts Tempo `/api/metrics/query_range` (and its gRPC `MetricsQueryRange` counterpart) exemplar-enrichment failures, split by which half of the best-effort exemplar attach failed: `stage="emit"` for a `chsql.EmitMetricsExemplars` render failure, `stage="execute"` for a ClickHouse query failure on the rendered SQL. Both failures still return the matrix response with an empty `exemplars` array — the same wire shape as a window with genuinely no exemplars — so this counter is the only way to notice a systematic exemplar outage without reading logs.
+
+`cerberus_queries_duration_seconds` is the name this histogram carried
+through v1.20.0. It is deprecated and emitted alongside the new name for
+one release, with its original classic explicit-bucket aggregation, so an
+existing dashboard or alert rule keeps working across the upgrade. Move
+queries to `cerberus_queries_duration_exp_hist`; the old name is removed
+one release after the rename ships.
 
 `cerberus_queries_duration_exp_hist` is collected as a native/exponential
 histogram (cerberus issue #3170), not the classic explicit-bucket shape

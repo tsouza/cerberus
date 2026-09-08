@@ -390,6 +390,20 @@ func verifyCaveats(s migrateverify.Summary) []string {
 			s.Undecidable, plural(s.Undecidable, "y", "ies"),
 		))
 	}
+	// A match over two EMPTY results diffed nothing, so it is agreement
+	// without evidence. ComparedUnits is a sum, so the aggregate and
+	// per-family guards above are satisfied by any single query that
+	// compared something: twenty-nine empty matches beside one real one
+	// pass every one of them. This is the counter that says so, and it is
+	// a caveat rather than a block because an empty window is a legitimate
+	// outcome — what is not legitimate is reporting it as proof.
+	if s.EmptyMatch > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d of the %d matching quer%s compared NOTHING (both backends returned an empty result), so %d quer%s the parity evidence actually rests on",
+			s.EmptyMatch, s.Match, plural(s.Match, "y", "ies"),
+			s.Match-s.EmptyMatch, plural(s.Match-s.EmptyMatch, "y is", "ies are"),
+		))
+	}
 	// Each limitation is named with the count of comparison units it covers. It is
 	// the OPPOSITE of an allow-list: nothing is blessed, and every dimension the
 	// comparators COULD judge is still judged and still blocks. Reporting it is

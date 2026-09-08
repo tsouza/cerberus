@@ -86,6 +86,27 @@ const CHECKS = {
     }
   },
 
+  'playwright-skip': () => {
+    // Playwright's own suppression routes, invisible to every scan above:
+    // they live in `.spec.ts`, not `*_test.go`. `test.skip` / `test.fixme`
+    // silence a spec while the lane stays green — a conditional
+    // `test.skip(!process.env.X, ...)` is the same move wearing an
+    // environment check. `.only` is the mirror image: it silences every
+    // OTHER spec in the file, so a lane can report green having run one
+    // test. All three are t.Skip in TypeScript.
+    const skips = grepFiles({
+      pathspecs: ['*.spec.ts', '*.spec.js', ':!:**/node_modules/**'],
+      grepFlags: ['-nEH'],
+      regex: '(^|[^A-Za-z0-9_$.])(test|it|describe|suite)(\\.describe)?\\.(skip|fixme|only)\\s*\\(',
+    });
+    if (skips.matched) {
+      log(skips.output);
+      fail(
+        'test.skip / test.fixme / test.only found in a Playwright spec — a spec runs and asserts, or it is deleted. A conditional skip on an env var is the same move wearing an environment check: make the missing environment a hard failure and wire the spec into a lane.',
+      );
+    }
+  },
+
   'soft-assert': () => {
     let bad = false;
     const softAssert = grepFiles({

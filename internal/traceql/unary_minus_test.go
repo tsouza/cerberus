@@ -41,12 +41,12 @@ func TestLowerUnaryMinus(t *testing.T) {
 			// coercion recursing into the `0 - x` arithmetic Binary.
 			name:       "bare_attr_negated_gt",
 			query:      `{ -.payload_bytes > -100 }`,
-			wantSubstr: "(? - toFloat64OrNull(`SpanAttributes`[?])) > ?",
+			wantSubstr: "(? - if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?]))) > ?",
 		},
 		{
 			name:       "bare_attr_negated_lt",
 			query:      `{ -.a < 5 }`,
-			wantSubstr: "(? - toFloat64OrNull(`SpanAttributes`[?])) < ?",
+			wantSubstr: "(? - if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?]))) < ?",
 		},
 		{
 			// Nested arithmetic operand: coercion recurses through both the
@@ -54,7 +54,7 @@ func TestLowerUnaryMinus(t *testing.T) {
 			// FieldAccess.
 			name:       "nested_arith_operand",
 			query:      `{ -(.a + 1) < -10 }`,
-			wantSubstr: "(? - (toFloat64OrNull(`SpanAttributes`[?]) + ?)) < ?",
+			wantSubstr: "(? - (if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) + ?)) < ?",
 		},
 		{
 			// Negated resource-scoped attribute resolves against the

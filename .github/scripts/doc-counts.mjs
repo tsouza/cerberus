@@ -642,7 +642,7 @@ function selfTest() {
 
   // The REAL forbid-skip.mjs must derive exactly 5 (not-implemented removed in #1538).
   const realForbid = readFileSync(FORBID_SKIP_MJS, 'utf8');
-  check('real forbid-skip.mjs derives 5 CHECK scans', countForbidSkipChecks(realForbid).count === 5);
+  check('real forbid-skip.mjs derives 6 CHECK scans', countForbidSkipChecks(realForbid).count === 6);
 
   // 1b. A workflow caller naming a scan the registry does not define must be
   // REJECTED — the #1538 failure mode, where compatibility.yml kept asking for

@@ -4,21 +4,63 @@ import (
 	"context"
 	"testing"
 
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/actuals"
 )
 
-func TestProgressRecorder_OnProgressLatchesMax(t *testing.T) {
+// TestProgressRecorder_OnProgressAccumulatesIncrements pins the packet
+// semantics the recorder depends on: a ClickHouse Progress packet carries
+// an INCREMENT, not a running total, so a query's rows/bytes read is the
+// SUM of its packets.
+//
+// This test previously asserted the maximum, which is what the recorder
+// did. Measured against ClickHouse 26.6, a scan of 20,000,000 rows arrived
+// as 2,528 packets summing to exactly 20,000,000 and latching at 15,360 —
+// so the max reported one block instead of the query, 1302x low, and both
+// the rows/bytes histograms and the solver's actuals learned from it.
+func TestProgressRecorder_OnProgressAccumulatesIncrements(t *testing.T) {
 	rec := &progressRecorder{ql: "promql", ctx: context.Background()}
 	rec.onProgress(&clickhouse.Progress{Rows: 10, Bytes: 100})
 	rec.onProgress(&clickhouse.Progress{Rows: 5, Bytes: 50})
 	rec.onProgress(&clickhouse.Progress{Rows: 20, Bytes: 200})
-	if rec.rows != 20 || rec.bytes != 200 {
-		t.Fatalf("expected the latched snapshot to be the max seen, got rows=%d bytes=%d", rec.rows, rec.bytes)
+	if rec.rows != 35 || rec.bytes != 350 {
+		t.Fatalf(
+			"expected the packet increments to be summed (rows=35 bytes=350), got rows=%d bytes=%d",
+			rec.rows, rec.bytes,
+		)
 	}
 	// A nil packet must never panic.
 	rec.onProgress(nil)
+	if rec.rows != 35 || rec.bytes != 350 {
+		t.Fatalf("a nil packet changed the totals: rows=%d bytes=%d", rec.rows, rec.bytes)
+	}
+}
+
+// TestProgressBridge_ForwardsIncrementsUnchanged pins that the ch-go
+// transport agrees with the clickhouse-go one. The bridge used to pre-sum
+// deltas into a running total before handing them to a recorder that
+// latched the max; now that the recorder accumulates, pre-summing here
+// would count each packet once per subsequent packet.
+func TestProgressBridge_ForwardsIncrementsUnchanged(t *testing.T) {
+	rec := &progressRecorder{ql: "promql", ctx: context.Background()}
+	bridge := progressBridge(rec)
+	for _, p := range []chproto.Progress{
+		{Rows: 10, Bytes: 100},
+		{Rows: 5, Bytes: 50},
+		{Rows: 20, Bytes: 200},
+	} {
+		if err := bridge(context.Background(), p); err != nil {
+			t.Fatalf("bridge returned %v", err)
+		}
+	}
+	if rec.rows != 35 || rec.bytes != 350 {
+		t.Fatalf(
+			"ch-go transport totals disagree with the clickhouse-go transport: rows=%d bytes=%d, want 35/350",
+			rec.rows, rec.bytes,
+		)
+	}
 }
 
 func TestProgressRecorder_OnProfileEventsLatchesPeakMemory(t *testing.T) {

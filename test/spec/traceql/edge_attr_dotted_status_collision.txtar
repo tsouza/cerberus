@@ -2,9 +2,11 @@
 { .status = "degraded" }
 -- args --
 [0] string = "status"
-[1] string = "degraded"
+[1] string = "status"
+[2] string = "status"
+[3] string = "degraded"
 -- sql --
-SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)
+SELECT * FROM `otel_traces` WHERE (if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) = ?)
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64,
@@ -16,9 +18,7 @@ INSERT INTO otel_traces (Duration, StatusCode) VALUES
     (20000000, 'Ok'),
     (30000000, 'Ok');
 -- expected_rows --
-[
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 10000000]
-]
+[]
 -- chplan --
-Filter predicate=(SpanAttributes["status"] = "degraded")
+Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "status"), FnToFloat64OrNull(SpanAttributes["status"]), FnToFloat64OrNull(ResourceAttributes["status"])) = "degraded")
   Scan(otel_traces)

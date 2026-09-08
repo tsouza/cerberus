@@ -353,9 +353,9 @@ redundancies — each catches a shape the others would miss:
   godog step definitions are non-test `.go` files under the migration
   harness.
 
-The gate dispatches **5** CHECK scans (`t-skip`, `soft-assert`,
-`should-skip`, `escape-hatch`, `feature-discipline`), which together run
-the **8** regex pattern rows above (the `soft-assert` scan carries rows
+The gate dispatches **6** CHECK scans (`t-skip`, `playwright-skip`,
+`soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`), which
+together run the **8** regex pattern rows above (the `soft-assert` scan carries rows
 2, 3 and 4 and `feature-discipline` carries rows 7 and 8; see the
 "Patterns vs CHECK categories" mapping). Pattern 1 runs over Go test
 files; patterns 2–4 over Go test files for soft-assertion / silent-recover
