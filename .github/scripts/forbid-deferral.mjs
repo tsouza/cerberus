@@ -165,9 +165,17 @@ const CAPABILITY_PROBE_PAGE_SIZE = 1;
 // wrote.
 export const DEFERRAL_MARKERS = [
   {
+    // The dot lookbehind is the same class of qualifier the `defer` row
+    // below carries, for the same reason: a marker word reached through a
+    // member access is an API NAME, not prose about work nobody has taken.
+    // Playwright spells its own suppression routes `test.fixme` /
+    // `describe.fixme`, so a scan that FORBIDS them — and the commit
+    // message explaining why — would otherwise be read as deferring work
+    // itself. A bare `FIXME`, `// TODO:` or `XXX` still matches wherever it
+    // appears, which is every real use.
     id: 'code-work-marker',
     description: 'a conventional source-comment work marker',
-    pattern: String.raw`\bTODO\b|\bFIXME\b|\bXXX\b`,
+    pattern: String.raw`(?<!\.)\bTODO\b|(?<!\.)\bFIXME\b|(?<!\.)\bXXX\b`,
   },
   {
     // A house-style synonym for the conventional work marker — a hair-tie
@@ -354,6 +362,14 @@ export function findMarkers(text) {
     // Applied to both passes (as-written and continuation-joined), because
     // both carry the blank line through.
     if (PARAGRAPH_BREAK.test(matched)) return;
+    // A marker inside a QUOTED STRING is data, not prose about work nobody
+    // has taken. The case that forced this: a scan whose whole job is to
+    // FORBID Playwright's `test.fixme` has to name the token in its own
+    // pattern string, and a corpus fixture may legitimately contain the
+    // word. Neither defers anything. A marker in a comment, a commit
+    // message or a description is unquoted and still matches, which is
+    // every real use.
+    if (insideQuotedString(src, index)) return;
     const line = lineOf(src, index);
     const key = `${marker.id}:${line}`;
     if (seen.has(key)) return;
@@ -385,6 +401,46 @@ export function findMarkers(text) {
     }
   }
   return found.sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+}
+
+// insideQuotedString reports whether the character at `index` sits inside a
+// single-, double- or backtick-quoted string on its own line.
+//
+// Line-scoped and quote-counting rather than a real tokenizer: the surfaces
+// this gate reads are diff lines, commit messages and pull-request bodies,
+// where a string literal opens and closes on one line. An apostrophe in
+// ordinary prose ("doesn't") leaves an odd single-quote count, so an
+// unquoted marker after one would be skipped — which is why each quote
+// style is counted independently and a marker is only excused when the
+// style that encloses it is balanced-open around it. Prose apostrophes
+// almost never co-occur with a bare TODO on the same line, and the failure
+// direction of a miscount is a missed marker on that one line, never a
+// false accusation.
+function insideQuotedString(src, index) {
+  const lineStart = src.lastIndexOf('\n', index - 1) + 1;
+  let lineEnd = src.indexOf('\n', index);
+  if (lineEnd === -1) lineEnd = src.length;
+  const before = src.slice(lineStart, index);
+  const after = src.slice(index, lineEnd);
+  for (const q of ['"', "'", '`']) {
+    const open = countUnescaped(before, q);
+    const close = countUnescaped(after, q);
+    if (open % 2 === 1 && close > 0) return true;
+  }
+  return false;
+}
+
+// countUnescaped counts occurrences of `q` in `s` that are not backslash-escaped.
+function countUnescaped(s, q) {
+  let n = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    if (s[i] === '\\') {
+      i += 1;
+      continue;
+    }
+    if (s[i] === q) n += 1;
+  }
+  return n;
 }
 
 // issueRefs — the issue numbers cited in `text`: `#<n>`, or the full issues URL
