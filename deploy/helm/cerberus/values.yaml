@@ -263,6 +263,25 @@ clickhouse:
     # `replicaCount`. `replicas` above (plain replication, N copies of the
     # SAME data) is a supported path and never needs this.
     experimentalDistributedMode: false
+    # -- ClickHouse's own Prometheus endpoint (cerberus issue #3193).
+    # Enabled by default: the chart ships Keeper, hot/cold tiering,
+    # replication and multi-shard fan-out, and those subsystems' failure
+    # modes — parts count, merge activity, replication lag, background pool
+    # depth, cache hit rates — are visible ONLY in ClickHouse's own
+    # `system.*` metrics. cerberus's own `/metrics` reports the
+    # query-serving side and says nothing about the storage layer beneath
+    # it, so a bundled deployment had no scrape target for the data tier at
+    # all.
+    #
+    # `enabled: false` renders exactly as this chart did before the endpoint
+    # existed: no `<prometheus>` block, no container port, no Service port.
+    metrics:
+      enabled: true
+      # -- Port for the ClickHouse Prometheus endpoint. 9363 is ClickHouse's
+      # own documented default for it.
+      port: 9363
+      # -- Path the endpoint serves.
+      path: /metrics
     # -- ClickHouse cluster DATA-shard topology (cerberus issue #3077, epic
     # #3074). DISAMBIGUATION: this is a DIFFERENT "shard" than `replicas`
     # above — replicas are copies of the SAME data; a DATA shard is a
