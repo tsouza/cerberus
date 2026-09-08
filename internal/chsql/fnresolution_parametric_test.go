@@ -79,11 +79,14 @@ func TestArrayReduceParametricFragRejectsABoundParameter(t *testing.T) {
 
 // TestArrayReduceParametricFragRejectsAnUnresolvedFn pins the other
 // fail-closed arm: an Fn with no fnResolutions entry must not render an empty
-// or raw aggregate name.
+// or raw aggregate name. The zero value is the one such Fn that can be
+// written without a raw literal, which forbid-chplan-fn-literal forbids and
+// resolveFn's own doc names as the case it fails closed on.
 func TestArrayReduceParametricFragRejectsAnUnresolvedFn(t *testing.T) {
 	t.Parallel()
 
-	_, err := arrayReduceParametricFrag(chplan.Fn("no_such_fn"), []Frag{InlineLit(0.5)}, BareIdent("v"))
+	var unresolved chplan.Fn
+	_, err := arrayReduceParametricFrag(unresolved, []Frag{InlineLit(0.5)}, BareIdent("v"))
 	if err == nil {
 		t.Fatal("an unresolved chplan.Fn produced a parametric aggregate spec")
 	}

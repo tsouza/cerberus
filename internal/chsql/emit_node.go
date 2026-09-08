@@ -90,6 +90,7 @@ func (e *emitter) subqueryFrag(n chplan.Node) (Frag, error) {
 // pattern.
 func (e *emitter) emitSelect(sb *QueryBuilder) error {
 	sb.attrStrategies = e.attrStrategies
+	sb.env = e
 	sql, args, err := sb.subquerySQL()
 	if err != nil {
 		return err
@@ -264,6 +265,7 @@ func (e *emitter) emitUnionAll(u *chplan.UnionAll) error {
 		arms[i] = f
 	}
 	b := NewBuilder()
+	b.env = e
 	UnionAll(arms...)(b)
 	return e.splice(b)
 }

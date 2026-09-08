@@ -5529,6 +5529,7 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 		// straight into GroupBy must not silently mis-render against a
 		// JSON-typed column.
 		sub := NewBuilderWithAttrStrategies(e.attrStrategies)
+		sub.env = e
 		if err := sub.Expr(g); err != nil {
 			return nil, err
 		}

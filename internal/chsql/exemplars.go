@@ -78,7 +78,15 @@ func EmitMetricsExemplars(
 		return "", nil, 0, err
 	}
 
-	e := &emitter{spansTable: spansTable}
+	// Seeded from the emit context exactly as chsql.Emit's own emitter is:
+	// this statement is built here and executed directly by the Tempo
+	// handlers, so it never flows through Emit, and a bare emitter would
+	// discard every ctx-carried bound and strategy — a JSON-typed attribute
+	// column would render Map syntax and fail at query time (issue #3186).
+	// spansTable stays explicit because the caller resolves it, and the
+	// handler ctx is not always engine-threaded with WithSpansTable.
+	e := newEmitter(ctx)
+	e.spansTable = spansTable
 	if err := e.emitMetricsExemplars(rw, m, traceIDCol, spanIDCol, maxPerSeries, spansTable); err != nil {
 		span.RecordError(err)
 		return "", nil, 0, err

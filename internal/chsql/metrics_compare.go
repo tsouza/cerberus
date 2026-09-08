@@ -845,10 +845,12 @@ func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []a
 		return fail(fmt.Errorf("%w: MetricsCompare.RootLookup is nil (no root leg to render)", ErrUnsupported))
 	}
 
-	e := &emitter{
-		spansTable:    spansTable,
-		ctxSpansTable: spansTable,
-	}
+	// Seeded from the emit context exactly as chsql.Emit's own emitter is —
+	// this leg is rendered outside Emit, and a bare emitter would discard
+	// every ctx-carried bound and strategy (issue #3186). spansTable and
+	// ctxSpansTable are already read off ctx by newEmitter; they are the
+	// same value spansTableFromCtx returned above.
+	e := newEmitter(ctx)
 	windowed, bound, err := e.compareWindowedScanBound(rw, m, rangeNS)
 	if err != nil {
 		return fail(err)
