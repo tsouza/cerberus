@@ -16,18 +16,25 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // shared implementation.
 func onlyReferencesPassthrough(e chplan.Expr, passthrough map[string]struct{}) bool {
 	ok := true
-	walkExpr(e, func(sub chplan.Expr) {
+	// Traversal is chplan.InspectExpr (exhaustive over the sealed Expr set,
+	// ratcheted by chplan's TestInspectExprExhaustive): a kind the walk
+	// missed would hide a ColumnRef and let this helper wrongly answer
+	// "safe to push through". The visitor never returns false — every
+	// sub-expression of the predicate is evaluated on the pushed-down row
+	// shape, so none of them may be skipped.
+	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
 		cr, isCol := sub.(*chplan.ColumnRef)
 		if !isCol {
-			return
+			return true
 		}
 		if cr.Qualifier != "" {
 			ok = false
-			return
+			return true
 		}
 		if _, found := passthrough[cr.Name]; !found {
 			ok = false
 		}
+		return true
 	})
 	return ok
 }
