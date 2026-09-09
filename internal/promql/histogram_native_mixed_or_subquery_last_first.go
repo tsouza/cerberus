@@ -218,8 +218,8 @@ func mixedLastFirstSeriesKeyAliases(s schema.Metrics) []string {
 // grid, whose group key is shared with three other continuations that
 // thread `[anchor, Attributes]` through their own downstream stages.
 // Widening it there is the same series-identity question cerberus issue
-// #3232 tracks for the reductions that key on Attributes alone, and it is
-// answered there rather than here.
+// #3240 tracks for the four continuations that share that fanout's key, and
+// it is answered there rather than here.
 //
 // The two reductions in THIS file publish MetricName as a group key
 // instead ([mixedLastFirstSeriesKey]), so they take
