@@ -28,6 +28,13 @@
 // timeSeriesTagsToGroup(Attributes) call) and is exercised with BOTH
 // chopt.FeatureTSGridTagGroups and chopt.FeatureTSThrowDuplicateSeriesIf on
 // at once.
+//
+// A fourth site shares the abort BUILDER those three reach through
+// (duplicateLabelsetAbortExpr) without sharing their collision test:
+// subqueryNameCollisionFilter, the name-drop guard on a SELECT-family
+// reduction over a subquery-anchor relation (cerberus issue #3232). Its
+// differential lives beside its own correctness pins, in
+// handler_chdb_mixed_or_subquery_duplicate_labelset_test.go.
 
 package prom_test
 

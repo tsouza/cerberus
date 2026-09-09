@@ -186,3 +186,29 @@ func TestQuery_MixedOrSubquerySelectFamily_DistinctLabelsets_ChDB(t *testing.T) 
 		})
 	}
 }
+
+// TestQuery_MixedOrSubquerySelectFamily_DuplicateSeriesTags_ChDB is this
+// guard's own differential against
+// chopt.FeatureTSThrowDuplicateSeriesIf (cerberus issue #3038), the
+// fourth call site of the shared abort builder
+// (internal/promql's duplicateLabelsetAbortExpr) —
+// handler_chdb_throw_duplicate_series_if_test.go covers the other three.
+//
+// With the feature on, the SAME collision must land on the SAME 422
+// errorType=execution wire shape while the message names the actual
+// colliding tag rather than carrying the static text. Without this the
+// feature's branch of the builder would be reachable only in theory from
+// this site: the collision TEST differs here (a distinct-name count, not
+// a row count, because the relation holds one row per subquery anchor),
+// so it is the one call site where the two branches are not trivially the
+// same expression.
+func TestQuery_MixedOrSubquerySelectFamily_DuplicateSeriesTags_ChDB(t *testing.T) {
+	start, end, _ := mixedOrDupWindow()
+	srv := newChDBServerWithThrowDuplicateSeriesIf(t,
+		mixedOrDupSeed(t, start, "map('host', 'a')", "map('host', 'a')"), false)
+
+	const query = `count_over_time((latency_exp_hist or on(host) latency_float)[3m:1m])`
+	status, body := getBody(t, fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
+		srv.URL, url.QueryEscape(query), end.Unix()))
+	assertDuplicateSeriesTagsRejected(t, body, status, query)
+}
