@@ -204,7 +204,7 @@ func TestExpHistogramWindowFactorStage_CapHintMutantsKilled(t *testing.T) {
 			return capmutant.Eval(t, []int{keys, aggs, extras, 1}, ops)
 		},
 		Observe: func(t *testing.T) (int, int) {
-			node, _ := expHistogramWindowFactorStage(
+			node, _, _, _ := expHistogramWindowFactorStage(
 				&chplan.OneRow{}, aggFuncs, capHintAliases(keys), capHintAliases(extras),
 				rateWindowFn, in, histogramWindowFold(rateWindowFn, in),
 			)

@@ -52,6 +52,23 @@ type nativeStrategy struct {
 // [TestNativeStrategies_HaveNativeSideFixtures].
 var nativeStrategies = []nativeStrategy{
 	{
+		// The one row whose marker selects the arm that is NOT the
+		// optimisation. ExpHistogramWindowFold defaults to the closed
+		// form (histogram_native_window_closed_form.go), so every
+		// exp-histogram rate/increase fixture in the corpus already pins
+		// the arm production runs; what would otherwise go unpinned is
+		// the telescoping arm that
+		// exp_histogram_increase_closed_form_chdb_test.go compares
+		// against, and an oracle whose SQL nothing pins can drift
+		// underneath the comparison that trusts it. So this section
+		// selects the oracle.
+		field:   "ExpHistogramWindowFold",
+		section: "telescoping_exp_histogram_window_fold",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.ExpHistogramWindowFold = promql.TelescopingExpHistogramWindowFoldLowerer{}
+		},
+	},
+	{
 		field:   "Rate",
 		section: "experimental_ts_grid_range",
 		wire: func(l *promql.RangeLowerers, has func(string) bool) {
