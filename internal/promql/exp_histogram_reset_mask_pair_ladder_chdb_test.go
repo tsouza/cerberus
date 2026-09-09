@@ -4,7 +4,7 @@
 // lambda rests on once its bucket ladders arrive as ARGUMENTS
 // (expHistogramPairBucketLadderArgs, cerberus issue #3239): that the
 // permutation `arraySort((rp, rt) -> rt, arrayEnumerate(<ts>), <ts>)`
-// yields is the permutation `arraySort((psr, pst) -> pst, <list>, <ts>)`
+// yields is the permutation `arraySort((row, key) -> key, <list>, <ts>)`
 // applies to its own first argument.
 //
 // # Why this needs pinning now
@@ -48,7 +48,7 @@ import (
 // comparing two spellings production no longer uses.
 const (
 	pairLadderPositionSpelling = "arraySort((rp, rt) -> rt, arrayEnumerate("
-	pairLadderSortSpelling     = "arraySort((psr, pst) -> pst, "
+	pairLadderSortSpelling     = "arraySort((row, key) -> key, "
 )
 
 // pairLadderTieCases are (timestamp, ladder) inputs whose timestamps all

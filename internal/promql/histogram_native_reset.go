@@ -171,8 +171,7 @@ const (
 	paramResetDensePrev = "rdp"
 )
 
-// The four bucket-ladder lambda ARGUMENTS every per-pair mask binds, and
-// the two comparator parameters of the sort that produces them. See
+// The four bucket-ladder lambda ARGUMENTS every per-pair mask binds. See
 // [expHistogramPairBucketLadderArgs] for why the ladders are arguments
 // rather than the per-series arrays read by subscript.
 const (
@@ -180,8 +179,6 @@ const (
 	paramPairCurrPosBuckets = "cpb"
 	paramPairPrevNegBuckets = "pnb"
 	paramPairCurrNegBuckets = "cnb"
-	paramPairSortRow        = "psr"
-	paramPairSortTime       = "pst"
 )
 
 // expHistogramPairBucketLadderArgs returns the extra lambda parameters
@@ -200,37 +197,46 @@ const (
 // ladder n-1 times, once per pair. That is the same lever
 // [expHistogramDenseContribsExpr] found one level further in (cerberus
 // issue #3178, where the capture was per TARGET BUCKET), and after that
-// fix it was what remained: measured on a real ClickHouse 26.6.4 against
-// cerberus's own `cerberus_queries_duration_exp_hist` telemetry (10
-// series, ~99 stored buckets, ~30 samples per 5m window), a 21-anchor
+// fix it was what remained.
+//
+// Measured on a real ClickHouse 26.6.4 against cerberus's own
+// `cerberus_queries_duration_exp_hist` telemetry (10 series, ~99 stored
+// buckets, ~30 samples per 5m window), a 21-anchor
 // `histogram_quantile(0.95, sum by(...) (rate(X[5m])))` peaked at
-// 433.32 MiB, of which 282 MiB was the mask — and splicing ONLY the two
-// bucket subscripts out of the pair lambda (leaving every other byte,
-// including the full-width dense comparison, untouched) took the whole
-// query to 156.37 MiB against a 150.97 MiB floor with the bucket half
-// removed outright. Cerberus issue #3239.
+// 432.85 MiB; the same query with the mask projection spliced to a
+// constant peaks at 57.83 MiB, so the mask was 375 MiB of it. Nothing
+// INSIDE the comparison accounted for any of that: hoisting
+// `length(<ladder>[curr])` out of the per-target lambda left it at
+// 432.82 MiB, shrinking the dense target range from ~157 elements to
+// four left it at 432.49 MiB, and replacing the folded bucket array with
+// a one-element constant left it at 432.80 MiB. Replacing the ENTIRE
+// dense comparison with a bare
+// `arrayExists(..., <ladder>[curr], <ladder>[curr])` — one subscript per
+// pair and nothing else — still cost 429.71 MiB, while deleting the
+// bucket half of the verdict outright cost 57.64 MiB. Reaching the array
+// WAS the cost. Handing the two ladders in as arguments takes the query
+// to 156.32 MiB. Cerberus issue #3239.
 //
 // # Why sorting is cheaper than gathering by position
 //
 // The pairing is over the timestamp-sorted permutation, so the arguments
-// must be in that same order. `arraySort((row, key) -> key, <list>,
-// <ts>)` is a two-argument sort: both arrays reach it as arguments and
-// nothing is captured, and it yields the SAME permutation the mask's
+// must be in that same order. [expHistogramSortRowsByKeyExpr] — the same
+// two-argument `arraySort` the across-series merge stage already orders
+// its collected arrays with — takes both arrays as arguments and captures
+// nothing, and it yields the SAME permutation the mask's
 // `arraySort((rp, rt) -> rt, arrayEnumerate(<ts>), <ts>)` yields, because
 // ClickHouse derives the permutation from the comparator's values alone
 // and those values are that one ts array in both spellings. Gathering
 // instead — `arrayMap(p -> <list>[p], <positions>)` — would reintroduce
 // the very capture this removes, one per ROW rather than one per pair.
+// TestExpHistogramPairLadder_ChDB_SortAgreesWithPositionPermutation
+// asserts that agreement against the substrate over tie-heavy keys.
 func expHistogramPairBucketLadderArgs() (params []string, args []chplan.Expr) {
 	sorted := func(alias string) chplan.Expr {
-		return &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramPairSortRow, paramPairSortTime},
-				Body:   &chplan.BareIdent{Name: paramPairSortTime},
-			},
+		return expHistogramSortRowsByKeyExpr(
 			&chplan.ColumnRef{Name: alias},
 			&chplan.ColumnRef{Name: hqWindowTsListAlias},
-		}}
+		)
 	}
 	prevOf := func(alias string) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{sorted(alias)}}
@@ -302,8 +308,8 @@ func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAli
 // array [counterIncreaseFold] sorts its own values by, so the two orders
 // are the same permutation by construction — CH derives the permutation
 // from the lambda's values alone, which are that key array in both cases.
-// Every SCALAR list is then read through those positions, which keeps
-// four parallel sorts out of the emitted SQL.
+// Every SCALAR list is then read through those positions, which keeps a
+// parallel sort per list out of the emitted SQL.
 //
 // The two BUCKET ladders are the exception: they are sorted directly and
 // handed to the pair lambda as ARGUMENTS, because a subscript of an
