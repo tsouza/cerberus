@@ -36,11 +36,14 @@ const defaultVolumeLimit = 100
 //     the projected keys collapse into one, and a row must carry EVERY
 //     requested label to be counted at all (see
 //     [targetLabelPresenceMatchers])
-//   - aggregateBy (optional): "series" (the default) or "labels".
-//     `targetLabels` restricts the group key in BOTH modes — upstream's
-//     aggregateBySeries branch builds its series key from
-//     `labelsToMatch` exactly as its labels branch does (the
-//     `aggregateBySeries` split inside `getVolume`,
+//   - aggregateBy (optional): "series" (the default — one row per
+//     distinct label SET) or "labels" (one row per bare label NAME, its
+//     value summed across every value that label takes). The two are
+//     genuinely different response SHAPES, not two spellings of one; see
+//     [buildIndexVolumeSQL]. `targetLabels` restricts the group key in
+//     BOTH of them — upstream's aggregateBySeries branch builds its
+//     series key from `labelsToMatch` exactly as its labels branch does
+//     (the `aggregateBySeries` split inside `getVolume`,
 //     pkg/ingester/instance.go)
 func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	q := r.FormValue("query")
@@ -61,7 +64,8 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetLabels := parseTargetLabels(r.FormValue("targetLabels"))
-	if err := validateAggregateBy(r.FormValue("aggregateBy")); err != nil {
+	aggregateBy := r.FormValue("aggregateBy")
+	if err := validateAggregateBy(aggregateBy); err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
@@ -73,7 +77,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	matchers = append(matchers, targetLabelPresenceMatchers(targetLabels, matchers)...)
 
-	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, targetLabels)
+	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, targetLabels, aggregateBy)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -165,8 +169,29 @@ func rankIndexVolumeRows(rows []chclient.IndexVolumeRow) []rankedVolumeRow {
 	return ranked
 }
 
-// buildIndexVolumeSQL builds the GROUP BY-on-label-set SELECT used by
-// /index/volume. The CH shape is:
+// Loki's two `aggregateBy` options
+// (pkg/storage/stores/index/seriesvolume/volume.go's Series / Labels).
+// The default when the parameter is absent is Series
+// (`DefaultAggregateBy`).
+const (
+	aggregateBySeries = "series"
+	aggregateByLabels = "labels"
+)
+
+// volumeLabelNameAlias is the ARRAY JOIN alias the "labels" aggregation
+// explodes one label NAME per row into. It has to be a name no column of
+// `otel_logs` carries, because GROUP BY / ORDER BY resolve identifiers
+// against SELECT and ARRAY JOIN aliases before FROM columns.
+const volumeLabelNameAlias = "label_name"
+
+// buildIndexVolumeSQL builds the SELECT used by /index/volume. Upstream's
+// `aggregateBy` picks between two genuinely different response shapes —
+// the two branches of upstream's `getVolume` (`pkg/ingester/instance.go`) —
+// so it picks between two SQL shapes here too.
+//
+// # aggregateBy=series (and the default)
+//
+// Keyed by the label SET — one row per distinct series:
 //
 //	SELECT
 //	    mapSort(<group-key-frag>) AS labels,
@@ -181,7 +206,7 @@ func rankIndexVolumeRows(rows []chclient.IndexVolumeRow) []rankedVolumeRow {
 //
 //   - `ResourceAttributes` (default — full label set)
 //   - `mapFilter((k, v) -> v != ”, map(?, <value expr>, …))` when
-//     `targetLabels` is set and aggregateBy is "labels" (or unset)
+//     `targetLabels` is set
 //
 // The group key is the WHOLE label-set Map, so it carries the canonical
 // key-order wrap (canonicalLabelsFrag). Without it one logical stream
@@ -196,6 +221,47 @@ func rankIndexVolumeRows(rows []chclient.IndexVolumeRow) []rankedVolumeRow {
 // straight into VectorSample — so this SQL is the only place the split
 // can be closed.
 //
+// # aggregateBy=labels
+//
+// Keyed by the bare label NAME, summing across every value that label
+// takes — `{service_name="a"}` at 10 B and `{service_name="b"}` at 5 B
+// are ONE `service_name` row of 15 B, not two rows:
+//
+//	SELECT
+//	    map(`label_name`, '') AS labels,
+//	    sum(length(`Body`)) AS bytes
+//	FROM `otel_logs`
+//	ARRAY JOIN mapKeys(<group-key-frag>) AS `label_name`
+//	WHERE <matchers> AND <time bounds>
+//	GROUP BY labels
+//	ORDER BY bytes DESC, labels
+//	LIMIT <n>
+//
+// ARRAY JOIN is upstream's own `s.labels.Range` over each stream, in
+// `getVolume`, expressed in ClickHouse: it replicates each matched row
+// once per label the row's
+// stream carries, so `sum(length(Body))` charges the row's full byte
+// count to every one of its labels — exactly `labelVolumes[l.Name] +=
+// size`. A row whose projected map is empty explodes to nothing and
+// contributes nothing, which is the same thing ranging over a stream's
+// own labels does. `<group-key-frag>` is shared with the series shape,
+// so `targetLabels` restricts the exploded key set identically.
+//
+// The one-entry `map(label_name, ”)` reproduces upstream's decode:
+// `toPrometheusData` (`pkg/querier/queryrange/volume.go`) builds this
+// mode's metric with `labels.FromStrings(name, "")`, a single label whose
+// NAME is the volume's name and whose VALUE is empty. Keeping
+// the wire shape a Map here — rather than returning a bare String and
+// re-wrapping in Go — is what lets both modes share one
+// chclient.QueryIndexVolume decode and one GROUP BY / ORDER BY / LIMIT
+// tail. No canonical-key-order wrap is needed on a map literal built from
+// a single key.
+//
+// Sharing that tail is also what gives this shape the second ORDER BY key
+// below for free, and it needs one just as much: label NAMES tie on byte
+// volume at least as readily as label sets do, and one row per distinct
+// name means the key is total here too.
+//
 // All identifiers and bound keys flow through Builder helpers — no
 // fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
 func buildIndexVolumeSQL(
@@ -205,6 +271,7 @@ func buildIndexVolumeSQL(
 	start, end time.Time,
 	limit int,
 	targetLabels []string,
+	aggregateBy string,
 ) (string, []any, error) {
 	groupFrag, err := volumeGroupFrag(s, strategies, targetLabels)
 	if err != nil {
@@ -212,12 +279,19 @@ func buildIndexVolumeSQL(
 	}
 
 	sb := chsql.NewQuery().
-		Select(
-			chsql.As(canonicalLabelsFrag(groupFrag), "labels"),
-			chsql.As(bytesAggFrag(s.BodyColumn), "bytes"),
-		).
 		From(chsql.Col(s.LogsTable)).
 		WithAttrStrategies(strategies)
+	if aggregateBy == aggregateByLabels {
+		sb.Select(
+			chsql.As(volumeLabelNameMapFrag(), "labels"),
+			chsql.As(bytesAggFrag(s.BodyColumn), "bytes"),
+		).ArrayJoin(chsql.As(chsql.Call("mapKeys", groupFrag), volumeLabelNameAlias))
+	} else {
+		sb.Select(
+			chsql.As(canonicalLabelsFrag(groupFrag), "labels"),
+			chsql.As(bytesAggFrag(s.BodyColumn), "bytes"),
+		)
+	}
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err
@@ -255,6 +329,12 @@ func buildIndexVolumeSQL(
 // label-set group key. "series" (or empty + no targetLabels) groups by
 // the full attribute map; otherwise we project to the targetLabels
 // subset.
+//
+// Both /index/volume shapes read it: the series shape groups by this Map
+// directly, the labels shape ARRAY JOINs over its KEYS. That is why the
+// `targetLabels` projection lives here rather than in either branch —
+// upstream's `getVolume` restricts to `labelsToMatch` in both of its
+// branches too.
 //
 // The projection resolves each requested label through
 // [logql.LabelValueExpr] — the SAME storage-shape precedence
@@ -310,28 +390,20 @@ func volumeGroupFrag(
 	return chsql.Call("mapFilter", dropAbsent, chsql.Call("map", entries...)), nil
 }
 
-// Loki's two `aggregateBy` options
-// (pkg/storage/stores/index/seriesvolume/volume.go's Series / Labels).
-// The default when the parameter is absent is Series
-// (`DefaultAggregateBy`).
-const (
-	aggregateBySeries = "series"
-	aggregateByLabels = "labels"
-)
-
 // validateAggregateBy mirrors upstream's `volumeAggregateBy`
 // (pkg/loghttp/query.go): absent means the default, one of the
 // two names is accepted, and anything else is a 400. Cerberus used to
 // accept any string silently, so `aggregateBy=banana` answered over a
 // grouping the client never asked for.
 //
-// The VALUE does not select a group key here, because upstream's does
+// The VALUE does not select a group KEY here, because upstream's does
 // not either: both of its branches restrict the key to `labelsToMatch`
-// (`getVolume`, pkg/ingester/instance.go). Where the two branches genuinely
-// differ is the aggregation SHAPE — upstream's labels branch sums per
-// label NAME across that label's values, a different wire shape from a
-// per-label-set row. Cerberus emits the series shape for both, tracked
-// as issue #3224.
+// (`getVolume`, pkg/ingester/instance.go). What it does select is the
+// aggregation SHAPE — upstream's labels branch sums per label NAME
+// across that label's values, a different wire shape from a
+// per-label-set row — which [buildIndexVolumeSQL] now answers with a
+// SQL shape of its own, so the validated value is threaded down to it
+// rather than discarded here.
 func validateAggregateBy(raw string) error {
 	switch raw {
 	case "", aggregateBySeries, aggregateByLabels:
@@ -378,6 +450,19 @@ func targetLabelPresenceMatchers(targetLabels []string, matchers []*labels.Match
 		out = append(out, labels.MustNewMatcher(labels.MatchRegexp, t, ".+"))
 	}
 	return out
+}
+
+// volumeLabelNameMapFrag renders the one-entry `map(<label_name>, ”)`
+// the "labels" aggregation reports each row's metric as — the
+// `labels.FromStrings(name, "")` upstream's `toPrometheusData` builds,
+// where the label NAME is the payload and the value slot is deliberately
+// empty.
+//
+// The empty value is a literal, not a placeholder-bound arg: it is part
+// of the query SHAPE (every row's value slot is empty by construction),
+// never client data.
+func volumeLabelNameMapFrag() chsql.Frag {
+	return chsql.Call("map", chsql.Col(volumeLabelNameAlias), chsql.InlineLit(""))
 }
 
 // parseVolumeLimit decodes the optional `limit` parameter; missing /

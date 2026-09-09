@@ -5,7 +5,7 @@
 // ...))[range:step])` for a SELECT-family member (count_over_time) and a
 // FOLD-family member (sum_over_time) — the label_replace-wrapped-inner
 // sibling of #2577's own bare-inner proof
-// (histogram_native_mixed_or_subquery_range_fn_chdb_test.go), reusing that
+// (histogram_native_mixed_or_subquery_family_chdb_test.go), reusing that
 // file's own seed/fixture/helpers so the assertions can be checked against
 // the identical baseline numbers.
 package promql_test
@@ -18,7 +18,7 @@ import (
 
 // wrappedMorQuery builds `<outer>(<fn>((label_replace((h) or (f), "extra",
 // "yes", "", ""))[2m:1m]))` — morQuery's own label_replace-wrapped-inner
-// sibling (histogram_native_mixed_or_subquery_range_fn_chdb_test.go). The
+// sibling (histogram_native_mixed_or_subquery_family_chdb_test.go). The
 // label_replace call adds a constant "extra" label without touching
 // "series", so every assertion below reads back against the SAME per-series
 // values morQuery's own tests pin.

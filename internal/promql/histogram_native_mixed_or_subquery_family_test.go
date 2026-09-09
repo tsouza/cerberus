@@ -17,8 +17,10 @@ import (
 // and its FOLD-family sibling already pin for a PURE histogram-native
 // subquery inner also lowers — without error, and to the correct
 // [chplan.RowShapeOf] — over a subquery whose own inner is instead a
-// mixed float/histogram `or` ([mixedOrSubqueryOuterFn],
-// histogram_native_mixed_or_subquery_range_fn.go).
+// mixed float/histogram `or` ([mixedExpHistogramSetOp],
+// histogram_native_mixed_or.go), answered through
+// [lowerHistogramOrMixedSubqueryOuterFnInput]'s continuation dispatch
+// (histogram_native_mixed_or_subquery_further_setop_range_fn.go).
 //
 // The six always-float-output names (count_over_time, present_over_time,
 // resets, changes, ts_of_first_over_time, ts_of_last_over_time) publish a

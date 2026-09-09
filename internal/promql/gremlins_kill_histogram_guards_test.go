@@ -23,18 +23,22 @@ import (
 //
 // The rule reads "exp-histogram lowering is available when the schema
 // DOES declare a table". Negated it reads "available only when it does
-// NOT", which is no real deployment: [mixedOrSubqueryOuterFn] reaches the
-// rule through [wrapMixedOrSubqueryInner] -> [mixedExpHistogramSetOp] ->
+// NOT", which is no real deployment: [mixedExpHistogramSetOp] reaches the
+// rule through [isExpHistogramValuedOrForwarded] ->
 // [isExpHistogramValuedShape], every one of which then answers false, and
-// the mixed-or subquery shape silently stops being recognised.
+// the mixed float/histogram `or` silently stops being recognised — taking
+// every composition built on it, subquery inners included, with it.
 //
 // The mutant is therefore killed by a POSITIVE recognition — the negative
 // direction is what the original already does. Until cerberus issue #2963
-// this test named [mixedOrSubqueryOuterFn]'s own copy of the rule; that
-// copy decided nothing about the answer and was deleted with the other
-// twenty composite ones, so the citation now names the one place the rule
-// is stated. Nothing about what this test exercises changed.
-func TestMixedOrSubqueryOuterFn_RequiresAConfiguredTable(t *testing.T) {
+// this test named a composite recognizer's own copy of the rule; that copy
+// decided nothing about the answer and was deleted with the other twenty
+// composite ones, so the citation names the one place the rule is stated.
+// Cerberus issue #3227 then deleted the mixed-or SUBQUERY recognizer this
+// test used to reach the rule THROUGH (an unsound distribute-then-
+// recombine rewrite), so it now calls the leaf recognizer directly.
+// Nothing about which rule this test exercises changed either time.
+func TestMixedExpHistogramSetOp_RequiresAConfiguredTable(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -44,25 +48,17 @@ func TestMixedOrSubqueryOuterFn_RequiresAConfiguredTable(t *testing.T) {
 			"nothing")
 	}
 
-	// The subquery inner is the bare mixed set-op [wrapMixedOrSubqueryInner]
-	// admits, and `@` pins it so subqueryHasEvalAnchor resolves without an
-	// ambient query time.
-	const q = `last_over_time(((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`
-	call, ok := mustParse(t, q).(*parser.Call)
+	const q = `(latency_exp_hist) or (other_metric)`
+	b, ok := mixedExpHistogramSetOp(mustParse(t, q), s, lowerCtx{})
 	if !ok {
-		t.Fatalf("mustParse(%q) = %T, want *parser.Call", q, mustParse(t, q))
-	}
-
-	sub, b, rebuild, ok := mixedOrSubqueryOuterFn(call, s, lowerCtx{})
-	if !ok {
-		t.Fatalf("mixedOrSubqueryOuterFn(%q) = ok false; want true — the schema DOES declare an "+
+		t.Fatalf("mixedExpHistogramSetOp(%q) = ok false; want true — the schema DOES declare an "+
 			"exp-histogram table, so availability must not be denied (mutant `!=`->`==` at "+
 			"histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != \"\" && !ctx.metadataFullRange` denies it on every "+
 			"configured deployment)", q)
 	}
-	if sub == nil || b == nil || rebuild == nil {
-		t.Fatalf("mixedOrSubqueryOuterFn(%q) returned ok=true with sub=%v b=%v rebuild==nil:%v; a "+
-			"recognised shape must carry all three", q, sub, b, rebuild == nil)
+	if b == nil {
+		t.Fatalf("mixedExpHistogramSetOp(%q) returned ok=true with a nil BinaryExpr; a recognised "+
+			"shape must carry the operator node", q)
 	}
 }
 

@@ -43,14 +43,16 @@ CREATE TABLE otel_metrics_gauge (
 -- window and the float series over a ONE-sample window (its other two
 -- anchors were shadowed away), answering TWO series.
 --
--- This is what makes the shape a regression pin for
--- histogram_native_mixed_or_subquery_range_fn.go's distribute-then-
--- recombine rewrite: that rewrite folds each arm over its FULL window
--- and applies the shadow to the FOLDED results, which under a narrowed
--- key drops the float series entirely (count 3, then shadowed) instead
--- of puncturing its window (count 1). `mixedOrSubqueryOuterFn` now
--- refuses a non-default match key for exactly that reason, routing this
--- query to the per-anchor-correct path instead.
+-- This is what makes the shape a regression pin for the
+-- distribute-then-recombine rewrite cerberus once applied here: it
+-- folded each arm over its FULL window and applied the shadow to the
+-- FOLDED results, which under a narrowed key drops the float series
+-- entirely (count 3, then shadowed) instead of puncturing its window
+-- (count 1). That rewrite first learned to refuse a non-default match
+-- key, and cerberus issue #3227 then removed it outright — the DEFAULT
+-- key punctures a window too, since it drops `__name__` and two arms can
+-- carry byte-identical attributes. Every mixed-`or` subquery now takes
+-- the per-anchor-correct path this fixture already pinned.
 INSERT INTO otel_metrics_exponential_histogram VALUES
     ('latency_exp_hist', map('service', 'web', 'pod', 'h1'), toDateTime64('2025-12-31 23:58:30', 9), 10, 20.0, 0, 0, 0, [1, 2, 3, 4], 0, []);
 INSERT INTO otel_metrics_gauge VALUES

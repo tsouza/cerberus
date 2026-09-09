@@ -64,6 +64,15 @@ func hoistedServiceWindow() (int64, int64) {
 // pkg/ingester/instance.go) — the same labels the matchers were
 // evaluated against — so the projection must resolve exactly as the
 // selector does.
+//
+// The request omits `aggregateBy`, which is upstream's default of
+// `series` — the label-SET shape whose per-VALUE split this test is
+// about. `targetLabels` alone reaches the projected branch, in both
+// modes, which is this file's own fix. Spelling it `aggregateBy=labels`
+// selects the per-label-NAME shape since cerberus issue #3224, and that
+// shape sums ACROSS a label's values by definition: it would answer one
+// `service_name` row of 15 and the per-value split this test exists to
+// pin would be gone.
 func TestIndexVolume_ChDB_TargetLabelsResolvesHoistedColumn(t *testing.T) {
 	c := chclienttest.NewChDB(t)
 	c.Seed(t, hoistedServiceSeed)
@@ -79,7 +88,7 @@ func TestIndexVolume_ChDB_TargetLabelsResolvesHoistedColumn(t *testing.T) {
 	}
 	getJSON(t, fmt.Sprintf(
 		`%s/loki/api/v1/index/volume?query=%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d`+
-			`&targetLabels=service_name&aggregateBy=labels`,
+			`&targetLabels=service_name`,
 		srv.URL, start, end,
 	), &parsed)
 
