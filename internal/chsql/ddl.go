@@ -496,7 +496,8 @@ func (c *CreateTableBuilder) TTL(t Frag) *CreateTableBuilder {
 }
 
 // EngineMergeTree renders the bare `MergeTree` table engine (no arguments) —
-// the single-node corpus table engine.
+// the single-node, non-replicating default. See EngineReplicatedMergeTree for
+// the form a Replicated database needs to replicate a table's DATA.
 func EngineMergeTree() Frag { return BareIdent("MergeTree") }
 
 // EngineAggregatingMergeTree renders the bare `AggregatingMergeTree` table
