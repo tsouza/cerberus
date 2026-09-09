@@ -17,12 +17,13 @@
 //
 //   - `max` / `min` treat NaN as ABSENT: the accumulator is replaced
 //     when the incoming sample is better `|| math.IsNaN(group.floatValue)`
-//     (promql/engine.go:3685 for MAX, :3694 for MIN), so a NaN
-//     accumulator loses to any real value and a group of nothing but
-//     NaN stays NaN.
+//     (the `parser.MAX` and `parser.MIN` arms of `promql/engine.go`'s
+//     `aggregation`), so a NaN accumulator loses to any real value and a
+//     group of nothing but NaN stays NaN.
 //   - `topk` / `bottomk` displace the heap root when the incoming sample
 //     is better `|| (math.IsNaN(group.heap[0].F) && !math.IsNaN(s.F))`
-//     (promql/engine.go:3932 and :3948) — a NaN in the heap is evicted
+//     (the `parser.TOPK` and `parser.BOTTOMK` arms of
+//     `promql/engine.go`'s `aggregationK`) — a NaN in the heap is evicted
 //     by any real value, in BOTH directions. Expressed as an ordering,
 //     that is "NaN sorts LAST whether the sort is ascending or
 //     descending", which is not the same as a total order: it is
@@ -114,12 +115,12 @@ func TestClickHouseIgnoresNaNInMaxMin(t *testing.T) {
 			}
 			if tc.wantBothAreNaN {
 				if !math.IsNaN(gotMax) || !math.IsNaN(gotMin) {
-					t.Errorf("max/min over an all-NaN group = %v/%v, want nan/nan (promql/engine.go:3685, :3694)", gotMax, gotMin)
+					t.Errorf("max/min over an all-NaN group = %v/%v, want nan/nan (the MAX and MIN arms of promql/engine.go's aggregation)", gotMax, gotMin)
 				}
 				return
 			}
 			if gotMax != tc.wantMax || gotMin != tc.wantMin {
-				t.Errorf("max/min over %q = %v/%v, want %v/%v — ClickHouse must ignore NaN the way Prometheus's `|| math.IsNaN(group.floatValue)` does (promql/engine.go:3685, :3694)",
+				t.Errorf("max/min over %q = %v/%v, want %v/%v — ClickHouse must ignore NaN the way Prometheus's `|| math.IsNaN(group.floatValue)` does (the MAX and MIN arms of promql/engine.go's aggregation)",
 					tc.grp, gotMax, gotMin, tc.wantMax, tc.wantMin)
 			}
 		})
@@ -133,9 +134,9 @@ func TestClickHouseIgnoresNaNInMaxMin(t *testing.T) {
 //
 // NaN LAST in BOTH directions is the ordering spelling of Prometheus's
 // heap rule `math.IsNaN(group.heap[0].F) && !math.IsNaN(s.F)`
-// (promql/engine.go:3932 for topk, :3948 for bottomk): a NaN sitting in
-// the heap is displaced by any real value regardless of which end the
-// heap keeps. NaN-FIRST under `DESC` — what a "NaN compares greatest"
+// (the `parser.TOPK` and `parser.BOTTOMK` arms of `promql/engine.go`'s
+// `aggregationK`): a NaN sitting in the heap is displaced by any real
+// value regardless of which end the heap keeps. NaN-FIRST under `DESC` — what a "NaN compares greatest"
 // total order would give — would make `topk(2, v)` answer the two NaN
 // series.
 func TestClickHouseSortsNaNLastInBothDirections(t *testing.T) {
@@ -188,7 +189,7 @@ func TestClickHouseSortsNaNLastInBothDirections(t *testing.T) {
 			sorted := append([]string(nil), gotNaN...)
 			sort.Strings(sorted)
 			if strings.Join(sorted, ",") != strings.Join(nanOrderingNaNIDs, ",") {
-				t.Errorf("trailing rows = %v, want the NaN rows %v last (promql/engine.go:3932, :3948); full order was %v",
+				t.Errorf("trailing rows = %v, want the NaN rows %v last (the topk and bottomk arms of promql/engine.go's aggregationK); full order was %v",
 					gotNaN, nanOrderingNaNIDs, got)
 			}
 		})

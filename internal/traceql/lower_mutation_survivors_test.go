@@ -19,9 +19,9 @@ import (
 //
 //	isNarrowSpanProjection  lower.go:`len(p.Replacements) != 0`
 //	isNarrowSpanProjection  lower.go:`len(p.Projections) != len(want)`
-//	lowerInOperation        lower.go:`absentAttributePredicate(attr, s, b.Op == traceql.OpNotIn); absent`
+//	lowerInOperation        lower.go:lowerInOperation:`absentAttributePredicate(attr, s); absent`
 //	attributeHasNoBacking   lower.go:`attr.Scope == traceql.AttributeScopeInstrumentation && s.ScopeAttributesColumn == ""`
-//	coerceBoolFieldAccess   lower.go:`op != chplan.OpEq && op != chplan.OpNe`
+//	coerceBoolFieldAccess   lower.go:coerceBoolFieldAccess:`op != chplan.OpEq && op != chplan.OpNe`
 //
 // Each test below calls the mutated function/call-site directly and asserts
 // the CONCRETE result on both sides of the guard, so a CONDITIONALS_NEGATION
@@ -109,7 +109,7 @@ func TestIsNarrowSpanProjection_PerColumnGuard(t *testing.T) {
 }
 
 // TestLowerInOperation_AbsentAttributeGuard pins the `; absent` guard
-// lower.go:`absentAttributePredicate(attr, s); absent`. The mutant flips it
+// lower.go:lowerInOperation:`absentAttributePredicate(attr, s); absent`. The mutant flips it
 // to `; !absent`, which:
 //   - on a backed attribute (absent == false) wrongly fires the early
 //     return, yielding the (nil, nil) zero value instead of a membership
@@ -160,10 +160,11 @@ func TestLowerInOperation_AbsentAttributeGuard(t *testing.T) {
 	}
 
 	// NOT IN over the same unbacked attribute is ALSO constant-false.
-	// Reference never evaluates the membership: binaryTypeValid admits a
-	// TypeNil operand for `=` / `!=` only (enum_operators.go:118), so
+	// Reference never evaluates the membership: binaryTypesValid admits a
+	// TypeNil operand for `=` / `!=` only (its
+	// `case TypeNil, TypeStatus, TypeKind` arm in enum_operators.go), so
 	// OpNotIn fails the type check and execute returns StaticFalse
-	// (ast_execute.go:416) rather than negating a false membership into a
+	// (ast_execute.go) rather than negating a false membership into a
 	// true predicate.
 	notIn := &tempoql.BinaryOperation{
 		Op:  tempoql.OpNotIn,
@@ -229,7 +230,7 @@ func TestAttributeHasNoBacking_InstrumentationScopeGuard(t *testing.T) {
 }
 
 // TestCoerceBoolFieldAccess_OpGuard pins the guard
-// lower.go:`op != chplan.OpEq && op != chplan.OpNe`. The mutant flips it
+// lower.go:coerceBoolFieldAccess:`op != chplan.OpEq && op != chplan.OpNe`. The mutant flips it
 // to `op == OpEq || op == OpNe`, which:
 //   - on OpEq wrongly fires the early return, leaving the LitBool operand
 //     un-coerced instead of rewritten to its OTel-CH string encoding;

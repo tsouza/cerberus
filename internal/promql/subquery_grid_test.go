@@ -404,12 +404,12 @@ func parseSubquery(t *testing.T, query string) *parser.SubqueryExpr {
 // answer for a subquery window that spans no grid multiple at all.
 //
 // Reference does NOT clamp the grid down to a single anchor. It computes
-// `newEv.endTimestamp = ev.endTimestamp - offsetMillis` UNSNAPPED
-// (promql/engine.go:2397) and `newEv.startTimestamp` as the snapped base
-// bumped by one interval (promql/engine.go:2418-2420), then the very
-// first statement of the sub-evaluator is
+// `newEv.endTimestamp = ev.endTimestamp - offsetMillis` UNSNAPPED and
+// `newEv.startTimestamp` as the snapped base bumped by one interval
+// (both in `promql/engine.go`'s `eval`, in its `*parser.SubqueryExpr`
+// arm), then the very first statement of the sub-evaluator is
 // `if ev.endTimestamp < ev.startTimestamp { return Matrix{}, nil }`
-// (promql/engine.go:1923) — the EMPTY matrix.
+// (`promql/engine.go`'s `eval`, its opening guard) — the EMPTY matrix.
 //
 // `up[1s:1m]` at 01:04:41 is exactly that shape: the window (01:04:40,
 // 01:04:41] holds no whole minute, so reference answers no samples where

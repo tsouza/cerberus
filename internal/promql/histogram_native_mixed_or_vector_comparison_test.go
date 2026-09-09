@@ -279,13 +279,13 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompare_ManyToMany(t *testi
 //
 // Reference builds the output label set from the MANY side, not from the
 // operator's syntactic LHS: for CardOneToMany it swaps `lhs, rhs`
-// outright before the match loop (promql/engine.go:3043-3046) and then
-// seeds `resultMetric`'s builder from that swapped `lhs`
-// (promql/engine.go:3216). The SAMPLE still comes from the syntactic
-// LHS — `doBinOp` un-swaps the values back (promql/engine.go:3090-3095)
-// — so the two follow different sides and a single "always L" forward
-// cannot be right for both. Plain float V-V already models this split
-// (internal/chsql/vector_join.go's `outerSide`).
+// outright before the match loop (`promql/engine.go`'s `VectorBinop`)
+// and then seeds `resultMetric`'s builder from that swapped `lhs`
+// (`promql/engine.go`'s `resultMetric`). The SAMPLE still comes from the
+// syntactic LHS — `doBinOp`, the closure inside `VectorBinop`, un-swaps
+// the values back — so the two follow different sides and a single
+// "always L" forward cannot be right for both. Plain float V-V already
+// models this split (internal/chsql/vector_join.go's `outerSide`).
 //
 // The assertion reads the MetricName projection against the Timestamp
 // projection, which was already Card-aware: both are label-side outputs
@@ -344,7 +344,7 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareNameFollowsManySide(
 			gotName := joinSideOf(s.MetricNameColumn)
 			wantSide := joinSideOf(s.TimestampColumn)
 			if gotName != wantSide {
-				t.Errorf("lower(%q): MetricName reads join side %q but the label-side Timestamp reads %q; reference takes both from the many side (promql/engine.go:3043-3046, 3216)",
+				t.Errorf("lower(%q): MetricName reads join side %q but the label-side Timestamp reads %q; reference takes both from the many side (promql/engine.go's VectorBinop and resultMetric)",
 					query, gotName, wantSide)
 			}
 		})

@@ -5960,7 +5960,7 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 }
 
 // Prometheus's stringlabels size prefix, transcribed from
-// `encodeSize` (model/labels/labels_stringlabels.go:552-564):
+// `encodeSize` (in `model/labels/labels_stringlabels.go`):
 //
 //	if v < 255 { data[offset] = uint8(v); return }
 //	data[offset] = 255
@@ -5969,7 +5969,7 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 //	data[offset+3] = byte(v >> 16)
 //
 // `labels.Hash()` is `xxhash.Sum64` over exactly those bytes
-// (labels_stringlabels.go:90-92), so the boundary and the byte order
+// (`labels_stringlabels.go`'s `Labels.Hash`), so the boundary and the byte order
 // below are load-bearing, not cosmetic.
 const (
 	// stringLabelsShortSizeMax is the EXCLUSIVE upper bound of the

@@ -9,13 +9,16 @@ import (
 
 // An attribute a span never carried resolves to StaticNil in reference
 // Tempo, and nothing matches nil: every binary comparison short-circuits
-// to false (pkg/traceql/ast.go:850 Equals / :892 NotEquals both return
-// false on TypeNil, and pkg/traceql/ast_execute.go:416 returns StaticFalse
-// for the operator/type pairs binaryTypeValid rejects — which for TypeNil
-// is everything except `=` and `!=`, pkg/traceql/enum_operators.go:118),
-// and every aggregate skips the span outright (ast_execute.go:263, :290,
-// :314, :338 `if val.IsNil() { continue }`; engine_metrics.go:2130
-// FloatizeAttribute answers TypeNil, which the over-time reducers skip).
+// to false (pkg/traceql/ast.go's Static.Equals / Static.NotEquals both
+// return false on TypeNil, and pkg/traceql/ast_execute.go's
+// BinaryOperation.execute returns StaticFalse for the operator/type pairs
+// binaryTypesValid rejects — which for TypeNil is everything except `=`
+// and `!=`, per that function's `case TypeNil, TypeStatus, TypeKind` arm
+// in pkg/traceql/enum_operators.go), and every aggregate skips the span
+// outright (the `if val.IsNil() { continue }` guard each of
+// pkg/traceql/ast_execute.go's Aggregate.evaluate avg/max/min/sum arms
+// opens its span loop with; engine_metrics.go's FloatizeAttribute answers
+// TypeNil, which the over-time reducers skip).
 //
 // cerberus reads attributes out of a Map(String, String) carrier, whose
 // subscript answers '' for a key the span does not have. '' is a perfectly
@@ -379,14 +382,16 @@ func TestRegexArrayFoldLowersLikeItsScalarSpelling(t *testing.T) {
 	}{
 		{
 			// OpRegexMatchAny -> element op OpRegex, matchAll false, so
-			// `matchCount > 0`: an OR (pkg/traceql/ast_execute.go:583,:620).
+			// `matchCount > 0`: an OR (the `matchAll` / `matchCount`
+			// pair in pkg/traceql/ast_execute.go's BinaryOperation.execute
+			// array branch).
 			name:     "match_any_is_an_or_of_the_scalar_form",
 			query:    `{ span.flavor =~ "van.*" || span.flavor =~ "man.*" }`,
 			combined: "(match(`SpanAttributes`[?], ?) OR match(`SpanAttributes`[?], ?))",
 		},
 		{
 			// OpRegexMatchNone -> element op OpNotRegex, matchAll true, so
-			// `matchCount == elemCount`: an AND (same lines).
+			// `matchCount == elemCount`: an AND (same branch).
 			name:     "match_none_is_an_and_of_the_scalar_form",
 			query:    `{ span.flavor !~ "van.*" && span.flavor !~ "man.*" }`,
 			combined: "NOT match(`SpanAttributes`[?], ?) AND NOT match(`SpanAttributes`[?], ?)",
@@ -440,11 +445,12 @@ func TestRegexArrayFoldOverANumericMaterializedColumn(t *testing.T) {
 // absentAttributePredicate answers for a carrier the OTel-CH schema does not
 // materialise.
 //
-// Reference does not compute a membership and negate it: binaryTypeValid
-// admits a TypeNil operand for `=` / `!=` only
-// (pkg/traceql/enum_operators.go:118), so OpIn AND OpNotIn both fail
+// Reference does not compute a membership and negate it: binaryTypesValid
+// admits a TypeNil operand for `=` / `!=` only (its
+// `case TypeNil, TypeStatus, TypeKind` arm in
+// pkg/traceql/enum_operators.go), so OpIn AND OpNotIn both fail
 // BinaryOperation.execute's type check, which returns StaticFalse outright
-// (pkg/traceql/ast_execute.go:416).
+// (pkg/traceql/ast_execute.go).
 //
 // The NOT IN half is the one that was wrong, and ast/rewrite.go is what made
 // it reachable from ordinary query text: it folds `!= && !=` into OpNotIn,

@@ -400,9 +400,10 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 		// The window spans no grid multiple at all. Reference does NOT
 		// clamp: `newEv.endTimestamp` stays the raw (unsnapped) window end
 		// while `newEv.startTimestamp` is the bumped snapped base
-		// (promql/engine.go:2397 and 2418-2420), and the very first thing the
-		// sub-evaluator does is `if ev.endTimestamp < ev.startTimestamp {
-		// return Matrix{}, nil }` (promql/engine.go:1923). So the subquery
+		// (`promql/engine.go`'s `eval`, in its `*parser.SubqueryExpr` arm),
+		// and the very first thing the sub-evaluator does is
+		// `if ev.endTimestamp < ev.startTimestamp { return Matrix{}, nil }`
+		// (`promql/engine.go`'s `eval`, its opening guard). So the subquery
 		// answers the EMPTY matrix, not one anchor at the snapped base.
 		//
 		// gridStart is a grid multiple, so `gridStart > epochFloor(rawEnd)`
@@ -444,7 +445,8 @@ const (
 	subqueryGridDerived
 	// subqueryGridEmpty — the anchor grid is known and holds NO anchor:
 	// the window is narrower than one step and spans no grid multiple.
-	// Reference answers the empty matrix (promql/engine.go:1923). The
+	// Reference answers the empty matrix (`promql/engine.go`'s `eval`,
+	// its opening guard). The
 	// returned context carries a degenerate single-anchor grid so the
 	// caller can still lower the inner for its column shape; the caller
 	// MUST cap the result with [emptySubqueryGrid].
@@ -456,7 +458,8 @@ const (
 //
 // This is the plan-level spelling of reference's
 // `if ev.endTimestamp < ev.startTimestamp { return Matrix{}, nil }`
-// (promql/engine.go:1923) — the answer is the EMPTY matrix, not "no
+// (`promql/engine.go`'s `eval`, its opening guard) — the answer is the
+// EMPTY matrix, not "no
 // result", so the relation must still publish its full column list for
 // whatever composes on top (an outer `*_over_time` reducer folds nothing
 // and emits nothing; `absent_over_time` reads the same emptiness and

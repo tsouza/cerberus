@@ -95,8 +95,8 @@ func timeFromUnixFloatSeconds(f float64) time.Time {
 // from "0".
 //
 // The two branches and their order are Prometheus's `parseDuration`
-// (web/api/v1/api.go:2272-2284) and Loki's `parseSecondsOrDuration`
-// (pkg/loghttp/params.go:202-214), which are the same function twice.
+// (web/api/v1/api.go) and Loki's `parseSecondsOrDuration`
+// (pkg/loghttp/params.go), which are the same function twice.
 // The unit branch is `model.ParseDuration`, NOT `time.ParseDuration`:
 // the two differ in both directions, and cerberus was on the wrong side
 // of both. `model` accepts the calendar units `y`, `w` and `d` that Go
@@ -105,7 +105,8 @@ func timeFromUnixFloatSeconds(f float64) time.Time {
 // `model` rejects, so those were answered here and a 400 upstream.
 //
 // Upstream Tempo is the exception and genuinely uses
-// `time.ParseDuration` (pkg/api/http.go:661-671), so the Tempo head has
+// `time.ParseDuration` in its own `parseSecondsOrDuration`
+// (pkg/api/http.go), so the Tempo head has
 // its own parser (internal/api/tempo's parseMetricsStep) rather than
 // sharing this one. Matching each head to its own reference is the
 // point; a single tolerant parser would match none of them.
@@ -113,8 +114,9 @@ func timeFromUnixFloatSeconds(f float64) time.Time {
 // The int64-overflow guard on the number branch is not cerberus-specific
 // caution: all three reference engines carry the identical check, and
 // all three answer 400 rather than a wrapped duration —
-// Prometheus web/api/v1/api.go:2273-2279, Loki
-// pkg/loghttp/params.go:202-209, Tempo pkg/api/http.go:661-668. Without
+// Prometheus's `parseDuration` in web/api/v1/api.go, Loki's
+// `parseSecondsOrDuration` in pkg/loghttp/params.go, Tempo's
+// `parseSecondsOrDuration` in pkg/api/http.go. Without
 // it `step=1e30` becomes an implementation-defined (in practice
 // negative) time.Duration and the step grid is built from nonsense.
 func ParseDuration(raw string) (time.Duration, error) {
@@ -169,7 +171,7 @@ func MinPositiveDuration(a, b time.Duration) time.Duration {
 //
 // The float branch is deliberately NOT gated on the value containing a
 // decimal point, unlike [ParseTimeUnixScaled]: Prometheus's own
-// parseTime (web/api/v1/api.go:2249-2254) calls strconv.ParseFloat
+// parseTime (web/api/v1/api.go) calls strconv.ParseFloat
 // first and unconditionally, so `time=1e19` parses there rather than
 // erroring. Prometheus then answers 200-with-no-samples for such a
 // timestamp — MinTime / MaxTime are the defaults for an ABSENT
@@ -222,8 +224,9 @@ func ParseTimeProm(raw string, def time.Time) (time.Time, error) {
 //     above every realistic ms timestamp (year 33658+ in ms).
 //
 // The float branch is reached only when the value contains a decimal
-// point, exactly as reference Loki (pkg/loghttp/params.go:168-174) and
-// reference Tempo (pkg/api/http.go:631-637) gate theirs. Both then fall
+// point, exactly as reference Loki's `parseTimestamp`
+// (pkg/loghttp/params.go) and reference Tempo's `parseTimestamp`
+// (pkg/api/http.go) gate theirs. Both then fall
 // to `strconv.ParseInt(value, 10, 64)`, which REJECTS an integer too
 // large for int64, and finally to RFC3339 — so `start=10000000000000000000`
 // is a 400 on both references. Ungated, cerberus accepted it as a float

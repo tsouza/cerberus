@@ -197,30 +197,6 @@ func TestAbsentSynthLabelsDuplicateEqualityDropped(t *testing.T) {
 	}
 }
 
-// isErrorBypassIdentity reports whether `e` is the exact
-// errorBypassIdentityExpr shape:
-//
-//	if(mapContains(<fullLabels>, '__error__'), withDetectedLevel(...), identity)
-//
-// This shape is produced ONLY when applyUnwrapPostFilters returns
-// hasMarks=true (applyUnwrapPostFilters -> applyUnwrapRowSemantics ->
-// lowerRangeAggregation -> errorBypassIdentityExpr). The
-// ordinary identity projection is a `mapConcat(...)` from
-// withDetectedLevelAndColumns, which never matches this predicate, so the
-// helper cleanly distinguishes "error-bypass applied" from "not applied".
-func isErrorBypassIdentity(e chplan.Expr) bool {
-	fc, ok := e.(*chplan.FuncCall)
-	if !ok || fc.Fn != chplan.FnIf || len(fc.Args) != 3 {
-		return false
-	}
-	cond, ok := fc.Args[0].(*chplan.FuncCall)
-	if !ok || cond.Fn != chplan.FnMapContainsKey || len(cond.Args) != 2 {
-		return false
-	}
-	lit, ok := cond.Args[1].(*chplan.LitString)
-	return ok && lit.V == "__error__"
-}
-
 // rangeWindowIdentityExpr returns the series-identity projection expr from
 // a lowered range-aggregation plan (the first projection of the
 // RangeWindow's input Project, aliased to the ResourceAttributes column),

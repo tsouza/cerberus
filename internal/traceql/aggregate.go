@@ -303,12 +303,13 @@ func minAggFunc(col, alias string) chplan.AggFunc {
 // Why `OrNull` and not `OrZero`: the map subscript yields ” for a key
 // the span never carried. Reference Tempo does not fold that span into
 // the aggregate — it SKIPS it, on both paths. The spanset aggregates
-// test `val.IsNil()` and `continue`
-// (pkg/traceql/ast_execute.go:263, :290, :314, :338); the metrics path
-// funnels the read through FloatizeAttribute
-// (pkg/traceql/engine_metrics.go:2130), which answers TypeNil for the
-// missing key, and NewOverTimeAggregator turns TypeNil into the NaN
-// sentinel its reducers skip (engine_metrics.go:508-513,
+// test `val.IsNil()` and `continue` — the guard each of
+// pkg/traceql/ast_execute.go's Aggregate.evaluate avg/max/min/sum arms
+// opens its span loop with; the metrics path funnels the read through
+// FloatizeAttribute (pkg/traceql/engine_metrics.go), which answers
+// TypeNil for the missing key, and NewOverTimeAggregator turns TypeNil
+// into the NaN sentinel its reducers skip (that constructor's default
+// getSpanAttValue closure in engine_metrics.go,
 // engine_metrics_functions.go). `toFloat64OrNull` reproduces that: NULL,
 // which every ClickHouse aggregate ignores. `OrZero` instead folded the
 // attribute-less span in as a real 0 — `avg(span.size)` over spans
@@ -353,8 +354,9 @@ func coerceMapNumericAggInput(expr chplan.Expr) (chplan.Expr, bool) {
 //
 // Reference Tempo drops the spanset outright in that case: each of the four
 // spanset aggregates starts from a nil accumulator and, having skipped every
-// span, hits `if sum == nil { continue }` / `maxS == nil` / `minS == nil`
-// (pkg/traceql/ast_execute.go:275, :299, :323, :350) — the trace never
+// span, hits the post-loop `if sum == nil { continue }` / `maxS == nil` /
+// `minS == nil` guard each of pkg/traceql/ast_execute.go's
+// Aggregate.evaluate avg/max/min/sum arms closes with — the trace never
 // reaches the response. ClickHouse instead emits the group with a NULL
 // value, because a GROUP BY key with rows still produces a row; this filter
 // is what turns that NULL back into "no row".

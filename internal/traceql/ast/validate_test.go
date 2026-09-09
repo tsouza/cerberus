@@ -447,7 +447,7 @@ func TestParseRejectsWhatReferenceRejects(t *testing.T) {
 		want  string
 	}{
 		{
-			// pkg/traceql/ast_validate.go:126 — Aggregate.validate's
+			// pkg/traceql/ast_validate.go's `Aggregate.validate` —
 			// `!a.e.referencesSpan()`. Aggregating a literal says nothing
 			// about the trace; cerberus emitted `avg(1)` and answered 200.
 			name:  "aggregate_over_constant",
@@ -455,7 +455,7 @@ func TestParseRejectsWhatReferenceRejects(t *testing.T) {
 			want:  "aggregate field expressions must reference the span: avg(1)",
 		},
 		{
-			// pkg/traceql/ast_validate.go:65 — GroupOperation.validate's
+			// pkg/traceql/ast_validate.go's `GroupOperation.validate` —
 			// `!o.Expression.referencesSpan()`. cerberus projected the
 			// literal as the grouping key and answered 200 with one
 			// synthetic group covering every span.
@@ -464,8 +464,8 @@ func TestParseRejectsWhatReferenceRejects(t *testing.T) {
 			want:  "grouping field expressions must reference the span: by(1)",
 		},
 		{
-			// pkg/traceql/ast_validate.go:223 — the regex RHS must be a
-			// Static. cerberus lowered it to ClickHouse's match() with a
+			// pkg/traceql/ast_validate.go's `BinaryOperation.validate` — the
+			// regex RHS must be a Static. cerberus lowered it to ClickHouse's match() with a
 			// per-row pattern, which ClickHouse refuses at execution time:
 			// a 502 where the reference gives 400.
 			name:  "regex_against_attribute",
@@ -473,7 +473,8 @@ func TestParseRejectsWhatReferenceRejects(t *testing.T) {
 			want:  "invalid type for =~ or !~: span.b",
 		},
 		{
-			// pkg/traceql/ast_metrics.go:369 — phi must be in [0,1].
+			// pkg/traceql/ast_metrics.go's `MetricsAggregate.validate` — phi
+			// must be in [0,1].
 			// cerberus emitted quantileExactInclusive(1.5), which
 			// ClickHouse rejects: another 502-for-400.
 			name:  "quantile_out_of_range",
@@ -481,8 +482,9 @@ func TestParseRejectsWhatReferenceRejects(t *testing.T) {
 			want:  "quantile must be between 0 and 1: 1.5",
 		},
 		{
-			// pkg/traceql/ast_metrics.go:376 against
-			// engine_metrics.go:639's maxGroupBys = 5.
+			// The trailing `len(a.by) > maxGroupBys` check of
+			// pkg/traceql/ast_metrics.go's `MetricsAggregate.validate`,
+			// against engine_metrics.go's `maxGroupBys = 5`.
 			name:  "too_many_group_bys",
 			query: `{} | rate() by (span.a, span.b, span.c, span.d, span.e, span.f)`,
 			want:  "metrics group by 6 values not yet supported",
@@ -490,14 +492,16 @@ func TestParseRejectsWhatReferenceRejects(t *testing.T) {
 		{
 			// quantile_over_time reserves one of the five slots for the
 			// synthetic __bucket label, so it stops a key earlier
-			// (ast_metrics.go:363).
+			// (the per-op `len(a.by) >= maxGroupBys` check in
+			// ast_metrics.go's `MetricsAggregate.validate`).
 			name:  "quantile_group_by_ceiling_is_one_lower",
 			query: `{} | quantile_over_time(duration, 0.9) by (span.a, span.b, span.c, span.d, span.e)`,
 			want:  "metrics group by 5 values not yet supported",
 		},
 		{
 			// avg_over_time carries a companion count series and applies
-			// the same stricter ceiling (engine_metrics_average.go:155).
+			// the same stricter ceiling
+			// (engine_metrics_average.go's `averageOverTimeAggregator.validate`).
 			name:  "avg_over_time_group_by_ceiling_is_one_lower",
 			query: `{} | avg_over_time(duration) by (span.a, span.b, span.c, span.d, span.e)`,
 			want:  "metrics group by 5 values not yet supported",

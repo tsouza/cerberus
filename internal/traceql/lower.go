@@ -1509,7 +1509,8 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 //
 // `=` and `!=` are the exception, and not by accident: they are the two
 // operators upstream lets a nil operand reach at all
-// (pkg/traceql/enum_operators.go:118), so they are the two whose answer
+// (binaryTypesValid's `case TypeNil, TypeStatus, TypeKind` arm in
+// pkg/traceql/enum_operators.go), so they are the two whose answer
 // depends on the VALUE rather than short-circuiting on the type. Against a
 // string literal that dependence is decidable right here — ” equals the
 // literal only when the literal is itself empty — so `{ span.x = "" }` is
@@ -1561,15 +1562,16 @@ func soleStringLiteral(lhs, rhs chplan.Expr) (string, bool) {
 // carried. That is every value comparison the language has, by two
 // upstream routes that meet at the same answer:
 //
-//   - `=` and `!=` type-check against a nil operand
-//     (pkg/traceql/enum_operators.go:118 lets TypeNil through for exactly
+//   - `=` and `!=` type-check against a nil operand (binaryTypesValid's
+//     `case TypeNil, TypeStatus, TypeKind` arm in
+//     pkg/traceql/enum_operators.go lets TypeNil through for exactly
 //     these two) and are then decided by Static.Equals /
 //     Static.NotEquals, both of which return false the moment either side
-//     is TypeNil (pkg/traceql/ast.go:850, :892).
+//     is TypeNil (pkg/traceql/ast.go).
 //   - `=~`, `!~`, `<`, `<=`, `>` and `>=` do NOT type-check against a nil
-//     operand — that same line restricts TypeNil to `=` / `!=` — and
+//     operand — that same arm restricts TypeNil to `=` / `!=` — and
 //     BinaryOperation.execute turns a failed binaryTypesValid into
-//     StaticFalse (pkg/traceql/ast_execute.go:416), so they never reach an
+//     StaticFalse (pkg/traceql/ast_execute.go), so they never reach an
 //     evaluation at all.
 //
 // cerberus reads attributes out of a Map(String, String) whose subscript
@@ -1795,10 +1797,11 @@ func arrayFoldOperands(b *traceql.BinaryOperation) (traceql.Attribute, []chplan.
 // array operators ast/rewrite.go folds an `||` chain of `=~` and an `&&`
 // chain of `!~` into.
 //
-// Reference semantics come straight from BinaryOperation.execute's array
-// branch (pkg/traceql/ast_execute.go:533-624): the array operator is
-// rewritten to a per-element operator by Operator.toElementOp
-// (pkg/traceql/enum_operators.go:151 — OpRegexMatchAny→OpRegex,
+// Reference semantics come straight from BinaryOperation.execute's
+// `case lhsT.isMatchingArrayElement(rhsT)` array branch in
+// pkg/traceql/ast_execute.go: the array operator is rewritten to a
+// per-element operator by Operator.toElementOp
+// (pkg/traceql/enum_operators.go — OpRegexMatchAny→OpRegex,
 // OpRegexMatchNone→OpNotRegex), and `matchAll` is set for the negated
 // element operators, so the result is `matchCount == elemCount` for
 // match-none and `matchCount > 0` for match-any. That is an AND of `!~`
@@ -1893,11 +1896,12 @@ func lowerAbsentFieldBinary(b *traceql.BinaryOperation, s schema.Traces) (chplan
 // polarities.
 //
 // Not "false for IN, true for NOT IN". Reference never evaluates the
-// membership at all when an operand is nil: binaryTypeValid admits a
-// TypeNil operand for `=` and `!=` only
-// (pkg/traceql/enum_operators.go:118), so OpIn and OpNotIn both fail
+// membership at all when an operand is nil: binaryTypesValid admits a
+// TypeNil operand for `=` and `!=` only (its
+// `case TypeNil, TypeStatus, TypeKind` arm in
+// pkg/traceql/enum_operators.go), so OpIn and OpNotIn both fail
 // BinaryOperation.execute's type check, which returns StaticFalse
-// outright (pkg/traceql/ast_execute.go:416) rather than computing a
+// outright (pkg/traceql/ast_execute.go) rather than computing a
 // membership and negating it. The negated arm was the one place in this
 // package that reasoned "the positive is false, therefore the negation is
 // true" — and because ast/rewrite.go folds `!= && !=` into OpNotIn, it

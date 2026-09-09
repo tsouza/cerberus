@@ -103,16 +103,18 @@ func TestParseDuration(t *testing.T) {
 		{"abc", 0, true},
 		// All three references reject a float-seconds duration whose
 		// nanosecond product overflows int64 rather than wrapping it:
-		// Prometheus web/api/v1/api.go:2273-2279, Loki
-		// pkg/loghttp/params.go:202-209, Tempo pkg/api/http.go:661-668.
-		// Unguarded, `step=1e30` became an implementation-defined
-		// (negative) Duration and the step grid was built from it.
+		// Prometheus's `parseDuration` in web/api/v1/api.go, Loki's
+		// `parseSecondsOrDuration` in pkg/loghttp/params.go, Tempo's
+		// `parseSecondsOrDuration` in pkg/api/http.go. Unguarded,
+		// `step=1e30` became an implementation-defined (negative)
+		// Duration and the step grid was built from it.
 		{"1e30", 0, true},
 		{"-1e30", 0, true},
 		{"NaN", 0, true},
-		// The unit branch is model.ParseDuration, the one Prometheus
-		// (web/api/v1/api.go:2280) and Loki (pkg/loghttp/params.go:210)
-		// both use. It differs from time.ParseDuration in BOTH
+		// The unit branch is model.ParseDuration, the one Prometheus's
+		// `parseDuration` (web/api/v1/api.go) and Loki's
+		// `parseSecondsOrDuration` (pkg/loghttp/params.go) both fall
+		// back to. It differs from time.ParseDuration in BOTH
 		// directions and cerberus was on the wrong side of each.
 		//
 		// model accepts the calendar units Go has no notion of; these
@@ -171,9 +173,9 @@ func TestParseTimeProm(t *testing.T) {
 		// seconds value that lands past the storable window is pinned to
 		// the window's edge. 999999999999s is year 33658, which reached
 		// ClickHouse as toDateTime64('33658-…', 9) and came back a 502.
-		// Prometheus parses the same input (parseTime calls ParseFloat
-		// first and unconditionally, web/api/v1/api.go:2249-2254) and
-		// answers 200 with no samples; the clamp is what reproduces that.
+		// Prometheus parses the same input (its `parseTime` in
+		// web/api/v1/api.go calls ParseFloat first and unconditionally)
+		// and answers 200 with no samples; the clamp reproduces that.
 		{"boundary-1e12-minus-1-clamps", "999999999999", maxStorable, false},
 		{"largest-unclamped-seconds", "9223372036", time.Unix(9_223_372_036, 0).UTC(), false},
 		{"boundary-1e12-exact", "1000000000000", time.UnixMilli(1_000_000_000_000).UTC(), false},
@@ -236,11 +238,12 @@ func TestParseTimeUnixScaled(t *testing.T) {
 		{"unix-nanos-1e15-boundary", "1000000000000000", time.Unix(0, 1_000_000_000_000_000).UTC(), false},
 		{"unix-nanos-logcli-shape", "1700000000000000000", time.Unix(0, 1_700_000_000_000_000_000).UTC(), false},
 		{"unix-nanos-2e18", "2000000000000000000", time.Unix(0, 2_000_000_000_000_000_000).UTC(), false},
-		// Reference Loki (pkg/loghttp/params.go:168-174) and reference
-		// Tempo (pkg/api/http.go:631-637) reach ParseFloat only when the
-		// value contains a decimal point. A bare integer too large for
-		// int64 therefore falls to strconv.ParseInt (which rejects it)
-		// and then to RFC3339 (which rejects it) — a 400 on both. Before
+		// Reference Loki's `parseTimestamp` (pkg/loghttp/params.go) and
+		// reference Tempo's `parseTimestamp` (pkg/api/http.go) reach
+		// ParseFloat only when the value contains a decimal point. A
+		// bare integer too large for int64 therefore falls to
+		// strconv.ParseInt (which rejects it) and then to RFC3339
+		// (which rejects it) — a 400 on both. Before
 		// the gate, cerberus took the ungated float branch and answered
 		// 200 over a window the client never asked for.
 		{"integer-too-large-for-int64-rejected", "10000000000000000000", time.Time{}, true},

@@ -278,15 +278,16 @@ func mixedVVHistogramFieldsExpr(ne bool) chplan.Expr {
 //
 //   - The SAMPLE — Value, the nine Histogram*Column fields, and the
 //     discriminator — is vector1's, from L unconditionally. Reference
-//     un-swaps the operand values inside its own `doBinOp`
-//     (promql/engine.go:3090-3095) precisely so `vectorElemBinop`
+//     un-swaps the operand values inside its own `doBinOp` closure
+//     (`promql/engine.go`'s `VectorBinop`) precisely so `vectorElemBinop`
 //     returns the SYNTACTIC LHS's sample for a bare comparison, whatever
 //     the Card.
 //   - The LABELS — Attributes, MetricName and the reported Timestamp —
 //     are the MANY side's. Reference swaps `lhs, rhs` outright for
-//     CardOneToMany (promql/engine.go:3043-3046) BEFORE the match loop,
-//     so `resultMetric`'s builder is seeded from the many side
-//     (promql/engine.go:3216 `enh.resetBuilder(lhs)`) — which under
+//     CardOneToMany (`promql/engine.go`'s `VectorBinop`) BEFORE the
+//     match loop, so `resultMetric`'s builder is seeded from the many
+//     side (`promql/engine.go`'s `resultMetric`, at its
+//     `enh.resetBuilder(lhs)`) — which under
 //     `group_right()` is the operator's syntactic RHS, not its LHS.
 //     Forwarding L's MetricName there published vector1's name on a row
 //     carrying vector2's label set. Comparisons never

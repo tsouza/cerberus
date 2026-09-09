@@ -48,7 +48,8 @@ func TestParseTempoTime(t *testing.T) {
 		{"rfc3339-past-storable-window", "9999-01-01T00:00:00Z", time.Unix(0, math.MaxInt64).UTC(), false},
 
 		// Reference Tempo reaches strconv.ParseFloat only for a value
-		// containing a decimal point (pkg/api/http.go:631-637); a bare
+		// containing a decimal point (its `parseTimestamp` in
+		// pkg/api/http.go); a bare
 		// integer wider than int64 falls to ParseInt, then RFC3339, and
 		// is rejected — `start=10000000000000000000` is a 400 there.
 		{"integer-too-large-for-int64-rejected", "10000000000000000000", time.Time{}, true},

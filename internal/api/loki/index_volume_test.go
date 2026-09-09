@@ -250,8 +250,9 @@ func TestIndexVolume_TargetLabelsResolveLikeTheSelector(t *testing.T) {
 // which IS series) exactly as it does in `aggregateBy=labels`.
 //
 // Upstream's aggregateBySeries branch builds its series key from the
-// same `labelsToMatch` map its labels branch sums into
-// (pkg/ingester/instance.go:886-903), so
+// same `labelsToMatch` map its labels branch sums into (the
+// `aggregateBySeries` split inside `getVolume`,
+// pkg/ingester/instance.go), so
 // `aggregateBy=series&targetLabels=job` returns `{job="…"}` rows. Cerberus
 // fell back to the FULL attribute map for that combination, returning
 // one row per distinct label set instead — a different row count and a
@@ -298,7 +299,8 @@ func TestIndexVolume_TargetLabelsApplyInSeriesMode(t *testing.T) {
 
 // TestIndexVolume_TargetLabelsRequirePresence pins upstream's
 // "Make sure all target labels are included in the matchers" step
-// (pkg/util/series_volume.go:58-65): every requested label the selector
+// (in `prepareLabelsAndMatchersWithTargets`,
+// pkg/util/series_volume.go): every requested label the selector
 // does not already constrain gets a `<target>=~".+"` matcher, so a
 // stream that does not CARRY the label is excluded from the volume
 // rather than counted into a group that omits the key.
@@ -338,7 +340,7 @@ func TestIndexVolume_TargetLabelsRequirePresence(t *testing.T) {
 }
 
 // TestIndexVolume_InvalidAggregateBy pins upstream's `volumeAggregateBy`
-// (pkg/loghttp/query.go:741-753): absent is the default, `series` and
+// (pkg/loghttp/query.go): absent is the default, `series` and
 // `labels` are accepted, anything else is a 400. Cerberus accepted any
 // string, so `aggregateBy=banana` answered over a grouping the client
 // never asked for.

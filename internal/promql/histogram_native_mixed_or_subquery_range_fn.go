@@ -31,8 +31,9 @@ import (
 // flip is unreachable from that table split.
 //
 // `or`'s shadow rule is keyed on a SIGNATURE rather than on series
-// identity, and reference derives that signature at
-// promql/engine.go:1454-1465: `on(...)` keeps only the named labels,
+// identity, and reference derives that signature in
+// `promql/engine.go`'s `rangeEval`, at its `sigf` construction:
+// `on(...)` keeps only the named labels,
 // while the default and `ignoring(...)` drop the named labels PLUS
 // `__name__`. Under the default key the signature is therefore the
 // series' full attribute set, which two series from the two different
@@ -140,8 +141,9 @@ func mixedOrSubqueryOuterFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (*pa
 //
 // It gates [mixedOrSubqueryOuterFn] because the distribute-then-recombine
 // identity this file exploits is only ever safe under the default key.
-// Reference computes a set operator's shadow signature at
-// promql/engine.go:1454-1465: `on(...)` keeps ONLY the named labels,
+// Reference computes a set operator's shadow signature in
+// `promql/engine.go`'s `rangeEval`, at its `sigf` construction:
+// `on(...)` keeps ONLY the named labels,
 // while the default and `ignoring(...)` both drop the named labels plus
 // `__name__`. Narrowing that key with `on()`/`ignoring()` lets a SINGLE
 // series of one arm shadow MANY series of the other, and lets which

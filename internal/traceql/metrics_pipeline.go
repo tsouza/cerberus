@@ -241,10 +241,11 @@ func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute,
 	// attribute — or carried a value that is not a number — contributes
 	// NULL and every ClickHouse aggregate skips it. That is exactly what
 	// the reference does on this path: FloatizeAttribute
-	// (pkg/traceql/engine_metrics.go:2130) answers TypeNil for both
-	// cases, NewOverTimeAggregator turns TypeNil into the NaN sentinel
-	// (engine_metrics.go:508-513), and the min/max/sum reducers skip a
-	// NaN (engine_metrics_functions.go).
+	// (pkg/traceql/engine_metrics.go) answers TypeNil for both cases,
+	// NewOverTimeAggregator turns TypeNil into the NaN sentinel (that
+	// constructor's default getSpanAttValue closure in
+	// engine_metrics.go), and the min/max/sum reducers skip a NaN
+	// (engine_metrics_functions.go).
 	//
 	// The one shape that does not map across is a step whose every
 	// matched span was skipped: the reference reports the NaN its

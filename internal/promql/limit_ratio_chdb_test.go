@@ -204,7 +204,8 @@ func limitRatioSeed() string {
 
 // longLabelValueSizes straddles Prometheus's stringlabels size-prefix
 // boundary (`v < 255` is one byte; 255 and up is `0xFF` + 3 little-endian
-// bytes — model/labels/labels_stringlabels.go:552-564) from both sides,
+// bytes — `model/labels/labels_stringlabels.go`'s `encodeSize`) from
+// both sides,
 // including the two values immediately either side of it and one that
 // exercises the second little-endian byte.
 var longLabelValueSizes = []int{100, 254, 255, 256, 1000}
@@ -246,11 +247,11 @@ func refSelectedLong(ratio float64) []string {
 // TestLimitRatio_ChDBParity_LongLabelValues pins the OTHER branch of
 // Prometheus's stringlabels size prefix.
 //
-// `encodeSize` (model/labels/labels_stringlabels.go:552-564) writes a
+// `encodeSize` (in `model/labels/labels_stringlabels.go`) writes a
 // single byte only while the size is `< 255`; at 255 and above it writes
 // the escape byte `0xFF` followed by three little-endian bytes. Because
 // `labels.Hash()` is `xxhash.Sum64` over exactly those bytes
-// (labels_stringlabels.go:90-92), a label value of 255 bytes or more
+// (`labels_stringlabels.go`'s `Labels.Hash`), a label value of 255 bytes or more
 // hashes to a DIFFERENT offset than a single-byte prefix produces — and
 // `limit_ratio` therefore keeps a different subset of series.
 //

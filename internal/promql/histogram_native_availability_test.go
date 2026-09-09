@@ -446,8 +446,9 @@ func expHistogramRecognizers() []expHistogramRecognizer {
 // `<fn>(((a) or (b))[r:s])` may be rewritten into
 // `<fn>((a)[r:s]) or <fn>((b)[r:s])` only while `or`'s shadow rule is
 // all-or-nothing per series. `on(...)` / `ignoring(...)` narrow the
-// shadow signature (reference derives it at promql/engine.go:1454-1465),
-// which lets ONE series shadow another at some anchors and not others —
+// shadow signature (reference derives it in `promql/engine.go`'s
+// `rangeEval`, at its `sigf` construction), which lets ONE series shadow
+// another at some anchors and not others —
 // so reference folds the shadowed series over a PUNCTURED window while
 // the rewrite folds it over its full window and then discards the whole
 // folded series. `test/spec/promql/mixed_or_subquery_outer_fn_or_on.txtar`

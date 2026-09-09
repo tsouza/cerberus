@@ -60,7 +60,8 @@ func hoistedServiceWindow() (int64, int64) {
 // the names.
 //
 // Reference Loki reads the value off the stream's own labels
-// (pkg/ingester/instance.go:889-903) — the same labels the matchers were
+// (the `s.labels.Range` walks inside `getVolume`,
+// pkg/ingester/instance.go) — the same labels the matchers were
 // evaluated against — so the projection must resolve exactly as the
 // selector does.
 func TestIndexVolume_ChDB_TargetLabelsResolvesHoistedColumn(t *testing.T) {

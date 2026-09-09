@@ -38,8 +38,9 @@ const defaultVolumeLimit = 100
 //   - aggregateBy (optional): "series" (the default) or "labels".
 //     `targetLabels` restricts the group key in BOTH modes — upstream's
 //     aggregateBySeries branch builds its series key from
-//     `labelsToMatch` exactly as its labels branch does
-//     (pkg/ingester/instance.go:886-903)
+//     `labelsToMatch` exactly as its labels branch does (the
+//     `aggregateBySeries` split inside `getVolume`,
+//     pkg/ingester/instance.go)
 func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	q := r.FormValue("query")
 	if q == "" {
@@ -184,14 +185,15 @@ func buildIndexVolumeSQL(
 // every such row), so a `k IN ('service_name')` mapFilter returned the
 // EMPTY map for every row and the whole tenant's volume collapsed into
 // one unlabelled `metric: {}` sample. Reference Loki reads the value off
-// the stream's own labels (pkg/ingester/instance.go:889-903), so the
-// projected key must carry the value cerberus matched on.
+// the stream's own labels (the `s.labels.Range` walks inside
+// `getVolume`, pkg/ingester/instance.go), so the projected key must
+// carry the value cerberus matched on.
 //
 // The outer `mapFilter((k, v) -> v != ”, …)` reproduces the one thing
 // the old shape got right: a stream that does not carry a requested
 // label contributes no entry for it, because upstream ranges over the
 // labels the stream HAS rather than the labels that were asked for
-// (`s.labels.Range` at instance.go:889). Building the map from an
+// (`s.labels.Range` inside `getVolume`). Building the map from an
 // explicit, sorted key list also makes its key order deterministic —
 // the canonical wrap outside still applies, and is now belt-and-braces
 // rather than load-bearing on this branch.
@@ -237,14 +239,14 @@ const (
 )
 
 // validateAggregateBy mirrors upstream's `volumeAggregateBy`
-// (pkg/loghttp/query.go:741-753): absent means the default, one of the
+// (pkg/loghttp/query.go): absent means the default, one of the
 // two names is accepted, and anything else is a 400. Cerberus used to
 // accept any string silently, so `aggregateBy=banana` answered over a
 // grouping the client never asked for.
 //
 // The VALUE does not select a group key here, because upstream's does
 // not either: both of its branches restrict the key to `labelsToMatch`
-// (pkg/ingester/instance.go:886-903). Where the two branches genuinely
+// (`getVolume`, pkg/ingester/instance.go). Where the two branches genuinely
 // differ is the aggregation SHAPE — upstream's labels branch sums per
 // label NAME across that label's values, a different wire shape from a
 // per-label-set row. Cerberus emits the series shape for both, tracked
@@ -261,8 +263,9 @@ func validateAggregateBy(raw string) error {
 // targetLabelPresenceMatchers returns the matchers upstream ADDS for a
 // `targetLabels` request: one `<target>=~".+"` per requested label the
 // selector does not already constrain
-// (pkg/util/series_volume.go:58-65's
-// "Make sure all target labels are included in the matchers").
+// (the "Make sure all target labels are included in the matchers" loop
+// in `prepareLabelsAndMatchersWithTargets`,
+// pkg/util/series_volume.go).
 //
 // It is not a projection detail — it decides which rows are COUNTED. A
 // stream that does not carry a requested label contributes nothing to an
