@@ -103,6 +103,13 @@ var agplOracleLanes = []agplOracleLane{
 		runFilter: `^Test(LogQL|TraceQL)ReferenceVerdictsAreCurrent$`,
 	},
 	{
+		name:      "agpl-oracle.yml → just test-agpl-oracle (loki pipeline error)",
+		source:    "just/test.just",
+		tags:      []string{"agpl_oracle"},
+		packages:  []string{"./internal/api/loki/..."},
+		runFilter: `^TestPipelineErrorMessageMatchesUpstream$`,
+	},
+	{
 		name:     "property.yml → just property",
 		source:   "just/test.just",
 		tags:     []string{"chdb", "agpl_oracle", "chdb_agpl_oracle"},

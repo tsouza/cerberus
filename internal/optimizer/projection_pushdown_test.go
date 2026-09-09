@@ -249,6 +249,44 @@ func TestAggregateColumns_Having(t *testing.T) {
 	}
 }
 
+// TestAggregateColumns_HavingOnOutputAlias is the other half of
+// [TestAggregateColumns_Having]: a Having reference to a name the
+// Aggregate PRODUCES must NOT be pushed into the Scan.
+//
+// `HAVING isNotNull(Value)` over `avg(Duration) AS Value` names the
+// aggregate's output column. The input relation has no such column, so a
+// narrowed Scan carrying it asks ClickHouse for `otel_traces.Value` and
+// gets error 215 (`not under aggregate function and not in GROUP BY
+// keys`). Nothing in the tree planted that shape until the TraceQL
+// aggregate lowering needed to drop all-NULL groups, which is how the
+// gap surfaced.
+//
+// The `Duration`-vs-`Value` split is what makes this test discriminating:
+// [TestAggregateColumns_Having]'s aggregate reads the same name it
+// produces (`any(Value) AS Value`), so it cannot tell "kept because the
+// AggFunc reads it" from "kept because Having names it".
+func TestAggregateColumns_HavingOnOutputAlias(t *testing.T) {
+	t.Parallel()
+
+	a := &chplan.Aggregate{
+		Input:          &chplan.Scan{Table: "otel_traces"},
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+		GroupByAliases: []string{"TraceId"},
+		AggFuncs: []chplan.AggFunc{
+			{Fn: chplan.FnAvg, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Duration"}}, Alias: "Value"},
+		},
+		Having: &chplan.FuncCall{
+			Fn:   chplan.FnIsNotNull,
+			Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
+		},
+	}
+	want := []string{"Duration", "TraceId"}
+	if got := aggregateColumns(a); !reflect.DeepEqual(got, want) {
+		t.Errorf("aggregateColumns() = %v, want %v — the aggregate's own output alias "+
+			"was pushed into the Scan, which has no such column", got, want)
+	}
+}
+
 // --- Expr-traversal exhaustiveness: the columns a pruned Scan must keep.
 //
 // stageColumns delegates its Expr walk to chplan.InspectExpr precisely so
