@@ -8,8 +8,14 @@
 // the aggregation happened to emit first — a choice ClickHouse does not
 // promise to repeat.
 //
-// A stub querier hands back a fixed slice and can never show it. Only
-// executing the emitted SQL against an engine that actually groups,
+// The residual half — WHICH member of a boundary tie the cap keeps, once
+// the cut is deterministic — is pinned here too: the SQL ranks the group
+// key as STORED and the response ranks it as SERVED, so a cut made in SQL
+// is made under the wrong collation. See
+// [TestIndexVolume_ChDB_CapKeepsTheServedRankedTieMember].
+//
+// A stub querier hands back a fixed slice and can never show any of it.
+// Only executing the emitted SQL against an engine that actually groups,
 // orders and truncates can.
 
 package loki_test
@@ -248,18 +254,123 @@ func TestIndexVolume_ChDB_TieOrderUsesServedLabelNames(t *testing.T) {
 	srvURL := newVolumeServer(t, dottedKeySeed)
 
 	const keptRows = 2
-	samples := queryVolume(t, srvURL, keptRows)
-	got := make([]string, 0, len(samples))
-	for _, s := range samples {
-		for k := range s.Metric {
-			if k != "job" {
-				got = append(got, k)
-			}
-		}
-	}
+	got := nonJobLabelNames(queryVolume(t, srvURL, keptRows))
 	want := []string{"aZ", "a_b"}
 	if !equalStrings(got, want) {
 		t.Fatalf("tie order by served label name: got %v, want %v — upstream ranks on "+
 			"seriesLabels.String(), which is built from the names the response carries", got, want)
+	}
+}
+
+// queryVolumeAggregateBy is [queryVolume] with an explicit `aggregateBy`,
+// so the labels-shaped response can be ranked by the same assertions.
+func queryVolumeAggregateBy(t *testing.T, srvURL string, limit int, aggregateBy string) []loki.VectorSample {
+	t.Helper()
+	var parsed struct {
+		Data loki.QueryData `json:"data"`
+	}
+	getJSON(t, fmt.Sprintf(
+		`%s/loki/api/v1/index/volume?query=%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d&limit=%d&aggregateBy=%s`,
+		srvURL,
+		volumeTieBase.Add(-time.Minute).Unix(),
+		volumeTieBase.Add(time.Minute).Unix(),
+		limit,
+		aggregateBy,
+	), &parsed)
+
+	raw, err := json.Marshal(parsed.Data.Result)
+	if err != nil {
+		t.Fatalf("re-marshal result: %v", err)
+	}
+	var samples []loki.VectorSample
+	if err := json.Unmarshal(raw, &samples); err != nil {
+		t.Fatalf("decode vector: %v", err)
+	}
+	return samples
+}
+
+// nonJobLabelNames reduces a response to the label name each sample
+// carries besides `job`, in response order. On [dottedKeySeed] that is the
+// one name that distinguishes the two tied streams.
+func nonJobLabelNames(samples []loki.VectorSample) []string {
+	out := make([]string, 0, len(samples))
+	for _, s := range samples {
+		for k := range s.Metric {
+			if k != "job" {
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
+// TestIndexVolume_ChDB_CapKeepsTheServedRankedTieMember is cerberus issue
+// #3237: the cap must keep the member upstream keeps, and upstream ranks
+// on the label names it SERVES.
+//
+// [TestIndexVolume_ChDB_TieOrderUsesServedLabelNames] already pins the
+// served ORDER of the two [dottedKeySeed] streams, but it asks for both of
+// them, so a Go-side re-rank alone satisfies it. This asks for ONE. The
+// row that has to survive is the one the SQL's own collation ranks
+// second — `aZ` beats `a_b` served (`_` is 0x5F, `Z` is 0x5A) while `a.b`
+// beats `aZ` stored (`.` is 0x2E) — so no ordering the SQL can express
+// keeps it, and the re-rank cannot recover it either: at `limit=1` under a
+// plain LIMIT the row is already gone by the time Go sees the result.
+//
+// It discriminates, and it is the ONE assertion in this file that does so
+// against a merely-deterministic cut. Measured on the pre-fix `ORDER BY
+// bytes DESC, labels LIMIT 1`, the endpoint answered `[a_b]`; the same
+// seed under upstream's rule answers `[aZ]`. Restoring the `labels` sort
+// key on top of WITH TIES turns the cut back into a total order in SQL and
+// fails this test again, which is what makes the WITH TIES half
+// load-bearing rather than decoration.
+func TestIndexVolume_ChDB_CapKeepsTheServedRankedTieMember(t *testing.T) {
+	srvURL := newVolumeServer(t, dottedKeySeed)
+
+	const keptRows = 1
+	samples := queryVolume(t, srvURL, keptRows)
+	if len(samples) != keptRows {
+		t.Fatalf("limit=%d returned %d samples — the WITH TIES over-fetch must be cut back "+
+			"to `limit` in Go, not served raw", keptRows, len(samples))
+	}
+	got := nonJobLabelNames(samples)
+	want := []string{"aZ"}
+	if !equalStrings(got, want) {
+		t.Fatalf("limit=%d tie member kept: got %v, want %v — the surviving member is decided "+
+			"by seriesLabels.String() over the SERVED names, where `aZ` precedes `a_b`; the "+
+			"stored keys `a.b` and `aZ` collate the other way round and must not settle it",
+			keptRows, got, want)
+	}
+}
+
+// TestIndexVolume_ChDB_LabelsAggregationCapUsesServedNames is the same
+// residual on the `aggregateBy=labels` shape, which shares
+// [buildIndexVolumeSQL]'s ORDER BY / LIMIT tail and therefore shares the
+// bug and the fix.
+//
+// On [dottedKeySeed] each of the two rows carries `job` plus one
+// distinguishing key, and ARRAY JOIN charges each row's ten bytes to every
+// label it carries: `job` totals 20 B, `a.b` and `aZ` 10 B each. `limit=2`
+// therefore takes `job` and then exactly one side of a tie whose two
+// members collate one way stored and the other way served.
+func TestIndexVolume_ChDB_LabelsAggregationCapUsesServedNames(t *testing.T) {
+	srvURL := newVolumeServer(t, dottedKeySeed)
+
+	const keptRows = 2
+	samples := queryVolumeAggregateBy(t, srvURL, keptRows, "labels")
+	if len(samples) != keptRows {
+		t.Fatalf("limit=%d returned %d samples", keptRows, len(samples))
+	}
+	got := make([]string, 0, len(samples))
+	for _, s := range samples {
+		for k := range s.Metric {
+			got = append(got, k)
+		}
+	}
+	want := []string{"job", "aZ"}
+	if !equalStrings(got, want) {
+		t.Fatalf("limit=%d label-name ranking: got %v, want %v — `job` carries both rows' bytes, "+
+			"and the 10 B tie below it is broken on the served name (`aZ` before `a_b`)",
+			keptRows, got, want)
 	}
 }

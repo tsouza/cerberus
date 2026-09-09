@@ -360,3 +360,69 @@ func TestIndexVolume_InvalidAggregateBy(t *testing.T) {
 		t.Fatalf("aggregateBy=banana returned %d, want 400", resp.StatusCode)
 	}
 }
+
+// TestIndexVolume_OverFetchIsCutBackToLimit pins the Go half of the
+// endpoint's cut: the SQL returns a SUPERSET of the answer (it truncates
+// `ORDER BY bytes DESC LIMIT n WITH TIES`, which keeps every row tying
+// with the n-th on volume), so the handler owes the final `limit`.
+//
+// The stub hands back the three rows that shape produces for `limit=1` on
+// a two-way tie at the cap boundary, in the order the SQL's own sort key
+// leaves them: the winner first, then the two tied rows in STORED-key
+// order, where `a.b` precedes `aZ`. A handler that served what it was
+// given would answer three samples; one that trusted the SQL's order for
+// the tie would answer `a_b`. Upstream ranks the SERVED names, where `aZ`
+// precedes `a_b`, so the single sample owed is `aZ`.
+//
+// This is the same rule TestIndexVolume_ChDB_CapKeepsTheServedRankedTieMember
+// executes end to end. It is restated here against a stub because the
+// truncation is a pure Go decision — it needs no engine, and pinning it
+// without one keeps it covered on every lane rather than only the
+// chDB-tagged ones.
+func TestIndexVolume_OverFetchIsCutBackToLimit(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{
+		volumeRows: []chclient.IndexVolumeRow{
+			{Labels: map[string]string{"job": "api", "pod": "zulu"}, Bytes: 30},
+			{Labels: map[string]string{"job": "api", "a.b": "1"}, Bytes: 10},
+			{Labels: map[string]string{"job": "api", "aZ": "1"}, Bytes: 10},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&limit=2`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		Data loki.QueryData `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var samples []loki.VectorSample
+	if err := json.Unmarshal(raw, &samples); err != nil {
+		t.Fatalf("decode vector: %v", err)
+	}
+
+	if len(samples) != 2 {
+		t.Fatalf("three rows over-fetched at limit=2 must be cut to 2, got %d: %v", len(samples), samples)
+	}
+	if got := samples[0].Metric["pod"]; got != "zulu" {
+		t.Errorf("first sample pod=%q; want zulu — 30 B outranks both 10 B rows", got)
+	}
+	if _, ok := samples[1].Metric["aZ"]; !ok {
+		t.Errorf("second sample = %v; want the `aZ` row — the 10 B tie is broken on the SERVED "+
+			"names, where `aZ` precedes `a_b`, not on the stored keys, where `a.b` precedes `aZ`",
+			samples[1].Metric)
+	}
+}

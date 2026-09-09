@@ -1,0 +1,41 @@
+`span:childCount` folds to a constant-false predicate: cerberus answers
+2xx-empty, which is what reference Tempo's DEFAULT block encoding answers.
+vparquet4 has no childCount column and its `checkConditions` returns
+`util.ErrUnsupported`, which `Engine.ExecuteSearch` converts into an empty
+response and a nil error. vparquet5 does carry the column and would answer
+for real, but both `DefaultEncoding()` and `LatestEncoding()` in the
+vendored fork return vparquet4 (cerberus issue #3229; the decision and the
+event that would overturn it are recorded on `attributeHasNoBacking`).
+
+The seed is the discriminating half. The root span has TWO children, so a
+lowering that derived childCount from `ParentSpanId` — the same edge set
+NestedSetAnnotate already walks — would match that root and return one row.
+The fold returns none. A seed without a parent/child edge would answer `[]`
+under both and pin nothing.
+
+-- query.traceql --
+{ span:childCount > 1 }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    Timestamp DateTime64(9)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '1000000000000001', '', toDateTime64('2026-01-01 00:00:00.000000001', 9)),
+    ('a0000000000000000000000000000001', '1000000000000002', '1000000000000001', toDateTime64('2026-01-01 00:00:00.000000002', 9)),
+    ('a0000000000000000000000000000001', '1000000000000003', '1000000000000001', toDateTime64('2026-01-01 00:00:00.000000003', 9));
+-- expected_rows --
+[]
+-- args --
+[0] bool = false
+-- chplan --
+Filter predicate=false
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE ?
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

@@ -166,11 +166,13 @@ func TestRequireSpansScansBounded_SkipsMetricsEmitterInner(t *testing.T) {
 }
 
 func TestRequireSpansScansBounded_AcceptsConstantFalse(t *testing.T) {
-	// The trace-scoped / per-event intrinsics OTel-CH does not materialise
-	// (rootName / traceDuration / span:childCount / instrumentation.*) lower to
-	// a StaticNil constant-false predicate, which ConstantFold collapses to a
-	// bare `false`. A `WHERE false` scan reads zero rows — the tightest bound —
-	// and must be accepted, not rejected as unbounded.
+	// The carriers OTel-CH does not materialise and cerberus does not derive
+	// (span:childCount / traceStartTime / event:timeSinceStart /
+	// instrumentation.* — traceql's attributeHasNoBacking is the list) lower to
+	// a constant-false predicate, which ConstantFold collapses to a bare
+	// `false`. A `WHERE false` scan reads zero rows — the tightest bound — and
+	// must be accepted, not rejected as unbounded. rootName / traceDuration are
+	// no longer in that set (issue #1711).
 	bare := &chplan.Filter{
 		Input:     &chplan.Scan{Table: spansTable},
 		Predicate: &chplan.LitBool{V: false},

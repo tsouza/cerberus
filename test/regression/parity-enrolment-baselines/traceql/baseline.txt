@@ -36,6 +36,7 @@ set_union_simple.txtar
 sibling_absent_parent_and_root_pair.txtar
 sibling_not_absent_parent.txtar
 sibling_simple.txtar
+span_childcount_constant_false.txtar
 spanset_and_distinct_spans.txtar
 spanset_pipeline_intersect.txtar
 structural_child_of_union.txtar

@@ -92,7 +92,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stamp := float64(end.UnixMilli()) / 1e3
-	ranked := rankIndexVolumeRows(rows)
+	ranked := rankIndexVolumeRows(rows, limit)
 	result := make([]VectorSample, 0, len(ranked))
 	for _, row := range ranked {
 		result = append(result, VectorSample{
@@ -122,35 +122,46 @@ type rankedVolumeRow struct {
 }
 
 // rankIndexVolumeRows puts the endpoint's rows into the order upstream
-// serves them in.
+// serves them in and cuts them to `limit`. It is the WHOLE of the
+// endpoint's ranking — both the order the response carries and which
+// rows are in it.
 //
-// Loki's volume response is ordered twice by the same rule, and cerberus
-// owes both. `MapToVolumeResponse`
-// (pkg/storage/stores/index/seriesvolume/volume.go) applies it before
-// truncating to `limit`; `toPrometheusData`
+// Loki's volume response is ordered twice by the same rule.
+// `MapToVolumeResponse` (pkg/storage/stores/index/seriesvolume/volume.go)
+// applies it before truncating to `limit`; `toPrometheusData`
 // (pkg/querier/queryrange/volume.go) applies it again to the vector it
 // serves. Both compare the volume descending and fall back to the entry's
 // own Name ascending — for an `aggregateBy=series` response that Name is
 // the stream's label-set string (`seriesNames[hash] = seriesLabels.String()`
 // in `getVolume`, pkg/ingester/instance.go).
 //
-// The truncation half is settled in SQL (see [buildIndexVolumeSQL]'s
-// second ORDER BY key), because only the database can order rows it is
-// about to discard. This is the serving half, and it runs over the
-// NORMALIZED label names rather than the raw OTel attribute keys the SQL
-// grouped on: those keys are what the response carries, so they are what
-// the comparison upstream performs is defined over. The name is built with
-// upstream's own renderer ([labels.Labels.String], via [labels.FromMap])
-// rather than a hand-rolled equivalent, so the two cannot drift.
+// That Name is a property of the SERVED label set, not of the stored one.
+// The SQL groups on raw OTel attribute keys and only
+// [format.NormalizeLabelMap] turns them into Prometheus label names, and
+// the rewrite is not order-preserving: `a.b` sorts before `aZ` stored
+// (`.` is 0x2E, `Z` is 0x5A) and `a_b` sorts after it served (`_` is
+// 0x5F). So the comparison cannot be performed before normalization, and
+// normalization does not happen until here.
 //
-// The two halves therefore rank on two different spellings of one label
-// set, and a rewritten key can collate differently under each — so on a
-// tie that straddles the cap, the member the SQL keeps is not always the
-// member upstream keeps. Closing that needs either a faithful in-SQL
-// rendering of the served label set (collision policy included) or a
-// truncation that does not decide membership before normalization;
-// cerberus issue #3237 carries it.
-func rankIndexVolumeRows(rows []chclient.IndexVolumeRow) []rankedVolumeRow {
+// Which is why the SQL does not perform the cut either — it hands back a
+// superset. [buildIndexVolumeSQL] emits `ORDER BY bytes DESC LIMIT n WITH
+// TIES`, which returns every row whose volume beats the n-th plus EVERY
+// row that ties with it. The correct top-n is a subset of that set for
+// any tie-break rule at all, because a tie-break only ever reorders rows
+// of equal volume and every row of the boundary volume is present. This
+// function then applies upstream's comparator to those rows and takes the
+// first `limit` — the same two-step upstream performs, with the sort in
+// the same place upstream has it and only the pre-filter pushed down.
+//
+// The name is built with upstream's own renderer ([labels.Labels.String],
+// via [labels.FromMap]) rather than a hand-rolled equivalent, so the two
+// cannot drift. Reproducing that renderer in ClickHouse instead — and
+// cutting in SQL after all — is not available at any reasonable price: it
+// would have to reproduce Go's byte-wise (not rune-wise) grammar rewrite,
+// [format.NormalizeLabelMap]'s entry-DROPPING collision policy, and
+// `strconv.Quote`'s escaping of arbitrary attribute VALUES, which
+// `Labels.String()` compares once two rows agree on their names.
+func rankIndexVolumeRows(rows []chclient.IndexVolumeRow, limit int) []rankedVolumeRow {
 	ranked := make([]rankedVolumeRow, 0, len(rows))
 	for _, row := range rows {
 		metric := format.NormalizeLabelMap(row.Labels)
@@ -166,6 +177,9 @@ func rankIndexVolumeRows(rows []chclient.IndexVolumeRow) []rankedVolumeRow {
 		}
 		return ranked[i].name < ranked[j].name
 	})
+	if limit > 0 && len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
 	return ranked
 }
 
@@ -199,8 +213,8 @@ const volumeLabelNameAlias = "label_name"
 //	FROM `otel_logs`
 //	WHERE <matchers> AND <time bounds>
 //	GROUP BY labels
-//	ORDER BY bytes DESC, labels
-//	LIMIT <n>
+//	ORDER BY bytes DESC
+//	LIMIT <n> WITH TIES
 //
 // `<group-key-frag>` is one of:
 //
@@ -234,8 +248,8 @@ const volumeLabelNameAlias = "label_name"
 //	ARRAY JOIN mapKeys(<group-key-frag>) AS `label_name`
 //	WHERE <matchers> AND <time bounds>
 //	GROUP BY labels
-//	ORDER BY bytes DESC, labels
-//	LIMIT <n>
+//	ORDER BY bytes DESC
+//	LIMIT <n> WITH TIES
 //
 // ARRAY JOIN is upstream's own `s.labels.Range` over each stream, in
 // `getVolume`, expressed in ClickHouse: it replicates each matched row
@@ -257,10 +271,12 @@ const volumeLabelNameAlias = "label_name"
 // tail. No canonical-key-order wrap is needed on a map literal built from
 // a single key.
 //
-// Sharing that tail is also what gives this shape the second ORDER BY key
+// Sharing that tail is also what gives this shape the WITH TIES cut
 // below for free, and it needs one just as much: label NAMES tie on byte
-// volume at least as readily as label sets do, and one row per distinct
-// name means the key is total here too.
+// volume at least as readily as label sets do, and this shape's key goes
+// through the same OTel-to-Prometheus rewrite on the way out — the
+// exploded key is a raw attribute name, and `toPrometheusData`'s
+// single-label metric carries its normalized spelling.
 //
 // All identifiers and bound keys flow through Builder helpers — no
 // fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
@@ -299,27 +315,43 @@ func buildIndexVolumeSQL(
 
 	sb.GroupBy(chsql.Col("labels")).
 		OrderBy(chsql.Col("bytes"), true).
-		// Second sort key. `bytes` alone is not a total order, and the
-		// LIMIT below is applied to whatever order it produces: two groups
-		// carrying the same byte volume at the cap boundary are ranked
-		// arbitrarily, and ClickHouse does not promise the SAME arbitrary
-		// order across two runs of one query (the parallel aggregation's
-		// merge order is not fixed), so the returned SET varied run to run.
+		// `bytes` is deliberately the ONLY sort key, and the cut is
+		// deliberately WITH TIES.
 		//
-		// Upstream is fully ordered before it truncates: seriesvolume's
-		// MapToVolumeResponse sorts by volume descending and falls back to
-		// the entry's own Name ascending, and only then slices to `limit`.
-		// `labels` is that entry's identity here — one row per distinct
-		// label set by construction of the GROUP BY — so ordering on it
-		// makes this ORDER BY total and the cut reproducible. ClickHouse
-		// compares a Map as its sequence of (key, value) pairs, which is
-		// the same collation upstream's label-set string gives.
+		// `bytes` alone is not a total order, so a plain `LIMIT n` over it
+		// returns whichever equal-volume groups the aggregation happened
+		// to emit first — an order ClickHouse does not promise to repeat
+		// (the parallel merge order is not fixed), so the returned SET
+		// varied run to run. Adding a second sort key would fix that, but
+		// only by settling the tie HERE, over the group key as STORED. The
+		// tie upstream settles is over the label-set string it SERVES, and
+		// `format.NormalizeLabelMap` reverses the collation of some key
+		// pairs on the way out (`a.b` before `aZ` stored, `a_b` after it
+		// served) — so a SQL tie-break is not merely a different arbitrary
+		// choice, it is a WRONG one on exactly the rows a cap discards.
 		//
-		// The WIRE order is settled separately, by rankIndexVolumeRows,
-		// which ranks the returned rows with upstream's own comparator
-		// over the label names it actually serves.
-		OrderBy(chsql.Col("labels"), false).
-		Limit(int64(limit))
+		// WITH TIES declines to make the choice at all: every row that
+		// ties with the n-th on `bytes` comes back, so the returned set is
+		// `{bytes > B} ∪ {bytes = B}` for B the n-th largest volume. That
+		// set is a pure function of the data — no merge order can perturb
+		// it, which is the determinism the second sort key was there for —
+		// and it CONTAINS the correct top-n under any tie-break, because a
+		// tie-break only ever reorders rows of one volume and every row of
+		// the boundary volume is in it. rankIndexVolumeRows then applies
+		// upstream's own comparator over the served names and takes the
+		// first `limit`, which is where the choice belongs.
+		//
+		// The cost is the size of the boundary tie group: the rows shipped
+		// beyond `limit` are exactly the equal-volume groups the cap fell
+		// inside of, and never any group of a lower volume. That is
+		// data-dependent rather than capped by `limit`, so the row count is
+		// left to the drain budget every other metadata endpoint is already
+		// bounded by (chclient's drainBudgetExceeded, which aborts the
+		// request with the Loki "maximum … reached" 400) rather than to a
+		// second cap here — a cap of our own would have to choose which
+		// tied groups to drop, which is the very choice this clause exists
+		// to avoid making before normalization.
+		LimitWithTies(int64(limit))
 
 	sqlStr, args := sb.Build()
 	return sqlStr, args, nil

@@ -58,11 +58,15 @@ const (
 	boundMemoryStreaming
 	// boundEmpty is a constant-false predicate: `WHERE false` reads zero rows
 	// (ClickHouse prunes every part), the tightest possible bound. The
-	// trace-scoped / per-event intrinsics that OTel-CH does not materialise
-	// (rootName / rootServiceName / traceDuration / span:childCount /
-	// event:timeSinceStart / instrumentation-scoped attributes) lower to a
-	// StaticNil constant-false predicate, which ConstantFold collapses
-	// `false AND <window>` to a bare `false` — that scan cannot OOM.
+	// carriers OTel-CH does not materialise and cerberus does not derive
+	// (span:childCount / traceStartTime / event:timeSinceStart /
+	// instrumentation-scoped attributes — traceql's attributeHasNoBacking is
+	// the list) lower to a constant-false predicate, which ConstantFold
+	// collapses `false AND <window>` to a bare `false` — that scan cannot
+	// OOM. The trace-scoped root-identity intrinsics (rootName /
+	// rootServiceName / traceDuration) are NOT in that set any more: since
+	// issue #1711 they lower to a per-trace aggregate subquery and reach
+	// this classifier as a real predicate.
 	boundEmpty
 )
 
