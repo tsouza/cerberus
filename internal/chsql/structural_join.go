@@ -103,16 +103,18 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 		return fmt.Errorf("%w: StructuralJoin column names unset", ErrUnsupported)
 	}
 
-	// Stamp the resolved cap when the plan reaches the emitter unbounded
-	// (MaxDepth == 0). The rendered bound already resolves 0 via
-	// effectiveRecursionDepth, so this is byte-neutral on the SQL — it
-	// keeps the in-memory plan's MaxDepth in agreement with the emitted
-	// `c._depth < N` literal, so the structural recursion and the
-	// nested-set recursion (which also bounds at defaultStructuralRecursionDepth)
-	// agree on the same ceiling.
-	if j.MaxDepth == 0 {
-		j.MaxDepth = defaultStructuralRecursionDepth
-	}
+	// MaxDepth is deliberately NOT stamped here. This used to write the
+	// resolved cap back into j when the plan arrived unbounded, which made
+	// emitStructuralJoin the one site in this package that mutates a
+	// caller-owned chplan node as a side effect of emitting — so
+	// chplan.Equal on a plan changed after its first emit, and anything
+	// keyed on the plan saw a different value depending on whether emission
+	// had happened yet.
+	//
+	// It was also redundant: the only read of j.MaxDepth is
+	// structuralDepthBoundFrag below, which resolves 0 through
+	// effectiveRecursionDepth itself, so the emitted `c._depth < N` literal
+	// is identical either way (cerberus issue #3211).
 
 	switch j.Op.Positive() {
 	case chplan.StructuralChild, chplan.StructuralParent, chplan.StructuralSibling:

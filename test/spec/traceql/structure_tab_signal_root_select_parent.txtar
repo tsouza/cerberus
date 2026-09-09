@@ -72,7 +72,7 @@ INSERT INTO otel_traces VALUES
 Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent]
   NestedSetAnnotate table=otel_traces traceLimit=20
     SetOperation op=||
-      StructuralJoin op=&>> maxDepth=128
+      StructuralJoin op=&>>
         Filter predicate=(((ParentSpanId = "") AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
           Scan(otel_traces)
         Filter predicate=((true AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))

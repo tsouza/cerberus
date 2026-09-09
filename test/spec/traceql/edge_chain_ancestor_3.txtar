@@ -48,8 +48,8 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "root"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
-StructuralJoin op=<< maxDepth=128
-  StructuralJoin op=<< maxDepth=128 candidatePrefilter
+StructuralJoin op=<<
+  StructuralJoin op=<< candidatePrefilter
     Filter predicate=(ResourceAttributes["service.name"] = "leaf")
       Scan(otel_traces)
     Filter predicate=(ResourceAttributes["service.name"] = "mid")

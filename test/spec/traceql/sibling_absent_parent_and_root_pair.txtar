@@ -65,7 +65,7 @@ scope: full
 [4] string = "service.name"
 [5] string = "y"
 -- chplan --
-StructuralJoin op=~ maxDepth=128
+StructuralJoin op=~
   Filter predicate=(ResourceAttributes["service.name"] = "x")
     Scan(otel_traces)
   Filter predicate=(ResourceAttributes["service.name"] = "y")
