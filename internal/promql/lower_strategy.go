@@ -400,6 +400,21 @@ type RangeLowerers struct {
 	// run. Never nil on the lowering path.
 	ExpHistogramWindowFold ExpHistogramWindowFoldLowerer
 
+	// ExpHistogramResetMask decides how the per-pair bucket-regression
+	// half of the exponential-histogram counter-reset mask is rendered:
+	// both sides densified outside the comparison lambda
+	// (histogram_native_reset.go, via expHistogramDenseContribsExpr) or
+	// the per-target-bucket picker + Kahan fold it replaced.
+	//
+	// Its default is the densified arm for the same reason
+	// ExpHistogramWindowFold's is the closed form: both arms fold the
+	// identical stored-count slices, so there is nothing for an operator
+	// to choose, and the per-target arm survives only as the DIFFERENTIAL
+	// ORACLE a chDB test runs the same query through to prove the two
+	// agree (exp_histogram_reset_mask_densified_chdb_test.go). Never nil
+	// on the lowering path.
+	ExpHistogramResetMask ExpHistogramResetMaskLowerer
+
 	// ArgAndMaxFusion is the resolved chopt.FeatureArgAndMaxFusion verdict
 	// (server >= 25.11, cerberus issue #2764), threaded to
 	// internal/promql/binary.go's vector-vector join lowering so it can set
@@ -527,6 +542,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.ExpHistogramWindowFold == nil {
 		l.ExpHistogramWindowFold = ClosedFormExpHistogramWindowFoldLowerer{}
+	}
+	if l.ExpHistogramResetMask == nil {
+		l.ExpHistogramResetMask = DensifiedExpHistogramResetMaskLowerer{}
 	}
 	return l
 }

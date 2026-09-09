@@ -411,7 +411,7 @@ func expHistogramWindowReshape(
 	var stages []func(chplan.Node) chplan.Node
 	if resets != nil {
 		stages = append(stages, func(n chplan.Node) chplan.Node {
-			return expHistogramResetMaskStage(n, aggs, keyAliases)
+			return expHistogramResetMaskStage(n, aggs, keyAliases, in.densifiedResetMask)
 		})
 		extraFactorAliases = []string{hqWindowResetsAlias}
 	}
@@ -545,7 +545,7 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 		resets:      resets,
 		perSecond:   perSecond,
 	}
-	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
+	winIn = winIn.withLowerers(ctx.lowerers)
 	fold := histogramWindowFold(shape.windowFn, winIn)
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
