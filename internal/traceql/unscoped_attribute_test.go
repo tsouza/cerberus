@@ -131,6 +131,13 @@ func lowerSearchSQL(t *testing.T, query string) string {
 // every literal kind the grammar has, deriving the expectation from the
 // scoped lowering rather than hardcoding it. A helper that learns about a
 // new literal but not about the coalesce fails here.
+//
+// The non-bool rows are the negative half and are load-bearing. Issue #3226
+// is exactly ONE cell of the scope x literal-kind matrix — unscoped int,
+// float, string, regex and ordered comparison all answered 200 before the
+// fix, because they route through coerceFieldAccess / lowerStatic, which
+// already knew the coalesce. Keeping them here is what stops the fix
+// over-reaching into paths that were already right.
 func TestUnscopedReadBindsLiteralsLikeItsScopedSpelling(t *testing.T) {
 	t.Parallel()
 
@@ -145,6 +152,10 @@ func TestUnscopedReadBindsLiteralsLikeItsScopedSpelling(t *testing.T) {
 		{"bool_true", `{ span.cache.hit = true }`, `{ .cache.hit = true }`},
 		{"bool_false", `{ span.cache.hit = false }`, `{ .cache.hit = false }`},
 		{"bool_not_equal", `{ span.cache.hit != true }`, `{ .cache.hit != true }`},
+		// The resource-scoped spelling answered too, so the unscoped read
+		// must agree with BOTH scoped arms, not just the span one.
+		{"bool_true_against_resource_scope", `{ resource.cache.hit = true }`, `{ .cache.hit = true }`},
+		{"bool_false_against_resource_scope", `{ resource.cache.hit = false }`, `{ .cache.hit = false }`},
 		{"int", `{ span.code = 500 }`, `{ .code = 500 }`},
 		{"int_ordering", `{ span.code > 500 }`, `{ .code > 500 }`},
 		{"float", `{ span.ratio = 0.5 }`, `{ .ratio = 0.5 }`},

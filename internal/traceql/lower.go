@@ -2277,11 +2277,31 @@ func stringifyNumericMaterialized(e chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{f}}
 }
 
-// coerceBoolFieldAccess rewrites a LitBool compared against a
-// FieldAccess into the OTel-CH string encoding ("true" / "false").
-// Only equality ops apply — TraceQL's type checker
-// (binaryTypeValid) rejects ordered comparisons on booleans before
-// lowering ever runs.
+// coerceBoolFieldAccess rewrites a LitBool compared against an attribute
+// read into the OTel-CH string encoding ("true" / "false"). Only equality
+// ops apply — TraceQL's type checker (binaryTypeValid) rejects ordered
+// comparisons on booleans before lowering ever runs.
+//
+// It reads BOTH lowered spellings of an attribute (see attributeReadArms),
+// and that is the whole of cerberus issue #3226. The unscoped read is not a
+// FieldAccess, so while it went unrecognised here the literal stayed a Go
+// bool and ClickHouse refused the comparison outright:
+//
+//	Code: 386. DB::Exception: There is no supertype for types String, UInt8
+//	because some of them are String/FixedString/Enum and some of them are
+//	not: while executing function equals on arguments
+//	if(mapContainsKey(SpanAttributes, 'cache.hit'_String),
+//	   arrayElement(SpanAttributes, 'cache.hit'_String),
+//	   ResourceAttributes.key_cache.hit) String,
+//	1_UInt8 UInt8. (NO_COMMON_TYPE)
+//
+// — a 502 on every `{ .cache.hit = true }`, in both polarities, while
+// `{ span.cache.hit = true }` and `{ resource.cache.hit = true }` both
+// answered. (chDB renders the same exception with `Bool` where production
+// ClickHouse says `UInt8`; the operand types are the same mismatch.) It was
+// exactly one cell of the scope x literal-kind matrix: unscoped int, float,
+// string, regex and ordered comparison all answered, because those route
+// through coerceFieldAccess / lowerStatic, which already knew the shape.
 //
 // Skipped when the FieldAccess side is a numeric materialized column
 // (FieldAccess.MaterializedColumnNumeric, cerberus issue #2869): that
