@@ -181,6 +181,7 @@ package perf
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"sync"
@@ -436,7 +437,7 @@ func TestCardinalityRatchet(t *testing.T) {
 	}
 	sort.Strings(matched)
 	for _, id := range matched {
-		compareCardinalityEntry(t, id, current[id], baseline[id], rollingRemedy)
+		compareCardinalityEntry(t, id, current[id], baseline[id], func() string { return rollingRemedy })
 	}
 }
 
@@ -529,19 +530,62 @@ func cardinalityEntryProblems(id string, cur, base baselineEntry) []cardinalityP
 }
 
 // compareCardinalityEntry reports every difference cardinalityEntryProblems
-// finds, appending remedy — the caller's own wording for what to do about a
+// finds, appending remedy() — the caller's own wording for what to do about a
 // difference that CAN legitimately be recorded. The rolling ratchet names its
 // recipe there; the release gate has no command to name and says what is true
 // instead (see releaseRemedy).
-func compareCardinalityEntry(t *testing.T, id string, cur, base baselineEntry, remedy string) {
+//
+// remedy is a func, not a string, because the release gate's wording costs a
+// SECOND full comparison per fixture to produce (against the rolling baseline)
+// and the overwhelmingly common case is a fixture with nothing to report at
+// all. Building it eagerly would pay that for every one of the ~950 fixtures on
+// every leg to throw it away.
+func compareCardinalityEntry(t *testing.T, id string, cur, base baselineEntry, remedy func() string) {
 	t.Helper()
+	var remedied string
 	for _, p := range cardinalityEntryProblems(id, cur, base) {
 		if p.remediable {
-			t.Errorf("%s %s", p.msg, remedy)
+			if remedied == "" {
+				remedied = remedy()
+			}
+			t.Errorf("%s %s", p.msg, remedied)
 			continue
 		}
 		t.Errorf("%s", p.msg)
 	}
+}
+
+// cardinalityEntryMatches reports whether cur is the measurement base RECORDS.
+//
+// It is deliberately NOT cardinalityEntryProblems == 0. That function is a
+// RATCHET: it reports only the bad direction, so it stays silent on a fan_factor
+// that fell, a recursion that got shallower, a CROSS JOIN that disappeared, and
+// a fixture that became measurable after being recorded as unmeasured. Every one
+// of those is a fixture whose committed row no longer describes it, which is the
+// opposite of what a caller asking "was THIS value recorded?" wants to hear —
+// and answering yes there is how the release gate would come to call an
+// unreviewed upward drift a ratified change (see releaseRemedy).
+//
+// Every field the baseline stores as a CLAIM about the fixture is compared.
+// UncountableLevels is not: it is diagnostic-only (see baselineEntry), a symptom
+// count carried for a reviewer rather than an assertion, and the nil-ness of
+// FanFactor it explains is compared directly.
+func cardinalityEntryMatches(cur, base baselineEntry) bool {
+	if (cur.FanFactor == nil) != (base.FanFactor == nil) {
+		return false
+	}
+	// The same epsilon the ratchet compares with: both sides are the profiler's
+	// own quotient round-tripped through the baseline's JSON, so an exact
+	// comparison would make representation noise read as a different fixture.
+	if cur.FanFactor != nil && math.Abs(*cur.FanFactor-*base.FanFactor) > fanFactorEpsilon {
+		return false
+	}
+	return cur.ScanRows == base.ScanRows &&
+		cur.PeakIntermediate == base.PeakIntermediate &&
+		cur.HasCrossJoin == base.HasCrossJoin &&
+		cur.HasArrayJoin == base.HasArrayJoin &&
+		cur.HasRecursiveCTE == base.HasRecursiveCTE &&
+		cur.MaxRecursionDepth == base.MaxRecursionDepth
 }
 
 // TestCardinalityBaselineCoversTheCorpus asserts the committed tree holds one

@@ -607,8 +607,9 @@ type CHOptCorpusConfig struct {
 	RingCapacity int
 	// SinkMode selects the durable sink (CERBERUS_CH_OPT_CORPUS_SINK_MODE):
 	// "jsonl" (default) appends rows to the SinkPath file; "chtable" writes them
-	// to the cerberus_router_corpus MergeTree the operator queries with the
-	// go/no-go analysis SQL. The CH-table sink needs no SinkPath. Any
+	// to the cerberus_router_corpus table the operator queries with the
+	// go/no-go analysis SQL (its MergeTree-family engine follows the deployment
+	// — see optcorpus.CorpusTableTopology). The CH-table sink needs no SinkPath. Any
 	// unrecognised value falls back to the JSONL sink.
 	SinkMode string
 }
@@ -1805,7 +1806,7 @@ const (
 	// any query unless an operator names one — the knob is off by default.
 	defaultCHQueryWorkload = ""
 	// defaultCHOptCorpusSinkMode is the JSONL file sink; "chtable" selects the
-	// cerberus_router_corpus MergeTree instead.
+	// cerberus_router_corpus table instead.
 	defaultCHOptCorpusSinkMode = "jsonl"
 	// defaultCHOptCorpusRing is the reconciler ring capacity when the operator
 	// does not override it. It mirrors optcorpus's own internal default; the

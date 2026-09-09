@@ -1397,11 +1397,18 @@ To answer it the engine closes the loop the optimization corpus
   `ALTER` converts an engine, construction also reads the DEPLOYED engine back
   from `system.tables` and **fails** on a replicated deployment whose corpus
   table cannot replicate, naming the one remedy: drop it and let the next start
-  recreate it (the corpus is a rolling 30-day sample). A multi-DATA-shard
-  deployment still holds a per-shard slice — the corpus gets no `Distributed`
-  wrapper, by the same permanent boundary `docs/helm-clickhouse.md` states for
-  the auxiliary tables — but that path is EXPERIMENTAL, while the replicated
-  one is supported.
+  recreate it (the corpus is a rolling 30-day sample).
+- **What that does NOT cover.** The sink reads two of the three knobs that
+  decide the signal tables' engine; the third,
+  `CERBERUS_SCHEMA_TABLE_ENGINE`, is how a classic `ON CLUSTER` deployment
+  supplies an explicit `ReplicatedMergeTree('/path', '{replica}')`. It is a
+  whole engine EXPRESSION, which the typed `chsql` builder cannot carry and
+  whose semantics were chosen for a different table, so the corpus table stays a
+  plain `MergeTree` there and the verify above is silent — the #3241 defect
+  surviving on a topology this does not reach, tracked in issue #3250. A
+  multi-DATA-shard deployment additionally holds a per-shard slice, since the
+  corpus gets no `Distributed` wrapper, by the same permanent boundary
+  `docs/helm-clickhouse.md` states for the auxiliary tables.
 - **A sink that cannot be built disables the reconciler**, logged at startup
   with the underlying error; it does not silently switch modes. There is no
   fallback from `chtable` to `jsonl` — an operator who asked for the CH table

@@ -568,12 +568,18 @@ carve-out. Its table is provisioned by the corpus sink rather than by
 <CERBERUS_SCHEMA_CLUSTER>` on its own `CREATE` and `ALTER` statements — which
 the chart always sets under `dataShards.count > 1` — so the table exists on
 every node and an INSERT is correct wherever it lands. It also resolves its
-ENGINE from `CERBERUS_SCHEMA_DATABASE_REPLICATED`, exactly as
-`internal/schema/ddl` does for the signal tables, so on the SUPPORTED
+ENGINE from `CERBERUS_SCHEMA_DATABASE_REPLICATED`, so on the SUPPORTED
 single-shard `replicas > 1` path — where the chart makes `otel` a `Replicated`
 database — the corpus rows replicate instead of accumulating per replica
-(issue #3241). What it still gets no part of is the `Distributed` wrapper: rows
-stay within their own shard, so a `dataShards.count > 1` deployment holds a
-per-shard slice of the corpus. That is this boundary, not a gap in it — nothing
-on the query path reads the corpus, and the offline calibration that does is
-single-shard-scoped like every other harness in this repository.
+(issue #3241).
+
+Under `dataShards.count > 1` it does neither. The corpus gets no `Distributed`
+wrapper, so rows never leave the shard they were written on — that part IS this
+boundary, and it costs nothing on the query path, which never reads the corpus.
+But this combination is also the one where the chart leaves
+`CERBERUS_SCHEMA_DATABASE_REPLICATED` unset and gives the SIGNAL tables an
+explicit `ReplicatedMergeTree(...)` through `schema.TABLE_ENGINE` instead — a
+knob the corpus sink does not read. So with `replicas > 1` on top, the corpus
+table stays a plain `MergeTree` and accumulates per REPLICA as well as per
+shard, and nothing reports it. That half is a gap, not a boundary, and it is
+tracked in issue #3250.

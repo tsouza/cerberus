@@ -182,6 +182,43 @@ func TestCorpusCreateTableSQL_EngineFollowsDatabaseReplication(t *testing.T) {
 	}
 }
 
+// TestNewCHTableSink_EngineReadFailureIsFatal pins that an unreadable
+// deployed-engine read fails construction rather than being read as "no
+// engine".
+//
+// All three are real driver outcomes and all three are silent by default: a
+// query the server refuses, a Scan that fails mid-row, and an error the driver
+// only reports after iteration. If any were swallowed, readDeployedEngine would
+// hand back the zero string,
+// verifyTableEngine would read that as a non-replicating engine, and the sink
+// would be refused on a deployment whose table is perfectly fine — or, on a
+// non-replicated deployment, the unread failure would simply vanish. Neither is
+// an answer about the server; only an error is.
+func TestNewCHTableSink_EngineReadFailureIsFatal(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		fe   *fakeExecer
+	}{
+		{name: "query-fails", fe: &fakeExecer{engineQueryErr: errors.New("query boom")}},
+		{name: "scan-fails", fe: &fakeExecer{engineScanErr: errors.New("scan boom")}},
+		{name: "iteration-reports-an-error", fe: &fakeExecer{engineRowsErr: errors.New("rows boom")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := NewCHTableSink(context.Background(), tc.fe, CorpusTableTopology{})
+			if err == nil {
+				t.Fatal("NewCHTableSink over an unreadable deployed engine: want an error, got nil")
+			}
+			if !strings.Contains(err.Error(), "engine") {
+				t.Errorf("error %q does not say the ENGINE read is what failed", err)
+			}
+		})
+	}
+}
+
 // TestNewCHTableSink_RejectsNonReplicatingDeployedEngine pins the migration half
 // of cerberus issue #3241: emitting the right engine only fixes a table this
 // binary CREATES, and `CREATE TABLE IF NOT EXISTS` is a no-op against a table an
@@ -190,10 +227,14 @@ func TestCorpusCreateTableSQL_EngineFollowsDatabaseReplication(t *testing.T) {
 // the SERVER reports — and if construction accepted it anyway, the corpus would
 // go on being mined one replica at a time with nothing saying so.
 //
-// The three cases are the whole truth table: the deployment that needs
+// Three of the 2x2's four cells are covered: the deployment that needs
 // replication and does not have it FAILS, the one that needs it and has it is
 // built, and the single-node deployment — where a plain MergeTree is correct and
-// there is no Keeper — is untouched by the check.
+// there is no Keeper — is untouched by the check. The fourth, a REPLICATING
+// engine deployed on a non-replicated deployment, is deliberately unchecked:
+// replicating more than the deployment asked for costs correctness nothing, and
+// refusing it would brick a deployment that turned replication off after the
+// table was made.
 func TestNewCHTableSink_RejectsNonReplicatingDeployedEngine(t *testing.T) {
 	t.Parallel()
 
@@ -256,7 +297,11 @@ func TestNewCHTableSink_RejectsNonReplicatingDeployedEngine(t *testing.T) {
 // writes, so construction succeeds unless a test says otherwise.
 // failStatement / failErr make ONE statement fail while the rest succeed, which
 // is how a least-privilege deployment presents (a CH user may hold CREATE but
-// not ALTER); execErr fails every statement; queryErr fails the schema read.
+// not ALTER); execErr fails every statement. The two reads are failed
+// SEPARATELY — engineQueryErr for the system.tables engine read, queryErr for
+// the system.columns schema read — because they run one after the other, so a
+// single shared error would only ever pin whichever runs first and would leave
+// the other read's fatal path with no coverage at all.
 type fakeExecer struct {
 	execSQL        []string
 	execErr        error
@@ -267,8 +312,21 @@ type fakeExecer struct {
 	deployedType   map[string]string
 	absentColumn   map[string]bool
 	deployedEngine string
+	engineScanErr  error
+	engineRowsErr  error
+	engineQueryErr error
 	queryErr       error
 }
+
+// systemTablesRelation is the relation the ENGINE read names, rendered the same
+// way corpusEngineQuery renders it, so the fake dispatches on the production
+// statement rather than on a hand-typed copy of it.
+var systemTablesRelation = chsql.RenderDDL(chsql.Qual("system", "tables"))
+
+// isEngineQuery reports whether query is the deployed-ENGINE read rather than
+// the deployed-SCHEMA read. Construction issues both against the same table
+// name, so the bound argument cannot tell them apart — the relation can.
+func isEngineQuery(query string) bool { return strings.Contains(query, systemTablesRelation) }
 
 func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
 	f.execSQL = append(f.execSQL, query)
@@ -287,7 +345,11 @@ func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
 // The table name is the query's last bound argument; checking it keeps the fake
 // honest about WHICH table it is answering for.
 func (f *fakeExecer) Query(_ context.Context, query string, args ...any) (driver.Rows, error) {
-	if f.queryErr != nil {
+	if isEngineQuery(query) {
+		if f.engineQueryErr != nil {
+			return nil, f.engineQueryErr
+		}
+	} else if f.queryErr != nil {
 		return nil, f.queryErr
 	}
 	if len(args) == 0 {
@@ -300,16 +362,17 @@ func (f *fakeExecer) Query(_ context.Context, query string, args ...any) (driver
 	if table != CorpusTableName {
 		return nil, errors.New("fakeExecer: schema query asked about table " + table)
 	}
-	// Construction issues TWO reads against the same table name — the engine
-	// (system.tables) and the column list (system.columns) — so the fake
-	// dispatches on the relation the statement names rather than on the bound
-	// argument they share.
-	if strings.Contains(query, chsql.RenderDDL(chsql.Qual("system", "tables"))) {
+	if isEngineQuery(query) {
 		engine := f.deployedEngine
 		if engine == "" {
 			engine = chsql.RenderDDL(corpusTableEngine(CorpusTableTopology{}))
 		}
-		return &fakeRows{cols: []string{"engine"}, rows: [][]string{{engine}}}, nil
+		return &fakeRows{
+			cols:     []string{"engine"},
+			rows:     [][]string{{engine}},
+			scanErr:  f.engineScanErr,
+			finalErr: f.engineRowsErr,
+		}, nil
 	}
 	rows := &fakeRows{cols: []string{"name", "type"}}
 	for _, c := range CorpusColumns() {
@@ -342,6 +405,11 @@ type fakeRows struct {
 	cols []string
 	rows [][]string
 	next int
+	// scanErr / finalErr make the row set fail mid-iteration and after it —
+	// the two ways a real driver reports a read that started fine and did not
+	// finish. Both are silent unless a test sets them.
+	scanErr  error
+	finalErr error
 }
 
 func (r *fakeRows) Next() bool {
@@ -353,6 +421,9 @@ func (r *fakeRows) Next() bool {
 }
 
 func (r *fakeRows) Scan(dest ...any) error {
+	if r.scanErr != nil {
+		return r.scanErr
+	}
 	if len(dest) != len(r.cols) {
 		return errors.New("fakeRows: want exactly one scan destination per column")
 	}
@@ -376,7 +447,7 @@ func (r *fakeRows) ColumnTypes() []driver.ColumnType { return nil }
 func (r *fakeRows) Totals(...any) error              { return nil }
 func (r *fakeRows) Columns() []string                { return r.cols }
 func (r *fakeRows) Close() error                     { return nil }
-func (r *fakeRows) Err() error                       { return nil }
+func (r *fakeRows) Err() error                       { return r.finalErr }
 
 func (f *fakeExecer) PrepareBatch(_ context.Context, _ string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
 	if f.batchErr != nil {
