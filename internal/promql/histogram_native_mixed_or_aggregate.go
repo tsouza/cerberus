@@ -271,7 +271,9 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 // The distinction used to be invisible because the two branches were
 // believed disjoint by construction ("drawn from different metrics and so
 // never share a series"). They are not: `or` matches on a signature that
-// drops `__name__` (promql/engine.go:1454-1465), so a histogram arm and a
+// drops `__name__` — upstream's `rangeEval` prepends `labels.MetricName`
+// to the `ignoring(...)` name list before hashing (`promql/engine.go`) —
+// so a histogram arm and a
 // float arm carrying byte-identical attributes both survive it, and a
 // name-dropping fold then publishes two rows on the SAME output key.
 // Under the symmetric difference BOTH were dropped and the query answered

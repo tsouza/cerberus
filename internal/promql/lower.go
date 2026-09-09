@@ -3003,7 +3003,9 @@ func lowerCallOverSubquery(c *parser.Call, sq *parser.SubqueryExpr, s schema.Met
 	// `<fn>((a)[r:s]) or <fn>((b)[r:s])` and recombined the two folds.
 	// That identity holds only while the `or`'s shadow is all-or-nothing
 	// per series, and it is not: `or` matches on a signature that DROPS
-	// `__name__` (promql/engine.go:1454-1465), so a histogram series and a
+	// `__name__` — upstream's `rangeEval` prepends `labels.MetricName` to
+	// the `ignoring(...)` name list before hashing (`promql/engine.go`) —
+	// so a histogram series and a
 	// float series carrying byte-identical attributes share one signature
 	// and the histogram shadows the float only at the anchors it actually
 	// covers. Folding each arm over its FULL window before shadowing cannot

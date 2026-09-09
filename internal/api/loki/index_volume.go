@@ -112,9 +112,9 @@ const (
 const volumeLabelNameAlias = "label_name"
 
 // buildIndexVolumeSQL builds the SELECT used by /index/volume. Upstream's
-// `aggregateBy` picks between two genuinely different response shapes
-// (pkg/ingester/instance.go:886-903), so it picks between two SQL shapes
-// here too.
+// `aggregateBy` picks between two genuinely different response shapes —
+// the two branches of upstream's `getVolume` (`pkg/ingester/instance.go`) —
+// so it picks between two SQL shapes here too.
 //
 // # aggregateBy=series (and the default)
 //
@@ -164,8 +164,9 @@ const volumeLabelNameAlias = "label_name"
 //	ORDER BY bytes DESC
 //	LIMIT <n>
 //
-// ARRAY JOIN is upstream's `s.labels.Range` (instance.go:889) expressed
-// in ClickHouse: it replicates each matched row once per label the row's
+// ARRAY JOIN is upstream's own `s.labels.Range` over each stream, in
+// `getVolume`, expressed in ClickHouse: it replicates each matched row
+// once per label the row's
 // stream carries, so `sum(length(Body))` charges the row's full byte
 // count to every one of its labels — exactly `labelVolumes[l.Name] +=
 // size`. A row whose projected map is empty explodes to nothing and
@@ -174,9 +175,9 @@ const volumeLabelNameAlias = "label_name"
 // so `targetLabels` restricts the exploded key set identically.
 //
 // The one-entry `map(label_name, ”)` reproduces upstream's decode:
-// `toPrometheusData` builds this mode's metric with
-// `labels.FromStrings(name, "")` (queryrange/volume.go:174), a single
-// label whose NAME is the volume's name and whose VALUE is empty. Keeping
+// `toPrometheusData` (`pkg/querier/queryrange/volume.go`) builds this
+// mode's metric with `labels.FromStrings(name, "")`, a single label whose
+// NAME is the volume's name and whose VALUE is empty. Keeping
 // the wire shape a Map here — rather than returning a bare String and
 // re-wrapping in Go — is what lets both modes share one
 // chclient.QueryIndexVolume decode and one GROUP BY / ORDER BY / LIMIT
@@ -228,8 +229,8 @@ func buildIndexVolumeSQL(
 // Both /index/volume shapes read it: the series shape groups by this Map
 // directly, the labels shape ARRAY JOINs over its KEYS. That is why the
 // `targetLabels` projection lives here rather than in either branch —
-// upstream restricts to `labelsToMatch` in both of its branches too
-// (pkg/ingester/instance.go:886-903).
+// upstream's `getVolume` restricts to `labelsToMatch` in both of its
+// branches too.
 //
 // chplan.MapWithoutKeys (and Builder.MapFilterExcept) cover the
 // NEGATED form ("everything except these keys"). The positive form
@@ -257,9 +258,10 @@ func volumeGroupFrag(s schema.Logs, targetLabels []string, aggregateBy string) c
 }
 
 // volumeLabelNameMapFrag renders the one-entry `map(<label_name>, ”)`
-// the "labels" aggregation reports each row's metric as — upstream's
-// `labels.FromStrings(name, "")` (queryrange/volume.go:174), where the
-// label NAME is the payload and the value slot is deliberately empty.
+// the "labels" aggregation reports each row's metric as — the
+// `labels.FromStrings(name, "")` upstream's `toPrometheusData` builds,
+// where the label NAME is the payload and the value slot is deliberately
+// empty.
 //
 // The empty value is a literal, not a placeholder-bound arg: it is part
 // of the query SHAPE (every row's value slot is empty by construction),

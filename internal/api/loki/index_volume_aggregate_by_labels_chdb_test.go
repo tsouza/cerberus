@@ -9,8 +9,9 @@
 //   - `labels` keys it by the bare label NAME, summing the volume across
 //     every value that label takes, and reports each row's metric as
 //     `labels.FromStrings(name, "")` — a single label whose name is the
-//     payload and whose value is empty
-//     (pkg/ingester/instance.go:886-903, queryrange/volume.go:158-176).
+//     payload and whose value is empty (upstream's `getVolume` in
+//     `pkg/ingester/instance.go`, and `toPrometheusData` in
+//     `pkg/querier/queryrange/volume.go`).
 //
 // Cerberus emitted the series shape for both, so `aggregateBy=labels`
 // answered one row per label SET where upstream answers one row per label

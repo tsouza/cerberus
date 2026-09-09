@@ -169,10 +169,12 @@ func mixedLastFirstWindowed(windowFn string, mixedRel chplan.Node, histSchema, s
 //
 // MetricName is part of the key because reference folds a range function
 // over the subquery matrix per SERIES, and a series is its full label set
-// — `__name__` included (promql/engine.go's rangeEval keys its output on
-// `Metric.Hash()`). The `or` that produced this Mixed relation matched its
-// two arms on a signature that EXCLUDES `__name__`
-// (promql/engine.go:1454-1465), so two rows that survived it can differ in
+// — `__name__` included, since upstream keys its output on
+// `Metric.Hash()`. The `or` that produced this Mixed relation matched its
+// two arms on a signature that EXCLUDES `__name__` — upstream's
+// `rangeEval` prepends `labels.MetricName` to the `ignoring(...)` name
+// list before hashing (`promql/engine.go`) — so two rows that survived it
+// can differ in
 // `__name__` while sharing Attributes exactly — a histogram arm and a float
 // arm on byte-identical attributes, where the histogram shadows the float
 // only at the anchors it actually covers (cerberus issue #3227). Under an
