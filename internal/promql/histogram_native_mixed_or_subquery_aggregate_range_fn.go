@@ -476,7 +476,7 @@ func lowerHistFoldOverPureSubqueryBranch(shape sumOrAvgMixedOrSubqueryShape, inp
 	windowShape := histogramAggShape{windowRange: sub.Range, windowFn: shape.windowFn}
 
 	if ctx.rangeMode() && subqueryPinned(sub) {
-		windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema)
+		windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema, ctx)
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 		return aggregatedHistogramProjection(
 			&chplan.CrossJoin{Left: grid, Right: windowed},
@@ -484,7 +484,7 @@ func lowerHistFoldOverPureSubqueryBranch(shape sumOrAvgMixedOrSubqueryShape, inp
 			histSchema,
 		), nil
 	}
-	windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema)
+	windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema, ctx)
 	tsExpr := chplan.NowNano()
 	if !anchor.End.IsZero() {
 		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})

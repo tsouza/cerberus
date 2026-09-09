@@ -178,6 +178,7 @@ func expHistogramWindowFloatsExpr(contribs chplan.Expr) chplan.Expr {
 func expHistogramWindowBucketsExpr(
 	offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string,
 	fold histogramWindowTimeFold,
+	rows expHistogramWindowRowSource,
 ) chplan.Expr {
 	// Deliberately not "t": `fold` binds paramRowTime ("t") inside its own
 	// arraySort comparator, and that comparator sits INSIDE this lambda's
@@ -209,8 +210,15 @@ func expHistogramWindowBucketsExpr(
 	return expHistogramOverMergedBucketRangeExpr(
 		scalesArr, offArr, bucArr, mergedScale,
 		func(mergedStart, mergedLength chplan.Expr) chplan.Expr {
+			// Bounds above come from the FULL per-row arrays, because the
+			// ladder's own offset is published separately by
+			// expHistogramMergeOffsetExpr over those same full arrays —
+			// deriving them from a narrowed row set instead would shift
+			// this ladder against its own offset. The CONTRIBUTIONS may be
+			// narrowed: a row the fold weights at zero adds nothing to any
+			// bucket. See histogram_native_window_closed_form.go.
 			contribs := expHistogramRowContribsExpr(
-				scalesArr, offArr, bucArr,
+				rows.array(scalesArrAlias), rows.array(offArrAlias), rows.array(bucArrAlias),
 				expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramExpTargetBucket),
 			)
 			return &chplan.FuncCall{
@@ -289,12 +297,12 @@ func expHistogramWindowFactorStage(
 	windowFn string,
 	in histogramWindowInputs,
 	fold histogramWindowTimeFold,
-) (chplan.Node, histogramWindowTimeFold) {
+) (chplan.Node, histogramWindowTimeFold, histogramWindowInputs, bool) {
 	factorExpr, hoistable := histogramWindowInvariantFactorExpr(
 		windowFn, in, &chplan.ColumnRef{Name: hqWindowTsListAlias},
 	)
 	if !hoistable {
-		return input, fold
+		return input, fold, in, false
 	}
 	projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+len(extraAliases)+1)
 	for _, name := range keyAliases {
@@ -310,7 +318,37 @@ func expHistogramWindowFactorStage(
 
 	hoisted := in
 	hoisted.hoistedFactor = &chplan.ColumnRef{Name: hqWindowFactorAlias}
-	return &chplan.Project{Input: input, Projections: projs}, histogramWindowFold(windowFn, hoisted)
+	return &chplan.Project{Input: input, Projections: projs}, histogramWindowFold(windowFn, hoisted), hoisted, true
+}
+
+// expHistogramWindowStages threads base through stages in order, each one
+// receiving the PREVIOUS stage's output rather than base.
+//
+// It exists because doing this inline is a trap that costs a debugging
+// session to find. [expHistogramWindowReshape] used to read
+//
+//	input := group
+//	if resets != nil {
+//	    input = expHistogramResetMaskStage(group, ...)
+//	}
+//
+// — the conditional stage re-reading `group`, not `input`. That is
+// invisible while the mask is the FIRST stage (input still IS group at
+// that point), and silently discards anything a later change inserts
+// beneath it: the inserted stage is built, its projections are correct,
+// and it never reaches the emitted SQL. Cerberus issue #3178 hit exactly
+// that — a stage added below the mask measured as a complete no-op, and
+// the discard was only found by dumping the emitted SQL and observing
+// that no trace of the stage was in it.
+//
+// Composing through this helper makes the mistake unspellable: there is
+// no second name in scope for a stage to read the wrong one of.
+func expHistogramWindowStages(base chplan.Node, stages ...func(chplan.Node) chplan.Node) chplan.Node {
+	out := base
+	for _, stage := range stages {
+		out = stage(out)
+	}
+	return out
 }
 
 // expHistogramWindowReshape wraps the per-series grouping in the Project
@@ -369,13 +407,40 @@ func expHistogramWindowReshape(
 	scalars []chplan.Projection,
 	s schema.Metrics,
 ) chplan.Node {
-	input := group
 	var extraFactorAliases []string
+	var stages []func(chplan.Node) chplan.Node
 	if resets != nil {
-		input = expHistogramResetMaskStage(group, aggs, keyAliases)
+		stages = append(stages, func(n chplan.Node) chplan.Node {
+			return expHistogramResetMaskStage(n, aggs, keyAliases)
+		})
 		extraFactorAliases = []string{hqWindowResetsAlias}
 	}
-	input, effectiveFold := expHistogramWindowFactorStage(input, aggs, keyAliases, extraFactorAliases, windowFn, in, fold)
+	closedForm := in.closedFormEligible && expHistogramWindowClosedFormApplies(windowFn, resets)
+	if closedForm {
+		maskAliases := extraFactorAliases
+		stages = append(stages, func(n chplan.Node) chplan.Node {
+			node, _ := expHistogramWindowCoefficientStage(
+				n, aggs, keyAliases, maskAliases, resets, in.temporality,
+			)
+			return node
+		})
+		extraFactorAliases = expHistogramWindowCoefficientAliases(maskAliases)
+	}
+	input := expHistogramWindowStages(group, stages...)
+	input, effectiveFold, hoistedIn, hoisted := expHistogramWindowFactorStage(
+		input, aggs, keyAliases, extraFactorAliases, windowFn, in, fold,
+	)
+	// The closed form scales by the hoisted factor column; without a
+	// hoisted factor there is nothing for it to read, so the per-bucket
+	// fold stays the shared one. bucketFold is used ONLY for the two
+	// bucket ladders — Count, Sum and ZeroCount keep counterIncreaseFold
+	// verbatim, see histogram_native_window_closed_form.go's header.
+	bucketFold := effectiveFold
+	narrowed := expHistogramWindowFullArrays()
+	if closedForm && hoisted {
+		bucketFold = expHistogramWindowClosedFormFold(hoistedIn)
+		narrowed = expHistogramWindowNarrowedArrays()
+	}
 
 	projs := make([]chplan.Projection, 0, len(keyAliases)+len(scalars)+7)
 	for _, name := range keyAliases {
@@ -408,7 +473,7 @@ func expHistogramWindowReshape(
 				Alias: s.PositiveOffsetColumn,
 			},
 			chplan.Projection{
-				Expr:  expHistogramWindowBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, effectiveFold),
+				Expr:  expHistogramWindowBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, bucketFold, narrowed),
 				Alias: s.PositiveBucketCountsColumn,
 			},
 			chplan.Projection{
@@ -416,7 +481,7 @@ func expHistogramWindowReshape(
 				Alias: s.NegativeOffsetColumn,
 			},
 			chplan.Projection{
-				Expr:  expHistogramWindowBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, effectiveFold),
+				Expr:  expHistogramWindowBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, bucketFold, narrowed),
 				Alias: s.NegativeBucketCountsColumn,
 			},
 		),
@@ -436,7 +501,7 @@ func expHistogramWindowReshape(
 //
 // rangeStart / rangeEnd are the window's own edges — see
 // classicBucketWindowStage's twin doc.
-func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
+func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	// Widened by expHistogramValuedWindowAggs / expHistogramValuedWindowScalars
 	// — the same Sum-collecting widening rate()/increase() apply for their
 	// histogram-VALUED output — so the quantile kernel's rankBase /
@@ -480,6 +545,7 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 		resets:      resets,
 		perSecond:   perSecond,
 	}
+	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
 	fold := histogramWindowFold(shape.windowFn, winIn)
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),

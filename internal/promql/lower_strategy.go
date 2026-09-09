@@ -380,6 +380,26 @@ type RangeLowerers struct {
 	// mode); never nil on the lowering path.
 	ExpHistogramMerge ExpHistogramMergeLowerer
 
+	// ExpHistogramWindowFold decides how the per-target-bucket counter
+	// fold for rate()/increase() over an exponential histogram is
+	// rendered: the closed form
+	// (histogram_native_window_closed_form.go) or the shared
+	// per-consecutive-pair telescoping sum (counterIncreaseFold).
+	//
+	// It is the ONE field whose default is not the conservative arm. The
+	// closed form is the shipped behaviour, not an opt-in optimisation,
+	// so it has no chopt feature id and no operator knob: it is
+	// bit-identical on the stored integer bucket counts it folds (see
+	// that file's header), which leaves nothing for an operator to
+	// choose between. The telescoping arm survives as a DIFFERENTIAL
+	// ORACLE — exp_histogram_increase_closed_form_chdb_test.go runs the
+	// same query through both and compares, the same way
+	// exp_histogram_merge_summap_chdb_test.go proves the sumMap merge
+	// against the fold — and as the answer to "what did this replace",
+	// which a reader of the closed form's algebra needs to be able to
+	// run. Never nil on the lowering path.
+	ExpHistogramWindowFold ExpHistogramWindowFoldLowerer
+
 	// ArgAndMaxFusion is the resolved chopt.FeatureArgAndMaxFusion verdict
 	// (server >= 25.11, cerberus issue #2764), threaded to
 	// internal/promql/binary.go's vector-vector join lowering so it can set
@@ -504,6 +524,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.ExpHistogramMerge == nil {
 		l.ExpHistogramMerge = FanoutExpHistogramMergeLowerer{}
+	}
+	if l.ExpHistogramWindowFold == nil {
+		l.ExpHistogramWindowFold = ClosedFormExpHistogramWindowFoldLowerer{}
 	}
 	return l
 }

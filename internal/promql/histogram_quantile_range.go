@@ -678,6 +678,7 @@ func buildHistogramNativeRangeTreeMerge(
 		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      resets,
 	}
+	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
 	fold := histogramWindowFold(shape.windowFn, winIn)
 	perSeries := expHistogramWindowReshape(
 		buildHistogramBucketFanout(
