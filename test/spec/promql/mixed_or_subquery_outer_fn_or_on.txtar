@@ -1,0 +1,59 @@
+-- query.promql --
+count_over_time((latency_exp_hist or on(service) up)[3m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `or on(service)` NARROWS the set operator's shadow key to a single
+-- label (reference computes it at promql/engine.go:1454-1465), so ONE
+-- histogram series shadows the float series at every anchor where the
+-- histogram is present -- and only there.
+--
+-- The two arms share `service=web` but differ on `pod`, and their
+-- samples are staggered so the shadow is PARTIAL across the three
+-- anchors of `[3m:1m]` at the 00:00:01 eval instant (23:58, 23:59,
+-- 00:00):
+--
+--   * 23:58 -- the histogram's first sample is still in the future, so
+--     nothing shadows `up`; the float row survives.
+--   * 23:59 / 00:00 -- the histogram row is present and carries the same
+--     `service=web` key, so `up` is shadowed at both.
+--
+-- Reference therefore folds the histogram series over a two-sample
+-- window and the float series over a ONE-sample window (its other two
+-- anchors were shadowed away), answering TWO series.
+--
+-- This is what makes the shape a regression pin for
+-- histogram_native_mixed_or_subquery_range_fn.go's distribute-then-
+-- recombine rewrite: that rewrite folds each arm over its FULL window
+-- and applies the shadow to the FOLDED results, which under a narrowed
+-- key drops the float series entirely (count 3, then shadowed) instead
+-- of puncturing its window (count 1). `mixedOrSubqueryOuterFn` now
+-- refuses a non-default match key for exactly that reason, routing this
+-- query to the per-anchor-correct path instead.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('service', 'web', 'pod', 'h1'), toDateTime64('2025-12-31 23:58:30', 9), 10, 20.0, 0, 0, 0, [1, 2, 3, 4], 0, []);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('service', 'web', 'pod', 'f1'), toDateTime64('2025-12-31 23:57:30', 9), 1.0);
+-- expected_rows --
+[]

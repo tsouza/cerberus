@@ -406,8 +406,14 @@ func TestUnaryTypesValidSymmetryWithAttribute(t *testing.T) {
 // is the point. The guard is what keeps such a node (from a future rewrite, a
 // lenient-parse path, or an in-package caller) out of regexp.Compile, and an
 // empty array encodes to "[]", which is not a valid regular expression. A
-// mutation that turns the guard's `||` into `&&` lets it through and turns
-// this valid-by-construction node into a validation error.
+// mutation that drops the type test lets it through and turns this
+// valid-by-construction node into a validation error.
+//
+// The pattern being a Static AT ALL is a separate rule with a separate
+// answer — the reference rejects `{ span.a =~ span.b }` outright rather than
+// skipping it (see validateRegexPattern and
+// TestParseRejectsWhatReferenceRejects/regex_against_attribute) — so this
+// test deliberately passes a Static of the wrong TYPE, not a non-Static.
 func TestValidateRegexPatternSkipsNonStringLiterals(t *testing.T) {
 	t.Parallel()
 	attr := NewScopedAttribute(AttributeScopeSpan, false, "http.route")
@@ -421,5 +427,138 @@ func TestValidateRegexPatternSkipsNonStringLiterals(t *testing.T) {
 	bad := &BinaryOperation{Op: OpRegex, LHS: attr, RHS: NewStaticString("[")}
 	if err := validateRegexPattern(bad); err == nil {
 		t.Error("validateRegexPattern({ span.http.route =~ `[` }) = nil; want an invalid-regex rejection")
+	}
+}
+
+// TestParseRejectsWhatReferenceRejects covers five shapes reference Tempo
+// declines with a 400 and cerberus, before these rules, accepted — three of
+// them answering 200 with a meaningless result and two reaching ClickHouse
+// and coming back as a 502 carrying a storage-engine error.
+//
+// Neither parity ledger could see them: test/rejection-parity enumerates
+// cerberus's OWN rejection sites (it cannot know about a site cerberus does
+// not have), and test/surface-parity's TraceQL oracle is Parse+Validate
+// only, so a query both engines PARSE looks identical there regardless of
+// what the reference's validate() then says about it.
+func TestParseRejectsWhatReferenceRejects(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{
+			// pkg/traceql/ast_validate.go:126 — Aggregate.validate's
+			// `!a.e.referencesSpan()`. Aggregating a literal says nothing
+			// about the trace; cerberus emitted `avg(1)` and answered 200.
+			name:  "aggregate_over_constant",
+			query: `{} | avg(1) > 2`,
+			want:  "aggregate field expressions must reference the span: avg(1)",
+		},
+		{
+			// pkg/traceql/ast_validate.go:65 — GroupOperation.validate's
+			// `!o.Expression.referencesSpan()`. cerberus projected the
+			// literal as the grouping key and answered 200 with one
+			// synthetic group covering every span.
+			name:  "group_by_constant",
+			query: `{} | by(1) | count() > 0`,
+			want:  "grouping field expressions must reference the span: by(1)",
+		},
+		{
+			// pkg/traceql/ast_validate.go:223 — the regex RHS must be a
+			// Static. cerberus lowered it to ClickHouse's match() with a
+			// per-row pattern, which ClickHouse refuses at execution time:
+			// a 502 where the reference gives 400.
+			name:  "regex_against_attribute",
+			query: `{ span.a =~ span.b }`,
+			want:  "invalid type for =~ or !~: span.b",
+		},
+		{
+			// pkg/traceql/ast_metrics.go:369 — phi must be in [0,1].
+			// cerberus emitted quantileExactInclusive(1.5), which
+			// ClickHouse rejects: another 502-for-400.
+			name:  "quantile_out_of_range",
+			query: `{} | quantile_over_time(duration, 1.5)`,
+			want:  "quantile must be between 0 and 1: 1.5",
+		},
+		{
+			// pkg/traceql/ast_metrics.go:376 against
+			// engine_metrics.go:639's maxGroupBys = 5.
+			name:  "too_many_group_bys",
+			query: `{} | rate() by (span.a, span.b, span.c, span.d, span.e, span.f)`,
+			want:  "metrics group by 6 values not yet supported",
+		},
+		{
+			// quantile_over_time reserves one of the five slots for the
+			// synthetic __bucket label, so it stops a key earlier
+			// (ast_metrics.go:363).
+			name:  "quantile_group_by_ceiling_is_one_lower",
+			query: `{} | quantile_over_time(duration, 0.9) by (span.a, span.b, span.c, span.d, span.e)`,
+			want:  "metrics group by 5 values not yet supported",
+		},
+		{
+			// avg_over_time carries a companion count series and applies
+			// the same stricter ceiling (engine_metrics_average.go:155).
+			name:  "avg_over_time_group_by_ceiling_is_one_lower",
+			query: `{} | avg_over_time(duration) by (span.a, span.b, span.c, span.d, span.e)`,
+			want:  "metrics group by 5 values not yet supported",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse(tc.query)
+			if err == nil {
+				t.Fatalf("Parse(%q) = nil error, want a rejection", tc.query)
+			}
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Parse(%q) error = %T (%v), want *ValidationError", tc.query, err, err)
+			}
+			if got := verr.Error(); !strings.Contains(got, tc.want) {
+				t.Fatalf("Parse(%q) message = %q, want it to contain %q", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseAcceptsWhatReferenceAccepts is the ratchet on the rules above: a
+// rule that rejected more than the reference does would be its own
+// wrong-rejection divergence. Each case sits one step inside a boundary the
+// test above sits one step outside of.
+func TestParseAcceptsWhatReferenceAccepts(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+	}{
+		// An aggregate/grouping over anything that names the span is fine,
+		// including an arithmetic expression that also carries a literal.
+		{"aggregate_over_attribute", `{} | avg(span.size) > 2`},
+		{"aggregate_over_intrinsic", `{} | avg(duration) > 2ms`},
+		{"aggregate_over_attribute_arithmetic", `{} | avg(span.size * 2) > 2`},
+		{"group_by_attribute", `{} | by(span.a) | count() > 0`},
+		{"group_by_intrinsic", `{} | by(name) | count() > 0`},
+		// count() has no inner expression at all and is exempt from the
+		// referencesSpan rule in both engines.
+		{"count_takes_no_operand", `{} | count() > 0`},
+		// A literal regex pattern is what the rule demands, and a valid
+		// one still compiles.
+		{"regex_against_literal", `{ span.a =~ "b.*" }`},
+		{"not_regex_against_literal", `{ span.a !~ "b.*" }`},
+		// Both ends of the phi range are inclusive upstream.
+		{"quantile_zero", `{} | quantile_over_time(duration, 0)`},
+		{"quantile_one", `{} | quantile_over_time(duration, 1)`},
+		// Five keys is the ceiling for the plain reducers…
+		{"rate_five_group_bys", `{} | rate() by (span.a, span.b, span.c, span.d, span.e)`},
+		{"count_over_time_five_group_bys", `{} | count_over_time() by (span.a, span.b, span.c, span.d, span.e)`},
+		{"max_over_time_five_group_bys", `{} | max_over_time(duration) by (span.a, span.b, span.c, span.d, span.e)`},
+		// …and four for the two that reserve a slot.
+		{"quantile_four_group_bys", `{} | quantile_over_time(duration, 0.9) by (span.a, span.b, span.c, span.d)`},
+		{"avg_over_time_four_group_bys", `{} | avg_over_time(duration) by (span.a, span.b, span.c, span.d)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Parse(tc.query); err != nil {
+				t.Fatalf("Parse(%q) = %v, want it accepted", tc.query, err)
+			}
+		})
 	}
 }

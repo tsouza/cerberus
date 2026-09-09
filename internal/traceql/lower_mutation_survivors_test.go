@@ -109,13 +109,22 @@ func TestIsNarrowSpanProjection_PerColumnGuard(t *testing.T) {
 }
 
 // TestLowerInOperation_AbsentAttributeGuard pins the `; absent` guard
-// lower.go:`absentAttributePredicate(attr, s, b.Op == traceql.OpNotIn); absent`.
-// The mutant flips it to `; !absent`, which:
+// lower.go:`absentAttributePredicate(attr, s); absent`. The mutant flips it
+// to `; !absent`, which:
 //   - on a backed attribute (absent == false) wrongly fires the early
-//     return, yielding the (nil, nil) zero value instead of an *InList;
+//     return, yielding the (nil, nil) zero value instead of a membership
+//     predicate;
 //   - on an unbacked attribute (absent == true) wrongly SKIPS the early
 //     return and falls through to generic lowering instead of the constant
 //     predicate.
+//
+// The backed case looks for an *InList ANYWHERE in the returned tree rather
+// than at its root: a Map-carried attribute now carries the existence probe
+// as an enclosing `mapContains(...) AND …` conjunct (needsAbsenceGuard), so
+// the root is that AND. Both polarities of the unbacked case are asserted,
+// because `NOT IN` is the one the constant used to get wrong — it answered
+// TRUE where reference answers false, making the folded spelling of
+// `{ x != "a" && x != "b" }` match every span.
 func TestLowerInOperation_AbsentAttributeGuard(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
@@ -129,8 +138,8 @@ func TestLowerInOperation_AbsentAttributeGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lowerInOperation(backed attribute IN [...]): unexpected error: %v", err)
 	}
-	if _, ok := got.(*chplan.InList); !ok {
-		t.Fatalf("lowerInOperation(backed attribute IN [...]) = %#v; want *chplan.InList", got)
+	if !containsInList(got) {
+		t.Fatalf("lowerInOperation(backed attribute IN [...]) = %#v; want a tree carrying an *chplan.InList", got)
 	}
 
 	unbacked := &tempoql.BinaryOperation{
@@ -149,6 +158,46 @@ func TestLowerInOperation_AbsentAttributeGuard(t *testing.T) {
 	if !ok || lit.V {
 		t.Errorf("lowerInOperation(unbacked attribute IN [...]) = %#v; want LitBool{V:false}", got)
 	}
+
+	// NOT IN over the same unbacked attribute is ALSO constant-false.
+	// Reference never evaluates the membership: binaryTypeValid admits a
+	// TypeNil operand for `=` / `!=` only (enum_operators.go:118), so
+	// OpNotIn fails the type check and execute returns StaticFalse
+	// (ast_execute.go:416) rather than negating a false membership into a
+	// true predicate.
+	notIn := &tempoql.BinaryOperation{
+		Op:  tempoql.OpNotIn,
+		LHS: tempoql.NewIntrinsic(tempoql.IntrinsicChildCount),
+		RHS: tempoql.NewStaticIntArray([]int{1, 2}),
+	}
+	got, err = lowerInOperation(notIn, s)
+	if err != nil {
+		t.Fatalf("lowerInOperation(unbacked attribute NOT IN [...]): unexpected error: %v", err)
+	}
+	lit, ok = got.(*chplan.LitBool)
+	if !ok || lit.V {
+		t.Errorf("lowerInOperation(unbacked attribute NOT IN [...]) = %#v; want LitBool{V:false}", got)
+	}
+}
+
+// containsInList reports whether e is, or encloses, a chplan.InList. The
+// membership lowering wraps its InList in the attribute-existence conjunct
+// for a Map-carried attribute, so the assertion that a membership was built
+// at all cannot be a root type-assertion.
+func containsInList(e chplan.Expr) bool {
+	switch v := e.(type) {
+	case *chplan.InList:
+		return true
+	case *chplan.Binary:
+		return containsInList(v.Left) || containsInList(v.Right)
+	case *chplan.FuncCall:
+		for _, a := range v.Args {
+			if containsInList(a) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestAttributeHasNoBacking_InstrumentationScopeGuard pins the predicate

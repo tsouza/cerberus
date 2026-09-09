@@ -92,25 +92,28 @@ func TestNumericAttrCoercion(t *testing.T) {
 			// Map(String, String) attribute reads as String; without the
 			// wrap CH rejects `max(String) > 100` with NO_COMMON_TYPE.
 			// coerceMapNumericAggInput wraps the FieldAccess with
-			// toFloat64OrZero so the aggregate sees a Float64.
+			// toFloat64OrNull — Null, not Zero, so a span that never
+			// carried the attribute is SKIPPED by the aggregate the way
+			// reference Tempo skips it, instead of contributing a real 0
+			// (see TestAggregateSkipsSpansMissingTheAttribute).
 			name:       "max_span_attr_wraps_aggregate_input",
 			query:      `{} | max(span.latency_ms) > 100`,
-			wantSubstr: "max(toFloat64OrZero(`SpanAttributes`[?]))",
+			wantSubstr: "max(toFloat64OrNull(`SpanAttributes`[?]))",
 		},
 		{
 			name:       "min_span_attr_wraps_aggregate_input",
 			query:      `{} | min(span.attempts) < 3`,
-			wantSubstr: "min(toFloat64OrZero(`SpanAttributes`[?]))",
+			wantSubstr: "min(toFloat64OrNull(`SpanAttributes`[?]))",
 		},
 		{
 			name:       "sum_span_attr_wraps_aggregate_input",
 			query:      `{} | sum(span.size) > 1000`,
-			wantSubstr: "sum(toFloat64OrZero(`SpanAttributes`[?]))",
+			wantSubstr: "sum(toFloat64OrNull(`SpanAttributes`[?]))",
 		},
 		{
 			name:       "avg_resource_attr_wraps_aggregate_input",
 			query:      `{} | avg(resource.replicas) > 1`,
-			wantSubstr: "avg(toFloat64OrZero(`ResourceAttributes`[?]))",
+			wantSubstr: "avg(toFloat64OrNull(`ResourceAttributes`[?]))",
 		},
 		{
 			// Intrinsic duration aggregates lower to a bare ColumnRef so
@@ -120,7 +123,7 @@ func TestNumericAttrCoercion(t *testing.T) {
 			// aggregate-input rule.
 			name:      "avg_duration_intrinsic_not_wrapped",
 			query:     `{} | avg(duration) > 100ms`,
-			notSubstr: "toFloat64OrZero(`Duration`",
+			notSubstr: "toFloat64OrNull(`Duration`",
 		},
 		{
 			// metrics-pipeline aggregates take the same coercion path
@@ -128,12 +131,12 @@ func TestNumericAttrCoercion(t *testing.T) {
 			// a Map(String, String) carrier needs the same wrap.
 			name:       "max_over_time_span_attr_wraps_aggregate_input",
 			query:      `{} | max_over_time(span.latency_ms)`,
-			wantSubstr: "max(toFloat64OrZero(`SpanAttributes`[?]))",
+			wantSubstr: "max(toFloat64OrNull(`SpanAttributes`[?]))",
 		},
 		{
 			name:       "quantile_over_time_span_attr_wraps_aggregate_input",
 			query:      `{} | quantile_over_time(span.latency_ms, 0.95)`,
-			wantSubstr: "quantileExactInclusive(toFloat64(?))(toFloat64OrZero(`SpanAttributes`[?]))",
+			wantSubstr: "quantileExactInclusive(toFloat64(?))(toFloat64OrNull(`SpanAttributes`[?]))",
 		},
 	}
 

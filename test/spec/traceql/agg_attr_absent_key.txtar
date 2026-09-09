@@ -1,0 +1,36 @@
+-- query.traceql --
+{} | min(span.size) < 100
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String),
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map(), map('size', '10'), 10000000),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map(), map('size', '20'), 20000000),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:02', 9), map(), map('shape', 'square'), 30000000),
+    ('t2', 'span', toDateTime64('2024-01-01 00:00:03', 9), map(), map('shape', 'circle'), 40000000),
+    ('t2', 'span', toDateTime64('2024-01-01 00:00:04', 9), map(), map('shape', 'round'), 50000000);
+-- expected_rows --
+[
+  ["span", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "t1"}, "2024-01-01T00:00:00Z", 10]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | min(span.size) < 100` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares
+-- args --
+[0] string = "size"
+[1] bool = true
+[2] int64 = 100
+-- chplan --
+Filter predicate=(Value < 100)
+  Filter predicate=FnIsNotNull(Value)
+    Aggregate groupBy=[TraceId AS TraceId] funcs=[FnMin(FnToFloat64OrNull(SpanAttributes["size"])) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
+      Filter predicate=true
+        Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, min(toFloat64OrNull(`SpanAttributes`[?])) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `TraceId`) WHERE isNotNull(`Value`)) WHERE (`Value` < ?)

@@ -1371,6 +1371,14 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	if b.Op == traceql.OpIn || b.Op == traceql.OpNotIn {
 		return lowerInOperation(b, s)
 	}
+	// `attr =~ a || attr =~ b` and `attr !~ a && attr !~ b` are folded by
+	// this repo's own parser into a single OpRegexMatchAny / OpRegexMatchNone
+	// BinaryOperation (ast/rewrite.go's arrayFoldRules). mapBinaryOp has no
+	// entry for either, so before this intercept the fold produced an
+	// operator its own lowering rejected — see lowerRegexMatchArray.
+	if b.Op == traceql.OpRegexMatchAny || b.Op == traceql.OpRegexMatchNone {
+		return lowerRegexMatchArray(b, s)
+	}
 	op, err := mapBinaryOp(b.Op)
 	if err != nil {
 		return nil, err
@@ -1473,7 +1481,176 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	if folded, ok := foldTrivialBoolConjunct(op, lhs, rhs); ok {
 		return folded, nil
 	}
-	return &chplan.Binary{Op: op, Left: lhs, Right: rhs}, nil
+	cmp := chplan.Expr(&chplan.Binary{Op: op, Left: lhs, Right: rhs})
+	if !needsAbsenceGuard(op, lhs, rhs) {
+		return cmp, nil
+	}
+	return guardAbsentAttribute(cmp, lhs, rhs), nil
+}
+
+// needsAbsenceGuard reports whether a comparison over a Map-carried
+// attribute must be conjoined with the existence probe, i.e. whether the ”
+// a missing key subscripts to could SATISFY this comparison.
+//
+// Two questions, in order. comparisonRejectsAbsentOperand answers the first:
+// does reference Tempo answer false for this operator when an operand is
+// absent? (It does, for every comparison.) This function answers the second:
+// can cerberus's own rendering produce true anyway?
+//
+// For six of the eight operators the answer is unconditionally yes, so they
+// are always guarded. `<` and `<=` are true for ” against any non-empty
+// literal; `>=` is true against ""; `=~` is true for any pattern that
+// matches the empty string, `.*` among them; `!~` is true for every pattern
+// that does not. `>` alone is false for ” against every literal — and it is
+// STILL guarded, because that is an accident of ” sorting below every other
+// string rather than anything the language says, and exempting one member
+// of an ordering family on a property of the collation would be a rule no
+// reader could predict from the operator.
+//
+// `=` and `!=` are the exception, and not by accident: they are the two
+// operators upstream lets a nil operand reach at all
+// (pkg/traceql/enum_operators.go:118), so they are the two whose answer
+// depends on the VALUE rather than short-circuiting on the type. Against a
+// string literal that dependence is decidable right here — ” equals the
+// literal only when the literal is itself empty — so `{ span.x = "" }` is
+// guarded and `{ span.x = "frontend" }` is not, with `!=` mirrored.
+//
+// That exemption is worth having rather than folding into one uniform rule,
+// because the guard is a probe of the attribute MAP. Equality against a
+// literal is the most common predicate in the language, and a materialized
+// attribute column (#2776) exists precisely so that predicate never touches
+// the map; guarding it unconditionally would send every `=` filter back to
+// the map it was materialized to avoid, to decide a case
+// (`= ""`) that the literal already settles. Anything the literal does not
+// settle — a comparison between two attributes, a non-literal peer — is
+// guarded.
+func needsAbsenceGuard(op chplan.BinaryOp, lhs, rhs chplan.Expr) bool {
+	if !comparisonRejectsAbsentOperand(op) {
+		return false
+	}
+	if op != chplan.OpEq && op != chplan.OpNe {
+		return true
+	}
+	lit, ok := soleStringLiteral(lhs, rhs)
+	if !ok {
+		return true
+	}
+	// ” = lit is true only for the empty literal; ” != lit is true for
+	// every other one.
+	return (lit == "") == (op == chplan.OpEq)
+}
+
+// soleStringLiteral returns the string literal value when exactly one of the
+// two operands is a string literal. Two literals (a constant-folded
+// comparison) or none (attribute against attribute) report false, so the
+// caller guards rather than reasoning about a value it cannot see.
+func soleStringLiteral(lhs, rhs chplan.Expr) (string, bool) {
+	l, lok := lhs.(*chplan.LitString)
+	r, rok := rhs.(*chplan.LitString)
+	switch {
+	case lok && !rok:
+		return l.V, true
+	case rok && !lok:
+		return r.V, true
+	}
+	return "", false
+}
+
+// comparisonRejectsAbsentOperand reports whether reference Tempo answers
+// FALSE for op whenever one of its operands is an attribute the span never
+// carried. That is every value comparison the language has, by two
+// upstream routes that meet at the same answer:
+//
+//   - `=` and `!=` type-check against a nil operand
+//     (pkg/traceql/enum_operators.go:118 lets TypeNil through for exactly
+//     these two) and are then decided by Static.Equals /
+//     Static.NotEquals, both of which return false the moment either side
+//     is TypeNil (pkg/traceql/ast.go:850, :892).
+//   - `=~`, `!~`, `<`, `<=`, `>` and `>=` do NOT type-check against a nil
+//     operand — that same line restricts TypeNil to `=` / `!=` — and
+//     BinaryOperation.execute turns a failed binaryTypesValid into
+//     StaticFalse (pkg/traceql/ast_execute.go:416), so they never reach an
+//     evaluation at all.
+//
+// cerberus reads attributes out of a Map(String, String) whose subscript
+// hands back ” for a missing key, and ” is an ordinary string to
+// ClickHouse. Every operator here therefore needs the existence probe in
+// attributeExistsPredicate; without it the absent span is compared as if
+// it carried the empty string.
+//
+// This function answers only "would reference say no match here"; whether
+// cerberus's own rendering can nonetheless say yes — and so needs the probe
+// — is needsAbsenceGuard's question.
+func comparisonRejectsAbsentOperand(op chplan.BinaryOp) bool {
+	switch op {
+	case chplan.OpEq, chplan.OpNe, chplan.OpLt, chplan.OpLe, chplan.OpGt, chplan.OpGe,
+		chplan.OpMatch, chplan.OpNotMatch:
+		return true
+	}
+	return false
+}
+
+// guardAbsentAttribute conjoins cmp with the existence predicate for every
+// operand that reads a Map-carried attribute, so a span that never carried
+// the key cannot satisfy a negated comparison. Returns cmp unchanged when
+// no operand needs a guard.
+func guardAbsentAttribute(cmp chplan.Expr, operands ...chplan.Expr) chplan.Expr {
+	for _, operand := range operands {
+		guard, ok := attributeExistsPredicate(operand)
+		if !ok {
+			continue
+		}
+		cmp = &chplan.Binary{Op: chplan.OpAnd, Left: guard, Right: cmp}
+	}
+	return cmp
+}
+
+// attributeExistsPredicate returns the `mapContains(<carrier>, <key>)`
+// probe that distinguishes a span that carried the key from one whose
+// subscript merely defaulted to the empty string, for the two lowered
+// shapes that read an attribute map: a scoped FieldAccess, and the
+// unscoped span-then-resource coalesce (unscopedAttributeExpr). ok is
+// false for every other expression.
+//
+// Two shapes are deliberately NOT guarded, because they already carry the
+// reference's nil semantics natively and a guard would be dead weight:
+//
+//   - anything the numeric coercion already wrapped in toFloat64OrNull
+//     (coerceFieldAccess) — the wrap yields NULL for a missing key, and a
+//     comparison against NULL is NULL, which WHERE drops;
+//   - a FieldAccess routed to a MaterializedColumnNumeric column, whose
+//     Nullable(Int32) DEFAULT toInt32OrNull(<map>[<key>]) is that same NULL
+//     computed once at ingest.
+//
+// A MaterializedColumnKindString column IS guarded: it is declared
+// LowCardinality(String) DEFAULT <map>[<key>]
+// (schema.MaterializedColumnKindString), so it reproduces the map's ”
+// default rather than a NULL, and its FieldAccess still records the
+// carrier and key the probe needs.
+func attributeExistsPredicate(e chplan.Expr) (chplan.Expr, bool) {
+	arms, _, ok := attributeReadArms(e)
+	if !ok || readsNumericColumn(arms) {
+		return nil, false
+	}
+	// The unscoped coalesce resolves to ” when NEITHER map carries the key,
+	// so the span exists for this attribute iff SOME arm's carrier does.
+	var probe chplan.Expr
+	for _, arm := range arms {
+		carrier, isColumn := arm.Source.(*chplan.ColumnRef)
+		if !isColumn {
+			return nil, false
+		}
+		armProbe := chplan.Expr(&chplan.FuncCall{Fn: chplan.FnMapContainsKey, Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: carrier.Name},
+			&chplan.LitString{V: arm.Path},
+		}})
+		if probe == nil {
+			probe = armProbe
+			continue
+		}
+		probe = &chplan.Binary{Op: chplan.OpOr, Left: probe, Right: armProbe}
+	}
+	return probe, probe != nil
 }
 
 // foldTrivialBoolConjunct collapses a logical AND / OR with a constant-true or
@@ -1546,25 +1723,18 @@ func foldTrivialBoolConjunct(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.E
 // execution semantics: a missing attribute never matches any RHS, so
 // `IN` is constant-false and `NOT IN` constant-true.
 func lowerInOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
-	attr, ok := fieldExprAttribute(b.LHS)
-	if !ok {
-		return nil, fmt.Errorf("traceql: IN comparison LHS must be an attribute reference, got %T", b.LHS)
-	}
-	st, ok := fieldExprStatic(b.RHS)
-	if !ok {
-		return nil, fmt.Errorf("traceql: IN comparison RHS must be a literal array, got %T", b.RHS)
-	}
-	elems, err := lowerStaticArray(st)
+	attr, elems, err := arrayFoldOperands(b)
 	if err != nil {
 		return nil, err
 	}
 	if len(elems) == 0 {
 		// Empty membership set: `x IN []` matches nothing, `x NOT IN []`
-		// matches everything (reference array semantics).
+		// matches everything (reference array semantics: matchCount > 0 is
+		// false over no elements, matchCount == elemCount is true).
 		return &chplan.LitBool{V: b.Op == traceql.OpNotIn}, nil
 	}
 
-	if pred, absent := absentAttributePredicate(attr, s, b.Op == traceql.OpNotIn); absent {
+	if pred, absent := absentAttributePredicate(attr, s); absent {
 		return pred, nil
 	}
 
@@ -1587,11 +1757,116 @@ func lowerInOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr,
 	if _, isField := left.(*chplan.FieldAccess); isField {
 		elems = stringifyListForMap(elems)
 	}
-	in := &chplan.InList{Left: left, List: elems}
+	// IN and NOT IN are the folded forms of an `||` chain of `=` and an
+	// `&&` chain of `!=` (ast/rewrite.go's arrayFoldRules), so they inherit
+	// the same missing-key hazard and take the same existence guard the
+	// unfolded spellings get — see comparisonRejectsAbsentOperand. Without
+	// it the fold is a free bypass: `{ span.x != "a" && span.x != "b" }`
+	// would match a span that never carried x, and `{ span.x = "" ||
+	// span.x = "b" }` would too.
+	membership := chplan.Expr(&chplan.InList{Left: left, List: elems})
 	if b.Op == traceql.OpNotIn {
-		return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{in}}, nil
+		membership = &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{membership}}
 	}
-	return in, nil
+	return guardAbsentAttribute(membership, left), nil
+}
+
+// arrayFoldOperands unpacks the `<attribute> <array-op> <literal array>`
+// shape every one of ast/rewrite.go's arrayFoldRules produces, shared by
+// the two lowerings that consume those folds so neither can drift on which
+// operand shapes it accepts.
+func arrayFoldOperands(b *traceql.BinaryOperation) (traceql.Attribute, []chplan.Expr, error) {
+	attr, ok := fieldExprAttribute(b.LHS)
+	if !ok {
+		return traceql.Attribute{}, nil, fmt.Errorf("traceql: %s comparison LHS must be an attribute reference, got %T", b.Op, b.LHS)
+	}
+	st, ok := fieldExprStatic(b.RHS)
+	if !ok {
+		return traceql.Attribute{}, nil, fmt.Errorf("traceql: %s comparison RHS must be a literal array, got %T", b.Op, b.RHS)
+	}
+	elems, err := lowerStaticArray(st)
+	if err != nil {
+		return traceql.Attribute{}, nil, err
+	}
+	return attr, elems, nil
+}
+
+// lowerRegexMatchArray lowers OpRegexMatchAny / OpRegexMatchNone — the two
+// array operators ast/rewrite.go folds an `||` chain of `=~` and an `&&`
+// chain of `!~` into.
+//
+// Reference semantics come straight from BinaryOperation.execute's array
+// branch (pkg/traceql/ast_execute.go:533-624): the array operator is
+// rewritten to a per-element operator by Operator.toElementOp
+// (pkg/traceql/enum_operators.go:151 — OpRegexMatchAny→OpRegex,
+// OpRegexMatchNone→OpNotRegex), and `matchAll` is set for the negated
+// element operators, so the result is `matchCount == elemCount` for
+// match-none and `matchCount > 0` for match-any. That is an AND of `!~`
+// per element and an OR of `=~` per element — which is exactly the shape
+// the query was written in before this repo's own parser folded it.
+//
+// So the lowering rebuilds precisely that tree out of the same
+// chplan.Binary{OpMatch} / {OpNotMatch} nodes the scalar path emits,
+// rather than reaching for ClickHouse's multiMatchAny: the fold becomes a
+// pure AST normalisation with no emitted-SQL footprint, and there is only
+// one place that decides how a TraceQL regex renders (the chsql emitter's
+// `^(?:…)$` anchoring in builder.go stays the single source of truth).
+// TestRegexArrayFoldLowersLikeItsScalarSpelling derives the expected
+// per-element fragment from the scalar lowering at test time rather than
+// hardcoding it, so the two cannot drift apart.
+//
+// The fold, not the lowering, was the thing under suspicion here: it
+// produced an operator mapBinaryOp had no case for, so the folded spelling
+// answered `traceql: operator operator(40) is unsupported` where the
+// unfolded one answered normally. The fold is faithful to reference — it
+// is the same rewrite reference's own array operators encode — so the
+// missing lowering is the defect, and it is fixed rather than the fold
+// removed.
+func lowerRegexMatchArray(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
+	attr, elems, err := arrayFoldOperands(b)
+	if err != nil {
+		return nil, err
+	}
+	matchAll := b.Op == traceql.OpRegexMatchNone
+	if len(elems) == 0 {
+		// Reference over an empty array: `matchCount > 0` is false for
+		// match-any, `matchCount == elemCount` is true for match-none.
+		// Unreachable from the fold (which needs two conjuncts to fire) but
+		// kept so the constant does not depend on the producer.
+		return &chplan.LitBool{V: matchAll}, nil
+	}
+	if pred, absent := absentAttributePredicate(attr, s); absent {
+		return pred, nil
+	}
+	left, err := lowerAttribute(attr, s)
+	if err != nil {
+		return nil, err
+	}
+
+	elemOp, combineOp := chplan.OpMatch, chplan.OpOr
+	if matchAll {
+		elemOp, combineOp = chplan.OpNotMatch, chplan.OpAnd
+	}
+	// Each element goes through the same numeric-materialized stringify the
+	// scalar regex path applies: match() cannot take the Nullable(Int32)
+	// column a routed numeric attribute reads from, so without this a
+	// folded `{ span.http.status_code =~ "5.." || … }` would abort the
+	// query where its unfolded spelling answers.
+	var tree chplan.Expr
+	for _, elem := range elems {
+		l, r := stringifyNumericMaterializedForStringOp(elemOp, left, elem)
+		cmp := chplan.Expr(&chplan.Binary{Op: elemOp, Left: l, Right: r})
+		if tree == nil {
+			tree = cmp
+			continue
+		}
+		tree = &chplan.Binary{Op: combineOp, Left: tree, Right: cmp}
+	}
+	// Both polarities need the existence probe: match-none is true for a
+	// span whose ” default matches none of the patterns, and match-any is
+	// true whenever one of them matches ” (`.*` does). See
+	// comparisonRejectsAbsentOperand.
+	return guardAbsentAttribute(tree, left), nil
 }
 
 // lowerAbsentFieldBinary intercepts a comparison where either operand
@@ -1614,10 +1889,22 @@ func lowerAbsentFieldBinary(b *traceql.BinaryOperation, s schema.Traces) (chplan
 // absentAttributePredicate reports whether attr resolves to a column
 // the OTel-CH traces schema does not materialise, and if so returns the
 // constant predicate that mirrors reference Tempo's StaticNil execution
-// semantics: a missing attribute compared against any typed RHS never
-// matches (the isMatchingOperand guard in BinaryOperation.execute
-// returns StaticFalse), so a positive membership / comparison is
-// constant-false and its negation constant-true.
+// semantics: constant-FALSE, for the membership operators in both
+// polarities.
+//
+// Not "false for IN, true for NOT IN". Reference never evaluates the
+// membership at all when an operand is nil: binaryTypeValid admits a
+// TypeNil operand for `=` and `!=` only
+// (pkg/traceql/enum_operators.go:118), so OpIn and OpNotIn both fail
+// BinaryOperation.execute's type check, which returns StaticFalse
+// outright (pkg/traceql/ast_execute.go:416) rather than computing a
+// membership and negating it. The negated arm was the one place in this
+// package that reasoned "the positive is false, therefore the negation is
+// true" — and because ast/rewrite.go folds `!= && !=` into OpNotIn, it
+// made `{ instrumentation.foo != "a" }` answer false while
+// `{ instrumentation.foo != "a" && instrumentation.foo != "b" }` answered
+// TRUE for every span in the table. lowerAbsentFieldBinary, which handles
+// the unfolded spelling, always answered false; the two now agree.
 //
 // Only the genuinely-unbacked carriers report absent here:
 // instrumentation-scoped attributes (no scope-attributes map) and the
@@ -1631,11 +1918,11 @@ func lowerAbsentFieldBinary(b *traceql.BinaryOperation, s schema.Traces) (chplan
 // absent too; they now have a real (correlated-subquery) lowering via
 // lowerTraceScopedBinary, so attributeHasNoBacking no longer reports
 // them (see issue #1711).
-func absentAttributePredicate(attr traceql.Attribute, s schema.Traces, negated bool) (chplan.Expr, bool) {
+func absentAttributePredicate(attr traceql.Attribute, s schema.Traces) (chplan.Expr, bool) {
 	if !attributeHasNoBacking(attr, s) {
 		return nil, false
 	}
-	return &chplan.LitBool{V: negated}, true
+	return &chplan.LitBool{V: false}, true
 }
 
 // attributeHasNoBacking reports whether attr names a carrier the OTel-CH
@@ -2017,14 +2304,20 @@ func coerceBoolFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Exp
 		}
 		return &chplan.LitString{V: "false"}
 	}
-	if f, ok := lhs.(*chplan.FieldAccess); ok {
-		if f.MaterializedColumnNumeric {
+	// Either operand may be the attribute read; the OTHER one is the bool
+	// literal to stringify. Both spellings of the read qualify — the
+	// unscoped `.cache.hit` resolves to the same String-valued map cells as
+	// `span.cache.hit`, and reading only the scoped shape here is what made
+	// `{ .cache.hit = true }` reach ClickHouse as `String = UInt8` and come
+	// back as a 502 (NO_COMMON_TYPE) where its scoped spelling answered.
+	if arms, _, ok := attributeReadArms(lhs); ok {
+		if readsNumericColumn(arms) {
 			return lhs, rhs
 		}
 		return lhs, boolToString(rhs)
 	}
-	if f, ok := rhs.(*chplan.FieldAccess); ok {
-		if f.MaterializedColumnNumeric {
+	if arms, _, ok := attributeReadArms(rhs); ok {
+		if readsNumericColumn(arms) {
 			return lhs, rhs
 		}
 		return boolToString(lhs), rhs
@@ -2175,41 +2468,104 @@ func isOrderingComparisonOp(op chplan.BinaryOp) bool {
 // exists to simulate here, computed once at the column instead of once
 // per query. Wrapping it in toFloat64OrNull again would be redundant at
 // best and a needless Int32->Float64 widening at worst.
-func coerceFieldAccess(expr chplan.Expr) chplan.Expr {
-	switch v := expr.(type) {
+// attributeReadArms decomposes a lowered attribute read into the
+// FieldAccess value arms it can resolve to, plus the function that puts a
+// rewritten set of arms back into the same shape. ok is false for anything
+// that is not an attribute read (an intrinsic ColumnRef, a literal, an
+// already-coerced FuncCall).
+//
+// There are exactly two shapes, and this is the ONLY function that knows
+// that:
+//
+//   - a scoped read (`span.x` / `resource.x`) is one *chplan.FieldAccess,
+//     and rebuilding it is just taking the single rewritten arm;
+//   - an unscoped read (`.x`) is unscopedAttributeExpr's coalesce,
+//     `if(mapContains(span,'x'), span['x'], resource['x'])`, whose two
+//     value arms are ordinary FieldAccess reads and whose condition is not
+//     a value at all — rebuilding it keeps the condition and swaps the arms.
+//
+// Three callers need that decomposition for three different reasons —
+// coerceFieldAccess rewrites the arms, attributeExistsPredicate folds them
+// into an existence probe, and coerceBoolFieldAccess only asks what kind of
+// column they are — which is why this returns the arms AND a rebuild rather
+// than being a plain map: a caller that does not rewrite ignores the
+// rebuild, and no caller has to restate the shape.
+//
+// It exists because restating it is how the same bug kept reopening. Each
+// helper was written against the scoped shape, and each in turn silently
+// mishandled the unscoped one: numeric comparison reverted to a
+// lexicographic string compare until coerceFieldAccess grew an arm for it,
+// `{ .attr = "string" }` matched nothing until #3203 stopped isNumericExpr
+// classifying the coalesce as numeric, and a bool literal stayed a
+// ClickHouse UInt8 against a String column — a 502 on every
+// `{ .cache.hit = true }` — until coerceBoolFieldAccess grew one too.
+func attributeReadArms(e chplan.Expr) (arms []*chplan.FieldAccess, rebuild func([]chplan.Expr) chplan.Expr, ok bool) {
+	switch v := e.(type) {
 	case *chplan.FieldAccess:
-		if v.MaterializedColumnNumeric {
-			return v
-		}
-		return &chplan.FuncCall{Fn: chplan.FnToFloat64OrNull, Args: []chplan.Expr{v}}
-	case *chplan.Binary:
-		if isArithmeticOp(v.Op) {
-			return &chplan.Binary{
-				Op:    v.Op,
-				Left:  coerceFieldAccess(v.Left),
-				Right: coerceFieldAccess(v.Right),
-			}
-		}
+		return []*chplan.FieldAccess{v}, func(rewritten []chplan.Expr) chplan.Expr {
+			return rewritten[0]
+		}, true
 	case *chplan.FuncCall:
-		// The unscoped-attribute coalesce (`.foo` — see
-		// unscopedAttributeExpr) is an `if(mapContains(span,'k'),
-		// span['k'], resource['k'])` whose two value arms are ordinary
-		// FieldAccess reads. Coerce the ARMS, not the if() itself, so an
-		// unscoped attribute compares numerically exactly as its scoped
-		// spellings do: without this, `.http.status_code > 400` reverts
-		// to a lexicographic string compare.
-		if v.Fn == chplan.FnIf && len(v.Args) == 3 {
-			return &chplan.FuncCall{
-				Fn: v.Fn,
-				Args: []chplan.Expr{
-					v.Args[0],
-					coerceFieldAccess(v.Args[1]),
-					coerceFieldAccess(v.Args[2]),
-				},
-			}
+		if v.Fn != chplan.FnIf || len(v.Args) != 3 {
+			return nil, nil, false
+		}
+		span, spanOK := v.Args[1].(*chplan.FieldAccess)
+		resource, resourceOK := v.Args[2].(*chplan.FieldAccess)
+		if !spanOK || !resourceOK {
+			return nil, nil, false
+		}
+		cond := v.Args[0]
+		return []*chplan.FieldAccess{span, resource}, func(rewritten []chplan.Expr) chplan.Expr {
+			return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{cond, rewritten[0], rewritten[1]}}
+		}, true
+	}
+	return nil, nil, false
+}
+
+// readsNumericColumn reports whether any arm of an attribute read is routed
+// to a materialized column of a native ClickHouse numeric type
+// (schema.MaterializedColumnKindNumeric, cerberus issue #2869).
+//
+// Any arm rather than all: such a column is Nullable and DEFAULT
+// to<Type>OrNull(<map>[<key>]), so it already carries both the numeric type
+// and the "NULL for absent or non-numeric" semantics the three callers
+// would otherwise be synthesising. A read that can resolve to one is
+// therefore left alone by all three — no toFloat64OrNull wrap, no bool
+// stringification, no existence probe — and treating the mixed unscoped
+// case as numeric keeps that decision identical however the arms are
+// provisioned.
+func readsNumericColumn(arms []*chplan.FieldAccess) bool {
+	for _, arm := range arms {
+		if arm.MaterializedColumnNumeric {
+			return true
 		}
 	}
-	return expr
+	return false
+}
+
+func coerceFieldAccess(expr chplan.Expr) chplan.Expr {
+	// Arithmetic recurses before the attribute-read decomposition: `.a + .b`
+	// is not an attribute read, it is a tree of two of them.
+	if v, ok := expr.(*chplan.Binary); ok && isArithmeticOp(v.Op) {
+		return &chplan.Binary{
+			Op:    v.Op,
+			Left:  coerceFieldAccess(v.Left),
+			Right: coerceFieldAccess(v.Right),
+		}
+	}
+	arms, rebuild, ok := attributeReadArms(expr)
+	if !ok || readsNumericColumn(arms) {
+		return expr
+	}
+	// The unscoped coalesce's arms are coerced, not the if() itself, so an
+	// unscoped attribute compares numerically exactly as its scoped
+	// spellings do: without this, `.http.status_code > 400` reverts to a
+	// lexicographic string compare.
+	wrapped := make([]chplan.Expr, len(arms))
+	for i, arm := range arms {
+		wrapped[i] = &chplan.FuncCall{Fn: chplan.FnToFloat64OrNull, Args: []chplan.Expr{arm}}
+	}
+	return rebuild(wrapped)
 }
 
 // isAttributeRead reports whether e reads an attribute value: either a
