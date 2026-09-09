@@ -60,11 +60,25 @@ var resetMaskBaseline = time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)
 // resetMaskSamples-1 pairs each.
 const resetMaskSamples = 4
 
-// resetMaskDensifiedMarker is a rendering-specific token of the DENSIFIED
-// arm's emitted SQL. The test asserts which arm each call actually built:
-// without that check a lowering change routing both calls onto the same
-// arm would leave this comparing a rendering against itself.
-const resetMaskDensifiedMarker = "arrayReduceInRanges"
+// resetMaskDensifiedMarker and resetMaskPerTargetMarker are
+// rendering-specific tokens of the two arms' emitted SQL: the pair
+// comparison's own lambda parameters, `(rdc, rdp) -> rdc < rdp` for the
+// densified arm and `rk` for the per-target one. The test asserts each
+// call carries its OWN marker and not the other's — without that a
+// lowering change routing both calls onto the same arm would leave this
+// comparing a rendering against itself.
+//
+// Deliberately NOT the bare `arrayReduceInRanges` this used to key on.
+// That function is the densified reading's mechanism, not its address:
+// once the closed-form bucket ladders started folding per row through the
+// same call (cerberus issue #3234), every arm's SQL carried the token and
+// the per-target arm failed a check it had not changed. A marker has to
+// name the rendering under test, not a primitive any sibling layer may
+// also reach for.
+const (
+	resetMaskDensifiedMarker = "(rdc, rdp) ->"
+	resetMaskPerTargetMarker = "arrayExists(rk ->"
+)
 
 const resetMaskDDL = "" +
 	"CREATE OR REPLACE TABLE otel_metrics_exponential_histogram (" +
@@ -318,10 +332,18 @@ func resetMaskLower(t *testing.T, expr string, opts promql.LowerOpts, wantDensif
 	if err != nil {
 		t.Fatalf("Emit(%q): %v", expr, err)
 	}
-	if got := strings.Contains(sqlStr, resetMaskDensifiedMarker); got != wantDensified {
-		t.Fatalf("emitted SQL for %q carries %s = %v, want %v — the two arms are not the two "+
-			"renderings this test believes it is comparing",
-			expr, resetMaskDensifiedMarker, got, wantDensified)
+	for _, marker := range []struct {
+		token string
+		want  bool
+	}{
+		{resetMaskDensifiedMarker, wantDensified},
+		{resetMaskPerTargetMarker, !wantDensified},
+	} {
+		if got := strings.Contains(sqlStr, marker.token); got != marker.want {
+			t.Fatalf("emitted SQL for %q carries %q = %v, want %v — the two arms are not the two "+
+				"renderings this test believes it is comparing",
+				expr, marker.token, got, marker.want)
+		}
 	}
 	return sqlStr, args
 }
