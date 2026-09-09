@@ -21,11 +21,14 @@ import (
 // The set is closed on purpose. Two of the nine columns are numeric
 // (SeverityNumber is Int32, TraceFlags is UInt8) and the fallback
 // expression NULLed the column out against the STRING literal `”`, so
-// `{SeverityNumber="9"}` and `{TraceFlags="0"}` reached ClickHouse as
+// `{SeverityNumber="9"}` and `{TraceFlags="1"}` reached ClickHouse as
 // `Code: 32 … while converting ” to Int32` — a 502 where reference Loki
 // answers with the matching streams. Nothing tested the numeric two: the
 // seven string columns work either way, and an emitted-SQL assertion
-// cannot see a type error at all. Only executing every column can.
+// cannot see a type error at all. Only executing every column can — and
+// the one fixture that did cover this query, test/spec/logql/
+// matcher_severity_number.txtar, declared the column String, so the type
+// it was written to model was the one type it could not hit.
 func TestStreamMatcherOnEveryTopLevelColumn(t *testing.T) {
 	db, err := sql.Open("chdb", "")
 	if err != nil {

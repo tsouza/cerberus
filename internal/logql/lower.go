@@ -2635,25 +2635,42 @@ func resourceFallbackColumn(s schema.Logs, labelName string) string {
 // resolve correctly when the producer wrote it to either side.
 func resourceAttributeFallbackLHS(topCol string, mapLookup chplan.Expr, numeric bool) chplan.Expr {
 	var col chplan.Expr = &chplan.ColumnRef{Name: topCol}
+	// unset is the value that means "this row did not carry the label",
+	// i.e. the one the coalesce falls THROUGH to the map on.
+	unset := ""
 	if numeric {
-		// Every Loki label value is a string, and the matcher compares
-		// against one. A numeric top-level column has to be rendered
-		// before it can be compared or NULLed out — see
-		// [topLevelLogColumnIsNumeric] for why only those columns are
-		// wrapped.
+		// Every Loki label value is a string and the matcher compares
+		// against one, so a numeric top-level column is rendered before
+		// it is compared or NULLed out — see
+		// [topLevelLogColumnIsNumeric] for why only those two columns
+		// are wrapped.
+		//
+		// Their "unset" is the numeric zero, not the empty string: both
+		// are UInt8 columns the OTel-CH exporter always writes, and the
+		// value it writes for an absent field is 0 — which is also what
+		// OTel itself calls unset (SEVERITY_NUMBER_UNSPECIFIED, and no
+		// trace flags). Rendering that as `"0"` and treating it as a
+		// present value would make the map fallback unreachable for
+		// every row ingested without the field.
 		col = &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{col}}
+		unset = numericTopLevelColumnUnset
 	}
 	return &chplan.FuncCall{
 		Fn: chplan.FnCoalesce,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
 				Fn:   chplan.FnNullIf,
-				Args: []chplan.Expr{col, &chplan.LitString{V: ""}},
+				Args: []chplan.Expr{col, &chplan.LitString{V: unset}},
 			},
 			mapLookup,
 		},
 	}
 }
+
+// numericTopLevelColumnUnset is the rendered form of the value a numeric
+// top-level OTel-CH column carries when the field was never set. See
+// [resourceAttributeFallbackLHS].
+const numericTopLevelColumnUnset = "0"
 
 func matchOp(t labels.MatchType) chplan.BinaryOp {
 	switch t {
