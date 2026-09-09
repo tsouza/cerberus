@@ -73,26 +73,48 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 	)
 }
 
-// mixedOrDupQueries are the six names whose output DROPS `__name__`, each
-// applied to the same mixed `or` subquery. All six reduce through the same
-// two continuations — lowerSelectFnOverExpHistogramSubqueryInput for the
-// four type-blind ones, lowerMixedOrSubqueryResetsOrChangesInput for
-// resets/changes over a Mixed relation — so listing them here is what
-// proves the guard is on the reduction rather than on one function's own
-// projection.
+// mixedOrDupNames are the six names whose output DROPS `__name__`. All six
+// reduce through the same two continuations —
+// lowerSelectFnOverExpHistogramSubqueryInput for the four type-blind ones,
+// lowerMixedOrSubqueryResetsOrChangesInput for resets/changes over a Mixed
+// relation — so listing them is what proves the guard rides on the
+// reduction rather than on one function's own output projection.
+var mixedOrDupNames = []string{
+	"count_over_time", "present_over_time",
+	"ts_of_first_over_time", "ts_of_last_over_time",
+	"resets", "changes",
+}
+
+// mixedOrDupMatchKeys are the two `or` match keys that reach the reduction,
+// and both are run because they arrive by different routes.
 //
-// `on(x)` narrows the shadow key to the label both arms share, which is
-// what routes the query to the per-anchor-correct reduction rather than
-// through the bare-`or` recognizer. The signature it produces is the same
-// one the default key produces on this seed — both arms carry `x` and
-// nothing else — so the answer upstream gives is identical either way.
-var mixedOrDupQueries = []string{
-	`count_over_time((latency_exp_hist or on(x) latency_float)[3m:1m])`,
-	`present_over_time((latency_exp_hist or on(x) latency_float)[3m:1m])`,
-	`ts_of_first_over_time((latency_exp_hist or on(x) latency_float)[3m:1m])`,
-	`ts_of_last_over_time((latency_exp_hist or on(x) latency_float)[3m:1m])`,
-	`resets((latency_exp_hist or on(x) latency_float)[3m:1m])`,
-	`changes((latency_exp_hist or on(x) latency_float)[3m:1m])`,
+// The DEFAULT key is the shape cerberus issue #3232 reported. It reaches
+// the per-anchor-correct reduction only since #3227 removed the
+// distribute-then-recombine rewrite that used to intercept it (that rewrite
+// answered this query wrongly in its own way — it folded each arm over its
+// FULL window and shadowed the folded results, losing the float series
+// outright instead of merging it).
+//
+// `on(x)` narrows the shadow key to the label both arms share. It reached
+// the same reduction even BEFORE that removal, because the rewrite refused
+// a non-default key. On this seed the two keys produce the identical
+// signature — both arms carry `x` and nothing else — so reference gives the
+// identical answer either way, which is what makes running both a route
+// check rather than two different questions.
+var mixedOrDupMatchKeys = []string{"", "on(x) "}
+
+// mixedOrDupQueries is every (name, match key) pair applied to the same
+// mixed `or` subquery.
+func mixedOrDupQueries() []string {
+	out := make([]string, 0, len(mixedOrDupNames)*len(mixedOrDupMatchKeys))
+	for _, key := range mixedOrDupMatchKeys {
+		for _, name := range mixedOrDupNames {
+			out = append(out, fmt.Sprintf(
+				"%s((latency_exp_hist or %slatency_float)[3m:1m])", name, key,
+			))
+		}
+	}
+	return out
 }
 
 // TestQuery_MixedOrSubquerySelectFamily_DuplicateLabelset_ChDB is the
@@ -103,7 +125,7 @@ func TestQuery_MixedOrSubquerySelectFamily_DuplicateLabelset_ChDB(t *testing.T) 
 	start, end, _ := mixedOrDupWindow()
 	srv, _ := newChDBServer(t, mixedOrDupSeed(t, start, "map('x', '1')", "map('x', '1')"))
 
-	for _, query := range mixedOrDupQueries {
+	for _, query := range mixedOrDupQueries() {
 		t.Run(query, func(t *testing.T) {
 			status, body := getBody(t, fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
 				srv.URL, url.QueryEscape(query), end.Unix()))
@@ -122,7 +144,7 @@ func TestQueryRange_MixedOrSubquerySelectFamily_DuplicateLabelset_ChDB(t *testin
 	start, end, step := mixedOrDupWindow()
 	srv, _ := newChDBServer(t, mixedOrDupSeed(t, start, "map('x', '1')", "map('x', '1')"))
 
-	for _, query := range mixedOrDupQueries {
+	for _, query := range mixedOrDupQueries() {
 		t.Run(query, func(t *testing.T) {
 			status, body := getBody(t, fmt.Sprintf(
 				"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
@@ -149,7 +171,7 @@ func TestQuery_MixedOrSubquerySelectFamily_DistinctLabelsets_ChDB(t *testing.T) 
 	srv, _ := newChDBServer(t, mixedOrDupSeed(t,
 		start, "map('x', '1', 'pod', 'h1')", "map('x', '1', 'pod', 'f1')"))
 
-	for _, query := range mixedOrDupQueries {
+	for _, query := range mixedOrDupQueries() {
 		t.Run(query, func(t *testing.T) {
 			status, body := getBody(t, fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
 				srv.URL, url.QueryEscape(query), end.Unix()))
