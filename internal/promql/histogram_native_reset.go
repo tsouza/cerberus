@@ -115,6 +115,13 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // comparison, which is then a two-argument `arrayExists` capturing
 // nothing. Same slices, same numbers, 238 MiB.
 //
+// The same lever then applied ONE level further out, and that was
+// cerberus issue #3239: with the per-target capture gone, what the mask
+// still paid for was the pair lambda's own capture of the group's
+// Array(Array) bucket ladders, rebuilt once per PAIR.
+// [expHistogramPairBucketLadderArgs] hands each pair its two ladders as
+// lambda arguments instead, and carries that measurement.
+//
 // # Why it is a column and not an expression inlined into the fold
 //
 // The mask is a rows x buckets nested expression, and the reshape above
@@ -163,6 +170,82 @@ const (
 	paramResetDenseCurr = "rdc"
 	paramResetDensePrev = "rdp"
 )
+
+// The four bucket-ladder lambda ARGUMENTS every per-pair mask binds, and
+// the two comparator parameters of the sort that produces them. See
+// [expHistogramPairBucketLadderArgs] for why the ladders are arguments
+// rather than the per-series arrays read by subscript.
+const (
+	paramPairPrevPosBuckets = "ppb"
+	paramPairCurrPosBuckets = "cpb"
+	paramPairPrevNegBuckets = "pnb"
+	paramPairCurrNegBuckets = "cnb"
+	paramPairSortRow        = "psr"
+	paramPairSortTime       = "pst"
+)
+
+// expHistogramPairBucketLadderArgs returns the extra lambda parameters
+// and matching arrayMap ARGUMENTS that hand each consecutive sample pair
+// its own two rows' stored bucket ladders, positionally aligned with the
+// (prev, curr) row positions the caller pairs by popBack/popFront.
+//
+// # Why the ladders are arguments and not subscripts
+//
+// A per-pair mask is `arrayMap((prev, curr) -> verdict, popBack(rows),
+// popFront(rows))`, and the verdict needs each row's Positive and
+// Negative bucket arrays. Reading them as `_hq_pos_buckets[curr]` makes
+// the group's whole Array(Array) ladder a CAPTURE of that lambda, and
+// ClickHouse materialises a captured column once per element of the
+// enclosing array — so a window of n samples rebuilds the entire n-row
+// ladder n-1 times, once per pair. That is the same lever
+// [expHistogramDenseContribsExpr] found one level further in (cerberus
+// issue #3178, where the capture was per TARGET BUCKET), and after that
+// fix it was what remained: measured on a real ClickHouse 26.6.4 against
+// cerberus's own `cerberus_queries_duration_exp_hist` telemetry (10
+// series, ~99 stored buckets, ~30 samples per 5m window), a 21-anchor
+// `histogram_quantile(0.95, sum by(...) (rate(X[5m])))` peaked at
+// 433.32 MiB, of which 282 MiB was the mask — and splicing ONLY the two
+// bucket subscripts out of the pair lambda (leaving every other byte,
+// including the full-width dense comparison, untouched) took the whole
+// query to 156.37 MiB against a 150.97 MiB floor with the bucket half
+// removed outright. Cerberus issue #3239.
+//
+// # Why sorting is cheaper than gathering by position
+//
+// The pairing is over the timestamp-sorted permutation, so the arguments
+// must be in that same order. `arraySort((row, key) -> key, <list>,
+// <ts>)` is a two-argument sort: both arrays reach it as arguments and
+// nothing is captured, and it yields the SAME permutation the mask's
+// `arraySort((rp, rt) -> rt, arrayEnumerate(<ts>), <ts>)` yields, because
+// ClickHouse derives the permutation from the comparator's values alone
+// and those values are that one ts array in both spellings. Gathering
+// instead — `arrayMap(p -> <list>[p], <positions>)` — would reintroduce
+// the very capture this removes, one per ROW rather than one per pair.
+func expHistogramPairBucketLadderArgs() (params []string, args []chplan.Expr) {
+	sorted := func(alias string) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramPairSortRow, paramPairSortTime},
+				Body:   &chplan.BareIdent{Name: paramPairSortTime},
+			},
+			&chplan.ColumnRef{Name: alias},
+			&chplan.ColumnRef{Name: hqWindowTsListAlias},
+		}}
+	}
+	prevOf := func(alias string) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{sorted(alias)}}
+	}
+	currOf := func(alias string) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{sorted(alias)}}
+	}
+	return []string{
+			paramPairPrevPosBuckets, paramPairCurrPosBuckets,
+			paramPairPrevNegBuckets, paramPairCurrNegBuckets,
+		}, []chplan.Expr{
+			prevOf(hqAggPosBucketsArrayAlias), currOf(hqAggPosBucketsArrayAlias),
+			prevOf(hqAggNegBucketsArrayAlias), currOf(hqAggNegBucketsArrayAlias),
+		}
+}
 
 // expHistogramResetMaskFor names the reset-mask column for an
 // exponential-histogram window reduced by windowFn, or nil for a windowFn
@@ -219,8 +302,15 @@ func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAli
 // array [counterIncreaseFold] sorts its own values by, so the two orders
 // are the same permutation by construction — CH derives the permutation
 // from the lambda's values alone, which are that key array in both cases.
-// Every list is then read through those positions, which is also what
-// keeps six parallel sorts out of the emitted SQL.
+// Every SCALAR list is then read through those positions, which keeps
+// four parallel sorts out of the emitted SQL.
+//
+// The two BUCKET ladders are the exception: they are sorted directly and
+// handed to the pair lambda as ARGUMENTS, because a subscript of an
+// Array(Array) column from inside that lambda is a capture ClickHouse
+// rebuilds once per pair — see [expHistogramPairBucketLadderArgs]. A
+// scalar list captured the same way costs one machine word per pair and
+// is not worth a sort.
 //
 // The mask's j-th element compares the pair (positions[j], positions[j+1])
 // — hence popBack against popFront, the same pairing the fold applies to
@@ -236,15 +326,17 @@ func expHistogramResetMaskExpr(densified bool) chplan.Expr {
 		tsList,
 	}}
 
+	ladderParams, ladderArgs := expHistogramPairBucketLadderArgs()
 	return hqLet(paramResetOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		args := []chplan.Expr{
 			&chplan.Lambda{
-				Params: []string{paramResetPrevRow, paramResetCurrRow},
+				Params: append([]string{paramResetPrevRow, paramResetCurrRow}, ladderParams...),
 				Body:   expHistogramResetVerdictExpr(densified),
 			},
 			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}},
 			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}},
-		}}
+		}
+		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: append(args, ladderArgs...)}
 	})
 }
 
@@ -283,8 +375,12 @@ func expHistogramResetVerdictExpr(densified bool) chplan.Expr {
 		// fold of a finer one and happens without a restart, which is
 		// why reference tests `>` rather than `!=`.
 		pairwise(&chplan.ColumnRef{Name: hqAggScalesArrayAlias}, chplan.OpGt),
-		expHistogramResetPairBucketRegressedExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, prev, curr, densified),
-		expHistogramResetPairBucketRegressedExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, prev, curr, densified),
+		expHistogramResetPairBucketRegressedExpr(
+			hqAggPosOffsetsArrayAlias, paramPairPrevPosBuckets, paramPairCurrPosBuckets, prev, curr, densified,
+		),
+		expHistogramResetPairBucketRegressedExpr(
+			hqAggNegOffsetsArrayAlias, paramPairPrevNegBuckets, paramPairCurrNegBuckets, prev, curr, densified,
+		),
 	)
 }
 
@@ -301,8 +397,10 @@ func orAllExpr(first chplan.Expr, rest ...chplan.Expr) chplan.Expr {
 }
 
 // expHistogramResetPairBucketRegressedExpr reports whether ANY bucket of
-// one signed ladder (Positive or Negative, named by offArrAlias /
-// bucArrAlias) regressed between prev and curr, comparing the two rows
+// one signed ladder — its per-row offsets named by offArrAlias, its two
+// bucket arrays bound to the pair lambda's prevBucParam / currBucParam by
+// [expHistogramPairBucketLadderArgs] — regressed between prev and curr,
+// comparing the two rows
 // at the coarser of the PAIR's own two scales — CURR's wherever the
 // comparison can decide anything, which is reference's "prev reconciled
 // to the current schema" (cerberus issue #2095; see
@@ -328,17 +426,22 @@ func orAllExpr(first chplan.Expr, rest ...chplan.Expr) chplan.Expr {
 // per-target-bucket picker + Kahan fold they replaced. The two fold the
 // identical slices; see [ExpHistogramResetMaskLowerer] for why the
 // superseded one is kept.
-func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, prev, curr chplan.Expr, densified bool) chplan.Expr {
+func expHistogramResetPairBucketRegressedExpr(
+	offArrAlias, prevBucParam, currBucParam string, prev, curr chplan.Expr, densified bool,
+) chplan.Expr {
 	scalesArr := chplan.Expr(&chplan.ColumnRef{Name: hqAggScalesArrayAlias})
 	offArr := chplan.Expr(&chplan.ColumnRef{Name: offArrAlias})
-	bucArr := chplan.Expr(&chplan.ColumnRef{Name: bucArrAlias})
 
 	at := func(list, pos chplan.Expr) chplan.Expr {
 		return &chplan.Subscript{Container: list, Key: pos}
 	}
 	prevScale, currScale := at(scalesArr, prev), at(scalesArr, curr)
 	prevOff, currOff := at(offArr, prev), at(offArr, curr)
-	prevBuc, currBuc := at(bucArr, prev), at(bucArr, curr)
+	// The pair's two bucket ladders arrive as lambda ARGUMENTS, not as a
+	// subscript of the group's per-row array — see
+	// [expHistogramPairBucketLadderArgs].
+	prevBuc := chplan.Expr(&chplan.BareIdent{Name: prevBucParam})
+	currBuc := chplan.Expr(&chplan.BareIdent{Name: currBucParam})
 
 	// The scale both rows are reconciled onto is the COARSER of the pair,
 	// not curr's alone. For the pair this comparison can decide it is
