@@ -351,9 +351,11 @@ func expHistogramPairCountProjection(input chplan.Node, tsExpr chplan.Expr, s sc
 // stored histograms differ in any field reference compares.
 //
 // Its skeleton is [expHistogramResetMaskExpr]'s — the same
-// sort-positions-once permutation, read through the same popBack/popFront
-// pairing — because both answer a per-pair question over the same
-// groupArrays and the pair ORDER must be identical. What differs is the
+// sort-positions-once permutation, the same popBack/popFront pairing, and
+// the same bucket ladders handed in as lambda arguments by
+// [expHistogramPairBucketLadderArgs] — because both answer a per-pair
+// question over the same groupArrays and the pair ORDER must be
+// identical. What differs is the
 // verdict, and one structural consequence of it: this mask compares each
 // row's stored fields AS STORED, with no rescale to the group's merged
 // scale, because `Equals` compares Schema itself. Two samples at different
@@ -372,15 +374,17 @@ func expHistogramChangeMaskExpr(s schema.Metrics) chplan.Expr {
 		tsList,
 	}}
 
+	ladderParams, ladderArgs := expHistogramPairBucketLadderArgs()
 	return hqLet(paramChangeOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		args := []chplan.Expr{
 			&chplan.Lambda{
-				Params: []string{paramChangePrevRow, paramChangeCurrRow},
+				Params: append([]string{paramChangePrevRow, paramChangeCurrRow}, ladderParams...),
 				Body:   expHistogramChangeVerdictExpr(s),
 			},
 			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}},
 			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}},
-		}}
+		}
+		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: append(args, ladderArgs...)}
 	})
 }
 
@@ -415,6 +419,18 @@ func expHistogramChangeVerdictExpr(s schema.Metrics) chplan.Expr {
 		list := chplan.Expr(&chplan.ColumnRef{Name: alias})
 		return &chplan.Binary{Op: chplan.OpNe, Left: at(list, curr), Right: at(list, prev)}
 	}
+	// The two bucket ladders arrive as lambda ARGUMENTS rather than as a
+	// subscript of the group's per-row array, for the reason
+	// [expHistogramPairBucketLadderArgs] gives: subscripting them here
+	// would make the whole group's ladder a capture of the per-pair
+	// lambda, rebuilt once per pair.
+	laddersDiffer := func(prevParam, currParam string) chplan.Expr {
+		return &chplan.Binary{
+			Op:    chplan.OpNe,
+			Left:  &chplan.BareIdent{Name: currParam},
+			Right: &chplan.BareIdent{Name: prevParam},
+		}
+	}
 
 	return orAllExpr(
 		differs(hqAggScalesArrayAlias),
@@ -422,9 +438,9 @@ func expHistogramChangeVerdictExpr(s schema.Metrics) chplan.Expr {
 		expHistogramSumDiffersExpr(),
 		differs(hqWindowZeroCountsArrayAlias),
 		differs(hqAggPosOffsetsArrayAlias),
-		differs(hqAggPosBucketsArrayAlias),
+		laddersDiffer(paramPairPrevPosBuckets, paramPairCurrPosBuckets),
 		differs(hqAggNegOffsetsArrayAlias),
-		differs(hqAggNegBucketsArrayAlias),
+		laddersDiffer(paramPairPrevNegBuckets, paramPairCurrNegBuckets),
 	)
 }
 

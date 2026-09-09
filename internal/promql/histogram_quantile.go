@@ -2572,9 +2572,12 @@ func promHistogramKahanSum(values chplan.Expr) chplan.Expr {
 // as the sort key, so calling it once per collected array — all keyed off
 // the SAME orderKey array — reorders every array by the identical
 // permutation and keeps them positionally aligned to each other
-// afterward. See expHistogramMergeSortStage, its only caller — called
-// once per group there rather than once per target bucket, which is why
-// that Project stage exists at all (cerberus issue #2267).
+// afterward. See expHistogramMergeSortStage — called once per group
+// there rather than once per target bucket, which is why that Project
+// stage exists at all (cerberus issue #2267) — and
+// [expHistogramPairBucketLadderArgs], which orders the counter-reset
+// mask's two bucket ladders by the window's timestamp list for the same
+// reason: an ordering that captures nothing (cerberus issue #3239).
 func expHistogramSortRowsByKeyExpr(arr, orderKey chplan.Expr) chplan.Expr {
 	const (
 		paramMergeSortRow = "row"
