@@ -260,8 +260,9 @@ func expHistogramWindowCoefficientAliases(forwarded []string) []string {
 }
 
 // expHistogramWindowCoefficientStage projects [hqWindowCoeffsAlias] and
-// [hqWindowKeepAlias] beside everything the layers above it read,
-// forwarding the grouping's own key columns and every aggregate by name —
+// one [expHistogramWindowNarrowedAlias] per column the bucket ladders
+// read, beside everything the layers above it read, forwarding the
+// grouping's own key columns and every aggregate by name —
 // the same shape [expHistogramResetMaskStage] uses, and it composes above
 // that stage because the coefficients read its mask.
 //
