@@ -13,12 +13,86 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
+// clusterName is the ClickHouse cluster the ON CLUSTER tests below configure —
+// the bundled chart's own `<cluster>` name, which is what a real
+// CERBERUS_CH_DATA_SHARDS > 1 deployment carries in CERBERUS_SCHEMA_CLUSTER.
+const clusterName = "bwc_cluster"
+
+// onClusterClause is the fragment every statement must carry when a cluster is
+// configured — and must NOT carry when one is not.
+const onClusterClause = "ON CLUSTER `" + clusterName + "`"
+
+// TestCorpusDDL_OnCluster pins the whole reconciliation's cluster-awareness on
+// BOTH sides of the switch: with a cluster configured EVERY statement
+// construction issues carries `ON CLUSTER`, and with none configured NOT ONE of
+// them does.
+//
+// Both halves matter, and neither is redundant. Without the first, the DDL is
+// executed only on whichever node served the connection: under
+// CERBERUS_CH_DATA_SHARDS > 1 the `otel` database is necessarily Atomic (a
+// Replicated database engine and an ON CLUSTER cluster are mutually exclusive),
+// so nothing propagates and every INSERT that later lands on one of the other
+// nodes fails with "Table otel.cerberus_router_corpus does not exist" —
+// cerberus issue #3225. Without the second, a fix could satisfy the first by
+// stamping ON CLUSTER unconditionally, which would break every single-node and
+// Replicated-database deployment (there is no cluster to name).
+//
+// It asserts over the statements the SINK ACTUALLY EXECUTES rather than over
+// the three renderers one by one, because the failure this pins is precisely a
+// statement that was left un-threaded: a renderer-by-renderer test passes while
+// the caller still hands one of them the wrong argument.
+func TestCorpusDDL_OnCluster(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		cluster string
+		want    bool
+	}{
+		{name: "sharded", cluster: clusterName, want: true},
+		{name: "single-node", cluster: "", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fe := &fakeExecer{}
+			if _, err := NewCHTableSink(context.Background(), fe, tc.cluster); err != nil {
+				t.Fatalf("NewCHTableSink(cluster=%q): %v", tc.cluster, err)
+			}
+			// One CREATE, one ADD COLUMN per corpus column, one MODIFY
+			// COLUMN per reconciled enum column: anything less means a
+			// statement was dropped rather than merely un-threaded.
+			if want := 1 + len(CorpusColumns()) + len(reconciledEnumColumns); len(fe.execSQL) != want {
+				t.Fatalf("construction ran %d statements, want %d: %q", len(fe.execSQL), want, fe.execSQL)
+			}
+			for _, sql := range fe.execSQL {
+				if got := strings.Contains(sql, onClusterClause); got != tc.want {
+					t.Errorf("statement carries %s = %v, want %v:\n%s", onClusterClause, got, tc.want, sql)
+				}
+			}
+		})
+	}
+}
+
+// TestCorpusCreateTableSQL_OnClusterPosition pins WHERE the clause lands.
+// ClickHouse accepts `ON CLUSTER` only between the table name and the column
+// list; a clause rendered anywhere else is a syntax error the fake executer
+// above would never notice, since it parses nothing.
+func TestCorpusCreateTableSQL_OnClusterPosition(t *testing.T) {
+	t.Parallel()
+
+	sql := corpusCreateTableSQL(clusterName)
+	if want := "CREATE TABLE IF NOT EXISTS " + CorpusTableName + " " + onClusterClause + " ("; !strings.Contains(sql, want) {
+		t.Errorf("DDL missing %q\nfull SQL:\n%s", want, sql)
+	}
+}
+
 // TestCorpusCreateTableSQL_Shape pins the rendered MergeTree DDL against the
 // dossier schema. The typed chsql builder produces it; this test is the golden
 // that catches a column / type / engine / order-by / TTL drift.
 func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 	t.Parallel()
-	sql := corpusCreateTableSQL()
+	sql := corpusCreateTableSQL("")
 
 	wantFragments := []string{
 		"CREATE TABLE IF NOT EXISTS cerberus_router_corpus (",
@@ -201,7 +275,7 @@ func TestCHTableSink_CreatesTableAndWrites(t *testing.T) {
 	t.Parallel()
 
 	fe := &fakeExecer{}
-	sink, err := NewCHTableSink(context.Background(), fe)
+	sink, err := NewCHTableSink(context.Background(), fe, "")
 	if err != nil {
 		t.Fatalf("NewCHTableSink: %v", err)
 	}
@@ -414,7 +488,7 @@ func TestNewCHTableSink_RejectsNarrowDeployedColumn(t *testing.T) {
 			t.Parallel()
 
 			fe := &fakeExecer{deployedType: map[string]string{tc.column: tc.deployed}}
-			_, err := NewCHTableSink(context.Background(), fe)
+			_, err := NewCHTableSink(context.Background(), fe, "")
 			if err == nil {
 				t.Fatalf("NewCHTableSink over a narrow %s column: want an error, got nil", tc.column)
 			}
@@ -446,9 +520,8 @@ func addMarker(column string) string {
 // by itself disable the sink.
 //
 // A CH user holding INSERT and CREATE but not ALTER is a routine least-
-// privilege grant, and so is an operator-owned table that would need ON
-// CLUSTER. On such a deployment the widening is refused on every start while
-// the deployed column already holds every member — nothing is wrong, and
+// privilege grant. On such a deployment the widening is refused on every start
+// while the deployed column already holds every member — nothing is wrong, and
 // failing construction there would turn the whole corpus off for a statement
 // whose work was already done.
 func TestNewCHTableSink_WideningIsBestEffort(t *testing.T) {
@@ -462,7 +535,7 @@ func TestNewCHTableSink_WideningIsBestEffort(t *testing.T) {
 				failStatement: alterMarker(col.name),
 				failErr:       errors.New("not enough privileges"),
 			}
-			sink, err := NewCHTableSink(context.Background(), fe)
+			sink, err := NewCHTableSink(context.Background(), fe, "")
 			if err != nil {
 				t.Fatalf("NewCHTableSink over an already-wide %s with no ALTER grant: %v", col.name, err)
 			}
@@ -489,7 +562,7 @@ func TestNewCHTableSink_NarrowColumnReportsWideningFailure(t *testing.T) {
 		failStatement: alterMarker(exitStatusColumn),
 		failErr:       errors.New(grantErr),
 	}
-	_, err := NewCHTableSink(context.Background(), fe)
+	_, err := NewCHTableSink(context.Background(), fe, "")
 	if err == nil {
 		t.Fatal("NewCHTableSink over a narrow exit_status column: want an error, got nil")
 	}
@@ -511,7 +584,7 @@ func TestNewCHTableSink_SchemaReadFailureIsFatal(t *testing.T) {
 	t.Parallel()
 
 	fe := &fakeExecer{queryErr: errors.New("system.columns unavailable")}
-	if _, err := NewCHTableSink(context.Background(), fe); err == nil {
+	if _, err := NewCHTableSink(context.Background(), fe, ""); err == nil {
 		t.Fatal("NewCHTableSink with an unreadable schema: want an error, got nil")
 	}
 }
@@ -528,7 +601,7 @@ func TestNewCHTableSink_AddColumnIsBestEffort(t *testing.T) {
 		failStatement: addMarker(parallelismColumn),
 		failErr:       errors.New("not enough privileges"),
 	}
-	sink, err := NewCHTableSink(context.Background(), fe)
+	sink, err := NewCHTableSink(context.Background(), fe, "")
 	if err != nil {
 		t.Fatalf("NewCHTableSink over an already-complete table with no ALTER grant: %v", err)
 	}
@@ -558,7 +631,7 @@ func TestNewCHTableSink_RejectsMissingColumn(t *testing.T) {
 		failStatement: addMarker(shardsObservedColumn),
 		failErr:       errors.New(grantErr),
 	}
-	_, err := NewCHTableSink(context.Background(), fe)
+	_, err := NewCHTableSink(context.Background(), fe, "")
 	if err == nil {
 		t.Fatalf("NewCHTableSink over a table missing %s: want an error, got nil", shardsObservedColumn)
 	}
@@ -577,7 +650,7 @@ func TestNewCHTableSink_MissingColumnFailsWithoutAnAlterError(t *testing.T) {
 	t.Parallel()
 
 	fe := &fakeExecer{absentColumn: map[string]bool{parallelismColumn: true}}
-	_, err := NewCHTableSink(context.Background(), fe)
+	_, err := NewCHTableSink(context.Background(), fe, "")
 	if err == nil {
 		t.Fatalf("NewCHTableSink over a table missing %s: want an error, got nil", parallelismColumn)
 	}
@@ -595,7 +668,7 @@ func TestNewCHTableSink_CreateFailureIsFatal(t *testing.T) {
 		failStatement: "CREATE TABLE IF NOT EXISTS " + CorpusTableName,
 		failErr:       errors.New("not enough privileges"),
 	}
-	if _, err := NewCHTableSink(context.Background(), fe); err == nil {
+	if _, err := NewCHTableSink(context.Background(), fe, ""); err == nil {
 		t.Fatal("NewCHTableSink with a refused CREATE: want an error, got nil")
 	}
 }
@@ -625,7 +698,7 @@ func TestNewCHTableSink_RejectsRenumberedDeployedColumn(t *testing.T) {
 		exitStatusColumn: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
 			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5, 'error' = 6, 'aborted' = 7)",
 	}}
-	_, err := NewCHTableSink(context.Background(), fe)
+	_, err := NewCHTableSink(context.Background(), fe, "")
 	if err == nil {
 		t.Fatal("NewCHTableSink over a renumbered exit_status column: want an error, got nil")
 	}

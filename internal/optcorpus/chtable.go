@@ -175,13 +175,13 @@ var reconciledEnumColumns = []reconciledEnumColumn{
 //
 // Only the CREATE and the verify can fail construction. Both ALTERs are
 // BEST-EFFORT by design: a deployment whose CH user holds INSERT and CREATE but
-// not ALTER, or whose corpus table is operator-owned and needs ON CLUSTER, is a
-// legitimate configuration, and on such a deployment an ALTER is a no-op in
-// every case that matters — the schema either already matches (nothing to do)
-// or it does not, which the verify catches on the server's own answer rather
-// than on whether the ALTER was permitted. That keeps the ALTER from turning a
-// working sink into a disabled one while leaving the guarantee intact: the sink
-// is never built over a schema that cannot hold what this binary writes.
+// not ALTER is a legitimate configuration, and on such a deployment an ALTER is
+// a no-op in every case that matters — the schema either already matches
+// (nothing to do) or it does not, which the verify catches on the server's own
+// answer rather than on whether the ALTER was permitted. That keeps the ALTER
+// from turning a working sink into a disabled one while leaving the guarantee
+// intact: the sink is never built over a schema that cannot hold what this
+// binary writes.
 //
 // Verifying against the server — rather than trusting the ALTERs did what they
 // were asked — is what makes the reconciliation honest rather than hopeful: a
@@ -189,22 +189,32 @@ var reconciledEnumColumns = []reconciledEnumColumn{
 // otherwise surface much later as a batch the table rejects, on every reconcile
 // interval, forever. A construction failure disables the reconciler (see
 // buildCorpusSink); the data plane is untouched either way.
-func NewCHTableSink(ctx context.Context, conn CHTableConn) (*CHTableSink, error) {
+//
+// cluster is the deployment's ClickHouse cluster name — cerberus's own
+// CERBERUS_SCHEMA_CLUSTER, the SAME resolved knob internal/schema/ddl threads
+// into every statement the auto-create hook emits (see its Config.Cluster).
+// Empty (the single-node default, and the Replicated-DATABASE deployment that
+// replicates its own DDL) renders exactly the DDL this sink emitted before the
+// parameter existed; non-empty adds `ON CLUSTER <cluster>` to every DDL
+// statement below — the CREATE and both ALTERs — so the table is created on
+// EVERY node of the cluster rather than on whichever one happened to serve this
+// connection (cerberus issue #3225).
+func NewCHTableSink(ctx context.Context, conn CHTableConn, cluster string) (*CHTableSink, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("optcorpus: nil CH connection for table sink")
 	}
-	if err := conn.Exec(ctx, corpusCreateTableSQL()); err != nil {
+	if err := conn.Exec(ctx, corpusCreateTableSQL(cluster)); err != nil {
 		return nil, fmt.Errorf("optcorpus: create %s: %w", CorpusTableName, err)
 	}
 	addErrs := map[string]error{}
 	for _, col := range CorpusColumns() {
-		if err := conn.Exec(ctx, corpusAddColumnSQL(col)); err != nil {
+		if err := conn.Exec(ctx, corpusAddColumnSQL(col, cluster)); err != nil {
 			addErrs[col.Name] = err
 		}
 	}
 	widenErrs := map[string]error{}
 	for _, col := range reconciledEnumColumns {
-		if err := conn.Exec(ctx, corpusAlterEnumColumnSQL(col)); err != nil {
+		if err := conn.Exec(ctx, corpusAlterEnumColumnSQL(col, cluster)); err != nil {
 			widenErrs[col.name] = err
 		}
 	}
@@ -234,17 +244,27 @@ func NewCHTableSink(ctx context.Context, conn CHTableConn) (*CHTableSink, error)
 // columnar INSERT batch names no columns and Append is POSITIONAL, so the
 // deployed order and CorpusColumns() order must agree, and appending is the one
 // edit that keeps them agreeing on a fresh table and a migrated one alike.
-func corpusAddColumnSQL(col chsql.ColumnDef) string {
-	return chsql.AlterTableAddColumn("", CorpusTableName, col.Name, col.Type).SQL()
+//
+// cluster carries the ON CLUSTER clause the CREATE carries — an ALTER that
+// stopped at the connected node would leave every other node's copy of the
+// table on the older column list, which is the same divergence the CREATE's own
+// clause exists to prevent. Empty leaves the clause off (see NewCHTableSink).
+func corpusAddColumnSQL(col chsql.ColumnDef, cluster string) string {
+	return chsql.AlterTableAddColumn("", CorpusTableName, col.Name, col.Type).
+		OnCluster(cluster).
+		SQL()
 }
 
 // corpusAlterEnumColumnSQL renders the statement that retypes the deployed
 // column to the member set this binary writes. Widening an Enum8 is
 // metadata-only on ClickHouse — no part is rewritten, no mutation is scheduled —
 // so it is safe to issue on every start, and IF EXISTS makes it a no-op on a
-// table the CREATE above just made with the wide type.
-func corpusAlterEnumColumnSQL(col reconciledEnumColumn) string {
-	return chsql.AlterTableModifyColumn("", CorpusTableName, col.name, col.enumType()).SQL()
+// table the CREATE above just made with the wide type. cluster carries the same
+// ON CLUSTER clause, for the same reason corpusAddColumnSQL does.
+func corpusAlterEnumColumnSQL(col reconciledEnumColumn, cluster string) string {
+	return chsql.AlterTableModifyColumn("", CorpusTableName, col.name, col.enumType()).
+		OnCluster(cluster).
+		SQL()
 }
 
 // readDeployedSchema reads the corpus table's DEPLOYED column name→type map out
@@ -459,9 +479,27 @@ func parseEnum8Value(rs []rune) (int64, int, bool) {
 //	  shards_observed UInt8, parallelism UInt8
 //	) ENGINE = MergeTree ORDER BY (shape_id, n_anchors, fanout)
 //	  TTL toDateTime(event_time) + toIntervalDay(30)
-func corpusCreateTableSQL() string {
+//
+// cluster (CERBERUS_SCHEMA_CLUSTER, see NewCHTableSink) adds the `ON CLUSTER`
+// clause between the table name and the column list, so a classic
+// distributed-DDL deployment — which is EVERY `CERBERUS_CH_DATA_SHARDS > 1`
+// deployment, since internal/schema/ddl's Config.Validate refuses that topology
+// without a cluster name — creates the table on every node instead of only on
+// the one that served this connection (cerberus issue #3225). Empty renders the
+// clause-free statement unchanged, which covers both the single-node default
+// and the single-shard multi-replica shape, where the `otel` database is itself
+// a Replicated database engine and replicates this DDL on its own.
+//
+// The engine stays a plain MergeTree in every topology: an ON CLUSTER CREATE
+// makes the table exist everywhere, which is what an INSERT landing on any node
+// needs, while a replicating engine or a Distributed wrapper would additionally
+// govern where the ROWS live and how a reader sees them — a separate property
+// this DDL has never claimed and one that already partitions the corpus per
+// replica on the supported multi-replica path (cerberus issue #3241).
+func corpusCreateTableSQL(cluster string) string {
 	return chsql.CreateTable(CorpusTableName).
 		IfNotExists().
+		OnCluster(cluster).
 		Columns(CorpusColumns()...).
 		Engine(chsql.EngineMergeTree()).
 		OrderBy("shape_id", "n_anchors", "fanout").

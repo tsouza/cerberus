@@ -560,3 +560,14 @@ own materialized view, and none of them is wired for the split. Combining
 than silently under-provisioning one of those tables. That carve-out is the
 EXPERIMENTAL mode's design boundary: the four features are
 single-data-shard-only.
+
+The router-calibration corpus (`cerberus_router_corpus`,
+`CERBERUS_CH_OPT_CORPUS_SINK_MODE=chtable`) is deliberately NOT in that
+carve-out. Its table is provisioned by the corpus sink rather than by
+`internal/schema/ddl`, and the sink stamps `ON CLUSTER
+<CERBERUS_SCHEMA_CLUSTER>` on its own `CREATE` and `ALTER` statements — which
+the chart always sets under `dataShards.count > 1` — so the table exists on
+every node and an INSERT is correct wherever it lands. It gets no
+`Distributed` wrapper and no replicating engine, so each node holds the rows
+written through it; nothing on the query path reads the corpus, and the
+consequences for the offline analysis that does are tracked in issue #3241.
