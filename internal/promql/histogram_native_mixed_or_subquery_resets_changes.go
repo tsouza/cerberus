@@ -175,8 +175,10 @@ func mixedPairCountStage(input chplan.Node, windowFn string, keyAliases []string
 //   - both rows histogram-typed → [expHistogramResetVerdictExpr] /
 //     [expHistogramChangeVerdictExpr], reused verbatim by naming this
 //     lambda's own (prev, curr) parameters identically to what those
-//     functions' hardcoded identifiers expect, so the two shapes cannot
-//     drift apart about what a hist/hist reset or change IS.
+//     functions' hardcoded identifiers expect — and by taking the same
+//     bucket-ladder arguments from [expHistogramPairBucketLadderArgs],
+//     which those functions read by the identifiers it names — so the two
+//     shapes cannot drift apart about what a hist/hist reset or change IS.
 //   - both rows float-typed → [mixedFloatPairVerdictExpr].
 //   - one of each (a type FLIP) → always true — reference's
 //     unconditional reset/change on a type transition, with no further
@@ -226,12 +228,14 @@ func mixedPairVerdictExpr(windowFn string, histSchema schema.Metrics, densified 
 		tsList,
 	}}
 
+	ladderParams, ladderArgs := expHistogramPairBucketLadderArgs()
 	return hqLet(paramMixedOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-			&chplan.Lambda{Params: []string{prevParam, currParam}, Body: body},
+		args := []chplan.Expr{
+			&chplan.Lambda{Params: append([]string{prevParam, currParam}, ladderParams...), Body: body},
 			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}},
 			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}},
-		}}
+		}
+		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: append(args, ladderArgs...)}
 	})
 }
 
