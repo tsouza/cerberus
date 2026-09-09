@@ -113,7 +113,6 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnLower:                           {Name: "lower"},
 	chplan.FnRegexMatch:                      {Name: "match"},
 	chplan.FnNullIf:                          {Name: "nullIf"},
-	chplan.FnParseReadableSize:               {Name: "parseReadableSize"},
 	chplan.FnParseTimeDelta:                  {Name: "parseTimeDelta"},
 	chplan.FnStringPosition:                  {Name: "position"},
 	chplan.FnReplaceAll:                      {Name: "replaceAll"},

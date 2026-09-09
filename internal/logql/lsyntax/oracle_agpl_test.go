@@ -65,6 +65,24 @@ var corpus = []string{
 	`{app="api"} | addr = ip("1.2.3.4")`,
 	`{app="api"} | (a="1" or b="2") and c="3"`,
 	`{app="api"} | a="1" b="2"`,
+	// Label-filter associativity/precedence where `,` and juxtaposition
+	// meet `or` / `and`. Upstream's grammar gives the two conjunction
+	// spellings NO precedence, so goyacc default-shifts every conflict
+	// they take part in — see [labelFilterConjLbp]. Nothing in the
+	// corpus combined them at the same nesting level before, which is
+	// why the divergence survived (cerberus issue #3183). The last entry
+	// is upstream's own pinned case from
+	// pkg/logql/syntax/parser_test.go.
+	`{app="api"} | a="1", b="2" or c="3"`,
+	`{app="api"} | a="1" b="2" or c="3"`,
+	`{app="api"} | a="1" or b="2", c="3"`,
+	`{app="api"} | a="1" or b="2" c="3"`,
+	`{app="api"} | a="1" and b="2", c="3"`,
+	`{app="api"} | a="1", b="2" and c="3"`,
+	`{app="api"} | a="1", b="2", c="3"`,
+	`{app="api"} | a="1" b="2" c="3"`,
+	`{app="api"} | a="1", b="2" or c="3", d="4"`,
+	`{app="api"} | foo="bar" buzz!="blip", blop=~"boop" or fuzz==5`,
 	// parsers
 	`{app="api"} | logfmt`,
 	`{app="api"} | logfmt --strict --keep-empty`,

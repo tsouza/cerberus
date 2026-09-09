@@ -1,10 +1,13 @@
 package tempo
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // TestParseTempoTime covers the three integer magnitudes plus float
@@ -33,9 +36,23 @@ func TestParseTempoTime(t *testing.T) {
 		{"unix-millis-with-frac", "1700000000123", time.UnixMilli(1_700_000_000_123).UTC(), false},
 		{"unix-millis-1_5e12", "1500000000000", time.UnixMilli(1_500_000_000_000).UTC(), false},
 
-		// Below 1e12 stays in the seconds branch (year ~33658 in
-		// seconds would be absurd; clients never send that).
-		{"boundary-1e12-minus-1-stays-seconds", "999999999999", time.Unix(999_999_999_999, 0).UTC(), false},
+		// Below 1e12 still routes to the seconds branch, but the
+		// resulting time is pinned to the last instant a scan bound can
+		// represent: tsScanBound renders t.UnixNano(), and 999999999999
+		// seconds is year 33658, far past the int64-nanosecond ceiling
+		// that both UnixNano() and the DateTime64(9) Timestamp column
+		// top out at. Unpinned, UnixNano() wrapped and the search ran
+		// over a window nobody asked for.
+		{"boundary-1e12-minus-1-clamps", "999999999999", time.Unix(0, math.MaxInt64).UTC(), false},
+		{"largest-unclamped-seconds", "9223372036", time.Unix(9_223_372_036, 0).UTC(), false},
+		{"rfc3339-past-storable-window", "9999-01-01T00:00:00Z", time.Unix(0, math.MaxInt64).UTC(), false},
+
+		// Reference Tempo reaches strconv.ParseFloat only for a value
+		// containing a decimal point (pkg/api/http.go:631-637); a bare
+		// integer wider than int64 falls to ParseInt, then RFC3339, and
+		// is rejected — `start=10000000000000000000` is a 400 there.
+		{"integer-too-large-for-int64-rejected", "10000000000000000000", time.Time{}, true},
+		{"exponent-without-decimal-point-rejected", "1e19", time.Time{}, true},
 
 		// >=1e15 → ns (tempo-vulture / ns-native plugin shape).
 		{"unix-nanos-1e15-boundary", "1000000000000000", time.Unix(0, 1_000_000_000_000_000).UTC(), false},
@@ -119,5 +136,57 @@ func TestParseTempoStartEnd_LogcliNanos(t *testing.T) {
 	}
 	if got := end.UnixNano(); got != endNs {
 		t.Fatalf("end ns: got %d, want %d", got, endNs)
+	}
+}
+
+// TestTempoScanBoundNeverWraps is the reason the parser clamps rather
+// than passing an out-of-range time through. tsScanBound renders
+// `Timestamp <op> fromUnixTimestamp64Nano(<t.UnixNano()>)`, and
+// time.Time.UnixNano() is documented as undefined outside roughly
+// 1678–2262: past that edge it silently WRAPS, so a request for "up to
+// year 33658" became a scan bound in the distant past (or, as an
+// unsigned nanosecond count, the far future) and the handler answered
+// 200 over a window the client never asked for — a wrong answer, not a
+// wrong status code.
+//
+// The invariant asserted here is round-tripping: whatever time the
+// parser hands back, re-reading the emitted nanosecond literal must
+// reproduce it exactly. That holds for every in-range timestamp and can
+// only hold at the edges if the parser pinned them there.
+func TestTempoScanBoundNeverWraps(t *testing.T) {
+	t.Parallel()
+
+	// Inputs a client can actually put on the wire that decode to a
+	// timestamp at or beyond the representable edge.
+	raws := []string{
+		"999999999999",         // seconds → year 33658
+		"9999-01-01T00:00:00Z", // RFC3339 → year 9999
+		"1700000000",           // control: an ordinary in-range seconds value
+		"1700000000000000000",  // control: an ordinary in-range ns value
+	}
+	for _, raw := range raws {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := parseTempoTime(raw)
+			if err != nil {
+				t.Fatalf("parseTempoTime(%q): %v", raw, err)
+			}
+			bound, ok := tsScanBound("Timestamp", chplan.OpLe, parsed).(*chplan.Binary)
+			if !ok {
+				t.Fatalf("tsScanBound did not return a *chplan.Binary")
+			}
+			call, ok := bound.Right.(*chplan.FuncCall)
+			if !ok || len(call.Args) != 1 {
+				t.Fatalf("tsScanBound rhs = %#v, want a 1-arg FuncCall", bound.Right)
+			}
+			lit, ok := call.Args[0].(*chplan.LitInt)
+			if !ok {
+				t.Fatalf("tsScanBound nanosecond arg = %#v, want *chplan.LitInt", call.Args[0])
+			}
+			if got := time.Unix(0, lit.V).UTC(); !got.Equal(parsed) {
+				t.Fatalf("scan bound wrapped: parsed %v rendered as %d ns, which reads back as %v",
+					parsed, lit.V, got)
+			}
+		})
 	}
 }

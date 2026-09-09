@@ -110,7 +110,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sqlStr, args, err := buildPatternsSQL(h.Schema, matchers, start, end, lineLimit)
+	sqlStr, args, err := buildPatternsSQL(h.Schema, h.AttrStrategies, matchers, start, end, lineLimit)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -143,14 +143,15 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 // Mirrors buildDetectedFieldsSQL but projects three columns — drain
 // needs the body and a real timestamp to bucket per-cluster samples, and
 // [minePatterns] buckets mining itself by the row's raw severity.
-func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time, lineLimit int) (string, []any, error) {
+func buildPatternsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers []*labels.Matcher, start, end time.Time, lineLimit int) (string, []any, error) {
 	sb := chsql.NewQuery().
 		Select(
 			chsql.Col(s.TimestampColumn),
 			chsql.Col(s.BodyColumn),
 			chsql.Col(s.SeverityColumn),
 		).
-		From(chsql.Col(s.LogsTable))
+		From(chsql.Col(s.LogsTable)).
+		WithAttrStrategies(strategies)
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err

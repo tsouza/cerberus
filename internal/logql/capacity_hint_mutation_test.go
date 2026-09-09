@@ -274,7 +274,7 @@ func TestWrapVectorAggregateForSample_CapHintMutantKilled(t *testing.T) {
 			return capmutant.Eval(t, []int{groups, 2}, ops)
 		},
 		Observe: func(t *testing.T) (int, int) {
-			node := wrapVectorAggregateForSample(&chplan.Aggregate{}, va, s, aliases, false, "")
+			node := wrapVectorAggregateForSample(&chplan.Aggregate{}, va, s, lowerCtx{}, aliases, false, "")
 			proj, ok := node.(*chplan.Project)
 			if !ok {
 				t.Fatalf("wrapVectorAggregateForSample -> %T; want *chplan.Project", node)

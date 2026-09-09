@@ -2128,8 +2128,10 @@ func durationLabelFilterExpr(f *syntax.DurationLabelFilter, s schema.Logs, label
 // humanize.ParseBytes's number/unit split) so an unparseable value
 // keeps-and-marks the row instead of silently falling through as 0 (the
 // prior bare `parseReadableSize` behaviour diverged from reference,
-// which stamps LabelFilterErr). The value branch still reads through
-// `parseReadableSize`, which understands "1KB", "1MiB", "1.5G", etc.
+// which stamps LabelFilterErr). The value branch is humanize's own
+// `f * multiplier` arithmetic rather than CH's `parseReadableSize`,
+// which threw on four shapes humanize accepts and rounded where
+// humanize truncates — see [newBytesParse].
 func bytesLabelFilterExpr(f *syntax.BytesLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
 	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
 	parse := newBytesParse(access)

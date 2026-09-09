@@ -74,8 +74,10 @@ func TestIndexVolume_HappyPath(t *testing.T) {
 	}
 }
 
-// TestIndexVolume_TargetLabels confirms the mapFilter projection for
-// the `targetLabels` query parameter.
+// TestIndexVolume_TargetLabels confirms the projected group key for the
+// `targetLabels` query parameter: an explicit map literal, one entry per
+// requested label, each value resolved through the SAME rule the
+// selector matchers resolve under, with absent labels filtered out.
 func TestIndexVolume_TargetLabels(t *testing.T) {
 	t.Parallel()
 
@@ -95,8 +97,8 @@ func TestIndexVolume_TargetLabels(t *testing.T) {
 
 	lastSQL := q.LastSQL()
 	lastArgs := q.LastArgs()
-	if !strings.Contains(lastSQL, "mapFilter((k, v) -> k IN (") {
-		t.Errorf("missing mapFilter for targetLabels: %q", lastSQL)
+	if !strings.Contains(lastSQL, "mapFilter((k, v) -> v != ?, map(") {
+		t.Errorf("missing absent-label filter over the projected map literal: %q", lastSQL)
 	}
 	// Args carry the target-label keys (sorted): env, job, plus the
 	// original "job" matcher value pair (job, api) ahead of those. The
@@ -177,5 +179,68 @@ func TestIndexVolume_BadInput(t *testing.T) {
 				t.Fatalf("expected 400, got %d", resp.StatusCode)
 			}
 		})
+	}
+}
+
+// TestIndexVolume_TargetLabelsResolveLikeTheSelector is the SQL-level
+// statement of the wrong-answer bug the chDB sibling
+// (TestIndexVolume_ChDB_TargetLabelsResolvesHoistedColumn) demonstrates
+// end to end. `service_name` is the sharp case: the selector resolves it
+// through the dedicated `ServiceName` column coalesced with the map
+// (logql.matcherLHS), because the OTel-CH exporter hoists `service.name`
+// out of ResourceAttributes. A projection that reads the literal
+// `service_name` map key instead sees nothing on exactly the rows the
+// selector matched.
+func TestIndexVolume_TargetLabelsResolveLikeTheSelector(t *testing.T) {
+	t.Parallel()
+
+	get := func(t *testing.T, q *stubQuerier, srv, query string) string {
+		t.Helper()
+		resp, err := http.Get(srv + query)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d", resp.StatusCode)
+		}
+		return q.LastSQL()
+	}
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// (1) Selector side: what does `service_name` resolve to when the
+	// request FILTERS on it? Everything between "WHERE (" and " = ?)" is
+	// the matcher's left-hand side.
+	selectorSQL := get(t, q, srv.URL,
+		`/loki/api/v1/index/volume?query=%7Bservice_name%3D%22api%22%7D`)
+	const wherePrefix = "WHERE ("
+	i := strings.Index(selectorSQL, wherePrefix)
+	if i < 0 {
+		t.Fatalf("no WHERE clause to read the matcher LHS from: %q", selectorSQL)
+	}
+	lhs := selectorSQL[i+len(wherePrefix):]
+	j := strings.Index(lhs, " = ?)")
+	if j < 0 {
+		t.Fatalf("could not delimit the matcher LHS in %q", selectorSQL)
+	}
+	lhs = lhs[:j]
+	if !strings.Contains(lhs, "ServiceName") {
+		t.Fatalf("premise broken: the selector no longer resolves service_name through "+
+			"the ServiceName column; LHS = %q", lhs)
+	}
+
+	// (2) Projection side: the same label, now as a targetLabels
+	// projection, must resolve to the SAME expression. Projecting the
+	// literal `service_name` map key instead returns the empty map on
+	// exactly the rows the selector matched, and the whole tenant's
+	// volume collapses into one unlabelled sample.
+	projectedSQL := get(t, q, srv.URL,
+		`/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&targetLabels=service_name&aggregateBy=labels`)
+	if !strings.Contains(projectedSQL, lhs) {
+		t.Errorf("projected `service_name` does not resolve as the selector does.\n"+
+			"selector LHS: %s\nprojection:   %s", lhs, projectedSQL)
 	}
 }

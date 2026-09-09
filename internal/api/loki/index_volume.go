@@ -12,6 +12,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -62,7 +63,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, matchers, start, end, limit, targetLabels, aggregateBy)
+	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, targetLabels, aggregateBy)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -109,7 +110,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 // `<group-key-frag>` is one of:
 //
 //   - `ResourceAttributes` (default — full label set)
-//   - `mapFilter((k, v) -> k IN (?, ?, …), ResourceAttributes)` when
+//   - `mapFilter((k, v) -> v != ”, map(?, <value expr>, …))` when
 //     `targetLabels` is set and aggregateBy is "labels" (or unset)
 //
 // The group key is the WHOLE label-set Map, so it carries the canonical
@@ -129,20 +130,25 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 // fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
 func buildIndexVolumeSQL(
 	s schema.Logs,
+	strategies chsql.AttrStrategies,
 	matchers []*labels.Matcher,
 	start, end time.Time,
 	limit int,
 	targetLabels []string,
 	aggregateBy string,
 ) (string, []any, error) {
-	groupFrag := volumeGroupFrag(s, targetLabels, aggregateBy)
+	groupFrag, err := volumeGroupFrag(s, strategies, targetLabels, aggregateBy)
+	if err != nil {
+		return "", nil, err
+	}
 
 	sb := chsql.NewQuery().
 		Select(
 			chsql.As(canonicalLabelsFrag(groupFrag), "labels"),
 			chsql.As(bytesAggFrag(s.BodyColumn), "bytes"),
 		).
-		From(chsql.Col(s.LogsTable))
+		From(chsql.Col(s.LogsTable)).
+		WithAttrStrategies(strategies)
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err
@@ -158,32 +164,61 @@ func buildIndexVolumeSQL(
 
 // volumeGroupFrag picks the CH expression that produces the row's
 // label-set group key. "series" (or empty + no targetLabels) groups by
-// the full ResourceAttributes map; otherwise we project to the
-// targetLabels subset via mapFilter.
+// the full attribute map; otherwise we project to the targetLabels
+// subset.
 //
-// chplan.MapWithoutKeys (and Builder.MapFilterExcept) cover the
-// NEGATED form ("everything except these keys"). The positive form
-// here composes the mapFilter body inline: the outer Call("mapFilter",
-// …) is typed, the lambda head is composed via Builder.Lambda, and
-// the bare lambda-parameter reference `k` inside In's left slot uses
-// chsql.BareIdent (the typed constructor for CH-safe bare identifiers
-// — narrow trust contract, no backtick quoting). All composition lives
-// inside the typed Frag surface.
-func volumeGroupFrag(s schema.Logs, targetLabels []string, aggregateBy string) chsql.Frag {
+// The projection resolves each requested label through
+// [logql.LabelValueExpr] — the SAME storage-shape precedence
+// [logql.SelectorPredicate] scopes the request with. Projecting by the
+// literal map key instead is the /index/volume wrong-answer bug:
+// `targetLabels=service_name` is selected through the dedicated
+// `ServiceName` column (the OTel-CH exporter hoists `service.name` out
+// of the map, leaving `ResourceAttributes['service_name']` empty on
+// every such row), so a `k IN ('service_name')` mapFilter returned the
+// EMPTY map for every row and the whole tenant's volume collapsed into
+// one unlabelled `metric: {}` sample. Reference Loki reads the value off
+// the stream's own labels (pkg/ingester/instance.go:889-903), so the
+// projected key must carry the value cerberus matched on.
+//
+// The outer `mapFilter((k, v) -> v != ”, …)` reproduces the one thing
+// the old shape got right: a stream that does not carry a requested
+// label contributes no entry for it, because upstream ranges over the
+// labels the stream HAS rather than the labels that were asked for
+// (`s.labels.Range` at instance.go:889). Building the map from an
+// explicit, sorted key list also makes its key order deterministic —
+// the canonical wrap outside still applies, and is now belt-and-braces
+// rather than load-bearing on this branch.
+//
+// All composition lives inside the typed Frag surface: the map literal
+// and the filter are Call constructors, the lambda head is
+// Builder.Lambda, and the bare lambda-parameter reference `v` uses
+// chsql.BareIdent (the typed constructor for CH-safe bare identifiers).
+func volumeGroupFrag(
+	s schema.Logs,
+	strategies chsql.AttrStrategies,
+	targetLabels []string,
+	aggregateBy string,
+) (chsql.Frag, error) {
 	if len(targetLabels) == 0 || aggregateBy == "series" {
-		return chsql.Col(s.ResourceAttributesColumn)
+		return attrMapFrag(strategies, s.ResourceAttributesColumn), nil
 	}
 	keys := append([]string(nil), targetLabels...)
 	sort.Strings(keys)
-	keyArgs := make([]chsql.Frag, len(keys))
-	for i, k := range keys {
-		keyArgs[i] = chsql.Lit(k)
+	// map(key, value, key, value, …) — CH's map-literal arity.
+	entries := make([]chsql.Frag, 0, 2*len(keys))
+	for _, k := range keys {
+		valueFrag, err := exprFrag(logql.LabelValueExpr(k, s))
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, chsql.Lit(k), valueFrag)
 	}
-	inFrag := chsql.In(chsql.BareIdent("k"), keyArgs...)
-	lambda := func(b *chsql.Builder) {
-		b.Lambda([]string{"k", "v"}, func(b *chsql.Builder) { inFrag(b) })
+	dropAbsent := func(b *chsql.Builder) {
+		b.Lambda([]string{"k", "v"}, func(b *chsql.Builder) {
+			chsql.Neq(chsql.BareIdent("v"), chsql.Lit(""))(b)
+		})
 	}
-	return chsql.Call("mapFilter", lambda, chsql.Col(s.ResourceAttributesColumn))
+	return chsql.Call("mapFilter", dropAbsent, chsql.Call("map", entries...)), nil
 }
 
 // parseVolumeLimit decodes the optional `limit` parameter; missing /

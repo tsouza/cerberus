@@ -244,33 +244,60 @@ func rangeWindowIdentityExpr(t *testing.T, n chplan.Node) chplan.Expr {
 	return p.Projections[0].Expr
 }
 
+// The two tests below pin both mutant halves of the
+// [applyUnwrapPostFilters] hasMarks return
+// range_aggregation.go:`&chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil`.
+//
+// They call applyUnwrapPostFilters DIRECTLY rather than observing the
+// lowered plan's series identity, because the plan-level observation
+// stopped discriminating: every unwrap conversion now contributes its
+// own SampleExtractionErr mark (bare `| unwrap x` models
+// convertFloat's `strconv.ParseFloat` failure, `bytes` models
+// convertBytes's — cerberus issue #3183), so `unwrapHasErrorMarks` is
+// true for an unwrap query whatever the POST-filters do, and an
+// assertion on the identity wrapper would pass under either mutant.
+// The return expression itself is unchanged and still the mutation
+// target; only where the tests observe it moved.
+
 // TestUnwrapPostFilterMarksGateErrorBypass_Negation pins the
-// CONDITIONALS_NEGATION half of the [applyUnwrapPostFilters] hasMarks
-// return
-// range_aggregation.go:`&chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil`:
-//
-// That `len(marks) > 0` hasMarks return flows up to unwrapHasErrorMarks
-// (via applyUnwrapRowSemantics), which gates wrapping the series identity
-// in errorBypassIdentityExpr. A NEGATION flip `> 0` → `<= 0` reports
-// hasMarks=false even though the numeric post-filter stamped a mark, so
-// the error-bypass identity wrapper disappears.
-//
-// Fixture `sum_over_time({app="api"} | logfmt | unwrap latency | status > 100 [5m])`:
-//   - `| logfmt` makes the labels parser-merged (errorBypass path reachable).
-//   - `unwrap latency` is a bare unwrap (no duration conversion → no mark
-//     from that stage), so the ONLY mark source is the post-filter.
-//   - `| status > 100` is a NumericLabelFilter → stamps a LabelFilterErr
-//     mark → marks==1 → hasMarks=true → identity IS error-bypass-wrapped.
-//
-// The negation mutant drops the wrapper; asserting it's present kills it.
+// CONDITIONALS_NEGATION half. `| status > 100` is a NumericLabelFilter,
+// which stamps a LabelFilterErr mark → marks==1 → hasMarks MUST be
+// true. The mutant `<= 0` reports false.
 func TestUnwrapPostFilterMarksGateErrorBypass_Negation(t *testing.T) {
 	t.Parallel()
 
+	if got := unwrapPostFilterHasMarks(t, `sum_over_time({app="api"} | logfmt | unwrap latency | status > 100 [5m])`); !got {
+		t.Errorf("applyUnwrapPostFilters reported hasMarks=false, but the numeric post-filter " +
+			"`status > 100` stamps a LabelFilterErr mark.\n" +
+			"A CONDITIONALS_NEGATION flip of `len(marks) > 0` to `<= 0` lived.")
+	}
+}
+
+// TestUnwrapPostFilterNoMarksSkipErrorBypass_Boundary pins the
+// CONDITIONALS_BOUNDARY half. `| foo = "bar"` is a StringLabelFilter,
+// for which labelFiltererLower returns NO marks — a string comparison
+// cannot fail to parse — so hasMarks MUST be false. The mutant `>= 0`
+// reports true for the empty slice.
+func TestUnwrapPostFilterNoMarksSkipErrorBypass_Boundary(t *testing.T) {
+	t.Parallel()
+
+	if got := unwrapPostFilterHasMarks(t, `sum_over_time({app="api"} | logfmt | unwrap latency | foo = "bar" [5m])`); got {
+		t.Errorf("applyUnwrapPostFilters reported hasMarks=true, but the string post-filter " +
+			"`foo = \"bar\"` stamps no mark.\n" +
+			"A CONDITIONALS_BOUNDARY flip of `len(marks) > 0` to `>= 0` lived.")
+	}
+}
+
+// unwrapPostFilterHasMarks lowers query's selector the way
+// [lowerRangeAggregation] does and returns applyUnwrapPostFilters's
+// hasMarks result for its unwrap post-filters.
+func unwrapPostFilterHasMarks(t *testing.T, query string) bool {
+	t.Helper()
+
 	s := schema.DefaultOTelLogs()
 	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	end := start.Add(1 * time.Hour)
+	lc := lowerCtx{Start: start, End: start.Add(time.Hour), Step: time.Minute}
 
-	query := `sum_over_time({app="api"} | logfmt | unwrap latency | status > 100 [5m])`
 	expr, err := syntax.ParseExpr(query)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
@@ -283,66 +310,14 @@ func TestUnwrapPostFilterMarksGateErrorBypass_Negation(t *testing.T) {
 		t.Fatalf("fixture invalid: expected a non-empty unwrap PostFilters slice")
 	}
 
-	plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: start, End: end, Step: time.Minute})
+	innerLc := lc.withMatcherWindowExtension(ra.Left.Interval + ra.Left.Offset)
+	inner, labelsExpr, err := lowerLogRange(ra.Left, s, innerLc)
 	if err != nil {
-		t.Fatalf("lowerRangeAggregation: %v", err)
+		t.Fatalf("lowerLogRange: %v", err)
 	}
-
-	identity := requireCanonicalIdentity(t, rangeWindowIdentityExpr(t, plan))
-	if !isErrorBypassIdentity(identity) {
-		t.Errorf("series identity is NOT error-bypass-wrapped, but the numeric post-filter "+
-			"`status > 100` stamps a mark so hasMarks must be true.\n"+
-			"A CONDITIONALS_NEGATION flip of `len(marks) > 0` to `<= 0` drops the wrapper.\nidentity=%#v", identity)
-	}
-}
-
-// TestUnwrapPostFilterNoMarksSkipErrorBypass_Boundary pins the
-// CONDITIONALS_BOUNDARY half of that same
-// range_aggregation.go:`&chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil`
-// return. A flip `len(marks) > 0` → `>= 0` reports hasMarks=true even
-// when NO mark was stamped, so the error-bypass wrapper is applied
-// spuriously.
-//
-// Fixture `sum_over_time({app="api"} | logfmt | unwrap latency | foo = "bar" [5m])`:
-//   - `| foo = "bar"` is a StringLabelFilter post-filter → produces NO
-//     marks (labelFiltererLower returns nil marks for string filters).
-//   - The post-filter slice is non-empty so applyUnwrapPostFilters is
-//     called and reaches that return with marks==0; `inner` is a
-//     Filter so `pred` is non-nil and the `> 0` return path executes.
-//   - bare `unwrap latency` adds no mark either, so unwrapHasErrorMarks is
-//     false on the original → identity is NOT error-bypass-wrapped.
-//
-// The boundary mutant `>= 0` makes hasMarks true → wrapper applied;
-// asserting the wrapper is ABSENT kills it.
-func TestUnwrapPostFilterNoMarksSkipErrorBypass_Boundary(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelLogs()
-	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	end := start.Add(1 * time.Hour)
-
-	query := `sum_over_time({app="api"} | logfmt | unwrap latency | foo = "bar" [5m])`
-	expr, err := syntax.ParseExpr(query)
+	_, _, hasMarks, err := applyUnwrapPostFilters(inner, ra.Left.Unwrap.PostFilters, s, labelsExpr)
 	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
+		t.Fatalf("applyUnwrapPostFilters: %v", err)
 	}
-	ra, ok := expr.(*syntax.RangeAggregationExpr)
-	if !ok {
-		t.Fatalf("ParseExpr(%q) -> %T, want *syntax.RangeAggregationExpr", query, expr)
-	}
-	if ra.Left.Unwrap == nil || len(ra.Left.Unwrap.PostFilters) == 0 {
-		t.Fatalf("fixture invalid: expected a non-empty unwrap PostFilters slice (string filter)")
-	}
-
-	plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: start, End: end, Step: time.Minute})
-	if err != nil {
-		t.Fatalf("lowerRangeAggregation: %v", err)
-	}
-
-	identity := requireCanonicalIdentity(t, rangeWindowIdentityExpr(t, plan))
-	if isErrorBypassIdentity(identity) {
-		t.Errorf("series identity IS error-bypass-wrapped, but the string post-filter "+
-			"`foo = \"bar\"` stamps no mark so hasMarks must be false.\n"+
-			"A CONDITIONALS_BOUNDARY flip of `len(marks) > 0` to `>= 0` applies the wrapper spuriously.\nidentity=%#v", identity)
-	}
+	return hasMarks
 }
