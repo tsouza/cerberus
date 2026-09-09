@@ -29,6 +29,15 @@ import (
 // baseline. Narrowing the ROW SET is what moves this fold — a throwaway
 // two-rows-per-anchor probe measured 85.2 MiB, a 19.8x drop.
 //
+// Every one of those body rewrites kept the TARGET loop on the outside,
+// which is why none of them moved: what ClickHouse charges for is the
+// per-row arrays being CAPTURED by that loop, not the arithmetic in it.
+// Moving the loop inside — folding each row's whole ladder in one
+// `arrayReduceInRanges` call that takes the row as an argument — does
+// move it, by the same lever [expHistogramDenseContribsExpr] found for
+// the reset mask. See [expHistogramWindowClosedFormBucketsExpr], which is
+// what the ladders render through today.
+//
 // # Correction: that 19.8x is this fold's own, not the query's
 //
 // An earlier revision of this paragraph said row-set narrowing was "the
@@ -77,9 +86,10 @@ import (
 // [expHistogramWindowCoefficientStage] computes it once per group, in a
 // layer of its own, exactly as the reset mask and the extrapolation
 // factor already are. Every row whose coefficient is zero contributes
-// nothing to any bucket and is dropped there too, which is what takes the
-// per-bucket row count from "every in-window sample" down to two plus one
-// per reset for a cumulative counter — the overwhelmingly common shape.
+// nothing to any bucket and is dropped there too, which takes the row
+// count the ladders fold from "every in-window sample" down to two plus
+// one per reset for a cumulative counter — the overwhelmingly common
+// shape.
 //
 // # Why this is bit-identical, not merely equal
 //
@@ -96,9 +106,14 @@ import (
 //
 // The DELTA branch is preserved rather than dropped: it is the same
 // coefficient mechanism with its own vector, so a delta-temporality
-// series still reads every sample it needs (its coefficients are non-zero
-// on all but the earliest row) and simply does not benefit from the
-// narrowing.
+// series still reads every sample it needs. Its vector is non-zero on all
+// but the earliest row, which is not an implementation gap — a delta
+// sample carries the increment itself, so there is nothing to cancel and
+// nothing to narrow. What that costs is a separate question from what it
+// retains, and the answer is now "nothing":
+// [expHistogramWindowClosedFormBucketsExpr] loops over ROWS rather than
+// over target buckets, so the ladders no longer pay per row per target
+// for either vector (cerberus issue #3234).
 
 const (
 	// hqWindowCoeffsAlias holds the per-retained-row counter-fold
@@ -148,7 +163,6 @@ const (
 	paramWinCoeffs     = "wcc"
 	paramWinCoeff      = "wcx"
 	paramWinKeepPos    = "wck"
-	paramWinValue      = "wcv"
 )
 
 // expHistogramWindowClosedFormApplies reports whether this file's rewrite
@@ -246,8 +260,9 @@ func expHistogramWindowCoefficientAliases(forwarded []string) []string {
 }
 
 // expHistogramWindowCoefficientStage projects [hqWindowCoeffsAlias] and
-// [hqWindowKeepAlias] beside everything the layers above it read,
-// forwarding the grouping's own key columns and every aggregate by name —
+// one [expHistogramWindowNarrowedAlias] per column the bucket ladders
+// read, beside everything the layers above it read, forwarding the
+// grouping's own key columns and every aggregate by name —
 // the same shape [expHistogramResetMaskStage] uses, and it composes above
 // that stage because the coefficients read its mask.
 //
@@ -337,68 +352,155 @@ func expHistogramWindowCoefficientStage(
 		expHistogramWindowCoefficientAliases(extraAliases)
 }
 
-// expHistogramWindowClosedFormFold is the per-target-bucket fold this
-// file's rewrite installs: the coefficient-weighted sum of the retained
-// rows' contributions, scaled by rate/increase's own boundary-
+// expHistogramWindowClosedFormBucketsExpr renders ONE series'
+// window-reduced bucket ladder at the group's merged scale, in closed
+// form: the coefficient-weighted sum of the RETAINED rows' dense
+// per-target contributions, scaled by rate/increase's own boundary-
 // extrapolation factor exactly as [histogramWindowFold]'s rate branch
 // scales [counterIncreaseFold]'s result.
 //
-// `order` is ignored: the row order is already encoded in the coefficient
-// vector, and the timestamps the extrapolation factor needs are read at
-// FULL length from the factor's own layer rather than from anything this
-// fold narrowed. Keeping those two apart is what makes the factor exact —
-// a fold that derived the factor from the narrowed rows would compute it
-// over the wrong window edges.
-func expHistogramWindowClosedFormFold(in histogramWindowInputs) histogramWindowTimeFold {
-	return func(values, _ chplan.Expr) chplan.Expr {
-		weighted := &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{
-			&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-				&chplan.Lambda{
-					Params: []string{paramWinCoeff, paramWinValue},
-					Body: &chplan.Binary{
-						Op:    chplan.OpMul,
-						Left:  &chplan.BareIdent{Name: paramWinCoeff},
-						Right: &chplan.BareIdent{Name: paramWinValue},
-					},
-				},
-				&chplan.ColumnRef{Name: hqWindowCoeffsAlias},
-				values,
-			}},
-		}}
-		return &chplan.Binary{Op: chplan.OpMul, Left: weighted, Right: in.hoistedFactor}
-	}
-}
-
-// expHistogramWindowRowSource decides which rows a per-target-bucket
-// contribution reads: every row the window grouping collected, or only
-// the rows [expHistogramWindowCoefficientStage] kept.
+// It replaces [expHistogramWindowBucketsExpr] for the closed form rather
+// than supplying it a `fold`, because the two differ in which axis is the
+// OUTER loop, not merely in how the inner values combine.
 //
-// It is a type rather than a bool so the two readings are named at the
-// call site and a future third one (an irate/idelta two-sample narrowing,
-// say) has somewhere to go that is not another boolean parameter.
-type expHistogramWindowRowSource struct {
-	narrowed bool
-}
-
-// expHistogramWindowFullArrays reads every row, which is what every
-// window shape outside this file's rewrite does.
-func expHistogramWindowFullArrays() expHistogramWindowRowSource {
-	return expHistogramWindowRowSource{}
-}
-
-// expHistogramWindowNarrowedArrays reads only the rows whose counter-fold
-// coefficient is non-zero.
-func expHistogramWindowNarrowedArrays() expHistogramWindowRowSource {
-	return expHistogramWindowRowSource{narrowed: true}
-}
-
-// array renders one of the window grouping's per-row groupArray columns
-// under this source's reading.
-func (r expHistogramWindowRowSource) array(alias string) chplan.Expr {
-	if r.narrowed {
+// # Why the per-target reading was not enough (cerberus issue #3234)
+//
+// [expHistogramWindowBucketsExpr] loops over TARGET buckets and, inside
+// that loop, maps over the group's per-row scale/offset/bucket arrays.
+// Those arrays are CAPTURED by the per-target lambda, and ClickHouse
+// materialises a captured column once per element of the enclosing loop —
+// the same cost [expHistogramDenseContribsExpr] was written to remove
+// from the counter-reset mask. Narrowing the row set hid it for a
+// CUMULATIVE counter, where the coefficient vector keeps two rows of ~20;
+// it does nothing for a DELTA one, whose vector is non-zero on every row
+// but the earliest.
+//
+// Measured against a real ClickHouse 26.6.4 on cerberus's own
+// `cerberus_queries_duration_exp_hist` telemetry (7 series, ~110-155
+// stored buckets, ~20 samples per 5m window), the panel query
+// `histogram_quantile(0.95, sum by (cerberus_ql) (rate(…[5m])))` emitted
+// by each rendering and then spliced so ONLY the temporality test
+// changes — every other byte of the two queries being what cerberus
+// itself emitted — with `read_rows` 16,384 on all eight runs:
+//
+//	step=15, 21 anchors    per-target      this reading
+//	  cumulative branch      269.32 MiB      269.10 MiB
+//	  delta branch forced    985.38 MiB      268.96 MiB
+//
+//	step=5, 61 anchors     per-target      this reading
+//	  cumulative branch      905.56 MiB      905.33 MiB
+//	  delta branch forced      3.33 GiB      905.20 MiB
+//
+// So the delta branch stops being a special case: the ladders now cost
+// the same whether the coefficient vector retained two rows or all but
+// one, and the residual — unchanged by this rewrite, and the same on both
+// branches — belongs to a different layer. All four result sets are
+// byte-identical to their per-target counterparts.
+//
+// # Why the answers do not move
+//
+// Each row's dense contribution folds exactly the slices
+// [expHistogramBucketSliceBoundsExpr] names — the same slices the
+// per-target reading hands to `arraySlice` — and the values are stored
+// UInt64 bucket counts in the Float64 domain, so every partial sum on
+// either side is an exact integer and re-associating them cannot change a
+// bit. That is this file's header argument, applied to the second axis.
+//
+// The bounds still come from the FULL per-row arrays, exactly as
+// [expHistogramWindowBucketsExpr] documents: this ladder's own offset is
+// published separately by [expHistogramMergeOffsetExpr] over those same
+// full arrays, so deriving the target range from the narrowed row set
+// would shift the ladder against its own offset.
+func expHistogramWindowClosedFormBucketsExpr(
+	offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string,
+	factor chplan.Expr,
+) chplan.Expr {
+	mergedScale := chplan.Expr(&chplan.ColumnRef{Name: mergedScaleAlias})
+	narrowed := func(alias string) chplan.Expr {
 		return &chplan.ColumnRef{Name: expHistogramWindowNarrowedAlias(alias)}
 	}
-	return &chplan.ColumnRef{Name: alias}
+	return expHistogramOverMergedBucketRangeExpr(
+		&chplan.ColumnRef{Name: scalesArrAlias},
+		&chplan.ColumnRef{Name: offArrAlias},
+		&chplan.ColumnRef{Name: bucArrAlias},
+		mergedScale,
+		func(mergedStart, mergedLength chplan.Expr) chplan.Expr {
+			// One retained row's dense contribution, already multiplied by
+			// that row's coefficient. Every lambda below binds per-ROW
+			// quantities and captures only scalars.
+			weightedRows := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{paramExpRowScale, paramExpRowOffset, paramExpRowBuckets, paramWinCoeff},
+					Body: scaleArrayExpr(
+						paramWinCoeffScaled,
+						&chplan.BareIdent{Name: paramWinCoeff},
+						expHistogramDenseContribsExpr(
+							&chplan.BareIdent{Name: paramExpRowScale},
+							&chplan.BareIdent{Name: paramExpRowOffset},
+							&chplan.BareIdent{Name: paramExpRowBuckets},
+							mergedScale, mergedStart, mergedLength,
+						),
+					),
+				},
+				narrowed(scalesArrAlias), narrowed(offArrAlias), narrowed(bucArrAlias),
+				&chplan.ColumnRef{Name: hqWindowCoeffsAlias},
+			}}
+			// sumForEach adds the retained rows position by position. Its
+			// result is as long as the longest array it folded, so it is
+			// EMPTY for a group that retained no row at all; arrayResize
+			// pins the ladder to the target range the offset beside it was
+			// published for, which is this projection's contract rather
+			// than something to infer from how many rows survived.
+			summed := &chplan.FuncCall{Fn: chplan.FnArrayResize, Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnArrayReduce, Args: []chplan.Expr{
+					&chplan.LitString{V: expHistogramWindowDenseSumAggName},
+					weightedRows,
+				}},
+				&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{mergedLength}},
+				toFloat64Expr(&chplan.LitInt{V: 0}),
+			}}
+			return scaleArrayExpr(paramWinFactorScaled, factor, summed)
+		},
+	)
+}
+
+// expHistogramWindowDenseSumAggName is the ClickHouse aggregate
+// [expHistogramWindowClosedFormBucketsExpr] combines the retained rows'
+// dense contributions with: `sum` under the `-ForEach` combinator, which
+// applies it position by position across an array of arrays. Plain sum,
+// not the compensated reducer, for the reason
+// [expHistogramDenseContribsExpr] gives.
+//
+// The `-ForEach` combinators SKIP a NULL element per POSITION rather than
+// per row — pinned empirically in internal/chsql's
+// TestForEachCombinator_AllFiveFnsSkipNullPerPosition — which would make
+// a target no retained row touched come back NULL instead of 0, and a
+// Nullable ladder is one the production cursor refuses to scan. It cannot
+// arise here: the arrays folded are `arrayReduceInRanges('sum', …)` over
+// a non-nullable `Array(Float64)`, which answers 0 for an empty range and
+// is non-nullable itself, so every position has a real contributor.
+const expHistogramWindowDenseSumAggName = expHistogramDenseSumAggName + "ForEach"
+
+// The two element parameters [scaleArrayExpr] is called with. They are
+// distinct names for two scalings that nest — the coefficient one sits
+// inside the array argument of the factor one — so that the emitted SQL
+// never reads as if an inner `wcs` referred to an outer binding, the
+// hazard [expHistogramWindowBucketsExpr]'s own `tb` comment describes.
+const (
+	paramWinCoeffScaled  = "wcs"
+	paramWinFactorScaled = "wcf"
+)
+
+// scaleArrayExpr multiplies every element of arr by the scalar `by`,
+// binding each element to `param`.
+func scaleArrayExpr(param string, by, arr chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{param},
+			Body:   mulExpr(&chplan.BareIdent{Name: param}, by),
+		},
+		arr,
+	}}
 }
 
 // ExpHistogramWindowFoldLowerer decides whether an exponential-histogram

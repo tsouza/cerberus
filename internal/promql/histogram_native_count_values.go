@@ -228,195 +228,22 @@ func nativeHistogramFloatString(value chplan.Expr) chplan.Expr {
 
 // nativeHistogramShortestGString renders the finite-value spelling of Go's
 // `strconv.FormatFloat(f, 'g', -1, 64)` from ClickHouse's own shortest
-// round-trip digits (`toString(Float64)`). CH already produces the same
-// digits Go's shortest mode does — the two disagree only on LAYOUT:
+// round-trip digits — the layout half of [shortestGExpr], with no suffix
+// on the fixed branch.
 //
-//   - CH switches to scientific notation at a different magnitude threshold
-//     than Go does, and spells the exponent differently (`1e-7` / `1e21`
-//     where Go writes `1e-07` / `1e+21`).
-//   - Go's shortest `%g` (`internal/strconv/ftoa.go` pins the decision
-//     precision `eprec` to 6 whenever the requested precision is "shortest")
-//     uses scientific notation exactly when the decimal exponent falls
-//     outside `[-4, 6)` — equivalently when the magnitude leaves
-//     `[1e-4, 1e6)`. That is a narrower window than `[-4, 21)`, so numbers
-//     CH still renders in fixed notation (e.g. `1009800`) must be relaid
-//     out as scientific (`1.0098e+06`) here.
-//
-// The expression reads the digits and the decimal exponent back out of CH's
-// rendering — exactly, from the string, never via log10 — so the `[-4, 6)`
-// boundary cannot be misclassified by a log rounding error.
-//
-// `value` and CH's rendering of it are each mentioned once, as the two
-// elements of a single-element `arrayMap`: every other mention below is a
-// lambda parameter (`v`/`u`), the same binding trick openMetricsFloatExpr
-// uses and for the same reason — `digits()` alone is referenced three times
-// while building the scientific mantissa, and `mantRaw()`/`u()` are each
-// referenced by several of the helpers above it, so inlining the raw
-// sub-expressions instead of binding them re-expands the tree at every
-// mention. Left unbound, that repetition compounds multiplicatively across
-// the ~6 nested layers between `value` and the top-level `multiIf` — enough
-// to blow ClickHouse's `max_query_size` on a single histogram bucket cell,
-// which is why every intermediate quantity below is bound with [hqLet]
-// exactly once rather than re-derived at each mention: hqLet renders
-// `arrayMap(<param> -> <body>, array(<val>))[1]`, ClickHouse's spelling of a
-// let-binding, so `mantRaw`, say, appears ONCE in the emitted SQL no matter
-// how many of the helpers below read it. A caller that mentions this
-// function's own result several times — nativeHistogramStringExpr calls it
-// eleven times over across Count, Sum and every bucket's lower/upper/count —
-// still renders eleven independent copies of the WHOLE chain; that
-// duplication is inherent (each call receives a different `value`) and is
-// not what this binding fixes. What it fixes is each of those eleven copies
-// no longer being its own multiplicative blowup on top of that.
-// goShortestGSciLowerBound and goShortestGSciUpperBound bracket the
-// magnitudes Go's shortest `%g` lays out in FIXED notation. `%g` uses
-// scientific notation exactly when the decimal exponent falls outside
-// `[-4, eprec)`, and `strconv/ftoa.go` pins `eprec` to 6 whenever the
-// requested precision is "shortest" — so the fixed window is `[1e-4,
-// 1e6)`, and `strconv.FormatFloat(1e6, 'g', -1, 64)` really is `1e+06`.
-//
-// They are package-level rather than per-function because BOTH runtime
-// `%g` renderers need them — [nativeHistogramShortestGString] here and
-// [openMetricsFloatExpr] in histogram_quantile.go — and two copies of a
-// threshold this easy to misremember is exactly how they drifted before
-// (the second carried 1e21, the point where CLICKHOUSE switches, which is
-// the one number that is certainly not Go's).
-const (
-	goShortestGSciLowerBound = 1e-4
-	goShortestGSciUpperBound = 1e6
-	// Exponents below this get a leading zero: Go writes at least two
-	// exponent digits ("1e-05", never "1e-5").
-	goSciExpPadBelow = 10
-)
-
+// Zero is steered into the fixed branch before the digit-parsing logic
+// ever sees it: its digit string is all zeros, which the decomposition's
+// leading/trailing-zero strip reduces to "", and answering "0" here is
+// cheaper than special-casing an empty digit string inside the mantissa.
 func nativeHistogramShortestGString(value chplan.Expr) chplan.Expr {
-	const (
-		// Lambda parameter names: the value and CH's own string rendering
-		// of its magnitude.
-		valueParam  = "hgv"
-		digitsParam = "hgu"
-		// hqLet binding names for the intermediate quantities below.
-		// Distinct from valueParam/digitsParam and from every other hqLet
-		// binding in this package (see histogram_quantile_window.go's own
-		// naming note) because these nest inside the value/digits lambda.
-		posParam         = "hge"
-		mantRawParam     = "hgm"
-		digitsAllParam   = "hgda"
-		digitsLeadParam  = "hgdl"
-		digitsFinalParam = "hgd"
-		pointPosParam    = "hgp"
-		intLenParam      = "hgi"
-		expValParam      = "hgx"
-	)
-
-	call := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Fn: fn, Args: args}
-	}
-	str := func(v string) chplan.Expr { return &chplan.InlineString{V: v} }
-	i := func(v int64) chplan.Expr { return &chplan.LitInt{V: v} }
-	f := func(v float64) chplan.Expr { return &chplan.LitFloat{V: v} }
-	bin := func(op chplan.BinaryOp, l, r chplan.Expr) chplan.Expr {
-		return &chplan.Binary{Op: op, Left: l, Right: r}
-	}
-	countOf := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
-		return call(chplan.FnToInt64, call(fn, args...))
-	}
-
-	v := &chplan.BareIdent{Name: valueParam}
-	u := &chplan.BareIdent{Name: digitsParam}
-
-	// Position of the exponent marker in CH's rendering; 0 when CH chose
-	// fixed notation.
-	epos := countOf(chplan.FnStringPosition, u, str("e"))
-	body := hqLet(posParam, epos, func(pos chplan.Expr) chplan.Expr {
-		// The mantissa CH rendered — the whole string in fixed notation.
-		mantRaw := call(chplan.FnIf, bin(chplan.OpGt, pos, i(0)),
-			call(chplan.FnSubstring, u, i(1), bin(chplan.OpSub, pos, i(1))),
-			u)
-		return hqLet(mantRawParam, mantRaw, func(mr chplan.Expr) chplan.Expr {
-			// Mantissa digits with the decimal point removed, then with
-			// leading and trailing zeros stripped: the significant digits,
-			// most significant first.
-			digitsAll := call(chplan.FnReplaceAll, mr, str("."), str(""))
-			return hqLet(digitsAllParam, digitsAll, func(da chplan.Expr) chplan.Expr {
-				digitsLead := call(chplan.FnRegexReplaceFirst, da, str("^0+"), str(""))
-				return hqLet(digitsLeadParam, digitsLead, func(dl chplan.Expr) chplan.Expr {
-					digits := call(chplan.FnRegexReplaceFirst, dl, str("0+$"), str(""))
-					return hqLet(digitsFinalParam, digits, func(d chplan.Expr) chplan.Expr {
-						pointPos := countOf(chplan.FnStringPosition, mr, str("."))
-						return hqLet(pointPosParam, pointPos, func(pp chplan.Expr) chplan.Expr {
-							// Digit count left of the decimal point (the
-							// whole mantissa when there is no point).
-							intLen := call(chplan.FnIf, bin(chplan.OpGt, pp, i(0)),
-								bin(chplan.OpSub, pp, i(1)),
-								countOf(chplan.FnLength, mr))
-							return hqLet(intLenParam, intLen, func(il chplan.Expr) chplan.Expr {
-								// The decimal exponent: read straight off
-								// CH's exponent when it used scientific
-								// notation, else derived from where the
-								// first significant digit sits relative to
-								// the decimal point. FnToInt64OrZero, not
-								// the throwing FnToInt64: ClickHouse's
-								// vectorized `if` does not reliably skip
-								// evaluating the untaken branch inside this
-								// deep an arrayMap/hqLet nesting, so a
-								// fixed-notation row (pos = 0, this branch
-								// never SELECTED) can still have its
-								// substring — the whole digit string, not
-								// an exponent suffix — pushed through
-								// toInt64 and abort the query on a string
-								// like "2.565". The OrZero result is
-								// discarded exactly when that happens
-								// (pos > 0 is false), so the 0 fallback
-								// never reaches the output.
-								leadingZeros := bin(chplan.OpSub, countOf(chplan.FnLength, da), countOf(chplan.FnLength, dl))
-								expVal := call(chplan.FnIf, bin(chplan.OpGt, pos, i(0)),
-									call(chplan.FnToInt64OrZero, call(chplan.FnSubstring, u, bin(chplan.OpAdd, pos, i(1)))),
-									bin(chplan.OpSub, bin(chplan.OpSub, il, leadingZeros), i(1)))
-								return hqLet(expValParam, expVal, func(ev chplan.Expr) chplan.Expr {
-									// `d` or `d.ddd` — Go's normalised
-									// scientific mantissa.
-									mantissa := call(chplan.FnIf, bin(chplan.OpLe, countOf(chplan.FnLength, d), i(1)),
-										d,
-										call(chplan.FnConcat, call(chplan.FnSubstring, d, i(1), i(1)), str("."), call(chplan.FnSubstring, d, i(2))))
-									expDigits := call(chplan.FnToString, call(chplan.FnAbs, ev))
-									expSuffix := call(chplan.FnConcat,
-										call(chplan.FnIf, bin(chplan.OpLt, ev, i(0)), str("-"), str("+")),
-										call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, ev), i(goSciExpPadBelow)),
-											call(chplan.FnConcat, str("0"), expDigits),
-											expDigits))
-									sign := call(chplan.FnIf, bin(chplan.OpLt, v, f(0)), str("-"), str(""))
-									sci := call(chplan.FnConcat, sign, mantissa, str("e"), expSuffix)
-									fixed := call(chplan.FnConcat, sign, u)
-
-									return call(chplan.FnMultiIf,
-										// Zero's digit string is all zeros,
-										// which the leading/trailing-zero
-										// strip above reduces to "" — steer
-										// it into `fixed` ("0") before the
-										// digit-parsing logic ever sees it,
-										// rather than special-casing an
-										// empty `digits` inside `mantissa`.
-										bin(chplan.OpEq, v, f(0)), str("0"),
-										bin(chplan.OpOr,
-											bin(chplan.OpLt, call(chplan.FnAbs, v), f(goShortestGSciLowerBound)),
-											bin(chplan.OpGe, call(chplan.FnAbs, v), f(goShortestGSciUpperBound))), sci,
-										fixed)
-								})
-							})
-						})
-					})
-				})
-			})
-		})
+	return shortestGExpr(value, value, func(g shortestGParts) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: []chplan.Expr{
+			&chplan.Binary{Op: chplan.OpEq, Left: g.value, Right: &chplan.LitFloat{V: 0}},
+			&chplan.InlineString{V: "0"},
+			g.useSci, g.sci,
+			&chplan.FuncCall{Fn: chplan.FnConcat, Args: []chplan.Expr{g.sign, g.rendered}},
+		}}
 	})
-
-	return &chplan.Subscript{
-		Container: call(chplan.FnArrayMap,
-			&chplan.Lambda{Params: []string{valueParam, digitsParam}, Body: body},
-			call(chplan.FnArray, value),
-			call(chplan.FnArray, call(chplan.FnToString, call(chplan.FnAbs, value)))),
-		Key: i(1),
-	}
 }
 
 func histStringCall(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {

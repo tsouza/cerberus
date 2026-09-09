@@ -103,6 +103,14 @@ const (
 	// interprets, exactly as for FnArrayReduce.
 	FnArrayReduceInRanges Fn = "arrayReduceInRanges"
 
+	// arrayResize(arr, size, extender) — arr truncated or padded with
+	// `extender` to exactly `size` elements. It is how a caller pins an
+	// array's LENGTH when the expression producing it derives that length
+	// from its own input rather than from the caller's contract — most
+	// visibly arrayReduce('sumForEach', …), whose result is as long as the
+	// longest array it folded and therefore EMPTY when it folded none.
+	FnArrayResize Fn = "arrayResize"
+
 	// arrayReverse(arr) — arr with element order reversed.
 	FnArrayReverse Fn = "arrayReverse"
 
