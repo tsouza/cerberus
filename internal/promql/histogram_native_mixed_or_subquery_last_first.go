@@ -204,40 +204,11 @@ func mixedLastFirstSeriesKeyAliases(s schema.Metrics) []string {
 	return []string{s.AttributesColumn, s.MetricNameColumn}
 }
 
-// mixedLastFirstAggs is [nativeExpHistBareAggsDirectional] widened by the
-// two columns this file's own top-level doc names as the gap it closes: the
-// real Value column a float row publishes, and [chplan.MixedDiscriminatorColumn]
-// itself — both picked by the SAME argMax/argMin selection (keyed by the
-// identical TimeUnix order column every other field already shares), so the
-// selected row's own discriminator and value/histogram payload stay
-// mutually consistent.
-//
-// MetricName is picked the same way, for the ONE caller that still keys
-// its reduction on Attributes alone: [lowerMixedLastFirstOverCallSubqueryInput]'s
-// doubly-nested sibling reduces across [buildOuterRangeSubqueryFanout]'s
-// grid, whose group key is shared with three other continuations that
-// thread `[anchor, Attributes]` through their own downstream stages.
-// Widening it there is the same series-identity question cerberus issue
-// #3240 tracks for the four continuations that share that fanout's key, and
-// it is answered there rather than here.
-//
-// The two reductions in THIS file publish MetricName as a group key
-// instead ([mixedLastFirstSeriesKey]), so they take
-// [mixedLastFirstSeriesKeyedAggs] — the same list minus the MetricName
-// pick, which would otherwise be a second projection of a name the group
-// key already publishes and a duplicate output alias.
-func mixedLastFirstAggs(windowFn string, histSchema schema.Metrics) []chplan.AggFunc {
-	pick := mixedLastFirstPick(windowFn)
-	return append(
-		[]chplan.AggFunc{pick(histSchema.MetricNameColumn, histSchema)},
-		mixedLastFirstSeriesKeyedAggs(windowFn, histSchema)...,
-	)
-}
-
-// mixedLastFirstPick resolves the directional selection both agg lists
-// order every one of their picks by: argMax over TimeUnix for
-// last_over_time, argMin for first_over_time. It is one function rather
-// than a copy per list so the direction cannot drift between them.
+// mixedLastFirstPick resolves the directional selection
+// [mixedLastFirstSeriesKeyedAggs] orders every one of its picks by: argMax
+// over TimeUnix for last_over_time, argMin for first_over_time. It is one
+// function rather than a copy per pick so the direction cannot drift
+// between them.
 func mixedLastFirstPick(windowFn string) func(string, schema.Metrics) chplan.AggFunc {
 	if windowFn == firstOverTimeWindowFn {
 		return earliestArgMin
@@ -245,9 +216,21 @@ func mixedLastFirstPick(windowFn string) func(string, schema.Metrics) chplan.Agg
 	return latestArgMax
 }
 
-// mixedLastFirstSeriesKeyedAggs is [mixedLastFirstAggs] for a reduction
-// whose group key already carries MetricName — see that function's doc for
-// the split.
+// mixedLastFirstSeriesKeyedAggs is [nativeExpHistValuedLatestAggsDirectional]
+// widened by the two columns this file's own top-level doc names as the gap
+// it closes: the real Value column a float row publishes, and
+// [chplan.MixedDiscriminatorColumn] itself — both picked by the SAME
+// argMax/argMin selection (keyed by the identical TimeUnix order column
+// every other field already shares), so the selected row's own
+// discriminator and value/histogram payload stay mutually consistent.
+//
+// MetricName is NOT among them, because every reduction that takes this
+// list publishes it as a group key instead ([mixedLastFirstSeriesKey]);
+// picking it as well would be a second projection of a name the key
+// already carries, and a duplicate output alias. A variant that DID pick
+// it existed for the one caller still keyed on Attributes alone — the
+// doubly-nested [lowerMixedLastFirstOverCallSubqueryInput] — and went away
+// with cerberus issue #3240, which widened that caller's key to this one.
 func mixedLastFirstSeriesKeyedAggs(windowFn string, histSchema schema.Metrics) []chplan.AggFunc {
 	pick := mixedLastFirstPick(windowFn)
 	return append(

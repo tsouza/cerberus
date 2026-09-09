@@ -48,7 +48,7 @@ import (
 // [expHistogramCountPresentValueAgg], [expHistogramPairCountAggs] /
 // [expHistogramPairCountStage] / [expHistogramPairCountProjection],
 // [tsOfSampleTimestampAgg], [capSelectFnOverSubquery] for the eight
-// SELECT-family names; [mixedLastFirstAggs] / [mixedLastFirstProjection]
+// SELECT-family names; [mixedLastFirstSeriesKeyedAggs] / [mixedLastFirstProjection]
 // and [mixedPairCountAggs] / [mixedPairCountStage] for their Mixed-shape
 // last/first and resets/changes siblings; [expHistogramValuedWindowFold] /
 // [expHistogramValuedWindowAggs] / [expHistogramWindowReshape] /
@@ -80,6 +80,7 @@ func buildOuterRangeSubqueryFanout(
 	wideInner chplan.Node,
 	grid histogramCallSubqueryGrid,
 	anchor evalAnchor,
+	key callSubqueryFanoutKey,
 	aggs []chplan.AggFunc,
 	minSamples int,
 	s schema.Metrics,
@@ -92,13 +93,106 @@ func buildOuterRangeSubqueryFanout(
 		StepAlign:      true,
 		Lookback:       grid.innerRange,
 		Offset:         anchor.Offset,
-		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-		GroupByAliases: []string{s.AttributesColumn},
+		GroupBy:        key.exprs,
+		GroupByAliases: key.aliases,
 		AggFuncs:       aggs,
 		MinSamples:     minSamples,
 		AnchorAlias:    chplan.RangeWindowAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
 	}
+}
+
+// callSubqueryFanoutKey is the per-series grouping key
+// [buildOuterRangeSubqueryFanout] folds each outer anchor's window under,
+// together with the aliases the fanout publishes it as. The two are one
+// value because the emitter pairs them POSITIONALLY, so a widening that
+// touched only one of them would misname a column rather than fail.
+type callSubqueryFanoutKey struct {
+	exprs   []chplan.Expr
+	aliases []string
+}
+
+// seriesIdentityCallSubqueryKey is `[Attributes, MetricName]` — the whole
+// of a series' identity — and is what every NAME-PRESERVING continuation
+// keys on.
+//
+// The fanout used to key on Attributes alone throughout, and the
+// name-preserving continuations then recovered `__name__` with an
+// argMax/argMin pick over the group. That is a wrong answer whenever two
+// series share their attributes and differ in `__name__` — exactly what
+// the `or` that builds a Mixed relation produces, since upstream matches
+// its arms on a signature that EXCLUDES `__name__` (`rangeEval` prepends
+// `labels.MetricName` to the ignoring(...) list before hashing,
+// promql/engine.go). Reference folds per SERIES and keys its output on
+// `Metric.Hash()`, so it answers TWO series where cerberus published
+// whichever name the pick happened to select and dropped the other series
+// outright. Cerberus issue #3240.
+//
+// [mixedLastFirstSeriesKey]'s doc carries the argument that this widening
+// is safe for any input: against a fold that groups by full series
+// identity an Attributes-only key is only ever too COARSE, never too fine,
+// and where `__name__` is uniform within an Attributes group the wider key
+// is byte-identical to the narrower one. This is the same key, reused
+// rather than re-derived.
+func seriesIdentityCallSubqueryKey(s schema.Metrics) callSubqueryFanoutKey {
+	return callSubqueryFanoutKey{
+		exprs:   mixedLastFirstSeriesKey(s),
+		aliases: mixedLastFirstSeriesKeyAliases(s),
+	}
+}
+
+// attributesCallSubqueryKey is `[Attributes]`, and is what every
+// NAME-DROPPING continuation keys on.
+//
+// Those continuations must NOT widen: their output has no `__name__` at
+// all (the projections publish `” AS MetricName`), so two series that
+// differ only in `__name__` would be published under one identical label
+// set — the shape reference raises
+// `vector cannot contain metrics with the same labelset` for. Keying on
+// Attributes alone is what lets [subqueryNameCollisionAgg]'s
+// distinct-`__name__` count see the collision at all, and
+// [subqueryNameCollisionFilter] turn it into that error.
+func attributesCallSubqueryKey(s schema.Metrics) callSubqueryFanoutKey {
+	return callSubqueryFanoutKey{
+		exprs:   []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		aliases: []string{s.AttributesColumn},
+	}
+}
+
+// guardedCallSubqueryFanout is [buildOuterRangeSubqueryFanout] keyed on
+// [attributesCallSubqueryKey] and wrapped in the duplicate-labelset guard
+// — the composition every NAME-DROPPING continuation in this file owes.
+//
+// The two halves have to travel together: the guard reads a
+// distinct-`__name__` count that only [subqueryNameCollisionAgg] publishes,
+// and that count only answers the right question over a group key that does
+// not already carry the name. Splitting them across call sites is how the
+// singly-nested family's own guard is written
+// ([selectFnSubqueryAggs] / [selectFnSubqueryNameGuard]); here the whole
+// file's key is one decision, so the pair collapses into one call.
+//
+// The widened agg list is built into a fresh slice rather than appended
+// in place. [lowerExpHistogramFoldOverCallSubqueryInput] hands the SAME
+// `aggs` value to its downstream reshape stages afterwards, and those
+// stages derive their projection from the list they are given — an
+// in-place append into that slice's spare capacity would put the guard
+// column into a relation whose own reduction never published it.
+func guardedCallSubqueryFanout(
+	wideInner chplan.Node,
+	grid histogramCallSubqueryGrid,
+	anchor evalAnchor,
+	aggs []chplan.AggFunc,
+	minSamples int,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
+	guarded := make([]chplan.AggFunc, 0, len(aggs)+1)
+	guarded = append(guarded, aggs...)
+	guarded = append(guarded, subqueryNameCollisionAgg(s))
+	return subqueryNameCollisionFilter(
+		buildOuterRangeSubqueryFanout(wideInner, grid, anchor, attributesCallSubqueryKey(s), guarded, minSamples, s),
+		s, ctx,
+	)
 }
 
 // lowerHistogramOrMixedCallSubqueryInput dispatches the fifteen SELECT/
@@ -155,7 +249,7 @@ func lowerHistogramOrMixedCallSubqueryInput(
 // own type-blind reasoning for the four names that never read the
 // histogram-specific columns, widened here to ALL eight since a Mixed
 // input's last_over_time / first_over_time / resets / changes route here
-// too via [mixedLastFirstAggs] / [mixedPairCountAggs] (built for a
+// too via [mixedLastFirstSeriesKeyedAggs] / [mixedPairCountAggs] (built for a
 // Mixed-shaped input exactly as their ambient-grid siblings are).
 //
 // Callers (see [lowerHistogramOrMixedCallSubqueryInput]) only ever pass
@@ -184,30 +278,39 @@ func lowerSelectFnOverCallSubqueryInput(wideInner chplan.Node, grid histogramCal
 	histSchema := histogramProjectionSchema(s)
 	histSchema.AggregationTemporalityColumn = ""
 	anchorRef := &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
-	fanout := func(aggs []chplan.AggFunc) *chplan.RangeBucketFanout {
-		return buildOuterRangeSubqueryFanout(wideInner, grid, anchor, aggs, stalenessMinSamples, s)
+	// The name-preserving pair keys on full series identity; the six that
+	// drop `__name__` key on Attributes alone and carry the collision
+	// guard instead. See [seriesIdentityCallSubqueryKey] /
+	// [attributesCallSubqueryKey].
+	if !selectFnDropsSeriesName(windowFn) {
+		fanout := buildOuterRangeSubqueryFanout(
+			wideInner, grid, anchor, seriesIdentityCallSubqueryKey(s),
+			nativeExpHistValuedLatestAggsDirectional(windowFn, histSchema), stalenessMinSamples, s,
+		)
+		return capSelectFnOverSubquery(windowFn, fanout, anchorRef, histSchema), nil
+	}
+	guarded := func(aggs []chplan.AggFunc) chplan.Node {
+		return guardedCallSubqueryFanout(wideInner, grid, anchor, aggs, stalenessMinSamples, s, ctx)
 	}
 	switch windowFn {
-	case lastOverTimeWindowFn, firstOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, fanout(nativeExpHistBareAggsDirectional(windowFn, histSchema)), anchorRef, histSchema), nil
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, fanout([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, histSchema)}), anchorRef, histSchema), nil
+		return capSelectFnOverSubquery(windowFn, guarded([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, histSchema)}), anchorRef, histSchema), nil
 	case resetsWindowFn, changesWindowFn:
 		perSeries := expHistogramPairCountStage(
-			fanout(expHistogramPairCountAggs(windowFn, histSchema)),
+			guarded(expHistogramPairCountAggs(windowFn, histSchema)),
 			windowFn, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn}, histSchema,
 			expHistogramDensifiedResetMaskEligible(ctx.lowerers),
 		)
 		return expHistogramPairCountProjection(perSeries, anchorRef, histSchema), nil
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
-		return capSelectFnOverSubquery(windowFn, fanout(tsOfSampleTimestampAgg(windowFn, histSchema)), anchorRef, histSchema), nil
+		return capSelectFnOverSubquery(windowFn, guarded(tsOfSampleTimestampAgg(windowFn, histSchema)), anchorRef, histSchema), nil
 	}
 }
 
 // lowerMixedLastFirstOverCallSubqueryInput answers last_over_time /
 // first_over_time over a MixedRowShape wideInner — the doubly-nested
 // sibling of [lowerMixedOrSubqueryLastFirstRange], fed the identical
-// [mixedLastFirstAggs] / [mixedLastFirstProjection] pair but reducing
+// [mixedLastFirstSeriesKeyedAggs] / [mixedLastFirstProjection] pair but reducing
 // across [buildOuterRangeSubqueryFanout]'s independent outer-subquery grid
 // instead of the ambient request grid.
 func lowerMixedLastFirstOverCallSubqueryInput(wideInner chplan.Node, grid histogramCallSubqueryGrid, windowFn string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
@@ -218,7 +321,10 @@ func lowerMixedLastFirstOverCallSubqueryInput(wideInner chplan.Node, grid histog
 	histSchema := histogramProjectionSchema(s)
 	histSchema.AggregationTemporalityColumn = ""
 	anchorRef := &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
-	fanout := buildOuterRangeSubqueryFanout(wideInner, grid, anchor, mixedLastFirstAggs(windowFn, histSchema), stalenessMinSamples, s)
+	fanout := buildOuterRangeSubqueryFanout(
+		wideInner, grid, anchor, seriesIdentityCallSubqueryKey(s),
+		mixedLastFirstSeriesKeyedAggs(windowFn, histSchema), stalenessMinSamples, s,
+	)
 	return mixedLastFirstProjection(fanout, anchorRef, histSchema, s), nil
 }
 
@@ -235,7 +341,9 @@ func lowerMixedResetsOrChangesOverCallSubqueryInput(wideInner chplan.Node, grid 
 	histSchema := histogramProjectionSchema(s)
 	histSchema.AggregationTemporalityColumn = ""
 	anchorRef := &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
-	fanout := buildOuterRangeSubqueryFanout(wideInner, grid, anchor, mixedPairCountAggs(windowFn, histSchema), stalenessMinSamples, s)
+	fanout := guardedCallSubqueryFanout(
+		wideInner, grid, anchor, mixedPairCountAggs(windowFn, histSchema), stalenessMinSamples, s, ctx,
+	)
 	perSeries := mixedPairCountStage(fanout, windowFn, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn}, histSchema, expHistogramDensifiedResetMaskEligible(ctx.lowerers))
 	return expHistogramPairCountProjection(perSeries, anchorRef, s), nil
 }
@@ -264,7 +372,7 @@ func lowerExpHistogramFoldOverCallSubqueryInput(wideInner chplan.Node, grid hist
 	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, histSchema)
 	winIn = winIn.withLowerers(ctx.lowerers)
 	aggs := expHistogramValuedWindowAggs(histSchema, windowFn)
-	grouped := buildOuterRangeSubqueryFanout(wideInner, grid, anchor, aggs, win.minSamples, s)
+	grouped := guardedCallSubqueryFanout(wideInner, grid, anchor, aggs, win.minSamples, s, ctx)
 	selected := selectExpHistogramWindowSamples(
 		grouped, aggs, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn},
 		histogramWindowSelectionFor(windowFn),
