@@ -295,9 +295,10 @@ func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.M
 // from its own output — true for every name
 // [selectFnOverExpHistogramSubquery] admits except last_over_time and
 // first_over_time, which select a published sample verbatim and keep the
-// name with it. It is the same split [capSelectFnOverSubquery] already
-// makes when it picks an output projection, named here so the collision
-// guard and the projection cannot drift apart about which names drop.
+// name with it. [capSelectFnOverSubquery] reads it too when it picks an
+// output projection — the name-preserving branch is that projection's own
+// first question — so the guard and the projection decide "does this name
+// drop" from ONE predicate rather than from two switches that could drift.
 func selectFnDropsSeriesName(windowFn string) bool {
 	switch windowFn {
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
@@ -398,9 +399,10 @@ func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRa
 // resets / changes, and [tsOfSelectProjection]'s float quartet (name
 // dropped) for the two ts_of_* siblings.
 func capSelectFnOverSubquery(windowFn string, input chplan.Node, tsExpr chplan.Expr, s schema.Metrics) chplan.Node {
-	switch windowFn {
-	case lastOverTimeWindowFn, firstOverTimeWindowFn:
+	if !selectFnDropsSeriesName(windowFn) {
 		return nativeHistogramProjection(input, bareExpHistogramNameExpr(s), tsExpr, s)
+	}
+	switch windowFn {
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
 		return expHistogramCountPresentProjection(input, tsExpr, s)
 	case resetsWindowFn, changesWindowFn:
