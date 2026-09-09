@@ -654,9 +654,11 @@ func pathologyFailureSpecs() []pathologySpec {
 			},
 		},
 		// Cerberus-side breaker on an unclassified head:
-		// cerberus_side_rejection_pressure only. That rule gates on exit_status
-		// alone, so it is the one detector whose reach does not depend on a
-		// route — which is exactly why the corpus plants it on TraceQL.
+		// cerberus_side_rejection_pressure only. It is one of the two detectors
+		// that gate on exit_status alone (failure_cluster_by_reason, which
+		// log:timeout carries, is the other), so its reach does not depend on a
+		// route — which is exactly why the corpus plants it on TraceQL. The two
+		// classes cover both such detectors on an unclassified head.
 		//
 		// As with log:timeout, the classification columns are absent from the
 		// fill; unclassifyNonPromQL writes them.

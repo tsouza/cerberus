@@ -282,20 +282,17 @@ func TestRouterBenchCorpusIsProducible(t *testing.T) {
 		t.Error("no unclassified bench row — the two non-PromQL heads are absent from the benchmark, so invariant 2 holds vacuously")
 	}
 
-	// The labeled classes carry the same classification boundary, and a rule is
-	// matched back to a class by decision_reason: a non-PromQL class labeled with
-	// a solver reason would score findings against a class no row belongs to.
+	// The labeled ground truth carries decision_reason too, and a finding is
+	// matched back to its class by that column, so a class whose reason no row
+	// can carry scores rules against a class nothing belongs to. Two ways to get
+	// that wrong, checked in one pass: a token production never emits at all, and
+	// a token production emits only for a head this class is not on.
 	for i, c := range corpus.Classes {
 		if c.Language != solver.LangPromQL && c.DecisionReason != engine.CorpusReasonNonPromQL {
 			t.Errorf("bench class %d (%s/%s) has decision_reason %q; a head the solver never classifies carries %q",
 				i, c.ShapeID, c.Language, c.DecisionReason, engine.CorpusReasonNonPromQL)
+			continue
 		}
-	}
-
-	// The labeled ground truth carries decision_reason too, and a finding is
-	// matched back to its class by that column: a class labeled with an
-	// unproducible reason scores rules against a class no row can belong to.
-	for i, c := range corpus.Classes {
 		if c.DecisionReason == "" {
 			continue // a class may group on shape_id alone
 		}
