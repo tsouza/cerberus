@@ -84,6 +84,31 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // is also cheaper: the cost is linear in the PAIR's bucket span, not the
 // window's.
 //
+// # What it costs, and why the pair comparison is shaped as it is
+//
+// The mask is one boolean per (series, anchor, sample pair), and the
+// bucket half of each verdict reconciles the pair's two rows over their
+// merged bucket range. That made it the single most expensive term in an
+// exponential-histogram `rate()` query once the bucket ladders themselves
+// folded in closed form (histogram_native_window_closed_form.go): on
+// cerberus's own `cerberus_queries_duration_exp_hist` telemetry, a
+// 21-anchor `histogram_quantile(0.95, sum by(...) (rate(X[5m])))` peaked
+// at 912 MiB against the 1 GiB CERBERUS_CH_QUERY_MAX_MEMORY default and
+// answered HTTP 422 — cerberus issue #3178, which is what made the
+// compose self-monitoring dashboard's own P95 panel red on `main`.
+//
+// The cost was NOT the verdict's arithmetic and NOT its cardinality.
+// Measured, holding everything else fixed: replacing the whole mask with
+// a constant took the query to 152 MiB; keeping the per-pair loop but
+// shrinking its target range from ~110 elements to FOUR left it at
+// 898 MiB. What the query was paying for was ClickHouse materialising the
+// group's per-row bucket ARRAYS once per element of the innermost lambda,
+// because that lambda read them by subscript rather than receiving them.
+// [expHistogramDenseContribsExpr] is the shape that stops it: both sides
+// of the comparison become dense per-target arrays built OUTSIDE the
+// comparison, which is then a two-argument `arrayExists` capturing
+// nothing. Same slices, same numbers, 238 MiB.
+//
 // # Why it is a column and not an expression inlined into the fold
 //
 // The mask is a rows x buckets nested expression, and the reshape above
@@ -123,6 +148,16 @@ const (
 // being recomputed per pair. See hqLet.
 const paramResetOrderedRows = "wrp"
 
+// paramResetDenseCurr / paramResetDensePrev bind one target bucket's
+// already-densified contribution from the pair's current and previous
+// row. They are lambda ARGUMENTS of the comparison rather than captured
+// arrays indexed inside it, which is the whole point of the densified
+// rendering — see [expHistogramDenseContribsExpr].
+const (
+	paramResetDenseCurr = "rdc"
+	paramResetDensePrev = "rdp"
+)
+
 // expHistogramResetMaskFor names the reset-mask column for an
 // exponential-histogram window reduced by windowFn, or nil for a windowFn
 // that does not read it.
@@ -152,7 +187,7 @@ func expHistogramResetMaskFor(windowFn string) chplan.Expr {
 // Forwarding is derived from the caller's own `aggs` list rather than
 // spelled out, so an aggregate added for one path (Sum, which only the
 // histogram-VALUED paths collect) cannot be left behind here.
-func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAliases []string) chplan.Node {
+func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAliases []string, densified bool) chplan.Node {
 	projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+1)
 	for _, name := range keyAliases {
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
@@ -163,7 +198,7 @@ func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAli
 	return &chplan.Project{
 		Input: input,
 		Projections: append(projs, chplan.Projection{
-			Expr:  expHistogramResetMaskExpr(),
+			Expr:  expHistogramResetMaskExpr(densified),
 			Alias: hqWindowResetsAlias,
 		}),
 	}
@@ -184,7 +219,7 @@ func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAli
 // The mask's j-th element compares the pair (positions[j], positions[j+1])
 // — hence popBack against popFront, the same pairing the fold applies to
 // its own time-sorted values.
-func expHistogramResetMaskExpr() chplan.Expr {
+func expHistogramResetMaskExpr(densified bool) chplan.Expr {
 	tsList := chplan.Expr(&chplan.ColumnRef{Name: hqWindowTsListAlias})
 	orderedRows := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 		&chplan.Lambda{
@@ -199,7 +234,7 @@ func expHistogramResetMaskExpr() chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramResetPrevRow, paramResetCurrRow},
-				Body:   expHistogramResetVerdictExpr(),
+				Body:   expHistogramResetVerdictExpr(densified),
 			},
 			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}},
 			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}},
@@ -218,7 +253,7 @@ func expHistogramResetMaskExpr() chplan.Expr {
 // merged scale therefore cannot hide an EARLIER pair's fine-scale
 // regression: each pair answers entirely from its own two rows, so it
 // cannot see any OTHER row's scale at all.
-func expHistogramResetVerdictExpr() chplan.Expr {
+func expHistogramResetVerdictExpr(densified bool) chplan.Expr {
 	prev := chplan.Expr(&chplan.BareIdent{Name: paramResetPrevRow})
 	curr := chplan.Expr(&chplan.BareIdent{Name: paramResetCurrRow})
 
@@ -241,8 +276,8 @@ func expHistogramResetVerdictExpr() chplan.Expr {
 		// fold of a finer one and happens without a restart, which is
 		// why reference tests `>` rather than `!=`.
 		pairwise(&chplan.ColumnRef{Name: hqAggScalesArrayAlias}, chplan.OpGt),
-		expHistogramResetPairBucketRegressedExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, prev, curr),
-		expHistogramResetPairBucketRegressedExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, prev, curr),
+		expHistogramResetPairBucketRegressedExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, prev, curr, densified),
+		expHistogramResetPairBucketRegressedExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, prev, curr, densified),
 	)
 }
 
@@ -277,7 +312,13 @@ func orAllExpr(first chplan.Expr, rest ...chplan.Expr) chplan.Expr {
 // rows there are N-1 pairs, each rescaling only its own two rows, so the
 // total cost is the same order as the single window-wide rescale the
 // mask used before — never a rows × rows × buckets blowup.
-func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, prev, curr chplan.Expr) chplan.Expr {
+//
+// `densified` selects between the two renderings of that comparison —
+// the dense per-target arrays this file's header describes, or the
+// per-target-bucket picker + Kahan fold they replaced. The two fold the
+// identical slices; see [ExpHistogramResetMaskLowerer] for why the
+// superseded one is kept.
+func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, prev, curr chplan.Expr, densified bool) chplan.Expr {
 	scalesArr := chplan.Expr(&chplan.ColumnRef{Name: hqAggScalesArrayAlias})
 	offArr := chplan.Expr(&chplan.ColumnRef{Name: offArrAlias})
 	bucArr := chplan.Expr(&chplan.ColumnRef{Name: bucArrAlias})
@@ -288,6 +329,29 @@ func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, p
 	prevScale, currScale := at(scalesArr, prev), at(scalesArr, curr)
 	prevOff, currOff := at(offArr, prev), at(offArr, curr)
 	prevBuc, currBuc := at(bucArr, prev), at(bucArr, curr)
+
+	// The scale both rows are reconciled onto is the COARSER of the pair,
+	// not curr's alone. For the pair this comparison can decide it is
+	// curr's — reference reconciles "prev to the current schema", and a
+	// pair reaching a verdict here has prev at least as coarse as curr, so
+	// least(prev, curr) IS curr. It differs only where curr is FINER than
+	// prev, and that pair is already condemned unconditionally by the
+	// `scales[curr] > scales[prev]` term this expression is OR-ed with
+	// (see expHistogramResetVerdictExpr), so no verdict moves.
+	//
+	// What does move is whether the pair can be EVALUATED at all.
+	// Downscaling is only ever lossless downward, so every shift in
+	// expHistogramBucketSliceBoundsExpr and
+	// expHistogramMergeBucketsBoundsExpr is `rowScale - mergedScale` and
+	// ClickHouse rejects a negative shift outright ("The number of shift
+	// positions needs to be a non-negative value"). Reconciling onto
+	// curr's scale alone spells exactly that shift for a resolution
+	// INCREASE, leaving the mask's evaluability resting on ClickHouse
+	// masking the condemned element out under short_circuit_function_
+	// evaluation — which it does for some renderings of this expression
+	// and not others. Taking the coarser scale removes the negative shift
+	// from the expression instead of relying on it never being reached.
+	pairScale := leastExpr(prevScale, currScale)
 
 	pairArray := func(a, b chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{a, b}}
@@ -300,8 +364,30 @@ func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, p
 	// identifier.
 	return expHistogramOverMergedBucketRangeExpr(
 		pairArray(prevScale, currScale), pairArray(prevOff, currOff), pairArray(prevBuc, currBuc),
-		currScale,
+		pairScale,
 		func(start, length chplan.Expr) chplan.Expr {
+			if densified {
+				// Both sides become dense per-target arrays built OUTSIDE
+				// any per-target lambda, so the comparison below reads
+				// them as arrayExists ARGUMENTS and captures nothing. See
+				// expHistogramDenseContribsExpr for the measurement that
+				// makes this the shipped rendering.
+				dense := func(rowScale, rowOff, rowBuc chplan.Expr) chplan.Expr {
+					return expHistogramDenseContribsExpr(rowScale, rowOff, rowBuc, pairScale, start, length)
+				}
+				return &chplan.FuncCall{Fn: chplan.FnArrayExists, Args: []chplan.Expr{
+					&chplan.Lambda{
+						Params: []string{paramResetDenseCurr, paramResetDensePrev},
+						Body: &chplan.Binary{
+							Op:    chplan.OpLt,
+							Left:  &chplan.BareIdent{Name: paramResetDenseCurr},
+							Right: &chplan.BareIdent{Name: paramResetDensePrev},
+						},
+					},
+					dense(currScale, currOff, currBuc),
+					dense(prevScale, prevOff, prevBuc),
+				}}
+			}
 			// One row's contribution at target absolute index `start + rk`,
 			// rescaled from that row's OWN scale to currScale. Binding
 			// (paramExpRowScale, paramExpRowOffset, paramExpRowBuckets) via
@@ -313,7 +399,7 @@ func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, p
 				return hqLet(paramExpRowScale, rowScale, func(chplan.Expr) chplan.Expr {
 					return hqLet(paramExpRowOffset, rowOff, func(chplan.Expr) chplan.Expr {
 						return hqLet(paramExpRowBuckets, rowBuc, func(chplan.Expr) chplan.Expr {
-							return expHistogramBucketRowContribExpr(currScale, start, paramResetTargetBucket)
+							return expHistogramBucketRowContribExpr(pairScale, start, paramResetTargetBucket)
 						})
 					})
 				})
@@ -334,4 +420,56 @@ func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, p
 			}}
 		},
 	)
+}
+
+// ExpHistogramResetMaskLowerer decides how the per-pair bucket-regression
+// half of the counter-reset mask is rendered.
+//
+// Like [ExpHistogramWindowFoldLowerer], and unlike the operator-facing
+// strategies in [RangeLowerers], this one is not a capability and carries
+// no chopt feature id: both arms fold the identical stored-count slices
+// (see [expHistogramDenseContribsExpr]), so there is nothing for a
+// deployment to choose. It exists so a test can run one query through
+// both renderings and compare — see
+// [DensifiedExpHistogramResetMaskLowerer] and
+// [PerTargetExpHistogramResetMaskLowerer].
+type ExpHistogramResetMaskLowerer interface {
+	// DensifiedResetMaskEligible reports whether the mask may build both
+	// sides of each pair comparison as dense per-target arrays outside
+	// the comparison lambda.
+	DensifiedResetMaskEligible() bool
+}
+
+// DensifiedExpHistogramResetMaskLowerer is the DEFAULT: densify both
+// sides of every pair comparison through
+// [expHistogramDenseContribsExpr].
+type DensifiedExpHistogramResetMaskLowerer struct{}
+
+// DensifiedResetMaskEligible returns true.
+func (DensifiedExpHistogramResetMaskLowerer) DensifiedResetMaskEligible() bool { return true }
+
+// PerTargetExpHistogramResetMaskLowerer keeps the per-target-bucket
+// picker + Kahan fold ([expHistogramBucketRowContribExpr]) the densified
+// rendering replaced.
+//
+// It is the differential oracle, not a fallback: no deployment wires it,
+// because there is no shape the two arms answer differently. A test
+// selects it to obtain the same query rendered the old way.
+type PerTargetExpHistogramResetMaskLowerer struct{}
+
+// DensifiedResetMaskEligible returns false.
+func (PerTargetExpHistogramResetMaskLowerer) DensifiedResetMaskEligible() bool { return false }
+
+// expHistogramDensifiedResetMaskEligible reads the ExpHistogramResetMask
+// strategy off a lowering table, treating an UNRESOLVED table — one whose
+// caller never ran [RangeLowerers.withDefaults] — as the per-target
+// reading rather than dereferencing a nil interface. This mirrors
+// [expHistogramClosedFormEligible]'s own posture, for the same reason:
+// several unit tests reach the window-input builders through a hand-built
+// lowerCtx carrying no table at all.
+func expHistogramDensifiedResetMaskEligible(l RangeLowerers) bool {
+	if l.ExpHistogramResetMask == nil {
+		return false
+	}
+	return l.ExpHistogramResetMask.DensifiedResetMaskEligible()
 }

@@ -122,7 +122,7 @@ func TestExpHistogramResetMaskStage_ProjectionCapacityIsTight(t *testing.T) {
 	aggs := []chplan.AggFunc{{Fn: chplan.FnAny, Alias: "agg_alias"}}
 	input := &chplan.Scan{Table: "otel_metrics_exponential_histogram"}
 
-	node := expHistogramResetMaskStage(input, aggs, keyAliases)
+	node := expHistogramResetMaskStage(input, aggs, keyAliases, true)
 
 	proj, ok := node.(*chplan.Project)
 	if !ok {

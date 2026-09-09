@@ -69,6 +69,23 @@ var nativeStrategies = []nativeStrategy{
 		},
 	},
 	{
+		// The second row whose marker selects the arm that is NOT the
+		// optimisation, for the same reason the row above does.
+		// ExpHistogramResetMask defaults to the densified pair
+		// comparison (histogram_native_reset.go, via
+		// expHistogramDenseContribsExpr), so every exp-histogram
+		// counter fixture in the corpus already pins the arm production
+		// runs; what would otherwise go unpinned is the
+		// per-target-bucket arm that
+		// exp_histogram_reset_mask_densified_chdb_test.go compares
+		// against.
+		field:   "ExpHistogramResetMask",
+		section: "per_target_exp_histogram_reset_mask",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.ExpHistogramResetMask = promql.PerTargetExpHistogramResetMaskLowerer{}
+		},
+	},
+	{
 		field:   "Rate",
 		section: "experimental_ts_grid_range",
 		wire: func(l *promql.RangeLowerers, has func(string) bool) {

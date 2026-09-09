@@ -212,7 +212,7 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 	histSchema.AggregationTemporalityColumn = ""
 
 	if ctx.rangeMode() && subqueryPinned(sub) {
-		windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema)
+		windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema, ctx)
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 		return capSelectFnOverSubquery(
 			windowFn,
@@ -224,7 +224,7 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 	if ctx.rangeMode() {
 		return lowerSelectFnOverSubqueryRange(windowFn, input, sub.Range, anchor.Offset, histSchema, ctx), nil
 	}
-	windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema)
+	windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema, ctx)
 	tsExpr := chplan.NowNano()
 	if !anchor.End.IsZero() {
 		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
@@ -240,7 +240,7 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 // it, already scoped to the outer window by [subqueryGridCtx] (see this
 // file's own top-level doc); resets/changes' [minSamplesFilter] floor reads
 // only the aggregated sample-count column, not the window bounds themselves.
-func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.Metrics) chplan.Node {
+func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	switch windowFn {
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
@@ -269,7 +269,7 @@ func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.M
 		}
 		return expHistogramPairCountStage(
 			minSamplesFilter(group, stalenessMinSamples),
-			windowFn, []string{s.AttributesColumn}, s,
+			windowFn, []string{s.AttributesColumn}, s, expHistogramDensifiedResetMaskEligible(ctx.lowerers),
 		)
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
 		return &chplan.Aggregate{
@@ -325,7 +325,7 @@ func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRa
 	case resetsWindowFn, changesWindowFn:
 		perSeries := expHistogramPairCountStage(
 			fanout(expHistogramPairCountAggs(windowFn, s)),
-			windowFn, []string{stepGridAnchorColumn, s.AttributesColumn}, s,
+			windowFn, []string{stepGridAnchorColumn, s.AttributesColumn}, s, expHistogramDensifiedResetMaskEligible(ctx.lowerers),
 		)
 		return expHistogramPairCountProjection(perSeries, anchorRef, s)
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn

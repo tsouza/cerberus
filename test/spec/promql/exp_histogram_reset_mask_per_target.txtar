@@ -1,0 +1,84 @@
+-- query.promql --
+increase(latency_exp_hist[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- exp_histogram_increase_partial_reset's restart, read through the
+-- query_range plan: one `[5m]` window per step anchor, folded by the
+-- per-anchor fan-out rather than by a single grouping. The counter-reset
+-- mask is projected per (anchor, series) there too, so this fixture is
+-- what pins that the whole-histogram verdict survives the OTHER plan
+-- shape rather than only the instant one (#2017).
+--
+-- The grid runs [00:00:00, 00:05:00] every 60s and the scrapes are 60s
+-- apart, so the restart at 00:02:00 sits inside the windows of the last
+-- four anchors and outside the windows of the first two — one fixture
+-- covering both verdicts.
+--
+--   TimeUnix   Count   Sum   buckets
+--   23:58:00     10    5.0   [ 8,  2]
+--   23:59:00     20   10.0   [16,  4]
+--   00:00:00     30   15.0   [24,  6]
+--   00:01:00     40   20.0   [32,  8]
+--   00:02:00     14    7.0   [ 5,  9]    <- the process restarted
+--   00:03:00     24   12.0   [10, 14]
+--   00:04:00     34   17.0   [15, 19]
+--   00:05:00     44   22.0   [20, 24]
+--
+-- Bucket 2 carries the divergence, exactly as in the instant fixture:
+-- its post-restart reading of 9 already exceeds the 8 it held one scrape
+-- earlier, so it never looks like it regressed. Take the 00:02:00 anchor,
+-- whose window (23:57:00, 00:02:00] holds the first five scrapes: the
+-- whole-histogram verdict condemns the last sample on Count alone
+-- (14 < 40) and folds bucket 2 as (4-2) + (6-4) + (8-6) + 9 = 15, where
+-- asking that bucket alone would fold it as (4-2) + (6-4) + (8-6) +
+-- (9-8) = 7 — under-counting the window by the 8 observations the
+-- pre-restart reading held. Every anchor whose window contains 00:02:00
+-- carries the same 8-observation correction, scaled by its own boundary
+-- extrapolation factor.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 10,  5.0, 0, 0, 0, [ 8,  2], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 20, 10.0, 0, 0, 0, [16,  4], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 30, 15.0, 0, 0, 0, [24,  6], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 40, 20.0, 0, 0, 0, [32,  8], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 14,  7.0, 0, 0, 0, [ 5,  9], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 24, 12.0, 0, 0, 0, [10, 14], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 34, 17.0, 0, 0, 0, [15, 19], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 44, 22.0, 0, 0, 0, [20, 24], 0, []);
+-- per_target_exp_histogram_reset_mask --
+-- exp_histogram_increase_partial_reset_range's shape, lowered through
+-- RangeLowerers.ExpHistogramResetMask =
+-- PerTargetExpHistogramResetMaskLowerer: the per-target-bucket picker +
+-- Kahan fold that the densified pair comparison
+-- (internal/promql/histogram_native_reset.go, via
+-- expHistogramDenseContribsExpr) replaced.
+--
+-- Like telescoping_exp_histogram_window_fold, this marker selects the
+-- arm that is NOT the optimisation: the densified rendering is what
+-- ships, and this section asks for the one it superseded. That arm is
+-- not a fallback — no deployment wires it — it is the oracle
+-- exp_histogram_reset_mask_densified_chdb_test.go compares against, and
+-- pinning its SQL here is what stops the oracle drifting silently
+-- underneath that comparison. Its sibling fixture
+-- (exp_histogram_increase_partial_reset_range: same query, same seed,
+-- same grid, no marker section) carries the densified rendering's own
+-- SQL, so the two goldens read side by side as the before and after.
+-- expected_rows --
+[]
