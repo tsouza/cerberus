@@ -72,9 +72,14 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // does declare the column persists ONE value per row and aggregates it as
 // `max`, which is that same fixed-band reading.
 //
-// The bucket comparison is made at EACH PAIR's own scale — the current
-// row's own, matching reference's "prev reconciled to the current
+// The bucket comparison is made at EACH PAIR's own scale — the coarser
+// of its two rows, which IS the current row's wherever the comparison can
+// decide anything, matching reference's "prev reconciled to the current
 // schema" — never at the window's merged (coarsest-of-everyone) scale.
+// (The two readings part only when curr is FINER than prev, and that pair
+// is condemned unconditionally by the schema term before any bucket is
+// read; see [expHistogramResetPairBucketRegressedExpr] for why the
+// distinction is nevertheless load-bearing.)
 // Comparing at the merged scale instead (cerberus issue #2095, fixed by
 // [expHistogramResetPairBucketRegressedExpr]) let a LATER sample's
 // coarser scale pull the comparison scale below an EARLIER pair's own,
@@ -91,7 +96,8 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // merged bucket range. That made it the single most expensive term in an
 // exponential-histogram `rate()` query once the bucket ladders themselves
 // folded in closed form (histogram_native_window_closed_form.go): on
-// cerberus's own `cerberus_queries_duration_exp_hist` telemetry, a
+// cerberus's own `cerberus_queries_duration_exp_hist` telemetry (7
+// series, 80-155 stored buckets, ~20 sample pairs per 5m window), a
 // 21-anchor `histogram_quantile(0.95, sum by(...) (rate(X[5m])))` peaked
 // at 912 MiB against the 1 GiB CERBERUS_CH_QUERY_MAX_MEMORY default and
 // answered HTTP 422 — cerberus issue #3178, which is what made the
@@ -246,10 +252,11 @@ func expHistogramResetMaskExpr(densified bool) chplan.Expr {
 // pair, with the pair's two row positions bound to paramResetPrevRow /
 // paramResetCurrRow by the caller's lambda.
 //
-// The bucket comparison rescales the PREVIOUS row down to the CURRENT
-// row's own scale — never to the window's merged (coarsest-of-everyone)
-// scale — matching reference's own "prev reconciled to the current
-// schema" (cerberus issue #2095). A LATER sample coarsening the window's
+// The bucket comparison rescales both rows onto the coarser of the
+// PAIR's own two scales — the CURRENT row's wherever the comparison can
+// decide anything — never onto the window's merged
+// (coarsest-of-everyone) scale, matching reference's own "prev
+// reconciled to the current schema" (cerberus issue #2095). A LATER sample coarsening the window's
 // merged scale therefore cannot hide an EARLIER pair's fine-scale
 // regression: each pair answers entirely from its own two rows, so it
 // cannot see any OTHER row's scale at all.
@@ -296,8 +303,11 @@ func orAllExpr(first chplan.Expr, rest ...chplan.Expr) chplan.Expr {
 // expHistogramResetPairBucketRegressedExpr reports whether ANY bucket of
 // one signed ladder (Positive or Negative, named by offArrAlias /
 // bucArrAlias) regressed between prev and curr, comparing the two rows
-// at CURR's own scale — reference's "prev reconciled to the current
-// schema" (cerberus issue #2095; see expHistogramResetVerdictExpr).
+// at the coarser of the PAIR's own two scales — CURR's wherever the
+// comparison can decide anything, which is reference's "prev reconciled
+// to the current schema" (cerberus issue #2095; see
+// expHistogramResetVerdictExpr, and the `pairScale` binding below for
+// why the clamp is spelled rather than assumed).
 //
 // Unlike the mask's other components, this reads only the ONE pair's own
 // two rows rather than a per-series array, so it needs its own small

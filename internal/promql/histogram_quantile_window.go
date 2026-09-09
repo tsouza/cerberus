@@ -98,21 +98,6 @@ const (
 	paramIncreaseSorted = "wsr"
 )
 
-// withLowerers stamps every lowering-table-derived strategy reading onto
-// in and returns the result.
-//
-// The two readings it resolves — the closed-form bucket fold and the
-// densified reset mask — are set together here rather than at each of the
-// seven window-input build sites, because a site that resolved one and
-// forgot the other would silently fall back to the slower rendering with
-// nothing failing: both arms answer identically, which is exactly what
-// makes a missed assignment invisible.
-func (in histogramWindowInputs) withLowerers(l RangeLowerers) histogramWindowInputs {
-	in.closedFormEligible = expHistogramClosedFormEligible(l)
-	in.densifiedResetMask = expHistogramDensifiedResetMaskEligible(l)
-	return in
-}
-
 // hqLet binds `val` to a lambda parameter for the duration of `body`,
 // rendering `arrayMap(<param> -> <body>, array(<val>))[1]` — ClickHouse's
 // spelling of a let-binding, since a one-element array evaluates the body
@@ -268,6 +253,21 @@ type histogramWindowInputs struct {
 	// nil everywhere else, which reproduces the pre-existing inline
 	// computation unchanged.
 	hoistedFactor chplan.Expr
+}
+
+// withLowerers stamps every lowering-table-derived strategy reading onto
+// in and returns the result.
+//
+// The two readings it resolves — the closed-form bucket fold and the
+// densified reset mask — are set together here rather than at each of the
+// seven window-input build sites, because a site that resolved one and
+// forgot the other would silently fall back to the slower rendering with
+// nothing failing: both arms answer identically, which is exactly what
+// makes a missed assignment invisible.
+func (in histogramWindowInputs) withLowerers(l RangeLowerers) histogramWindowInputs {
+	in.closedFormEligible = expHistogramClosedFormEligible(l)
+	in.densifiedResetMask = expHistogramDensifiedResetMaskEligible(l)
+	return in
 }
 
 // histogramWindowFold maps a matched range-vector function to the

@@ -2884,7 +2884,7 @@ const paramExpDenseTarget = "dk"
 // a captured column once per element of the enclosing loop — so a group's
 // whole per-row bucket array is rebuilt once per target bucket. Measured
 // against a real ClickHouse 26.6.4 on cerberus's own
-// `cerberus_queries_duration_exp_hist` telemetry (7 series, 105-155
+// `cerberus_queries_duration_exp_hist` telemetry (7 series, 80-155
 // stored buckets, ~20 sample pairs per 5m window, a 21-anchor
 // query_range), the counter-reset mask built that way peaked at 912 MiB —
 // over the 1 GiB CERBERUS_CH_QUERY_MAX_MEMORY default, which is what made
