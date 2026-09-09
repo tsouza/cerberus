@@ -29,40 +29,64 @@ INSERT INTO otel_metrics_histogram VALUES
 [0] string = "http_server_request_duration_bucket"
 [1] string = "le"
 [2] string = "+Inf"
-[3] int64 = 1
-[4] string = "service_name"
-[5] string = "service.name"
-[6] string = "service_name"
-[7] string = "service.name"
-[8] string = "service_name"
-[9] string = ""
-[10] string = "service_name"
-[11] string = "http_server_request_duration"
-[12] string = "http.server.request.duration"
-[13] string = "http.server.request/duration"
-[14] string = "http.server.request_duration"
-[15] string = "http.server/request/duration"
-[16] string = "http.server/request_duration"
-[17] string = "http.server_request.duration"
-[18] string = "http.server_request_duration"
-[19] string = "http/server/request/duration"
-[20] string = "http/server/request_duration"
-[21] string = "http/server_request_duration"
-[22] string = "http_server.request.duration"
-[23] string = "http_server.request_duration"
-[24] string = "http_server_request.duration"
-[25] string = "2026-01-01 00:00:01.000000000"
-[26] int64 = 9
-[27] string = "2026-01-01 00:00:01.000000000"
-[28] int64 = 9
-[29] int64 = 300000000000
+[3] float64 = 0
+[4] int64 = 0
+[5] int64 = 0
+[6] int64 = 1
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 0
+[10] int64 = 1
+[11] int64 = 1
+[12] int64 = 1
+[13] int64 = 0
+[14] int64 = 1
+[15] int64 = 1
+[16] int64 = 1
+[17] int64 = 1
+[18] int64 = 1
+[19] int64 = 1
+[20] int64 = 1
+[21] int64 = 1
+[22] int64 = 1
+[23] int64 = 2
+[24] int64 = 1
+[25] int64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] string = "service_name"
+[29] string = "service.name"
+[30] string = "service_name"
+[31] string = "service.name"
+[32] string = "service_name"
+[33] string = ""
+[34] string = "service_name"
+[35] string = "http_server_request_duration"
+[36] string = "http.server.request.duration"
+[37] string = "http.server.request/duration"
+[38] string = "http.server.request_duration"
+[39] string = "http.server/request/duration"
+[40] string = "http.server/request_duration"
+[41] string = "http.server_request.duration"
+[42] string = "http.server_request_duration"
+[43] string = "http/server/request/duration"
+[44] string = "http/server/request_duration"
+[45] string = "http/server_request_duration"
+[46] string = "http_server.request.duration"
+[47] string = "http_server.request_duration"
+[48] string = "http_server_request.duration"
+[49] string = "2026-01-01 00:00:01.000000000"
+[50] int64 = 9
+[51] string = "2026-01-01 00:00:01.000000000"
+[52] int64 = 9
+[53] int64 = 300000000000
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
     Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
-      Project ["http_server_request_duration_bucket" AS MetricName, FnMapMerge(Attributes, FnMap("le", FnIf((le_idx > FnLength(ExplicitBounds)), "+Inf", FnToString(ExplicitBounds[le_idx])))) AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(FnArraySum(FnArraySlice(BucketCounts, 1, le_idx))) AS Value]
+      Project ["http_server_request_duration_bucket" AS MetricName, FnMapMerge(Attributes, FnMap("le", FnIf((le_idx > FnLength(ExplicitBounds)), "+Inf", FnArrayMap(pffv -> FnArrayMap(pffu -> FnMultiIf(FnIsNaN(pffv), "NaN", (FnIsInfinite(pffv) AND (pffv > 0)), "+Inf", FnIsInfinite(pffv), "-Inf", FnArrayMap(pffs -> FnArrayMap(pffe -> FnIf((pffe = 0), pffu, FnConcat(FnIf(FnStartsWith(pffu, "-"), "-", ""), FnArrayMap(pffm -> FnArrayMap(pffp -> FnArrayMap(pffd -> FnArrayMap(pffn -> FnMultiIf((pffn >= FnToInt64(FnLength(pffd))), FnConcat(pffd, FnLeftPad("", (pffn - FnToInt64(FnLength(pffd))), "0")), (pffn > 0), FnConcat(FnSubstring(pffd, 1, pffn), ".", FnSubstring(pffd, (pffn + 1))), FnConcat("0.", FnLeftPad("", (0 - pffn), "0"), pffd)), FnArray((FnIf((pffp > 0), (pffp - 1), FnToInt64(FnLength(pffm))) + FnToInt64(FnSubstring(pffs, (pffe + 1))))))[1], FnArray(FnIf((pffp > 0), FnConcat(FnSubstring(pffm, 1, (pffp - 1)), FnSubstring(pffm, (pffp + 1))), pffm)))[1], FnArray(FnToInt64(FnStringPosition(pffm, "."))))[1], FnArray(FnSubstring(pffs, 1, (pffe - 1))))[1])), FnArray(FnToInt64(FnStringPosition(pffs, "e"))))[1], FnArray(FnIf(FnStartsWith(pffu, "-"), FnSubstring(pffu, 2), pffu)))[1]), FnArray(FnToString(pffv)))[1], FnArray(ExplicitBounds[le_idx]))[1]))) AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(FnArraySum(FnArraySlice(BucketCounts, 1, le_idx))) AS Value]
         Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, ExplicitBounds AS ExplicitBounds, BucketCounts AS BucketCounts, FnArrayJoin(FnArrayEnumerate(BucketCounts)) AS le_idx]
           Filter predicate=(MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration"))
             Scan(otel_metrics_histogram)
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[le_idx])))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
