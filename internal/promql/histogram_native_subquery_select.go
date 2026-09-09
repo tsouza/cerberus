@@ -225,7 +225,7 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 	histSchema.AggregationTemporalityColumn = ""
 
 	if ctx.rangeMode() && subqueryPinned(sub) {
-		windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema)
+		windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema, ctx)
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 		return capSelectFnOverSubquery(
 			windowFn,
@@ -237,7 +237,7 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 	if ctx.rangeMode() {
 		return lowerSelectFnOverSubqueryRange(windowFn, input, sub.Range, anchor.Offset, histSchema, ctx), nil
 	}
-	windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema)
+	windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema, ctx)
 	tsExpr := chplan.NowNano()
 	if !anchor.End.IsZero() {
 		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
@@ -253,46 +253,81 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 // it, already scoped to the outer window by [subqueryGridCtx] (see this
 // file's own top-level doc); resets/changes' [minSamplesFilter] floor reads
 // only the aggregated sample-count column, not the window bounds themselves.
-func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.Metrics) chplan.Node {
+//
+// Every name but last_over_time / first_over_time additionally carries the
+// name-drop collision guard ([selectFnDropsSeriesName], cerberus issue
+// #3232): grouping by Attributes ALONE merges two series that differ only
+// by `__name__`, which is exactly the pair reference refuses to answer once
+// the drop collapses them onto one label set. The two preserving names are
+// excluded because they keep `__name__` in their output, so nothing of
+// theirs can collide there.
+func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	aliases := []string{s.AttributesColumn}
+	reduce := func(aggs []chplan.AggFunc) chplan.Node {
+		return selectFnSubqueryNameGuard(windowFn, &chplan.Aggregate{
+			Input:              input,
+			GroupBy:            groupBy,
+			GroupByAliases:     aliases,
+			AggFuncs:           selectFnSubqueryAggs(windowFn, aggs, s),
+			DropEmptyOnNoGroup: true,
+		}, s, ctx)
+	}
 	switch windowFn {
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
-		return &chplan.Aggregate{
-			Input:              input,
-			GroupBy:            groupBy,
-			GroupByAliases:     []string{s.AttributesColumn},
-			AggFuncs:           nativeExpHistBareAggsDirectional(windowFn, s),
-			DropEmptyOnNoGroup: true,
-		}
+		return reduce(nativeExpHistBareAggsDirectional(windowFn, s))
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
-		return &chplan.Aggregate{
-			Input:              input,
-			GroupBy:            groupBy,
-			GroupByAliases:     []string{s.AttributesColumn},
-			AggFuncs:           []chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, s)},
-			DropEmptyOnNoGroup: true,
-		}
+		return reduce([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, s)})
 	case resetsWindowFn, changesWindowFn:
-		group := &chplan.Aggregate{
-			Input:              input,
-			GroupBy:            groupBy,
-			GroupByAliases:     []string{s.AttributesColumn},
-			AggFuncs:           append(expHistogramPairCountAggs(windowFn, s), windowSampleCountAgg(s)),
-			DropEmptyOnNoGroup: true,
-		}
 		return expHistogramPairCountStage(
-			minSamplesFilter(group, stalenessMinSamples),
-			windowFn, []string{s.AttributesColumn}, s,
+			minSamplesFilter(
+				reduce(append(expHistogramPairCountAggs(windowFn, s), windowSampleCountAgg(s))),
+				stalenessMinSamples,
+			),
+			windowFn, aliases, s,
 		)
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
-		return &chplan.Aggregate{
-			Input:              input,
-			GroupBy:            groupBy,
-			GroupByAliases:     []string{s.AttributesColumn},
-			AggFuncs:           tsOfSampleTimestampAgg(windowFn, s),
-			DropEmptyOnNoGroup: true,
-		}
+		return reduce(tsOfSampleTimestampAgg(windowFn, s))
 	}
+}
+
+// selectFnDropsSeriesName reports whether windowFn removes `__name__`
+// from its own output — true for every name
+// [selectFnOverExpHistogramSubquery] admits except last_over_time and
+// first_over_time, which select a published sample verbatim and keep the
+// name with it. It is the same split [capSelectFnOverSubquery] already
+// makes when it picks an output projection, named here so the collision
+// guard and the projection cannot drift apart about which names drop.
+func selectFnDropsSeriesName(windowFn string) bool {
+	switch windowFn {
+	case lastOverTimeWindowFn, firstOverTimeWindowFn:
+		return false
+	default:
+		return true
+	}
+}
+
+// selectFnSubqueryAggs and selectFnSubqueryNameGuard are the two halves
+// of the name-drop collision guard, applied to whichever of the three
+// grid modes is reducing. See [subqueryNameCollisionAgg] for what the
+// guard tests and why the test is exact; this pair only decides WHERE it
+// rides and WHICH names owe it.
+//
+// Both are no-ops for the two name-preserving names, so every reduction
+// in this file can route through them unconditionally rather than
+// repeating the split per grid mode.
+func selectFnSubqueryAggs(windowFn string, aggs []chplan.AggFunc, s schema.Metrics) []chplan.AggFunc {
+	if !selectFnDropsSeriesName(windowFn) {
+		return aggs
+	}
+	return append(aggs, subqueryNameCollisionAgg(s))
+}
+
+func selectFnSubqueryNameGuard(windowFn string, node chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	if !selectFnDropsSeriesName(windowFn) {
+		return node
+	}
+	return subqueryNameCollisionFilter(node, s, ctx)
 }
 
 // lowerSelectFnOverSubqueryRange is the query_range shape: one
@@ -314,8 +349,15 @@ func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.M
 // resolving it per function.
 func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRange, offset time.Duration, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
-	fanout := func(aggs []chplan.AggFunc) *chplan.RangeBucketFanout {
-		return &chplan.RangeBucketFanout{
+	// Same guard the other two grid modes carry
+	// ([selectFnSubqueryNameGuard]), on the per-(series, anchor) buckets
+	// this mode reduces to instead of the per-series groups they do. The
+	// question is per output vector either way — reference checks one
+	// evaluation step's Matrix at a time — and a fan-out bucket IS one
+	// step's group, so the abort rides on the fan-out's own output rather
+	// than needing an anchor key of its own.
+	fanout := func(aggs []chplan.AggFunc) chplan.Node {
+		return selectFnSubqueryNameGuard(windowFn, &chplan.RangeBucketFanout{
 			Input:          input,
 			Start:          ctx.start.UTC(),
 			End:            ctx.end.UTC(),
@@ -324,11 +366,11 @@ func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRa
 			Offset:         offset,
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 			GroupByAliases: []string{s.AttributesColumn},
-			AggFuncs:       aggs,
+			AggFuncs:       selectFnSubqueryAggs(windowFn, aggs, s),
 			MinSamples:     stalenessMinSamples,
 			AnchorAlias:    stepGridAnchorColumn,
 			TimestampCol:   s.TimestampColumn,
-		}
+		}, s, ctx)
 	}
 	switch windowFn {
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:

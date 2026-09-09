@@ -303,13 +303,20 @@ func lowerMixedOrSubqueryResetsOrChangesInput(mixedRel chplan.Node, sub *parser.
 	}
 
 	group := &chplan.Aggregate{
-		Input:              mixedRel,
-		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           append(mixedPairCountAggs(windowFn, histSchema), windowSampleCountAgg(s)),
+		Input:          mixedRel,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		GroupByAliases: []string{s.AttributesColumn},
+		AggFuncs: selectFnSubqueryAggs(
+			windowFn,
+			append(mixedPairCountAggs(windowFn, histSchema), windowSampleCountAgg(s)),
+			s,
+		),
 		DropEmptyOnNoGroup: true,
 	}
-	windowed := mixedPairCountStage(minSamplesFilter(group, stalenessMinSamples), windowFn, []string{s.AttributesColumn}, histSchema)
+	windowed := mixedPairCountStage(
+		minSamplesFilter(selectFnSubqueryNameGuard(windowFn, group, s, ctx), stalenessMinSamples),
+		windowFn, []string{s.AttributesColumn}, histSchema,
+	)
 
 	if ctx.rangeMode() && subqueryPinned(sub) {
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
@@ -346,11 +353,14 @@ func lowerMixedOrSubqueryResetsRange(mixedRel chplan.Node, sub *parser.SubqueryE
 		Offset:         anchor.Offset,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		GroupByAliases: []string{s.AttributesColumn},
-		AggFuncs:       mixedPairCountAggs(windowFn, histSchema),
+		AggFuncs:       selectFnSubqueryAggs(windowFn, mixedPairCountAggs(windowFn, histSchema), s),
 		MinSamples:     stalenessMinSamples,
 		AnchorAlias:    stepGridAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
 	}
-	perSeries := mixedPairCountStage(fanout, windowFn, []string{stepGridAnchorColumn, s.AttributesColumn}, histSchema)
+	perSeries := mixedPairCountStage(
+		selectFnSubqueryNameGuard(windowFn, fanout, s, ctx),
+		windowFn, []string{stepGridAnchorColumn, s.AttributesColumn}, histSchema,
+	)
 	return expHistogramPairCountProjection(perSeries, anchorRef, s)
 }
