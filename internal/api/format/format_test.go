@@ -110,6 +110,26 @@ func TestParseDuration(t *testing.T) {
 		{"1e30", 0, true},
 		{"-1e30", 0, true},
 		{"NaN", 0, true},
+		// The unit branch is model.ParseDuration, the one Prometheus
+		// (web/api/v1/api.go:2280) and Loki (pkg/loghttp/params.go:210)
+		// both use. It differs from time.ParseDuration in BOTH
+		// directions and cerberus was on the wrong side of each.
+		//
+		// model accepts the calendar units Go has no notion of; these
+		// were a 400 here and an answer upstream.
+		{"1d", 24 * time.Hour, false},
+		{"1w", 7 * 24 * time.Hour, false},
+		{"1y", 365 * 24 * time.Hour, false},
+		{"1h30m", 90 * time.Minute, false},
+		{"500ms", 500 * time.Millisecond, false},
+		// model rejects fractional units and the sub-millisecond units;
+		// these were answered here and are a 400 upstream.
+		{"1.5h", 0, true},
+		{"100us", 0, true},
+		{"100ns", 0, true},
+		// model also requires units in descending magnitude with no
+		// repeats, where Go accepts any order.
+		{"30s5m", 0, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {

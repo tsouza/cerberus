@@ -2578,7 +2578,7 @@ func matcherLHS(label string, s schema.Logs) chplan.Expr {
 	}
 	mapLookup := attributeLookupColumn(s.ResourceAttributesColumn, label)
 	if col := resourceFallbackColumn(s, label); col != "" {
-		return resourceAttributeFallbackLHS(col, mapLookup)
+		return resourceAttributeFallbackLHS(col, mapLookup, topLevelLogColumnIsNumeric(col, s))
 	}
 	return mapLookup
 }
@@ -2633,16 +2633,22 @@ func resourceFallbackColumn(s schema.Logs, labelName string) string {
 // matcher's logical contract holds regardless of which storage shape
 // the row used — both presence and ABSENCE of `service.name=cerberus`
 // resolve correctly when the producer wrote it to either side.
-func resourceAttributeFallbackLHS(topCol string, mapLookup chplan.Expr) chplan.Expr {
+func resourceAttributeFallbackLHS(topCol string, mapLookup chplan.Expr, numeric bool) chplan.Expr {
+	var col chplan.Expr = &chplan.ColumnRef{Name: topCol}
+	if numeric {
+		// Every Loki label value is a string, and the matcher compares
+		// against one. A numeric top-level column has to be rendered
+		// before it can be compared or NULLed out — see
+		// [topLevelLogColumnIsNumeric] for why only those columns are
+		// wrapped.
+		col = &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{col}}
+	}
 	return &chplan.FuncCall{
 		Fn: chplan.FnCoalesce,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Fn: chplan.FnNullIf,
-				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: topCol},
-					&chplan.LitString{V: ""},
-				},
+				Fn:   chplan.FnNullIf,
+				Args: []chplan.Expr{col, &chplan.LitString{V: ""}},
 			},
 			mapLookup,
 		},

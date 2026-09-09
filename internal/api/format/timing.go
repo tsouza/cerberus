@@ -2,10 +2,13 @@ package format
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/prometheus/common/model"
 )
 
 // msEpochFloor / nsEpochFloor split an integer Unix timestamp by scale:
@@ -86,12 +89,28 @@ func timeFromUnixFloatSeconds(f float64) time.Time {
 	return clampStorable(time.Unix(sec, nsec).UTC())
 }
 
-// ParseDuration parses a Prom / Loki style step / range duration.
-// Accepts plain floats (interpreted as seconds) or Go-style durations
-// like "30s", "5m", "1h". Empty input is an error so callers can
-// distinguish "missing" from "0".
+// ParseDuration parses a Prom / Loki style step / range duration: a
+// plain number (interpreted as seconds), else a Prometheus duration
+// literal. Empty input is an error so callers can distinguish "missing"
+// from "0".
 //
-// The int64-overflow guard on the float branch is not cerberus-specific
+// The two branches and their order are Prometheus's `parseDuration`
+// (web/api/v1/api.go:2272-2284) and Loki's `parseSecondsOrDuration`
+// (pkg/loghttp/params.go:202-214), which are the same function twice.
+// The unit branch is `model.ParseDuration`, NOT `time.ParseDuration`:
+// the two differ in both directions, and cerberus was on the wrong side
+// of both. `model` accepts the calendar units `y`, `w` and `d` that Go
+// does not — `?step=1d` was a 400 here and an answer upstream — and Go
+// accepts fractional units (`1.5h`) and the sub-second `us`/`ns` that
+// `model` rejects, so those were answered here and a 400 upstream.
+//
+// Upstream Tempo is the exception and genuinely uses
+// `time.ParseDuration` (pkg/api/http.go:661-671), so the Tempo head has
+// its own parser (internal/api/tempo's parseMetricsStep) rather than
+// sharing this one. Matching each head to its own reference is the
+// point; a single tolerant parser would match none of them.
+//
+// The int64-overflow guard on the number branch is not cerberus-specific
 // caution: all three reference engines carry the identical check, and
 // all three answer 400 rather than a wrapped duration —
 // Prometheus web/api/v1/api.go:2273-2279, Loki
@@ -109,7 +128,11 @@ func ParseDuration(raw string) (time.Duration, error) {
 		}
 		return time.Duration(ns), nil
 	}
-	return time.ParseDuration(raw)
+	d, err := model.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse %q to a valid duration", raw)
+	}
+	return time.Duration(d), nil
 }
 
 // MinPositiveDuration returns the smaller of a and b, treating a
