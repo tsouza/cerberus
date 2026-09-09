@@ -299,3 +299,37 @@ func TestMetricsFirstStageBreaksAtTrailingPipe(t *testing.T) {
 		t.Errorf("Parse(`{} | rate() | rate()`) = %v, nil; want a parse error (loop must break after the metrics first stage)", expr)
 	}
 }
+
+// TestExistenceOperatorsRoundTrip pins the POSTFIX rendering of `= nil`
+// / `!= nil`, and pins it by RE-PARSING rather than by restating a
+// literal: a prefix rendering produces `{ = nil.a }`, which the parser
+// rejects, so the round-trip is what makes the assertion mean
+// "well-formed" rather than "matches whatever we print today".
+//
+// Upstream Tempo renders these the same way — `unaryOp` in
+// pkg/traceql/ast_stringer.go emits `wrapElement(e) + " != nil"` and
+// keeps the phrase out of its operator enum entirely.
+func TestExistenceOperatorsRoundTrip(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{`{ .a = nil }`, "{ .a = nil }"},
+		{`{ .a != nil }`, "{ .a != nil }"},
+		{`{ span.foo = nil }`, "{ span.foo = nil }"},
+		{`{ resource.service.name != nil }`, "{ resource.service.name != nil }"},
+		{`{ kind != nil }`, "{ kind != nil }"},
+	}
+	for _, c := range cases {
+		got := mustParse(t, c.query).String()
+		if got != c.want {
+			t.Errorf("Parse(%q).String() = %q; want %q", c.query, got, c.want)
+		}
+		// Re-parsing the printed form must succeed and be stable.
+		again := mustParse(t, got).String()
+		if again != got {
+			t.Errorf("Parse(%q).String() = %q; the printed form does not round-trip", got, again)
+		}
+	}
+}

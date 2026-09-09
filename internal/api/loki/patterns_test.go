@@ -231,7 +231,14 @@ func TestPatterns_UsesRequestedStep(t *testing.T) {
 	if len(out.Data) != 1 {
 		t.Fatalf("patterns=%d want 1: %+v", len(out.Data), out.Data)
 	}
-	want := [][2]int64{{0, 15}, {15, 15}}
+	// Upstream buckets TWICE: at ingest against drain.TimeResolution
+	// (10s) and again at query time against the request step
+	// (pkg/pattern/drain/chunk.go). 30 lines one second apart therefore
+	// land in the 10s ingest buckets 0/10/20 with 10 lines each, and the
+	// 15s re-scale folds buckets 0 and 10 together. Bucketing straight to
+	// the step - one stage - would split them evenly as {0,15},{15,15},
+	// which is a bucket layout upstream never produces for this input.
+	want := [][2]int64{{0, 20}, {15, 10}}
 	if len(out.Data[0].Samples) != len(want) {
 		t.Fatalf("samples=%v want %v", out.Data[0].Samples, want)
 	}

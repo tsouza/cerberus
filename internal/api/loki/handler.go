@@ -420,12 +420,16 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cancel()
 
-	// Instant /query: collapse the window onto a single point. Per
-	// upstream Loki contract the evaluation lookback is
-	// [qlcommon.InstantLookback] (the same instant-lookback PromQL
-	// uses). Threading [ts - InstantLookback, ts] keeps the Scan
-	// filtered to that envelope so the SQL doesn't return every
-	// matching log in the table.
+	// Instant /query: collapse the window onto a single point using
+	// [qlcommon.InstantLookback], the same instant-lookback PromQL uses.
+	// Threading [ts - InstantLookback, ts] keeps the Scan filtered to
+	// that envelope so the SQL doesn't return every matching log in the
+	// table.
+	//
+	// This is cerberus's own envelope, not an upstream Loki contract —
+	// see [qlcommon.InstantLookback]'s doc. Upstream's instant handler
+	// 400s a log selector outright, and its own 30s
+	// `max_look_back_period` is unreachable from HTTP.
 	res, err := h.Engine.Query(ctx, h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts, limit, dir), q)
 	if err != nil {
 		h.respondError(r.Context(), w, classifyEngineErr(err))
@@ -470,11 +474,22 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return
 	}
-	step, err := format.ParseDuration(r.FormValue("step"))
-	if err != nil {
-		// Loki allows missing step (auto-resolves); cerberus requires it for
-		// metric queries. Default to 1 minute when absent.
-		step = time.Minute
+	// ABSENT and MALFORMED are different requests. Upstream Loki
+	// auto-resolves an absent step (loghttp's `parseSecondsOrDuration`
+	// is only reached when the param is present) and returns 400 —
+	// `cannot parse %q to a valid duration` — for one it cannot parse.
+	// Collapsing both into a 1m default answered `?step=banana` with a
+	// 200 over a window the client never asked for. `parsePatternsStep`
+	// in patterns.go already splits them the same way.
+	stepRaw := r.FormValue("step")
+	step := time.Minute
+	if stepRaw != "" {
+		step, err = format.ParseDuration(stepRaw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, ErrBadData,
+				fmt.Errorf("cannot parse %q to a valid duration", stepRaw))
+			return
+		}
 	}
 	if step <= 0 {
 		// An explicitly non-positive step would divide by zero in the
@@ -484,8 +499,16 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'step' parameter"))
 		return
 	}
-	if !end.After(start) {
-		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("'end' must be after 'start'"))
+	// Only a STRICTLY inverted window is rejected. Upstream Loki's
+	// check is `if result.End.Before(result.Start)` (pkg/loghttp/query.go)
+	// — `start == end` is accepted and answers with the single anchor a
+	// zero-width window produces. (Upstream's error STRING over-claims,
+	// saying "before or equal to"; the code is the reference, and the
+	// message here matches the predicate rather than copying that.) The
+	// Loki metadata endpoints in this package already use the
+	// non-strict form; only /query_range diverged.
+	if end.Before(start) {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("'end' must not be before 'start'"))
 		return
 	}
 	// Cap the returned points per timeseries (end-start)/step, mirroring the

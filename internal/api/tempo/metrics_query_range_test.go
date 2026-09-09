@@ -1558,3 +1558,60 @@ func TestMetricsQueryRange_ResolutionCap(t *testing.T) {
 		t.Errorf("over-cap window must be rejected before any CH query; saw %d", len(q.queriedSQLs))
 	}
 }
+
+// TestAlignMetricsWindow_EpochAnchoredGrid pins the alignment grid to
+// the UNIX EPOCH rather than to Go's zero time.
+//
+// Tempo's `alignStart`/`alignEnd` (pkg/traceql/engine_metrics.go) are
+// `start - start%step` and `end + step - end%step` over unix
+// nanoseconds. `time.Time.Truncate` instead rounds "down to a multiple
+// of d (since the zero time)", and Go's zero time sits
+// E = 62135596800 s before the epoch — so the two agree exactly when
+// step divides E. Since 86400 divides E, every step that divides a day
+// agrees, which is why TestAlignMetricsWindow above (step = 1m) and
+// every `-- step --` in the Tempo compat corpus (all 60s) are blind to
+// the difference.
+//
+// The 60s row is kept alongside the divergent ones deliberately: it is
+// what stops this test from passing on a formula that is right only for
+// the non-divisor case.
+func TestAlignMetricsWindow_EpochAnchoredGrid(t *testing.T) {
+	t.Parallel()
+
+	// 2026-05-12T10:00:46Z / +2h, expressed as unix seconds so the
+	// expectation can be stated as the same modulo Tempo computes.
+	start := time.Date(2026, 5, 12, 10, 0, 46, 0, time.UTC)
+	end := time.Date(2026, 5, 12, 12, 0, 46, 0, time.UTC)
+
+	for _, step := range []time.Duration{
+		time.Minute,              // divides 86400 — both formulas agree
+		7 * time.Second,          // 62135596800 mod 7 == 4
+		13 * time.Second,         // 62135596800 mod 13 == 4
+		1500 * time.Second,       // a defaultQueryRangeStep ladder rung
+		15300 * time.Millisecond, // sub-second component, not a whole second
+	} {
+		t.Run(step.String(), func(t *testing.T) {
+			t.Parallel()
+			gotStart, gotEnd := tempo.AlignMetricsWindowForTest(start, end, step)
+
+			stepNano := step.Nanoseconds()
+			wantStart := time.Unix(0, start.UnixNano()-start.UnixNano()%stepNano).UTC()
+			wantEnd := time.Unix(0, end.UnixNano()-end.UnixNano()%stepNano).UTC()
+			if wantEnd.Before(end) {
+				wantEnd = wantEnd.Add(step)
+			}
+			if !gotStart.Equal(wantStart) {
+				t.Errorf("aligned start = %v, want %v (Truncate would give %v)",
+					gotStart.UTC(), wantStart, start.Truncate(step).UTC())
+			}
+			if !gotEnd.Equal(wantEnd) {
+				t.Errorf("aligned end = %v, want %v", gotEnd.UTC(), wantEnd)
+			}
+			// The grid must be an epoch multiple, which is the property
+			// every downstream `timestampMs` inherits.
+			if gotStart.UnixNano()%stepNano != 0 {
+				t.Errorf("aligned start %v is not an epoch multiple of %v", gotStart.UTC(), step)
+			}
+		})
+	}
+}

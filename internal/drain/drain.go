@@ -138,9 +138,28 @@ func (c *Cluster) Samples() []Sample {
 }
 
 // observe records one log line at tsNano against this cluster.
+//
+// The bucket floor is EPOCH-relative, matching upstream Loki's
+// `drain.TruncateTimestamp` (pkg/pattern/drain/chunk.go), which is a
+// plain `ts - ts%step` over milliseconds since the Unix epoch.
+// `time.Time.Truncate` cannot be used here: its doc says "rounding t
+// down to a multiple of d (since the zero time)", and the zero time is
+// Jan 1 year 1 — 62135596800 s before the Unix epoch. The two agree
+// only when that offset is a multiple of the resolution, which is why
+// the default 10s hid the difference; at a 13s resolution every bucket
+// landed 4 s early.
 func (c *Cluster) observe(tsNano int64) {
 	c.count++
-	bucket := time.Unix(0, tsNano).Truncate(c.res).Unix()
+	resNano := c.res.Nanoseconds()
+	// Go's `%` truncates toward zero, so a pre-epoch timestamp would
+	// floor the wrong way without the adjustment; upstream never sees a
+	// negative model.Time, but a floor that jumped direction at the
+	// epoch would make buckets non-monotonic here.
+	rem := tsNano % resNano
+	if rem < 0 {
+		rem += resNano
+	}
+	bucket := time.Unix(0, tsNano-rem).Unix()
 	if c.samples == nil {
 		c.samples = map[int64]int64{}
 	}

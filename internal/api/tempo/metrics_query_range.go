@@ -228,9 +228,44 @@ func (metricsLang) ProjectSamples(plan chplan.Node, _ engine.Meta) chplan.Node {
 // step multiple, end rounds up (unchanged when already a multiple).
 // Range queries only — Tempo's IsInstant path skips alignment, and so
 // does cerberus's handleMetricsQueryInstant.
+//
+// The grid is anchored at the UNIX EPOCH, because Tempo's `alignStart` /
+// `alignEnd` (pkg/traceql/engine_metrics.go) are `start - start%step`
+// and `end + step - end%step` over unix NANOSECONDS.
+// `time.Time.Truncate` cannot stand in for that: its doc says "rounding
+// t down to a multiple of d (since the zero time)", and Go's zero time
+// is Jan 1 year 1, i.e. E = 62135596800 s before the epoch. The two
+// grids coincide exactly when `step` divides E — and since `86400 | E`,
+// every step that divides a day agrees, which is why a corpus and a
+// test suite built on 60s steps could not see the difference. A 7s step
+// put every anchor 3 s off; 13s, 9 s off; and the step ladder
+// `defaultQueryRangeStep` picks for a Grafana request that omits `step`
+// includes rungs like 1500s and 3300s, which land 1200 s and 900 s off.
+//
+// Integer nanoseconds throughout, never float seconds: a step is exact
+// in ns and the modulo is exact, where seconds-as-float would reintroduce
+// the rounding this alignment exists to avoid.
 func alignMetricsWindow(start, end time.Time, step time.Duration) (time.Time, time.Time) {
-	alignedStart := start.Truncate(step)
-	alignedEnd := end.Truncate(step)
+	stepNano := step.Nanoseconds()
+	if stepNano <= 0 {
+		// A non-positive step has no grid to snap to. Callers reject it
+		// before reaching here (handleMetricsQueryRange's step guard), so
+		// this only keeps the helper total.
+		return start, end
+	}
+	// Go's `%` truncates toward zero, so a pre-epoch bound needs the
+	// adjustment to floor rather than round toward the epoch. Tempo's own
+	// arithmetic is unsigned and cannot express the case at all.
+	floor := func(t time.Time) time.Time {
+		ns := t.UnixNano()
+		rem := ns % stepNano
+		if rem < 0 {
+			rem += stepNano
+		}
+		return time.Unix(0, ns-rem).UTC()
+	}
+	alignedStart := floor(start)
+	alignedEnd := floor(end)
 	if alignedEnd.Before(end) {
 		alignedEnd = alignedEnd.Add(step)
 	}

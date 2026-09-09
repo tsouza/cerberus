@@ -164,9 +164,20 @@ func TestLower_HistogramBucket_EmittedShape_CumulativeAndPlusInf(t *testing.T) {
 	// Pin the precise CH idiom for `+Inf` synthesis on the trailing
 	// bucket — the only mechanism that lets a Prom client read the
 	// histogram's total observation count through `_bucket{le="+Inf"}`.
-	want := "if((le_idx > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[le_idx]))"
+	// The branch guard and the bound it reads are pinned separately
+	// because the finite arm is no longer a bare `toString`: it is
+	// promFixedFloatStringExpr, whose spelling matches Prometheus's own
+	// OTLP `le` stamping and is pinned end-to-end against
+	// strconv.FormatFloat by TestPromFixedFloatLabelsMatchGo.
+	want := "if((le_idx > length(`ExplicitBounds`)), ?, "
 	if !strings.Contains(sql, want) {
 		t.Errorf("emitted SQL missing +Inf branch %q\nSQL: %s", want, sql)
+	}
+	if !strings.Contains(sql, "array(`ExplicitBounds`[le_idx])") {
+		t.Errorf("emitted SQL missing the finite arm's bound read\nSQL: %s", sql)
+	}
+	if strings.Contains(sql, "toString(`ExplicitBounds`[le_idx])") {
+		t.Errorf("emitted SQL spells `le` with ClickHouse's toString; Prometheus stamps it with strconv.FormatFloat(bound, 'f', -1, 64)\nSQL: %s", sql)
 	}
 	// Pin the cumulative-count Value expression. `arraySlice(arr, 1, n)`
 	// returns the first n elements; `arraySum` of that gives the

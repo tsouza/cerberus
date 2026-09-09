@@ -2561,10 +2561,7 @@ func lowerSubqueryOverCountValues(
 	if err != nil {
 		return nil, err
 	}
-	groupBy = append(groupBy, &chplan.FuncCall{
-		Fn:   chplan.FnToString,
-		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
-	})
+	groupBy = append(groupBy, promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn}))
 	aliases = append(aliases, valueKeyAlias)
 	groupBy = append(groupBy, &chplan.ColumnRef{Name: anchorAlias})
 	aliases = append(aliases, anchorAlias)

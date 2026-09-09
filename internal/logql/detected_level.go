@@ -208,8 +208,15 @@ func detectedLevelSourceExpr(s schema.Logs) chplan.Expr {
 // `warn`/`wrn`/`warning`, `inf`/`info`/`information`, `dbg`/`debug`,
 // `trc`/`trace`, `critical`, `fatal`) onto Loki's canonical lowercase
 // level strings. Non-empty inputs that don't match any group fall
-// through to the lowercased original value — matching upstream
-// `normalizeLogLevel`'s default branch.
+// through UNCHANGED, case and all: upstream `normalizeLogLevel`
+// (pkg/distributor/field_detection.go) matches its variants with
+// `bytes.EqualFold` — case-insensitively — but its default branch is
+// `return level`, the caller's own string, with the comment "Return the
+// original value if it doesn't match any known level". So a
+// `SeverityText` of `NOTICE` shows up as `detected_level="NOTICE"` on a
+// reference Loki, not `notice`; only the seven KNOWN families are
+// lowercased, because their canonical spellings
+// (pkg/util/constants/levels.go) are lowercase to begin with.
 //
 // An EMPTY input maps to `unknown`: reference Loki's level detection
 // (pkg/distributor/field_detection.go — default-on via the
@@ -245,9 +252,11 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 	for _, g := range levelNormalizationGroups {
 		args = append(args, anyEqual(lowerValue, g.variants), &chplan.LitString{V: g.canonical})
 	}
-	// Default branch — pass through the lowercased original. Matches
-	// upstream Loki's `default: return level` behaviour.
-	args = append(args, lowerValue)
+	// Default branch — pass the ORIGINAL through, case preserved. That
+	// is upstream Loki's `default: return level`; matching is folded
+	// (the comparisons above all read `lowerValue`), the fallthrough is
+	// not.
+	args = append(args, value)
 
 	return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: args}
 }
@@ -284,8 +293,9 @@ var levelNormalizationGroups = []levelNormalizationGroup{
 // An empty input maps to `"unknown"`, matching reference Loki's
 // `constants.LogLevelUnknown` stamping (see [normaliseLevelExpr]'s doc
 // comment). A non-empty input that matches none of the known variants
-// falls through to its lowercased form, matching upstream
-// `normalizeLogLevel`'s default branch.
+// falls through UNCHANGED — upstream `normalizeLogLevel` folds case
+// only to MATCH (`bytes.EqualFold`) and returns the caller's own string
+// from its default branch.
 //
 // Used by `/loki/api/v1/patterns` (internal/api/loki/patterns.go) to
 // bucket pattern mining per detected level: that handler resolves each
@@ -304,7 +314,7 @@ func NormalizeDetectedLevel(raw string) string {
 			}
 		}
 	}
-	return lower
+	return raw
 }
 
 // anyEqual returns a left-folded OR-chain of `expr = variant`

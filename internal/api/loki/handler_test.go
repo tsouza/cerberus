@@ -679,8 +679,15 @@ func TestQueryRange_PushesStartEndToSQL(t *testing.T) {
 
 	lastSQL := q.LastSQL()
 	lastArgs := q.LastArgs()
-	if !strings.Contains(lastSQL, "`Timestamp` >=") || !strings.Contains(lastSQL, "`Timestamp` <=") {
-		t.Fatalf("expected Timestamp BETWEEN predicate in SQL; got: %s", lastSQL)
+	// A log-line query's window is `[start, end)` — reference Loki's
+	// entry path makes `end` exclusive (pkg/iter/entry_iterator.go: "The
+	// maxt is exclusive"), so the upper bound must be STRICT. Asserting
+	// the absence of `<=` is what makes this fail if the bound reverts.
+	if !strings.Contains(lastSQL, "`Timestamp` >=") || !strings.Contains(lastSQL, "`Timestamp` <") {
+		t.Fatalf("expected Timestamp window predicate in SQL; got: %s", lastSQL)
+	}
+	if strings.Contains(lastSQL, "`Timestamp` <=") {
+		t.Fatalf("log-line query used an INCLUSIVE end bound; reference Loki's entry path is [start, end): %s", lastSQL)
 	}
 	// The bound is rendered as toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)
 	// so both bound strings must appear as positional args.
@@ -696,9 +703,10 @@ func TestQueryRange_PushesStartEndToSQL(t *testing.T) {
 
 // TestQuery_PushesInstantWindowToSQL pins the same contract on the
 // instant `/query` path. The handler collapses a single `time` param
-// into a [time - 5m, time] envelope (per Loki's instant-lookback
-// convention) so the emitted SQL doesn't pull every matching row in
-// the table.
+// into a [time - 5m, time] envelope (cerberus's own choice — see
+// qlcommon.InstantLookback; upstream Loki 400s an instant log query
+// outright) so the emitted SQL doesn't pull every matching row in the
+// table.
 func TestQuery_PushesInstantWindowToSQL(t *testing.T) {
 	t.Parallel()
 
@@ -720,8 +728,13 @@ func TestQuery_PushesInstantWindowToSQL(t *testing.T) {
 
 	lastSQL := q.LastSQL()
 	lastArgs := q.LastArgs()
-	if !strings.Contains(lastSQL, "`Timestamp` >=") || !strings.Contains(lastSQL, "`Timestamp` <=") {
-		t.Fatalf("expected Timestamp BETWEEN predicate in SQL; got: %s", lastSQL)
+	// Log-line query: the upper bound is strict. See
+	// TestQueryRange_PushesStartEndToSQL for the upstream citation.
+	if !strings.Contains(lastSQL, "`Timestamp` >=") || !strings.Contains(lastSQL, "`Timestamp` <") {
+		t.Fatalf("expected Timestamp window predicate in SQL; got: %s", lastSQL)
+	}
+	if strings.Contains(lastSQL, "`Timestamp` <=") {
+		t.Fatalf("log-line query used an INCLUSIVE end bound; reference Loki's entry path is [start, end): %s", lastSQL)
 	}
 	const wantStart = "2026-05-14 12:00:00.000000000"
 	const wantEnd = "2026-05-14 12:05:00.000000000"
@@ -890,6 +903,13 @@ func TestQueryRange_BadInput(t *testing.T) {
 		// and divides by zero. Upstream Loki rejects both shapes too.
 		{"zero step", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=0`},
 		{"negative step", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=-60`},
+		// A step that does not parse is a 400, not a silent fallback to
+		// the absent-step default: upstream Loki's parseSecondsOrDuration
+		// answers `cannot parse %q to a valid duration`. Three spellings
+		// so a fix that special-cases one of them is not enough.
+		{"malformed step: word", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=banana`},
+		{"malformed step: bare unit", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=h`},
+		{"malformed step: bad suffix", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=1x`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1180,5 +1200,43 @@ func TestQuery_Streams_RespectsForwardDirection(t *testing.T) {
 		if !got[want] {
 			t.Errorf("expected limit=2 forward clamp to surface %q, got values %v", want, streams[0].Values)
 		}
+	}
+}
+
+// TestQueryRange_StartEqualsEndIsAccepted pins the zero-width window as
+// a 200.
+//
+// Upstream Loki rejects only a STRICTLY inverted window —
+// `if result.End.Before(result.Start)` in pkg/loghttp/query.go — so
+// `start == end` is a legal request answering with the single anchor a
+// zero-width window produces. (Upstream's error string says "before or
+// equal to", which is why this was easy to get wrong; the code is the
+// reference.) The inverted case is asserted alongside it so a fix that
+// simply dropped the guard would fail.
+func TestQueryRange_StartEqualsEndIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	const sameTS = "1717995600"
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=` + sameTS + `&end=` + sameTS + `&step=60`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start == end: status=%d, want 200", resp.StatusCode)
+	}
+
+	inverted, err := http.Get(srv.URL +
+		`/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995601&end=` + sameTS + `&step=60`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer inverted.Body.Close()
+	if inverted.StatusCode != http.StatusBadRequest {
+		t.Fatalf("end before start: status=%d, want 400", inverted.StatusCode)
 	}
 }

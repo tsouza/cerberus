@@ -80,6 +80,25 @@ func (o UnaryOperation) impliedType() StaticType {
 }
 
 func (o UnaryOperation) String() string {
+	// The existence operators are POSTFIX in the TraceQL surface syntax:
+	// `{ .a != nil }`, never `{ != nil .a }`. Every other unary operator
+	// (`-x`, `!x`) is prefix, so the two spellings have to be separated
+	// here rather than folded into [Operator.String]. Upstream Tempo
+	// draws the same line in the same place — `unaryOp` in
+	// pkg/traceql/ast_stringer.go special-cases OpExists / OpNotExists
+	// and its enum_operators.go carries no symbol for either.
+	//
+	// Rendering them prefix produced `{ = nil.a }`, which does not
+	// re-parse — and this String() is not test-only: the offline explain
+	// path (internal/api/tempo/explain.go) feeds it to
+	// classifyMetricsPipeline, whose rejection message quotes the query
+	// back to the operator.
+	switch o.Op {
+	case OpExists:
+		return wrap(o.Expression) + " " + operatorSymbols[OpExists]
+	case OpNotExists:
+		return wrap(o.Expression) + " " + operatorSymbols[OpNotExists]
+	}
 	return o.Op.String() + wrap(o.Expression)
 }
 

@@ -267,13 +267,29 @@ func nativeHistogramFloatString(value chplan.Expr) chplan.Expr {
 // duplication is inherent (each call receives a different `value`) and is
 // not what this binding fixes. What it fixes is each of those eleven copies
 // no longer being its own multiplicative blowup on top of that.
+// goShortestGSciLowerBound and goShortestGSciUpperBound bracket the
+// magnitudes Go's shortest `%g` lays out in FIXED notation. `%g` uses
+// scientific notation exactly when the decimal exponent falls outside
+// `[-4, eprec)`, and `strconv/ftoa.go` pins `eprec` to 6 whenever the
+// requested precision is "shortest" — so the fixed window is `[1e-4,
+// 1e6)`, and `strconv.FormatFloat(1e6, 'g', -1, 64)` really is `1e+06`.
+//
+// They are package-level rather than per-function because BOTH runtime
+// `%g` renderers need them — [nativeHistogramShortestGString] here and
+// [openMetricsFloatExpr] in histogram_quantile.go — and two copies of a
+// threshold this easy to misremember is exactly how they drifted before
+// (the second carried 1e21, the point where CLICKHOUSE switches, which is
+// the one number that is certainly not Go's).
+const (
+	goShortestGSciLowerBound = 1e-4
+	goShortestGSciUpperBound = 1e6
+	// Exponents below this get a leading zero: Go writes at least two
+	// exponent digits ("1e-05", never "1e-5").
+	goSciExpPadBelow = 10
+)
+
 func nativeHistogramShortestGString(value chplan.Expr) chplan.Expr {
 	const (
-		sciLowerBound = 1e-4
-		sciUpperBound = 1e6
-		// Exponents below this get a leading zero: Go writes at least two
-		// exponent digits ("1e-05", never "1e-5").
-		expPadBelow = 10
 		// Lambda parameter names: the value and CH's own string rendering
 		// of its magnitude.
 		valueParam  = "hgv"
@@ -365,7 +381,7 @@ func nativeHistogramShortestGString(value chplan.Expr) chplan.Expr {
 									expDigits := call(chplan.FnToString, call(chplan.FnAbs, ev))
 									expSuffix := call(chplan.FnConcat,
 										call(chplan.FnIf, bin(chplan.OpLt, ev, i(0)), str("-"), str("+")),
-										call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, ev), i(expPadBelow)),
+										call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, ev), i(goSciExpPadBelow)),
 											call(chplan.FnConcat, str("0"), expDigits),
 											expDigits))
 									sign := call(chplan.FnIf, bin(chplan.OpLt, v, f(0)), str("-"), str(""))
@@ -382,8 +398,8 @@ func nativeHistogramShortestGString(value chplan.Expr) chplan.Expr {
 										// empty `digits` inside `mantissa`.
 										bin(chplan.OpEq, v, f(0)), str("0"),
 										bin(chplan.OpOr,
-											bin(chplan.OpLt, call(chplan.FnAbs, v), f(sciLowerBound)),
-											bin(chplan.OpGe, call(chplan.FnAbs, v), f(sciUpperBound))), sci,
+											bin(chplan.OpLt, call(chplan.FnAbs, v), f(goShortestGSciLowerBound)),
+											bin(chplan.OpGe, call(chplan.FnAbs, v), f(goShortestGSciUpperBound))), sci,
 										fixed)
 								})
 							})

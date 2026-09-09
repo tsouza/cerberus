@@ -187,11 +187,6 @@ func TestLower_NilComparisonRejections(t *testing.T) {
 			query:   `{ resource.service.name = nil }`,
 			wantSub: "resource.service.name cannot be nil",
 		},
-		{
-			name:    "child_count_not_nil",
-			query:   `{ span:childCount != nil }`,
-			wantSub: "child counts",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

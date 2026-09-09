@@ -50,8 +50,13 @@ func TestReconstructLogStreamWrapThreadsFixtureWindow(t *testing.T) {
 	if !ok {
 		t.Fatal("ReconstructLogStreamWrap declined a log-stream query")
 	}
-	if !strings.Contains(sqlStr, "`Timestamp` >=") || !strings.Contains(sqlStr, "`Timestamp` <=") {
+	// A log-stream query's window is `[start, end)` — reference Loki's
+	// entry path makes `end` exclusive — so the upper bound is strict.
+	if !strings.Contains(sqlStr, "`Timestamp` >=") || !strings.Contains(sqlStr, "`Timestamp` <") {
 		t.Fatalf("wrapped SQL omitted the fixture window:\n%s", sqlStr)
+	}
+	if strings.Contains(sqlStr, "`Timestamp` <=") {
+		t.Fatalf("wrapped SQL used an INCLUSIVE end bound on a log-stream query:\n%s", sqlStr)
 	}
 }
 

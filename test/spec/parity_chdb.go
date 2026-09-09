@@ -1048,17 +1048,26 @@ func totalClassicHistogramObservations(counts []float64) float64 {
 }
 
 // formatBucketBound renders a bucket boundary the way the `le` label
-// spells it, which must agree with ClickHouse's `toString(Float64)` — the
-// expression cerberus's own emitter uses — or the two sides' bucket series
-// carry different label sets and never align.
+// spells it.
 //
-// Go's shortest round-trip formatting agrees with ClickHouse's across the
-// range the corpus uses. The two part company only at the exponent
-// thresholds ('g' switches to exponent form at >=1e21 and <1e-4), so a
-// fixture seeding a boundary out there would fail on the label rather than
-// silently compare the wrong bucket.
+// The reference is Prometheus's own OTLP receiver — the code that turns
+// the SAME OTel explicit-bucket histogram into classic
+// `<name>_bucket{le="…"}` series — which stamps the bound with
+// `strconv.FormatFloat(bound, 'f', -1, 64)`
+// (`storage/remote/otlptranslator/prometheusremotewrite/helper.go`), and
+// cerberus's emitter reproduces that verb in
+// internal/promql.promFixedFloatStringExpr.
+//
+// It deliberately does NOT read "whatever ClickHouse's toString spells".
+// That was the previous justification, and it was circular: the oracle
+// agreed with the emitter by construction, so no fixture could ever have
+// caught the emitter disagreeing with Prometheus. It also picked the
+// wrong verb ('g'), whose shortest form switches to exponent notation
+// once the decimal exponent leaves [-4, 6) — so a 1e6 bound would have
+// been spelled `1e+06` here and `1000000` by both Prometheus and
+// cerberus.
 func formatBucketBound(bound float64) string {
-	return strconv.FormatFloat(bound, 'g', -1, 64)
+	return strconv.FormatFloat(bound, 'f', -1, 64)
 }
 
 // appendPoint adds one sample to the series identified by the base label

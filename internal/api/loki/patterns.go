@@ -190,9 +190,16 @@ func minePatterns(lines []chclient.TimestampedLine, start, end time.Time, step t
 		level := logql.NormalizeDetectedLevel(line.Severity)
 		m, ok := miners[level]
 		if !ok {
-			cfg := drain.DefaultConfig()
-			cfg.SampleResolution = step
-			m = drain.New(cfg)
+			// The miner buckets at its OWN fixed resolution, not at the
+			// request's step. Upstream truncates TWICE - once at ingest
+			// against `drain.TimeResolution` (10s,
+			// pkg/pattern/drain/chunk.go's `Add`) and again at query
+			// time against the request step (`Iterator` / `ForRange`) -
+			// so a step that is not a multiple of 10s still reports
+			// buckets sitting on the 10s ingest grid. Bucketing straight
+			// to `step` skipped the first stage and reported bucket
+			// timestamps upstream never emits.
+			m = drain.New(drain.DefaultConfig())
 			miners[level] = m
 			levels = append(levels, level)
 		}
@@ -209,7 +216,7 @@ func minePatterns(lines []chclient.TimestampedLine, start, end time.Time, step t
 			if s == "" {
 				continue
 			}
-			samples := projectSamples(c.Samples(), start, end)
+			samples := projectSamples(c.Samples(), start, end, step)
 			volume := sampleVolume(samples)
 			if volume < int64(minVolume) {
 				continue
@@ -265,22 +272,56 @@ func parsePatternsStep(raw string, start, end time.Time) (time.Duration, error) 
 
 // projectSamples converts the in-house drain cluster samples
 // (TimestampUnixSec, Count) onto the upstream wire shape
-// `[][unix_seconds, count]`. Drain aligns buckets to the Unix grid, so an
-// unaligned request start can put the first bucket's timestamp before the
-// query window even though its rows were in-window. Upstream drops that
-// partial pre-start bucket; apply the same [start,end] timestamp filter
-// before the volume floor is evaluated. Samples already arrive ascending
-// by timestamp (drain.Cluster.Samples sorts), and the resolution is whole
-// seconds, matching upstream's `WriteQueryPatternsResponseJSON`, which
-// emits `sample.Timestamp.Unix()`.
-func projectSamples(samples []drain.Sample, start, end time.Time) [][2]int64 {
-	out := make([][2]int64, 0, len(samples))
+// `[][unix_seconds, count]`, re-scaling the miner's own ingest buckets
+// onto the request `step` and folding the counts of every ingest bucket
+// that lands in the same step bucket.
+//
+// That re-scale is upstream's second truncation stage
+// (pkg/pattern/drain/chunk.go's `Iterator` / `ForRange`, over buckets the
+// ingest stage already floored to `drain.TimeResolution`); both stages
+// floor EPOCH-relatively, so `ts - ts%step` is the whole rule.
+//
+// The window filter is `[start, end)` — upstream's chunk range is
+// documented as "[start:end)" and its own iteration excludes the closing
+// edge. Buckets can also fall before `start`: the ingest floor puts a
+// bucket timestamp at or before the rows that produced it, so an
+// unaligned request start leaves a partial pre-start bucket that
+// upstream drops. Filtering here, before the volume floor is evaluated,
+// keeps a pattern from being retained on the strength of samples that
+// are not reported.
+//
+// Samples arrive ascending by timestamp (drain.Cluster.Samples sorts) and
+// the resolution is whole seconds, matching upstream's
+// `WriteQueryPatternsResponseJSON`, which emits `sample.Timestamp.Unix()`.
+func projectSamples(samples []drain.Sample, start, end time.Time, step time.Duration) [][2]int64 {
+	stepSec := int64(step / time.Second)
+	if stepSec < 1 {
+		// parsePatternsStep floors the request step at
+		// minimumPatternSampleResolution, so this is unreachable from the
+		// wire; keeping the guard means a caller that passes a sub-second
+		// step re-scales by one second rather than dividing by zero.
+		stepSec = 1
+	}
+	folded := make(map[int64]int64, len(samples))
+	order := make([]int64, 0, len(samples))
 	for _, s := range samples {
-		stamp := time.Unix(s.TimestampUnixSec, 0)
-		if stamp.Before(start) || stamp.After(end) {
+		rem := s.TimestampUnixSec % stepSec
+		if rem < 0 {
+			rem += stepSec
+		}
+		bucket := s.TimestampUnixSec - rem
+		stamp := time.Unix(bucket, 0)
+		if stamp.Before(start) || !stamp.Before(end) {
 			continue
 		}
-		out = append(out, [2]int64{s.TimestampUnixSec, s.Count})
+		if _, seen := folded[bucket]; !seen {
+			order = append(order, bucket)
+		}
+		folded[bucket] += s.Count
+	}
+	out := make([][2]int64, 0, len(order))
+	for _, bucket := range order {
+		out = append(out, [2]int64{bucket, folded[bucket]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
 	return out

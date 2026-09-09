@@ -121,7 +121,14 @@ func TestMinePatternsUsesRequestedStep(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("patterns=%d want 1: %+v", len(got), got)
 	}
-	want := [][2]int64{{0, 15}, {15, 15}}
+	// Upstream buckets TWICE: at ingest against drain.TimeResolution
+	// (10s) and again at query time against the request step
+	// (pkg/pattern/drain/chunk.go). 30 lines one second apart therefore
+	// land in the 10s ingest buckets 0/10/20 with 10 lines each, and the
+	// 15s re-scale folds buckets 0 and 10 together. Bucketing straight to
+	// the step - one stage - would split them evenly as {0,15},{15,15},
+	// which is a bucket layout upstream never produces for this input.
+	want := [][2]int64{{0, 20}, {15, 10}}
 	if len(got[0].Samples) != len(want) {
 		t.Fatalf("samples=%v want %v", got[0].Samples, want)
 	}
@@ -206,4 +213,43 @@ func patternTestVolume(pattern Pattern) int64 {
 		total += sample[1]
 	}
 	return total
+}
+
+// TestMinePatternsExcludesEndBucket pins `/patterns`' window as
+// `[start, end)`.
+//
+// Upstream's pattern chunk range is documented as "[start:end)"
+// (pkg/pattern/drain/chunk.go) and its iteration excludes the closing
+// edge, so a bucket whose timestamp equals `end` is not reported. The
+// two in-window buckets are asserted alongside it so an over-eager
+// filter that dropped everything would fail too.
+func TestMinePatternsExcludesEndBucket(t *testing.T) {
+	t.Parallel()
+
+	base := time.Unix(1786836190, 0).UTC()
+	const step = 10 * time.Second
+	lines := make([]chclient.TimestampedLine, 0, 3)
+	// One line per 10s bucket at 0s, 10s and 20s past `base`.
+	for _, offset := range []time.Duration{0, step, 2 * step} {
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: base.Add(offset),
+			Body:      "common beta loud route",
+			Severity:  "INFO",
+		})
+	}
+
+	// The window closes exactly on the third bucket's timestamp.
+	got := minePatterns(lines, base, base.Add(2*step), step, 0)
+	if len(got) != 1 {
+		t.Fatalf("patterns=%d want 1: %+v", len(got), got)
+	}
+	want := [][2]int64{{base.Unix(), 1}, {base.Add(step).Unix(), 1}}
+	if len(got[0].Samples) != len(want) {
+		t.Fatalf("samples=%v want %v (the bucket AT end must be excluded)", got[0].Samples, want)
+	}
+	for i := range want {
+		if got[0].Samples[i] != want[i] {
+			t.Fatalf("sample[%d]=%v want %v", i, got[0].Samples[i], want[i])
+		}
+	}
 }
