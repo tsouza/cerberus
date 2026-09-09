@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -435,5 +436,54 @@ func expHistogramRecognizers() []expHistogramRecognizer {
 			v0, v1, ok := labelCallOverMixedExpHistogramSetOp(e, s, c)
 			return tup(v0, v1, ok)
 		}},
+	}
+}
+
+// TestMixedOrSubqueryOuterFnRequiresDefaultMatching pins
+// [defaultSetOpMatching]'s gate on the distribute-then-recombine
+// recognizer.
+//
+// `<fn>(((a) or (b))[r:s])` may be rewritten into
+// `<fn>((a)[r:s]) or <fn>((b)[r:s])` only while `or`'s shadow rule is
+// all-or-nothing per series. `on(...)` / `ignoring(...)` narrow the
+// shadow signature (reference derives it at promql/engine.go:1454-1465),
+// which lets ONE series shadow another at some anchors and not others —
+// so reference folds the shadowed series over a PUNCTURED window while
+// the rewrite folds it over its full window and then discards the whole
+// folded series. `test/spec/promql/mixed_or_subquery_outer_fn_or_on.txtar`
+// pins the answers on both sides of that difference; this test pins the
+// gate itself, without a chDB round-trip.
+func TestMixedOrSubqueryOuterFnRequiresDefaultMatching(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ctx := lowerCtx{start: at, end: at}
+
+	cases := []struct {
+		query string
+		want  bool
+	}{
+		{query: `count_over_time((latency_exp_hist or up)[5m:1m])`, want: true},
+		{query: `count_over_time((latency_exp_hist or on(job) up)[5m:1m])`, want: false},
+		{query: `count_over_time((latency_exp_hist or ignoring(job) up)[5m:1m])`, want: false},
+		// `on()` with no labels collapses every series onto ONE shadow
+		// key — the most aggressive narrowing there is, and the case a
+		// `len(MatchingLabels) == 0` check alone would wave through.
+		{query: `count_over_time((latency_exp_hist or on() up)[5m:1m])`, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+
+			call, ok := peelWrappers(mustParse(t, tc.query)).(*parser.Call)
+			if !ok {
+				t.Fatalf("parsed %q as %T, want *parser.Call", tc.query, mustParse(t, tc.query))
+			}
+			if _, _, _, got := mixedOrSubqueryOuterFn(call, s, ctx); got != tc.want {
+				t.Errorf("mixedOrSubqueryOuterFn(%q) = %v, want %v", tc.query, got, tc.want)
+			}
+		})
 	}
 }

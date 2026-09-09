@@ -131,9 +131,18 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 // its own RangeWindow wrapper reduces over the placeholder `Value`
 // column a histogram-shaped row does not meaningfully carry.
 func lowerHistogramNativeSubqueryInner(sub *parser.SubqueryExpr, step time.Duration, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
-	grid, ok, err := subqueryGridCtx(sub, step, ctx)
-	if err != nil || !ok {
+	grid, state, err := subqueryGridCtx(sub, step, ctx)
+	if err != nil || state == subqueryGridUnavailable {
 		return nil, false, nil
+	}
+	// The subquery's window spans no anchor at all: whatever the inner
+	// lowers to, its row set is reference's empty matrix. Applied to the
+	// inner relation (not to this function's caller's outer wrapper) so
+	// an enclosing reducer still folds over an EMPTY matrix rather than
+	// disappearing itself — see [emptySubqueryGrid].
+	capEmpty := func(n chplan.Node) chplan.Node { return n }
+	if state == subqueryGridEmpty {
+		capEmpty = emptySubqueryGrid
 	}
 
 	innerExpr := sub.Expr
@@ -155,9 +164,9 @@ func lowerHistogramNativeSubqueryInner(sub *parser.SubqueryExpr, step time.Durat
 		}
 		switch chplan.RowShapeOf(plan) {
 		case chplan.HistogramRowShape, chplan.MixedRowShape:
-			return plan, true, nil
+			return capEmpty(plan), true, nil
 		default:
-			return subqueryAnchorShape(plan, s), true, nil
+			return subqueryAnchorShape(capEmpty(plan), s), true, nil
 		}
 	}
 	// The eleven-function drop-family range-vector reducer vocabulary
@@ -182,7 +191,7 @@ func lowerHistogramNativeSubqueryInner(sub *parser.SubqueryExpr, step time.Durat
 		if err != nil {
 			return nil, true, err
 		}
-		return subqueryAnchorShape(plan, s), true, nil
+		return subqueryAnchorShape(capEmpty(plan), s), true, nil
 	}
 	return nil, false, nil
 }
@@ -251,14 +260,17 @@ func lowerSubqueryOverUnary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	grid, ok, err := subqueryGridCtx(sub, step, ctx)
+	grid, state, err := subqueryGridCtx(sub, step, ctx)
 	if err != nil {
 		return nil, err
 	}
-	if ok {
+	if state != subqueryGridUnavailable {
 		inner, err := lowerUnary(u, s, grid)
 		if err != nil {
 			return nil, err
+		}
+		if state == subqueryGridEmpty {
+			inner = emptySubqueryGrid(inner)
 		}
 		return subqueryAnchorShape(inner, s), nil
 	}
@@ -350,13 +362,12 @@ func wrapSubqueryIdentity(
 //     widenSubquerySpine only walks RangeWindow spines and cannot reach
 //     across a join.
 //
-// ok is false when no eval anchor is available (a bare Lower() with no
-// query time threaded through) — the caller then keeps the raw-stream
-// lowering, which is grid-free.
-func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx) (lowerCtx, bool, error) {
+// The returned [subqueryGridState] distinguishes the three answers a
+// caller must tell apart — see that type's own doc.
+func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx) (lowerCtx, subqueryGridState, error) {
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
-		return lowerCtx{}, false, err
+		return lowerCtx{}, subqueryGridUnavailable, err
 	}
 	var windowEnd, windowStart time.Time
 	switch {
@@ -370,7 +381,7 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 		windowEnd = anchor.End
 		windowStart = anchor.End.Add(-sub.Range)
 	default:
-		return lowerCtx{}, false, nil
+		return lowerCtx{}, subqueryGridUnavailable, nil
 	}
 
 	// `offset` shifts WHICH instants are evaluated; the grid is snapped
@@ -384,10 +395,25 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	// pre-1970 bound above the floor, so it bumps only when the snapped
 	// value is not already past the bound.
 	gridStart := epochFloor(windowStart.Add(-anchor.Offset), step).Add(step)
+	state := subqueryGridDerived
 	if gridStart.After(gridEnd) {
-		// Sub-step window — reference clamps start to end and evaluates
-		// the single anchor at the snapped base.
+		// The window spans no grid multiple at all. Reference does NOT
+		// clamp: `newEv.endTimestamp` stays the raw (unsnapped) window end
+		// while `newEv.startTimestamp` is the bumped snapped base
+		// (promql/engine.go:2397 and 2418-2420), and the very first thing the
+		// sub-evaluator does is `if ev.endTimestamp < ev.startTimestamp {
+		// return Matrix{}, nil }` (promql/engine.go:1923). So the subquery
+		// answers the EMPTY matrix, not one anchor at the snapped base.
+		//
+		// gridStart is a grid multiple, so `gridStart > epochFloor(rawEnd)`
+		// holds exactly when `gridStart > rawEnd` — this comparison IS
+		// reference's, expressed on the snapped end.
+		//
+		// The bounds are still clamped to a single degenerate anchor so the
+		// caller can lower the inner for its COLUMN SHAPE and cap the row
+		// set with [emptySubqueryGrid]; the grid itself is never read.
 		gridStart = gridEnd
+		state = subqueryGridEmpty
 	}
 
 	out := ctx
@@ -396,7 +422,56 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	out.end = gridEnd.UTC()
 	out.step = step
 	out.stepAligned = true
-	return out, true, nil
+	return out, state, nil
+}
+
+// subqueryGridState is [subqueryGridCtx]'s three-way answer.
+//
+// The two non-derived states are NOT interchangeable: one says "this
+// lowering entry point cannot see a query time at all", the other says
+// "the query time is known and it makes the subquery's answer empty".
+// Collapsing them is how `up[1s:1m]` came back with one sample where
+// reference Prometheus returns none.
+type subqueryGridState int
+
+const (
+	// subqueryGridUnavailable — no eval anchor is available (a bare
+	// [Lower] with no query time threaded through). The caller keeps its
+	// raw-stream lowering, which is grid-free.
+	subqueryGridUnavailable subqueryGridState = iota
+	// subqueryGridDerived — a real anchor grid spanning at least one
+	// anchor. The returned context is the grid to lower the inner over.
+	subqueryGridDerived
+	// subqueryGridEmpty — the anchor grid is known and holds NO anchor:
+	// the window is narrower than one step and spans no grid multiple.
+	// Reference answers the empty matrix (promql/engine.go:1923). The
+	// returned context carries a degenerate single-anchor grid so the
+	// caller can still lower the inner for its column shape; the caller
+	// MUST cap the result with [emptySubqueryGrid].
+	subqueryGridEmpty
+)
+
+// emptySubqueryGrid caps an already-lowered subquery inner so it answers
+// no rows at all, keeping every column the inner publishes.
+//
+// This is the plan-level spelling of reference's
+// `if ev.endTimestamp < ev.startTimestamp { return Matrix{}, nil }`
+// (promql/engine.go:1923) — the answer is the EMPTY matrix, not "no
+// result", so the relation must still publish its full column list for
+// whatever composes on top (an outer `*_over_time` reducer folds nothing
+// and emits nothing; `absent_over_time` reads the same emptiness and
+// correctly reports 1). It reuses the constant-false Filter idiom
+// [dropExpHistogramSamples] already establishes, and carries the
+// Histogram / Mixed passthrough flags so [chplan.RowShapeOf] still
+// classifies the capped relation by the shape its input publishes.
+func emptySubqueryGrid(inner chplan.Node) chplan.Node {
+	shape := chplan.RowShapeOf(inner)
+	return &chplan.Filter{
+		Input:     inner,
+		Predicate: &chplan.LitBool{V: false},
+		Histogram: shape == chplan.HistogramRowShape,
+		Mixed:     shape == chplan.MixedRowShape,
+	}
 }
 
 // epochFloor snaps t down to the nearest absolute-epoch multiple of
@@ -691,11 +766,11 @@ func lowerSubqueryOverInstantCall(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	grid, ok, err := subqueryGridCtx(sub, step, ctx)
+	grid, state, err := subqueryGridCtx(sub, step, ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
+	if state == subqueryGridUnavailable {
 		return nil, fmt.Errorf(
 			"promql: subquery inner %s is evaluated per anchor and requires a query evaluation time (use LowerAt)",
 			call.Func.Name,
@@ -704,6 +779,9 @@ func lowerSubqueryOverInstantCall(
 	inner, err := lowerCall(call, s, grid)
 	if err != nil {
 		return nil, err
+	}
+	if state == subqueryGridEmpty {
+		inner = emptySubqueryGrid(inner)
 	}
 	return subqueryAnchorShape(inner, s), nil
 }
@@ -755,14 +833,17 @@ func lowerSubqueryOverBinary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	grid, ok, err := subqueryGridCtx(sub, step, ctx)
+	grid, state, err := subqueryGridCtx(sub, step, ctx)
 	if err != nil {
 		return nil, err
 	}
-	if ok {
+	if state != subqueryGridUnavailable {
 		inner, err := lowerBinary(b, s, grid)
 		if err != nil {
 			return nil, err
+		}
+		if state == subqueryGridEmpty {
+			inner = emptySubqueryGrid(inner)
 		}
 		switch chplan.RowShapeOf(inner) {
 		case chplan.HistogramRowShape, chplan.MixedRowShape:
