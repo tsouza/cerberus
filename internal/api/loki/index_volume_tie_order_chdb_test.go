@@ -118,10 +118,12 @@ func podOrder(samples []loki.VectorSample) []string {
 	return out
 }
 
-func newVolumeTieServer(t *testing.T) string {
+// newVolumeServer seeds one chDB session and mounts the Loki handler over
+// it, returning the base URL [queryVolume] asks against.
+func newVolumeServer(t *testing.T, seed string) string {
 	t.Helper()
 	c := chclienttest.NewChDB(t)
-	c.Seed(t, volumeTieSeed())
+	c.Seed(t, seed)
 	h := loki.New(c, schema.DefaultOTelLogs(), nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
@@ -154,7 +156,7 @@ func newVolumeTieServer(t *testing.T) string {
 // differently because `limit` changed how much of the tie the engine
 // bothered to order.
 func TestIndexVolume_ChDB_TiedVolumesTruncateDeterministically(t *testing.T) {
-	srvURL := newVolumeTieServer(t)
+	srvURL := newVolumeServer(t, volumeTieSeed())
 
 	// zulu plus the two alphabetically-first members of the tie.
 	const keptRows = 3
@@ -180,7 +182,7 @@ func TestIndexVolume_ChDB_TiedVolumesTruncateDeterministically(t *testing.T) {
 // in the aggregation's own order (`foxtrot, echo, delta, alpha, bravo,
 // charlie, …` on this seed) rather than in name order.
 func TestIndexVolume_ChDB_UntruncatedTieOrderIsUpstreams(t *testing.T) {
-	srvURL := newVolumeTieServer(t)
+	srvURL := newVolumeServer(t, volumeTieSeed())
 
 	// One above the fourteen seeded streams, so nothing is cut.
 	const keptRows = 15
@@ -243,16 +245,10 @@ INSERT INTO otel_logs (Timestamp, Body, ServiceName, ResourceAttributes) VALUES
 // that re-rank is removed even with the SQL key in place, the exact
 // converse of [TestIndexVolume_ChDB_TiedVolumesTruncateDeterministically].
 func TestIndexVolume_ChDB_TieOrderUsesServedLabelNames(t *testing.T) {
-	c := chclienttest.NewChDB(t)
-	c.Seed(t, dottedKeySeed)
-	h := loki.New(c, schema.DefaultOTelLogs(), nil)
-	mux := http.NewServeMux()
-	h.Mount(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	srvURL := newVolumeServer(t, dottedKeySeed)
 
 	const keptRows = 2
-	samples := queryVolume(t, srv.URL, keptRows)
+	samples := queryVolume(t, srvURL, keptRows)
 	got := make([]string, 0, len(samples))
 	for _, s := range samples {
 		for k := range s.Metric {

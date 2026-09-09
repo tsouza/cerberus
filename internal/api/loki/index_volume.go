@@ -138,6 +138,14 @@ type rankedVolumeRow struct {
 // the comparison upstream performs is defined over. The name is built with
 // upstream's own renderer ([labels.Labels.String], via [labels.FromMap])
 // rather than a hand-rolled equivalent, so the two cannot drift.
+//
+// The two halves therefore rank on two different spellings of one label
+// set, and a rewritten key can collate differently under each — so on a
+// tie that straddles the cap, the member the SQL keeps is not always the
+// member upstream keeps. Closing that needs either a faithful in-SQL
+// rendering of the served label set (collision policy included) or a
+// truncation that does not decide membership before normalization;
+// cerberus issue #3237 carries it.
 func rankIndexVolumeRows(rows []chclient.IndexVolumeRow) []rankedVolumeRow {
 	ranked := make([]rankedVolumeRow, 0, len(rows))
 	for _, row := range rows {
