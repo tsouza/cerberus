@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -87,11 +88,12 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stamp := float64(end.UnixMilli()) / 1e3
-	result := make([]VectorSample, 0, len(rows))
-	for _, row := range rows {
+	ranked := rankIndexVolumeRows(rows)
+	result := make([]VectorSample, 0, len(ranked))
+	for _, row := range ranked {
 		result = append(result, VectorSample{
-			Metric: format.NormalizeLabelMap(row.Labels),
-			Value:  [2]any{stamp, strconv.FormatUint(row.Bytes, 10)},
+			Metric: row.metric,
+			Value:  [2]any{stamp, strconv.FormatUint(row.bytes, 10)},
 		})
 	}
 
@@ -104,6 +106,57 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// rankedVolumeRow is one /index/volume row in the shape the wire order is
+// decided on: the label map the response actually carries (post
+// [format.NormalizeLabelMap], which is where an OTel attribute key becomes
+// a Prometheus label name) and the label-set string upstream ranks that row
+// by.
+type rankedVolumeRow struct {
+	metric map[string]string
+	name   string
+	bytes  uint64
+}
+
+// rankIndexVolumeRows puts the endpoint's rows into the order upstream
+// serves them in.
+//
+// Loki's volume response is ordered twice by the same rule, and cerberus
+// owes both. `MapToVolumeResponse`
+// (pkg/storage/stores/index/seriesvolume/volume.go) applies it before
+// truncating to `limit`; `toPrometheusData`
+// (pkg/querier/queryrange/volume.go) applies it again to the vector it
+// serves. Both compare the volume descending and fall back to the entry's
+// own Name ascending — for an `aggregateBy=series` response that Name is
+// the stream's label-set string (`seriesNames[hash] = seriesLabels.String()`
+// in `getVolume`, pkg/ingester/instance.go).
+//
+// The truncation half is settled in SQL (see [buildIndexVolumeSQL]'s
+// second ORDER BY key), because only the database can order rows it is
+// about to discard. This is the serving half, and it runs over the
+// NORMALIZED label names rather than the raw OTel attribute keys the SQL
+// grouped on: those keys are what the response carries, so they are what
+// the comparison upstream performs is defined over. The name is built with
+// upstream's own renderer ([labels.Labels.String], via [labels.FromMap])
+// rather than a hand-rolled equivalent, so the two cannot drift.
+func rankIndexVolumeRows(rows []chclient.IndexVolumeRow) []rankedVolumeRow {
+	ranked := make([]rankedVolumeRow, 0, len(rows))
+	for _, row := range rows {
+		metric := format.NormalizeLabelMap(row.Labels)
+		ranked = append(ranked, rankedVolumeRow{
+			metric: metric,
+			name:   labels.FromMap(metric).String(),
+			bytes:  row.Bytes,
+		})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].bytes != ranked[j].bytes {
+			return ranked[i].bytes > ranked[j].bytes
+		}
+		return ranked[i].name < ranked[j].name
+	})
+	return ranked
+}
+
 // buildIndexVolumeSQL builds the GROUP BY-on-label-set SELECT used by
 // /index/volume. The CH shape is:
 //
@@ -113,7 +166,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 //	FROM `otel_logs`
 //	WHERE <matchers> AND <time bounds>
 //	GROUP BY labels
-//	ORDER BY bytes DESC
+//	ORDER BY bytes DESC, labels
 //	LIMIT <n>
 //
 // `<group-key-frag>` is one of:
@@ -164,6 +217,26 @@ func buildIndexVolumeSQL(
 
 	sb.GroupBy(chsql.Col("labels")).
 		OrderBy(chsql.Col("bytes"), true).
+		// Second sort key. `bytes` alone is not a total order, and the
+		// LIMIT below is applied to whatever order it produces: two groups
+		// carrying the same byte volume at the cap boundary are ranked
+		// arbitrarily, and ClickHouse does not promise the SAME arbitrary
+		// order across two runs of one query (the parallel aggregation's
+		// merge order is not fixed), so the returned SET varied run to run.
+		//
+		// Upstream is fully ordered before it truncates: seriesvolume's
+		// MapToVolumeResponse sorts by volume descending and falls back to
+		// the entry's own Name ascending, and only then slices to `limit`.
+		// `labels` is that entry's identity here — one row per distinct
+		// label set by construction of the GROUP BY — so ordering on it
+		// makes this ORDER BY total and the cut reproducible. ClickHouse
+		// compares a Map as its sequence of (key, value) pairs, which is
+		// the same collation upstream's label-set string gives.
+		//
+		// The WIRE order is settled separately, by rankIndexVolumeRows,
+		// which ranks the returned rows with upstream's own comparator
+		// over the label names it actually serves.
+		OrderBy(chsql.Col("labels"), false).
 		Limit(int64(limit))
 
 	sqlStr, args := sb.Build()
