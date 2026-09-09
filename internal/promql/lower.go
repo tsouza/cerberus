@@ -4452,45 +4452,139 @@ func rangeFnCollidesOnNameDrop(fn string, ms []*labels.Matcher, inner chplan.Nod
 // grouping, against the query's already-computed columns.
 func duplicateLabelsetGuardExpr(s schema.Metrics, ctx lowerCtx, groupID chplan.Expr) chplan.Expr {
 	if !ctx.throwDuplicateSeriesIf {
-		return &chplan.Binary{
-			Op: chplan.OpEq,
-			Left: &chplan.FuncCall{
-				Fn: chplan.FnThrowIf,
-				Args: []chplan.Expr{
-					&chplan.Binary{
-						Op:    chplan.OpGt,
-						Left:  &chplan.FuncCall{Fn: chplan.FnUniqExact, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}}},
-						Right: &chplan.LitInt{V: 1},
-					},
-					&chplan.InlineString{V: chplan.DuplicateLabelsetMessage},
-				},
+		return duplicateLabelsetAbortExpr(
+			&chplan.Binary{
+				Op:    chplan.OpGt,
+				Left:  &chplan.FuncCall{Fn: chplan.FnUniqExact, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}}},
+				Right: &chplan.LitInt{V: 1},
 			},
-			Right: &chplan.LitInt{V: 0},
+			ctx, groupID,
+		)
+	}
+	return duplicateLabelsetAbortExpr(
+		// count() > 1 is equivalent to uniqExact(MetricName) > 1 at
+		// every one of this guard's call sites: `groupID`'s own
+		// Input already emits at most one row per distinct name
+		// within a group (the selector/window seam beneath every
+		// caller groups by (name, label set[, step]) first — see
+		// each call site's own "any is exact, not a pick" comment),
+		// so a surviving row count and a surviving distinct-name
+		// count are the same number. count() is also
+		// timeSeriesThrowDuplicateSeriesIf's own documented idiom.
+		&chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  &chplan.FuncCall{Fn: chplan.FnCount},
+			Right: &chplan.LitInt{V: 1},
+		},
+		ctx, groupID,
+	)
+}
+
+// duplicateLabelsetAbortExpr wraps a caller-supplied COLLISION TEST in
+// whichever abort idiom the request's capability set selects, and is the
+// single place that choice is made:
+//
+//   - `throwIf(<collides>, <upstream's own message>)` by default, and
+//   - `timeSeriesThrowDuplicateSeriesIf(<collides>, <groupID>)` when
+//     chopt.FeatureTSThrowDuplicateSeriesIf is on, where ClickHouse
+//     renders a message naming the actual colliding tags.
+//
+// Both idioms return 0 on success, so `= 0` is the gate either way.
+//
+// It takes the test rather than deriving it because the two guard shapes
+// this file serves count different things over different relations.
+// [duplicateLabelsetGuardExpr]'s own callers sit on a relation already
+// collapsed to one row per (label set, name), so a row count answers the
+// question; [subqueryNameCollisionFilter]'s relation holds one row per
+// (series, subquery anchor), where a row count would fire on a single
+// series' own anchors and only a DISTINCT-name count is the question.
+func duplicateLabelsetAbortExpr(collides chplan.Expr, ctx lowerCtx, groupID chplan.Expr) chplan.Expr {
+	abort := &chplan.FuncCall{
+		Fn:   chplan.FnThrowIf,
+		Args: []chplan.Expr{collides, &chplan.InlineString{V: chplan.DuplicateLabelsetMessage}},
+	}
+	if ctx.throwDuplicateSeriesIf {
+		abort = &chplan.FuncCall{
+			Fn:   chplan.FnTimeSeriesThrowDuplicateSeriesIf,
+			Args: []chplan.Expr{collides, groupID},
 		}
 	}
-	return &chplan.Binary{
-		Op: chplan.OpEq,
-		Left: &chplan.FuncCall{
-			Fn: chplan.FnTimeSeriesThrowDuplicateSeriesIf,
-			Args: []chplan.Expr{
-				// count() > 1 is equivalent to uniqExact(MetricName) > 1 at
-				// every one of this guard's call sites: `groupID`'s own
-				// Input already emits at most one row per distinct name
-				// within a group (the selector/window seam beneath every
-				// caller groups by (name, label set[, step]) first — see
-				// each call site's own "any is exact, not a pick" comment),
-				// so a surviving row count and a surviving distinct-name
-				// count are the same number. count() is also
-				// timeSeriesThrowDuplicateSeriesIf's own documented idiom.
-				&chplan.Binary{
-					Op:    chplan.OpGt,
-					Left:  &chplan.FuncCall{Fn: chplan.FnCount},
-					Right: &chplan.LitInt{V: 1},
-				},
-				groupID,
-			},
-		},
-		Right: &chplan.LitInt{V: 0},
+	return &chplan.Binary{Op: chplan.OpEq, Left: abort, Right: &chplan.LitInt{V: 0}}
+}
+
+// subqueryNameCollisionCountAlias is the per-group distinct-`__name__`
+// count [subqueryNameCollisionAgg] publishes and
+// [subqueryNameCollisionFilter] reads back.
+const subqueryNameCollisionCountAlias = "_drop_name_series_names"
+
+// subqueryNameCollisionAgg and subqueryNameCollisionFilter are the two
+// halves of the name-drop guard a SELECT-family reduction over a
+// SUBQUERY-ANCHOR relation needs (cerberus issue #3232). The first rides
+// in the reduction's own AggFuncs; the second reads the column it
+// publishes and aborts the query.
+//
+// # What is being guarded
+//
+// count_over_time / present_over_time / ts_of_first_over_time /
+// ts_of_last_over_time / resets / changes all drop `__name__` from their
+// output. Their reduction groups by the published Attributes column, so
+// two series that differ ONLY by `__name__` — which a mixed float /
+// histogram `or` produces whenever its two arms carry byte-identical
+// attributes, since `or` matches on a signature that drops `__name__` —
+// arrive in ONE group and are answered as a single sample carrying a
+// value neither series has.
+//
+// Reference refuses that query rather than answering it: the two series
+// both reach the subquery's Matrix, the name drop collapses them onto one
+// label set, and `Matrix.ContainsSameLabelset()` raises
+// `vector cannot contain metrics with the same labelset`
+// (prometheus/prometheus@cerberus-parser/promql/engine.go — the same site
+// [rangeFnCollidesOnNameDrop] cites).
+//
+// # Why the test is EXACT rather than conservative
+//
+// A group holds two distinct names precisely when reference has two
+// series colliding after the drop. Every name these six answer emits a
+// row for a series with at least one in-window sample, so "two names fed
+// this group" and "two output series would share a label set" are the
+// same fact. A totally-shadowed `or` arm contributes NO row to the
+// relation — the shadow already removed it at every anchor — so the
+// guard cannot fire on a query reference answers with one series, and a
+// pair of arms differing on any label lands in two groups and never
+// meets.
+//
+// # Why a Filter over an aggregated column rather than a HAVING
+//
+// [wrapDropNameCollisionGuard] rides as `chplan.Aggregate.Having` because
+// ClickHouse's analyzer prunes a SELECT expression nothing downstream
+// reads, `throwIf` side effect included. A Filter reading a materialised
+// aggregate column satisfies that constraint just as well — the column IS
+// read, by the enclosing WHERE — and unlike a HAVING it composes with
+// [chplan.RangeBucketFanout], which the query_range fan-out mode of these
+// same reductions builds and which carries no Having slot. One mechanism
+// covers all three grid modes rather than two mechanisms covering one
+// each. It also makes the guard visible to the optimizer's own
+// projection pushdown for free: an AggFunc's arguments are already
+// enumerated as required columns (`rangeBucketFanoutColumns` /
+// `aggregateColumns`, internal/optimizer/projection_pushdown.go), so the
+// `__name__` column the test reads cannot be narrowed away beneath it.
+func subqueryNameCollisionAgg(s schema.Metrics) chplan.AggFunc {
+	return chplan.AggFunc{
+		Fn:    chplan.FnUniqExact,
+		Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}},
+		Alias: subqueryNameCollisionCountAlias,
+	}
+}
+
+func subqueryNameCollisionFilter(input chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	collides := &chplan.Binary{
+		Op:    chplan.OpGt,
+		Left:  &chplan.ColumnRef{Name: subqueryNameCollisionCountAlias},
+		Right: &chplan.LitInt{V: 1},
+	}
+	return &chplan.Filter{
+		Input:     input,
+		Predicate: duplicateLabelsetAbortExpr(collides, ctx, timeSeriesTagsToGroupExpr(s)),
 	}
 }
 
