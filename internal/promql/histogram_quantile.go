@@ -597,142 +597,21 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 //
 // Reference (prometheus/model/labels): the hardcoded cases 1 / 0 / -1 /
 // NaN / ±Inf, then `strconv.FormatFloat(f, 'g', -1, 64)`, with `".0"`
-// appended when that result carries neither `.` nor `e`.
+// appended when that result carries neither `.` nor `e`. The `%g` half is
+// [shortestGExpr]; this function is the OpenMetrics layout over it.
 //
-// ClickHouse's `toString(Float64)` already produces the same shortest
-// round-tripping digits Go's 'g' -1 does — the two disagree only on
-// LAYOUT. CH switches to scientific notation at a different threshold
-// (`0.00001` where Go writes `1e-05`) and spells the exponent
-// differently (`1e-7` / `1e21` where Go writes `1e-07` / `1e+21`). So
-// the expression reads the digits and the decimal exponent back out of
-// CH's rendering — exactly, from the string, never via log10 — and
-// re-lays them out under Go's rule: scientific iff the decimal exponent
-// falls outside [-4, 6) ([goShortestGSciLowerBound,
-// goShortestGSciUpperBound)), exponent always signed and at least two
-// digits wide.
+// The hardcoded cases sit INSIDE the decomposition's bindings rather than
+// short-circuiting them, because ClickHouse evaluates an `arrayMap`
+// lambda's body for every element regardless of which `multiIf` arm wins.
+// That is safe: the decomposition reads a NaN or infinity's rendering as
+// an ordinary digit string and answers something the arm below discards —
+// see [shortestGExpr]'s own note on `toInt64OrZero`.
 //
 // `newPhi` mints the phi expression; it is called twice (the value and
-// its CH rendering) and the two results are bound as the parameters of
-// a single-element `arrayMap`. Every other mention inside the formatter
-// is a lambda parameter, so a phi that lowers to a scalar subquery
-// appears twice in the SQL rather than once per mention. It is a
+// its CH rendering) because chplan Expr trees must stay trees. It is a
 // factory rather than a value for the same reason limitRatioPredicate's
-// is: chplan Expr trees must stay trees.
+// is.
 func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, error) {
-	const (
-		// Lambda parameter names: the phi value and CH's own string
-		// rendering of its magnitude.
-		valueParam  = "v"
-		digitsParam = "u"
-	)
-
-	call := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Fn: fn, Args: args}
-	}
-	// Shape constants go inline rather than through `?` placeholders:
-	// they feed `concat`, where a bound parameter leaves the operand
-	// type indeterminate and CH mis-dispatches to `arrayConcat`
-	// (Code 43). Same reasoning as chplan.InlineString's doc comment.
-	str := func(v string) chplan.Expr { return &chplan.InlineString{V: v} }
-	i := func(v int64) chplan.Expr { return &chplan.LitInt{V: v} }
-	f := func(v float64) chplan.Expr { return &chplan.LitFloat{V: v} }
-	bin := func(op chplan.BinaryOp, l, r chplan.Expr) chplan.Expr {
-		return &chplan.Binary{Op: op, Left: l, Right: r}
-	}
-
-	// Every sub-expression is a factory: the IR is a tree, so two
-	// mentions of `epos` must be two distinct node graphs.
-	v := func() chplan.Expr { return &chplan.BareIdent{Name: valueParam} }
-	u := func() chplan.Expr { return &chplan.BareIdent{Name: digitsParam} }
-
-	// `position` and `length` return UInt64, while subtracting from one
-	// yields Int64. An `if` with one arm of each has no common supertype,
-	// and ClickHouse resolves that pair to `Variant(Int64, UInt64)`;
-	// arithmetic or `toString` over a Variant then comes back Nullable.
-	// That nullability rides the whole label expression up into
-	// `mapConcat`, so Attributes arrives as `Map(String, Nullable(String))`
-	// and the production cursor refuses to scan it into `map[string]string`.
-	// chDB coerces it away, so only the strict-scan differential sees it.
-	// Landing every count on Int64 at the source keeps each `if`
-	// single-typed.
-	countOf := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
-		return call(chplan.FnToInt64, call(fn, args...))
-	}
-
-	// Position of the exponent marker in CH's rendering; 0 when CH chose
-	// fixed notation.
-	epos := func() chplan.Expr { return countOf(chplan.FnStringPosition, u(), str("e")) }
-	// The mantissa CH rendered — the whole string in fixed notation.
-	mantRaw := func() chplan.Expr {
-		return call(chplan.FnIf, bin(chplan.OpGt, epos(), i(0)),
-			call(chplan.FnSubstring, u(), i(1), bin(chplan.OpSub, epos(), i(1))),
-			u())
-	}
-	// Mantissa digits with the decimal point removed, then with leading
-	// and trailing zeros stripped: the significant digits, most
-	// significant first.
-	digitsAll := func() chplan.Expr { return call(chplan.FnReplaceAll, mantRaw(), str("."), str("")) }
-	digitsLead := func() chplan.Expr { return call(chplan.FnRegexReplaceFirst, digitsAll(), str("^0+"), str("")) }
-	digits := func() chplan.Expr { return call(chplan.FnRegexReplaceFirst, digitsLead(), str("0+$"), str("")) }
-
-	pointPos := func() chplan.Expr { return countOf(chplan.FnStringPosition, mantRaw(), str(".")) }
-	// Digit count left of the decimal point (the whole mantissa when
-	// there is no point).
-	intLen := func() chplan.Expr {
-		return call(chplan.FnIf, bin(chplan.OpGt, pointPos(), i(0)),
-			bin(chplan.OpSub, pointPos(), i(1)),
-			countOf(chplan.FnLength, mantRaw()))
-	}
-	// The decimal exponent: read straight off CH's exponent when it used
-	// scientific notation, else derived from where the first significant
-	// digit sits relative to the decimal point. Both forms are exact —
-	// no floating-point log is involved, so the [-4, 6) boundaries
-	// cannot be misclassified.
-	expVal := func() chplan.Expr {
-		leadingZeros := bin(chplan.OpSub, countOf(chplan.FnLength, digitsAll()), countOf(chplan.FnLength, digitsLead()))
-		return call(chplan.FnIf, bin(chplan.OpGt, epos(), i(0)),
-			call(chplan.FnToInt64, call(chplan.FnSubstring, u(), bin(chplan.OpAdd, epos(), i(1)))),
-			bin(chplan.OpSub, bin(chplan.OpSub, intLen(), leadingZeros), i(1)))
-	}
-
-	// `d` or `d.ddd` — Go's normalised scientific mantissa.
-	mantissa := func() chplan.Expr {
-		return call(chplan.FnIf, bin(chplan.OpLe, countOf(chplan.FnLength, digits()), i(1)),
-			digits(),
-			call(chplan.FnConcat, call(chplan.FnSubstring, digits(), i(1), i(1)), str("."), call(chplan.FnSubstring, digits(), i(2))))
-	}
-	expDigits := func() chplan.Expr { return call(chplan.FnToString, call(chplan.FnAbs, expVal())) }
-	expSuffix := func() chplan.Expr {
-		return call(chplan.FnConcat,
-			call(chplan.FnIf, bin(chplan.OpLt, expVal(), i(0)), str("-"), str("+")),
-			call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, expVal()), i(goSciExpPadBelow)),
-				call(chplan.FnConcat, str("0"), expDigits()),
-				expDigits()))
-	}
-	// `u` is the magnitude's rendering, so the sign is reattached here
-	// for both layouts.
-	sign := func() chplan.Expr {
-		return call(chplan.FnIf, bin(chplan.OpLt, v(), f(0)), str("-"), str(""))
-	}
-	sci := call(chplan.FnConcat, sign(), mantissa(), str("e"), expSuffix())
-	// CH's fixed notation already matches Go's over the whole [-4, 6)
-	// exponent range; only Go's trailing `.0` for integral values is
-	// missing.
-	fixed := call(chplan.FnConcat, sign(),
-		call(chplan.FnIf, bin(chplan.OpGt, pointPos(), i(0)), u(), call(chplan.FnConcat, u(), str(".0"))))
-
-	body := call(chplan.FnMultiIf,
-		call(chplan.FnIsNaN, v()), str("NaN"),
-		bin(chplan.OpEq, v(), f(1)), str("1.0"),
-		bin(chplan.OpEq, v(), f(0)), str("0.0"),
-		bin(chplan.OpEq, v(), f(-1)), str("-1.0"),
-		bin(chplan.OpAnd, call(chplan.FnIsInfinite, v()), bin(chplan.OpGt, v(), f(0))), str("+Inf"),
-		call(chplan.FnIsInfinite, v()), str("-Inf"),
-		bin(chplan.OpOr,
-			bin(chplan.OpLt, call(chplan.FnAbs, v()), f(goShortestGSciLowerBound)),
-			bin(chplan.OpGe, call(chplan.FnAbs, v()), f(goShortestGSciUpperBound))), sci,
-		fixed)
-
 	phiValue, err := newPhi()
 	if err != nil {
 		return nil, err
@@ -741,13 +620,32 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.Subscript{
-		Container: call(chplan.FnArrayMap,
-			&chplan.Lambda{Params: []string{valueParam, digitsParam}, Body: body},
-			call(chplan.FnArray, phiValue),
-			call(chplan.FnArray, call(chplan.FnToString, call(chplan.FnAbs, phiDigits)))),
-		Key: i(1),
-	}, nil
+	call := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Fn: fn, Args: args}
+	}
+	str := func(v string) chplan.Expr { return &chplan.InlineString{V: v} }
+	f := func(v float64) chplan.Expr { return &chplan.LitFloat{V: v} }
+	bin := func(op chplan.BinaryOp, l, r chplan.Expr) chplan.Expr {
+		return &chplan.Binary{Op: op, Left: l, Right: r}
+	}
+	return shortestGExpr(phiValue, phiDigits, func(g shortestGParts) chplan.Expr {
+		v := g.value
+		// CH's fixed notation already matches Go's over the whole [-4, 6)
+		// exponent range; only Go's trailing `.0` for integral values is
+		// missing.
+		fixed := call(chplan.FnConcat, g.sign,
+			call(chplan.FnIf, bin(chplan.OpGt, g.pointPos, &chplan.LitInt{V: 0}),
+				g.rendered, call(chplan.FnConcat, g.rendered, str(".0"))))
+		return call(chplan.FnMultiIf,
+			call(chplan.FnIsNaN, v), str("NaN"),
+			bin(chplan.OpEq, v, f(1)), str("1.0"),
+			bin(chplan.OpEq, v, f(0)), str("0.0"),
+			bin(chplan.OpEq, v, f(-1)), str("-1.0"),
+			bin(chplan.OpAnd, call(chplan.FnIsInfinite, v), bin(chplan.OpGt, v, f(0))), str("+Inf"),
+			call(chplan.FnIsInfinite, v), str("-Inf"),
+			g.useSci, g.sci,
+			fixed)
+	}), nil
 }
 
 // histogramAggShape collects the bits we need to build the
