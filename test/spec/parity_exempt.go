@@ -167,6 +167,85 @@ const (
 	// ENROLLED, and passes because the rate family deduplicates.
 	ReasonDuplicateTimestampSeed = "duplicate-timestamp-seed"
 
+	// ReasonLogQueryAnswer covers a LogQL fixture whose query is a LOG
+	// query rather than a metric one. The two engines answer such a
+	// query in shapes that have no element-wise correspondence at all:
+	// the reference returns [logqlmodel.Streams], a set of log LINES
+	// grouped by stream, while cerberus returns the `SELECT *` row set
+	// whose column layout is whatever the fixture's own `seed:` DDL
+	// happened to declare.
+	//
+	// This is not a gap in RunParity's dispatch table that a comparator
+	// could close. test/spec/parityoracle/logql's flatten already
+	// REFUSES the [logqlmodel.Streams] case by name, with the same
+	// reasoning: manufacturing a correspondence between lines and a
+	// fixture-defined projection would manufacture a green. The
+	// oracle's own doc comment states the resulting rule as "enrol
+	// metric queries only".
+	//
+	// Membership is decided by the UPSTREAM parser, not by inspecting
+	// the emitted SQL: syntax.ParseExpr returns a syntax.SampleExpr for
+	// a metric query and a syntax.LogSelectorExpr for a log one, and
+	// that is the same classification the reference engine itself makes
+	// when it picks which answer shape to build.
+	//
+	// This is NOT a reason to reach for when a metric fixture merely
+	// happens to be hard to compare. A metric query whose seed is too
+	// thin, or whose lowering emits a projection the comparator cannot
+	// read, is an ordinary corpus or harness deficiency to fix at the
+	// source — it stays undeclared until it is fixed, rather than
+	// borrowing this reason.
+	ReasonLogQueryAnswer = "log-query-answer"
+
+	// ReasonStructuredMetadataUnobservable covers a LogQL metric fixture
+	// whose answer depends on data upstream's in-process querier never
+	// puts in front of its engine.
+	//
+	// [logql.NewMockQuerier] is that querier, and its processStream /
+	// processSeries helpers call the pipeline with `labels.EmptyLabels()`
+	// for structured metadata, so an entry's StructuredMetadata is
+	// DISCARDED before evaluation begins. Cerberus carries structured
+	// metadata in LogAttributes and severity in SeverityText, and folds
+	// both into the synthesised `detected_level` label and into `level`
+	// grouping keys. None of that has any counterpart the reference can
+	// be handed.
+	//
+	// The class therefore has two faces, and both are this one reason:
+	// a seed that POPULATES LogAttributes or SeverityText, which
+	// parity_loki_chdb.go's rejectOpaqueColumn refuses at read time; and
+	// an answer carrying the `detected_level` label cerberus synthesises
+	// even when severity is absent (as `unknown`), which reaches the
+	// comparator as a label-set difference instead. Upstream produces
+	// `detected_level` at INGESTION, in a level-discovery step the
+	// in-process querier does not run, so the label cannot appear on the
+	// reference side at any value — not even as absent-meaning-unknown.
+	//
+	// A subset comparison over the remaining columns is deliberately not
+	// offered. It would run, pass, and prove nothing about the axis it
+	// dropped, which is the hollow green the whole parity layer exists
+	// to eliminate.
+	ReasonStructuredMetadataUnobservable = "structured-metadata-unobservable"
+
+	// ReasonReferenceShardedPathOnly covers a fixture whose operator the
+	// reference engine implements ONLY on its sharded query path, which
+	// the in-process oracle deliberately does not run.
+	//
+	// `approx_topk` is the case. Upstream's pkg/logql/optimize.go
+	// rewrites it — unconditionally, on the unsharded path too — into
+	// `topk(k, CountMinSketchEval<__count_min_sketch__(...)>)`, and the
+	// CountMinSketchEvalExpr evaluator consumes sketches that only the
+	// sharded downstream path produces. test/spec/parityoracle/logql
+	// runs [logql.NewMockQuerier] with mockQuerierShards = 0, because
+	// sharding would change which streams a query observes for a reason
+	// that has nothing to do with the lowering under test. So the
+	// reference yields an empty vector — no error, no panic, no answer.
+	//
+	// Raising the oracle's shard count for this one fixture is not the
+	// fix hiding behind this reason. It would be a per-fixture knob on
+	// the oracle's own configuration, which is the shape invariant 7
+	// forbids, and it would change the observed stream set for every
+	// other fixture sharing the session.
+	ReasonReferenceShardedPathOnly = "reference-sharded-path-only"
 	// ReasonReferenceFetchLayer covers a TraceQL fixture whose reference
 	// answer is produced partly OUTSIDE the spanset pipeline the oracle
 	// evaluates. test/spec/parityoracle/traceql runs upstream Tempo's
@@ -269,6 +348,9 @@ var parityExemptReasons = []string{
 	ReasonRejectionOnly,
 	ReasonVacuousEmptyInput,
 	ReasonDuplicateTimestampSeed,
+	ReasonLogQueryAnswer,
+	ReasonStructuredMetadataUnobservable,
+	ReasonReferenceShardedPathOnly,
 	ReasonReferenceFetchLayer,
 	ReasonEmittedSQLOnly,
 	ReasonDuplicateSpanSeed,

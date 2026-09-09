@@ -39,3 +39,6 @@ INSERT INTO otel_logs (Body) VALUES
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "status"), "status_extracted", "status"), FnRegexExtractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1])), "status"), FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "status"), "status_extracted", "status"), FnRegexExtractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1]))["status"], LogAttributes["status"]) = "500"))
   Scan(otel_logs)
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api"} | regexp "(?P<status>\\d{3})" | status="500"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

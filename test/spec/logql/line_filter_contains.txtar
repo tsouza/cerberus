@@ -24,3 +24,6 @@ INSERT INTO otel_logs (Body) VALUES
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "error", substr))
   Scan(otel_logs)
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api"} |= "error"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
