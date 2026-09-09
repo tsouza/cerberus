@@ -251,6 +251,39 @@ func mixedOrShadowUnless(left, right chplan.Node, leftIsHistogram bool, match ch
 // [mixedOrShadowUnless]'s doc for why a caller must pass it explicitly
 // rather than this function deriving it from ctx.
 func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned bool) chplan.Node {
+	return mixedBranchUnion(histBranch, floatBranch, s, stepAligned, true)
+}
+
+// combineMixedFoldBranches recombines the two halves of a NON-grouped
+// mixed relation that were split by value type, folded separately, and
+// have to come back together — [lowerFurtherWrapMixedOrSubqueryFoldFn]'s
+// recombination.
+//
+// It is [combineMixedAggregateBranches] MINUS the collision drop, and the
+// difference is the whole point. That drop is reference's `sum`/`avg`
+// rule: a GROUP whose members disagreed on value type is dropped with a
+// MixedFloatsHistogramsAggWarning. There is no grouping aggregate on this
+// path — each folded row is one source series' own window — so there is
+// no such group and no such rule. What remains is `or`'s ordinary
+// left-biased union: the same resolution that produced this relation one
+// stage earlier.
+//
+// The distinction used to be invisible because the two branches were
+// believed disjoint by construction ("drawn from different metrics and so
+// never share a series"). They are not: `or` matches on a signature that
+// drops `__name__` (promql/engine.go:1454-1465), so a histogram arm and a
+// float arm carrying byte-identical attributes both survive it, and a
+// name-dropping fold then publishes two rows on the SAME output key.
+// Under the symmetric difference BOTH were dropped and the query answered
+// nothing; under the left-biased union the histogram row survives, which
+// is what reference answers (cerberus issue #3227).
+func combineMixedFoldBranches(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned bool) chplan.Node {
+	return mixedBranchUnion(histBranch, floatBranch, s, stepAligned, false)
+}
+
+// mixedBranchUnion is the one [chplan.VectorSetOp] both recombinations
+// above build, parameterised by the single flag they differ on.
+func mixedBranchUnion(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned, dropCollisions bool) chplan.Node {
 	return &chplan.VectorSetOp{
 		Left:                histBranch,
 		Right:               floatBranch,
@@ -258,7 +291,7 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 		Match:               chplan.VectorMatch{},
 		StepAligned:         stepAligned,
 		Mixed:               true,
-		MixedDropCollisions: true,
+		MixedDropCollisions: dropCollisions,
 		MetricNameColumn:    s.MetricNameColumn,
 		AttributesColumn:    s.AttributesColumn,
 		TimestampColumn:     s.TimestampColumn,

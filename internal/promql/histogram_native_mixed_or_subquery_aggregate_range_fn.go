@@ -14,14 +14,13 @@ import (
 // SELECT/FOLD-family outer function over a subquery whose own inner is
 // `sum`/`avg` [by/without] wrapping a mixed float/histogram `or` —
 // `<fn>((sum by (series) ((a) or (b)))[range:step])` — cerberus issue
-// #2581's own remaining gap, the one
-// [wrapMixedOrSubqueryInner]'s doc names as deliberately unattempted by
-// this file's sibling (histogram_native_mixed_or_subquery_range_fn.go)
-// because naively DISTRIBUTING the outer function per `or` ARM and
-// recombining does not reproduce reference's sum/avg drop-on-collision
-// semantics (a `by`/`without` clause can put rows from BOTH arms into the
-// SAME output group, and reference drops that group entirely rather than
-// picking a side).
+// #2581's own remaining gap. It was never answerable by DISTRIBUTING the
+// outer function per `or` ARM and recombining: that does not reproduce
+// reference's sum/avg drop-on-collision semantics, because a
+// `by`/`without` clause can put rows from BOTH arms into the SAME output
+// group and reference drops that group entirely rather than picking a
+// side. (The bare mixed-`or` sibling did distribute, until cerberus issue
+// #3227 established the rewrite was unsound there too and removed it.)
 //
 // # Why this composes soundly after all
 //

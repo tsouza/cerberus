@@ -411,14 +411,6 @@ func expHistogramRecognizers() []expHistogramRecognizer {
 			v0, v1, v2, v3, ok := expHistogramHistogramCompareBoolBinop(b, s, c)
 			return tup(v0, v1, v2, v3, ok)
 		}},
-		{"mixedOrSubqueryOuterFn", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
-			call, isCall := peelWrappers(e).(*parser.Call)
-			if !isCall {
-				return "zero,zero,zero,zero"
-			}
-			v0, v1, v2, ok := mixedOrSubqueryOuterFn(call, s, c)
-			return tup(v0, v1, v2 != nil, ok)
-		}},
 		{"sumOrAvgMixedOrSubqueryOuterFnRecognized", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
 			call, isCall := peelWrappers(e).(*parser.Call)
 			if !isCall {

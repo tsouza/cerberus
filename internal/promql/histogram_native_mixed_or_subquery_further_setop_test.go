@@ -14,8 +14,8 @@ import (
 // histogram_native_mixed_or_subquery_further_setop_test.go pins cerberus
 // issue #2581's investigation of its own third named wrapper family — a
 // further `and`/`or`/`unless` wrapping a mixed float/histogram `or`
-// subquery inner ([wrapMixedOrSubqueryInner],
-// histogram_native_mixed_or_subquery_range_fn.go) — for the SELECT/FOLD-
+// subquery inner ([mixedExpHistogramSetOp],
+// histogram_native_mixed_or.go) — for the SELECT/FOLD-
 // family outer-fn composition specifically (`<fn>((wrapper((a) or
 // (b)))[range:step])`), as distinct from the BARE-subquery composition
 // (no outer `<fn>`) cerberus issue #2589's own fix (PR #2597) already
@@ -64,7 +64,7 @@ func furtherSetOpQuery(fn, lhs, op, rhs string) string {
 }
 
 // selectFoldFamilyNames is the fifteen SELECT/FOLD-family names
-// [isHistogramSubqueryOuterFnName] (histogram_native_mixed_or_subquery_range_fn.go)
+// [histogramSubqueryOuterFnName] (histogram_native_subquery_call_subquery_outer_fn.go)
 // recognises.
 var selectFoldFamilyNames = []string{
 	"count_over_time", "present_over_time", "last_over_time", "first_over_time",

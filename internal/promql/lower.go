@@ -2997,23 +2997,27 @@ func lowerCallOverSubquery(c *parser.Call, sq *parser.SubqueryExpr, s schema.Met
 	if shape, ok := rangeFnOverExpHistogramSubquery(c, s, ctx); ok {
 		return lowerExpHistogramRangeFnOverSubquery(shape, s, ctx)
 	}
-	// The identical SELECT/FOLD-family composition (cerberus issue #2577),
-	// but for a subquery whose own inner is a MIXED float/histogram `or`
-	// rather than a pure histogram-native shape — see
-	// histogram_native_mixed_or_subquery_range_fn.go's own doc for why
-	// this is a genuinely different recognizer/lowering rather than a
-	// widening of the two calls just above. Since cerberus issue #2581,
-	// also matches when that mixed `or` is itself directly wrapped in
-	// label_replace/label_join.
-	if sub, b, rebuild, ok := mixedOrSubqueryOuterFn(c, s, ctx); ok {
-		return lowerMixedOrSubqueryOuterFn(c, sub, b, rebuild, s, ctx)
-	}
-	// The `sum`/`avg`-wrapped sibling of the mixed-or-subquery composition
-	// just above (cerberus issue #2581) — see
-	// histogram_native_mixed_or_subquery_aggregate_range_fn.go's own doc for
-	// why this needs a genuinely different lowering (window-purity
-	// collision drop) rather than the distribute-and-recombine
-	// [lowerMixedOrSubqueryOuterFn] uses.
+	// A subquery whose own inner is a BARE mixed float/histogram `or`
+	// (cerberus issue #2577) has no recognizer here on purpose. It used to
+	// have one, which rewrote `<fn>(((a) or (b))[r:s])` into
+	// `<fn>((a)[r:s]) or <fn>((b)[r:s])` and recombined the two folds.
+	// That identity holds only while the `or`'s shadow is all-or-nothing
+	// per series, and it is not: `or` matches on a signature that DROPS
+	// `__name__` (promql/engine.go:1454-1465), so a histogram series and a
+	// float series carrying byte-identical attributes share one signature
+	// and the histogram shadows the float only at the anchors it actually
+	// covers. Folding each arm over its FULL window before shadowing cannot
+	// reproduce that per-anchor puncture, and it LOST the float series
+	// outright (cerberus issue #3227). Falling through instead reaches
+	// [lowerOuterRangeFnOverSubquery] → [lowerHistogramOrMixedSubqueryOuterFnInput],
+	// which folds directly over the per-anchor-correct Mixed relation
+	// [lowerSubquery] already builds and so needs no such identity.
+	//
+	// The `sum`/`avg`-wrapped sibling below keeps its own recognizer
+	// (cerberus issue #2581): it never distributed either — see
+	// histogram_native_mixed_or_subquery_aggregate_range_fn.go's own doc
+	// for the window-purity collision drop that shape needs and that a
+	// bare `or` does not.
 	if shape, ok := sumOrAvgMixedOrSubqueryOuterFnRecognized(c, s, ctx); ok {
 		return lowerSumOrAvgMixedOrSubqueryOuterFn(shape, s, ctx)
 	}

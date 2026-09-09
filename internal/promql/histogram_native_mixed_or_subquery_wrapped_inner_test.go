@@ -17,8 +17,8 @@ import (
 // of the fifteen SELECT/FOLD-family names also lowers — without error, and
 // to the correct [chplan.RowShapeOf] — when the subquery's own inner is a
 // mixed float/histogram `or` DIRECTLY wrapped in label_replace, rather than
-// a bare `X or Y` node ([wrapMixedOrSubqueryInner],
-// histogram_native_mixed_or_subquery_range_fn.go).
+// a bare `X or Y` node ([labelCallOverMixedExpHistogramSetOp],
+// histogram_native_mixed_or.go).
 //
 // Same wantMixed split as #2577's own test: the six always-float-output
 // names publish a plain [chplan.SampleRowShape] (both synthetic arms agree
@@ -108,10 +108,9 @@ func TestLower_ExpHistogram_MixedOrSubqueryOuterFn_WrappedInner(t *testing.T) {
 
 // TestLower_ExpHistogram_MixedOrSubqueryOuterFn_LabelJoinWrappedInner pins
 // the label_join half of the same wrapper family alongside label_replace's
-// own dedicated test above — [labelCallOverMixedExpHistogramSetOp] (and by
-// extension [wrapMixedOrSubqueryInner]) recognises both names identically,
-// this only checks label_join's own distinct arg-count/shape parsing didn't
-// regress.
+// own dedicated test above — [labelCallOverMixedExpHistogramSetOp]
+// recognises both names identically, so this only checks label_join's own
+// distinct arg-count/shape parsing didn't regress.
 func TestLower_ExpHistogram_MixedOrSubqueryOuterFn_LabelJoinWrappedInner(t *testing.T) {
 	t.Parallel()
 

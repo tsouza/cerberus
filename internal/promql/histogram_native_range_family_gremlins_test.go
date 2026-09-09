@@ -3,8 +3,14 @@
 // range-function family: histogram_native_range_fn.go,
 // histogram_native_reset.go, histogram_native_count_present_over_time.go,
 // histogram_native_dropping_shape.go,
-// histogram_native_mixed_or_subquery_aggregate_range_fn.go and
-// histogram_native_mixed_or_subquery_range_fn.go.
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go.
+//
+// The three mutants this file used to kill inside
+// histogram_native_mixed_or_subquery_range_fn.go's own recognizer went
+// away with the file: the distribute-then-recombine rewrite it guarded
+// was removed as unsound (cerberus issue #3227), so its arity, range and
+// argument-shape guards no longer exist to mutate. The sum/avg-wrapped
+// recognizer's identically-shaped guards are still here, still killed.
 //
 // See gremlins_kill_test.go for the shared convention this file follows:
 // one Test... per mutant (or per tightly-related cluster of mutants), with
@@ -495,84 +501,4 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFn_InstantPinDoesNotBroadcast(t *testin
 		t.Fatalf("LowerAt: %v", err)
 	}
 	assertNoCrossJoin(t, plan, "sum_over_time instant query over an @-pinned mixed-or subquery")
-}
-
-// TestMixedOrSubqueryOuterFn_ArgCountVsNameGuard kills the INVERT_LOGICAL
-// mutant (`||` -> `&&`) at
-// histogram_native_mixed_or_subquery_range_fn.go:`len(c.Args) != 1 || !isHistogramSubqueryOuterFnName(c.Func.Name)`.
-//
-// A 2-arg call to a recognised name (count_over_time takes exactly 1
-// argument) must reject on arity alone. With AND, a recognised name
-// (`!isHistogramSubqueryOuterFnName(...)` == false) makes the whole
-// conjunction false regardless of arity, so the mutant proceeds to index
-// c.Args[0] as if it were the sole argument and can recognise the shape
-// anyway.
-func TestMixedOrSubqueryOuterFn_ArgCountVsNameGuard(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	sub := &parser.SubqueryExpr{
-		Expr:  mustParse(t, `(latency_exp_hist) or (other_metric)`),
-		Range: 5 * time.Minute,
-		Step:  time.Minute,
-	}
-	call := &parser.Call{
-		Func: parser.MustGetFunction("count_over_time"),
-		Args: parser.Expressions{sub, &parser.NumberLiteral{Val: 1}},
-	}
-	ctx := lowerCtx{start: at, end: at}
-	if _, _, _, ok := mixedOrSubqueryOuterFn(call, s, ctx); ok {
-		t.Fatalf("expected a 2-arg call to a 1-arg function to be rejected; got ok=true (mutant `||`->`&&` at " +
-			"histogram_native_mixed_or_subquery_range_fn.go:`len(c.Args) != 1 || !isHistogramSubqueryOuterFnName(c.Func.Name)`)")
-	}
-}
-
-// TestMixedOrSubqueryOuterFn_ZeroRangeRejected is the
-// histogram_native_mixed_or_subquery_range_fn.go sibling of
-// TestSumOrAvgMixedOrSubqueryOuterFnRecognized_ZeroRangeRejected above,
-// killing:
-// both on
-// histogram_native_mixed_or_subquery_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`:
-//   - CONDITIONALS_BOUNDARY on `sub.Range <= 0` (-> `< 0`).
-//   - INVERT_LOGICAL on the second `||` (-> `&&`).
-func TestMixedOrSubqueryOuterFn_ZeroRangeRejected(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	sub := &parser.SubqueryExpr{
-		Expr:  mustParse(t, `(latency_exp_hist) or (other_metric)`),
-		Range: 0,
-		Step:  time.Minute,
-	}
-	call := &parser.Call{
-		Func: parser.MustGetFunction("count_over_time"),
-		Args: parser.Expressions{sub},
-	}
-	ctx := lowerCtx{start: at, end: at}
-	if _, _, _, ok := mixedOrSubqueryOuterFn(call, s, ctx); ok {
-		t.Fatalf("expected zero-range subquery to be rejected; got ok=true (mutants on " +
-			"histogram_native_mixed_or_subquery_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`)")
-	}
-}
-
-// TestMixedOrSubqueryOuterFn_NonSubqueryArgNoPanic is the
-// histogram_native_mixed_or_subquery_range_fn.go sibling of
-// TestSumOrAvgMixedOrSubqueryOuterFnRecognized_NonSubqueryArgNoPanic
-// above, killing the INVERT_LOGICAL mutant on the first `||` of
-// histogram_native_mixed_or_subquery_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`
-// (-> `&&`, causing a nil-pointer panic on `sub.Range` when c.Args[0] is
-// not a subquery).
-func TestMixedOrSubqueryOuterFn_NonSubqueryArgNoPanic(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	call := &parser.Call{
-		Func: parser.MustGetFunction("count_over_time"),
-		Args: parser.Expressions{&parser.VectorSelector{Name: "latency_exp_hist"}},
-	}
-	if _, _, _, ok := mixedOrSubqueryOuterFn(call, s, lowerCtx{}); ok {
-		t.Fatalf("expected non-subquery argument to be rejected; got ok=true")
-	}
 }
