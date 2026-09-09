@@ -168,6 +168,14 @@ func expHistogramWindowFloatsExpr(contribs chplan.Expr) chplan.Expr {
 // contributions go through the range-vector function's own fold
 // instead.
 //
+// rate/increase over an exponential histogram do NOT come here: their
+// ladders render through [expHistogramWindowClosedFormBucketsExpr], which
+// loops over ROWS rather than over target buckets so the per-row arrays
+// reach `arrayReduceInRanges` as arguments instead of being captured once
+// per target. This function stays the reading for every other window
+// shape, and is the differential oracle the closed form is compared
+// against — see [TelescopingExpHistogramWindowFoldLowerer].
+//
 // Callers pass a `fold` already built with `in.hoistedFactor` set when
 // [expHistogramWindowFactorStage] found rate/increase's boundary-
 // extrapolation factor hoistable — see that function's doc for why a
@@ -178,7 +186,6 @@ func expHistogramWindowFloatsExpr(contribs chplan.Expr) chplan.Expr {
 func expHistogramWindowBucketsExpr(
 	offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string,
 	fold histogramWindowTimeFold,
-	rows expHistogramWindowRowSource,
 ) chplan.Expr {
 	// Deliberately not "t": `fold` binds paramRowTime ("t") inside its own
 	// arraySort comparator, and that comparator sits INSIDE this lambda's
@@ -210,15 +217,8 @@ func expHistogramWindowBucketsExpr(
 	return expHistogramOverMergedBucketRangeExpr(
 		scalesArr, offArr, bucArr, mergedScale,
 		func(mergedStart, mergedLength chplan.Expr) chplan.Expr {
-			// Bounds above come from the FULL per-row arrays, because the
-			// ladder's own offset is published separately by
-			// expHistogramMergeOffsetExpr over those same full arrays —
-			// deriving them from a narrowed row set instead would shift
-			// this ladder against its own offset. The CONTRIBUTIONS may be
-			// narrowed: a row the fold weights at zero adds nothing to any
-			// bucket. See histogram_native_window_closed_form.go.
 			contribs := expHistogramRowContribsExpr(
-				rows.array(scalesArrAlias), rows.array(offArrAlias), rows.array(bucArrAlias),
+				scalesArr, offArr, bucArr,
 				expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramExpTargetBucket),
 			)
 			return &chplan.FuncCall{
@@ -431,15 +431,21 @@ func expHistogramWindowReshape(
 		input, aggs, keyAliases, extraFactorAliases, windowFn, in, fold,
 	)
 	// The closed form scales by the hoisted factor column; without a
-	// hoisted factor there is nothing for it to read, so the per-bucket
-	// fold stays the shared one. bucketFold is used ONLY for the two
+	// hoisted factor there is nothing for it to read, so the ladders stay
+	// on the shared per-target reading. This choice binds ONLY the two
 	// bucket ladders — Count, Sum and ZeroCount keep counterIncreaseFold
 	// verbatim, see histogram_native_window_closed_form.go's header.
-	bucketFold := effectiveFold
-	narrowed := expHistogramWindowFullArrays()
+	bucketsExpr := func(offAlias, bucAlias string) chplan.Expr {
+		return expHistogramWindowBucketsExpr(
+			offAlias, bucAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, effectiveFold,
+		)
+	}
 	if closedForm && hoisted {
-		bucketFold = expHistogramWindowClosedFormFold(hoistedIn)
-		narrowed = expHistogramWindowNarrowedArrays()
+		bucketsExpr = func(offAlias, bucAlias string) chplan.Expr {
+			return expHistogramWindowClosedFormBucketsExpr(
+				offAlias, bucAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, hoistedIn.hoistedFactor,
+			)
+		}
 	}
 
 	projs := make([]chplan.Projection, 0, len(keyAliases)+len(scalars)+7)
@@ -473,7 +479,7 @@ func expHistogramWindowReshape(
 				Alias: s.PositiveOffsetColumn,
 			},
 			chplan.Projection{
-				Expr:  expHistogramWindowBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, bucketFold, narrowed),
+				Expr:  bucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias),
 				Alias: s.PositiveBucketCountsColumn,
 			},
 			chplan.Projection{
@@ -481,7 +487,7 @@ func expHistogramWindowReshape(
 				Alias: s.NegativeOffsetColumn,
 			},
 			chplan.Projection{
-				Expr:  expHistogramWindowBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, bucketFold, narrowed),
+				Expr:  bucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias),
 				Alias: s.NegativeBucketCountsColumn,
 			},
 		),

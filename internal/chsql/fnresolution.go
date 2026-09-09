@@ -56,6 +56,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnArrayPushBack:       {Name: "arrayPushBack"},
 	chplan.FnArrayReduce:         {Name: "arrayReduce"},
 	chplan.FnArrayReduceInRanges: {Name: "arrayReduceInRanges"},
+	chplan.FnArrayResize:         {Name: "arrayResize"},
 	chplan.FnArrayReverse:        {Name: "arrayReverse"},
 	chplan.FnArraySlice:          {Name: "arraySlice"},
 	chplan.FnArraySort:           {Name: "arraySort"},
