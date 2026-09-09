@@ -45,10 +45,6 @@ import (
 // to widen the generator knows what the work is rather than having to
 // rediscover it.
 var uncoveredOptimizerKinds = map[string]string{
-	"NaryVectorSetOp": "produced by FlattenVectorSetOp, never by a lowering, so it is not an " +
-		"input shape a generator can draw. It IS round-tripped, as the optimized side of the " +
-		"VectorSetOp chains generateSetOpChain draws — which is the only way a plan ever " +
-		"contains one.",
 	"NestedSetAnnotate": "reached only by RequireScanResourceBound, a verify-only analyzer that " +
 		"panics on a broken lowering invariant rather than rewriting anything. There is no " +
 		"rewrite for a round-trip to disagree about, and the invariant it checks is pinned " +

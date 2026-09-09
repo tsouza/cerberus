@@ -248,8 +248,14 @@ func subqueryHasEvalAnchor(sub *parser.SubqueryExpr, ctx lowerCtx) bool {
 		// positive" error rather than silently falling through here.
 		return true
 	}
-	_, ok, err := subqueryGridCtx(sub, step, ctx)
-	return err == nil && ok
+	_, state, err := subqueryGridCtx(sub, step, ctx)
+	// [subqueryGridEmpty] counts as "has an anchor": the question this
+	// answers is whether the ENTRY POINT threaded a query time through,
+	// not whether the resulting window happens to span an anchor. An
+	// empty window is a lowerable answer (the empty matrix) that this
+	// file's own lowering below produces correctly; only
+	// [subqueryGridUnavailable] has no answer to give.
+	return err == nil && state != subqueryGridUnavailable
 }
 
 // lowerExpHistogramRangeFnOverSubquery keeps the subquery matrix on the
@@ -266,11 +272,11 @@ func lowerExpHistogramRangeFnOverSubquery(shape histogramSubqueryRangeShape, s s
 	if step < 0 {
 		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", sub.Step)
 	}
-	gridCtx, ok, err := subqueryGridCtx(sub, step, ctx)
+	gridCtx, state, err := subqueryGridCtx(sub, step, ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
+	if state == subqueryGridUnavailable {
 		return nil, fmt.Errorf("promql: histogram-valued subquery requires query eval-time context (use LowerAt)")
 	}
 
@@ -281,7 +287,23 @@ func lowerExpHistogramRangeFnOverSubquery(shape histogramSubqueryRangeShape, s s
 	if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape {
 		return nil, fmt.Errorf("promql: internal invariant violated: histogram subquery input is %T with %s row shape", input, chplan.RowShapeOf(input))
 	}
-	return lowerExpHistogramRangeFnOverSubqueryInput(input, sub, shape.windowFn, s, ctx)
+	node, err := lowerExpHistogramRangeFnOverSubqueryInput(input, sub, shape.windowFn, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Every function [rangeFnOverExpHistogramSubquery] admits (rate,
+	// increase, delta, irate, idelta, sum_over_time, avg_over_time) is a
+	// per-series fold: an empty subquery matrix carries no series, so the
+	// fold emits nothing. Capping the folded result is therefore the same
+	// answer as capping the matrix and folding — and unlike the matrix,
+	// the folded node is not re-inspected for its histogram row shape by
+	// anything below. absent_over_time — the one range-vector function
+	// that DOES synthesise a row from an empty matrix, and so could not
+	// be capped this way — is not in the recognizer's switch at all.
+	if state == subqueryGridEmpty {
+		node = emptySubqueryGrid(node)
+	}
+	return node, nil
 }
 
 // lowerExpHistogramRangeFnOverSubqueryInput is

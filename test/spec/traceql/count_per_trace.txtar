@@ -18,15 +18,16 @@ INSERT INTO otel_traces VALUES
 -- args --
 [0] int64 = 1
 [1] string = "service.name"
-[2] string = "^(?:.+)$"
-[3] int64 = 0
+[2] string = "service.name"
+[3] string = "^(?:.+)$"
+[4] int64 = 0
 -- chplan --
 Filter predicate=(Value > 0)
   Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
-    Filter predicate=(ResourceAttributes["service.name"] =~ ".+")
+    Filter predicate=(FnMapContainsKey(ResourceAttributes, "service.name") AND (ResourceAttributes["service.name"] =~ ".+"))
       Scan(otel_traces)
 -- sql --
-SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE match(`ResourceAttributes`[?], ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND match(`ResourceAttributes`[?], ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
 -- expected_rows --
 [
   ["GET /a", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "t1", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 3],

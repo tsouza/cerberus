@@ -156,24 +156,36 @@ func TestIndexVolume_ChDB_AggregateByLabels(t *testing.T) {
 }
 
 // TestIndexVolume_ChDB_AggregateByLabelsTargetLabels covers the
-// `targetLabels` restriction of the same shape. Upstream keeps only the
-// requested names and still sums across their values, so one row of 17 —
-// where the unfixed series shape answers TWO rows ({service_name=a}=12
-// and {service_name=b}=5), splitting the very sum this mode exists to
-// produce.
+// `targetLabels` restriction of the same shape.
+//
+// `targetLabels` also adds upstream's `<target>=~".+"` presence matchers
+// ([targetLabelPresenceMatchers]), so asking for {env, pod} counts only
+// the stream carrying BOTH — the 2-byte one. Upstream then charges that
+// stream's whole size to each requested NAME it carries: two rows of 2.
+// The series shape answers ONE row instead, `{env=prod, pod=p1}`=2, with
+// its values populated — so this discriminates on the row count and on
+// the metric shape at once.
+//
+// The requested labels are deliberately plain map keys rather than
+// `service_name`: that one resolves through the hoisted `ServiceName`
+// column, which this file's shared seed does not declare, and pinning
+// that resolution is
+// TestIndexVolume_ChDB_TargetLabelsResolvesHoistedColumn's subject
+// rather than this one's.
 func TestIndexVolume_ChDB_AggregateByLabelsTargetLabels(t *testing.T) {
 	srv, _ := seedKeyOrderServer(t, volumeShapeSeed())
 
 	got := labelNameVolumes(t, volumeSamples(t, srv.URL,
-		"aggregateBy=labels&targetLabels=service_name"))
-	want := map[string]uint64{"service_name": 17}
+		"aggregateBy=labels&targetLabels=env,pod"))
+	want := map[string]uint64{"env": 2, "pod": 2}
 	if len(got) != len(want) {
-		t.Fatalf("targetLabels=service_name must collapse to ONE service_name row; "+
-			"got %d: %v", len(got), got)
+		t.Fatalf("targetLabels=env,pod must report one row per requested NAME (%d here); "+
+			"got %d: %v", len(want), len(got), got)
 	}
-	if got["service_name"] != want["service_name"] {
-		t.Errorf("service_name volume: got %d want %d; all=%v",
-			got["service_name"], want["service_name"], got)
+	for name, bytes := range want {
+		if got[name] != bytes {
+			t.Errorf("label %q volume: got %d want %d; all=%v", name, got[name], bytes, got)
+		}
 	}
 }
 

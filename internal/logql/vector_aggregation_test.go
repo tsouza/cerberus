@@ -272,3 +272,65 @@ func funcName(expr chplan.Expr) string {
 	}
 	return ""
 }
+
+// TestLowerVectorAggregationInstantAnchorsAtRequestEnd pins the instant
+// arm of [wrapVectorAggregateForSample]'s TimeUnix synthesis.
+//
+// Reference Loki stamps every sample of an instant query at the instant
+// the REQUEST asked about. Cerberus used to stamp `now64(9)` — the
+// instant ClickHouse happened to execute the query — so the wire
+// timestamp diverged by the whole gap between the two. The gap is
+// unbounded: a dashboard asking about a past instant got `now`, and the
+// aggregated arm of `variants(sum by (...) (...), ...)` stamped an
+// instant appearing nowhere in the request at all while its
+// un-aggregated arm stamped the request's own (cerberus issue #3183).
+//
+// `sum by (job) (count_over_time({app="a"}[5m]))` at start == end is the
+// minimal shape: rangeMode() is true but the inner RangeWindow is not a
+// matrix (one anchor), so the lowering takes the instant arm.
+func TestLowerVectorAggregationInstantAnchorsAtRequestEnd(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+
+	query := `sum by (job) (count_over_time({app="a"}[5m]))`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+
+	instant := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
+	lc := lowerCtx{Start: instant, End: instant, Step: 30 * time.Second}
+
+	plan, err := lower(expr, s, lc)
+	if err != nil {
+		t.Fatalf("lower(%q): %v", query, err)
+	}
+
+	proj, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("lower(%q) -> %T, want *chplan.Project (sample-shape wrapper)", query, plan)
+	}
+	var tsExpr chplan.Expr
+	for _, p := range proj.Projections {
+		if p.Alias == sampleTimeUnixCol {
+			tsExpr = p.Expr
+		}
+	}
+	if tsExpr == nil {
+		t.Fatalf("sample-shape Project has no %s projection", sampleTimeUnixCol)
+	}
+
+	call, ok := tsExpr.(*chplan.FuncCall)
+	if !ok {
+		t.Fatalf("%s projection is %T, want *chplan.FuncCall", sampleTimeUnixCol, tsExpr)
+	}
+	if call.Fn == chplan.FnNow64 {
+		t.Fatalf("%s is now64(...) — the instant sample is stamped at query-execution "+
+			"time instead of the request instant %s", sampleTimeUnixCol, instant)
+	}
+	if want := timeLiteralExpr(instant); !call.Equal(want) {
+		t.Fatalf("%s = %#v, want the toDateTime64 literal for %s (the request's own "+
+			"evaluation instant)", sampleTimeUnixCol, call, instant)
+	}
+}

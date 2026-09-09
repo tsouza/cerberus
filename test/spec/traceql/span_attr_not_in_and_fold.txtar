@@ -17,10 +17,11 @@ INSERT INTO otel_traces (SpanId) VALUES
 ]
 -- args --
 [0] string = "http.method"
-[1] string = "GET"
-[2] string = "POST"
+[1] string = "http.method"
+[2] string = "GET"
+[3] string = "POST"
 -- chplan --
-Filter predicate=FnNot((SpanAttributes["http.method"] IN ("GET", "POST")))
+Filter predicate=(FnMapContainsKey(SpanAttributes, "http.method") AND FnNot((SpanAttributes["http.method"] IN ("GET", "POST"))))
   Scan(otel_traces)
 -- sql --
-SELECT * FROM `otel_traces` WHERE not((`SpanAttributes`[?] IN (?, ?)))
+SELECT * FROM `otel_traces` WHERE mapContains(`SpanAttributes`, ?) AND not((`SpanAttributes`[?] IN (?, ?)))

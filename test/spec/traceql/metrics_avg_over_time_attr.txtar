@@ -16,8 +16,8 @@ INSERT INTO otel_traces VALUES
 [0] string = "latency_ms"
 [1] bool = true
 -- chplan --
-MetricsAggregate op=avg_over_time attr=FnToFloat64OrZero(SpanAttributes["latency_ms"]) valueAlias=Value
+MetricsAggregate op=avg_over_time attr=FnToFloat64OrNull(SpanAttributes["latency_ms"]) valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
 -- sql --
-SELECT avg(toFloat64OrZero(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
+SELECT avg(toFloat64OrNull(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)

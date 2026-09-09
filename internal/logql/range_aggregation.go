@@ -34,7 +34,7 @@ import (
 //   - byte-counting ops (`bytes_rate`, `bytes_over_time`)           → toFloat64(length(Body))
 //   - unwrap with no conversion                                     → toFloat64OrZero(labelsExpr[field])
 //   - unwrap duration / duration_seconds(field)                     → regex-gated Go-duration parse (0 on error)
-//   - unwrap bytes(field)                                           → parseReadableSize(labelsExpr[field])
+//   - unwrap bytes(field)                                           → gated humanize.ParseBytes replica over labelsExpr[field]
 //
 // Grouping:
 //   - no Grouping → group by ResourceAttributes (one row per stream).
@@ -396,13 +396,13 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (chplan.
 //  3. the unwrap post-filters then AND-fold against the
 //     conversion-stamped labels (see [applyUnwrapPostFilters]).
 //
-// Only the duration conversions can reject a value at the unwrap
-// conversion stage under cerberus's lowering today (bare unwrap reads
-// through toFloat64OrZero, bytes through parseReadableSize), so only
-// they contribute a mark here; the unwrap POST-filters
-// (applyUnwrapPostFilters) route through labelFiltererLower, so numeric
-// and bytes post-filters keep-and-mark per [numericLabelFilterExpr] /
-// [bytesLabelFilterExpr] like the duration ones.
+// All three conversions reference Loki performs at this stage — bare
+// (`strconv.ParseFloat`), duration (`time.ParseDuration`) and bytes
+// (`humanize.ParseBytes`) — can reject a value, and each contributes a
+// mark here. The unwrap POST-filters (applyUnwrapPostFilters) route
+// through labelFiltererLower, so numeric and bytes post-filters
+// keep-and-mark per [numericLabelFilterExpr] / [bytesLabelFilterExpr]
+// in the same way.
 // hasErrorMarks reports whether the returned labels expression carries
 // any conditional `__error__` stamp — the identity construction uses
 // it to gate the reference engine's error-series grouping bypass.
@@ -415,9 +415,34 @@ func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, inne
 	}
 	hasErrorMarks := false
 	unwrapAccess := structuredOrStreamLookupOnMap(s, labelsExpr, e.Left.Unwrap.Identifier)
+	// Every conversion reference Loki performs at this stage can reject
+	// a value, and all three reject it the same way — `convFn` returns
+	// `(0, err)` and Process stamps `__error__="SampleExtractionErr"` +
+	// `__error_details__` on the sample's labels
+	// (pkg/logql/log/metrics_extraction.go's streamLabelSampleExtractor.Process).
+	// The three conversions are convertFloat (`strconv.ParseFloat`),
+	// convertDuration (`time.ParseDuration`) and convertBytes
+	// (`humanize.ParseBytes`); cerberus models each with the parse
+	// helper of the same name.
+	var parseValid, parseDetails chplan.Expr
 	switch e.Left.Unwrap.Operation {
+	case "":
+		// Bare `| unwrap x`: convertFloat. This arm was missing, so an
+		// unparseable value became a silent 0 in the NORMAL series and
+		// the error series reference Loki splits off never appeared
+		// (cerberus issue #3183).
+		parse := newNumericParse(unwrapAccess)
+		parseValid, parseDetails = parse.valid, parse.details
 	case syntax.OpConvDuration, syntax.OpConvDurationSeconds:
 		parse := newDurationParse(unwrapAccess)
+		parseValid, parseDetails = parse.valid, parse.details
+	case syntax.OpConvBytes:
+		// `| unwrap bytes(x)`: convertBytes. Missing for the same
+		// reason, and doubly wrong before — see [unwrapValueExpr].
+		parse := newBytesParse(unwrapAccess)
+		parseValid, parseDetails = parse.valid, parse.details
+	}
+	if parseValid != nil {
 		labelsExpr = wrapLabelsWithMarks(labelsExpr, []labelFilterMark{{
 			cond: &chplan.Binary{
 				Op: chplan.OpAnd,
@@ -426,10 +451,10 @@ func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, inne
 					Left:  unwrapAccess,
 					Right: &chplan.LitString{V: ""},
 				},
-				Right: notExpr(parse.valid),
+				Right: notExpr(parseValid),
 			},
 			kind:    errSampleExtractionKind,
-			details: parse.details,
+			details: parseDetails,
 		}})
 		hasErrorMarks = true
 	}
@@ -622,8 +647,9 @@ func matrixBucketColumn(plan chplan.Node) string {
 // Float64, `duration` / `duration_seconds` parses Loki's Go-duration
 // shape via the regex-gated [newDurationParse] expression (Float64
 // seconds; 0 on parse error, matching reference convertDuration), and
-// `bytes` parses the human-readable byte-size shape via CH's
-// `parseReadableSize` (Float64 bytes).
+// `bytes` parses the human-readable byte-size shape via the regex-gated
+// [newBytesParse] expression (Float64 bytes; 0 on parse error, matching
+// reference convertBytes).
 //
 // `length(Body)` is wrapped in `toFloat64` so the per-row Value tuple
 // — `(Timestamp, Value)` shaped by the windowed-array RangeWindow
@@ -685,16 +711,16 @@ func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr ch
 //	unwrap foo                       → toFloat64OrZero(labelsExpr['foo'])
 //	unwrap duration(foo)             → regex-gated Go-duration parse (Float64 seconds, 0 on parse error)
 //	unwrap duration_seconds(foo)     → same as duration(foo)
-//	unwrap bytes(foo)                → parseReadableSize(labelsExpr['foo'])    (Float64 bytes)
+//	unwrap bytes(foo)                → regex-gated humanize.ParseBytes replica (Float64 bytes, 0 on parse error)
 //
 // The duration conversions go through [newDurationParse] — Go's exact
 // time.ParseDuration unit set incl. `µs`/`μs`, with unparseable values
 // yielding 0 instead of a query-aborting CH exception (reference
 // semantics: convertDuration returns (0, err) and the sample is kept
-// with `__error__="SampleExtractionErr"`). `parseReadableSize` accepts
-// the human-readable byte-size shapes Loki's `humanize.ParseBytes`
-// covers (`1KB`, `1.5MiB`, `2 G`). All return Float64 so the
-// downstream windowed-array math stays in Float64 throughout.
+// with `__error__="SampleExtractionErr"`). The bytes conversion goes
+// through [newBytesParse], which replicates `humanize.ParseBytes` under
+// the same contract. All return Float64 so the downstream
+// windowed-array math stays in Float64 throughout.
 func unwrapValueExpr(u *syntax.UnwrapExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
 	if u.Identifier == "" {
 		return nil, fmt.Errorf("logql: `| unwrap` has empty identifier")
@@ -734,19 +760,27 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, s schema.Logs, labelsExpr chplan.Expr
 		// labels map.
 		return newDurationParse(access).seconds, nil
 	case syntax.OpConvBytes:
-		// `parseReadableSize` returns UInt64 (CH 24.x+); wrap in
-		// `toFloat64` so the downstream windowed-array math (especially
-		// the counter_delta arrayMap that does `if(c < p, c, c - p)`)
-		// can resolve a common type — chDB refuses to mix UInt64
-		// branches with their signed-subtraction siblings. Aligns with
-		// the comment above and matches the `length(Body)` path in
-		// `rangeValueExpr` which is also toFloat64-wrapped.
+		// Gated [newBytesParse] shape, for the same reason the duration
+		// arm above is gated: reference Loki's convertBytes returns
+		// `(0, err)` for a value humanize.ParseBytes rejects and the
+		// sample is KEPT with value 0 plus
+		// `__error__="SampleExtractionErr"`. A bare
+		// `parseReadableSize(...)` instead THREW on four whole shapes
+		// humanize accepts — a bare byte count with no unit (`1024`,
+		// i.e. an ordinary logfmt `size=1024`), `5k`, `5 ki` and
+		// `5,000 kb` — aborting the entire query with a 502, and
+		// rounded rather than truncated everywhere it did parse. See
+		// [newBytesParse]'s own comment for the measurements.
+		//
+		// The result is Float64 (humanize's `float64(uint64(f))`), so
+		// the downstream windowed-array math — especially the
+		// counter_delta arrayMap's `if(c < p, c, c - p)` — resolves one
+		// common type, which it could not do against
+		// `parseReadableSize`'s UInt64.
+		parse := newBytesParse(access)
 		return &chplan.FuncCall{
-			Fn: chplan.FnToFloat64,
-			Args: []chplan.Expr{&chplan.FuncCall{
-				Fn:   chplan.FnParseReadableSize,
-				Args: []chplan.Expr{access},
-			}},
+			Fn:   chplan.FnIf,
+			Args: []chplan.Expr{parse.valid, parse.value, &chplan.LitFloat{V: 0}},
 		}, nil
 	}
 	return nil, fmt.Errorf("logql: unsupported unwrap conversion %q", u.Operation)

@@ -108,13 +108,6 @@ const bytesNumberRe = `^[0-9.,]*`
 // value, faithful to humanize.ParseBytes's two-stage parse (peel the
 // leading `[0-9.,]*` number run, ParseFloat the comma-stripped number,
 // then look the lowercased+trimmed remainder up in the unit table).
-//
-// Narrow divergences (documented, not fixed):
-//
-//   - humanize returns `too large: <s>` when the byte count overflows
-//     uint64 (a value above ~1.8e19 bytes); this classifier never emits
-//     that branch. parseReadableSize would also disagree numerically at
-//     that magnitude, so the realistic corpus never reaches it.
 type bytesParse struct {
 	raw     chplan.Expr
 	valid   chplan.Expr
@@ -122,8 +115,56 @@ type bytesParse struct {
 	details chplan.Expr
 }
 
+// Why the byte count is computed arithmetically rather than handed to
+// ClickHouse's own `parseReadableSize`.
+//
+// `parseReadableSize` is neither a superset nor a subset of
+// humanize.ParseBytes, and both directions were wrong answers:
+//
+//   - It THROWS (`Code: 6 … Unknown readable size unit`) on four whole
+//     shapes humanize accepts — a bare number with no unit at all (`5`,
+//     an ordinary logfmt `size=1024`), the single-letter units (`5k`),
+//     the binary prefixes without the trailing `b` (`5 ki`), and any
+//     value carrying humanize's comma separators (`5,000 kb`). A throw
+//     is not a per-row error: it aborts the WHOLE query with a 502,
+//     where reference Loki keeps the row and stamps `__error__`. The
+//     regex gate does not save it — those values are VALID per
+//     humanize, so the gate lets them through to the call. Measured
+//     against a real engine; see TestBytesParseMatchesHumanize.
+//   - Where it does parse, it ROUNDS to nearest (`1.5 B` → 2) where
+//     humanize truncates (`uint64(1.5)` → 1), so every fractional
+//     value with a non-integral byte count answered off by one.
+//   - It throws again (`Code: 36 … Result is too big`) on the overflow
+//     humanize reports as the ordinary parse error `too large: <s>`.
+//
+// The arithmetic below is humanize's own formula — `f *= float64(m)`,
+// reject at `f >= math.MaxUint64`, then `uint64(f)` — expressed in
+// typed Frags. It cannot throw for any input, and it agrees with
+// humanize on every unit spelling and every magnitude.
+
+// The two multiplier bases of humanize's bytesSizeTable: a unit spelled
+// with an `i` (`ki`, `kib`, `mi`, `mib`, …) is a power of 1024, every
+// other spelling a power of 1000. Both are exactly representable in
+// Float64 up to the sixth power (2^60 and 1e18), so the multiplication
+// carries no rounding the reference does not also carry.
+const (
+	bytesDecimalUnitBase = 1000
+	bytesBinaryUnitBase  = 1024
+)
+
+// bytesUnitPrefixLetters is humanize's SI prefix set in ascending
+// magnitude order. A unit's exponent is its 1-based index here; the
+// empty unit and a bare `b` carry no prefix and so take exponent 0.
+const bytesUnitPrefixLetters = "kmgtpe"
+
+// bytesTooLargeThreshold is humanize's overflow bound: it rejects with
+// `too large: <s>` once the scaled value reaches math.MaxUint64.
+// Written as the Float64 that Go's `f >= math.MaxUint64` comparison
+// actually performs — the untyped constant converts to 2^64 exactly.
+const bytesTooLargeThreshold = 18446744073709551616.0
+
 // newBytesParse builds the parse expressions for one label access,
-// replicating humanize.ParseBytes's split in CH function calls.
+// replicating humanize.ParseBytes in CH function calls.
 func newBytesParse(raw chplan.Expr) bytesParse {
 	// number = the leading [0-9.,] run; numStripped = that run with
 	// commas removed (humanize's `strings.Replace(num, ",", "", -1)`).
@@ -163,24 +204,31 @@ func newBytesParse(raw chplan.Expr) bytesParse {
 		Fn:   chplan.FnRegexMatch,
 		Args: []chplan.Expr{rest, &chplan.LitString{V: bytesUnitRe}},
 	}
-	valid := &chplan.Binary{Op: chplan.OpAnd, Left: numberValid, Right: unitValid}
-	// value: parseReadableSize understands the same human size grammar
-	// humanize.ParseBytes does for the accepted set; it is only ever
-	// read under `valid`.
-	value := &chplan.FuncCall{
-		Fn:   chplan.FnParseReadableSize,
-		Args: []chplan.Expr{raw},
+
+	scaled := bytesScaledExpr(numStripped, rest)
+	inRange := &chplan.Binary{
+		Op:    chplan.OpLt,
+		Left:  scaled,
+		Right: &chplan.LitFloat{V: bytesTooLargeThreshold},
 	}
-	// details: classify in humanize's scan order — number first, then
-	// unit. `if(numberValid, <unhandled-size>, <parsefloat-error>)`.
+	valid := &chplan.Binary{
+		Op:   chplan.OpAnd,
+		Left: &chplan.Binary{Op: chplan.OpAnd, Left: numberValid, Right: unitValid},
+		// The overflow bound is humanize's THIRD rejection, and it is
+		// reached only once the number and the unit have both been
+		// accepted — mirroring the order of ParseBytes's own returns.
+		Right: inRange,
+	}
+	// value: humanize's `uint64(f)`, i.e. truncation toward zero. The
+	// scaled value is never negative (bytesNumberRe admits no sign), so
+	// floor and truncate coincide. Only ever read under `valid`.
+	value := &chplan.FuncCall{Fn: chplan.FnFloor, Args: []chplan.Expr{scaled}}
+	// details: classify in humanize's scan order — number, then unit,
+	// then overflow.
 	details := &chplan.FuncCall{
-		Fn: chplan.FnIf,
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
-			numberValid,
-			&chplan.FuncCall{
-				Fn:   chplan.FnConcat,
-				Args: []chplan.Expr{&chplan.LitString{V: `unhandled size name: `}, rest},
-			},
+			notExpr(numberValid),
 			&chplan.FuncCall{
 				Fn: chplan.FnConcat,
 				Args: []chplan.Expr{
@@ -189,7 +237,68 @@ func newBytesParse(raw chplan.Expr) bytesParse {
 					&chplan.LitString{V: `": invalid syntax`},
 				},
 			},
+			notExpr(unitValid),
+			&chplan.FuncCall{
+				Fn:   chplan.FnConcat,
+				Args: []chplan.Expr{&chplan.LitString{V: `unhandled size name: `}, rest},
+			},
+			&chplan.FuncCall{
+				Fn:   chplan.FnConcat,
+				Args: []chplan.Expr{&chplan.LitString{V: `too large: `}, raw},
+			},
 		},
 	}
 	return bytesParse{raw: raw, valid: valid, value: value, details: details}
+}
+
+// bytesScaledExpr is humanize's `f *= float64(m)`: the comma-stripped
+// number multiplied by the multiplier its unit names.
+//
+// The multiplier is derived from the unit's SHAPE rather than from a
+// 26-entry lookup, because humanize's table is itself generated from
+// that shape: the first letter picks the exponent
+// ([bytesUnitPrefixLetters]) and a following `i` picks the base
+// ([bytesBinaryUnitBase] vs [bytesDecimalUnitBase]). `pow(base, 0)` is
+// 1, which covers both the empty unit and a bare `b`.
+//
+// This expression is only meaningful for a unit [bytesUnitRe] admits;
+// for anything else the exponent falls through to 0, and the caller
+// gates on `valid` before reading it.
+func bytesScaledExpr(numStripped, rest chplan.Expr) chplan.Expr {
+	head := &chplan.FuncCall{
+		Fn:   chplan.FnSubstring,
+		Args: []chplan.Expr{rest, &chplan.LitInt{V: 1}, &chplan.LitInt{V: 1}},
+	}
+	isBinary := &chplan.Binary{
+		Op: chplan.OpEq,
+		Left: &chplan.FuncCall{
+			Fn:   chplan.FnSubstring,
+			Args: []chplan.Expr{rest, &chplan.LitInt{V: 2}, &chplan.LitInt{V: 1}},
+		},
+		Right: &chplan.LitString{V: "i"},
+	}
+	expArgs := make([]chplan.Expr, 0, 2*len(bytesUnitPrefixLetters)+1)
+	for i, letter := range bytesUnitPrefixLetters {
+		expArgs = append(
+			expArgs,
+			&chplan.Binary{Op: chplan.OpEq, Left: head, Right: &chplan.LitString{V: string(letter)}},
+			&chplan.LitInt{V: int64(i + 1)},
+		)
+	}
+	expArgs = append(expArgs, &chplan.LitInt{V: 0})
+	exponent := &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: expArgs}
+
+	base := &chplan.FuncCall{
+		Fn: chplan.FnIf,
+		Args: []chplan.Expr{
+			isBinary,
+			&chplan.LitInt{V: bytesBinaryUnitBase},
+			&chplan.LitInt{V: bytesDecimalUnitBase},
+		},
+	}
+	return &chplan.Binary{
+		Op:    chplan.OpMul,
+		Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64OrZero, Args: []chplan.Expr{numStripped}},
+		Right: &chplan.FuncCall{Fn: chplan.FnPow, Args: []chplan.Expr{base, exponent}},
+	}
 }

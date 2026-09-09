@@ -1133,7 +1133,6 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnLower:                            "FnLower",
 	chplan.FnRegexMatch:                       "FnRegexMatch",
 	chplan.FnNullIf:                           "FnNullIf",
-	chplan.FnParseReadableSize:                "FnParseReadableSize",
 	chplan.FnParseTimeDelta:                   "FnParseTimeDelta",
 	chplan.FnStringPosition:                   "FnStringPosition",
 	chplan.FnReplaceAll:                       "FnReplaceAll",

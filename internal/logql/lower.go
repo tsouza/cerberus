@@ -2128,8 +2128,10 @@ func durationLabelFilterExpr(f *syntax.DurationLabelFilter, s schema.Logs, label
 // humanize.ParseBytes's number/unit split) so an unparseable value
 // keeps-and-marks the row instead of silently falling through as 0 (the
 // prior bare `parseReadableSize` behaviour diverged from reference,
-// which stamps LabelFilterErr). The value branch still reads through
-// `parseReadableSize`, which understands "1KB", "1MiB", "1.5G", etc.
+// which stamps LabelFilterErr). The value branch is humanize's own
+// `f * multiplier` arithmetic rather than CH's `parseReadableSize`,
+// which threw on four shapes humanize accepts and rounded where
+// humanize truncates — see [newBytesParse].
 func bytesLabelFilterExpr(f *syntax.BytesLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
 	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
 	parse := newBytesParse(access)
@@ -2576,7 +2578,7 @@ func matcherLHS(label string, s schema.Logs) chplan.Expr {
 	}
 	mapLookup := attributeLookupColumn(s.ResourceAttributesColumn, label)
 	if col := resourceFallbackColumn(s, label); col != "" {
-		return resourceAttributeFallbackLHS(col, mapLookup)
+		return resourceAttributeFallbackLHS(col, mapLookup, topLevelLogColumnIsNumeric(col, s))
 	}
 	return mapLookup
 }
@@ -2631,21 +2633,44 @@ func resourceFallbackColumn(s schema.Logs, labelName string) string {
 // matcher's logical contract holds regardless of which storage shape
 // the row used — both presence and ABSENCE of `service.name=cerberus`
 // resolve correctly when the producer wrote it to either side.
-func resourceAttributeFallbackLHS(topCol string, mapLookup chplan.Expr) chplan.Expr {
+func resourceAttributeFallbackLHS(topCol string, mapLookup chplan.Expr, numeric bool) chplan.Expr {
+	var col chplan.Expr = &chplan.ColumnRef{Name: topCol}
+	// unset is the value that means "this row did not carry the label",
+	// i.e. the one the coalesce falls THROUGH to the map on.
+	unset := ""
+	if numeric {
+		// Every Loki label value is a string and the matcher compares
+		// against one, so a numeric top-level column is rendered before
+		// it is compared or NULLed out — see
+		// [topLevelLogColumnIsNumeric] for why only those two columns
+		// are wrapped.
+		//
+		// Their "unset" is the numeric zero, not the empty string: both
+		// are UInt8 columns the OTel-CH exporter always writes, and the
+		// value it writes for an absent field is 0 — which is also what
+		// OTel itself calls unset (SEVERITY_NUMBER_UNSPECIFIED, and no
+		// trace flags). Rendering that as `"0"` and treating it as a
+		// present value would make the map fallback unreachable for
+		// every row ingested without the field.
+		col = &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{col}}
+		unset = numericTopLevelColumnUnset
+	}
 	return &chplan.FuncCall{
 		Fn: chplan.FnCoalesce,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Fn: chplan.FnNullIf,
-				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: topCol},
-					&chplan.LitString{V: ""},
-				},
+				Fn:   chplan.FnNullIf,
+				Args: []chplan.Expr{col, &chplan.LitString{V: unset}},
 			},
 			mapLookup,
 		},
 	}
 }
+
+// numericTopLevelColumnUnset is the rendered form of the value a numeric
+// top-level OTel-CH column carries when the field was never set. See
+// [resourceAttributeFallbackLHS].
+const numericTopLevelColumnUnset = "0"
 
 func matchOp(t labels.MatchType) chplan.BinaryOp {
 	switch t {

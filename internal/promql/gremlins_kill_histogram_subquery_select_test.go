@@ -62,8 +62,9 @@ import (
 // histogram_native_subquery_select.go:`sub.Range <= 0` (-> `< 0`). A
 // zero-duration subquery with an
 // otherwise valid histogram-native inner and a resolvable eval anchor
-// isolates the Range check alone: subqueryGridCtx tolerates a zero Range
-// via its own sub-step-window clamp, so subqueryHasEvalAnchor genuinely
+// isolates the Range check alone: a zero Range makes subqueryGridCtx
+// report [subqueryGridEmpty] — an eval anchor RESOLVED over a window
+// that spans none — so subqueryHasEvalAnchor genuinely
 // returns true here — the same isolation strategy
 // TestRangeFnOverExpHistogramSubquery_ZeroRangeRejected
 // (histogram_native_range_family_gremlins_test.go) uses for its own

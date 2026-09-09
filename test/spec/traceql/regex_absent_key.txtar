@@ -1,0 +1,32 @@
+-- query.traceql --
+{ span.color =~ ".*" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanAttributes Map(String, String),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('color', 'red'), map('service.name', 'frontend')),
+    ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), map('color', ''), map('service.name', 'frontend')),
+    ('a0000000000000000000000000000003', '0000000000000003', toDateTime64('2026-01-01 00:00:02', 9), map('shape', 'square'), map('service.name', 'frontend'));
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
+-- expected_rows --
+[
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "frontend"}, "2026-01-01T00:00:01Z", 0]
+]
+-- args --
+[0] string = "color"
+[1] string = "color"
+[2] string = "^(?:.*)$"
+-- chplan --
+Filter predicate=(FnMapContainsKey(SpanAttributes, "color") AND (SpanAttributes["color"] =~ ".*"))
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE mapContains(`SpanAttributes`, ?) AND match(`SpanAttributes`[?], ?)

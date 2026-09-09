@@ -449,6 +449,7 @@ matrix_selector_top_level.txtar
 min_over_time_exp_histogram_drops.txtar
 minute_default.txtar
 minute_of_vector.txtar
+mixed_or_subquery_outer_fn_or_on.txtar
 mod_arithmetic.txtar
 month_default.txtar
 month_of_vector.txtar
@@ -623,7 +624,6 @@ subquery_irate_nested.txtar
 subquery_label_replace.txtar
 subquery_last_over_time_at_pinned_name.txtar
 subquery_last_over_time_histogram_fanout_name.txtar
-subquery_last_over_time_mixed_or_partial_shadow.txtar
 subquery_last_over_time_name.txtar
 subquery_last_over_time_nested_call.txtar
 subquery_last_over_time_nested_subquery.txtar

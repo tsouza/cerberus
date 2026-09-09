@@ -369,3 +369,25 @@ func SentinelsForFloor(floor ServerFloor) []Sentinel {
 	}
 	return out
 }
+
+// formatPromStep renders a step for the Prom head's `?step=` the way a
+// Prometheus client does: a bare number of seconds, the same spelling
+// formatPromTime already uses for `start` / `end`.
+//
+// Go's [time.Duration.String] is NOT the Prometheus wire format and must not
+// be used here. The two disagree on exactly the durations this file produces:
+// sortedSlabOverTimeSentinelStep is `sentinelWindow / 480` = 7.5s, whose
+// String() is "7.5s" — which `model.ParseDuration` rejects outright with
+// `unknown unit "." in duration "7.5s"`, because it takes an integer count per
+// unit and has no fractional form. Upstream Prometheus's parseDuration answers
+// 400 for that spelling too, so this is the harness matching the wire contract
+// rather than the head relaxing to meet the harness: its own `parseDuration`
+// tries `strconv.ParseFloat` FIRST and only then `model.ParseDuration`, so the
+// unit-less "7.5" is the spelling both accept. Cerberus's
+// [format.ParseDuration] mirrors that order.
+//
+// The Tempo branch below deliberately keeps Duration.String(): upstream Tempo
+// really does parse with `time.ParseDuration`, which accepts "7.5s".
+func formatPromStep(d time.Duration) string {
+	return strconv.FormatFloat(d.Seconds(), 'f', -1, 64)
+}

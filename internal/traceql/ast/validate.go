@@ -68,6 +68,51 @@ const spanFilterBooleanFormat = "span filter field expressions must resolve to a
 // pattern that does not compile — `{ span.x =~ "[" }`.
 const invalidRegexFormat = "invalid regex: %s"
 
+// regexNonStaticFormat reproduces the reference's wording for a `=~` / `!~`
+// whose pattern is not a literal — `{ span.a =~ span.b }`. Formatted with
+// the two operator spellings and the offending right-hand side, exactly as
+// pkg/traceql/ast_validate.go's `BinaryOperation.validate` does.
+const regexNonStaticFormat = "invalid type for %s or %s: %s"
+
+// aggregateReferencesSpanFormat reproduces the reference's wording for an
+// aggregate whose inner expression names no span field — `| avg(1)`
+// (pkg/traceql/ast_validate.go's `Aggregate.validate`).
+const aggregateReferencesSpanFormat = "aggregate field expressions must reference the span: %s"
+
+// groupReferencesSpanFormat is the `| by(...)` twin of the rule above —
+// `| by(1)` (pkg/traceql/ast_validate.go's `GroupOperation.validate`).
+const groupReferencesSpanFormat = "grouping field expressions must reference the span: %s"
+
+// quantileRangeFormat reproduces the reference's wording for a
+// quantile_over_time phi outside [0,1] — the `q < 0 || q > 1` check in
+// pkg/traceql/ast_metrics.go's `MetricsAggregate.validate`.
+const quantileRangeFormat = "quantile must be between 0 and 1: %v"
+
+// unsupportedGroupBysFormat reproduces the reference's wording for a metrics
+// aggregate with too many `by(...)` keys. The reference builds it from
+// `newUnsupportedError`, whose `unsupportedError.Error` in
+// pkg/traceql/ast_validate.go renders `<feature> not yet supported`, around
+// `metrics group by %v values` in pkg/traceql/ast_metrics.go's
+// `MetricsAggregate.validate`.
+const unsupportedGroupBysFormat = "metrics group by %v values not yet supported"
+
+// maxGroupBys is the reference engine's hard ceiling on the number of
+// `by(...)` keys a metrics aggregate may carry — pkg/traceql/engine_metrics.go's
+// own `maxGroupBys`, where it sizes the fixed-length `SeriesMapKey` array that
+// keys every output series. Two thresholds fall out of it, and the reference
+// applies them to different aggregates:
+//
+//   - rate / count_over_time / min|max|sum_over_time stop at the trailing
+//     `len(a.by) > maxGroupBys` check of ast_metrics.go's
+//     `MetricsAggregate.validate`, so five keys are accepted.
+//   - quantile_over_time / histogram_over_time stop at that same method's
+//     per-op `len(a.by) >= maxGroupBys` checks because the synthetic
+//     `__bucket` label occupies one of the five slots, and avg_over_time
+//     does the same in engine_metrics_average.go's
+//     `averageOverTimeAggregator.validate` for its own count-carrying
+//     companion series.
+const maxGroupBys = 5
+
 // ValidationError is returned by Parse for a query that parses cleanly but
 // breaks one of the language's static rules. It is distinct from
 // ParseError because nothing about the TEXT was wrong — the grammar
@@ -219,6 +264,77 @@ func (r *RootExpr) validate() error {
 	if cmp, ok := r.MetricsPipeline.(*MetricsCompare); ok && cmp.Filter() != nil {
 		return validateSpansetFilterResult(cmp.Filter(), cmp.Filter().Expression)
 	}
+	return validateFirstStage(r.MetricsPipeline)
+}
+
+// validateFirstStage applies the reference's metrics-aggregate rules — the
+// phi range and the `by(...)` ceiling. Both live on the reference's own
+// `MetricsAggregate.validate` / `averageOverTimeAggregator.validate`
+// (in pkg/traceql/ast_metrics.go and engine_metrics_average.go) rather than
+// in ast_validate.go, but they are static rules over the parsed tree exactly
+// like the ones above, and the reference reaches them from the same
+// query-time validate() walk.
+//
+// The walk runs on the tree the grammar produced, BEFORE applyRewrites folds
+// a standalone `| by(X)` stage into the following aggregate's group-by
+// (MetricsAggregate.WithLeadingGroupBy). That ordering is what the reference
+// does too: its `by(...)` stage is a GroupOperation the metrics validator
+// never sees, so a fold-only key does not count against the ceiling in
+// either engine.
+func validateFirstStage(fs FirstStageElement) error {
+	switch a := fs.(type) {
+	case *MetricsAggregate:
+		if a == nil {
+			return nil
+		}
+		return validateMetricsAggregate(a)
+	case *AverageOverTimeAggregator:
+		if a == nil {
+			return nil
+		}
+		// avg_over_time reserves a slot for the companion count series
+		// it carries alongside each value series, so its ceiling is the
+		// strict one.
+		return validateGroupByCount(len(a.GroupBy()), maxGroupBys-1)
+	}
+	return nil
+}
+
+// validateMetricsAggregate applies the two rules the reference keeps on
+// `MetricsAggregate.validate` in pkg/traceql/ast_metrics.go: the `by(...)`
+// ceiling, whose threshold depends on whether the aggregate reserves a slot
+// for the synthetic `__bucket` label, and the [0,1] range every
+// quantile_over_time phi must sit in.
+func validateMetricsAggregate(a *MetricsAggregate) error {
+	// quantile_over_time and histogram_over_time both reserve a group-by
+	// slot for the synthetic `__bucket` label, so they stop one key
+	// earlier than the plain per-step reducers.
+	limit := maxGroupBys
+	switch a.Op() {
+	case MetricsAggregateQuantileOverTime, MetricsAggregateHistogramOverTime:
+		limit = maxGroupBys - 1
+	}
+	if err := validateGroupByCount(len(a.GroupBy()), limit); err != nil {
+		return err
+	}
+	if a.Op() != MetricsAggregateQuantileOverTime {
+		return nil
+	}
+	for _, q := range a.Quantiles() {
+		if q < 0 || q > 1 {
+			return newValidationError(quantileRangeFormat, q)
+		}
+	}
+	return nil
+}
+
+// validateGroupByCount rejects a metrics aggregate carrying more than limit
+// `by(...)` keys, naming the count the client wrote — the reference's own
+// message shape.
+func validateGroupByCount(n, limit int) error {
+	if n > limit {
+		return newValidationError(unsupportedGroupBysFormat, n)
+	}
 	return nil
 }
 
@@ -241,7 +357,19 @@ func validatePipelineElement(elem PipelineElement) error {
 	case ScalarFilter:
 		return validateScalarFilter(e.Op, e.LHS, e.RHS, e)
 	case GroupOperation:
-		return validateFieldExpr(e.Expression)
+		if err := validateFieldExpr(e.Expression); err != nil {
+			return err
+		}
+		// `| by(1)` groups every span into one bucket keyed by a constant.
+		// The reference rejects it (pkg/traceql/ast_validate.go's
+		// `GroupOperation.validate`) rather
+		// than answering, and it is not a harmless no-op here: the grouping
+		// key reaches the emitter as a projected constant, so cerberus
+		// answered 200 with a single synthetic group.
+		if !referencesSpan(e.Expression) {
+			return newValidationError(groupReferencesSpanFormat, e.String())
+		}
+		return nil
 	case Aggregate:
 		return validateAggregate(e)
 	case Pipeline:
@@ -304,7 +432,37 @@ func validateAggregate(a Aggregate) error {
 	if t != TypeAttribute && !t.isNumeric() {
 		return newValidationError(aggregateNumericFormat, a.String())
 	}
+	// `| avg(1)` aggregates a constant: every span contributes the same
+	// literal, so the answer says nothing about the trace. The reference
+	// rejects it (pkg/traceql/ast_validate.go's `Aggregate.validate`);
+	// without the rule
+	// cerberus emitted `avg(1)` and answered 200.
+	if !referencesSpan(inner) {
+		return newValidationError(aggregateReferencesSpanFormat, a.String())
+	}
 	return nil
+}
+
+// referencesSpan reports whether fe names any span field — an attribute or
+// an intrinsic — anywhere in its tree. It is the reference's
+// `FieldExpression.referencesSpan` in pkg/traceql/ast.go (with
+// `Static.referencesSpan` false and `Attribute.referencesSpan` true),
+// spelled as a walk here rather than a method per node so the rule
+// lives beside the two validators that are its only callers.
+func referencesSpan(fe FieldExpression) bool {
+	switch e := fe.(type) {
+	case *BinaryOperation:
+		if e == nil {
+			return false
+		}
+		return referencesSpan(e.LHS) || referencesSpan(e.RHS)
+	case UnaryOperation:
+		return referencesSpan(e.Expression)
+	case Attribute:
+		return true
+	}
+	// Static is the only remaining leaf, and a literal names no span field.
+	return false
 }
 
 // validateScalarFilter is the shared body of the two positions carrying an
@@ -419,7 +577,18 @@ func validateRegexPattern(o *BinaryOperation) error {
 		return nil
 	}
 	static, ok := o.RHS.(Static)
-	if !ok || static.Type != TypeString {
+	if !ok {
+		// A per-span pattern (`{ span.a =~ span.b }`) is not a pattern the
+		// engine can compile once and reuse, and the reference refuses it
+		// outright — pkg/traceql/ast_validate.go's `BinaryOperation.validate`
+		// requires a Static RHS. cerberus must too:
+		// its lowering emits ClickHouse's `match(haystack, pattern)`, whose
+		// pattern argument must be constant — a non-constant one aborts the
+		// query at execution time, so the client saw a 502 carrying a
+		// ClickHouse error where the reference answers 400.
+		return newValidationError(regexNonStaticFormat, OpRegex, OpNotRegex, o.RHS.String())
+	}
+	if static.Type != TypeString {
 		return nil
 	}
 	if _, err := regexp.Compile(static.EncodeToString(false)); err != nil {

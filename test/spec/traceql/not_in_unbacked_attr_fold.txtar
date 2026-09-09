@@ -1,0 +1,28 @@
+-- query.traceql --
+{ instrumentation.foo != "a" && instrumentation.foo != "b" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanAttributes Map(String, String),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('flavor', 'vanilla'), map('service.name', 'frontend')),
+    ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), map('flavor', 'mango'), map('service.name', 'frontend')),
+    ('a0000000000000000000000000000003', '0000000000000003', toDateTime64('2026-01-01 00:00:02', 9), map('flavor', 'cocoa'), map('service.name', 'frontend')),
+    ('a0000000000000000000000000000004', '0000000000000004', toDateTime64('2026-01-01 00:00:03', 9), map('shape', 'square'), map('service.name', 'frontend'));
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
+-- expected_rows --
+[]
+-- args --
+[0] bool = false
+-- chplan --
+Filter predicate=false
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE ?

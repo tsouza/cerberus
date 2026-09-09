@@ -1,0 +1,11 @@
+{
+  "query": "mixed_or_subquery_outer_fn_or_on/fanout",
+  "lowering": "fanout",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 12,
+  "cumulative_d": "13m0s",
+  "outer_range": "1h0m0s"
+}

@@ -817,6 +817,9 @@ func classifyMetadataErr(err error) error {
 // count across all streams, not per-stream).
 func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time, _ schema.Logs, limit int, dir logDirection, categorize bool) (*QueryData, error) {
 	if logql.IsMetricQuery(expr) {
+		if err := pipelineErrorFor(samples); err != nil {
+			return nil, err
+		}
 		return &QueryData{
 			ResultType: "vector",
 			Result:     toVector(samples, ts),
@@ -849,6 +852,9 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 // same `total entries across all streams` rule as [buildInstantData].
 func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time.Time, step time.Duration, _ schema.Logs, limit int, dir logDirection, categorize bool) (*QueryData, error) {
 	if logql.IsMetricQuery(expr) {
+		if err := pipelineErrorFor(samples); err != nil {
+			return nil, err
+		}
 		return &QueryData{
 			ResultType: "matrix",
 			Result:     toMatrixStepGrid(samples, start, end, step),

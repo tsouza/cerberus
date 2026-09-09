@@ -12,6 +12,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -30,13 +31,19 @@ const defaultVolumeLimit = 100
 //   - start / end (optional): time range (defaults to last hour)
 //   - limit (optional): top-N row cap (default 100)
 //   - targetLabels (optional): comma-separated label whitelist; when set,
-//     only those keys appear in the per-row metric map and rows that
-//     share the projected keys collapse into one
+//     only those keys appear in the per-row metric map, rows that share
+//     the projected keys collapse into one, and a row must carry EVERY
+//     requested label to be counted at all (see
+//     [targetLabelPresenceMatchers])
 //   - aggregateBy (optional): "series" (the default — one row per
 //     distinct label SET) or "labels" (one row per bare label NAME, its
 //     value summed across every value that label takes). The two are
 //     genuinely different response SHAPES, not two spellings of one; see
-//     [buildIndexVolumeSQL].
+//     [buildIndexVolumeSQL]. `targetLabels` restricts the group key in
+//     BOTH of them — upstream's aggregateBySeries branch builds its
+//     series key from `labelsToMatch` exactly as its labels branch does
+//     (the `aggregateBySeries` split inside `getVolume`,
+//     pkg/ingester/instance.go)
 func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	q := r.FormValue("query")
 	if q == "" {
@@ -57,14 +64,19 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 
 	targetLabels := parseTargetLabels(r.FormValue("targetLabels"))
 	aggregateBy := r.FormValue("aggregateBy")
+	if err := validateAggregateBy(aggregateBy); err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
 
 	matchers, err := selectorMatchers(q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	matchers = append(matchers, targetLabelPresenceMatchers(targetLabels, matchers)...)
 
-	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, matchers, start, end, limit, targetLabels, aggregateBy)
+	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, targetLabels, aggregateBy)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -132,8 +144,8 @@ const volumeLabelNameAlias = "label_name"
 // `<group-key-frag>` is one of:
 //
 //   - `ResourceAttributes` (default — full label set)
-//   - `mapFilter((k, v) -> k IN (?, ?, …), ResourceAttributes)` when
-//     `targetLabels` is set and aggregateBy is not "series"
+//   - `mapFilter((k, v) -> v != ”, map(?, <value expr>, …))` when
+//     `targetLabels` is set
 //
 // The group key is the WHOLE label-set Map, so it carries the canonical
 // key-order wrap (canonicalLabelsFrag). Without it one logical stream
@@ -188,15 +200,21 @@ const volumeLabelNameAlias = "label_name"
 // fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
 func buildIndexVolumeSQL(
 	s schema.Logs,
+	strategies chsql.AttrStrategies,
 	matchers []*labels.Matcher,
 	start, end time.Time,
 	limit int,
 	targetLabels []string,
 	aggregateBy string,
 ) (string, []any, error) {
-	groupFrag := volumeGroupFrag(s, targetLabels, aggregateBy)
+	groupFrag, err := volumeGroupFrag(s, strategies, targetLabels)
+	if err != nil {
+		return "", nil, err
+	}
 
-	sb := chsql.NewQuery().From(chsql.Col(s.LogsTable))
+	sb := chsql.NewQuery().
+		From(chsql.Col(s.LogsTable)).
+		WithAttrStrategies(strategies)
 	if aggregateBy == aggregateByLabels {
 		sb.Select(
 			chsql.As(volumeLabelNameMapFrag(), "labels"),
@@ -222,9 +240,9 @@ func buildIndexVolumeSQL(
 }
 
 // volumeGroupFrag picks the CH expression that produces the row's
-// label-set Map. "series" (or empty + no targetLabels) uses the full
-// ResourceAttributes map; otherwise we project to the targetLabels
-// subset via mapFilter.
+// label-set group key. "series" (or empty + no targetLabels) groups by
+// the full attribute map; otherwise we project to the targetLabels
+// subset.
 //
 // Both /index/volume shapes read it: the series shape groups by this Map
 // directly, the labels shape ARRAY JOINs over its KEYS. That is why the
@@ -232,29 +250,120 @@ func buildIndexVolumeSQL(
 // upstream's `getVolume` restricts to `labelsToMatch` in both of its
 // branches too.
 //
-// chplan.MapWithoutKeys (and Builder.MapFilterExcept) cover the
-// NEGATED form ("everything except these keys"). The positive form
-// here composes the mapFilter body inline: the outer Call("mapFilter",
-// …) is typed, the lambda head is composed via Builder.Lambda, and
-// the bare lambda-parameter reference `k` inside In's left slot uses
-// chsql.BareIdent (the typed constructor for CH-safe bare identifiers
-// — narrow trust contract, no backtick quoting). All composition lives
-// inside the typed Frag surface.
-func volumeGroupFrag(s schema.Logs, targetLabels []string, aggregateBy string) chsql.Frag {
-	if len(targetLabels) == 0 || aggregateBy == aggregateBySeries {
-		return chsql.Col(s.ResourceAttributesColumn)
+// The projection resolves each requested label through
+// [logql.LabelValueExpr] — the SAME storage-shape precedence
+// [logql.SelectorPredicate] scopes the request with. Projecting by the
+// literal map key instead is the /index/volume wrong-answer bug:
+// `targetLabels=service_name` is selected through the dedicated
+// `ServiceName` column (the OTel-CH exporter hoists `service.name` out
+// of the map, leaving `ResourceAttributes['service_name']` empty on
+// every such row), so a `k IN ('service_name')` mapFilter returned the
+// EMPTY map for every row and the whole tenant's volume collapsed into
+// one unlabelled `metric: {}` sample. Reference Loki reads the value off
+// the stream's own labels (the `s.labels.Range` walks inside
+// `getVolume`, pkg/ingester/instance.go), so the projected key must
+// carry the value cerberus matched on.
+//
+// The outer `mapFilter((k, v) -> v != ”, …)` reproduces the one thing
+// the old shape got right: a stream that does not carry a requested
+// label contributes no entry for it, because upstream ranges over the
+// labels the stream HAS rather than the labels that were asked for
+// (`s.labels.Range` inside `getVolume`). Building the map from an
+// explicit, sorted key list also makes its key order deterministic —
+// the canonical wrap outside still applies, and is now belt-and-braces
+// rather than load-bearing on this branch.
+//
+// All composition lives inside the typed Frag surface: the map literal
+// and the filter are Call constructors, the lambda head is
+// Builder.Lambda, and the bare lambda-parameter reference `v` uses
+// chsql.BareIdent (the typed constructor for CH-safe bare identifiers).
+func volumeGroupFrag(
+	s schema.Logs,
+	strategies chsql.AttrStrategies,
+	targetLabels []string,
+) (chsql.Frag, error) {
+	if len(targetLabels) == 0 {
+		return attrMapFrag(strategies, s.ResourceAttributesColumn), nil
 	}
 	keys := append([]string(nil), targetLabels...)
 	sort.Strings(keys)
-	keyArgs := make([]chsql.Frag, len(keys))
-	for i, k := range keys {
-		keyArgs[i] = chsql.Lit(k)
+	// map(key, value, key, value, …) — CH's map-literal arity.
+	entries := make([]chsql.Frag, 0, 2*len(keys))
+	for _, k := range keys {
+		valueFrag, err := exprFrag(logql.LabelValueExpr(k, s))
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, chsql.Lit(k), valueFrag)
 	}
-	inFrag := chsql.In(chsql.BareIdent("k"), keyArgs...)
-	lambda := func(b *chsql.Builder) {
-		b.Lambda([]string{"k", "v"}, func(b *chsql.Builder) { inFrag(b) })
+	dropAbsent := func(b *chsql.Builder) {
+		b.Lambda([]string{"k", "v"}, func(b *chsql.Builder) {
+			chsql.Neq(chsql.BareIdent("v"), chsql.Lit(""))(b)
+		})
 	}
-	return chsql.Call("mapFilter", lambda, chsql.Col(s.ResourceAttributesColumn))
+	return chsql.Call("mapFilter", dropAbsent, chsql.Call("map", entries...)), nil
+}
+
+// validateAggregateBy mirrors upstream's `volumeAggregateBy`
+// (pkg/loghttp/query.go): absent means the default, one of the
+// two names is accepted, and anything else is a 400. Cerberus used to
+// accept any string silently, so `aggregateBy=banana` answered over a
+// grouping the client never asked for.
+//
+// The VALUE does not select a group KEY here, because upstream's does
+// not either: both of its branches restrict the key to `labelsToMatch`
+// (`getVolume`, pkg/ingester/instance.go). What it does select is the
+// aggregation SHAPE — upstream's labels branch sums per label NAME
+// across that label's values, a different wire shape from a
+// per-label-set row — which [buildIndexVolumeSQL] now answers with a
+// SQL shape of its own, so the validated value is threaded down to it
+// rather than discarded here.
+func validateAggregateBy(raw string) error {
+	switch raw {
+	case "", aggregateBySeries, aggregateByLabels:
+		return nil
+	default:
+		return errors.New("invalid aggregation option")
+	}
+}
+
+// targetLabelPresenceMatchers returns the matchers upstream ADDS for a
+// `targetLabels` request: one `<target>=~".+"` per requested label the
+// selector does not already constrain
+// (the "Make sure all target labels are included in the matchers" loop
+// in `prepareLabelsAndMatchersWithTargets`,
+// pkg/util/series_volume.go).
+//
+// It is not a projection detail — it decides which rows are COUNTED. A
+// stream that does not carry a requested label contributes nothing to an
+// upstream `targetLabels` volume, where cerberus counted it and merely
+// left the key out of its metric map, inflating the volume of the
+// remaining group.
+//
+// Upstream also drops its match-all matcher once a target has added one.
+// Cerberus has no match-all matcher to drop: [selectorMatchers] parses a
+// real stream selector, and an empty-compatible one is already accepted
+// by the permissive parse rather than represented as a nameless matcher.
+func targetLabelPresenceMatchers(targetLabels []string, matchers []*labels.Matcher) []*labels.Matcher {
+	if len(targetLabels) == 0 {
+		return nil
+	}
+	constrained := make(map[string]bool, len(matchers))
+	for _, m := range matchers {
+		constrained[m.Name] = true
+	}
+	// Sorted so the emitted predicate order is deterministic; upstream
+	// iterates a map here and does not care, but a golden does.
+	targets := append([]string(nil), targetLabels...)
+	sort.Strings(targets)
+	var out []*labels.Matcher
+	for _, t := range targets {
+		if constrained[t] {
+			continue
+		}
+		out = append(out, labels.MustNewMatcher(labels.MatchRegexp, t, ".+"))
+	}
+	return out
 }
 
 // volumeLabelNameMapFrag renders the one-entry `map(<label_name>, ”)`

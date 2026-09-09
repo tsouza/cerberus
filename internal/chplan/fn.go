@@ -248,10 +248,6 @@ const (
 	// nullIf(x, y) — NULL when x equals y, else x.
 	FnNullIf Fn = "nullIf"
 
-	// parseReadableSize(s) — a human-readable byte-size string ('1.5 MiB') parsed
-	// to a Float64 byte count.
-	FnParseReadableSize Fn = "parseReadableSize"
-
 	// parseTimeDelta(s) — a human-readable duration string parsed to a Float64
 	// second count.
 	FnParseTimeDelta Fn = "parseTimeDelta"

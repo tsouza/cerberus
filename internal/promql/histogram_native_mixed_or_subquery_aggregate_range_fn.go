@@ -178,17 +178,43 @@ func lowerSumOrAvgMixedOrSubqueryOuterFn(shape sumOrAvgMixedOrSubqueryShape, s s
 	if step < 0 {
 		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", sub.Step)
 	}
-	gridCtx, ok, err := subqueryGridCtx(sub, step, ctx)
+	gridCtx, state, err := subqueryGridCtx(sub, step, ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
+	if state == subqueryGridUnavailable {
 		return nil, fmt.Errorf("promql: histogram-valued subquery requires query eval-time context (use LowerAt)")
 	}
 	if shape.b.ReturnBool {
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
+	node, err := lowerMixedOrSubqueryAggregateRangeFnOverGrid(shape, gridCtx, sub, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Same reasoning as [lowerExpHistogramRangeFnOverSubquery]'s own cap:
+	// every windowFn dispatched below is a per-(group, anchor) fold or
+	// selection over the subquery matrix, so an empty matrix yields no
+	// rows and capping the folded result is the same answer as capping
+	// the matrix. Applying it here rather than inside each of the five
+	// arms keeps one statement of the rule instead of five.
+	if state == subqueryGridEmpty {
+		node = emptySubqueryGrid(node)
+	}
+	return node, nil
+}
+
+// lowerMixedOrSubqueryAggregateRangeFnOverGrid is
+// [lowerMixedOrSubqueryAggregateRangeFn]'s per-windowFn dispatch, split
+// out so its caller has exactly one return to cap for an empty grid.
+func lowerMixedOrSubqueryAggregateRangeFnOverGrid(
+	shape sumOrAvgMixedOrSubqueryShape,
+	gridCtx lowerCtx,
+	sub *parser.SubqueryExpr,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
 	switch shape.windowFn {
 	case countOverTimeWindowFn, presentOverTimeWindowFn, tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn:
 		return lowerSumOrAvgMixedOrSubquerySelectFn(shape, gridCtx, s, ctx)

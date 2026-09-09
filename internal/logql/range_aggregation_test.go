@@ -543,11 +543,23 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 //	    return col.Name != s.ResourceAttributesColumn
 //	}
 //
-// A bare-unwrap query (no `| logfmt` / `| json` / `| regexp` parser
-// stage) reads its labels map directly from ResourceAttributes — so
-// [hasParserMergedLabels] must return false, the SECOND guard returns
-// early, and the SQL never references the `_logql_merged_labels`
-// intermediate alias.
+// The fixture is `sum by (category) (count_over_time({app="api"}[5m]))`:
+// NO parser stage and NO unwrap, so `labelsExpr` is the bare
+// `ColumnRef(ResourceAttributes)` and [hasParserMergedLabels] must
+// return false; the outer `by (category)` names a non-top-level label,
+// which makes `outerByNeedsParsedLabels` true so the FIRST guard does
+// not short-circuit and execution actually reaches the second. The SQL
+// must then never reference the `_logql_merged_labels` intermediate
+// alias.
+//
+// It used to be a bare-unwrap query, and that no longer discriminates:
+// every unwrap conversion now stamps a SampleExtractionErr mark (bare
+// `| unwrap x` models convertFloat's ParseFloat failure — cerberus
+// issue #3183), so an unwrap's `labelsExpr` is always a mark wrap
+// rather than a bare ColumnRef and [hasParserMergedLabels] is true for
+// EVERY unwrap query. The outer-by route is the remaining one that
+// reaches the guard with a bare column, and it exercises the same
+// return.
 //
 // The mutant this fixture kills:
 //
@@ -557,16 +569,14 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 //     hasParserMergedLabels returns true instead of false, so the
 //     second guard stops returning early and the materialised-column
 //     branch fires, carrying the `_logql_merged_labels` alias into the
-//     bare-unwrap SQL. Applying that rewrite by hand fails this test;
-//     reverting it passes.
+//     SQL. Applying that rewrite by hand fails this test; reverting it
+//     passes.
 //
 // The INVERT_LOGICAL mutant on the FIRST guard's `&&` is NOT killed
-// here, and no bare-unwrap fixture can kill it: with
-// [hasParserMergedLabels] false, the original reads `!true && !false`
-// → false and falls through to the second guard, which returns `inner`,
-// while the `||` mutant reads `!true || !false` → true and returns
-// `inner` immediately. Both leave the alias ABSENT and the assertion
-// below passes either way. That mutant dies in
+// here: with `hasUnwrap` false and `outerByNeedsParsedLabels` true, the
+// original reads `!false && !true` → false and the `||` mutant reads
+// `!false || !true` → true and returns `inner` immediately. Both leave
+// the alias ABSENT. That mutant dies in
 // [TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn]
 // instead, whose `| logfmt` fixture makes [hasParserMergedLabels] true.
 //
@@ -580,27 +590,27 @@ func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 	end := start.Add(time.Hour)
 	step := time.Minute
 
-	// Bare unwrap: the unwrap target is a stream label (`latency` lives
-	// directly in ResourceAttributes — no parser stage interpolates).
-	// labelsExpr stays as `ColumnRef(ResourceAttributes)`, so
-	// hasParserMergedLabels MUST return false and the SQL MUST NOT
-	// reference `_logql_merged_labels`.
-	query := `sum_over_time({app="api"} | unwrap latency [5m])`
+	// No parser stage: the labels map is read straight off
+	// ResourceAttributes, so labelsExpr stays a bare
+	// `ColumnRef(ResourceAttributes)` and hasParserMergedLabels MUST
+	// return false. The outer `by (category)` is what carries execution
+	// past the first guard so the second one is actually evaluated.
+	query := `sum by (category) (count_over_time({app="api"}[5m]))`
 	expr, err := syntax.ParseExpr(query)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	ra, ok := expr.(*syntax.RangeAggregationExpr)
+	va, ok := expr.(*syntax.VectorAggregationExpr)
 	if !ok {
-		t.Fatalf("ParseExpr(%q) -> %T, want *syntax.RangeAggregationExpr", query, expr)
+		t.Fatalf("ParseExpr(%q) -> %T, want *syntax.VectorAggregationExpr", query, expr)
 	}
-	if ra.Left.Unwrap == nil {
-		t.Fatalf("fixture invalid: Unwrap is nil")
+	if va.Grouping == nil || len(va.Grouping.Groups) != 1 {
+		t.Fatalf("fixture invalid: expected exactly one by-clause label, got %v", va.Grouping)
 	}
 
-	plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: start, End: end, Step: step})
+	plan, err := lower(expr, s, lowerCtx{Start: start, End: end, Step: step})
 	if err != nil {
-		t.Fatalf("lowerRangeAggregation: %v", err)
+		t.Fatalf("lower: %v", err)
 	}
 
 	sqlStr, _, err := chsql.Emit(context.Background(), plan)
@@ -615,7 +625,7 @@ func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 	// `==` and hasParserMergedLabels reported true for a bare
 	// ResourceAttributes ColumnRef.
 	if strings.Contains(sqlStr, "_logql_merged_labels") {
-		t.Errorf("bare-unwrap SQL unexpectedly carries the `_logql_merged_labels` alias\n"+
+		t.Errorf("SQL unexpectedly carries the `_logql_merged_labels` alias\n"+
 			"  → CONDITIONALS_NEGATION on range_aggregation.go:`col.Name != s.ResourceAttributesColumn` (`!=` → `==`) lived\nsql=%s", sqlStr)
 	}
 
@@ -623,8 +633,13 @@ func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 	// the `MapWithoutKeys` strip via the `mapFilter((k, v) -> NOT (k IN
 	// (?)), ...)` shape compiled from the non-materialised path. Without
 	// it the test only checks one direction of the toggle.
-	if !strings.Contains(sqlStr, "mapFilter((k, v) -> NOT (k IN") {
-		t.Errorf("bare-unwrap SQL missing the non-materialised path's mapFilter strip shape\nsql=%s", sqlStr)
+	// Companion positive assertion: the non-materialised path must still
+	// resolve the by-clause key off the raw ResourceAttributes column.
+	// Without it the test only checks one direction of the toggle.
+	if !strings.Contains(sqlStr, "`ResourceAttributes`[?] AS `gkey_0`") {
+		t.Errorf("SQL missing the non-materialised path's raw-column key resolution "+
+			"(the by-clause key must resolve off `ResourceAttributes`, not off the "+
+			"materialised alias)\nsql=%s", sqlStr)
 	}
 }
 

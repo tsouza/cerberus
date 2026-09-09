@@ -382,8 +382,9 @@ func TestLabelCallOverExpHistogramDroppingShape_LabelJoinMinArity(t *testing.T) 
 // sub.Range = 0 with everything else valid (a real mixed-or inner,
 // eval-anchor-resolvable ctx) makes the ORIGINAL code reject via the
 // Range check alone (short-circuiting subqueryHasEvalAnchor away
-// entirely). subqueryGridCtx tolerates a zero Range via its own
-// sub-step-window clamp, so subqueryHasEvalAnchor(sub, ctx) genuinely
+// entirely). A zero Range makes subqueryGridCtx report
+// [subqueryGridEmpty] — the window spans no anchor — which is still an
+// eval anchor RESOLVED, so subqueryHasEvalAnchor(sub, ctx) genuinely
 // returns true here — which is exactly what lets the second-`||` AND-mutant
 // (needing BOTH operands true) fall through to a false "not rejected"
 // verdict, and what lets the `sub.Range <= 0` boundary-mutant do the same

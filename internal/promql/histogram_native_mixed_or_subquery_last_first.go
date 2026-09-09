@@ -176,19 +176,20 @@ func mixedLastFirstWindowed(windowFn string, mixedRel chplan.Node, histSchema, s
 // two arms on a signature that EXCLUDES `__name__` — upstream's
 // `rangeEval` prepends `labels.MetricName` to the `ignoring(...)` name
 // list before hashing (`promql/engine.go`) — so two rows that survived it
-// can differ in
-// `__name__` while sharing Attributes exactly — a histogram arm and a float
-// arm on byte-identical attributes, where the histogram shadows the float
-// only at the anchors it actually covers (cerberus issue #3227). Under an
-// Attributes-only key those two series collapse into one group and the
-// argMax below silently publishes whichever `__name__` won, dropping a
-// series reference reports.
+// can differ in `__name__` while sharing Attributes exactly: a histogram
+// arm and a float arm on byte-identical attributes, where the histogram
+// shadows the float only at the anchors it actually covers (cerberus issue
+// #3227). Under an Attributes-only key those two series collapse into one
+// group and the argMax below silently publishes whichever `__name__` won,
+// dropping a series reference reports.
 //
-// Adding it cannot split a group that reference keeps: MetricName is
-// constant within an Attributes group for every other input this
-// continuation sees — a single-metric selector publishes one name, and an
-// aggregation upstream has already blanked it (reference's aggregations
-// drop `__name__`, so every row carries the same empty name).
+// Widening the key cannot split a group reference keeps, for ANY input:
+// against a fold that groups by full series identity, an Attributes-only
+// key is only ever too COARSE, never too fine. Where MetricName is uniform
+// within an Attributes group — a single-metric selector publishes one
+// name, and an upstream aggregation has already blanked it, since
+// reference's aggregations drop `__name__` — the wider key is
+// byte-identical to the narrower one.
 func mixedLastFirstSeriesKey(s schema.Metrics) []chplan.Expr {
 	return []chplan.Expr{
 		&chplan.ColumnRef{Name: s.AttributesColumn},

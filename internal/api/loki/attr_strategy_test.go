@@ -66,3 +66,68 @@ func TestQuery_JSONAttrStrategyRendersDynamicSubcolumnPath(t *testing.T) {
 			s.ResourceAttributesColumn, sql)
 	}
 }
+
+// TestMetadataBuilders_JSONAttrStrategyReachesEveryBuilder covers the
+// three builders that were left out of cerberus issue #3063's threading:
+// /index/stats, /index/volume and /patterns each construct their SQL
+// directly against chsql.NewQuery() and so never reach chsql.Emit's
+// ctx-based AttrStrategies plumbing, yet none of them called
+// .WithAttrStrategies. Every one of them shares applySelectorAndWindow,
+// whose stream-selector matchers are per-key attribute-map accesses — so
+// against a JSON-typed attributes column all three emitted a
+// Map bracket-subscript that the column cannot answer.
+//
+// /patterns was explicitly (and wrongly) documented as exempt on the
+// grounds that it projects only Timestamp/Body/SeverityText: a builder's
+// exposure is wherever it touches an attribute map in the STATEMENT, and
+// the WHERE clause is such a place.
+func TestMetadataBuilders_JSONAttrStrategyReachesEveryBuilder(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"index-stats", `/loki/api/v1/index/stats?query=%7Bjob%3D%22api%22%7D`},
+		{"index-volume", `/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D`},
+		{"patterns", `/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := schema.DefaultOTelLogs()
+			q := &stubQuerier{}
+			h := loki.New(q, s, nil)
+			h.AttrStrategies = chsql.AttrStrategies{s.ResourceAttributesColumn: chsql.AttrStrategyJSON}
+			h.Lang.AttrStrategies = h.AttrStrategies
+
+			mux := http.NewServeMux()
+			h.Mount(mux)
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + tc.path)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+
+			sql := q.LastSQL()
+			if sql == "" {
+				t.Fatal("stubQuerier saw no SQL — request never reached a builder")
+			}
+			if strings.Contains(sql, "`"+s.ResourceAttributesColumn+"`[") {
+				t.Errorf("SQL carries a Map bracket-subscript against the JSON-typed %q column:\n%s",
+					s.ResourceAttributesColumn, sql)
+			}
+			if !strings.Contains(sql, s.ResourceAttributesColumn+"`.`job`.:String") {
+				t.Errorf("SQL does not carry the JSON dynamic-subcolumn read for %q:\n%s",
+					s.ResourceAttributesColumn, sql)
+			}
+		})
+	}
+}
