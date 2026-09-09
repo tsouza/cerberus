@@ -158,6 +158,20 @@ func (p capturePattern) Match(n chplan.Node) (Bindings, bool) {
 // (child patterns first to last, then parent — parent wins last because
 // it conceptually owns the node) wins. Rules that need disjoint names
 // should pick disjoint names.
+//
+// The arity check applies to the MATCHED node only, never to the nodes
+// its child patterns bind. `WithChildren(Kind(A), Kind(B))` accepts any B
+// whatever B's own child count is, because each child is matched by
+// `Kind`, which compares the dynamic type and nothing else. That matters
+// for the chplan kinds whose `Children()` is variable-arity —
+// `RangeWindow` returns one, two or three children depending on which
+// optional side-scans lowering populated, and `MetricsCompare` two or
+// three — so a pattern written with one shape of such a node in mind
+// still fires on every other shape of it. A Transform that rewires a
+// captured node's fields by name must therefore establish for itself
+// that the shape it is looking at is the shape it was written for;
+// `rangeWindowReadsInput` in filter_range_window_transpose.go is the
+// worked example.
 func WithChildren(parent Pattern, children ...Pattern) Pattern {
 	return withChildrenPattern{parent: parent, children: children}
 }

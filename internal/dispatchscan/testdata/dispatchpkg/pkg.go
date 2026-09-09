@@ -44,6 +44,31 @@ func keyedTwice(n Node) (bool, bool) {
 	return false, false
 }
 
+// classifiesOrFails answers yes or no and reports that it could not
+// decide. The error is not a second answer the caller consumes, so this
+// is still a classifier — internal/chsql's emitMetricNode is the
+// production instance of exactly this shape.
+func classifiesOrFails(n Node) (bool, error) {
+	switch n.(type) {
+	case *Scan:
+		return true, nil
+	case *Project:
+		return true, nil
+	}
+	return false, nil
+}
+
+// errorFirst puts the error where the answer belongs. Go's convention
+// is error-last, and returnsOnlyAnswer only strips a TRAILING error, so
+// this shape stays unread rather than guessed at.
+func errorFirst(n Node) (error, bool) {
+	switch n.(type) {
+	case *Filter:
+		return nil, true
+	}
+	return nil, false
+}
+
 // unwrap returns a node, so it is an unwrapper rather than a
 // classification: its arms legitimately differ per caller.
 func unwrap(n Node) (*Filter, bool) {

@@ -29,7 +29,7 @@ SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, sqrt(`Value`) AS `Value` FRO
 -- chplan --
 Project ["" AS MetricName, Attributes, TimeUnix, FnSqrt(Value) AS Value]
   Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, Value AS Value]
-    Aggregate groupBy=[] funcs=[FnAvg(Value) AS Value]
+    Aggregate groupBy=[] funcs=[FnAvg(Value) AS Value] dropEmptyOnNoGroup
       Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
         Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
           Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))

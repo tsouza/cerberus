@@ -251,8 +251,23 @@ func setOp(op parser.ItemType, m *parser.VectorMatching, lhs, rhs []VectorRow, e
 	return out
 }
 
+// setOpRow reshapes one surviving row: set ops drop __name__ and
+// re-stamp the evaluation timestamp, and change nothing else about the
+// sample.
+//
+// The Histogram payload rides across for the same reason V does. A set
+// op selects rows, it does not read their values, so an `or` between a
+// float-valued and a histogram-valued operand answers with each row's
+// own payload — that mixture is the whole point of the shape. Dropping
+// the histogram here made the oracle report a float-only answer, which
+// would have read as cerberus being wrong.
 func setOpRow(r VectorRow, evalTsMs int64) VectorRow {
-	return VectorRow{Labels: DropLabel(r.Labels, MetricNameLabel), T: evalTsMs, V: r.V}
+	return VectorRow{
+		Labels:    DropLabel(r.Labels, MetricNameLabel),
+		T:         evalTsMs,
+		V:         r.V,
+		Histogram: r.Histogram,
+	}
 }
 
 // applyBinary applies the binary op to two floats and returns (value,

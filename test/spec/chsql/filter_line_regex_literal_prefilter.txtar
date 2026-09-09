@@ -3,7 +3,7 @@
 [1] string = "%reset%"
 [2] string = "connection reset"
 -- chplan --
-Filter predicate=lineContent(Body, "connection reset", regex)
+Filter predicate=lineContent(Body, "connection reset", regex,textIndexPrefilter)
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND match(`Body`, ?))
