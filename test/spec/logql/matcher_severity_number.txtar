@@ -53,14 +53,14 @@ INSERT INTO otel_logs (Timestamp, Body) VALUES
   ["2026-05-20T12:02:00Z", "both"]
 ]
 -- args --
-[0] string = ""
+[0] string = "0"
 [1] string = "SeverityNumber"
 [2] string = "9"
 -- chplan --
-Filter predicate=(FnCoalesce(FnNullIf(SeverityNumber, ""), ResourceAttributes["SeverityNumber"]) = "9")
+Filter predicate=(FnCoalesce(FnNullIf(FnToString(SeverityNumber), "0"), ResourceAttributes["SeverityNumber"]) = "9")
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`SeverityNumber`, ?), `ResourceAttributes`[?]) = ?)
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(toString(`SeverityNumber`), ?), `ResourceAttributes`[?]) = ?)
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{SeverityNumber="9"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
