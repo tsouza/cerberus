@@ -220,7 +220,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			chopt.FeatureLagInFrameAdjacency:
 			// A RangeLowerers dispatch strategy (or a modifier on one) —
 			// composed by chopttest.BuildRangeLowerers from the resolved set.
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -258,6 +258,16 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// function's own dispatch already picked, at every one of that
 			// wrapper's call sites regardless of which strategy ran. It never
 			// reads, and has no field on, promql.RangeLowerers itself.
+			// FeatureExpHistogramTwoLevel (cerberus issue #3247) is the
+			// FeatureJoinSpill shape once more: internal/engine/
+			// query_settings_rules.go's applyExpHistogramTwoLevelBound stamps
+			// group_by_two_level_threshold_bytes based on a plan-shape
+			// predicate (planHasExpHistogramWindowGrouping — an exponential
+			// histogram node over a RangeBucketFanout), so it changes how
+			// ClickHouse partitions the aggregation it is handed, never which
+			// RangeLowerers strategy built that plan. The exp-histogram
+			// lowerings it fires on do not route through promql.RangeLowerers'
+			// native/fan-out dispatch at all.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know whether it is a "+
 				"RangeLowerers strategy or an emit-time setting — update this helper and, if it is a "+

@@ -143,6 +143,22 @@ type SettingsRules struct {
 	// per-query memory cap — see engine.go's execContext.
 	JoinSpill bool
 
+	// ExpHistogramTwoLevel, when true, stamps
+	// group_by_two_level_threshold_bytes=1 on a plan carrying a windowed
+	// exponential-histogram per-series grouping (see
+	// planHasExpHistogramWindowGrouping), so ClickHouse's aggregator converts
+	// to its two-level hash table at once instead of handing the array stages
+	// above it one block holding every group's whole groupArray state. Driven
+	// by the exp_histogram_two_level registry feature, which carries NO
+	// version floor: the setting predates cerberus's 24.8 floor by years, so
+	// unlike JoinSpill this flag is an operator off-switch rather than a
+	// compatibility gate, and it is true on every server under `auto`.
+	// Applied via applyExpHistogramTwoLevelBound rather than inside apply
+	// below, alongside the other memory bounds it belongs with — it needs no
+	// memory cap (the threshold is absolute, not cap-relative; see
+	// expHistogramTwoLevelThresholdBytes for why).
+	ExpHistogramTwoLevel bool
+
 	// TraceIDBitmapFilter, when true, stamps
 	// min_table_rows_to_use_projection_index=0 on a plan carrying a
 	// TraceId-keyed predicate or join (see eligibleForTraceIDBitmapFilter)
@@ -266,6 +282,9 @@ func (r SettingsRules) enabledOpts() []string {
 	}
 	if r.JoinSpill {
 		opts = append(opts, "join_spill")
+	}
+	if r.ExpHistogramTwoLevel {
+		opts = append(opts, "exp_histogram_two_level")
 	}
 	if r.TraceIDBitmapFilter {
 		opts = append(opts, "trace_id_bitmap_filter")
@@ -613,6 +632,134 @@ func planHasNativeHistogramMerge(plan chplan.Node) bool {
 		return true
 	})
 	return found
+}
+
+// settingGroupByTwoLevelThresholdBytes is the ClickHouse setting naming the
+// aggregation-state size, in bytes, at which the aggregator abandons its
+// single-level hash table and converts to the two-level one — which then
+// emits its result as 256 bucket blocks instead of one. ClickHouse's own
+// default is 50000000 (50 MB); a value of 0 DISABLES the byte threshold
+// entirely rather than making it fire immediately (see system.settings'
+// description: "0 - the threshold is not set"), which is why the stamped
+// value below is 1 and not 0.
+//
+// perf-sentinel: memory-bounding — the block the aggregation emits is the
+// block every array stage above it materialises its intermediates for, so
+// this threshold is what sets an exp-histogram window query's peak. See
+// expHistogramTwoLevelThresholdBytes for the measurement.
+const settingGroupByTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes"
+
+// expHistogramTwoLevelThresholdBytes is the group_by_two_level_threshold_bytes
+// cerberus stamps on a windowed exponential-histogram plan: 1 byte, the
+// smallest value that still ARMS the threshold, so the aggregator converts to
+// two-level at its first opportunity.
+//
+// One byte rather than a tuned size because the measurement says the value is
+// insensitive anywhere below the conversion point and there is no honest
+// number between "convert at once" and ClickHouse's own default. Real
+// ClickHouse 26.6, the same exp-histogram panel query
+// (`histogram_quantile(0.95, sum by (…) (rate(<exp-hist>[5m])))`, 10 series),
+// peak memory_usage by threshold at 21 anchors: 1 B 39.72, 1 MB 36.44, 2 MB
+// 39.24, 4 MB 40.83, 8 MB 39.18, 16 MB 426.16, 32 MB 426.18, 50 MB (default)
+// 426.15 MiB. At 61 anchors: 1 B 76.92, 1 MB 65.51, 16 MB 75.09, 32 MB 85.77,
+// 50 MB 992.33 MiB. The curve is FLAT below the conversion point and steps
+// straight to the unbounded fan-out above it, so any sub-knee value buys the
+// same win; 1 buys it for every plan, including one whose per-group state is
+// larger than a tuned constant would have anticipated.
+//
+// Stamping it does NOT disable the sibling row threshold
+// (group_by_two_level_threshold, default 100000 keys): ClickHouse converts
+// when EITHER threshold trips, so leaving the row axis alone can only make
+// conversion happen sooner, never later.
+const expHistogramTwoLevelThresholdBytes = 1
+
+// applyExpHistogramTwoLevelBound stamps
+// group_by_two_level_threshold_bytes=expHistogramTwoLevelThresholdBytes on a
+// plan carrying a WINDOWED exponential-histogram per-series grouping, so the
+// aggregator hands the array stages above it 256 small blocks rather than one
+// block holding every group's whole groupArray state.
+//
+// It is gated on BOTH:
+//
+//   - expHistogramTwoLevelEnabled — the boot-resolved
+//     chopt.FeatureExpHistogramTwoLevel verdict (SettingsRules.ExpHistogramTwoLevel).
+//     The feature carries no version floor (the setting predates cerberus's
+//     24.8 floor by years), so this is an operator off-switch rather than a
+//     compatibility gate; it exists because the stamp is a real execution-shape
+//     change, not because an older server would reject the setting.
+//   - planHasExpHistogramWindowGrouping(plan) — the plan shape. This one is
+//     load-bearing: two-level aggregation costs a FIXED ~18 MiB (the 256
+//     sub-tables' own allocation) on an aggregation whose per-group state is
+//     scalar, measured on real ClickHouse 26.6 as `sum by (event)
+//     (rate(counter[5m]))` over 225 series going 6.69 -> 25.83 MiB and a bare
+//     `sum by (event) (counter)` going 6.34 -> 23.88 MiB. Stamping this
+//     globally would trade a 3.8x regression on cerberus's cheapest and most
+//     common shapes for the win on its most expensive one.
+//
+// Like every other rule reachable from applySharedQuerySettings the setting is
+// RESULT-EQUIVALENT — two-level aggregation emits the rows the single-level
+// table would have emitted, in a different block partitioning — so an
+// over-match costs memory, never correctness.
+func applyExpHistogramTwoLevelBound(ctx context.Context, plan chplan.Node, expHistogramTwoLevelEnabled bool) context.Context {
+	if !expHistogramTwoLevelEnabled || !planHasExpHistogramWindowGrouping(plan) {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, expHistogramTwoLevelThresholdBytes)
+}
+
+// planHasExpHistogramWindowGrouping reports whether plan carries BOTH an
+// exponential-histogram node and a per-anchor window fan-out — the conjunction
+// that identifies the shape whose peak the two-level threshold governs.
+//
+// The two conjuncts, and why neither alone is the predicate:
+//
+//   - *chplan.HistogramQuantileNative or *chplan.HistogramProjection proves
+//     EXPONENTIAL. They are the two IR nodes exclusive to the exponential
+//     (native) histogram lowering — the same pair planHasNativeHistogramMerge
+//     matches, and for the same reason (both carry the Scale / ZeroCount /
+//     PositiveOffset / NegativeOffset field set no classic-histogram or
+//     non-histogram node has). Alone they over-match a bare selector, which
+//     builds no window state at all: measured, a bare exp-histogram selector
+//     moved 18.15 -> 18.63 MiB, i.e. it paid the overhead and won nothing.
+//   - *chplan.RangeBucketFanout proves WINDOWED — the per-series groupArray
+//     stage fanned across an anchor grid, which is where the state that must
+//     be split actually lives. Alone it over-matches the CLASSIC bucket-ladder
+//     fold, which builds the same node from
+//     internal/promql/histogram_quantile_classic_native.go and gains nothing:
+//     measured, `histogram_quantile(0.95, sum by (le) (rate(<classic>[5m])))`
+//     moved 75.00 -> 76.67 MiB.
+//
+// The INSTANT (single-anchor) exp-histogram shape is deliberately outside the
+// predicate. It groups through a plain *chplan.Aggregate rather than a
+// RangeBucketFanout (internal/promql/histogram_quantile_native_window.go's
+// expHistogramValuedWindowStageBy), so recognising it would mean sniffing
+// column names off a node type every head builds — and it would buy nothing:
+// measured on real ClickHouse 26.6, the instant form of the same panel query
+// was 22.90 MiB with the default threshold and 22.90 MiB forced. Excluded on
+// the measurement, not on effort.
+//
+// A plan mixing a classic ladder and an exponential histogram satisfies both
+// conjuncts through different nodes and is stamped. That is an accepted
+// over-match, bounded by the classic ladder's own measured +2%; the
+// alternative — proving the RangeBucketFanout found is the one BENEATH the
+// exponential node — is machinery for a shape that pays 1.67 MiB to be wrong.
+//
+// The sweep is chplan.WalkDeep, matching planHasNativeHistogramMerge /
+// planHasSortedSlabOverTime: a node nested inside a scalar-binding subtree (an
+// Expr slot Walk does not follow) must still be found, because the answer
+// gates a memory bound.
+func planHasExpHistogramWindowGrouping(plan chplan.Node) bool {
+	expHistogram, windowed := false, false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		switch n.(type) {
+		case *chplan.HistogramQuantileNative, *chplan.HistogramProjection:
+			expHistogram = true
+		case *chplan.RangeBucketFanout:
+			windowed = true
+		}
+		return !(expHistogram && windowed)
+	})
+	return expHistogram && windowed
 }
 
 // EligibleForLazyMaterialization reports whether plan carries exactly one
