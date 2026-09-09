@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
@@ -25,13 +26,13 @@ const labelsAlias = "labels"
 
 // keyOrderSite is one emitted-SQL shape pin. want is the substring the
 // query must carry for its whole-Map identity key to be key-order
-// canonical; groupsByAlias marks the queries that additionally GROUP BY
-// the alias rather than by the wrapped expression.
+// canonical; alias, when non-empty, is the SELECT alias the query
+// additionally GROUPs BY rather than grouping by the wrapped expression.
 type keyOrderSite struct {
-	name          string
-	path          string
-	want          string
-	groupsByAlias bool
+	name  string
+	path  string
+	want  string
+	alias string
 }
 
 // TestMetadataSQL_CanonicalisesWholeMapIdentityKeys pins that every Loki
@@ -55,10 +56,16 @@ func TestMetadataSQL_CanonicalisesWholeMapIdentityKeys(t *testing.T) {
 	const window = "start=1717995600&end=1717999200"
 	sites := []keyOrderSite{
 		{
-			name:          "index/volume groups by the canonicalised label set",
-			path:          `/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&` + window,
-			want:          canonicalLabelsCol + " AS `" + labelsAlias + "`",
-			groupsByAlias: true,
+			// /index/volume pre-aggregates on the STORED label set and
+			// regroups on the SERVED one above it (issue #3246), so its
+			// canonical wrap lands on the inner stage's own alias. The
+			// outer stage needs no wrap of its own: normalizedLabelsFrag
+			// rebuilds the Map from a sorted array and re-applies the
+			// same function.
+			name:  "index/volume groups by the canonicalised label set",
+			path:  `/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&` + window,
+			want:  canonicalLabelsCol + " AS `" + loki.StoredLabelsAlias + "`",
+			alias: loki.StoredLabelsAlias,
 		},
 		{
 			name: "index/stats counts distinct canonicalised label sets",
@@ -66,16 +73,16 @@ func TestMetadataSQL_CanonicalisesWholeMapIdentityKeys(t *testing.T) {
 			want: "uniqExact(" + canonicalLabelsCol + ")",
 		},
 		{
-			name:          "series groups by the canonicalised label set",
-			path:          `/loki/api/v1/series?match%5B%5D=%7Bjob%3D%22api%22%7D&` + window,
-			want:          canonicalLabelsCol + " AS `" + labelsAlias + "`",
-			groupsByAlias: true,
+			name:  "series groups by the canonicalised label set",
+			path:  `/loki/api/v1/series?match%5B%5D=%7Bjob%3D%22api%22%7D&` + window,
+			want:  canonicalLabelsCol + " AS `" + labelsAlias + "`",
+			alias: labelsAlias,
 		},
 		{
-			name:          "detected_labels groups by the canonicalised label set",
-			path:          `/loki/api/v1/detected_labels?query=%7Bjob%3D%22api%22%7D&` + window,
-			want:          canonicalLabelsCol + " AS `" + labelsAlias + "`",
-			groupsByAlias: true,
+			name:  "detected_labels groups by the canonicalised label set",
+			path:  `/loki/api/v1/detected_labels?query=%7Bjob%3D%22api%22%7D&` + window,
+			want:  canonicalLabelsCol + " AS `" + labelsAlias + "`",
+			alias: labelsAlias,
 		},
 	}
 
@@ -87,10 +94,10 @@ func TestMetadataSQL_CanonicalisesWholeMapIdentityKeys(t *testing.T) {
 				t.Fatalf("identity key is not key-order canonical: want substring %q in %q",
 					site.want, sql)
 			}
-			if !site.groupsByAlias {
+			if site.alias == "" {
 				return
 			}
-			wantGroup := "GROUP BY `" + labelsAlias + "`"
+			wantGroup := "GROUP BY `" + site.alias + "`"
 			if !strings.Contains(sql, wantGroup) {
 				t.Errorf("must GROUP BY the alias (CH resolves GROUP BY against SELECT "+
 					"aliases first): want %q in %q", wantGroup, sql)
