@@ -41,7 +41,8 @@ import (
 // has no slot for the real Value column a float row publishes, nor for
 // [chplan.MixedDiscriminatorColumn] itself, both of which
 // [lowerSumOrAvgOverMixedExpHistogramSetOp]'s own Mixed-shaped subquery
-// inner ALREADY carries on every row. [mixedLastFirstAggs] below widens
+// inner ALREADY carries on every row. [mixedLastFirstSeriesKeyedAggs] below
+// widens
 // that same argMax/argMin set by exactly those two columns: every field is
 // still picked at the SAME selected row (every AggFunc orders by the
 // identical TimeUnix column [nativeExpHistBareAggsDirectional] already
@@ -127,7 +128,8 @@ func lowerMixedOrSubqueryLastFirstInput(mixedRel chplan.Node, sub *parser.Subque
 // one `[sub.Range]` window per output step anchor via
 // [chplan.RangeBucketFanout] over mixedRel directly — mirrors
 // [lowerMixedOrSubqueryResetsRange]'s identical shape (same MinSamples
-// floor, same AnchorAlias / TimestampCol wiring), fed [mixedLastFirstAggs]
+// floor, same AnchorAlias / TimestampCol wiring), fed
+// [mixedLastFirstSeriesKeyedAggs]
 // instead of [mixedPairCountAggs] so each bucket collapses to the single
 // argMax/argMin-selected row instead of a groupArray pair-verdict.
 func lowerMixedOrSubqueryLastFirstRange(mixedRel chplan.Node, sub *parser.SubqueryExpr, windowFn string, anchor evalAnchor, histSchema, s schema.Metrics, ctx lowerCtx) chplan.Node {
@@ -140,7 +142,7 @@ func lowerMixedOrSubqueryLastFirstRange(mixedRel chplan.Node, sub *parser.Subque
 		Offset:         anchor.Offset,
 		GroupBy:        mixedLastFirstSeriesKey(s),
 		GroupByAliases: mixedLastFirstSeriesKeyAliases(s),
-		AggFuncs:       mixedLastFirstAggs(windowFn, histSchema),
+		AggFuncs:       mixedLastFirstSeriesKeyedAggs(windowFn, histSchema),
 		MinSamples:     stalenessMinSamples,
 		AnchorAlias:    stepGridAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
@@ -150,7 +152,7 @@ func lowerMixedOrSubqueryLastFirstRange(mixedRel chplan.Node, sub *parser.Subque
 
 // mixedLastFirstWindowed builds the instant-mode (and pinned-broadcast,
 // before the CrossJoin) per-series reduction: mixedRel grouped by its own
-// published series key, collapsed by [mixedLastFirstAggs] — mirrors
+// published series key, collapsed by [mixedLastFirstSeriesKeyedAggs] — mirrors
 // [selectFnOverSubqueryWindowed]'s last_over_time/first_over_time case, one
 // level up in Mixed-row width.
 func mixedLastFirstWindowed(windowFn string, mixedRel chplan.Node, histSchema, s schema.Metrics) chplan.Node {
@@ -158,7 +160,7 @@ func mixedLastFirstWindowed(windowFn string, mixedRel chplan.Node, histSchema, s
 		Input:              mixedRel,
 		GroupBy:            mixedLastFirstSeriesKey(s),
 		GroupByAliases:     mixedLastFirstSeriesKeyAliases(s),
-		AggFuncs:           mixedLastFirstAggs(windowFn, histSchema),
+		AggFuncs:           mixedLastFirstSeriesKeyedAggs(windowFn, histSchema),
 		DropEmptyOnNoGroup: true,
 	}
 }
@@ -209,14 +211,44 @@ func mixedLastFirstSeriesKeyAliases(s schema.Metrics) []string {
 // selected row's own discriminator and value/histogram payload stay
 // mutually consistent.
 //
-// MetricName is NOT among them: it is a group key
-// ([mixedLastFirstSeriesKey]), so the reduction publishes it directly and
-// an argMax over it would be a duplicate projection of the same name.
+// MetricName is picked the same way, for the ONE caller that still keys
+// its reduction on Attributes alone: [lowerMixedLastFirstOverCallSubqueryInput]'s
+// doubly-nested sibling reduces across [buildOuterRangeSubqueryFanout]'s
+// grid, whose group key is shared with three other continuations that
+// thread `[anchor, Attributes]` through their own downstream stages.
+// Widening it there is the same series-identity question cerberus issue
+// #3232 tracks for the reductions that key on Attributes alone, and it is
+// answered there rather than here.
+//
+// The two reductions in THIS file publish MetricName as a group key
+// instead ([mixedLastFirstSeriesKey]), so they take
+// [mixedLastFirstSeriesKeyedAggs] — the same list minus the MetricName
+// pick, which would otherwise be a second projection of a name the group
+// key already publishes and a duplicate output alias.
 func mixedLastFirstAggs(windowFn string, histSchema schema.Metrics) []chplan.AggFunc {
-	pick := latestArgMax
+	pick := mixedLastFirstPick(windowFn)
+	return append(
+		[]chplan.AggFunc{pick(histSchema.MetricNameColumn, histSchema)},
+		mixedLastFirstSeriesKeyedAggs(windowFn, histSchema)...,
+	)
+}
+
+// mixedLastFirstPick resolves the directional selection both agg lists
+// order every one of their picks by: argMax over TimeUnix for
+// last_over_time, argMin for first_over_time. It is one function rather
+// than a copy per list so the direction cannot drift between them.
+func mixedLastFirstPick(windowFn string) func(string, schema.Metrics) chplan.AggFunc {
 	if windowFn == firstOverTimeWindowFn {
-		pick = earliestArgMin
+		return earliestArgMin
 	}
+	return latestArgMax
+}
+
+// mixedLastFirstSeriesKeyedAggs is [mixedLastFirstAggs] for a reduction
+// whose group key already carries MetricName — see that function's doc for
+// the split.
+func mixedLastFirstSeriesKeyedAggs(windowFn string, histSchema schema.Metrics) []chplan.AggFunc {
+	pick := mixedLastFirstPick(windowFn)
 	return append(
 		[]chplan.AggFunc{
 			pick(histSchema.ValueColumn, histSchema),
