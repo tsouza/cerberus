@@ -1597,3 +1597,96 @@ func TestIfNonZero_InlineDenom(t *testing.T) {
 		t.Errorf("Args = %v; want empty", args)
 	}
 }
+
+// TestQueryBuilder_LimitWithTies — CH `LIMIT N WITH TIES`, the cut that
+// declines to break a tie on the sort key and hands every tied row back
+// instead. The modifier renders in the same slot `BY` would occupy.
+func TestQueryBuilder_LimitWithTies(t *testing.T) {
+	t.Parallel()
+
+	sql, args := NewQuery().
+		Select(As(Col("labels"), "labels"), As(Call("sum", Col("n")), "bytes")).
+		From(Col("otel_logs")).
+		GroupBy(Col("labels")).
+		OrderBy(Col("bytes"), true).
+		LimitWithTies(3).
+		Build()
+
+	wantSQL := "SELECT `labels` AS `labels`, sum(`n`) AS `bytes` FROM `otel_logs`" +
+		" GROUP BY `labels`" +
+		" ORDER BY `bytes` DESC" +
+		" LIMIT 3 WITH TIES"
+	if sql != wantSQL {
+		t.Errorf("SQL = %q; want %q", sql, wantSQL)
+	}
+	if args != nil {
+		t.Errorf("Args = %v; want nil", args)
+	}
+}
+
+// TestQueryBuilder_LimitWithTies_NonPositive — a non-positive count
+// suppresses the whole clause, WITH TIES included. Sharing Limit's
+// `hasLimit = n > 0` gate is what makes that true; asserting it here
+// stops the modifier from leaking a bare ` WITH TIES` onto a statement
+// with no LIMIT at all, which ClickHouse would reject.
+func TestQueryBuilder_LimitWithTies_NonPositive(t *testing.T) {
+	t.Parallel()
+
+	sql, _ := NewQuery().
+		From(Col("t")).
+		OrderBy(Col("x"), false).
+		LimitWithTies(0).
+		Build()
+
+	wantSQL := "SELECT * FROM `t` ORDER BY `x`"
+	if sql != wantSQL {
+		t.Errorf("SQL = %q; want %q", sql, wantSQL)
+	}
+}
+
+// TestQueryBuilder_LimitWithTies_Misuse — the two compositions CH's
+// grammar has no rendering for panic at render time rather than emit
+// something that parses but means something else.
+func TestQueryBuilder_LimitWithTies_Misuse(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		build func() *QueryBuilder
+		want  string
+	}{
+		{
+			name: "no_order_by",
+			build: func() *QueryBuilder {
+				return NewQuery().From(Col("t")).LimitWithTies(3)
+			},
+			want: "requires an ORDER BY",
+		},
+		{
+			name: "with_limit_by",
+			build: func() *QueryBuilder {
+				return NewQuery().From(Col("t")).
+					OrderBy(Col("x"), false).
+					LimitWithTies(3).
+					LimitBy(Col("g"))
+			},
+			want: "cannot be combined with LIMIT ... BY",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("rendering %s did not panic", tc.name)
+				}
+				msg, ok := r.(string)
+				if !ok || !strings.Contains(msg, tc.want) {
+					t.Fatalf("panic = %v; want a message containing %q", r, tc.want)
+				}
+			}()
+			tc.build().Build()
+		})
+	}
+}

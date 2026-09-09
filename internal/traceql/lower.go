@@ -1263,17 +1263,24 @@ func lowerIntrinsicNilComparison(op traceql.Operator, attr traceql.Attribute, s 
 		// condition. That reasoning is real but it does not single out
 		// `!= nil`: it applies to `> 2` identically, so the two arms
 		// disagreed about the SAME query family — one 4xx, one
-		// 2xx-empty. Cerberus already settled which way that resolves
-		// when it burned the loud-422 down to the constant fold (see
-		// TestUnbackedIntrinsicComparisonsLowerConstant): the surface-
-		// parity oracle is upstream Parse+Validate, which accepts
-		// `{ span:childCount > 0 }`, and Tempo's own live-block search
-		// path downgrades the fetch-time ErrUnsupported to "skip this
-		// block" rather than surfacing it. So the 2xx-empty class is the
-		// one to be consistent about, and `= nil` stays rejected via the
+		// 2xx-empty. What settles which way that resolves is where the
+		// fetch-time error actually lands: `Engine.ExecuteSearch`
+		// (pkg/traceql/engine.go) turns a `util.ErrUnsupported` from the
+		// fetcher into an EMPTY SearchResponse and a nil error, so every
+		// /api/search caller — querier and live store alike — answers
+		// 2xx-empty rather than 4xx. So the 2xx-empty class is the one to
+		// be consistent about, and `= nil` stays rejected via the
 		// OpNotExists guard above — that rejection is upstream's own
 		// validate rule for EVERY intrinsic, not a childCount special
 		// case.
+		//
+		// The surface-parity oracle is NOT evidence here and used to be
+		// cited as if it were. That oracle is upstream Parse + Validate
+		// (test/surface-parity/traceql.go), which decides ACCEPTANCE and
+		// nothing else; it accepts `{ span:childCount > 0 }` and would
+		// accept a derived lowering identically, so it can distinguish
+		// neither answer from the other. Why the answer is EMPTY rather
+		// than derived is [attributeHasNoBacking]'s subject.
 		return &chplan.LitBool{V: false}, nil
 	case traceql.IntrinsicEventName, traceql.IntrinsicEventTimeSinceStart:
 		if s.EventsColumn == "" {
@@ -1937,6 +1944,47 @@ func absentAttributePredicate(attr traceql.Attribute, s schema.Traces) (chplan.E
 // intrinsics with a column, and the trace-scoped root-identity
 // intrinsics lowerTraceScopedBinary now resolves via a correlated
 // subquery) has a real backing.
+//
+// # Why span:childCount stays here (cerberus issue #3229)
+//
+// childCount is the one entry whose absence is a CHOICE rather than a
+// consequence, so the choice is recorded here. It is derivable: it is
+// `count(spans in this trace whose ParentSpanId = this span's SpanId)`,
+// strictly less machinery than the nested-set intrinsics cerberus
+// already recomputes from the same edge set (chplan.NestedSetAnnotate
+// needs a recursive DFS walk and a depth cap; a child count needs one
+// GROUP BY). Reference computes both from the same adjacency in the same
+// pass — vparquet5's `assignNestedSetModelBoundsAndServiceStats` assigns
+// `ChildCount` and the nested-set bounds in one function — so nothing
+// about the VALUE separates them.
+//
+// What separates them is which block encoding carries the column, and
+// cerberus tracks reference's own default. vparquet4 declares
+// `columnPathSpanNestedSetLeft` and friends and cerberus answers those;
+// it has no childCount column, and its `checkConditions` returns
+// `util.ErrUnsupported` for the intrinsic, which `Engine.ExecuteSearch`
+// (pkg/traceql/engine.go) converts into an empty response and a nil
+// error. vparquet5 does carry `columnPathSpanChildCount` and answers for
+// real — but in the vendored fork BOTH `DefaultEncoding()` and
+// `LatestEncoding()` (tempodb/encoding/versioned.go) return vparquet4,
+// so vparquet5 is an opt-in format upstream has not promoted, not the
+// reference's answer.
+//
+// That same rule explains cerberus's other intrinsic decisions rather
+// than sitting beside them as an exception: vparquet3's `checkConditions`
+// rejects `event:name`, `link:traceID`, `link:spanID`,
+// `instrumentation:name` and `instrumentation:version` as well as
+// childCount, and cerberus answers all five — because vparquet4, the
+// default, carries all five. Deriving childCount would be the only place
+// cerberus answered something the reference's default encoding cannot,
+// and invariant 7 makes the reference the source of truth in exactly
+// that direction. What makes this entry wrong is therefore a concrete
+// event rather than a judgement call: a vendored Tempo bump that makes
+// `DefaultEncoding()` return vparquet5 owes the derivation.
+//
+// test/spec/traceql/span_childcount_constant_false.txtar pins the
+// resulting answer against a seed that a derived lowering would answer
+// differently.
 func attributeHasNoBacking(attr traceql.Attribute, s schema.Traces) bool {
 	if attr.Intrinsic == traceql.IntrinsicNone {
 		return attr.Scope == traceql.AttributeScopeInstrumentation && s.ScopeAttributesColumn == ""

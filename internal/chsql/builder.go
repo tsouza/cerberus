@@ -3241,6 +3241,7 @@ type QueryBuilder struct {
 	orderBy    []orderKey
 	limit      int64
 	hasLimit   bool
+	limitTies  bool
 	limitBy    []Frag
 
 	// attrStrategies is threaded into the Builder subquerySQL renders
@@ -3481,6 +3482,43 @@ func (s *QueryBuilder) OrderBy(expr Frag, desc bool) *QueryBuilder {
 func (s *QueryBuilder) Limit(n int64) *QueryBuilder {
 	s.limit = n
 	s.hasLimit = n > 0
+	return s
+}
+
+// LimitWithTies is [QueryBuilder.Limit] plus ClickHouse's `WITH TIES`
+// modifier: after the first `n` rows the engine keeps emitting rows for
+// as long as they compare EQUAL to row `n` on the ORDER BY key.
+//
+// The clause exists for the one shape a plain LIMIT cannot serve: a cut
+// whose final ranking is not decidable in SQL. `ORDER BY k DESC LIMIT n`
+// makes the SET it returns depend on how the engine happened to break
+// ties on `k`, and appending a second sort key fixes that only by
+// deciding the tie in SQL — which is wrong when the authoritative
+// comparison lives in Go. `ORDER BY k DESC LIMIT n WITH TIES` instead
+// returns exactly `{rows with k > B} ∪ {rows with k = B}` for `B` the
+// n-th largest `k`: a SET that is a pure function of the data, that no
+// merge order can perturb, and that provably CONTAINS the correct top-n
+// under any tie-break whatsoever. The caller then applies its own
+// comparator to those rows and truncates.
+//
+// Two shapes panic at render time rather than emit SQL the server would
+// reject or, worse, SQL that means something else — the same treatment
+// [QueryBuilder.WithScalar] gives a nil body, and for the same reason:
+// neither is reachable from data, only from a caller that composed the
+// statement wrong.
+//
+//   - no ORDER BY — ClickHouse itself rejects `WITH TIES` without one,
+//     because there is no key for "ties" to be defined over;
+//   - a LIMIT BY partition — `LIMIT n BY expr` and `LIMIT n WITH TIES`
+//     are two different modifiers of one clause and CH's grammar admits
+//     only one of them, so rendering both would silently drop one.
+//
+// Callers that want the plain cut keep calling [QueryBuilder.Limit];
+// the modifier is opt-in precisely because WITH TIES makes the returned
+// row count data-dependent.
+func (s *QueryBuilder) LimitWithTies(n int64) *QueryBuilder {
+	s.Limit(n)
+	s.limitTies = s.hasLimit
 	return s
 }
 
@@ -3740,7 +3778,17 @@ func (s *QueryBuilder) writeInto(b *Builder) {
 	if s.hasLimit {
 		b.sb.WriteString(" LIMIT ")
 		b.sb.WriteString(strconv.FormatInt(s.limit, 10))
-		if len(s.limitBy) > 0 {
+		hasLimitBy := len(s.limitBy) > 0
+		switch {
+		case s.limitTies:
+			switch {
+			case len(s.orderBy) == 0:
+				panic("chsql: LIMIT ... WITH TIES requires an ORDER BY")
+			case hasLimitBy:
+				panic("chsql: LIMIT ... WITH TIES cannot be combined with LIMIT ... BY")
+			}
+			b.sb.WriteString(" WITH TIES")
+		case hasLimitBy:
 			b.sb.WriteString(" BY ")
 			for i, f := range s.limitBy {
 				if i > 0 {

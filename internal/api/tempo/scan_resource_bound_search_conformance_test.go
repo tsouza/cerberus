@@ -21,12 +21,15 @@ import (
 // chokepoint (chplan.ScanResourceBoundViolation). compose-smoke caught a
 // false-rejection here that the unit suite missed; this test closes that gap.
 //
-// Root cause it guards: the trace-scoped / per-event intrinsics OTel-CH does
-// not materialise (rootName / rootServiceName / traceDuration / span:childCount
-// / event:timeSinceStart / instrumentation-scoped attributes) lower to a
-// StaticNil constant-false predicate (matching reference Tempo's empty result),
-// which ConstantFold collapses `false AND <window>` to a bare `false`. A
-// `WHERE false` scan reads zero rows — the chokepoint must classify it bounded.
+// Root cause it guards: the carriers OTel-CH does not materialise and cerberus
+// does not derive (span:childCount / traceStartTime / event:timeSinceStart /
+// instrumentation-scoped attributes — traceql's attributeHasNoBacking is the
+// list) lower to a constant-false predicate (matching what reference Tempo's
+// default block encoding answers), which ConstantFold collapses
+// `false AND <window>` to a bare `false`. A `WHERE false` scan reads zero
+// rows — the chokepoint must classify it bounded. The trace-scoped
+// root-identity intrinsics left that set at issue #1711 and now lower to a
+// per-trace aggregate subquery instead.
 
 func searchEngineErr(t *testing.T, h *Handler, query string, start, end time.Time) error {
 	t.Helper()
