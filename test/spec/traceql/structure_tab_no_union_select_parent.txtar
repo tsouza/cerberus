@@ -78,7 +78,7 @@ INSERT INTO otel_traces VALUES
 -- chplan --
 Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent]
   NestedSetAnnotate table=otel_traces
-    StructuralJoin op=&>> maxDepth=128
+    StructuralJoin op=&>>
       Filter predicate=(true AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
         Scan(otel_traces)
       Filter predicate=(true AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))

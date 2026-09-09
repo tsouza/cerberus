@@ -34,7 +34,7 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName) VALUES
   ["b", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "s5", "__cerberus_traceID": "t3"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
-StructuralJoin op=!< maxDepth=128
+StructuralJoin op=!<
   Filter predicate=(SpanName = "a")
     Scan(otel_traces)
   Filter predicate=(SpanName = "b")
