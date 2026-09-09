@@ -117,10 +117,18 @@ spec-chdb:
 # on a developer's laptop sat on `main` unseen (#2074). The suite is the only
 # layer that executes emitted SQL against a real engine from inside the
 # emitter package, where the unexported emitter entry points are reachable.
+#
+# Includes ./internal/optimizer/... for the same reason, found the same way:
+# TestPropertyOptimizerSemanticEquivalence and its coverage ledger
+# (property_coverage_test.go) are chdb-tagged and were named by NO lane, so
+# they ran only on a developer's laptop. The ledger reached `main` with an
+# entry whose own text said the kind it excused "IS round-tripped" — a
+# self-contradiction the ledger's own contract test rejects, and which nothing
+# in CI could see.
 
-# Run the chdb-tagged handler, emitter, solver and corpus lanes. Needs libchdb.so.
+# Run the chdb-tagged handler, emitter, optimizer, solver and corpus lanes. Needs libchdb.so.
 test-chdb:
-    go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+    go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle) for all three
 # query heads. The synthetic composite tag activates the LogQL live runner.
