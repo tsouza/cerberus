@@ -7,16 +7,21 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// histogram_native_mixed_or_subquery_further_setop_range_fn.go answers
-// cerberus issue #2724: a SELECT/FOLD-family outer function over a subquery
-// whose own inner is a further `and`/`unless`/`or` wrapping a mixed
-// float/histogram `or` — `<fn>((((a) or (b)) and/unless/or c)[range:step])`,
-// either order — the one gap
-// histogram_native_mixed_or_subquery_range_fn.go's own doc names as
-// deliberately unattempted by that file's distribute-then-recombine
-// mechanism (a first attempt hit cerberus issue #2589's own
-// and/unless-forwarded-histogram-subquery-inner rejection one level down;
-// see that doc for the full account).
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go answers a
+// SELECT/FOLD-family outer function over a subquery whose own inner
+// resolves to a native-histogram or MIXED relation — a further
+// `and`/`unless`/`or` wrapping a mixed float/histogram `or`
+// (`<fn>((((a) or (b)) and/unless/or c)[range:step])`, either order —
+// cerberus issue #2724), a bare and/unless-forwarded histogram selector,
+// and, since cerberus issue #3227, the BARE mixed `or` itself.
+//
+// The bare shape used to have its own AST recognizer, which distributed
+// the outer function over the two arms and recombined the folds. That
+// rewrite is gone: `or` matches on a signature that drops `__name__`, so
+// the shadow between two arms carrying identical attributes is per-anchor
+// rather than per-series, and folding each arm over its full window before
+// shadowing cannot reproduce it. Every one of these shapes now answers
+// here instead.
 //
 // lowerHistogramOrMixedSubqueryOuterFnInput is called from
 // [lowerOuterRangeFnOverSubquery], right before its own catch-all
@@ -117,26 +122,31 @@ func lowerHistogramOrMixedSubqueryOuterFnInput(inner chplan.Node, shape chplan.R
 }
 
 // lowerFurtherWrapMixedOrSubqueryFoldFn answers the seven type-preserving
-// FOLD-family names over a MixedRowShape inner — the "further and/unless/or"
-// composition's own genuinely new machinery. Unlike the sum/avg-wrapped
+// FOLD-family names over a MixedRowShape inner. Unlike the sum/avg-wrapped
 // composer's identically-named sibling
 // (histogram_native_mixed_or_subquery_aggregate_range_fn.go), no
 // window-purity test is needed at all: this shape carries no `by`/`without`
-// grouping, so every output series maps 1:1 to exactly one source series
-// from EITHER of the mixed `or`'s two operands (they are drawn from
-// different metrics and so never share a series — the same invariant
-// histogram_native_mixed_or_subquery_range_fn.go's own top doc derives),
-// meaning a series is homogeneously histogram- or float-typed for its
-// ENTIRE window by construction. [splitMixedRelByDiscriminator] partitions
-// inner on its own [chplan.MixedDiscriminatorColumn] — a structural no-op
-// disjoint split, not a purity test — and each side folds through the
+// grouping, so every output row is one SOURCE SERIES' own window, and the
+// `or` one stage earlier already resolved which of the two arms owns each
+// (series, anchor). A series is therefore homogeneously histogram- or
+// float-typed for its ENTIRE window, and [splitMixedRelByDiscriminator]'s
+// partition on [chplan.MixedDiscriminatorColumn] is a structural no-op
+// disjoint split rather than a purity test. Each side folds through the
 // UNCHANGED single-type continuation
 // ([lowerExpHistogramRangeFnOverSubqueryInput] for the histogram side,
 // [lowerFloatFoldOverSubqueryInput] for the float side, both already
-// three-grid-mode capable) before recombining via
-// [combineMixedAggregateBranches]'s own "structural no-op" reuse (the two
-// folded branches are disjoint by construction, so its drop-on-collision
-// rule never has a collision to drop and every row survives).
+// three-grid-mode capable).
+//
+// The recombination is [combineMixedFoldBranches] — `or`'s ordinary
+// left-biased union, NOT [combineMixedAggregateBranches]'s symmetric
+// difference. The two folded branches are not disjoint on the OUTPUT key:
+// every one of these seven names drops `__name__`, and `or` matched its
+// arms on a signature that drops `__name__` too, so a histogram arm and a
+// float arm carrying byte-identical attributes both survive it and land
+// on one output key. That is a shadow to resolve, never a mixed GROUP to
+// drop — there is no group here — and the symmetric difference resolved
+// it by dropping both (cerberus issue #3227). See
+// [combineMixedFoldBranches]'s own doc.
 func lowerFurtherWrapMixedOrSubqueryFoldFn(mixedRel chplan.Node, sub *parser.SubqueryExpr, windowFn string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	histSchema := histogramProjectionSchema(s)
 	histSchema.AggregationTemporalityColumn = ""
@@ -152,7 +162,7 @@ func lowerFurtherWrapMixedOrSubqueryFoldFn(mixedRel chplan.Node, sub *parser.Sub
 	}
 	floatFolded := lowerFloatFoldOverSubqueryInput(floatBranch, sub, windowFn, anchor, s, ctx)
 
-	return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil
+	return combineMixedFoldBranches(histFolded, floatFolded, s, ctx.step > 0), nil
 }
 
 // splitMixedRelByDiscriminator partitions mixedRel — the fourteen-column

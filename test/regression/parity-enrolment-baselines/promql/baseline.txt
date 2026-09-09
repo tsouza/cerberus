@@ -625,6 +625,7 @@ subquery_irate_nested.txtar
 subquery_label_replace.txtar
 subquery_last_over_time_at_pinned_name.txtar
 subquery_last_over_time_histogram_fanout_name.txtar
+subquery_last_over_time_mixed_or_partial_shadow.txtar
 subquery_last_over_time_name.txtar
 subquery_last_over_time_nested_call.txtar
 subquery_last_over_time_nested_subquery.txtar
@@ -662,6 +663,7 @@ subquery_quantile_over_time_rate.txtar
 subquery_quantile_scalar_phi.txtar
 subquery_sort_inner.txtar
 subquery_stddev.txtar
+subquery_sum_over_time_mixed_or_partial_shadow.txtar
 subquery_sum_over_time_rate.txtar
 subquery_time_minus_aggregate_offset.txtar
 subquery_topk_computed.txtar
