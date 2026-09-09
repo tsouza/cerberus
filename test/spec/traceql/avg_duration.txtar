@@ -28,3 +28,6 @@ SELECT * FROM (SELECT `TraceId` AS `TraceId`, avg(`Duration`) AS `Value`, any(`S
 [
   ["span", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "2100000000", "__cerberus_traceID": "t1", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 80000000]
 ]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ resource.service.name = "frontend" } | avg(duration) > 50ms` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares

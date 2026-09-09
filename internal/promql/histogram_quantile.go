@@ -2212,7 +2212,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// per-series sample floor. Without it the stage below would fold
 	// across time and series at once — see
 	// histogram_quantile_native_window.go.
-	perSeries := expHistogramWindowStage(input, shape, rangeStart, rangeEnd, s)
+	perSeries := expHistogramWindowStage(input, shape, rangeStart, rangeEnd, s, ctx)
 
 	// Stage 2: the user's aggregation across those per-series rows. Its
 	// keys bind from the per-series stage's already-canonical Attributes

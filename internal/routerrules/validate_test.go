@@ -402,3 +402,142 @@ func TestValidateHealthScope(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateRejectsUnreachedParam pins validateEveryParamIsReached, the dual
+// of the dangling-${param} check. ParamResolver.Resolve walks the DECLARED
+// params, not the used ones, and every corpus-kind param drives its own full
+// aggregate pass — so a param no rule reaches buys a corpus scan per run and
+// can never move a finding. memory_high_watermark sat in the shipped catalog in
+// exactly that state, and was the doc's headline example of the params
+// mechanism while gating nothing.
+//
+// The reached arms are asserted alongside the rejected one because each is a
+// distinct way a param is legitimately reached, and dropping any one of them
+// would turn this gate into a false positive that deletes a live param.
+func TestValidateRejectsUnreachedParam(t *testing.T) {
+	// mem_wm is declared and named by nothing: the memory_high_watermark shape.
+	const reachedByNothing = `
+apiVersion: routerrules.cerberus/v1
+catalogVersion: 1
+params:
+  - name: pctile
+    kind: config
+    key: router_rules.watermark_percentile
+  - name: support
+    kind: config
+    key: router_rules.min_class_support
+  - name: mem_wm
+    kind: corpus_percentile
+    column: memory_usage
+    percentile: { ref: pctile }
+    partition_by: [language]
+    scope: { route: A, exit_status: ok }
+rules:
+  - id: r1
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support: { ref: support }
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+    finding: "x"
+`
+
+	// Same catalog, except the rule's condition carries a real ParamCmp leaf
+	// naming mem_wm.
+	const reachedByCondition = `
+apiVersion: routerrules.cerberus/v1
+catalogVersion: 1
+params:
+  - name: pctile
+    kind: config
+    key: router_rules.watermark_percentile
+  - name: support
+    kind: config
+    key: router_rules.min_class_support
+  - name: mem_wm
+    kind: corpus_percentile
+    column: memory_usage
+    percentile: { ref: pctile }
+    partition_by: [language]
+    scope: { route: A, exit_status: ok }
+rules:
+  - id: r1
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support: { ref: support }
+    condition:
+      all:
+        - { col: memory_usage, op: gte, param: mem_wm }
+    finding: "x"
+`
+
+	// A MESSAGE-only param gates nothing but is legitimately reached — the
+	// cerberus_reject_ratio shape. Without the message scan this arm would fail
+	// and the gate would delete a live param.
+	const reachedByMessage = `
+apiVersion: routerrules.cerberus/v1
+catalogVersion: 1
+params:
+  - name: pctile
+    kind: config
+    key: router_rules.watermark_percentile
+  - name: support
+    kind: config
+    key: router_rules.min_class_support
+  - name: mem_wm
+    kind: corpus_percentile
+    column: memory_usage
+    percentile: { ref: pctile }
+    partition_by: [language]
+    scope: { route: A, exit_status: ok }
+rules:
+  - id: r1
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support: { ref: support }
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+    finding: "peaks at {mem_wm} for {shape_id}"
+`
+
+	t.Run("unreached param is rejected", func(t *testing.T) {
+		_, err := LoadCatalog([]byte(reachedByNothing))
+		if err == nil {
+			t.Fatal("expected load to fail: mem_wm is declared and reached by nothing")
+		}
+		if !strings.Contains(err.Error(), `param "mem_wm" is declared but no rule reaches it`) {
+			t.Fatalf("error %q should name the unreached param", err.Error())
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{"a condition leaf reaches it", reachedByCondition},
+		{"a finding message placeholder reaches it", reachedByMessage},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := LoadCatalog([]byte(tc.yaml)); err != nil {
+				t.Fatalf("catalog should load: %v", err)
+			}
+		})
+	}
+
+	// pctile is reached only THROUGH mem_wm's percentile ref: reachability is
+	// transitive, or the gate would reject every fraction param in the shipped
+	// catalog.
+	t.Run("a param reached only transitively is accepted", func(t *testing.T) {
+		if _, err := LoadCatalog([]byte(reachedByCondition)); err != nil {
+			t.Fatalf("transitively reached pctile should load: %v", err)
+		}
+	})
+}

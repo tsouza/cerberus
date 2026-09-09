@@ -58,8 +58,6 @@ type chExtra struct {
 	rawHTTPURLPath     string
 	rawHTTPMaxConns    int
 	rawHTTPProxyURL    string
-	rawConnStrategy    string
-	singleAddr         bool
 }
 
 // keepAliveInputs groups the four already-parsed TCP-keepalive knobs so they
@@ -233,15 +231,13 @@ func chExtraFromEnv(v *viper.Viper) (chExtra, error) {
 	var out chExtra
 
 	// Multi-host address list. CERBERUS_CH_ADDR is comma-separated; trim each
-	// entry, drop empties, require at least one. A single host (the common
-	// case) yields a one-element slice and singleAddr=true (used to note the
-	// pointless round_robin-with-one-host combo).
+	// entry, drop empties, require at least one. A single host is the common
+	// case and yields a one-element slice.
 	addrs, err := parseAddrs(getString(v, envCHAddr))
 	if err != nil {
 		return chExtra{}, fmt.Errorf("%s: %w", envCHAddr, err)
 	}
 	out.Addrs = addrs
-	out.singleAddr = len(addrs) == 1
 
 	// Protocol enum.
 	switch proto := strings.ToLower(getString(v, envCHProtocol)); proto {
@@ -256,7 +252,6 @@ func chExtraFromEnv(v *viper.Viper) (chExtra, error) {
 
 	// Connection-open strategy enum.
 	strategy := strings.ToLower(getString(v, envCHConnOpenStrategy))
-	out.rawConnStrategy = strategy
 	switch strategy {
 	case chConnOpenInOrder:
 		out.ConnOpenStrategy = clickhouse.ConnOpenInOrder

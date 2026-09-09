@@ -261,6 +261,7 @@ func lowerExpHistogramFoldOverCallSubqueryInput(wideInner chplan.Node, grid hist
 	win := histogramWindow{lookback: shape.windowRange, offset: anchor.Offset, minSamples: shape.minSamples()}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
 	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, histSchema)
+	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
 	aggs := expHistogramValuedWindowAggs(histSchema, windowFn)
 	grouped := buildOuterRangeSubqueryFanout(wideInner, grid, anchor, aggs, win.minSamples, s)
 	selected := selectExpHistogramWindowSamples(

@@ -196,6 +196,17 @@ type histogramWindowInputs struct {
 	// or nil where the underlying table carries no such column.
 	temporality chplan.Expr
 
+	// closedFormEligible carries the ExpHistogramWindowFold lowerer's
+	// answer down to the reshape: true permits the exponential-histogram
+	// bucket ladders to fold in closed form
+	// (histogram_native_window_closed_form.go), false keeps
+	// counterIncreaseFold for them. It rides on this struct rather than
+	// on expHistogramWindowReshape's parameter list because every call
+	// site already threads this struct and none of them would notice a
+	// transposed bool. The zero value is the conservative reading, so a
+	// caller that never resolves the strategy gets the shared fold.
+	closedFormEligible bool
+
 	// resets is the per-series whole-histogram counter-reset mask
 	// (hqWindowResetsAlias), or nil where each component decides its own
 	// reset — see counterIncreaseFold.

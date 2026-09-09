@@ -97,18 +97,6 @@ type ScanEstimate struct {
 	// probes ran for the same request (see its own mergeCardinalityEstimate
 	// doc).
 	Rows uint64
-
-	// DistinctSeries is the cardinality pre-probe's uniqUpTo(100)(...)
-	// read-out (issue #2788) — the number of distinct series backing the
-	// scan window, up to the uniqUpTo(100) cap (see chplan.FnUniqUpTo's own
-	// doc for the saturation behaviour above it). Zero when the cardinality
-	// pre-probe did not run (EXPLAIN ESTIMATE alone never populates this
-	// field — it has no comparable per-series signal). classify() does not
-	// read this field at all: it exists solely for
-	// internal/engine/cardinality_probe_wiring.go's own per-rung admission
-	// seeding, which needs the fan-out signal EXPLAIN ESTIMATE's row-only
-	// upper bound cannot provide.
-	DistinctSeries uint64
 }
 
 // Decision is the routing output. Slices are ordered oldest-first
