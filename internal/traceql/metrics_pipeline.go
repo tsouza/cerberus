@@ -236,11 +236,30 @@ func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute,
 	// aggregate.go. `*_over_time(span.foo)` resolves to a FieldAccess
 	// against SpanAttributes (typed String); wrap so the downstream CH
 	// aggregate (`max`/`min`/`sum`/`avg`/`quantiles`) sees a Float64.
+	//
+	// The wrap is `toFloat64OrNull`, so a span that never carried the
+	// attribute — or carried a value that is not a number — contributes
+	// NULL and every ClickHouse aggregate skips it. That is exactly what
+	// the reference does on this path: FloatizeAttribute
+	// (pkg/traceql/engine_metrics.go) answers TypeNil for both cases,
+	// NewOverTimeAggregator turns TypeNil into the NaN sentinel (that
+	// constructor's default getSpanAttValue closure in
+	// engine_metrics.go), and the min/max/sum reducers skip a NaN
+	// (engine_metrics_functions.go).
+	//
+	// The one shape that does not map across is a step whose every
+	// matched span was skipped: the reference reports the NaN its
+	// aggregator was initialised with, while ClickHouse's aggregate
+	// answers NULL. cerberus renders that step the same way it renders a
+	// step with no matching spans at all — the two are indistinguishable
+	// in the reference too, since its aggregator initialises every empty
+	// step to the same NaN — so the step falls to the range-fill policy
+	// rather than to a value invented here.
 	attrExpr, err := lowerAttribute(attr, s)
 	if err != nil {
 		return nil, err
 	}
-	expr := coerceMapNumericAggInput(attrExpr)
+	expr, _ := coerceMapNumericAggInput(attrExpr)
 	if attr.Intrinsic == traceql.IntrinsicDuration {
 		expr = durationNsToSeconds(expr)
 	}

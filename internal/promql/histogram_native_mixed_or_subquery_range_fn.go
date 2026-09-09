@@ -23,15 +23,26 @@ import (
 // re-evaluating `(a) or (b)` at every subquery anchor and folding the
 // resulting per-series Matrix — the SAME window reduction it applies to a
 // bare selector's matrix, type-blind to whether a given series' samples
-// are float or histogram. Because `or`'s default match key spans every
-// label including `__name__`, and the two arms here are drawn from
-// different metrics, no series is ever produced by both arms: each
-// series' own window is homogeneously float-valued (from `b`) or
-// homogeneously histogram-valued (from `a`). Under that (the only sane,
-// and only reachable, shape — see [mixedExpHistogramSetOp]'s own doc for
-// why a genuine same-series type flip is unreachable from cerberus's
-// disjoint float/histogram table split) the outer function DISTRIBUTES
-// over the union:
+// are float or histogram. Because the two arms here are drawn from the
+// disjoint float and exp-histogram tables, no SERIES is ever produced by
+// both arms: each series' own window is homogeneously float-valued (from
+// `b`) or homogeneously histogram-valued (from `a`) — see
+// [mixedExpHistogramSetOp]'s own doc for why a genuine same-series type
+// flip is unreachable from that table split.
+//
+// `or`'s shadow rule is keyed on a SIGNATURE rather than on series
+// identity, and reference derives that signature in
+// `promql/engine.go`'s `rangeEval`, at its `sigf` construction:
+// `on(...)` keeps only the named labels,
+// while the default and `ignoring(...)` drop the named labels PLUS
+// `__name__`. Under the default key the signature is therefore the
+// series' full attribute set, which two series from the two different
+// metrics can only share by carrying byte-identical attributes; under a
+// narrowed key one series routinely shadows many, and shadows them at
+// some anchors and not others. Distribution is an identity only while
+// the shadow is all-or-nothing per series, so [defaultSetOpMatching]
+// gates this recognizer on the default key. Under it the outer function
+// DISTRIBUTES over the union:
 //
 //	<fn>(((a) or (b))[5m:1m])  ==  <fn>((a)[5m:1m]) or <fn>((b)[5m:1m])
 //
@@ -119,10 +130,34 @@ func mixedOrSubqueryOuterFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (*pa
 		return nil, nil, nil, false
 	}
 	b, rebuild, ok := wrapMixedOrSubqueryInner(sub.Expr, s, ctx)
-	if !ok {
+	if !ok || !defaultSetOpMatching(b.VectorMatching) {
 		return nil, nil, nil, false
 	}
 	return sub, b, rebuild, true
+}
+
+// defaultSetOpMatching reports whether m is a set operator's DEFAULT
+// match key — no `on(...)`, no `ignoring(...)`.
+//
+// It gates [mixedOrSubqueryOuterFn] because the distribute-then-recombine
+// identity this file exploits is only ever safe under the default key.
+// Reference computes a set operator's shadow signature in
+// `promql/engine.go`'s `rangeEval`, at its `sigf` construction:
+// `on(...)` keeps ONLY the named labels,
+// while the default and `ignoring(...)` both drop the named labels plus
+// `__name__`. Narrowing that key with `on()`/`ignoring()` lets a SINGLE
+// series of one arm shadow MANY series of the other, and lets which
+// series are shadowed change from anchor to anchor — so
+// `<fn>(((a) or on(x) (b))[r:s])` folds each surviving series over a
+// PUNCTURED window, which is not what folding each arm over its FULL
+// window and shadowing the folded results afterwards produces.
+//
+// A narrowed key therefore falls through to [lowerOuterRangeFnOverSubquery]
+// / [lowerHistogramOrMixedSubqueryOuterFnInput], which folds directly over
+// the per-anchor-correct Mixed relation [lowerSubqueryOverBinary] builds
+// and so never needs this identity in the first place.
+func defaultSetOpMatching(m *parser.VectorMatching) bool {
+	return m == nil || (!m.On && len(m.MatchingLabels) == 0)
 }
 
 // wrapMixedOrSubqueryInner recognises inner — a subquery's own Expr — as

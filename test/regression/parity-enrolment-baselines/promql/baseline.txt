@@ -188,7 +188,6 @@ exp_histogram_merge_summap_multigroup.txtar
 exp_histogram_merge_summap_range_multigroup.txtar
 exp_histogram_rate.txtar
 exp_histogram_rate_range.txtar
-exp_histogram_reset_mask_per_target.txtar
 exp_histogram_resets.txtar
 exp_histogram_scalar_div_sum.txtar
 exp_histogram_scalar_mul_bare.txtar
@@ -450,6 +449,7 @@ matrix_selector_top_level.txtar
 min_over_time_exp_histogram_drops.txtar
 minute_default.txtar
 minute_of_vector.txtar
+mixed_or_subquery_outer_fn_or_on.txtar
 mod_arithmetic.txtar
 month_default.txtar
 month_of_vector.txtar

@@ -167,11 +167,11 @@ func lowerSelectFnOverExpHistogramSubquery(shape histogramSubquerySelectShape, s
 	if step < 0 {
 		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", sub.Step)
 	}
-	gridCtx, ok, err := subqueryGridCtx(sub, step, ctx)
+	gridCtx, state, err := subqueryGridCtx(sub, step, ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
+	if state == subqueryGridUnavailable {
 		return nil, fmt.Errorf("promql: histogram-valued subquery requires query eval-time context (use LowerAt)")
 	}
 
@@ -182,7 +182,20 @@ func lowerSelectFnOverExpHistogramSubquery(shape histogramSubquerySelectShape, s
 	if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape {
 		return nil, fmt.Errorf("promql: internal invariant violated: histogram subquery input is %T with %s row shape", input, chplan.RowShapeOf(input))
 	}
-	return lowerSelectFnOverExpHistogramSubqueryInput(input, sub, shape.windowFn, s, ctx)
+	node, err := lowerSelectFnOverExpHistogramSubqueryInput(input, sub, shape.windowFn, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Same reasoning as [lowerExpHistogramRangeFnOverSubquery]'s own cap:
+	// every name [selectFnOverExpHistogramSubquery] admits (count/present/
+	// last/first_over_time, resets, changes, ts_of_first/last_over_time)
+	// is a per-series window selection, so an empty subquery matrix
+	// selects nothing and capping the selected result is the same answer
+	// as capping the matrix.
+	if state == subqueryGridEmpty {
+		node = emptySubqueryGrid(node)
+	}
+	return node, nil
 }
 
 // lowerSelectFnOverExpHistogramSubqueryInput is

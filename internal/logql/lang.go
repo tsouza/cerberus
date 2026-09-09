@@ -447,11 +447,26 @@ func parseExprTraced(ctx context.Context, query string) (syntax.Expr, error) {
 //
 // Implementation: try the strict ParseExpr first (the common case —
 // every well-formed Loki query passes). On the specific
-// empty-compatible rejection, retry with ParseExprWithoutValidation —
-// the parser-stage errors (`e.err` fields on BinOpExpr / LiteralExpr /
-// VectorExpr / VectorAggregationExpr / LabelReplaceExpr) are populated
-// during parsing itself, so the permissive path still surfaces them
-// downstream when cerberus's lowering walks the AST.
+// empty-compatible rejection, retry with
+// [syntax.ParseExprAllowingEmptyCompatibleMatchers], which runs the
+// identical validation walk with that ONE rule short-circuited.
+//
+// The retry used to go through ParseExprWithoutValidation, which drops
+// the whole walk. That made one intentionally-relaxed rule relax every
+// other parse-time rejection with it — the `err` stashed on BinOpExpr /
+// LiteralExpr / VectorExpr / VectorAggregationExpr / LabelReplaceExpr,
+// the sort/sort_desc grouping rule, and the rejections reachable only
+// through Selector() ("grouping not allowed for %s", "invalid
+// aggregation %s with unwrap"). The claim that the lowering re-raised
+// them downstream was false: those fields are unexported, `Selector()`
+// is the only path to the Selector-borne ones, and lower.go never calls
+// it. So e.g.
+// `count_over_time({app=~".*"}[5m]) + count_over_time({job="x"}[5m]) by (level)`
+// — a shape upstream rejects with "grouping not allowed for
+// count_over_time" — was accepted and answered (cerberus issue #3183).
+// Upstream scopes its own permissive parse to matcher-only internal RPC
+// fields that immediately type-assert to *MatchersExpr; every HTTP query
+// path validates.
 //
 // Detection is by error-message substring because the in-house
 // lsyntax errEmptyCompatibleMatcherRejected constant is unexported.
@@ -471,5 +486,5 @@ func ParseExprPermissive(query string) (syntax.Expr, error) {
 	if !strings.Contains(err.Error(), "empty-compatible") {
 		return nil, err
 	}
-	return syntax.ParseExprWithoutValidation(query)
+	return syntax.ParseExprAllowingEmptyCompatibleMatchers(query)
 }

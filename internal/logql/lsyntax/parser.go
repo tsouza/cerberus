@@ -23,10 +23,41 @@ func ParseExpr(input string) (Expr, error) {
 	return expr, nil
 }
 
+// ParseExprAllowingEmptyCompatibleMatchers parses a LogQL expression and
+// runs the SAME validation walk [ParseExpr] runs, with exactly one rule
+// short-circuited: [validateMatchers]'s "at least one non-empty matcher"
+// rejection.
+//
+// This is the entry point cerberus's permissive gateway contract
+// (logql.ParseExprPermissive) needs. Retrying through
+// [ParseExprWithoutValidation] instead dropped the whole walk, so ONE
+// intentionally-relaxed rule silently relaxed every other parse-time
+// rejection with it: the `err` stashed on BinOpExpr / LiteralExpr /
+// VectorExpr / VectorAggregationExpr / LabelReplaceExpr, the
+// sort/sort_desc grouping rule, and every rejection reachable only
+// through Selector() ("grouping not allowed for %s", "invalid
+// aggregation %s with unwrap", ...). Those fields are unexported and the
+// lowering never calls Selector(), so nothing downstream re-raised them
+// — the query was simply accepted (cerberus issue #3183).
+func ParseExprAllowingEmptyCompatibleMatchers(input string) (Expr, error) {
+	expr, err := ParseExprWithoutValidation(input)
+	if err != nil {
+		return nil, err
+	}
+	if err := (exprValidator{allowEmptyCompatibleMatchers: true}).expr(expr); err != nil {
+		return nil, err
+	}
+	return expr, nil
+}
+
 // ParseExprWithoutValidation parses a LogQL expression without running
-// the stream-selector validation (the "at least one non-empty matcher"
-// rule). Parse-time errors stashed on AST nodes (e.g. a bad
-// label_replace regex) still surface when the lowering walks the tree.
+// ANY of the post-parse validation walk. Parse-time errors stashed on
+// AST nodes (e.g. a bad label_replace regex) are populated but NOT
+// raised: they live in unexported fields, so a caller that skips the
+// walk accepts every shape the walk would have rejected.
+//
+// Callers wanting only the empty-compatible-matcher rule relaxed want
+// [ParseExprAllowingEmptyCompatibleMatchers] instead.
 func ParseExprWithoutValidation(input string) (expr Expr, err error) {
 	if len(input) >= maxInputSize {
 		return nil, NewParseError(fmt.Sprintf("input size too long (%d > %d)", len(input), maxInputSize), 0, 0)
@@ -69,27 +100,41 @@ func ParseExprWithoutValidation(input string) (expr Expr, err error) {
 // substring, so the wording must not drift.
 const errEmptyCompatibleMatcherRejected = "queries require at least one regexp or equality matcher that does not have an empty-compatible value. For instance, app=~\".*\" does not meet this requirement, but app=~\".+\" will"
 
-func validateExpr(expr Expr) error {
+// exprValidator runs the post-parse validation walk. It carries exactly
+// one knob so that the strict and permissive entry points cannot drift:
+// both run the same code, and the difference between them is visible as
+// a single field rather than as two parallel walks.
+type exprValidator struct {
+	// allowEmptyCompatibleMatchers short-circuits [validateMatchers]
+	// alone. Every other rule in the walk still applies. See
+	// [ParseExprAllowingEmptyCompatibleMatchers] for why this is a
+	// field on the shared walk and not a second walk.
+	allowEmptyCompatibleMatchers bool
+}
+
+func validateExpr(expr Expr) error { return exprValidator{}.expr(expr) }
+
+func (v exprValidator) expr(expr Expr) error {
 	switch e := expr.(type) {
 	case SampleExpr:
-		return validateSampleExpr(e)
+		return v.sampleExpr(e)
 	case LogSelectorExpr:
-		return validateLogSelectorExpr(e)
+		return v.logSelectorExpr(e)
 	default:
 		return NewParseError(fmt.Sprintf("unexpected expression type: %T", e), 0, 0)
 	}
 }
 
-func validateSampleExpr(expr SampleExpr) error {
+func (v exprValidator) sampleExpr(expr SampleExpr) error {
 	switch e := expr.(type) {
 	case *BinOpExpr:
 		if e.err != nil {
 			return e.err
 		}
-		if err := validateSampleExpr(e.SampleExpr); err != nil {
+		if err := v.sampleExpr(e.SampleExpr); err != nil {
 			return err
 		}
-		return validateSampleExpr(e.RHS)
+		return v.sampleExpr(e.RHS)
 	case *LiteralExpr:
 		return e.err
 	case *VectorExpr:
@@ -103,26 +148,29 @@ func validateSampleExpr(expr SampleExpr) error {
 				return err
 			}
 		}
-		return validateSampleExpr(e.Left)
+		return v.sampleExpr(e.Left)
 	case *LabelReplaceExpr:
 		if e.err != nil {
 			return e.err
 		}
-		return validateSampleExpr(e.Left)
+		return v.sampleExpr(e.Left)
 	default:
 		sel, err := e.Selector()
 		if err != nil {
 			return err
 		}
-		return validateLogSelectorExpr(sel)
+		return v.logSelectorExpr(sel)
 	}
 }
 
-func validateLogSelectorExpr(expr LogSelectorExpr) error {
+func (v exprValidator) logSelectorExpr(expr LogSelectorExpr) error {
 	switch expr.(type) {
 	case *VectorExpr:
 		return nil
 	default:
+		if v.allowEmptyCompatibleMatchers {
+			return nil
+		}
 		return validateMatchers(expr.Matchers())
 	}
 }
@@ -693,29 +741,98 @@ func (p *parser) parseOrFilter() *LineFilterExpr {
 // label filters
 // ------------------------------------------------------------------
 
+// Label-filter operator binding powers.
+//
+// Upstream's grammar (pkg/logql/syntax/syntax.y) declares precedence for
+// `or` and `and` — `%left OR` below `%left AND UNLESS` — but declares
+// NONE for the two conjunction spellings `labelFilter COMMA labelFilter`
+// and `labelFilter labelFilter` (juxtaposition). goyacc cannot compare a
+// rule with no precedence against the lookahead, so it resolves every
+// such conflict by its default: SHIFT.
+//
+// That default is not expressible as one precedence number, because it
+// fires in BOTH directions — the parser shifts a comma arriving after an
+// `or`, and shifts an `or` arriving after a comma. What it IS expressible
+// as is an asymmetric pair of binding powers: comma and juxtaposition
+// bind tighter than anything on their LEFT (so a pending `a or …`
+// reduction is always deferred) and looser than anything on their RIGHT
+// (so the right operand swallows the rest of the filter). Hence
+// [labelFilterLbp] / [labelFilterRbp] rather than a single precedence.
+//
+// The two spellings therefore come out RIGHT-associative and, from the
+// left, LOOSEST — the opposite of the tighter-than-`or`,
+// left-associative reading cerberus used to give them. The user-visible
+// difference: `| a="1", b="2" or c="3"` is `And(a, Or(b, c))` upstream
+// and was `Or(And(a, b), c)` here, which selects a different row set
+// (cerberus issue #3183). Upstream pins the shape in
+// pkg/logql/syntax/parser_test.go's
+// `| foo="bar" buzz!="blip", blop=~"boop" or fuzz==5` case:
+// `And(foo, And(buzz, Or(blop, fuzz)))`.
+const (
+	// labelFilterOrLbp / labelFilterOrRbp: `%left OR`. Left
+	// associativity is rbp = lbp + 1.
+	labelFilterOrLbp = 1
+	labelFilterOrRbp = 2
+
+	// labelFilterAndLbp / labelFilterAndRbp: `%left AND`, one level
+	// above OR.
+	labelFilterAndLbp = 3
+	labelFilterAndRbp = 4
+
+	// labelFilterConjLbp / labelFilterConjRbp: `,` and juxtaposition.
+	// The lbp is above every declared operator so the conflict always
+	// resolves as a shift; the rbp is below every one of them so the
+	// right operand extends maximally.
+	labelFilterConjLbp = 5
+	labelFilterConjRbp = 0
+)
+
 func (p *parser) parseLabelFilter() LabelFilterer {
-	left := p.parseLabelFilterAnd()
-	for p.at(tkOr) {
-		p.advance()
-		right := p.parseLabelFilterAnd()
-		left = NewOrLabelFilter(left, right)
-	}
-	return left
+	return p.parseLabelFilterAt(0)
 }
 
-func (p *parser) parseLabelFilterAnd() LabelFilterer {
+// parseLabelFilterAt is the precedence-climbing loop. minBp is the
+// binding power an operator must reach to be consumed here rather than
+// returned to the caller.
+func (p *parser) parseLabelFilterAt(minBp int) LabelFilterer {
 	left := p.parseLabelFilterAtom()
 	for {
-		switch {
-		case p.at(tkAnd) || p.at(tkComma):
-			p.advance()
-			left = NewAndLabelFilter(left, p.parseLabelFilterAtom())
-		case p.at(tkIdentifier) || p.at(tkOpenParen):
-			// juxtaposition is implicit AND
-			left = NewAndLabelFilter(left, p.parseLabelFilterAtom())
-		default:
+		lbp, rbp, isOr, ok := p.labelFilterOp()
+		if !ok || lbp < minBp {
 			return left
 		}
+		// `,`, `and` and `or` are spelled tokens and are consumed;
+		// juxtaposition is not a token at all, so there is nothing to
+		// advance past — the next atom starts immediately.
+		if p.at(tkOr) || p.at(tkAnd) || p.at(tkComma) {
+			p.advance()
+		}
+		right := p.parseLabelFilterAt(rbp)
+		if isOr {
+			left = NewOrLabelFilter(left, right)
+		} else {
+			left = NewAndLabelFilter(left, right)
+		}
+	}
+}
+
+// labelFilterOp classifies the token at the cursor as a label-filter
+// infix operator and reports its binding powers. The final bool reports
+// whether the filter continues at all.
+func (p *parser) labelFilterOp() (lbp, rbp int, isOr, ok bool) {
+	switch {
+	case p.at(tkOr):
+		return labelFilterOrLbp, labelFilterOrRbp, true, true
+	case p.at(tkAnd):
+		return labelFilterAndLbp, labelFilterAndRbp, false, true
+	case p.at(tkComma):
+		return labelFilterConjLbp, labelFilterConjRbp, false, true
+	case p.at(tkIdentifier) || p.at(tkOpenParen):
+		// Juxtaposition: two filters side by side are an implicit `and`,
+		// with the same binding powers as the comma spelling.
+		return labelFilterConjLbp, labelFilterConjRbp, false, true
+	default:
+		return 0, 0, false, false
 	}
 }
 

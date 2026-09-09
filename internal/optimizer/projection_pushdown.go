@@ -248,12 +248,40 @@ func cloneStageOverInput(stage, newInput chplan.Node) chplan.Node {
 // AggFuncs strips MetricName out from under a HAVING clause that
 // references it, and ClickHouse fails outer-scope resolution with error
 // 47 (UNKNOWN_IDENTIFIER).
+//
+// A Having reference to a name the Aggregate itself PRODUCES is the one
+// thing this must not push down. `HAVING isNotNull(Value)` over
+// `avg(Duration) AS Value` names the aggregate's OUTPUT column, which the
+// input relation does not have, so carrying it into the narrowed Scan
+// asks ClickHouse for `otel_traces.Value` and it answers error 215
+// (`not under aggregate function and not in GROUP BY keys`). Only the
+// Having-only contribution is filtered: a produced alias that ALSO names
+// a real base column (`TraceId AS TraceId`, or an aggregate over
+// `MetricName` aliased back to `MetricName`) still reaches the Scan
+// through the GroupBy / AggFunc roots, which are unfiltered.
 func aggregateColumns(a *chplan.Aggregate) []string {
 	var roots []chplan.Expr
 	roots = append(roots, a.GroupBy...)
 	roots = append(roots, aggFuncExprs(a.AggFuncs)...)
-	roots = append(roots, a.Having)
-	return stageColumns(nil, roots...)
+	cols := stageColumns(nil, roots...)
+	if a.Having == nil {
+		return cols
+	}
+	produced := make(map[string]bool, len(a.GroupByAliases)+len(a.AggFuncs))
+	for _, alias := range a.GroupByAliases {
+		produced[alias] = true
+	}
+	for _, fn := range a.AggFuncs {
+		produced[fn.Alias] = true
+	}
+	var fromHaving []string
+	for _, col := range stageColumns(nil, a.Having) {
+		if produced[col] {
+			continue
+		}
+		fromHaving = append(fromHaving, col)
+	}
+	return stageColumns(append(cols, fromHaving...))
 }
 
 // rangeWindowColumns returns the sorted, deduped set of base columns a

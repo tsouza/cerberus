@@ -132,6 +132,29 @@ func topLevelColumnsReferencedBy(labels []string, s schema.Logs) []string {
 	return out
 }
 
+// topLevelLogColumnIsNumeric reports whether a top-level OTel-CH scalar
+// column holds a NUMBER rather than a string.
+//
+// Two of the nine do: SeverityNumber (Int32 in the OTel-CH DDL) and
+// TraceFlags (UInt8). Every label value on the Loki wire is a string, so
+// a matcher against one of these has to compare its rendered form —
+// `nullIf(SeverityNumber, ”)` is a ClickHouse type error, not a
+// no-match: `{SeverityNumber="9"}` and `{TraceFlags="0"}` came back as a
+// 502 (`Code: 32 … while converting ” to Int32`) where reference Loki
+// answers with the matching streams.
+//
+// The string-typed seven are deliberately NOT wrapped: a `toString`
+// around `ServiceName` would be a semantic no-op that ClickHouse cannot
+// see through for primary-key and skip-index analysis, so it would cost
+// every `{service_name=...}` query its index pruning to fix a problem
+// those columns do not have.
+func topLevelLogColumnIsNumeric(col string, s schema.Logs) bool {
+	if col == "" {
+		return false
+	}
+	return col == s.SeverityNumberColumn || col == s.TraceFlagsColumn
+}
+
 // topLevelColumnRef returns a chplan ColumnRef pointing at the
 // top-level OTel-CH column named `col`. Used by both the inner range
 // aggregation's `by/without` resolution and the augmented-identity

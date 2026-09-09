@@ -26,7 +26,7 @@
         "guard": [
           "past returning if step \u003c 0",
           "past returning if err != nil",
-          "past returning if !ok",
+          "past returning if state == subqueryGridUnavailable",
           "past returning if err != nil",
           "if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape"
         ],
@@ -45,12 +45,12 @@
       "site": "internal/promql/histogram_native_range_fn.go:lowerExpHistogramRangeFnOverSubquery#d4ecb9e5",
       "message": "promql: histogram-valued subquery requires query eval-time context (use LowerAt)",
       "class": "internal",
-      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it",
+      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it, and the guard tests subqueryGridUnavailable specifically — the state subqueryGridCtx returns only when no evaluation anchor was threaded through, never for a window that merely spans no anchor",
       "evidence": {
         "guard": [
           "past returning if step \u003c 0",
           "past returning if err != nil",
-          "if !ok"
+          "if state == subqueryGridUnavailable"
         ],
         "callers": [
           "lowerCallOverSubquery",
@@ -59,7 +59,8 @@
         "cited": [
           "Lower",
           "LowerAt",
-          "LowerAtRange"
+          "LowerAtRange",
+          "subqueryGridCtx"
         ]
       }
     }

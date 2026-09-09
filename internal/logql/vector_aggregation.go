@@ -92,7 +92,7 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 	if rangeBucketed {
 		userAliases = aliases[:len(aliases)-1]
 	}
-	return wrapVectorAggregateForSample(agg, e, s, userAliases, rangeBucketed, bucketAlias), nil
+	return wrapVectorAggregateForSample(agg, e, s, lc, userAliases, rangeBucketed, bucketAlias), nil
 }
 
 // vectorAggregationGroupBy mirrors PromQL aggregateGroupBy, but Loki's
@@ -447,15 +447,28 @@ func buildVectorAggFunc(e *syntax.VectorAggregationExpr, _ schema.Logs) (chplan.
 //	Attributes  = map('lbl0', gkey_0, ...)    for `by (...)`
 //	            | gkey_0                        for `without (...)` (mapFilter output)
 //	            | empty Map(String,String)      for unaggregated
-//	TimeUnix    = now64(9)                      (instant mode)
-//	            | <bucketAlias>                  (range mode: per-anchor anchor_ts)
+//	TimeUnix    = <bucketAlias>                  (range mode: per-anchor anchor_ts)
+//	            | <request End>                  (instant mode, window known)
+//	            | now64(9)                       (instant mode, no window)
 //	Value       = <agg alias>
 //
 // In range mode (rangeBucketed=true) the inner Aggregate carries the
 // per-anchor timestamp under bucketAlias; the outer Project re-aliases
 // it to TimeUnix so the canonical Sample shape exposes one row per step
 // instead of collapsing to one row per series at `now64(9)`.
-func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggregationExpr, s schema.Logs, aliases []string, rangeBucketed bool, bucketAlias string) chplan.Node {
+//
+// In instant mode the sample is stamped at the REQUEST's own evaluation
+// instant (lc.End), not at query-execution time. Reference Loki stamps
+// every sample of an instant query at the requested `time`
+// (pkg/logql/evaluator.go's step evaluators carry the request's ts), so
+// `now64(9)` diverged by the whole gap between the instant the client
+// asked about and the instant ClickHouse ran the query — unbounded for
+// any dashboard querying a past instant, and the reason
+// `variants(sum by (...) (...), ...)` stamped its aggregated arm at an
+// instant appearing nowhere in the request (cerberus issue #3183).
+// A bare lowering with no window (Lang constructed without one) keeps
+// the `now64(9)` synthesis, which is the only anchor available there.
+func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx, aliases []string, rangeBucketed bool, bucketAlias string) chplan.Node {
 	var attrs chplan.Expr
 	switch {
 	case len(aliases) == 0:
@@ -470,9 +483,14 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 		attrs = &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 	}
 
-	tsExpr := chplan.NowNano()
-	if rangeBucketed {
+	var tsExpr chplan.Expr
+	switch {
+	case rangeBucketed:
 		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
+	case !lc.End.IsZero():
+		tsExpr = timeLiteralExpr(lc.End)
+	default:
+		tsExpr = chplan.NowNano()
 	}
 
 	return &chplan.Project{

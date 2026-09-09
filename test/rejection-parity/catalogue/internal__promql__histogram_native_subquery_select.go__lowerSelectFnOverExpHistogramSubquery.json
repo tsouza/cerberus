@@ -27,7 +27,7 @@
         "guard": [
           "past returning if step \u003c 0",
           "past returning if err != nil",
-          "past returning if !ok",
+          "past returning if state == subqueryGridUnavailable",
           "past returning if err != nil",
           "if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape"
         ],
@@ -48,12 +48,12 @@
       "site": "internal/promql/histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery#d4ecb9e5",
       "message": "promql: histogram-valued subquery requires query eval-time context (use LowerAt)",
       "class": "internal",
-      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it, and selectFnOverExpHistogramSubquery's own subqueryHasEvalAnchor check already declines to match in that case, so this branch is unreachable even from that entry point",
+      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it, and selectFnOverExpHistogramSubquery's own subqueryHasEvalAnchor check already declines to match in that case — subqueryHasEvalAnchor is false exactly when subqueryGridCtx reports subqueryGridUnavailable, which is the state this guard tests — so this branch is unreachable even from that entry point",
       "evidence": {
         "guard": [
           "past returning if step \u003c 0",
           "past returning if err != nil",
-          "if !ok"
+          "if state == subqueryGridUnavailable"
         ],
         "callers": [
           "lowerCallOverSubquery",
@@ -65,6 +65,7 @@
           "LowerAt",
           "LowerAtRange",
           "selectFnOverExpHistogramSubquery",
+          "subqueryGridCtx",
           "subqueryHasEvalAnchor"
         ]
       }

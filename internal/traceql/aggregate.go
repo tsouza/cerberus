@@ -86,25 +86,56 @@ const (
 // correct the case where the arbitrarily-`any()`-picked row isn't
 // actually the trace's root (see anyAggFunc's doc comment, issue #1481).
 func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (chplan.Node, error) {
-	valueFunc, needsNestedSet, err := scalarAggLeaf(agg, s, aggValueAlias)
+	leaf, err := scalarAggLeaf(agg, s, aggValueAlias)
 	if err != nil {
 		return nil, err
 	}
-	if needsNestedSet {
-		prev = annotateNestedSet(prev, s)
-	}
+	prev = leaf.prepareInput(prev, s)
 	// spansetEnvelopeAggFuncs (group_coalesce.go) returns the same
 	// envelope tail group()/coalesce() use, with a count-shaped Value
 	// in slot 0; swap in this aggregate's own valueFunc so the two
 	// AggFunc lists can't drift out of lock-step.
 	envelopeAggFuncs := spansetEnvelopeAggFuncs(s)
-	envelopeAggFuncs[0] = valueFunc
-	return &chplan.Aggregate{
+	envelopeAggFuncs[0] = leaf.fn
+	node := chplan.Node(&chplan.Aggregate{
 		Input:          prev,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
 		GroupByAliases: []string{aggTraceIDAlias},
 		AggFuncs:       envelopeAggFuncs,
-	}, nil
+	})
+	if leaf.nullable {
+		node = dropNullValueRows(node, aggValueAlias)
+	}
+	return node, nil
+}
+
+// scalarAggLeafResult is what scalarAggLeaf computes about one aggregate:
+// the AggFunc itself plus the two facts its caller must act on before the
+// AggFunc can be used. Grouped into a struct rather than returned as a
+// widening tuple so neither flag can be silently transposed at the call
+// site.
+type scalarAggLeafResult struct {
+	fn chplan.AggFunc
+	// needsNestedSet is true when the leaf reads a nested-set intrinsic
+	// (`min(nestedSetLeft)`), which has no flat OTel-CH column: the
+	// aggregate's Input must be wrapped in annotateNestedSet before the
+	// AggFunc's Args can resolve.
+	needsNestedSet bool
+	// nullable is true when the leaf reads a Map-carried attribute and so
+	// went through coerceMapNumericAggInput's toFloat64OrNull wrap: every
+	// span it skipped contributes nothing, so the aggregate answers NULL
+	// for a trace whose spans were ALL skipped — the case reference Tempo
+	// drops out of the answer entirely. See dropNullValueRows.
+	nullable bool
+}
+
+// prepareInput returns the aggregate Input the leaf needs — the caller's
+// node, wrapped in the nested-set annotation when the leaf reads one.
+func (r scalarAggLeafResult) prepareInput(prev chplan.Node, s schema.Traces) chplan.Node {
+	if r.needsNestedSet {
+		return annotateNestedSet(prev, s)
+	}
+	return prev
 }
 
 // scalarAggLeaf lowers a single TraceQL aggregate (`count()`,
@@ -119,43 +150,49 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 // must wrap the aggregate's shared Input in annotateNestedSet before
 // this AggFunc's Args can resolve. Reference Tempo materialises the
 // same positions, so `/api/search` accepts it.
-func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (chplan.AggFunc, bool, error) {
+func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (scalarAggLeafResult, error) {
 	chFunc, err := mapAggregateOp(agg.Op())
 	if err != nil {
-		return chplan.AggFunc{}, false, err
+		return scalarAggLeafResult{}, err
 	}
 	if agg.Op() == traceql.AggregateCount {
 		// count() takes no inner expression — aggregate a constant.
-		return chplan.AggFunc{
+		return scalarAggLeafResult{fn: chplan.AggFunc{
 			Fn:    chFunc,
 			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
 			Alias: alias,
-		}, false, nil
+		}}, nil
 	}
 	// sum/avg/max/min — read the inner FieldExpression via the fork
 	// accessor and lower it.
 	inner := agg.InnerExpr()
 	if inner == nil {
-		return chplan.AggFunc{}, false, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", agg.Op())
+		return scalarAggLeafResult{}, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", agg.Op())
 	}
 	if col, ok := nestedSetColumnForFieldExpr(inner); ok {
-		return chplan.AggFunc{Fn: chFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: alias}, true, nil
+		return scalarAggLeafResult{
+			fn:             chplan.AggFunc{Fn: chFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: alias},
+			needsNestedSet: true,
+		}, nil
 	}
 	arg, err := lowerFieldExpr(inner, s)
 	if err != nil {
-		return chplan.AggFunc{}, false, err
+		return scalarAggLeafResult{}, err
 	}
 
 	// Map(String, String) coercion: when the aggregate input is a
 	// FieldAccess against SpanAttributes / ResourceAttributes the value
 	// is a String. ClickHouse refuses `max(String) > 100` with
-	// NO_COMMON_TYPE; wrap in `toFloat64OrZero(...)` at lowering time so
+	// NO_COMMON_TYPE; wrap in `toFloat64OrNull(...)` at lowering time so
 	// the aggregate sees a Float64 and the downstream numeric comparison
 	// resolves. Intrinsic ColumnRefs (Duration etc.) lower to a bare
 	// ColumnRef and pass through unchanged.
-	arg = coerceMapNumericAggInput(arg)
+	arg, nullable := coerceMapNumericAggInput(arg)
 
-	return chplan.AggFunc{Fn: chFunc, Args: []chplan.Expr{arg}, Alias: alias}, false, nil
+	return scalarAggLeafResult{
+		fn:       chplan.AggFunc{Fn: chFunc, Args: []chplan.Expr{arg}, Alias: alias},
+		nullable: nullable,
+	}, nil
 }
 
 // traceStartNsAggFunc returns `min(toUnixTimestamp64Nano(<Timestamp>))
@@ -256,28 +293,99 @@ func minAggFunc(col, alias string) chplan.AggFunc {
 
 // coerceMapNumericAggInput wraps Map-subscript expressions
 // (`SpanAttributes['foo']`, `ResourceAttributes['foo']`) with
-// `toFloat64OrZero(...)` so they can flow into a numeric CH aggregate
+// `toFloat64OrNull(...)` so they can flow into a numeric CH aggregate
 // (`max`/`min`/`sum`/`avg`/`quantiles`). The OTel-CH attribute carriers
 // are typed `Map(String, String)`, so a bare subscript returns String —
 // CH then refuses to compare the aggregate against a numeric literal
-// with NO_COMMON_TYPE.
+// with NO_COMMON_TYPE. Reports whether it wrapped, so the caller knows
+// the aggregate's result is now Nullable.
 //
-// The `OrZero` variant silently coerces strings that don't parse as
-// numbers (matches Loki's silent-fallback for typed label filters via
-// PR #479).
+// Why `OrNull` and not `OrZero`: the map subscript yields ” for a key
+// the span never carried. Reference Tempo does not fold that span into
+// the aggregate — it SKIPS it, on both paths. The spanset aggregates
+// test `val.IsNil()` and `continue` — the guard each of
+// pkg/traceql/ast_execute.go's Aggregate.evaluate avg/max/min/sum arms
+// opens its span loop with; the metrics path funnels the read through
+// FloatizeAttribute (pkg/traceql/engine_metrics.go), which answers
+// TypeNil for the missing key, and NewOverTimeAggregator turns TypeNil
+// into the NaN sentinel its reducers skip (that constructor's default
+// getSpanAttValue closure in engine_metrics.go,
+// engine_metrics_functions.go). `toFloat64OrNull` reproduces that: NULL,
+// which every ClickHouse aggregate ignores. `OrZero` instead folded the
+// attribute-less span in as a real 0 — `avg(span.size)` over spans
+// carrying 10 and 20 plus one carrying nothing answered 10 where
+// reference answers 15, and `min` answered 0 where reference answers 10.
+//
+// The wrap also nulls a key that IS present but whose value is not a
+// number. On the metrics path that is again exactly reference:
+// FloatizeAttribute maps the NaN that Static.Float returns for every
+// non-numeric type (ast.go) back to TypeNil. On the spanset-aggregate
+// path reference instead keeps such a span — a TypeString value is not
+// nil — and then cannot do arithmetic with it: sumInto returns without
+// summing when the two Statics disagree on type while the avg divisor
+// still counts the span, and compare falls back to ordering by type
+// ordinal (ast.go). The result is not a number the attribute ever
+// carried. Skipping is the only reading that keeps a numeric aggregate
+// numeric, so cerberus skips on both paths rather than reproducing that.
+//
+// Skipping also matches what the FILTER path in this package already
+// does — coerceFieldAccess in lower.go wraps with `toFloat64OrNull`, and
+// its doc comment derives the same reference semantics for comparisons.
+// The previous `OrZero` here justified itself by analogy to Loki's
+// typed-label-filter fallback, which is a different language with a
+// different reference engine and says nothing about what Tempo answers.
 //
 // Pass-through for everything else: intrinsic ColumnRefs (Duration,
 // already Int64) need no cast; pre-wrapped FuncCalls (e.g. an
 // arithmetic Binary that was already coerced) keep their existing
 // shape.
-func coerceMapNumericAggInput(expr chplan.Expr) chplan.Expr {
+func coerceMapNumericAggInput(expr chplan.Expr) (chplan.Expr, bool) {
 	if _, ok := expr.(*chplan.FieldAccess); ok {
 		return &chplan.FuncCall{
-			Fn:   chplan.FnToFloat64OrZero,
+			Fn:   chplan.FnToFloat64OrNull,
 			Args: []chplan.Expr{expr},
-		}
+		}, true
 	}
-	return expr
+	return expr, false
+}
+
+// dropNullValueRows wraps agg in the `isNotNull(<alias>)` filter that drops a
+// trace whose every span was skipped by the NULL coercion above.
+//
+// Reference Tempo drops the spanset outright in that case: each of the four
+// spanset aggregates starts from a nil accumulator and, having skipped every
+// span, hits the post-loop `if sum == nil { continue }` / `maxS == nil` /
+// `minS == nil` guard each of pkg/traceql/ast_execute.go's
+// Aggregate.evaluate avg/max/min/sum arms closes with — the trace never
+// reaches the response. ClickHouse instead emits the group with a NULL
+// value, because a GROUP BY key with rows still produces a row; this filter
+// is what turns that NULL back into "no row".
+//
+// It matters even though `{} | avg(span.size) > 5` already drops the NULL
+// through its own comparison: a trailing aggregate with no comparison
+// (`{} | avg(span.size)`) has no such filter, and the /api/search wire
+// shape has no representation for a NULL Value — the spec round-trip
+// surfaces it as a literal `null`, and the production scan binds a plain
+// float64 destination (chclient.Sample.Value), which a NULL leaves at its
+// zero value. Either way the trace is reported with a fabricated aggregate
+// instead of being omitted.
+//
+// A Filter ABOVE the Aggregate rather than the Aggregate's own `Having`
+// slot: `Value` is the aggregate's OUTPUT alias, and the scalar-filter path
+// already stacks exactly this shape (`Filter predicate=(Value > 0)` over the
+// same Aggregate), so the optimizer's projection pushdown reads the
+// reference as an output column. Put in `Having`, the same ColumnRef is
+// walked as an INPUT of the Aggregate and pushed down into the scan's
+// projection list, which then names a column the table does not have
+// (ClickHouse: `Column 'otel_traces.Value' is not under aggregate function`).
+func dropNullValueRows(agg chplan.Node, alias string) chplan.Node {
+	return &chplan.Filter{
+		Input: agg,
+		Predicate: &chplan.FuncCall{
+			Fn:   chplan.FnIsNotNull,
+			Args: []chplan.Expr{&chplan.ColumnRef{Name: alias}},
+		},
+	}
 }
 
 // mapAggregateOp turns a TraceQL AggregateOp into the CH agg function
