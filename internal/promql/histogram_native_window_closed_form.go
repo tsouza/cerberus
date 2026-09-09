@@ -470,6 +470,15 @@ func expHistogramWindowClosedFormBucketsExpr(
 // applies it position by position across an array of arrays. Plain sum,
 // not the compensated reducer, for the reason
 // [expHistogramDenseContribsExpr] gives.
+//
+// The `-ForEach` combinators SKIP a NULL element per POSITION rather than
+// per row — pinned empirically in internal/chsql's
+// TestForEachCombinator_AllFiveFnsSkipNullPerPosition — which would make
+// a target no retained row touched come back NULL instead of 0, and a
+// Nullable ladder is one the production cursor refuses to scan. It cannot
+// arise here: the arrays folded are `arrayReduceInRanges('sum', …)` over
+// a non-nullable `Array(Float64)`, which answers 0 for an empty range and
+// is non-nullable itself, so every position has a real contributor.
 const expHistogramWindowDenseSumAggName = expHistogramDenseSumAggName + "ForEach"
 
 // The two element parameters [scaleArrayExpr] is called with. They are
