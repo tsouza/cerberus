@@ -100,16 +100,24 @@ func TestExpHistogramPairLadder_ChDB_SortAgreesWithPositionPermutation(t *testin
 			sorted := func(list string) string {
 				return pairLadderSortSpelling + list + ", ts)"
 			}
+			// The control gathers through the REVERSED permutation. Its
+			// job is to fail the equality, which is what makes the two
+			// assertions above mean something: without it a case whose
+			// arrays compared equal for some reason unrelated to the
+			// permutation — an empty array, say — would pass while
+			// testing nothing.
+			control := "arrayMap(p -> ladder[p], arrayReverse(" + positions + "))"
 			query := fmt.Sprintf(
-				"WITH [%s] AS ts, [%s] AS ladder SELECT %s = %s AS ladders_agree, %s = %s AS keys_agree",
+				"WITH [%s] AS ts, [%s] AS ladder SELECT %s = %s AS ladders_agree, %s = %s AS keys_agree, %s = %s AS control_agrees",
 				strings.Join(stamps, ", "), strings.Join(tc.ladders, ", "),
 				gathered("ladder"), sorted("ladder"),
 				gathered("ts"), sorted("ts"),
+				control, sorted("ladder"),
 			)
 			// ClickHouse answers a comparison as UInt8, which the chdb
 			// driver hands back as a number rather than a bool.
-			var laddersAgree, keysAgree uint8
-			if err := fixture.db.QueryRow(query).Scan(&laddersAgree, &keysAgree); err != nil {
+			var laddersAgree, keysAgree, controlAgrees uint8
+			if err := fixture.db.QueryRow(query).Scan(&laddersAgree, &keysAgree, &controlAgrees); err != nil {
 				t.Fatalf("query %s: %v", query, err)
 			}
 			if keysAgree != 1 {
@@ -118,6 +126,10 @@ func TestExpHistogramPairLadder_ChDB_SortAgreesWithPositionPermutation(t *testin
 			if laddersAgree != 1 {
 				t.Fatalf("%s: gathering the ladder by the position permutation differs from sorting it directly — "+
 					"the mask would pair one row's scalars with another row's buckets", name)
+			}
+			if controlAgrees != 0 {
+				t.Fatalf("%s: the REVERSED permutation also compares equal, so this case's assertions cannot fail — "+
+					"pick ladder elements that distinguish an order", name)
 			}
 		})
 	}
