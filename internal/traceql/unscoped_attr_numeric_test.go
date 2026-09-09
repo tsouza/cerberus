@@ -129,18 +129,20 @@ func TestIsNumericExprRejectsTheUnscopedAttributeShape(t *testing.T) {
 	}
 }
 
-// TestIsAttributeReadRequiresBothCoalesceArms pins the conjunction in
-// isAttributeRead's FuncCall arm: BOTH branches of the span-then-resource
-// coalesce must themselves be attribute reads. A half-matching FnIf — one arm
-// an attribute read, the other any other expression — is not the shape
-// unscopedAttributeExpr builds, and treating it as one would extend the
-// "bare attribute" numeric intent to a call this lowering never produced.
+// TestIsAttributeReadRecognisesOnlyTheCoalesceShape pins every conjunct of
+// isAttributeRead's FuncCall arm. The shape it recognises is exactly the
+// span-then-resource coalesce unscopedAttributeExpr builds — `if()`, three
+// arguments, and BOTH value arms themselves attribute reads — and each of
+// those conditions must be able to fail on its own, or the predicate extends
+// the "bare attribute" numeric intent to calls this lowering never produced.
 //
-// The `&&` between the two arm checks survived mutation to `||` because every
-// existing case supplied two attribute reads or none. These cases supply
-// exactly one, on each side in turn, so the operator is pinned in both
-// directions.
-func TestIsAttributeReadRequiresBothCoalesceArms(t *testing.T) {
+// The function-identity case is what tells the conjunction apart from a
+// disjunction over the same operands. `multiIf(cond, then, else)` has the
+// coalesce's arity and two attribute-read arms and is still not the coalesce,
+// so it answers false only because the `if()` check is AND-ed with the rest.
+// Without it, `v.Fn == chplan.FnIf && len(v.Args) == 3` and
+// `v.Fn == chplan.FnIf || len(v.Args) == 3` agree on every case here.
+func TestIsAttributeReadRecognisesOnlyTheCoalesceShape(t *testing.T) {
 	t.Parallel()
 
 	attr := func() chplan.Expr {
@@ -153,17 +155,19 @@ func TestIsAttributeReadRequiresBothCoalesceArms(t *testing.T) {
 
 	for _, c := range []struct {
 		name      string
+		fn        chplan.Fn
 		then, els chplan.Expr
 		want      bool
 	}{
-		{"both arms are attribute reads", attr(), attr(), true},
-		{"only the then-arm is an attribute read", attr(), notAttr(), false},
-		{"only the else-arm is an attribute read", notAttr(), attr(), false},
-		{"neither arm is an attribute read", notAttr(), notAttr(), false},
+		{"both arms are attribute reads", chplan.FnIf, attr(), attr(), true},
+		{"only the then-arm is an attribute read", chplan.FnIf, attr(), notAttr(), false},
+		{"only the else-arm is an attribute read", chplan.FnIf, notAttr(), attr(), false},
+		{"neither arm is an attribute read", chplan.FnIf, notAttr(), notAttr(), false},
+		{"a three-argument call that is not if()", chplan.FnMultiIf, attr(), attr(), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			e := &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{contains, c.then, c.els}}
+			e := &chplan.FuncCall{Fn: c.fn, Args: []chplan.Expr{contains, c.then, c.els}}
 			if got := isAttributeRead(e); got != c.want {
 				t.Fatalf("isAttributeRead(%s) = %v, want %v", c.name, got, c.want)
 			}

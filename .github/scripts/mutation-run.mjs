@@ -114,6 +114,28 @@ const perMutantResidentMemoryMax = '1GiB';
 // TIMED OUT.
 const perMutantMemoryHoldGraceSeconds = 30;
 
+// survivorDiffStatuses asks gremlins to print, for every LIVED mutant, the
+// unified diff between the original source and the source it actually ran. `l`
+// is gremlins' letter for LIVED, and it is the only status here on purpose:
+// survivors are the ones a reader has to reason about, and the killed majority
+// would bury them.
+//
+// A mutant is an edit to the AST, not to the text, and gremlins re-prints the
+// mutated file with `go/printer`. So a mutation that changes an operator's
+// PRECEDENCE re-parenthesises the expression to preserve the tree, and the
+// mutant does not read like the operator swapped in place. INVERT_LOGICAL on
+// the first `&&` of `a && b && c` gives `(a || b) && c`, never `a || b && c`;
+// INVERT_BITWISE on `&`/`|` moves across Go precedence levels the same way.
+// Both mutants are real and they are killed by different tests.
+//
+// Without the diff, the report says only `INVERT_LOGICAL at lower.go:2203:30`
+// and a reader reconstructs the mutant by swapping the operator in the source —
+// which yields the OTHER program, and then "the shard reports a survivor its own
+// tree kills" (tsouza/cerberus#3215: two tests were written against the
+// text-level mutant, neither of which the AST-level one is affected by). The
+// tool already knows exactly what it ran; printing it is the whole fix.
+const survivorDiffStatuses = 'l';
+
 const goDurationUnitSeconds = { ns: 1e-9, us: 1e-6, ms: 1e-3, s: 1, m: 60, h: 3600 };
 
 function required(name) {
@@ -322,6 +344,8 @@ function runGremlins({ report, budgetSeconds, ledger, diffRef = '' }) {
     '--output',
     report,
     '--on-shutdown-status=not-run',
+    '--output-diff-statuses',
+    survivorDiffStatuses,
     '--timeout-max',
     `${bounds.runSeconds}s`,
     '--compile-allowance',

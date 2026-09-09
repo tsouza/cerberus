@@ -1430,6 +1430,41 @@ Prior PRs #504 and #664 carry pattern-#3 refactors. They are not
 reverted (their diffs are now load-bearing for the published
 thresholds), but new violations should follow remedy #1 or #2.
 
+#### Read the mutant; do not retype it
+
+Both remedies need to know what the mutant IS, and a survivor's
+`(file, line, column, mutator)` tuple does not say. gremlins mutates the
+parsed **AST** and re-prints the file with `go/printer`, so a mutation
+that moves an operator to a different precedence level comes back
+re-parenthesised in order to preserve the tree. INVERT_LOGICAL on the
+first `&&` of `a && b && c` is `(a || b) && c`, never `a || b && c`;
+INVERT_BITWISE crosses Go's `&` / `|` levels the same way. The two
+programs are both legal, both real, and killed by different tests.
+
+So retyping the mutant from the report — swapping the operator at that
+line and column in an editor — can adjudicate a mutant the lane never
+ran. That is a live failure mode, not a hypothetical. Cerberus issue #3215
+records two tests written against the text-level rewrite of the
+`isAttributeRead` predicate in `internal/traceql/lower.go`, and then the
+conclusion that the lane must be testing stale sources — while the lane
+was reporting the AST-level mutant correctly the whole time.
+
+The lane prints the answer. `.github/scripts/mutation-run.mjs` passes
+`--output-diff-statuses l`, so every LIVED mutant's log line is followed
+by a unified diff of the original source against the source that
+actually ran:
+
+```text
+ LIVED INVERT_LOGICAL at lower.go:2226:30
+-    return v.Fn == chplan.FnIf && len(v.Args) == 3 &&
++    return (v.Fn == chplan.FnIf || len(v.Args) == 3) &&
+         isAttributeRead(v.Args[1]) && isAttributeRead(v.Args[2])
+```
+
+Read that diff before writing either a test or an equivalence note. It
+is asked for on survivors only: killed mutants need no adjudication, and
+printing a diff per kill would bury the handful that do.
+
 #### When a capacity mutant is equivalent
 
 "An `ARITHMETIC_BASE` mutant on a `make` capacity argument is
