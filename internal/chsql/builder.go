@@ -3775,27 +3775,42 @@ func (s *QueryBuilder) writeInto(b *Builder) {
 			}
 		}
 	}
-	if s.hasLimit {
-		b.sb.WriteString(" LIMIT ")
-		b.sb.WriteString(strconv.FormatInt(s.limit, 10))
-		hasLimitBy := len(s.limitBy) > 0
+	s.writeLimit(b)
+}
+
+// writeLimit renders the LIMIT clause and whichever of its two mutually
+// exclusive modifiers the statement carries: ClickHouse's `WITH TIES`
+// (see [QueryBuilder.LimitWithTies]) or the `BY <expr>` partition (see
+// [QueryBuilder.LimitBy]). A non-positive count renders nothing at all,
+// modifiers included — `hasLimit` is the single gate, because CH has no
+// spelling for either modifier without a count.
+//
+// Split out of [QueryBuilder.writeInto] rather than inlined with the
+// other clauses: writeInto is one linear walk of the SELECT grammar and
+// this is the only clause of it with a branch inside a branch.
+func (s *QueryBuilder) writeLimit(b *Builder) {
+	if !s.hasLimit {
+		return
+	}
+	b.sb.WriteString(" LIMIT ")
+	b.sb.WriteString(strconv.FormatInt(s.limit, 10))
+	hasLimitBy := len(s.limitBy) > 0
+	switch {
+	case s.limitTies:
 		switch {
-		case s.limitTies:
-			switch {
-			case len(s.orderBy) == 0:
-				panic("chsql: LIMIT ... WITH TIES requires an ORDER BY")
-			case hasLimitBy:
-				panic("chsql: LIMIT ... WITH TIES cannot be combined with LIMIT ... BY")
-			}
-			b.sb.WriteString(" WITH TIES")
+		case len(s.orderBy) == 0:
+			panic("chsql: LIMIT ... WITH TIES requires an ORDER BY")
 		case hasLimitBy:
-			b.sb.WriteString(" BY ")
-			for i, f := range s.limitBy {
-				if i > 0 {
-					b.sb.WriteString(", ")
-				}
-				f(b)
+			panic("chsql: LIMIT ... WITH TIES cannot be combined with LIMIT ... BY")
+		}
+		b.sb.WriteString(" WITH TIES")
+	case hasLimitBy:
+		b.sb.WriteString(" BY ")
+		for i, f := range s.limitBy {
+			if i > 0 {
+				b.sb.WriteString(", ")
 			}
+			f(b)
 		}
 	}
 }
