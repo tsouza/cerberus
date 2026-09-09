@@ -93,6 +93,16 @@ const (
 	// itself is data CH interprets, not a chsql-resolved Fn.
 	FnArrayReduce Fn = "arrayReduce"
 
+	// arrayReduceInRanges(aggNameString, ranges, arr, ...) — one aggregate
+	// result per (offset, length) range of arr, where ranges is an
+	// Array(Tuple(UInt, UInt)) of 1-based offsets. It is arrayReduce applied
+	// to a whole LIST of sub-arrays at once, which is what lets a caller
+	// fold arr slice-by-slice without a lambda that CAPTURES arr — the
+	// capture ClickHouse pays for by replicating the captured array once per
+	// element of the enclosing loop. The aggregate name is data CH
+	// interprets, exactly as for FnArrayReduce.
+	FnArrayReduceInRanges Fn = "arrayReduceInRanges"
+
 	// arrayReverse(arr) — arr with element order reversed.
 	FnArrayReverse Fn = "arrayReverse"
 

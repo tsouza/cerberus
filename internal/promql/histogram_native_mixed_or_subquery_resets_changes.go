@@ -145,8 +145,8 @@ func mixedPairCountAggs(windowFn string, histSchema schema.Metrics) []chplan.Agg
 // [mixedPairVerdictExpr] renders to the single float reference publishes
 // — the number of condemned pairs — the same `arraySum` + Float64 cast
 // [expHistogramPairCountExpr] applies to the all-histogram mask.
-func mixedPairCountExpr(windowFn string, histSchema schema.Metrics) chplan.Expr {
-	mask := mixedPairVerdictExpr(windowFn, histSchema)
+func mixedPairCountExpr(windowFn string, histSchema schema.Metrics, densified bool) chplan.Expr {
+	mask := mixedPairVerdictExpr(windowFn, histSchema, densified)
 	return toFloat64Expr(&chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{mask}})
 }
 
@@ -154,7 +154,7 @@ func mixedPairCountExpr(windowFn string, histSchema schema.Metrics) chplan.Expr 
 // [mixedPairCountExpr] instead of the all-histogram
 // [expHistogramPairCountExpr] — the type-aware sibling projecting the
 // per-series pair count alongside the grouping's own key columns.
-func mixedPairCountStage(input chplan.Node, windowFn string, keyAliases []string, histSchema schema.Metrics) chplan.Node {
+func mixedPairCountStage(input chplan.Node, windowFn string, keyAliases []string, histSchema schema.Metrics, densified bool) chplan.Node {
 	projs := make([]chplan.Projection, 0, len(keyAliases)+1)
 	for _, name := range keyAliases {
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
@@ -162,7 +162,7 @@ func mixedPairCountStage(input chplan.Node, windowFn string, keyAliases []string
 	return &chplan.Project{
 		Input: input,
 		Projections: append(projs, chplan.Projection{
-			Expr:  mixedPairCountExpr(windowFn, histSchema),
+			Expr:  mixedPairCountExpr(windowFn, histSchema, densified),
 			Alias: histSchema.ValueColumn,
 		}),
 	}
@@ -188,9 +188,9 @@ func mixedPairCountStage(input chplan.Node, windowFn string, keyAliases []string
 // set it wraps, so it is positionally aligned with the Value / discriminator
 // arrays this function reads by the same construction those siblings rely
 // on.
-func mixedPairVerdictExpr(windowFn string, histSchema schema.Metrics) chplan.Expr {
+func mixedPairVerdictExpr(windowFn string, histSchema schema.Metrics, densified bool) chplan.Expr {
 	prevParam, currParam := paramResetPrevRow, paramResetCurrRow
-	histVerdict := expHistogramResetVerdictExpr()
+	histVerdict := expHistogramResetVerdictExpr(densified)
 	if windowFn == changesWindowFn {
 		prevParam, currParam = paramChangePrevRow, paramChangeCurrRow
 		histVerdict = expHistogramChangeVerdictExpr(histSchema)
@@ -316,6 +316,7 @@ func lowerMixedOrSubqueryResetsOrChangesInput(mixedRel chplan.Node, sub *parser.
 	windowed := mixedPairCountStage(
 		minSamplesFilter(selectFnSubqueryNameGuard(windowFn, group, s, ctx), stalenessMinSamples),
 		windowFn, []string{s.AttributesColumn}, histSchema,
+		expHistogramDensifiedResetMaskEligible(ctx.lowerers),
 	)
 
 	if ctx.rangeMode() && subqueryPinned(sub) {
@@ -361,6 +362,7 @@ func lowerMixedOrSubqueryResetsRange(mixedRel chplan.Node, sub *parser.SubqueryE
 	perSeries := mixedPairCountStage(
 		selectFnSubqueryNameGuard(windowFn, fanout, s, ctx),
 		windowFn, []string{stepGridAnchorColumn, s.AttributesColumn}, histSchema,
+		expHistogramDensifiedResetMaskEligible(ctx.lowerers),
 	)
 	return expHistogramPairCountProjection(perSeries, anchorRef, s)
 }

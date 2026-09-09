@@ -37,7 +37,7 @@ func TestMixedPairCountStage_ProjectionsCapacityIsTight(t *testing.T) {
 	input := &chplan.Scan{Table: "dummy"}
 	keyAliases := []string{"step_anchor", "attrs_alias"}
 
-	node := mixedPairCountStage(input, resetsWindowFn, keyAliases, histSchema)
+	node := mixedPairCountStage(input, resetsWindowFn, keyAliases, histSchema, true)
 	proj, ok := node.(*chplan.Project)
 	if !ok {
 		t.Fatalf("node = %T, want *chplan.Project", node)
@@ -104,8 +104,8 @@ func TestMixedPairVerdictExpr_WindowFnSelectsBranch(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	histSchema := histogramProjectionSchema(s)
 
-	resetsParams := innerPairLambdaParams(t, mixedPairVerdictExpr(resetsWindowFn, histSchema))
-	changesParams := innerPairLambdaParams(t, mixedPairVerdictExpr(changesWindowFn, histSchema))
+	resetsParams := innerPairLambdaParams(t, mixedPairVerdictExpr(resetsWindowFn, histSchema, true))
+	changesParams := innerPairLambdaParams(t, mixedPairVerdictExpr(changesWindowFn, histSchema, true))
 
 	if resetsParams[0] != paramResetPrevRow || resetsParams[1] != paramResetCurrRow {
 		t.Fatalf("resets params = %v, want [%q %q] (mutant `==`->`!=` at "+

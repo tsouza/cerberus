@@ -207,6 +207,13 @@ type histogramWindowInputs struct {
 	// caller that never resolves the strategy gets the shared fold.
 	closedFormEligible bool
 
+	// densifiedResetMask carries the ExpHistogramResetMask lowerer's
+	// answer down to the reshape, on this struct and for the identical
+	// reason closedFormEligible rides here. The zero value is the
+	// conservative reading, so a caller that never resolves the strategy
+	// gets the per-target rendering.
+	densifiedResetMask bool
+
 	// resets is the per-series whole-histogram counter-reset mask
 	// (hqWindowResetsAlias), or nil where each component decides its own
 	// reset — see counterIncreaseFold.
@@ -246,6 +253,21 @@ type histogramWindowInputs struct {
 	// nil everywhere else, which reproduces the pre-existing inline
 	// computation unchanged.
 	hoistedFactor chplan.Expr
+}
+
+// withLowerers stamps every lowering-table-derived strategy reading onto
+// in and returns the result.
+//
+// The two readings it resolves — the closed-form bucket fold and the
+// densified reset mask — are set together here rather than at each of the
+// seven window-input build sites, because a site that resolved one and
+// forgot the other would silently fall back to the slower rendering with
+// nothing failing: both arms answer identically, which is exactly what
+// makes a missed assignment invisible.
+func (in histogramWindowInputs) withLowerers(l RangeLowerers) histogramWindowInputs {
+	in.closedFormEligible = expHistogramClosedFormEligible(l)
+	in.densifiedResetMask = expHistogramDensifiedResetMaskEligible(l)
+	return in
 }
 
 // histogramWindowFold maps a matched range-vector function to the

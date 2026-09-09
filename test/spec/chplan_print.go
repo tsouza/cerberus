@@ -1093,6 +1093,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnArrayPopFront:                    "FnArrayPopFront",
 	chplan.FnArrayPushBack:                    "FnArrayPushBack",
 	chplan.FnArrayReduce:                      "FnArrayReduce",
+	chplan.FnArrayReduceInRanges:              "FnArrayReduceInRanges",
 	chplan.FnArrayReverse:                     "FnArrayReverse",
 	chplan.FnArraySlice:                       "FnArraySlice",
 	chplan.FnArraySort:                        "FnArraySort",
