@@ -270,19 +270,32 @@ func mixedVVHistogramFieldsExpr(ne bool) chplan.Expr {
 // [chplan.Filter] keeping only the combinations `vectorElemBinop` does
 // not error on — float,float satisfying the comparison always; plus,
 // for `==`/`!=` only, histogram,histogram satisfying the structural
-// field-equality/inequality — forwarding L's own canonical quartet
-// (MetricName UNCHANGED — comparisons never changesMetricSchema),
-// Histogram*Column fields, and discriminator, ALL UNCONDITIONALLY from L
-// regardless of Card: reference always preserves vector1's (the
-// operator's syntactic LHS's) own sample for a bare V-V comparison, and
-// that choice is independent of which side group_left()/group_right()
-// names as "many". Only the output Attributes and Timestamp are
-// Card-aware (via [mixedVVOutputAttributesExpr] / [mixedVVManySide]),
-// mirroring plain [chplan.VectorJoin]'s own split between its
-// hardcoded-LHS bare-comparison Value and its `outerSide`-picked
-// Timestamp (internal/chsql/vector_join.go). See this file's header for
-// why an ordering op (`<`/`<=`/`>`/`>=`) never admits a histogram,
-// histogram pair.
+// field-equality/inequality.
+//
+// The forwarded output splits along the same seam plain
+// [chplan.VectorJoin] splits on (internal/chsql/vector_join.go), because
+// reference splits there too:
+//
+//   - The SAMPLE — Value, the nine Histogram*Column fields, and the
+//     discriminator — is vector1's, from L unconditionally. Reference
+//     un-swaps the operand values inside its own `doBinOp` closure
+//     (`promql/engine.go`'s `VectorBinop`) precisely so `vectorElemBinop`
+//     returns the SYNTACTIC LHS's sample for a bare comparison, whatever
+//     the Card.
+//   - The LABELS — Attributes, MetricName and the reported Timestamp —
+//     are the MANY side's. Reference swaps `lhs, rhs` outright for
+//     CardOneToMany (`promql/engine.go`'s `VectorBinop`) BEFORE the
+//     match loop, so `resultMetric`'s builder is seeded from the many
+//     side (`promql/engine.go`'s `resultMetric`, at its
+//     `enh.resetBuilder(lhs)`) — which under
+//     `group_right()` is the operator's syntactic RHS, not its LHS.
+//     Forwarding L's MetricName there published vector1's name on a row
+//     carrying vector2's label set. Comparisons never
+//     `changesMetricSchema`, so the name survives to the wire and the
+//     divergence is visible.
+//
+// See this file's header for why an ordering op (`<`/`<=`/`>`/`>=`)
+// never admits a histogram,histogram pair.
 func lowerMixedVVCompareFilter(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics) chplan.Node {
 	bothFloat := &chplan.Binary{
 		Op:    chplan.OpAnd,
@@ -308,7 +321,7 @@ func lowerMixedVVCompareFilter(join *chplan.MixedVectorJoin, op chplan.BinaryOp,
 	filtered := &chplan.Filter{Input: join, Predicate: keep}
 
 	projs := []chplan.Projection{
-		{Expr: mixedJoinFieldRef(mixedVVJoinSideL, s.MetricNameColumn), Alias: s.MetricNameColumn},
+		{Expr: mixedJoinFieldRef(mixedVVManySide(join.Card), s.MetricNameColumn), Alias: s.MetricNameColumn},
 		{
 			Expr:  mixedVVOutputAttributesExpr(join.Match, join.Card, join.Include, s.AttributesColumn),
 			Alias: s.AttributesColumn,

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
@@ -216,5 +217,53 @@ func TestSentinels_CompareParams(t *testing.T) {
 	}
 	if !strings.Contains(q, "status = error") {
 		t.Fatalf("compare sentinel q %q does not select the error subpopulation", q)
+	}
+}
+
+// TestSentinels_StepIsPromWireParseable pins the wire spelling of every
+// sentinel's Step against the Prom head's OWN parser.
+//
+// This is the unit-lane twin of TestSentinels_Roster above, for the same
+// reason its doc gives: a sentinel that issues a request the head rejects is
+// far cheaper to catch here than in the Docker-gated real-ClickHouse lane,
+// where it costs a container boot, a seed and ~275s before surfacing as an
+// opaque `HTTP 400 (want 200)`.
+//
+// The concrete regression it exists to stop: runSentinelOnce used to send
+// `Step.String()`, and sortedSlabOverTimeSentinelStep is sentinelWindow/480 =
+// 7.5s, whose Go spelling "7.5s" `model.ParseDuration` rejects outright —
+// there is no fractional form for a unit. Upstream Prometheus rejects it too,
+// so the head was right and the harness was wrong; formatPromStep emits the
+// unit-less seconds both accept.
+//
+// The assertion runs the harness's formatter through the PRODUCTION parser
+// rather than a copy of it, so it tracks the head's real contract: if
+// format.ParseDuration's grammar ever narrows again, this fails here instead
+// of in strict-scan.
+func TestSentinels_StepIsPromWireParseable(t *testing.T) {
+	checked := 0
+	for _, floor := range []ServerFloor{FloorBase, FloorJoinSpill} {
+		for _, s := range SentinelsForFloor(floor) {
+			if s.Step <= 0 {
+				continue
+			}
+			wire := formatPromStep(s.Step)
+			got, err := format.ParseDuration(wire)
+			if err != nil {
+				t.Errorf("sentinel %q: step %s formats to %q, which the Prom head refuses: %v\n"+
+					"The head follows upstream Prometheus (ParseFloat, then model.ParseDuration); "+
+					"emit a spelling both accept rather than relaxing the head.",
+					s.Name, s.Step, wire, err)
+				continue
+			}
+			if got != s.Step {
+				t.Errorf("sentinel %q: step %s round-trips through %q as %s — the request would "+
+					"measure a different grid than the sentinel declares", s.Name, s.Step, wire, got)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no sentinel declared a positive Step — the gate is inert")
 	}
 }

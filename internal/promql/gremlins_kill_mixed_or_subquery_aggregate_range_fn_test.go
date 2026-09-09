@@ -247,9 +247,9 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFnRange_StepAlignedFalseAtZeroStep(t *t
 	if effStep == 0 {
 		effStep = defaultSubqueryStep
 	}
-	gridCtx, ok, err := subqueryGridCtx(shape.sub, effStep, realCtx)
-	if err != nil || !ok {
-		t.Fatalf("subqueryGridCtx: ok=%v err=%v", ok, err)
+	gridCtx, state, err := subqueryGridCtx(shape.sub, effStep, realCtx)
+	if err != nil || state != subqueryGridDerived {
+		t.Fatalf("subqueryGridCtx: state=%v err=%v", state, err)
 	}
 
 	// The distinguishing input: drive the function directly with

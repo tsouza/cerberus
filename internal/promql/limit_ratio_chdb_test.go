@@ -184,8 +184,8 @@ const limitRatioSeedDDL = "" +
 	"CREATE OR REPLACE TABLE otel_metrics_gauge (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`);\n" +
 	"CREATE OR REPLACE TABLE otel_metrics_sum (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`);\n"
 
-// limitRatioSeed is the DDL plus the five-instance `up` corpus, all of
-// which lands in the gauge table.
+// limitRatioSeed is the DDL plus the five-instance `up` corpus and the
+// long-label `up_long` corpus, all of which lands in the gauge table.
 func limitRatioSeed() string {
 	var b strings.Builder
 	b.WriteString(limitRatioSeedDDL)
@@ -194,7 +194,103 @@ func limitRatioSeed() string {
 			"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES ('up', map('instance', '%s', 'job', 'demo'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);\n",
 			inst)
 	}
+	for _, size := range longLabelValueSizes {
+		fmt.Fprintf(&b,
+			"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES ('%s', map('instance', '%s', 'detail', '%s'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);\n",
+			longLabelMetric, longLabelInstance(size), longLabelValue(size))
+	}
 	return b.String()
+}
+
+// longLabelValueSizes straddles Prometheus's stringlabels size-prefix
+// boundary (`v < 255` is one byte; 255 and up is `0xFF` + 3 little-endian
+// bytes — `model/labels/labels_stringlabels.go`'s `encodeSize`) from
+// both sides,
+// including the two values immediately either side of it and one that
+// exercises the second little-endian byte.
+var longLabelValueSizes = []int{100, 254, 255, 256, 1000}
+
+// longLabelMetric names the long-label corpus. A distinct metric name
+// keeps it invisible to the `up` cases above, which share the table.
+const longLabelMetric = "up_long"
+
+// longLabelValue is the `detail` label value of the given byte length.
+// The content is irrelevant to the encoding — only the SIZE selects
+// encodeSize's branch — so a single repeated ASCII byte keeps the seed
+// readable and the byte length equal to the rune length.
+func longLabelValue(size int) string { return strings.Repeat("a", size) }
+
+// longLabelInstance is the short, human-readable series key projected
+// back out of the query; the long bytes live in `detail`.
+func longLabelInstance(size int) string { return fmt.Sprintf("L%d", size) }
+
+// refSelectedLong is [refSelected] for the long-label corpus: the same
+// HashRatioSampler rule, over label sets whose `detail` value crosses
+// the size-prefix boundary.
+func refSelectedLong(ratio float64) []string {
+	var out []string
+	for _, size := range longLabelValueSizes {
+		ls := prommodel.FromStrings(
+			"__name__", longLabelMetric,
+			"detail", longLabelValue(size),
+			"instance", longLabelInstance(size),
+		)
+		off := float64(ls.Hash()) / float64(uint64(math.MaxUint64))
+		if (ratio >= 0 && off < ratio) || (ratio < 0 && off >= 1.0+ratio) {
+			out = append(out, longLabelInstance(size))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestLimitRatio_ChDBParity_LongLabelValues pins the OTHER branch of
+// Prometheus's stringlabels size prefix.
+//
+// `encodeSize` (in `model/labels/labels_stringlabels.go`) writes a
+// single byte only while the size is `< 255`; at 255 and above it writes
+// the escape byte `0xFF` followed by three little-endian bytes. Because
+// `labels.Hash()` is `xxhash.Sum64` over exactly those bytes
+// (`labels_stringlabels.go`'s `Labels.Hash`), a label value of 255 bytes or more
+// hashes to a DIFFERENT offset than a single-byte prefix produces — and
+// `limit_ratio` therefore keeps a different subset of series.
+//
+// OTel attribute values reach these sizes routinely (`http.url`,
+// `db.statement`, `exception.message`), so this is a live wire-format
+// divergence, not a theoretical one. The corpus straddles the boundary
+// from both sides so the test also fails if the comparison drifts to
+// `<= 255`.
+func TestLimitRatio_ChDBParity_LongLabelValues(t *testing.T) {
+	fixture := newChDBFixture(t, limitRatioSeed())
+
+	s := schema.DefaultOTelMetrics()
+	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
+	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+
+	for _, ratio := range []float64{0.25, 0.5, 0.75, -0.5} {
+		ratio := ratio
+		t.Run(fmt.Sprintf("ratio=%g", ratio), func(t *testing.T) {
+			query := fmt.Sprintf("limit_ratio(%g, %s)", ratio, longLabelMetric)
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, evalTS, evalTS)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): %v", query, err)
+			}
+			sqlStr, args, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit(%q): %v", query, err)
+			}
+			got := selectInstances(t, fixture, sqlStr, args)
+			want := refSelectedLong(ratio)
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Errorf("limit_ratio(%g, %s) selected %v; reference HashRatioSampler selects %v",
+					ratio, longLabelMetric, got, want)
+			}
+		})
+	}
 }
 
 // selectInstances runs the lowered Sample-shape SQL and returns the

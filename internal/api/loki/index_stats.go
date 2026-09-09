@@ -55,7 +55,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sqlStr, args, err := buildIndexStatsSQL(h.Schema, matchers, start, end)
+	sqlStr, args, err := buildIndexStatsSQL(h.Schema, h.AttrStrategies, matchers, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -93,14 +93,15 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 // All identifiers and time-range bounds flow through Builder helpers so
 // no SQL string concatenation happens at this level (the CLAUDE.md
 // "no raw SQL" rule for new code).
-func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
+func buildIndexStatsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
 		Select(
-			streamsAggFrag(s.ResourceAttributesColumn),
+			streamsAggFrag(attrMapFrag(strategies, s.ResourceAttributesColumn)),
 			countStar(),
 			bytesAggFrag(s.BodyColumn),
 		).
-		From(chsql.Col(s.LogsTable))
+		From(chsql.Col(s.LogsTable)).
+		WithAttrStrategies(strategies)
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err
@@ -115,14 +116,20 @@ func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end ti
 // constructor so the SQL stream stays inside the chsql surface (no raw
 // clause-keyword cosplay).
 //
+// The Map expression is supplied by the caller through [attrMapFrag]
+// rather than read as a bare column, so a JSON-typed attributes column
+// is reconstructed into a genuine Map(String,String) first — a bare
+// JSON column would hash as an opaque JSON value and count streams by
+// its serialised text.
+//
 // uniqExact over the whole label-set Map is a series-identity key, and CH
 // hashes a Map positionally over its (keys, values) arrays, so the
 // canonical key-order wrap is what makes one logical stream delivered
 // under two OTLP key orders count once. The result is a scalar straight
 // out of CH — unlike /series there is no Go-side dedupe that could
 // recover a doubled count, so the wrap is the whole fix.
-func streamsAggFrag(col string) chsql.Frag {
-	return chsql.Call("uniqExact", canonicalLabelsFrag(chsql.Col(col)))
+func streamsAggFrag(attrMap chsql.Frag) chsql.Frag {
+	return chsql.Call("uniqExact", canonicalLabelsFrag(attrMap))
 }
 
 // countStar returns a Frag that emits "count()" via the typed Call

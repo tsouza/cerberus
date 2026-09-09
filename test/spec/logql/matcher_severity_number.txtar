@@ -10,14 +10,28 @@
 --
 -- NB: LogQL matchers are string-typed. The value "9" matches the
 -- CH-rendered string form of the UInt8 (9 → '9') through the coalesce.
+--
+-- The column is declared UInt8 here because that is what the OTel-CH
+-- exporter declares (test/e2e/migration/expected/schema/default.sql:225).
+-- It used to be declared String, which is what made this fixture unable
+-- to see cerberus issue #3183's defect: the fallback NULLed the column
+-- out against the STRING literal '', which ClickHouse refuses on a UInt8
+-- with `Code: 32 … while converting '' to UInt8`, so `{SeverityNumber="9"}`
+-- was a 502 in production while this fixture passed. A seed that models a
+-- column at the wrong type cannot catch a type error.
+--
+-- The `map-only` row is what pins the numeric "unset" sentinel: with a
+-- UInt8 there is no empty string, and the exporter writes 0 for a record
+-- carrying no severity, so 0 is the value the coalesce must fall through
+-- to the map on.
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
-    SeverityNumber String MATERIALIZED multiIf(
-        Body = 'top-level-only', '9',
-        Body = 'both', '9',
-        Body = 'negative-top', '17',
-        ''
+    SeverityNumber UInt8 MATERIALIZED multiIf(
+        Body = 'top-level-only', 9,
+        Body = 'both', 9,
+        Body = 'negative-top', 17,
+        0
     ),
     ResourceAttributes Map(String, String) MATERIALIZED multiIf(
         Body = 'map-only', map('SeverityNumber', '9'),
@@ -39,14 +53,14 @@ INSERT INTO otel_logs (Timestamp, Body) VALUES
   ["2026-05-20T12:02:00Z", "both"]
 ]
 -- args --
-[0] string = ""
+[0] string = "0"
 [1] string = "SeverityNumber"
 [2] string = "9"
 -- chplan --
-Filter predicate=(FnCoalesce(FnNullIf(SeverityNumber, ""), ResourceAttributes["SeverityNumber"]) = "9")
+Filter predicate=(FnCoalesce(FnNullIf(FnToString(SeverityNumber), "0"), ResourceAttributes["SeverityNumber"]) = "9")
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`SeverityNumber`, ?), `ResourceAttributes`[?]) = ?)
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(toString(`SeverityNumber`), ?), `ResourceAttributes`[?]) = ?)
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{SeverityNumber="9"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

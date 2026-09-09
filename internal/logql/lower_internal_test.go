@@ -479,15 +479,34 @@ func TestMatcherToExpr_TopLevelColumnCoalesce_Conformance(t *testing.T) {
 			}
 			null, ok := coalesce.Args[0].(*chplan.FuncCall)
 			if !ok || null.Fn != chplan.FnNullIf || len(null.Args) != 2 {
-				t.Fatalf("matcherToExpr(%s=val) coalesce arg0 = %v; want nullIf(<col>, '')", col, coalesce.Args[0])
+				t.Fatalf("matcherToExpr(%s=val) coalesce arg0 = %v; want nullIf(<col>, <unset>)", col, coalesce.Args[0])
 			}
-			topRef, ok := null.Args[0].(*chplan.ColumnRef)
+			// Two of the nine columns are UInt8 (SeverityNumber,
+			// TraceFlags). A Loki label value is a string, so those are
+			// rendered before the comparison and their "unset" is the
+			// numeric zero the exporter writes for an absent field —
+			// nullIf against the STRING '' on a UInt8 is a ClickHouse
+			// type error, not a no-match (cerberus issue #3183). The
+			// other seven keep the bare-column shape deliberately: a
+			// no-op toString around ServiceName would cost every
+			// `{service_name=...}` query its index pruning.
+			topArg := null.Args[0]
+			wantUnset := ""
+			if topLevelLogColumnIsNumeric(col, s) {
+				wantUnset = numericTopLevelColumnUnset
+				render, ok := topArg.(*chplan.FuncCall)
+				if !ok || render.Fn != chplan.FnToString || len(render.Args) != 1 {
+					t.Fatalf("matcherToExpr(%s=val) nullIf arg0 = %v; want toString(<col>) for a numeric column", col, topArg)
+				}
+				topArg = render.Args[0]
+			}
+			topRef, ok := topArg.(*chplan.ColumnRef)
 			if !ok || topRef.Name != col {
 				t.Errorf("matcherToExpr(%s=val) nullIf arg0 = %v; want ColumnRef{Name:%q}", col, null.Args[0], col)
 			}
 			sentinel, ok := null.Args[1].(*chplan.LitString)
-			if !ok || sentinel.V != "" {
-				t.Errorf("matcherToExpr(%s=val) nullIf arg1 = %v; want LitString{V:\"\"}", col, null.Args[1])
+			if !ok || sentinel.V != wantUnset {
+				t.Errorf("matcherToExpr(%s=val) nullIf arg1 = %v; want LitString{V:%q}", col, null.Args[1], wantUnset)
 			}
 			// Fallback arm: `ResourceAttributes[<col>]`. Labels like
 			// SeverityText / TraceId carry no underscore, so

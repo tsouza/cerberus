@@ -3,8 +3,9 @@ package loki
 import "github.com/tsouza/cerberus/internal/chsql"
 
 // This file is cerberus issue #3063 point 2's fix: /loki/api/v1/labels,
-// /series, /label/<name>/values, /detected_fields and /detected_labels all
-// build their SQL directly against chsql.NewQuery() rather than through a
+// /series, /label/<name>/values, /detected_fields, /detected_labels,
+// /index/stats, /index/volume and /patterns all build their SQL directly
+// against chsql.NewQuery() rather than through a
 // chplan tree lowered by logql.Lang.Parse, so they never reach
 // engine.emitForHead / chsql.Emit's ctx-based AttrStrategies threading —
 // wiring Handler.AttrStrategies alone (cerberus issue #2777 / #3064) had
@@ -18,17 +19,21 @@ import "github.com/tsouza/cerberus/internal/chsql"
 // internal/api/tempo's /api/search/tags) cover the WHOLE-MAP shapes these
 // builders read that per-key rendering never touched.
 //
-// /patterns (patterns.go) is not in this list: it only projects
-// Timestamp/Body/SeverityText, never an attribute-map column, so it has
-// no JSON-strategy exposure at all.
+// /patterns is in the list even though it projects only
+// Timestamp/Body/SeverityText: its exposure is the shared
+// applySelectorAndWindow WHERE clause, where every stream-selector
+// matcher is a per-key attribute-map access. A builder needs the
+// strategies whenever it touches an attribute map ANYWHERE in the
+// statement, not only in its projection.
 
 // attrMapFrag renders col as a genuine Map(String,String) Frag: the bare
 // column reference when strategies resolves it to AttrStrategyMap (the
 // default, and every pre-#3063 call site's byte-identical behaviour), or
 // chsql.JSONAttrMapReconstruction(col) when it resolves to
 // AttrStrategyJSON. Used wherever one of these builders reads or GROUPs
-// BY a whole attribute map — series.go / detected_labels.go's
-// canonicalLabelsFrag input (the stream label-set identity) and
+// BY a whole attribute map — series.go / detected_labels.go /
+// index_volume.go's canonicalLabelsFrag input (the stream label-set
+// identity), index_stats.go's uniqExact stream count, and
 // detected_fields.go's stream_labels / log_attributes projections (the
 // per-line structured-metadata peek).
 func attrMapFrag(strategies chsql.AttrStrategies, col string) chsql.Frag {

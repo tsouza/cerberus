@@ -272,3 +272,81 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompare_ManyToMany(t *testi
 		t.Errorf("error %q does not contain 'many-to-many matching not allowed'", err.Error())
 	}
 }
+
+// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareNameFollowsManySide
+// pins WHICH operand's `__name__` a bare (no `bool`) mixed-`or` V-V
+// comparison publishes.
+//
+// Reference builds the output label set from the MANY side, not from the
+// operator's syntactic LHS: for CardOneToMany it swaps `lhs, rhs`
+// outright before the match loop (`promql/engine.go`'s `VectorBinop`)
+// and then seeds `resultMetric`'s builder from that swapped `lhs`
+// (`promql/engine.go`'s `resultMetric`). The SAMPLE still comes from the
+// syntactic LHS — `doBinOp`, the closure inside `VectorBinop`, un-swaps
+// the values back — so the two follow different sides and a single
+// "always L" forward cannot be right for both. Plain float V-V already
+// models this split (internal/chsql/vector_join.go's `outerSide`).
+//
+// The assertion reads the MetricName projection against the Timestamp
+// projection, which was already Card-aware: both are label-side outputs
+// and must name the SAME join side for every Card. Under `group_right()`
+// they disagreed, publishing vector1's name on vector2's label set.
+func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareNameFollowsManySide(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	for _, mod := range []string{"", "on (service) group_left ()", "on (service) group_right ()"} {
+		mod := mod
+		name := mod
+		if name == "" {
+			name = "default-matching"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			query := mixedOrExpr + " > " + mod + " " + mixedOrExpr
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
+			}
+			proj, ok := plan.(*chplan.Project)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.Project", query, plan)
+			}
+
+			joinSideOf := func(alias string) string {
+				for _, pr := range proj.Projections {
+					if pr.Alias != alias {
+						continue
+					}
+					ref, isRef := pr.Expr.(*chplan.ColumnRef)
+					if !isRef {
+						t.Fatalf("lower(%q): %s projection is %T, want a *chplan.ColumnRef off the join", query, alias, pr.Expr)
+					}
+					// "_mvj_<side>_<col>" — see mixedJoinFieldAlias.
+					parts := strings.SplitN(ref.Name, "_", 4)
+					if len(parts) != 4 || parts[1] != "mvj" {
+						t.Fatalf("lower(%q): %s projection reads %q, want a join-side field alias", query, alias, ref.Name)
+					}
+					return parts[2]
+				}
+				t.Fatalf("lower(%q): no %s projection", query, alias)
+				return ""
+			}
+
+			gotName := joinSideOf(s.MetricNameColumn)
+			wantSide := joinSideOf(s.TimestampColumn)
+			if gotName != wantSide {
+				t.Errorf("lower(%q): MetricName reads join side %q but the label-side Timestamp reads %q; reference takes both from the many side (promql/engine.go's VectorBinop and resultMetric)",
+					query, gotName, wantSide)
+			}
+		})
+	}
+}

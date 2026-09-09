@@ -1977,9 +1977,23 @@ func stepAlignedAnchorCountFor(end time.Time, offset, outerRange time.Duration, 
 	delta := ((base % stepNS) + stepNS) % stepNS
 	span := outerRange.Nanoseconds() - delta
 	if span <= 0 {
-		// Sub-step window: reference clamps start to end and evaluates
-		// the single anchor at the snapped base.
-		return 1
+		// Sub-step window: the grid holds NO anchor, and the result is
+		// the empty matrix.
+		//
+		// Reference does not clamp — the claim this comment used to make
+		// is false and is the same one internal/promql's subquery grid
+		// carried (cerberus issue #3183). promql/engine.go's evalSubquery
+		// leaves `newEv.endTimestamp` unsnapped and sets
+		// `newEv.startTimestamp` to the snapped base bumped by one
+		// interval, so a window narrower than one step leaves
+		// start > end, and `if ev.endTimestamp < ev.startTimestamp
+		// { return Matrix{}, nil }` returns an EMPTY matrix. `up[1s:1m]`
+		// at an off-grid instant is one sample here and none there.
+		//
+		// Zero flows straight through: anchorFanoutFrag fans over
+		// `range(0, numAnchors)`, and `range(0, 0)` is the empty array,
+		// so the arrayJoin produces no rows.
+		return 0
 	}
 	return (span + stepNS - 1) / stepNS
 }

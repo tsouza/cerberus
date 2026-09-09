@@ -5,11 +5,11 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverInstantCall#64810e23",
       "message": "promql: subquery inner %s is evaluated per anchor and requires a query evaluation time (use LowerAt)",
       "class": "internal",
-      "rationale": "subqueryGridCtx reports no grid only when no evaluation anchor was threaded through, which the HTTP handlers never do: every wire query lowers through LowerAt, LowerAtRange or LowerAtRangeOpts, and only the bare Lower entry point used by package tests leaves the anchor unset",
+      "rationale": "subqueryGridCtx reports subqueryGridUnavailable only when no evaluation anchor was threaded through, which the HTTP handlers never do: every wire query lowers through LowerAt, LowerAtRange or LowerAtRangeOpts, and only the bare Lower entry point used by package tests leaves the anchor unset. A window narrower than one step is subqueryGridEmpty, a separate state this guard deliberately does not reject.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
-          "if !ok"
+          "if state == subqueryGridUnavailable"
         ],
         "callers": [
           "lowerSubqueryOverCall"

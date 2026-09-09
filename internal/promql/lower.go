@@ -5959,23 +5959,102 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 	}
 }
 
-// lenPrefixExpr renders Prometheus's stringlabels length prefix for a
-// string `s` as the single byte `char(length(s))`.
+// Prometheus's stringlabels size prefix, transcribed from
+// `encodeSize` (in `model/labels/labels_stringlabels.go`):
 //
-// Prometheus's encoding uses a single length byte for sizes 0..254 and a
-// `0xFF` escape + 3-byte little-endian length for sizes >= 255. Cerberus
-// emits only the single-byte form: OTel-CH label names and values are
-// short identifiers (metric names, instance/job/service tags) that never
-// approach 255 bytes — Prometheus's own metric/label-name grammar and
-// the OTel attribute model keep them well under that — so the escape
-// branch can never fire for real series. Restricting to the single-byte
-// form keeps the per-series hash expression compact and byte-for-byte
-// identical to `labels.Hash()` for every label set that can actually
-// reach this path.
+//	if v < 255 { data[offset] = uint8(v); return }
+//	data[offset] = 255
+//	data[offset+1] = byte(v)
+//	data[offset+2] = byte(v >> 8)
+//	data[offset+3] = byte(v >> 16)
+//
+// `labels.Hash()` is `xxhash.Sum64` over exactly those bytes
+// (`labels_stringlabels.go`'s `Labels.Hash`), so the boundary and the byte order
+// below are load-bearing, not cosmetic.
+const (
+	// stringLabelsShortSizeMax is the EXCLUSIVE upper bound of the
+	// single-byte form: `v < 255` in encodeSize.
+	stringLabelsShortSizeMax = 255
+	// stringLabelsLongSizeEscape is the marker byte introducing the
+	// four-byte form. It shares encodeSize's boundary value by
+	// coincidence of the encoding, not by derivation from it.
+	stringLabelsLongSizeEscape = 255
+	// stringLabelsSizeAlias binds the encoded string's size once inside
+	// the prefix expression — see [lenPrefixExpr].
+	stringLabelsSizeAlias = "n"
+	// stringLabelsSizeBindingIndex reads the sole element back out of
+	// that one-element binding array.
+	stringLabelsSizeBindingIndex = 1
+)
+
+// stringLabelsLongSizeShifts are encodeSize's little-endian byte shifts
+// for the four-byte form, in emission order (`byte(v)`, `byte(v >> 8)`,
+// `byte(v >> 16)`).
+var stringLabelsLongSizeShifts = []int64{0, 8, 16}
+
+// lenPrefixExpr renders Prometheus's stringlabels size prefix for the
+// string `sExpr`, in BOTH of encodeSize's forms:
+//
+//	if(n < 255, char(n), char(255, n, bitShiftRight(n, 8), bitShiftRight(n, 16)))
+//
+// The three little-endian bytes carry no explicit mask because `char`
+// converts each argument to UInt8 by wrapping, which IS Go's `byte(v)`
+// — the same truncation encodeSize relies on. (Pinned end-to-end by
+// TestLimitRatio_ChDBParity_LongLabelValues' 1000-byte case, whose low
+// byte 232 differs from both the unmasked value and a saturating one.)
+//
+// The escape branch is not hypothetical. OTel attribute values are not
+// bounded by Prometheus's label-name grammar — `http.url`,
+// `db.statement` and `exception.message` routinely exceed 255 bytes —
+// and emitting only the single-byte form hashed those series to a
+// different offset than `labels.Hash()` does, so `limit_ratio` kept a
+// different subset of them than the reference engine.
+//
+// `n` is bound ONCE, through a one-element `arrayMap` acting as a
+// let-binding, rather than re-rendering `length(sExpr)` in all five
+// positions the two branches need. `sExpr` is a Map subscript over a
+// `mapConcat`; re-rendering it five times per label per row is a real
+// cost the single-byte form never had, and the binding keeps the emitted
+// expression the size it was.
 func lenPrefixExpr(sExpr chplan.Expr) chplan.Expr {
+	size := func() chplan.Expr { return &chplan.BareIdent{Name: stringLabelsSizeAlias} }
+
+	longBytes := []chplan.Expr{&chplan.LitInt{V: stringLabelsLongSizeEscape}}
+	for _, shift := range stringLabelsLongSizeShifts {
+		shifted := size()
+		if shift != 0 {
+			shifted = &chplan.FuncCall{
+				Fn:   chplan.FnBitShiftRight,
+				Args: []chplan.Expr{shifted, &chplan.LitInt{V: shift}},
+			}
+		}
+		longBytes = append(longBytes, shifted)
+	}
+
+	prefix := &chplan.FuncCall{
+		Fn: chplan.FnIf,
+		Args: []chplan.Expr{
+			&chplan.Binary{Op: chplan.OpLt, Left: size(), Right: &chplan.LitInt{V: stringLabelsShortSizeMax}},
+			&chplan.FuncCall{Fn: chplan.FnChar, Args: []chplan.Expr{size()}},
+			&chplan.FuncCall{Fn: chplan.FnChar, Args: longBytes},
+		},
+	}
+
 	return &chplan.FuncCall{
-		Fn:   chplan.FnChar,
-		Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{sExpr}}},
+		Fn: chplan.FnArrayElement,
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Fn: chplan.FnArrayMap,
+				Args: []chplan.Expr{
+					&chplan.Lambda{Params: []string{stringLabelsSizeAlias}, Body: prefix},
+					&chplan.FuncCall{
+						Fn:   chplan.FnArray,
+						Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{sExpr}}},
+					},
+				},
+			},
+			&chplan.LitInt{V: stringLabelsSizeBindingIndex},
+		},
 	}
 }
 

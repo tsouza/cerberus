@@ -166,15 +166,6 @@ func TestSubqueryGridCtxDerivesTheAnchorGrid(t *testing.T) {
 			wantStart: time.Date(2026, time.January, 1, 0, 4, 0, 0, time.UTC),
 			wantEnd:   time.Date(2026, time.January, 1, 1, 2, 0, 0, time.UTC),
 		},
-		{
-			// A window narrower than one step would otherwise produce
-			// start > end; reference clamps to the single snapped anchor.
-			name:      "sub-step window clamps to one anchor",
-			query:     `up[1s:1m]`,
-			ctx:       instantCtx,
-			wantStart: time.Date(2026, time.January, 1, 1, 4, 0, 0, time.UTC),
-			wantEnd:   time.Date(2026, time.January, 1, 1, 4, 0, 0, time.UTC),
-		},
 	}
 
 	for _, tc := range cases {
@@ -185,12 +176,12 @@ func TestSubqueryGridCtxDerivesTheAnchorGrid(t *testing.T) {
 			if tc.pinAt != nil {
 				sub.Timestamp = tc.pinAt
 			}
-			got, ok, err := subqueryGridCtx(sub, gridTestSubStep, tc.ctx)
+			got, state, err := subqueryGridCtx(sub, gridTestSubStep, tc.ctx)
 			if err != nil {
 				t.Fatalf("subqueryGridCtx(%q): %v", tc.query, err)
 			}
-			if !ok {
-				t.Fatalf("subqueryGridCtx(%q) reported no grid, want one", tc.query)
+			if state != subqueryGridDerived {
+				t.Fatalf("subqueryGridCtx(%q) state = %v, want subqueryGridDerived", tc.query, state)
 			}
 			if !got.start.Equal(tc.wantStart) {
 				t.Errorf("grid start = %s, want %s", got.start, tc.wantStart)
@@ -235,12 +226,12 @@ func TestSubqueryGridCtxNeedsACompleteEvalWindow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, ok, err := subqueryGridCtx(parseSubquery(t, `up[5m:1m]`), gridTestSubStep, tc.ctx)
+			got, state, err := subqueryGridCtx(parseSubquery(t, `up[5m:1m]`), gridTestSubStep, tc.ctx)
 			if err != nil {
 				t.Fatalf("subqueryGridCtx: %v", err)
 			}
-			if ok {
-				t.Fatalf("subqueryGridCtx reported a grid [%s, %s], want the raw-stream fallback", got.start, got.end)
+			if state != subqueryGridUnavailable {
+				t.Fatalf("subqueryGridCtx reported state %v with grid [%s, %s], want the raw-stream fallback", state, got.start, got.end)
 			}
 		})
 	}
@@ -252,9 +243,9 @@ func TestSubqueryGridCtxNeedsACompleteEvalWindow(t *testing.T) {
 func TestSubqueryGridCtxPropagatesAnchorErrors(t *testing.T) {
 	t.Parallel()
 
-	_, ok, err := subqueryGridCtx(parseSubquery(t, `up[5m:1m] @ start()`), gridTestSubStep, lowerCtx{})
+	_, state, err := subqueryGridCtx(parseSubquery(t, `up[5m:1m] @ start()`), gridTestSubStep, lowerCtx{})
 	if err == nil {
-		t.Fatalf("subqueryGridCtx(`@ start()`, no range context) returned ok=%v, want an error", ok)
+		t.Fatalf("subqueryGridCtx(`@ start()`, no range context) returned state=%v, want an error", state)
 	}
 }
 
@@ -407,4 +398,99 @@ func parseSubquery(t *testing.T, query string) *parser.SubqueryExpr {
 		t.Fatalf("ParseExpr(%q) returned %T, want *parser.SubqueryExpr", query, expr)
 	}
 	return sub
+}
+
+// TestSubqueryGridCtxReportsAnEmptyWindow pins reference Prometheus's
+// answer for a subquery window that spans no grid multiple at all.
+//
+// Reference does NOT clamp the grid down to a single anchor. It computes
+// `newEv.endTimestamp = ev.endTimestamp - offsetMillis` UNSNAPPED and
+// `newEv.startTimestamp` as the snapped base bumped by one interval
+// (both in `promql/engine.go`'s `eval`, in its `*parser.SubqueryExpr`
+// arm), then the very first statement of the sub-evaluator is
+// `if ev.endTimestamp < ev.startTimestamp { return Matrix{}, nil }`
+// (`promql/engine.go`'s `eval`, its opening guard) — the EMPTY matrix.
+//
+// `up[1s:1m]` at 01:04:41 is exactly that shape: the window (01:04:40,
+// 01:04:41] holds no whole minute, so reference answers no samples where
+// a clamp would invent one at 01:04:00.
+func TestSubqueryGridCtxReportsAnEmptyWindow(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		query string
+		ctx   lowerCtx
+	}{
+		{
+			// Instant eval: the whole window is (end-1s, end], narrower
+			// than the 1m step and off its phase.
+			name:  "instant eval, window narrower than one step",
+			query: `up[1s:1m]`,
+			ctx:   lowerCtx{end: gridTestQueryEnd},
+		},
+		{
+			// Range mode widens to [start-Range, end]; with a range and a
+			// query span that together stay inside one step, that widened
+			// window still spans no anchor.
+			name:  "range mode, widened window still spans no anchor",
+			query: `up[1s:1m]`,
+			ctx: lowerCtx{
+				start: time.Date(2026, time.January, 1, 1, 4, 40, 0, time.UTC),
+				end:   gridTestQueryEnd,
+				step:  time.Second,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, state, err := subqueryGridCtx(parseSubquery(t, tc.query), gridTestSubStep, tc.ctx)
+			if err != nil {
+				t.Fatalf("subqueryGridCtx(%q): %v", tc.query, err)
+			}
+			if state != subqueryGridEmpty {
+				t.Fatalf("subqueryGridCtx(%q) state = %v, want subqueryGridEmpty (reference answers the empty matrix)", tc.query, state)
+			}
+		})
+	}
+}
+
+// TestLowerSubqueryOverAnEmptyWindowAnswersNoRows is the plan-level half
+// of [TestSubqueryGridCtxReportsAnEmptyWindow]: an arithmetic subquery
+// inner over a window that spans no anchor must lower to a relation that
+// answers NO rows, not to one anchor's worth of samples.
+//
+// The assertion is on the emitted row set, not on the grid bounds,
+// because the grid bounds stay clamped by design — they exist only so
+// the inner can be lowered for its column shape.
+func TestLowerSubqueryOverAnEmptyWindowAnswersNoRows(t *testing.T) {
+	t.Parallel()
+
+	sub := parseSubquery(t, `(up * 2)[1s:1m]`)
+	plan, err := lowerSubquery(sub, schema.DefaultOTelMetrics(), lowerCtx{
+		end:      gridTestQueryEnd,
+		lowerers: RangeLowerers{}.withDefaults(),
+	})
+	if err != nil {
+		t.Fatalf("lowerSubquery: %v", err)
+	}
+
+	var capped bool
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		f, ok := n.(*chplan.Filter)
+		if !ok {
+			return true
+		}
+		if lit, ok := f.Predicate.(*chplan.LitBool); ok && !lit.V {
+			capped = true
+			return false
+		}
+		return true
+	})
+	if !capped {
+		t.Errorf("lowerSubquery(`(up * 2)[1s:1m]` at %s) produced %T with no constant-false cap; reference answers the empty matrix", gridTestQueryEnd, plan)
+	}
 }

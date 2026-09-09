@@ -176,7 +176,16 @@ func TestDetectedLevel_RangeAggregationLevelByUsesSeverityText(t *testing.T) {
 	if len(proj.Projections) == 0 {
 		t.Fatalf("Project has no projections")
 	}
+	// Every unwrap conversion can reject a value, so the identity is
+	// error-bypass-wrapped: `if(mapContains(labels, '__error__'),
+	// <full labels>, <grouped identity>)`. Reference Loki's
+	// LabelsBuilder.GroupedLabels returns the FULL label set for an
+	// error sample, which is what that first arm models; the grouping
+	// this test is about lives in the third. Peel it before inspecting.
 	identity := requireCanonicalIdentity(t, proj.Projections[0].Expr)
+	if bypass, ok := identity.(*chplan.FuncCall); ok && bypass.Fn == chplan.FnIf && len(bypass.Args) == 3 {
+		identity = bypass.Args[2]
+	}
 	mapCall, ok := identity.(*chplan.FuncCall)
 	if !ok || mapCall.Fn != chplan.FnMap {
 		t.Fatalf("identity projection = %v; want FuncCall(map, ...)", identity)

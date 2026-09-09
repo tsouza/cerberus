@@ -371,7 +371,7 @@ func runSentinelOnce(t *testing.T, mux *http.ServeMux, sentinel Sentinel, start,
 	if sentinel.Path == "/api/v1/query_range" {
 		params.Set("start", formatPromTime(start))
 		params.Set("end", formatPromTime(end))
-		params.Set("step", sentinel.Step.String())
+		params.Set("step", formatPromStep(sentinel.Step))
 	} else {
 		params.Set("start", fmt.Sprintf("%d", start.UnixNano()))
 		params.Set("end", fmt.Sprintf("%d", end.UnixNano()))

@@ -1,10 +1,11 @@
 -- query.traceql --
 { resource.service.name !~ "back.*" }
 -- sql --
-SELECT * FROM `otel_traces` WHERE NOT match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND NOT match(`ResourceAttributes`[?], ?)
 -- args --
 [0] string = "service.name"
-[1] string = "^(?:back.*)$"
+[1] string = "service.name"
+[2] string = "^(?:back.*)$"
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
@@ -17,5 +18,5 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "frontend"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
-Filter predicate=(ResourceAttributes["service.name"] !~ "back.*")
+Filter predicate=(FnMapContainsKey(ResourceAttributes, "service.name") AND (ResourceAttributes["service.name"] !~ "back.*"))
   Scan(otel_traces)
