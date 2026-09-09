@@ -185,9 +185,13 @@ INSERT INTO otel_traces VALUES
   [1, "statusMessage", "", 1]
 ]
 -- chplan --
-MetricsCompare topN=10 selection=(((FnToUnixNanos(Timestamp) > 1778580000000000000) AND (FnToUnixNanos(Timestamp) <= 1778580060000000000)) AND (StatusCode = "Error")) window=(1778580000000000000, 1778580060000000000] rootLookup=true valueAlias=Value
+MetricsCompare topN=10 selection=(((FnToUnixNanos(Timestamp) > 1778580000000000000) AND (FnToUnixNanos(Timestamp) <= 1778580060000000000)) AND (StatusCode = "Error")) window=(1778580000000000000, 1778580060000000000] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
+  RootLookup:
+    Aggregate groupBy=[TraceId] funcs=[FnArgMin(SpanName, Timestamp) AS __root_name, FnArgMin(ServiceName, Timestamp) AS __root_service_name]
+      Filter predicate=(ParentSpanId = "")
+        Scan(otel_traces)
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{ } | compare({ status = error }, 10, 1778580000000000000, 1778580060000000000)` projects a per-trace aggregate rather than a spanset, so it carries no span identity for runTempoParity's WHICH-SPANS-MATCHED comparison

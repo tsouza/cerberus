@@ -6,7 +6,7 @@
 [4] string = "%done%"
 [5] string = "lookup user_id=50 storage 87%full done"
 -- chplan --
-Filter predicate=lineContent(Body, "lookup user_id=50 storage 87%full done", substr)
+Filter predicate=lineContent(Body, "lookup user_id=50 storage 87%full done", substr,textIndexPrefilter)
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND (position(`Body`, ?) > 0))

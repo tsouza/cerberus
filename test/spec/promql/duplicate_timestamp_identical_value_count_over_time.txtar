@@ -104,8 +104,8 @@ INSERT INTO otel_metrics_sum VALUES
 [16] string = "http_requests.total"
 -- chplan --
 Project ["" AS MetricName, mapWithoutEmpty(FnMap("job", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
-  Aggregate groupBy=[Attributes["job"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value]
-    RangeWindow func=count_over_time range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  Aggregate groupBy=[Attributes["job"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value] dropEmptyOnNoGroup
+    RangeWindow func=count_over_time range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z distinctSampleRows
       Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
         Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
           Scan(otel_metrics_sum)

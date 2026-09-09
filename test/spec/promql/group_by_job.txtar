@@ -43,7 +43,7 @@ INSERT INTO otel_metrics_gauge VALUES
 ]
 -- chplan --
 Project ["" AS MetricName, mapWithoutEmpty(FnMap("job", gkey_0)) AS Attributes, FnNow64(9) AS TimeUnix, Value AS Value]
-  Aggregate groupBy=[Attributes["job"] AS gkey_0] funcs=[FnAny(FnToFloat64(1)) AS Value]
+  Aggregate groupBy=[Attributes["job"] AS gkey_0] funcs=[FnAny(FnToFloat64(1)) AS Value] dropEmptyOnNoGroup
     Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
       Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
         Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))

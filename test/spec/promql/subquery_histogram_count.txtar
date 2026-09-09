@@ -48,8 +48,8 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 [6] string = "latency/exp_hist"
 [7] string = "latency_exp.hist"
 -- chplan --
-RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
-  RangeWindow func= range=5m0s step=1m0s outerRange=5m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:55:01Z end=2026-01-01T00:00:01Z
+RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z distinctSampleRows
+  RangeWindow func= range=5m0s step=1m0s outerRange=5m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:55:01Z end=2026-01-01T00:00:01Z stepAlign
     Project ["" AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(Count) AS Value]
       Filter predicate=(MetricName IN ("latency_exp_hist", "latency.exp.hist", "latency.exp/hist", "latency.exp_hist", "latency/exp/hist", "latency/exp_hist", "latency_exp.hist"))
         Scan(otel_metrics_exponential_histogram)
