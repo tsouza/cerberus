@@ -1775,7 +1775,18 @@ const corpusSinkModeCHTable = "chtable"
 // the corpus sink, so a sink outage costs calibration data and nothing else.
 func buildCorpusSink(ctx context.Context, logger *slog.Logger, conn optcorpus.CHTableConn, cfg config.Config) (optcorpus.Sink, string, bool) {
 	if cfg.CHOptCorpus.SinkMode == corpusSinkModeCHTable {
-		sink, err := optcorpus.NewCHTableSink(ctx, conn)
+		// The corpus table is provisioned against the SAME cluster the
+		// auto-create hook renders its own DDL against
+		// (internal/schemaboot.DDLConfig threads this identical
+		// SchemaProvisioning.Cluster into internal/schema/ddl's
+		// Config.Cluster), so a distributed-DDL deployment gets the table
+		// on every node instead of only on the one that served this
+		// connection — cerberus issue #3225. Reading that knob here rather
+		// than adding a corpus-specific one keeps "which cluster is this"
+		// a single source of truth; it is read independently of
+		// CERBERUS_AUTO_CREATE_SCHEMA because this sink creates its own
+		// table whether or not that hook runs.
+		sink, err := optcorpus.NewCHTableSink(ctx, conn, cfg.SchemaProvisioning.Cluster)
 		if err != nil {
 			logger.Warn("ch_opt corpus CH-table sink unavailable; reconciler disabled", "err", err)
 			return nil, "", false

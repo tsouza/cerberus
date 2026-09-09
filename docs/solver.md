@@ -1364,11 +1364,25 @@ To answer it the engine closes the loop the optimization corpus
   POSITIONALLY, so a missing column does not lose one field, it binds every
   later value to the wrong column or invalidates the batch outright, on every
   reconcile interval, forever. Both ALTERs are **best-effort** — a CH user with
-  `INSERT` + `CREATE` but no `ALTER` grant, or an operator-owned table that
-  needs `ON CLUSTER`, still gets a working sink whenever the deployed table
-  already matches. The `system.columns` read is the authority: it is the
-  server's own answer, so the sink is never built over a table that cannot hold
-  what the binary writes.
+  `INSERT` + `CREATE` but no `ALTER` grant still gets a working sink whenever
+  the deployed table already matches. The `system.columns` read is the
+  authority: it is the server's own answer, so the sink is never built over a
+  table that cannot hold what the binary writes.
+- **Distributed DDL.** Every DDL statement above — the `CREATE`, each `ADD
+  COLUMN`, each `MODIFY COLUMN` — carries `ON CLUSTER
+  <CERBERUS_SCHEMA_CLUSTER>` when that knob is set — the same resolved cluster
+  name `internal/schemaboot` threads into the auto-create hook's own DDL, read
+  independently of `CERBERUS_AUTO_CREATE_SCHEMA` because this sink provisions
+  its own table either way. Without the clause the `CREATE` reaches only the
+  node that served the connection, and on a multi-node cluster whose database is
+  `Atomic` — which is every `CERBERUS_CH_DATA_SHARDS > 1` deployment, since a
+  `Replicated` database engine and an `ON CLUSTER` cluster are mutually
+  exclusive — every later INSERT that lands elsewhere fails with `Table
+  cerberus_router_corpus does not exist`. Unset (the single-node default, and
+  the single-shard multi-replica shape, where the `Replicated` database engine
+  replicates the DDL itself) renders the clause-free statements unchanged. The
+  engine stays a plain `MergeTree` in every topology: the clause governs where
+  the TABLE exists, not where the ROWS live.
 - **A sink that cannot be built disables the reconciler**, logged at startup
   with the underlying error; it does not silently switch modes. There is no
   fallback from `chtable` to `jsonl` — an operator who asked for the CH table
