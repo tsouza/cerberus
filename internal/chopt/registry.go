@@ -2603,7 +2603,9 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Stable,
 		AutoSelect: true,
-		Doc:        "stamp group_by_two_level_threshold_bytes=1 on a windowed exponential-histogram plan so the aggregator converts to its two-level table at once instead of feeding the array stages one whole-state block (result-equivalent, no version floor, measured 426 -> 38 MiB at 21 anchors and 992 -> 78 MiB at 61 -- #3247)",
+		Doc: "stamp group_by_two_level_threshold_bytes=1 on a windowed exponential-histogram plan so the aggregator " +
+			"converts to its two-level table at once instead of feeding the array stages one whole-state block " +
+			"(result-equivalent, no version floor, measured 157 -> 27 MiB at 21 anchors and 383 -> 53 MiB at 61 -- #3247)",
 	},
 }
 

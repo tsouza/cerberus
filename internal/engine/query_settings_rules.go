@@ -757,7 +757,9 @@ func planHasExpHistogramWindowGrouping(plan chplan.Node) bool {
 		case *chplan.RangeBucketFanout:
 			windowed = true
 		}
-		return !(expHistogram && windowed)
+		// Keep descending while EITHER conjunct is still missing; once both
+		// are found nothing further can change the answer.
+		return !expHistogram || !windowed
 	})
 	return expHistogram && windowed
 }
