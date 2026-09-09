@@ -201,23 +201,27 @@ func checkCorpusFixture(t *testing.T, path string, valid map[string]struct{}) (c
 // parity lane all scored a corpus whose reason column was fiction, and the
 // route-B rows additionally claimed a refusal reason while carrying route B.
 //
-// Two of the three invariants documented on TestRouterCorpusFixturesAreProducible
-// are asserted here, both derived from the production consts rather than
-// restated:
+// All three invariants documented on TestRouterCorpusFixturesAreProducible are
+// asserted here, every one of them derived from the production consts rather
+// than restated:
 //
 //  1. decision_reason is a solver.Reasons member or the corpus-only non-PromQL
 //     token.
 //
+//  2. only solver.LangPromQL rows carry a classification, and a row on any
+//     other head names its own absence with the non-PromQL reason. The
+//     generated corpus is stricter than the JSONL fixtures on that second half:
+//     the fixtures predate the token and are allowed to carry an absent reason
+//     instead, while the generator writes every row itself and so has no vintage
+//     to be honest about.
+//
 //  3. route == "B" iff decision_reason == solver.ReasonRouted.
 //
-// Invariant 2 (only PromQL rows carry a classification) is NOT asserted here,
-// and deliberately so rather than silently: the benchmark corpus plants
-// classified LogQL and TraceQL classes — route A with real geometry — which the
-// solver cannot produce, because solver.Classify is PromQL-gated. Making those
-// classes honest changes which rules can fire on them and therefore the labeled
-// ground truth and the regression floors, so it is its own change, tracked in
-// issue #3204. Asserting the two invariants that DO hold is what keeps the
-// remaining gap visible instead of letting the whole corpus go unpinned.
+// Invariant 2 reaches the benchmark corpus through the same corpusRow helpers
+// the fixture check uses, so "classified" means one thing in this file. A
+// BenchRow's geometry is float64 where the fixture's is int64 — the generator
+// draws integer-valued jitter into the same UInt32 corpus columns — so the
+// conversion is exact and a fabricated non-zero cannot round itself away.
 func TestRouterBenchCorpusIsProducible(t *testing.T) {
 	t.Parallel()
 
@@ -232,8 +236,10 @@ func TestRouterBenchCorpusIsProducible(t *testing.T) {
 	valid := validRouterDecisionReasons()
 
 	// Both sides of invariant 3 must be exercised, or a corpus that happened to
-	// contain only route-A rows would satisfy it vacuously.
-	var routeB, routeA int
+	// contain only route-A rows would satisfy it vacuously; and both sides of
+	// the classification boundary must be populated, or invariant 2 is satisfied
+	// by a corpus that simply has no non-PromQL rows to get wrong.
+	var routeB, routeA, classified, unclassified int
 	for i, r := range corpus.Rows {
 		if _, ok := valid[r.DecisionReason]; !ok {
 			t.Errorf("bench row %d (%s/%s) has decision_reason %q, which is no token production can emit",
@@ -242,6 +248,19 @@ func TestRouterBenchCorpusIsProducible(t *testing.T) {
 		if routed := r.DecisionReason == solver.ReasonRouted; (r.Route == "B") != routed {
 			t.Errorf("bench row %d (%s/%s) has route=%q with decision_reason=%q; route B and %q are the same event",
 				i, r.ShapeID, r.Language, r.Route, r.DecisionReason, solver.ReasonRouted)
+		}
+		if row := benchCorpusRow(r); row.classified() {
+			classified++
+			if r.Language != solver.LangPromQL {
+				t.Errorf("bench row %d (%s) is %s but carries a classification (route=%q reason=%q geometry=%d); the solver only classifies %s",
+					i, r.ShapeID, r.Language, r.Route, r.DecisionReason, row.geometry(), solver.LangPromQL)
+			}
+		} else {
+			unclassified++
+			if r.Language != solver.LangPromQL && r.DecisionReason != engine.CorpusReasonNonPromQL {
+				t.Errorf("bench row %d (%s) is %s and unclassified but its decision_reason is %q, not %q; production names that absence rather than leaving it blank",
+					i, r.ShapeID, r.Language, r.DecisionReason, engine.CorpusReasonNonPromQL)
+			}
 		}
 		switch r.Route {
 		case "B":
@@ -256,11 +275,24 @@ func TestRouterBenchCorpusIsProducible(t *testing.T) {
 	if routeA == 0 {
 		t.Error("no route-A bench row — the refusal half of the routed-reason invariant is untested")
 	}
+	if classified == 0 {
+		t.Error("no classified bench row — the route-scoped rules score against nothing")
+	}
+	if unclassified == 0 {
+		t.Error("no unclassified bench row — the two non-PromQL heads are absent from the benchmark, so invariant 2 holds vacuously")
+	}
 
 	// The labeled ground truth carries decision_reason too, and a finding is
-	// matched back to its class by that column: a class labeled with an
-	// unproducible reason scores rules against a class no row can belong to.
+	// matched back to its class by that column, so a class whose reason no row
+	// can carry scores rules against a class nothing belongs to. Two ways to get
+	// that wrong, checked in one pass: a token production never emits at all, and
+	// a token production emits only for a head this class is not on.
 	for i, c := range corpus.Classes {
+		if c.Language != solver.LangPromQL && c.DecisionReason != engine.CorpusReasonNonPromQL {
+			t.Errorf("bench class %d (%s/%s) has decision_reason %q; a head the solver never classifies carries %q",
+				i, c.ShapeID, c.Language, c.DecisionReason, engine.CorpusReasonNonPromQL)
+			continue
+		}
 		if c.DecisionReason == "" {
 			continue // a class may group on shape_id alone
 		}
@@ -268,5 +300,23 @@ func TestRouterBenchCorpusIsProducible(t *testing.T) {
 			t.Errorf("bench class %d (%s/%s) has decision_reason %q, which is no token production can emit",
 				i, c.ShapeID, c.Language, c.DecisionReason)
 		}
+	}
+}
+
+// benchCorpusRow projects a generated BenchRow onto the corpusRow shape the
+// fixture invariants are written against, so both populations are judged by one
+// definition of "classified" rather than by two that can drift.
+func benchCorpusRow(r routerrules.BenchRow) corpusRow {
+	return corpusRow{
+		Language:       r.Language,
+		Route:          r.Route,
+		DecisionReason: r.DecisionReason,
+		NAnchors:       int64(r.NAnchors),
+		Fanout:         int64(r.Fanout),
+		CumulativeD:    int64(r.CumulativeD),
+		OuterRange:     int64(r.OuterRange),
+		Step:           int64(r.Step),
+		KShards:        int64(r.KShards),
+		Parallelism:    int64(r.Parallelism),
 	}
 }

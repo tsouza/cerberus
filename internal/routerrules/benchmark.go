@@ -287,9 +287,17 @@ const (
 	routeBFloorDurSpread = 400.0
 )
 
+// benchClassifiedLang is the one head the router classifies. Solver.Classify is
+// PromQL-gated, so a PromQL row is the only row that can carry a route, a
+// decision reason drawn from the solver's own vocabulary, or any non-zero solver
+// geometry. Every other head is rewritten to the unclassified shape by
+// unclassifyNonPromQL, and the generator tests membership against this constant
+// rather than the literal so the two cannot drift.
+const benchClassifiedLang = "promql"
+
 // languages are the three heads, weighted PromQL-dominant to match a realistic
 // query mix (the healthy generator plants more promql classes).
-var benchLanguages = []string{"promql", "logql", "traceql"}
+var benchLanguages = []string{benchClassifiedLang, "logql", "traceql"}
 
 // GenerateBenchCorpus builds a deterministic labeled corpus from p. The same
 // seed yields byte-identical rows, so the metrics are reproducible.
@@ -301,6 +309,7 @@ func GenerateBenchCorpus(p BenchParams) *BenchCorpus {
 	plantHealthy(bc, rng, p)
 	plantRouteBFloor(bc, rng, p)
 	plantPathologies(bc, rng, p)
+	unclassifyNonPromQL(bc)
 
 	// Deterministic ordering so a chdb re-insert and the in-Go scan see the same
 	// row sequence (quantileExact is order-independent, but stability avoids
@@ -318,7 +327,7 @@ func GenerateBenchCorpus(p BenchParams) *BenchCorpus {
 func plantHealthy(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 	for _, lang := range benchLanguages {
 		n := p.HealthyClassesPerLang
-		if lang != "promql" {
+		if lang != benchClassifiedLang {
 			n = max(1, n/2) // promql-dominant mix
 		}
 		for c := 0; c < n; c++ {
@@ -344,6 +353,12 @@ func plantHealthy(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 					ExitStatus:          "ok",
 				})
 			}
+			// The classified columns above are what a PromQL row carries; on the
+			// other two heads unclassifyNonPromQL overwrites them (and this
+			// class's DecisionReason) with the unclassified shape. Filling them
+			// unconditionally keeps the healthy body ONE distribution — the same
+			// draws in the same order for every language — so a per-language
+			// runtime-cost watermark stays comparable across heads.
 			bc.Classes = append(bc.Classes, LabeledClass{
 				ShapeID: shape, Language: lang, DecisionReason: "below-threshold",
 				QueryHash: hash, Expect: nil, Severity: SevHealthy,
@@ -352,39 +367,85 @@ func plantHealthy(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 	}
 }
 
-// plantRouteBFloor seeds healthy route-B classes whose high fan-out establishes
-// the route-B fanout floor the shard rules learn. These are negative classes
-// (exit ok, finishing reasonably), but with fan-out characteristic of route B.
+// plantRouteBFloor seeds a healthy route-B class whose high fan-out establishes
+// the route-B fanout floor the shard rules learn. It is a negative class (exit
+// ok, finishing reasonably) with fan-out characteristic of route B.
+//
+// PromQL only, and structurally so rather than as a sampling choice: route B is
+// a Solver outcome, Solver.Classify is PromQL-gated, and the fan-out floor is
+// learned from a geometry column restricted to classified rows. A LogQL route-B
+// seed would be a class production can never write, and its fan-out would be
+// folded into a floor no LogQL query can ever be measured against.
 func plantRouteBFloor(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
-	for _, lang := range []string{"promql", "logql"} {
-		shape := lang + ":routeb_healthy"
-		hash := uint64(2000 + len(bc.Classes))
-		for i := 0; i < p.HealthyClassSize; i++ {
-			// A healthy fan-out reaches query_log on every shard, so
-			// shards_observed equals k_shards; only an abnormal exit truncates it.
-			k := jitter(rng, 4, 8)
-			bc.Rows = append(bc.Rows, BenchRow{
-				ShapeID:             shape,
-				Language:            lang,
-				NormalizedQueryHash: hash,
-				Fanout:              routeBFloorFanout,
-				CumulativeD:         jitter(rng, healthyDBase, healthyDSpread),
-				Route:               "B",
-				KShards:             k,
-				ShardsObserved:      k,
-				Parallelism:         benchRouteBParallelism,
-				DecisionReason:      "routed",
-				ReadRows:            jitter(rng, healthyReadBase, healthyReadSpread),
-				ReadBytes:           jitter(rng, 1_000_000, 40_000_000),
-				QueryDurationMS:     jitter(rng, routeBFloorDurBase, routeBFloorDurSpread),
-				MemoryUsage:         jitter(rng, healthyMemBase, healthyMemSpread),
-				ExitStatus:          "ok",
-			})
-		}
-		bc.Classes = append(bc.Classes, LabeledClass{
-			ShapeID: shape, Language: lang, DecisionReason: "routed",
-			QueryHash: hash, Expect: nil, Severity: SevHealthy,
+	shape := benchClassifiedLang + ":routeb_healthy"
+	hash := uint64(2000 + len(bc.Classes))
+	for i := 0; i < p.HealthyClassSize; i++ {
+		// A healthy fan-out reaches query_log on every shard, so
+		// shards_observed equals k_shards; only an abnormal exit truncates it.
+		k := jitter(rng, 4, 8)
+		bc.Rows = append(bc.Rows, BenchRow{
+			ShapeID:             shape,
+			Language:            benchClassifiedLang,
+			NormalizedQueryHash: hash,
+			Fanout:              routeBFloorFanout,
+			CumulativeD:         jitter(rng, healthyDBase, healthyDSpread),
+			Route:               "B",
+			KShards:             k,
+			ShardsObserved:      k,
+			Parallelism:         benchRouteBParallelism,
+			DecisionReason:      "routed",
+			ReadRows:            jitter(rng, healthyReadBase, healthyReadSpread),
+			ReadBytes:           jitter(rng, 1_000_000, 40_000_000),
+			QueryDurationMS:     jitter(rng, routeBFloorDurBase, routeBFloorDurSpread),
+			MemoryUsage:         jitter(rng, healthyMemBase, healthyMemSpread),
+			ExitStatus:          "ok",
 		})
+	}
+	bc.Classes = append(bc.Classes, LabeledClass{
+		ShapeID: shape, Language: benchClassifiedLang, DecisionReason: "routed",
+		QueryHash: hash, Expect: nil, Severity: SevHealthy,
+	})
+}
+
+// unclassifyNonPromQL rewrites every LogQL and TraceQL row and class into the
+// shape production actually records for a head the router never classifies:
+// engine.routeFeatures reports present=false, an empty route, all-zero solver
+// geometry and the non-promql reason for any language other than PromQL, because
+// Solver.Classify is PromQL-gated.
+//
+// It runs as one post-pass over the finished corpus rather than as a branch
+// inside each planter, and that is the point: a spec author cannot forget it. A
+// non-PromQL row whose route and geometry were fabricated makes every
+// route-gated rule score against fiction, and makes a geometry percentile fitted
+// over that language look like a learned watermark when on real data its whole
+// population is zero.
+//
+// The runtime-cost columns are untouched. An unclassified query still runs, still
+// reads rows and still OOMs or times out, so read_rows / read_bytes /
+// query_duration_ms / memory_usage / exit_status are as real on a LogQL row as on
+// a PromQL one. shards_observed is zeroed with the geometry: it counts the shards
+// of a fan-out that never happened.
+func unclassifyNonPromQL(bc *BenchCorpus) {
+	for i := range bc.Rows {
+		r := &bc.Rows[i]
+		if r.Language == benchClassifiedLang {
+			continue
+		}
+		r.Route = routeUnclassified
+		r.DecisionReason = reasonNonPromQL
+		r.NAnchors, r.Fanout, r.CumulativeD = 0, 0, 0
+		r.OuterRange, r.Step, r.KShards = 0, 0, 0
+		r.ShardsObserved, r.Parallelism = 0, 0
+	}
+	for i := range bc.Classes {
+		c := &bc.Classes[i]
+		if c.Language == benchClassifiedLang {
+			continue
+		}
+		// A class is identified by its group-key dimensions, and decision_reason
+		// is one of them: it has to name the same token the rows now carry or no
+		// finding can be matched back to it.
+		c.DecisionReason = reasonNonPromQL
 	}
 }
 
@@ -492,7 +553,7 @@ func pathologyFailureSpecs() []pathologySpec {
 		// only when cumulative_d is in the per-language tail, so it is expected at
 		// SEVERE (d in tail) but NOT at MARGINAL (d in the healthy body).
 		{
-			shape: "prom:oom_heavy", lang: "promql", hashBase: 30000,
+			shape: "prom:oom_heavy", lang: benchClassifiedLang, hashBase: 30000,
 			expect: func(sev PathologySeverity) []string {
 				base := []string{"oom_on_route_a", "failure_cluster_by_reason"}
 				if sev == SevSevere {
@@ -517,8 +578,13 @@ func pathologyFailureSpecs() []pathologySpec {
 		// (route_a_slow_hot_shape, which gates only on route-A duration). The
 		// MARGINAL variant clears neither tail, so it expects only the two
 		// status-driven rules.
+		//
+		// PromQL, because "route A" is a claim only a classified head can make.
+		// The LogQL sibling below plants the same failure on a head that carries
+		// no route, and the two together are what separate "this rule needs a
+		// route" from "this rule needs only an exit status".
 		{
-			shape: "log:timeout_heavy", lang: "logql", hashBase: 31000,
+			shape: "prom:timeout_heavy", lang: benchClassifiedLang, hashBase: 39000,
 			expect: func(sev PathologySeverity) []string {
 				base := []string{"route_a_timeout_should_shard", "failure_cluster_by_reason"}
 				if sev == SevSevere {
@@ -537,10 +603,47 @@ func pathologyFailureSpecs() []pathologySpec {
 				}
 			},
 		},
+		// The same hard failure on a head the router never classifies. An
+		// unclassified query still runs and still times out, so this class is a
+		// real population — and it is the one that proves the ROUTE-AGNOSTIC
+		// failure clustering still reaches those heads while every route- or
+		// geometry-gated rule correctly does not.
+		//
+		// failure_cluster_by_reason alone, and each absence is structural rather
+		// than a tuning outcome:
+		//   - route_a_timeout_should_shard and route_a_slow_hot_shape gate on
+		//     route == A, and an unclassified row matches neither route token
+		//     (see the route asymmetry note on enumDomains);
+		//   - heavy_shape_geometry_failing reads d_high_watermark, a geometry
+		//     percentile restricted to classified rows and partitioned by
+		//     language, so LogQL has no partition key and the rule is never
+		//     evaluated for it at all.
+		//
+		// One severity rather than two: the severe/marginal split existed to probe
+		// retention in the duration and geometry tails, and neither detector can
+		// reach this class any more, so a second magnitude would label an
+		// identical expectation twice.
+		//
+		// The classification columns are deliberately absent from the fill —
+		// unclassifyNonPromQL is the single writer of route, decision_reason and
+		// geometry on a non-PromQL row.
+		{
+			shape: "log:timeout", lang: "logql", hashBase: 31000,
+			expect:     always("failure_cluster_by_reason"),
+			severities: []PathologySeverity{SevSevere},
+			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
+				return BenchRow{
+					ExitStatus:      "timeout",
+					QueryDurationMS: sevDurSevere,
+					MemoryUsage:     jitter(rng, healthyMemBase, healthyMemSpread),
+					ReadRows:        jitter(rng, 1_000_000, 4_000_000),
+				}
+			},
+		},
 		// Route-A sample-budget: route_a_hit_sample_budget +
 		// cerberus_side_rejection_pressure.
 		{
-			shape: "prom:topk_budget", lang: "promql", hashBase: 32000,
+			shape: "prom:topk_budget", lang: benchClassifiedLang, hashBase: 32000,
 			expect:     always("route_a_hit_sample_budget", "cerberus_side_rejection_pressure"),
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
@@ -550,21 +653,29 @@ func pathologyFailureSpecs() []pathologySpec {
 				}
 			},
 		},
-		// Cerberus-side breaker: cerberus_side_rejection_pressure only.
+		// Cerberus-side breaker on an unclassified head:
+		// cerberus_side_rejection_pressure only. It is one of the two detectors
+		// that gate on exit_status alone (failure_cluster_by_reason, which
+		// log:timeout carries, is the other), so its reach does not depend on a
+		// route — which is exactly why the corpus plants it on TraceQL. The two
+		// classes cover both such detectors on an unclassified head.
+		//
+		// As with log:timeout, the classification columns are absent from the
+		// fill; unclassifyNonPromQL writes them.
 		{
 			shape: "trc:breaker", lang: "traceql", hashBase: 33000,
 			expect:     always("cerberus_side_rejection_pressure"),
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
 				return BenchRow{
-					Route: "A", ExitStatus: "breaker", DecisionReason: "scalar-heavy",
-					ReadRows: jitter(rng, 100_000, 500_000),
+					ExitStatus: "breaker",
+					ReadRows:   jitter(rng, 100_000, 500_000),
 				}
 			},
 		},
 		// Explicit rejected: cerberus_side_rejection_pressure only.
 		{
-			shape: "prom:rejected", lang: "promql", hashBase: 34000,
+			shape: "prom:rejected", lang: benchClassifiedLang, hashBase: 34000,
 			expect:     always("cerberus_side_rejection_pressure"),
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
@@ -577,7 +688,7 @@ func pathologyFailureSpecs() []pathologySpec {
 		// Route-B still failing: route_b_still_failing +
 		// failure_cluster_by_reason + heavy_shape_geometry_failing.
 		{
-			shape: "prom:routeb_fail", lang: "promql", hashBase: 35000,
+			shape: "prom:routeb_fail", lang: benchClassifiedLang, hashBase: 35000,
 			expect:     always("route_b_still_failing", "failure_cluster_by_reason", "heavy_shape_geometry_failing"),
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
@@ -603,7 +714,7 @@ func pathologyTailSpecs() []pathologySpec {
 	return []pathologySpec{
 		// Route-B overshard regret: route_b_overshard_low_fanout only.
 		{
-			shape: "prom:overshard", lang: "promql", hashBase: 36000,
+			shape: "prom:overshard", lang: benchClassifiedLang, hashBase: 36000,
 			expect:     always("route_b_overshard_low_fanout"),
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
@@ -619,7 +730,7 @@ func pathologyTailSpecs() []pathologySpec {
 		},
 		// High-fanout route-A: route_a_high_fanout_should_shard only.
 		{
-			shape: "prom:hot_fanout", lang: "promql", hashBase: 37000,
+			shape: "prom:hot_fanout", lang: benchClassifiedLang, hashBase: 37000,
 			expect:     always("route_a_high_fanout_should_shard"),
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
@@ -636,7 +747,7 @@ func pathologyTailSpecs() []pathologySpec {
 		// Memory near cap (healthy but in the per-language memory tail):
 		// route_a_memory_near_cap only.
 		{
-			shape: "prom:mem_near_cap", lang: "promql", hashBase: 38000,
+			shape: "prom:mem_near_cap", lang: benchClassifiedLang, hashBase: 38000,
 			expect:     always("route_a_memory_near_cap"),
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
@@ -653,7 +764,7 @@ func pathologyTailSpecs() []pathologySpec {
 		// Slow hot shape (route A, in the per-language duration tail):
 		// route_a_slow_hot_shape only. Grouped by normalized_query_hash.
 		{
-			shape: "prom:slow_hot", lang: "promql", hashBase: benchSlowHotHashBase,
+			shape: "prom:slow_hot", lang: benchClassifiedLang, hashBase: benchSlowHotHashBase,
 			expect:     always("route_a_slow_hot_shape"),
 			severities: []PathologySeverity{SevSevere, SevMarginal},
 			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
@@ -669,7 +780,7 @@ func pathologyTailSpecs() []pathologySpec {
 		},
 		// Read-amplification (experimental rule): read_amplification_hot_shape.
 		{
-			shape: "prom:read_amp", lang: "promql", hashBase: 40000,
+			shape: "prom:read_amp", lang: benchClassifiedLang, hashBase: 40000,
 			expect:     always("read_amplification_hot_shape"),
 			severities: []PathologySeverity{SevSevere},
 			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
