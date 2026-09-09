@@ -27,3 +27,6 @@ INSERT INTO otel_logs (Body) VALUES ('prod'), ('production'), ('stg'), ('staging
 -- chplan --
 Filter predicate=(ResourceAttributes["env"] =~ "prod|stg")
   Scan(otel_logs)
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{env=~"prod|stg"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence

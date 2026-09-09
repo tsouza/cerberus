@@ -39,3 +39,6 @@ Filter predicate=((ResourceAttributes["level"] = "error") AND (FnIf(FnMapContain
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), JSONExtractString(`Body`, ?))), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), JSONExtractString(`Body`, ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{level="error"} | json level="severity" | level_extracted="warn"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
