@@ -132,7 +132,7 @@ CREATE TABLE otel_metrics_exponential_histogram (
 [68] string = "^(?:cpu_temp|gpu_temp)$"
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
-  RangeWindow func= range=5m0s step=1m0s outerRange=10m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes, MetricName] start=2025-12-31T23:50:01Z end=2026-01-01T00:00:01Z
+  RangeWindow func= range=5m0s step=1m0s outerRange=10m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes, MetricName] start=2025-12-31T23:50:01Z end=2026-01-01T00:00:01Z stepAlign
     UnionAll arms=6
       Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
         Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))

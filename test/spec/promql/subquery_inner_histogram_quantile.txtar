@@ -79,7 +79,7 @@ INSERT INTO otel_metrics_histogram VALUES
 [34] string = "http_server.request_duration"
 [35] string = "http_server_request.duration"
 -- chplan --
-RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z distinctSampleRows
   Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
     Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
       HistogramQuantile phi=0.9 groupBy=[anchor_ts AS anchor_ts, Attributes AS Attributes]
