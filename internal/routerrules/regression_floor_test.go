@@ -66,6 +66,48 @@ func TestRegressionFloorNominal(t *testing.T) {
 			t.Errorf("rule %q has labeled positives but F1=0 — it detected none of them", r.Rule)
 		}
 	}
+
+	assertEveryEvaluatedRuleIsLabeled(t, cat, corpus)
+}
+
+// assertEveryEvaluatedRuleIsLabeled is what makes the per-rule F1 check above
+// mean something. That check skips a rule with no labeled positives, and
+// scoreReport does not even emit a row for a rule that neither fired nor was
+// labeled, so a rule the corpus stopped planting a pathology for leaves every
+// floor in this file green while detecting nothing.
+//
+// The hazard is concrete rather than theoretical. A route-gated rule can only be
+// labeled on the one head that carries a route: Solver.Classify is PromQL-gated,
+// so a LogQL or TraceQL class has no route for `route == A` to match. Moving the
+// last route-A pathology of some kind onto a non-PromQL head — or dropping it —
+// silently retires the rule from the benchmark. This asserts the corpus still
+// exercises every rule the evaluator runs, so that retirement is a failure
+// instead of an omission.
+//
+// Deprecated rules are excluded because the evaluator never runs them;
+// experimental ones are included because ScoreCatalog opts them in.
+func assertEveryEvaluatedRuleIsLabeled(t *testing.T, cat *Catalog, corpus *BenchCorpus) {
+	t.Helper()
+
+	labeled := map[string]struct{}{}
+	for _, c := range corpus.Classes {
+		for _, rule := range c.Expect {
+			labeled[rule] = struct{}{}
+		}
+	}
+	if len(labeled) == 0 {
+		t.Fatal("no class in the benchmark corpus is labeled with any rule — every floor in this file is vacuous")
+	}
+	for i := range cat.Rules {
+		rule := &cat.Rules[i]
+		if rule.Status == StatusDeprecated {
+			continue
+		}
+		if _, ok := labeled[rule.ID]; !ok {
+			t.Errorf("rule %q is evaluated but no benchmark class is labeled with it — it is scored on an empty population, "+
+				"so its precision/recall/F1 and every floor in this file are silent about it", rule.ID)
+		}
+	}
 }
 
 // TestRegressionFloorSaneRange pins recall + precision floors across the

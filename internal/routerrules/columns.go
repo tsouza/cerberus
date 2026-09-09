@@ -29,6 +29,17 @@ const (
 	routeUnclassified = ""
 )
 
+// reasonNonPromQL is the decision_reason token a row carries when its head never
+// entered the solver at all. It is corpus TAXONOMY rather than a solver Reason —
+// engine.CorpusReasonNonPromQL is where it is declared for the writer — and it is
+// re-declared here under the same deliberate no-import contract as
+// CorpusTableName above; decision_reason_gate_test.go pins that the two agree.
+//
+// It is a named constant rather than a literal because two places in this package
+// must agree on it exactly: the decision_reason enum domain a rule may name, and
+// the benchmark generator that stamps it on every non-PromQL row.
+const reasonNonPromQL = "non-promql"
+
 // ColumnKind classifies each corpus column so the validator can tell which
 // columns may legitimately carry an enum literal in a rule condition (the
 // closed-domain columns) versus which may only be compared against a resolved
@@ -242,7 +253,7 @@ var enumDomains = map[string]map[string]struct{}{
 		// exclude this population, not average it in.
 		"extraction-failed",
 		// Corpus-only: LogQL and TraceQL do not enter Solver.Classify.
-		"non-promql",
+		reasonNonPromQL,
 	),
 }
 

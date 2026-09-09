@@ -516,11 +516,25 @@ the route-scoped rules nor the two non-PromQL heads go untested.
 The GENERATED benchmark corpus is a separate population and is pinned separately,
 because that test globs `testdata/*.jsonl` and the benchmark corpus is built in
 Go and handed to the evaluator in memory, never touching a file. It is held to
-the first two invariants by `TestRouterBenchCorpusIsProducible` in the same file.
-It does not yet satisfy the third: it plants classified LogQL and TraceQL classes
-that a PromQL-gated solver cannot emit, which is tracked in issue #3204 —
-correcting them moves the labeled ground truth and the regression floors, so it
-is its own change rather than a fixture edit.
+all three invariants by `TestRouterBenchCorpusIsProducible` in the same file,
+through the same `classified()` helper, and to a stricter form of the second: the
+generator writes every row itself, so a non-PromQL row must name its absent
+classification with the `non-promql` token rather than leaving the reason blank.
+`unclassifyNonPromQL` in `benchmark.go` is the single writer of `route`,
+`decision_reason` and the geometry columns on a LogQL or TraceQL row, applied as
+one post-pass over the finished corpus so a new pathology spec on those heads
+cannot opt out of it.
+
+That constrains what the benchmark can label. Route B is a Solver outcome, so the
+route-B fan-out floor is seeded on PromQL alone; a route-A pathology is planted on
+PromQL, where "route A" is a claim a classified head can make; and the two
+non-PromQL pathology classes expect only the detectors that gate on `exit_status`
+— `failure_cluster_by_reason` on a LogQL timeout, `cerberus_side_rejection_pressure`
+on a TraceQL breaker trip. Every route- or geometry-gated rule is absent from
+those labels structurally, not by tuning: an unclassified row matches neither
+route token, and `d_high_watermark` is a geometry percentile restricted to
+classified rows and partitioned by language, so those heads have no partition key
+and the rule is never evaluated for them at all.
 
 It proves
 the catalog is **effective**, not just well-formed: default-lane tests assert that
@@ -579,8 +593,12 @@ labels grounded in real incident outcomes, which this corpus does not have.
   numbers belong — the shipped catalog stays number-free; the floors live in
   test code). The overall recall/precision floors hold at nominal prevalence;
   severe-recall is floored at 1.0 across the whole grid including off-nominal
-  prevalence. Adversarial corpora (monochrome-healthy, distribution-shifted
-  across seeds) and a multi-rule-interaction test guard the edges.
+  prevalence. Every evaluated rule must also carry at least one labeled class:
+  the per-rule F1 check skips a rule with no labeled positives and the scorecard
+  omits it entirely, so without that assertion a rule the corpus stopped planting
+  a pathology for would leave every floor green while detecting nothing.
+  Adversarial corpora (monochrome-healthy, distribution-shifted across seeds) and
+  a multi-rule-interaction test guard the edges.
 - `cerberus route-rules benchmark` runs the whole thing from the CLI: it scores the
   embedded catalog over the generated corpus and prints the metric table, no
   corpus file required (`--seed`, `--min-support`, and `--param` tune it). The

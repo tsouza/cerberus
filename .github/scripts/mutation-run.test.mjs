@@ -245,6 +245,24 @@ test('both invocations pin the per-mutant budget to the derived value', (t) => {
   }
 });
 
+// A survivor's `(file, line, column, type)` tuple does not determine the
+// program gremlins ran: the mutation is applied to the AST and the file is
+// re-printed, so a precedence-changing operator swap comes back
+// re-parenthesised and is NOT the program a reader gets by swapping the
+// operator in the source. Both invocations must ask for the diff, because
+// either can be the one that produces the leg's survivors (#3215).
+test('both invocations print the source every survivor actually ran', (t) => {
+  const f = fixture(t, [0, 7]);
+  assert.equal(run(f, { DIFF_REF: 'a'.repeat(40) }).status, 0);
+  const calls = invocations(f);
+  assert.equal(calls.length, 2);
+  for (const args of calls) {
+    const at = args.indexOf('--output-diff-statuses');
+    assert.notEqual(at, -1, `--output-diff-statuses missing from ${JSON.stringify(args)}`);
+    assert.equal(args[at + 1], 'l', 'survivors are the statuses whose source a reader has to read');
+  }
+});
+
 test('the probe is timed once and reused across the fallback invocation', (t) => {
   const f = fixture(t, [0, 7]);
   assert.equal(run(f, { DIFF_REF: 'a'.repeat(40) }).status, 0);
