@@ -1,0 +1,148 @@
+# `last_over_time` over a SUBQUERY whose inner is a mixed float/histogram
+# `or` between two arms carrying BYTE-IDENTICAL attributes (#3227).
+#
+# `or`'s default set-op match key is "every label except `__name__`"
+# (promql/engine.go:1454-1465), so `latency_exp_hist{x="1"}` and
+# `latency_float{x="1"}` share ONE signature and the histogram arm
+# shadows the float arm — but only at the anchors where the histogram
+# actually has a sample. Across this subquery's three anchors that shadow
+# is therefore PARTIAL: the float series SURVIVES at the anchor the
+# histogram does not cover, and `last_over_time` (one of the two range
+# functions reference never strips `__name__` from) reports BOTH series.
+#
+# This is the shape the sibling setop_or_subquery_name.txtar deliberately
+# avoids — its comment says the two metrics sit on DISTINCT attribute
+# sets "so two metrics sharing one attribute set would see the right arm
+# dropped as already-present rather than merged". That is exactly the
+# case here, and the point: an all-or-nothing shadow is what makes
+# distributing the outer function over the two arms an identity, and a
+# PARTIAL shadow is what breaks it.
+#
+# Seed timings, against the corpus's fixed 2026-01-01T00:00:01Z instant.
+# `[3m:1m]` anchors at the step multiples inside (23:57:01, 00:00:01]:
+#
+#   23:58:00 — no histogram sample within lookback; the float sample at
+#              23:57:30 wins, so the float series is live here
+#   23:59:00 — histogram sample at 23:58:30 shadows the float
+#   00:00:00 — histogram sample at 23:59:30 shadows the float
+#
+# So the float series' surviving sample is the 23:57:30 one (value 7),
+# NOT the later 23:59:45 one (value 99). The two float values are
+# deliberately distinct: an implementation that folds each arm over its
+# FULL window before shadowing answers 99 for the float series, or drops
+# it altogether, and neither can be mistaken for the reference answer.
+# The `-- parity --` section is what makes that claim checkable — the
+# expected rows below are compared against the upstream Prometheus
+# engine's own answer over this same seed, not merely against whatever
+# cerberus last emitted.
+-- query.promql --
+last_over_time((latency_exp_hist or latency_float)[3m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('x', '1'), toDateTime64('2025-12-31 23:58:30', 9), 10, 20.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('latency_exp_hist', map('x', '1'), toDateTime64('2025-12-31 23:59:30', 9), 14, 28.0, 0, 0, 0, [2, 3, 4, 5], 0, []);
+INSERT INTO otel_metrics_gauge VALUES
+    ('latency_float', map('x', '1'), toDateTime64('2025-12-31 23:57:30', 9), 7.0),
+    ('latency_float', map('x', '1'), toDateTime64('2025-12-31 23:59:45', 9), 99.0);
+-- expected_rows --
+[
+  ["latency_exp_hist", {"x": "1"}, "2026-01-01T00:00:01Z", 0, 14, 28, 0, 0, 0, 0, [2,3,4,5], 0, [], 1],
+  ["latency_float", {"x": "1"}, "2026-01-01T00:00:01Z", 7, 0, 0, 0, 0, 0, 0, [], 0, [], 0]
+]
+-- args --
+[0] string = "2026-01-01 00:00:01.000000000"
+[1] int64 = 9
+[2] float64 = 0
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "latency_exp_hist"
+[11] string = "latency.exp.hist"
+[12] string = "latency.exp/hist"
+[13] string = "latency.exp_hist"
+[14] string = "latency/exp/hist"
+[15] string = "latency/exp_hist"
+[16] string = "latency_exp.hist"
+[17] string = "latency_exp_hist"
+[18] string = "latency.exp.hist"
+[19] string = "latency.exp/hist"
+[20] string = "latency.exp_hist"
+[21] string = "latency/exp/hist"
+[22] string = "latency/exp_hist"
+[23] string = "latency_exp.hist"
+[24] string = "service_name"
+[25] string = "service.name"
+[26] string = "service_name"
+[27] string = "service.name"
+[28] string = "service_name"
+[29] string = ""
+[30] string = "service_name"
+[31] string = "latency_float"
+[32] string = "latency.float"
+[33] string = "latency/float"
+[34] string = "service_name"
+[35] string = "service.name"
+[36] string = "service_name"
+[37] string = "service.name"
+[38] string = "service_name"
+[39] string = ""
+[40] string = "service_name"
+[41] string = "latency_float"
+[42] string = "latency.float"
+[43] string = "latency/float"
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, FnToDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, Value AS Value, HistogramCount AS HistogramCount, HistogramSum AS HistogramSum, HistogramScale AS HistogramScale, HistogramZeroCount AS HistogramZeroCount, HistogramZeroThreshold AS HistogramZeroThreshold, HistogramPositiveOffset AS HistogramPositiveOffset, HistogramPositiveBucketCounts AS HistogramPositiveBucketCounts, HistogramNegativeOffset AS HistogramNegativeOffset, HistogramNegativeBucketCounts AS HistogramNegativeBucketCounts, _setop_is_histogram AS _setop_is_histogram]
+  Aggregate groupBy=[Attributes AS Attributes, MetricName AS MetricName] funcs=[FnArgMax(Value, TimeUnix) AS Value, FnArgMax(_setop_is_histogram, TimeUnix) AS _setop_is_histogram, FnArgMax(HistogramCount, TimeUnix) AS HistogramCount, FnArgMax(HistogramSum, TimeUnix) AS HistogramSum, FnArgMax(HistogramScale, TimeUnix) AS HistogramScale, FnArgMax(HistogramZeroCount, TimeUnix) AS HistogramZeroCount, FnArgMax(HistogramPositiveOffset, TimeUnix) AS HistogramPositiveOffset, FnArgMax(HistogramPositiveBucketCounts, TimeUnix) AS HistogramPositiveBucketCounts, FnArgMax(HistogramNegativeOffset, TimeUnix) AS HistogramNegativeOffset, FnArgMax(HistogramNegativeBucketCounts, TimeUnix) AS HistogramNegativeBucketCounts, FnArgMax(HistogramZeroThreshold, TimeUnix) AS HistogramZeroThreshold] dropEmptyOnNoGroup
+    VectorSetOp op=or match=default stepAligned mixed mixedHistogramOnLeft
+      HistogramProjection project=[MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, 0 AS Value]
+        RangeBucketFanout step=1m0s lookback=5m0s groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnArgMax(MetricName, TimeUnix) AS MetricName, FnArgMax(Count, TimeUnix) AS Count, FnArgMax(Sum, TimeUnix) AS Sum, FnArgMax(Scale, TimeUnix) AS Scale, FnArgMax(ZeroCount, TimeUnix) AS ZeroCount, FnArgMax(PositiveOffset, TimeUnix) AS PositiveOffset, FnArgMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, FnArgMax(NegativeOffset, TimeUnix) AS NegativeOffset, FnArgMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts] start=2025-12-31T23:58:00Z end=2026-01-01T00:00:00Z
+          Filter predicate=(MetricName IN ("latency_exp_hist", "latency.exp.hist", "latency.exp/hist", "latency.exp_hist", "latency/exp/hist", "latency/exp_hist", "latency_exp.hist"))
+            Scan(otel_metrics_exponential_histogram)
+      RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value stepAlign start=2025-12-31T23:58:00Z end=2026-01-01T00:00:00Z
+        Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          Filter predicate=(MetricName IN ("latency_float", "latency.float", "latency/float"))
+            Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, `Value` AS `Value`, `HistogramCount` AS `HistogramCount`, `HistogramSum` AS `HistogramSum`, `HistogramScale` AS `HistogramScale`, `HistogramZeroCount` AS `HistogramZeroCount`, `HistogramZeroThreshold` AS `HistogramZeroThreshold`, `HistogramPositiveOffset` AS `HistogramPositiveOffset`, `HistogramPositiveBucketCounts` AS `HistogramPositiveBucketCounts`, `HistogramNegativeOffset` AS `HistogramNegativeOffset`, `HistogramNegativeBucketCounts` AS `HistogramNegativeBucketCounts`, `_setop_is_histogram` AS `_setop_is_histogram` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, argMax(`Value`, `TimeUnix`) AS `Value`, argMax(`_setop_is_histogram`, `TimeUnix`) AS `_setop_is_histogram`, argMax(`HistogramCount`, `TimeUnix`) AS `HistogramCount`, argMax(`HistogramSum`, `TimeUnix`) AS `HistogramSum`, argMax(`HistogramScale`, `TimeUnix`) AS `HistogramScale`, argMax(`HistogramZeroCount`, `TimeUnix`) AS `HistogramZeroCount`, argMax(`HistogramPositiveOffset`, `TimeUnix`) AS `HistogramPositiveOffset`, argMax(`HistogramPositiveBucketCounts`, `TimeUnix`) AS `HistogramPositiveBucketCounts`, argMax(`HistogramNegativeOffset`, `TimeUnix`) AS `HistogramNegativeOffset`, argMax(`HistogramNegativeBucketCounts`, `TimeUnix`) AS `HistogramNegativeBucketCounts`, argMax(`HistogramZeroThreshold`, `TimeUnix`) AS `HistogramZeroThreshold` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, `_setop_side`, max(`_setop_side` = 0) OVER (PARTITION BY mapSort(`Attributes`), `TimeUnix`) AS `_setop_has_left` FROM (((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 0 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, 1 AS `_setop_is_histogram` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT anchor_ts AS `anchor_ts`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM (SELECT * FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(3, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:58:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9)) LIMIT 4000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(3, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:58:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9)) LIMIT 4000001)) > 4000000, 'histogram/LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY anchor_ts, `Attributes`))))) UNION ALL ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 1 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, toFloat64(0) AS `HistogramCount`, toFloat64(0) AS `HistogramSum`, toInt32(0) AS `HistogramScale`, toFloat64(0) AS `HistogramZeroThreshold`, toFloat64(0) AS `HistogramZeroCount`, toInt32(0) AS `HistogramPositiveOffset`, emptyArrayFloat64() AS `HistogramPositiveBucketCounts`, toInt32(0) AS `HistogramNegativeOffset`, emptyArrayFloat64() AS `HistogramNegativeBucketCounts`, 0 AS `_setop_is_histogram` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(3, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:58:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(3, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:58:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))))))) WHERE `_setop_side` = 0 OR `_setop_has_left` = 0) GROUP BY `Attributes`, `MetricName`)

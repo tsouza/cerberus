@@ -349,6 +349,15 @@ func TestDetectedLabels_ChDB_DivergentKeyOrderCardinality(t *testing.T) {
 // projecting {job, dc} out of two divergently-ordered maps yields two
 // divergently-ordered projections — the targetLabels path needs the
 // canonical wrap exactly as much as the bare-column path does.
+//
+// The request omits `aggregateBy`, which is upstream's default of
+// `series` — the label-SET shape this canonical wrap belongs to.
+// `targetLabels` alone reaches volumeGroupFrag's projected branch. It
+// used to spell that as `aggregateBy=labels`, which since cerberus issue
+// #3224 selects the per-label-NAME shape instead: a shape whose group
+// key is a one-entry map literal, so it neither has nor needs a key
+// order to canonicalise, and which would have quietly stopped exercising
+// the wrap at all.
 func TestIndexVolume_ChDB_TargetLabelsKeyOrder(t *testing.T) {
 	srv, _ := seedKeyOrderServer(t, []keyOrderSeedRow{
 		{body: "0123456789", mapSQL: "map('job','api','dc','eu','pod','a')"},
@@ -361,7 +370,7 @@ func TestIndexVolume_ChDB_TargetLabelsKeyOrder(t *testing.T) {
 	}
 	getJSON(t, fmt.Sprintf(
 		`%s/loki/api/v1/index/volume?query=%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d`+
-			`&targetLabels=job,dc&aggregateBy=labels`,
+			`&targetLabels=job,dc`,
 		srv.URL, start, end,
 	), &parsed)
 

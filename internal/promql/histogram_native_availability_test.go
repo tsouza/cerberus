@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -412,14 +414,6 @@ func expHistogramRecognizers() []expHistogramRecognizer {
 			v0, v1, v2, v3, ok := expHistogramHistogramCompareBoolBinop(b, s, c)
 			return tup(v0, v1, v2, v3, ok)
 		}},
-		{"mixedOrSubqueryOuterFn", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
-			call, isCall := peelWrappers(e).(*parser.Call)
-			if !isCall {
-				return "zero,zero,zero,zero"
-			}
-			v0, v1, v2, ok := mixedOrSubqueryOuterFn(call, s, c)
-			return tup(v0, v1, v2 != nil, ok)
-		}},
 		{"sumOrAvgMixedOrSubqueryOuterFnRecognized", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
 			call, isCall := peelWrappers(e).(*parser.Call)
 			if !isCall {
@@ -439,51 +433,72 @@ func expHistogramRecognizers() []expHistogramRecognizer {
 	}
 }
 
-// TestMixedOrSubqueryOuterFnRequiresDefaultMatching pins
-// [defaultSetOpMatching]'s gate on the distribute-then-recombine
-// recognizer.
+// TestMixedOrSubquerySetOpStaysPerAnchor pins what replaced
+// [defaultSetOpMatching]'s gate.
 //
-// `<fn>(((a) or (b))[r:s])` may be rewritten into
-// `<fn>((a)[r:s]) or <fn>((b)[r:s])` only while `or`'s shadow rule is
-// all-or-nothing per series. `on(...)` / `ignoring(...)` narrow the
-// shadow signature (reference derives it in `promql/engine.go`'s
-// `rangeEval`, at its `sigf` construction), which lets ONE series shadow
-// another at some anchors and not others —
-// so reference folds the shadowed series over a PUNCTURED window while
-// the rewrite folds it over its full window and then discards the whole
-// folded series. `test/spec/promql/mixed_or_subquery_outer_fn_or_on.txtar`
-// pins the answers on both sides of that difference; this test pins the
-// gate itself, without a chDB round-trip.
-func TestMixedOrSubqueryOuterFnRequiresDefaultMatching(t *testing.T) {
+// `<fn>(((a) or (b))[r:s])` used to be rewritten into
+// `<fn>((a)[r:s]) or <fn>((b)[r:s])`, which is an identity only while
+// `or`'s shadow is all-or-nothing per series. `on(...)` / `ignoring(...)`
+// narrow the shadow signature (reference derives it in
+// `promql/engine.go`'s `rangeEval`, at its `sigf` construction) so one
+// series shadows another at some anchors and not others — and cerberus
+// issue #3227 established that the DEFAULT key does the same thing, since
+// it drops `__name__` and two arms can carry byte-identical attributes.
+// The rewrite was removed outright rather than gated, so all four match
+// modes now lower the same way.
+//
+// The observable is WHERE the `or` sits. Distribution put it ABOVE the
+// two folds, recombining already-reduced per-series rows, so it was not
+// step-aligned. The per-anchor route puts it BELOW the fold, resolving
+// the shadow once per (series, anchor) — a step-aligned set operation —
+// and the fold then reduces the already-punctured relation. Asserting
+// step-alignment therefore fails on the distributed shape rather than
+// merely describing the current one.
+//
+// `test/spec/promql/mixed_or_subquery_outer_fn_or_on.txtar` and
+// `subquery_last_over_time_mixed_or_partial_shadow.txtar` pin the
+// resulting ANSWERS against the reference engine; this pins the plan
+// shape, without a chDB round-trip.
+func TestMixedOrSubquerySetOpStaysPerAnchor(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	ctx := lowerCtx{start: at, end: at}
 
-	cases := []struct {
-		query string
-		want  bool
-	}{
-		{query: `count_over_time((latency_exp_hist or up)[5m:1m])`, want: true},
-		{query: `count_over_time((latency_exp_hist or on(job) up)[5m:1m])`, want: false},
-		{query: `count_over_time((latency_exp_hist or ignoring(job) up)[5m:1m])`, want: false},
+	for _, query := range []string{
+		`count_over_time((latency_exp_hist or up)[5m:1m])`,
+		`count_over_time((latency_exp_hist or on(job) up)[5m:1m])`,
+		`count_over_time((latency_exp_hist or ignoring(job) up)[5m:1m])`,
 		// `on()` with no labels collapses every series onto ONE shadow
-		// key — the most aggressive narrowing there is, and the case a
-		// `len(MatchingLabels) == 0` check alone would wave through.
-		{query: `count_over_time((latency_exp_hist or on() up)[5m:1m])`, want: false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.query, func(t *testing.T) {
+		// key — the most aggressive narrowing there is.
+		`count_over_time((latency_exp_hist or on() up)[5m:1m])`,
+	} {
+		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
-			call, ok := peelWrappers(mustParse(t, tc.query)).(*parser.Call)
-			if !ok {
-				t.Fatalf("parsed %q as %T, want *parser.Call", tc.query, mustParse(t, tc.query))
+			plan, err := LowerAt(context.Background(), mustParse(t, query), s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): %v", query, err)
 			}
-			if _, _, _, got := mixedOrSubqueryOuterFn(call, s, ctx); got != tc.want {
-				t.Errorf("mixedOrSubqueryOuterFn(%q) = %v, want %v", tc.query, got, tc.want)
+			var setOps, stepAligned int
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				if v, ok := n.(*chplan.VectorSetOp); ok {
+					setOps++
+					if v.StepAligned {
+						stepAligned++
+					}
+				}
+				return true
+			})
+			if setOps != 1 {
+				t.Fatalf("%q lowered to %d VectorSetOps, want exactly 1 — the mixed `or` is "+
+					"resolved once, beneath the fold", query, setOps)
+			}
+			if stepAligned != 1 {
+				t.Errorf("%q lowered its mixed `or` with StepAligned=false — that is the "+
+					"distribute-then-recombine shape, which resolves the shadow over already-"+
+					"folded per-series rows and cannot reproduce a per-anchor puncture "+
+					"(cerberus issue #3227)", query)
 			}
 		})
 	}

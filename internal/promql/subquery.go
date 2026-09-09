@@ -1037,11 +1037,11 @@ func lowerOuterRangeFnOverSubquery(
 	// [lowerExpHistogramRangeFnOverSubquery] (histogram_native_range_fn.go).
 	if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
 		// Cerberus issue #2724: inner may have reached this Histogram/Mixed
-		// shape via a further and/unless/or wrapping a mixed `or` (or a
-		// bare and/unless-forwarded histogram selector) — any shape
-		// [lowerSubquery]'s ordinary dispatch resolves this way, not only
-		// the ones histogram_native_mixed_or_subquery_range_fn.go's own
-		// distribute-then-recombine mechanism recognises from the AST.
+		// shape via a further and/unless/or wrapping a mixed `or`, a bare
+		// and/unless-forwarded histogram selector, or (since cerberus issue
+		// #3227) a bare mixed `or` — any shape [lowerSubquery]'s ordinary
+		// dispatch resolves this way, and the row shape alone says which
+		// continuation applies, so no AST recognizer is needed.
 		// [lowerHistogramOrMixedSubqueryOuterFnInput] answers every one of
 		// the fifteen SELECT/FOLD-family names for it; anything else
 		// (deriv, predict_linear, ...) falls through unmatched to this

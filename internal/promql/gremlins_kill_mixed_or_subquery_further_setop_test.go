@@ -183,7 +183,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch(t *testing.
 // TestLowerFurtherWrapMixedOrSubqueryFoldFn_StepAligned kills both
 // mutants on the `ctx.step > 0` argument (CONDITIONALS_BOUNDARY `>`->`>=`
 // and CONDITIONALS_NEGATION `>`->`<=`) of
-// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil`,
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`return combineMixedFoldBranches(histFolded, floatFolded, s, ctx.step > 0), nil`,
 // inside lowerFurtherWrapMixedOrSubqueryFoldFn:
 //
 // stepAligned threads directly into the returned *chplan.VectorSetOp's own
@@ -212,7 +212,7 @@ func TestLowerFurtherWrapMixedOrSubqueryFoldFn_StepAligned(t *testing.T) {
 	}
 	if vso.StepAligned {
 		t.Fatalf("instant-mode (step==0) StepAligned = true, want false (mutants on the `ctx.step > 0` argument of " +
-			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil`)")
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`return combineMixedFoldBranches(histFolded, floatFolded, s, ctx.step > 0), nil`)")
 	}
 
 	rangeCtx := lowerCtx{start: at, end: at.Add(10 * time.Minute), step: time.Minute}
