@@ -324,7 +324,9 @@ function main() {
         `detected ${detected} of ${attempted} attempted (killed ${counts.killed}, run timed out ` +
         `${counts.runTimedOut}, lived ${counts.lived}, timed out ${counts.timedOut}). A mutant the ` +
         `compile+run backstop claimed is unadjudicated, not detected: it counts against this ratio ` +
-        `(#2903). gremlins reported ${reported}% over killed+lived only.`,
+        `(#2903). gremlins reported ${reported}% over killed+lived only. To act on a survivor read ` +
+        `the LIVED diff printed above it, not its line:column — a mutant is an AST edit, so swapping ` +
+        `the operator in the source can give a different program (#3215).`,
     );
     process.exit(1);
   }
