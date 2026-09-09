@@ -236,6 +236,7 @@ func expHistogramResetsWindowed(shape histogramAggShape, s schema.Metrics, ctx l
 		shape.windowFn,
 		[]string{s.AttributesColumn},
 		s,
+		expHistogramDensifiedResetMaskEligible(ctx.lowerers),
 	), nil
 }
 
@@ -261,6 +262,7 @@ func lowerExpHistogramResetsRange(shape histogramAggShape, s schema.Metrics, ctx
 		shape.windowFn,
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		s,
+		expHistogramDensifiedResetMaskEligible(ctx.lowerers),
 	)
 	return expHistogramPairCountProjection(perSeries, anchorRef, s)
 }
@@ -294,7 +296,7 @@ func expHistogramPairCountAggs(windowFn string, s schema.Metrics) []chplan.AggFu
 // twice per TARGET BUCKET. Here it is read exactly once, by the single
 // arraySum below, so a separate layer would add a projection without
 // removing a repetition.
-func expHistogramPairCountStage(input chplan.Node, windowFn string, keyAliases []string, s schema.Metrics) chplan.Node {
+func expHistogramPairCountStage(input chplan.Node, windowFn string, keyAliases []string, s schema.Metrics, densified bool) chplan.Node {
 	projs := make([]chplan.Projection, 0, len(keyAliases)+1)
 	for _, name := range keyAliases {
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
@@ -302,7 +304,7 @@ func expHistogramPairCountStage(input chplan.Node, windowFn string, keyAliases [
 	return &chplan.Project{
 		Input: input,
 		Projections: append(projs, chplan.Projection{
-			Expr:  expHistogramPairCountExpr(windowFn, s),
+			Expr:  expHistogramPairCountExpr(windowFn, s, densified),
 			Alias: s.ValueColumn,
 		}),
 	}
@@ -317,8 +319,8 @@ func expHistogramPairCountStage(input chplan.Node, windowFn string, keyAliases [
 // UInt64 — the classic float emitters (emitRangeWindowResets /
 // emitRangeWindowChanges in internal/chsql) cast for the same reason, and
 // prod ClickHouse is strict where chDB would coerce.
-func expHistogramPairCountExpr(windowFn string, s schema.Metrics) chplan.Expr {
-	mask := expHistogramResetMaskExpr()
+func expHistogramPairCountExpr(windowFn string, s schema.Metrics, densified bool) chplan.Expr {
+	mask := expHistogramResetMaskExpr(densified)
 	if windowFn == changesWindowFn {
 		mask = expHistogramChangeMaskExpr(s)
 	}

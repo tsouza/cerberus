@@ -196,6 +196,7 @@ func lowerSelectFnOverCallSubqueryInput(wideInner chplan.Node, grid histogramCal
 		perSeries := expHistogramPairCountStage(
 			fanout(expHistogramPairCountAggs(windowFn, histSchema)),
 			windowFn, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn}, histSchema,
+			expHistogramDensifiedResetMaskEligible(ctx.lowerers),
 		)
 		return expHistogramPairCountProjection(perSeries, anchorRef, histSchema), nil
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
@@ -235,7 +236,7 @@ func lowerMixedResetsOrChangesOverCallSubqueryInput(wideInner chplan.Node, grid 
 	histSchema.AggregationTemporalityColumn = ""
 	anchorRef := &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
 	fanout := buildOuterRangeSubqueryFanout(wideInner, grid, anchor, mixedPairCountAggs(windowFn, histSchema), stalenessMinSamples, s)
-	perSeries := mixedPairCountStage(fanout, windowFn, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn}, histSchema)
+	perSeries := mixedPairCountStage(fanout, windowFn, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn}, histSchema, expHistogramDensifiedResetMaskEligible(ctx.lowerers))
 	return expHistogramPairCountProjection(perSeries, anchorRef, s), nil
 }
 
@@ -261,7 +262,7 @@ func lowerExpHistogramFoldOverCallSubqueryInput(wideInner chplan.Node, grid hist
 	win := histogramWindow{lookback: shape.windowRange, offset: anchor.Offset, minSamples: shape.minSamples()}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
 	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, histSchema)
-	winIn.closedFormEligible = expHistogramClosedFormEligible(ctx.lowerers)
+	winIn = winIn.withLowerers(ctx.lowerers)
 	aggs := expHistogramValuedWindowAggs(histSchema, windowFn)
 	grouped := buildOuterRangeSubqueryFanout(wideInner, grid, anchor, aggs, win.minSamples, s)
 	selected := selectExpHistogramWindowSamples(

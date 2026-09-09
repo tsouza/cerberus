@@ -98,7 +98,7 @@ func TestExpHistogramPairCountStage_CapHintMutantKilled(t *testing.T) {
 			return capmutant.Eval(t, []int{keys, 1}, ops)
 		},
 		Observe: func(t *testing.T) (int, int) {
-			node := expHistogramPairCountStage(&chplan.OneRow{}, rateWindowFn, capHintAliases(keys), s)
+			node := expHistogramPairCountStage(&chplan.OneRow{}, rateWindowFn, capHintAliases(keys), s, true)
 			projs := capHintProjections(t, node, "expHistogramPairCountStage result")
 			return len(projs), cap(projs)
 		},

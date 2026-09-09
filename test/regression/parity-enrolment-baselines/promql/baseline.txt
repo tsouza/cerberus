@@ -188,6 +188,7 @@ exp_histogram_merge_summap_multigroup.txtar
 exp_histogram_merge_summap_range_multigroup.txtar
 exp_histogram_rate.txtar
 exp_histogram_rate_range.txtar
+exp_histogram_reset_mask_per_target.txtar
 exp_histogram_resets.txtar
 exp_histogram_scalar_div_sum.txtar
 exp_histogram_scalar_mul_bare.txtar

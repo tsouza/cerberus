@@ -26,8 +26,34 @@ import (
 // 21 samples 1684.6 MiB) and does NOT respond to restructuring the body:
 // transposing the loops, densifying the per-row ladder in linear time,
 // and dropping the Kahan compensation each measured within 0.2% of
-// baseline. Narrowing the ROW SET is the only lever that moves it — a
-// throwaway two-rows-per-anchor probe measured 85.2 MiB, a 19.8x drop.
+// baseline. Narrowing the ROW SET is what moves this fold — a throwaway
+// two-rows-per-anchor probe measured 85.2 MiB, a 19.8x drop.
+//
+// # Correction: that 19.8x is this fold's own, not the query's
+//
+// An earlier revision of this paragraph said row-set narrowing was "the
+// ONLY lever that moves it", with the 19.8x as the whole query's. Both
+// readings were wrong, and the wrongness was load-bearing: after this
+// file shipped, the panel it was written for STILL answered 422. Two
+// corrections, each measured against the same ClickHouse 26.6.4 and the
+// same live telemetry:
+//
+//   - The 19.8x is this fold's, not the query's. The residual cost was
+//     never in the ladders at all — it was the counter-reset mask
+//     (histogram_native_reset.go), a SEPARATE layer this fold's
+//     coefficients read but do not render. With that mask replaced by a
+//     constant the query peaked at 152 MiB; with it, 912 MiB.
+//   - "The only lever" does not generalise past this fold. The mask's
+//     own cost did not respond to row-set narrowing (it must see every
+//     pair to decide which rows are retainable here) and did not respond
+//     to cardinality either: shrinking its per-pair target range from
+//     ~110 elements to FOUR left it at 898 MiB. What moved it was
+//     removing ARRAY CAPTURES from its innermost lambda at unchanged
+//     cardinality — see [expHistogramDenseContribsExpr].
+//
+// Both levers are live and both are needed: with the mask densified,
+// rendering these ladders through [counterIncreaseFold] instead of the
+// closed form took the same panel query from 251 MiB back to 958 MiB.
 //
 // # Why both temporality branches are linear in the per-row values
 //

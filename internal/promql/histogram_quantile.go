@@ -2794,9 +2794,36 @@ func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, para
 // width, so summing over mergedLength targets costs this row O(row's own
 // width) total — once, not once per target.
 func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
-	rowScale := &chplan.BareIdent{Name: paramExpRowScale}
-	rowOffset := &chplan.BareIdent{Name: paramExpRowOffset}
-	rowBuckets := &chplan.BareIdent{Name: paramExpRowBuckets}
+	rowBuckets := chplan.Expr(&chplan.BareIdent{Name: paramExpRowBuckets})
+	sliceStart, sliceLen := expHistogramBucketSliceBoundsExpr(
+		&chplan.BareIdent{Name: paramExpRowScale},
+		&chplan.BareIdent{Name: paramExpRowOffset},
+		rowBuckets,
+		mergedScale, mergedStart,
+		&chplan.BareIdent{Name: paramT},
+	)
+	return &chplan.FuncCall{
+		Fn:   chplan.FnArraySlice,
+		Args: []chplan.Expr{rowBuckets, sliceStart, sliceLen},
+	}
+}
+
+// expHistogramBucketSliceBoundsExpr is the index arithmetic
+// [expHistogramBucketPositionPickerExpr] documents, factored out so the
+// SAME (offset, length) pair can be handed either to `arraySlice` — one
+// target at a time, inside a per-target lambda — or to
+// `arrayReduceInRanges`, which folds every target's slice at once from
+// OUTSIDE such a lambda ([expHistogramDenseContribsExpr]). Both readings
+// must agree bucket-for-bucket about which stored position lands where,
+// and a second transcription of this arithmetic is exactly where they
+// would stop agreeing.
+//
+// The returned offset is 1-based and clamped to [1, length(arr)+1]; the
+// returned length is clamped to >= 0, so a row that does not touch the
+// target yields an EMPTY slice rather than an out-of-range one.
+func expHistogramBucketSliceBoundsExpr(
+	rowScale, rowOffset, rowBuckets, mergedScale, mergedStart, target chplan.Expr,
+) (sliceStart, sliceLen chplan.Expr) {
 	rowLength := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{rowBuckets}}
 
 	// ratio = 2^(s - mergedScale): every ratio consecutive absolute
@@ -2806,7 +2833,7 @@ func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, 
 		Args: []chplan.Expr{&chplan.LitInt{V: 1}, subExpr(rowScale, mergedScale)},
 	}
 	// target absolute index = mergedStart + t (t is 0-based).
-	targetAbs := addExpr(mergedStart, &chplan.BareIdent{Name: paramT})
+	targetAbs := addExpr(mergedStart, target)
 	// row's own last populated absolute index (off + length(arr) - 1;
 	// off - 1 for an empty row, matching
 	// expHistogramMergeBucketsBoundsExpr's own empty-row convention).
@@ -2827,17 +2854,95 @@ func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, 
 	// [1, length(arr)+1] so an empty intersection still yields a
 	// syntactically valid (offset, 0) slice rather than an out-of-range
 	// offset arraySlice might reject.
-	sliceStart := leastExpr(
+	sliceStart = leastExpr(
 		greatestExpr(addExpr(subExpr(chunkStartAbs, rowOffset), &chplan.LitInt{V: 1}), &chplan.LitInt{V: 1}),
 		addExpr(rowLength, &chplan.LitInt{V: 1}),
 	)
-	sliceLen := greatestExpr(&chplan.LitInt{V: 0}, addExpr(subExpr(chunkEndAbs, chunkStartAbs), &chplan.LitInt{V: 1}))
-
-	return &chplan.FuncCall{
-		Fn:   chplan.FnArraySlice,
-		Args: []chplan.Expr{rowBuckets, sliceStart, sliceLen},
-	}
+	sliceLen = greatestExpr(&chplan.LitInt{V: 0}, addExpr(subExpr(chunkEndAbs, chunkStartAbs), &chplan.LitInt{V: 1}))
+	return sliceStart, sliceLen
 }
+
+// paramExpDenseTarget is the 0-based target-bucket index
+// [expHistogramDenseContribsExpr]'s range-building lambda binds. It binds
+// nothing but a scalar, which is the whole point of that function — see
+// its doc.
+const paramExpDenseTarget = "dk"
+
+// expHistogramDenseContribsExpr renders ONE row's contribution at EVERY
+// target bucket of [mergedStart, mergedStart + mergedLength) as a single
+// dense array, in the same float domain [expHistogramWindowFloatsExpr]
+// moves the window ladder into.
+//
+// # Why not a per-target lambda
+//
+// The obvious rendering is `arrayMap(k -> sum(arraySlice(arr, ...)),
+// range(mergedLength))`, and that is what the per-target callers
+// ([expHistogramMergeBucketsRowsSumExpr],
+// [expHistogramWindowBucketsExpr]) build via
+// [expHistogramBucketPositionPickerExpr]. It has a cost this rendering
+// does not: `arr` is CAPTURED by that lambda, and ClickHouse materialises
+// a captured column once per element of the enclosing loop — so a group's
+// whole per-row bucket array is rebuilt once per target bucket. Measured
+// against a real ClickHouse 26.6.4 on cerberus's own
+// `cerberus_queries_duration_exp_hist` telemetry (7 series, 80-155
+// stored buckets, ~20 sample pairs per 5m window, a 21-anchor
+// query_range), the counter-reset mask built that way peaked at 912 MiB —
+// over the 1 GiB CERBERUS_CH_QUERY_MAX_MEMORY default, which is what made
+// the compose self-monitoring dashboard's own P95 panel answer 422
+// (cerberus issue #3178). The same mask built through this function
+// peaked at 238 MiB.
+//
+// The lever is the capture, not the cardinality: swapping the mask's
+// per-target body for a constant left it at 898 MiB, and shrinking the
+// per-pair target range to FOUR elements left it at 898 MiB too. What
+// moves it is that here the only lambda ranges over target INDICES and
+// captures nothing but scalars, while `arr` reaches
+// `arrayReduceInRanges` as a plain argument.
+//
+// # Why the result is the same numbers
+//
+// `arrayReduceInRanges('sum', ranges, arr)` folds exactly the slices
+// [expHistogramBucketSliceBoundsExpr] names — the same slices the
+// per-target rendering hands to `arraySlice` — so the two differ only in
+// HOW each slice is summed: plain addition here, Prometheus's
+// Neumaier-compensated recurrence ([promHistogramKahanSum]) there. The
+// values are stored UInt64 bucket counts cast to Float64, so every
+// partial sum on either side is an exact integer in Float64 and the two
+// agree bit-for-bit. That is the same exactness argument
+// histogram_native_window_closed_form.go's header makes for the closed
+// form, and it is why this rendering is confined to callers folding
+// STORED counts.
+func expHistogramDenseContribsExpr(
+	rowScale, rowOffset, rowBuckets, mergedScale, mergedStart, mergedLength chplan.Expr,
+) chplan.Expr {
+	sliceStart, sliceLen := expHistogramBucketSliceBoundsExpr(
+		rowScale, rowOffset, rowBuckets, mergedScale, mergedStart,
+		&chplan.BareIdent{Name: paramExpDenseTarget},
+	)
+	toUInt64 := func(e chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{e}}
+	}
+	ranges := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramExpDenseTarget},
+			Body: &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
+				toUInt64(sliceStart), toUInt64(sliceLen),
+			}},
+		},
+		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{toUInt64(mergedLength)}},
+	}}
+	return &chplan.FuncCall{Fn: chplan.FnArrayReduceInRanges, Args: []chplan.Expr{
+		&chplan.LitString{V: expHistogramDenseSumAggName},
+		ranges,
+		expHistogramWindowFloatsExpr(rowBuckets),
+	}}
+}
+
+// expHistogramDenseSumAggName is the ClickHouse aggregate
+// [expHistogramDenseContribsExpr] folds each target's slice with. Plain
+// `sum`, not the compensated reducer the per-target sibling uses: see
+// that function's "same numbers" argument.
+const expHistogramDenseSumAggName = "sum"
 
 // expHistogramRowContribsExpr renders the PER-ROW contributions at one
 // target bucket index, positionally aligned with the groupArray lists
