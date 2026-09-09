@@ -1,0 +1,37 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:arrayFoldOperands#1778042b",
+      "message": "traceql: %s comparison RHS must be a literal array, got %T",
+      "class": "internal",
+      "rationale": "Defensive: every array comparison reaching here was folded by ast/rewrite.go's foldArrayComparison, whose only constructing return is `\u0026BinaryOperation{Op: rule.array, LHS: attrL, RHS: merged}` with merged a staticMerge array Static, so a non-literal RHS is unreachable from a parseable query for any of the four arrayFoldRules operators (OpIn, OpNotIn, OpRegexMatchAny, OpRegexMatchNone).",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerInOperation",
+          "lowerRegexMatchArray"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:arrayFoldOperands#3a1098b8",
+      "message": "traceql: %s comparison LHS must be an attribute reference, got %T",
+      "class": "internal",
+      "rationale": "Defensive: every array comparison reaching here was folded by ast/rewrite.go's foldArrayComparison, whose only constructing return takes its LHS from attrLiteralOperands and so is always an Attribute, for any of the four arrayFoldRules operators (OpIn, OpNotIn, OpRegexMatchAny, OpRegexMatchNone); a non-attribute LHS is unreachable from a parseable query.",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerInOperation",
+          "lowerRegexMatchArray"
+        ]
+      }
+    }
+  ]
+}

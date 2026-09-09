@@ -12,7 +12,7 @@
           "if chplan.RowShapeOf(mixedRel) != chplan.MixedRowShape"
         ],
         "callers": [
-          "lowerSumOrAvgMixedOrSubqueryOuterFn"
+          "lowerMixedOrSubqueryAggregateRangeFnOverGrid"
         ],
         "cited": [
           "combineMixedAggregateBranches",
