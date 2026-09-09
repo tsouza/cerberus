@@ -3806,6 +3806,28 @@ merges — nothing lands between it and the tag it clears. A fix merged onto
 `main` after the audit would ship unaudited in the head release, defeating the
 point of auditing at all.
 
+**A standing `perf-guards` drift against the previous release is expected, and
+the cut is what clears it.** `TestReleasePerfRegression` compares the corpus
+against `test/perf/release-baseline/<version>/`, a FROZEN snapshot of the
+previous release. That reference moves at exactly one moment — the cut —
+because `just release-prep <version>` runs `just capture-release-perf-baseline
+<version>` and stages `test/perf/release-baseline/<version>/` into the release
+commit itself, sourced byte-for-byte from the working tree's own rolling
+`test/perf/cardinality-baseline/`. The gate resolves the SEMVER-HIGHEST
+subdirectory present, so the release commit is judged against a reference
+captured from itself and the lane goes green at the cut.
+
+Between cuts, any correctness fix that legitimately changes a fixture's
+measured cardinality leaves `perf-guards` red on `main` until the next release.
+That is the gate working, not a blocker: it is reporting a real difference
+against what actually shipped. The failure names which of the two cases it is —
+a change since the release that the rolling baseline shows was already recorded
+and reviewed, or live drift `TestCardinalityRatchet` is failing on too
+(cerberus issue #3244). Only the second needs root-causing. **Never regenerate
+a frozen release baseline on a fix branch to clear the first**; a release
+reference that moves outside a cut stops describing what shipped, which is the
+one thing it exists to do.
+
 The single publish in step 5 runs through the machinery below — the head
 release by merging its release PR.
 

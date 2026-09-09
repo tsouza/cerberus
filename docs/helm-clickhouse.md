@@ -567,7 +567,13 @@ carve-out. Its table is provisioned by the corpus sink rather than by
 `internal/schema/ddl`, and the sink stamps `ON CLUSTER
 <CERBERUS_SCHEMA_CLUSTER>` on its own `CREATE` and `ALTER` statements — which
 the chart always sets under `dataShards.count > 1` — so the table exists on
-every node and an INSERT is correct wherever it lands. It gets no
-`Distributed` wrapper and no replicating engine, so each node holds the rows
-written through it; nothing on the query path reads the corpus, and the
-consequences for the offline analysis that does are tracked in issue #3241.
+every node and an INSERT is correct wherever it lands. It also resolves its
+ENGINE from `CERBERUS_SCHEMA_DATABASE_REPLICATED`, exactly as
+`internal/schema/ddl` does for the signal tables, so on the SUPPORTED
+single-shard `replicas > 1` path — where the chart makes `otel` a `Replicated`
+database — the corpus rows replicate instead of accumulating per replica
+(issue #3241). What it still gets no part of is the `Distributed` wrapper: rows
+stay within their own shard, so a `dataShards.count > 1` deployment holds a
+per-shard slice of the corpus. That is this boundary, not a gap in it — nothing
+on the query path reads the corpus, and the offline calibration that does is
+single-shard-scoped like every other harness in this repository.

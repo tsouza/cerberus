@@ -1357,7 +1357,9 @@ To answer it the engine closes the loop the optimization corpus
   NOT EXISTS` per corpus column, then an `ALTER TABLE … MODIFY COLUMN` that
   widens `exit_status` to the member set this binary can emit, then one read of
   `system.columns` that fails construction if a column is still missing or a
-  member still absent. `CREATE … IF NOT EXISTS` alone cannot do this: it is a
+  member still absent, plus one read of `system.tables` that fails construction
+  if the deployed ENGINE cannot replicate where the deployment requires it (see
+  **Replicated rows** below). `CREATE … IF NOT EXISTS` alone cannot do this: it is a
   no-op against an existing table however its columns are declared, so a binary
   that learnt a new member would write a value the deployed column cannot hold,
   and a binary that learnt a new COLUMN is worse still — the batch appends
@@ -1380,9 +1382,26 @@ To answer it the engine closes the loop the optimization corpus
   exclusive — every later INSERT that lands elsewhere fails with `Table
   cerberus_router_corpus does not exist`. Unset (the single-node default, and
   the single-shard multi-replica shape, where the `Replicated` database engine
-  replicates the DDL itself) renders the clause-free statements unchanged. The
-  engine stays a plain `MergeTree` in every topology: the clause governs where
-  the TABLE exists, not where the ROWS live.
+  replicates the DDL itself) renders the clause-free statements unchanged.
+- **Replicated rows.** `ON CLUSTER` governs where the TABLE exists; the ENGINE
+  governs where the ROWS live, and the two need answering separately. A
+  `Replicated` database replicates DDL but does **not** convert a `MergeTree`
+  into a `ReplicatedMergeTree` — the plain engine is accepted, and each replica
+  then holds only the rows written through it, while the offline reader's
+  ordinary single-node `SELECT` mines that one slice as if it were the whole
+  corpus. So the sink emits the bare `ReplicatedMergeTree` whenever
+  `CERBERUS_SCHEMA_DATABASE_REPLICATED` is set — the same engine
+  `internal/schema/ddl` resolves for the signal tables under a `Replicated`
+  database — and the plain `MergeTree` otherwise. Because `CREATE … IF NOT
+  EXISTS` is a no-op against a table an older binary already created, and no
+  `ALTER` converts an engine, construction also reads the DEPLOYED engine back
+  from `system.tables` and **fails** on a replicated deployment whose corpus
+  table cannot replicate, naming the one remedy: drop it and let the next start
+  recreate it (the corpus is a rolling 30-day sample). A multi-DATA-shard
+  deployment still holds a per-shard slice — the corpus gets no `Distributed`
+  wrapper, by the same permanent boundary `docs/helm-clickhouse.md` states for
+  the auxiliary tables — but that path is EXPERIMENTAL, while the replicated
+  one is supported.
 - **A sink that cannot be built disables the reconciler**, logged at startup
   with the underlying error; it does not silently switch modes. There is no
   fallback from `chtable` to `jsonl` — an operator who asked for the CH table

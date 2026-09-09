@@ -71,18 +71,76 @@ import (
 // lives, one subdirectory per version (see capture-release-perf-baseline.mjs).
 const releaseBaselineRoot = "release-baseline"
 
-// releaseRegen is what compareCardinalityEntry's messages interpolate as the
-// fix. Every one of those messages reads as "regenerate with `%s`" or
-// "run `%s`", so this has to read as a command, not a parenthetical aside —
-// deliberately NOT cardinalityRegen ("just update-cardinality-baseline"):
-// that recipe writes the ROLLING baseline this test does not read, and
-// running it would silently do nothing to fix a release-gate failure. There
-// is no command that fixes this: a release-gate regression means the query
-// genuinely got more expensive since the last release, which needs a
-// root-cause fix (or, if the cost increase is deliberate, a release-notes
-// callout) — not a regeneration. The frozen baseline itself is only ever
-// written by `just capture-release-perf-baseline`, once, at the NEXT release.
-const releaseRegen = "(nothing — see release_regression_test.go's own doc: root-cause the regression, do not regenerate)"
+// releaseRegen is the command baselineShards quotes when the FROZEN tree
+// itself cannot be read — a missing directory, a corrupt shard file, a record
+// filed under a name that is not its own. That is the one release-baseline
+// failure a command does fix, and this is the command: the capture script
+// rewrites the tree from the rolling baseline it was cut from.
+//
+// It is deliberately NOT cardinalityRegen ("just update-cardinality-baseline"):
+// that recipe writes the ROLLING tree this test does not read, and running it
+// would silently do nothing here.
+//
+// It is equally deliberately NOT what a fixture-level DIFFERENCE reports. Those
+// take releaseRemedy instead, because re-cutting a frozen release reference is
+// never the answer to a fixture that moved since that release — see its doc.
+const releaseRegen = "just capture-release-perf-baseline <version>"
+
+// releaseRemedy is what the release gate appends to a per-fixture difference a
+// maintainer could legitimately record — the slot the rolling ratchet fills
+// with `just update-cardinality-baseline`.
+//
+// There is no such command here, and the honest reason depends on WHICH of two
+// situations produced the difference. The gate could not previously tell them
+// apart, so it said "a real regression" for both (cerberus issue #3244):
+//
+//   - RATIFIED SINCE THE RELEASE. The fixture's current measurement matches the
+//     committed ROLLING baseline, which means some PR between that release and
+//     now measured this exact value, re-recorded the row, and had the change
+//     reviewed. #3214's LogQL `[start, end)` fix is the worked example: a
+//     half-open entry window legitimately stops scanning the endpoint sample,
+//     so logql/range_filter went from 2 scan rows to 1 — correct, reviewed, and
+//     not a regression of anything. It is still reported, because a difference
+//     against what actually shipped is exactly what this gate exists to
+//     surface; it just is not a defect to root-cause, and it clears on its own
+//     at the next cut, when `just release-prep` freezes today's rolling
+//     baseline as the new reference.
+//   - LIVE DRIFT. The current measurement does not match the rolling baseline
+//     either, so TestCardinalityRatchet is failing on this fixture too and
+//     nobody has reviewed this value. That is the regression case, and it is
+//     root-caused, never recorded.
+//
+// Neither branch is an escape hatch: both still FAIL. What changes is that the
+// reader is told which one they are looking at, rather than being told to
+// root-cause a change that was already reviewed and ratified — which is the
+// dead end issue #3244 hit. The frozen reference is never re-cut on a fix
+// branch in either case.
+//
+// rolling is the committed rolling baseline row for this fixture and ok says
+// whether one exists. It always should: TestCardinalityBaselineCoversTheCorpus
+// pins the rolling tree against the same corpus roster `current` is profiled
+// from. When it does not, that absence is reported rather than folded into
+// either verdict.
+func releaseRemedy(version, id string, cur, rolling baselineEntry, ok bool) string {
+	rollingPath := filepath.Join(baselinePath, id+shardExt)
+	if !ok {
+		return fmt.Sprintf("The rolling baseline has no row for this fixture at all (%s is missing), so "+
+			"whether this difference was ever reviewed cannot be established here — "+
+			"`%s` records it, and TestCardinalityBaselineCoversTheCorpus is the gate that should have "+
+			"caught the gap.", rollingPath, cardinalityRegen)
+	}
+	if len(cardinalityEntryProblems(id, cur, rolling)) == 0 {
+		return fmt.Sprintf("This is a CHANGE SINCE v%s, not a fresh regression: the current measurement "+
+			"matches the committed rolling baseline (%s), so it was recorded and reviewed by the PR that "+
+			"made it. Nothing is regenerated here — a frozen release reference moves only at a release "+
+			"cut, and `just release-prep` freezes today's rolling baseline as the next release's "+
+			"reference, which clears this (docs/operations.md, \"The release ritual\").", version, rollingPath)
+	}
+	return fmt.Sprintf("This is LIVE DRIFT, not a change ratified since v%s: the current measurement does "+
+		"not match the committed rolling baseline either (%s), so TestCardinalityRatchet is failing on "+
+		"this fixture too and nobody has reviewed this value. Root-cause it; re-cutting the frozen v%s "+
+		"reference is never the fix.", version, rollingPath, version)
+}
 
 // releaseBaselineVersion returns the semver-highest subdirectory name under
 // test/perf/release-baseline/. This repo's own commit history never has a
@@ -188,8 +246,127 @@ func TestReleasePerfRegression(t *testing.T) {
 		t.Logf("%d fixture(s) present at v%s no longer in the corpus (not gated): %v", len(retiredSince), version, retiredSince)
 	}
 
+	// The ROLLING baseline is the second reference this gate reads, and it reads
+	// it for one purpose only: to tell a difference the corpus already ratified
+	// between releases from one nobody has reviewed. It is never compared
+	// against for the verdict — every difference below is still a failure
+	// against the FROZEN reference (cerberus issue #3244).
+	rolling := profile.FilterShardMap(shard, loadBaseline(t))
+
 	for _, id := range matched {
-		compareCardinalityEntry(t, id, current[id], release[id], releaseRegen)
+		rollingEntry, haveRolling := rolling[id]
+		compareCardinalityEntry(t, id, current[id], release[id],
+			releaseRemedy(version, id, current[id], rollingEntry, haveRolling))
 	}
 	t.Logf("release perf regression gate: %d fixture(s) checked against v%s", len(matched), version)
+}
+
+// TestReleaseRemedy_DistinguishesRatifiedChangeFromLiveDrift pins the whole
+// point of cerberus issue #3244: the release gate has to be able to say which
+// of two things a difference against the frozen reference IS.
+//
+// Before this, it could say only one — "a real regression" — and offered a
+// parenthetical where a command would go. That wording sent the reader of a
+// perfectly correct, already-reviewed change (#3214's LogQL `[start, end)`
+// fix, which legitimately took logql/range_filter from 2 scan rows to 1) off
+// to root-cause a defect that was not there, and then to conclude the trunk
+// lane was deadlocked because no command could clear it.
+//
+// The discriminator is evidence the tree already holds: the ROLLING baseline.
+// A value that matches it was measured, recorded and reviewed by some PR since
+// the release; a value that does not match it is failing TestCardinalityRatchet
+// right now and nobody has looked at it. This test drives both, plus the
+// should-never-happen third case, through the real comparison rule.
+//
+// It deliberately does NOT assert that either verdict passes: both branches are
+// still reported failures. The verdict is the wording, not the outcome.
+func TestReleaseRemedy_DistinguishesRatifiedChangeFromLiveDrift(t *testing.T) {
+	const (
+		version = "1.20.0"
+		id      = "logql/range_filter"
+	)
+	// The real #3214 row: the frozen v1.20.0 reference says 2, the corpus and
+	// its rolling baseline both say 1.
+	current := baselineEntry{Fixture: id, ScanRows: 1, PeakIntermediate: 1}
+
+	ratified := releaseRemedy(version, id, current, baselineEntry{Fixture: id, ScanRows: 1, PeakIntermediate: 1}, true)
+	// A rolling row that ALSO disagrees with the measurement — the rolling
+	// ratchet is red on this fixture too, so nothing has reviewed this value.
+	live := releaseRemedy(version, id, current, baselineEntry{Fixture: id, ScanRows: 7, PeakIntermediate: 7}, true)
+	absent := releaseRemedy(version, id, current, baselineEntry{}, false)
+
+	if ratified == live {
+		t.Fatalf("a ratified between-release change and live drift produce the SAME remedy, which is the "+
+			"whole defect issue #3244 reports:\n%s", ratified)
+	}
+	for _, tc := range []struct {
+		name string
+		got  string
+		want []string
+		deny []string
+	}{
+		{
+			name: "ratified",
+			got:  ratified,
+			// It must name the reference version, say plainly that this is not
+			// a regression, and point at the cut that clears it.
+			want: []string{"CHANGE SINCE v" + version, "rolling baseline", "just release-prep", baselinePath},
+			// Root-causing is exactly the wrong instruction here.
+			deny: []string{"Root-cause"},
+		},
+		{
+			name: "live-drift",
+			got:  live,
+			want: []string{"LIVE DRIFT", "TestCardinalityRatchet", "Root-cause", baselinePath},
+			deny: []string{"just release-prep"},
+		},
+		{
+			name: "no-rolling-row",
+			got:  absent,
+			want: []string{"no row for this fixture", cardinalityRegen},
+			deny: []string{"CHANGE SINCE", "LIVE DRIFT"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, w := range tc.want {
+				if !strings.Contains(tc.got, w) {
+					t.Errorf("remedy does not mention %q:\n%s", w, tc.got)
+				}
+			}
+			for _, d := range tc.deny {
+				if strings.Contains(tc.got, d) {
+					t.Errorf("remedy wrongly mentions %q:\n%s", d, tc.got)
+				}
+			}
+		})
+	}
+}
+
+// TestCardinalityEntryProblems_RemediableSplit pins which differences carry the
+// caller's remedy sentence and which do not.
+//
+// The split is not cosmetic. The remedy slot says how a maintainer records a
+// difference that was intended, and a CROSS JOIN or an unbounded closure
+// appearing where the baseline had none is never a thing to record — appending
+// "regenerate and review the diff" to it would read as an offer to bless it.
+// An identical pair must produce no problems at all, or every fixture would
+// carry a remedy nobody asked for.
+func TestCardinalityEntryProblems_RemediableSplit(t *testing.T) {
+	const id = "promql/probe"
+	base := baselineEntry{Fixture: id, ScanRows: 2, PeakIntermediate: 2}
+
+	if got := cardinalityEntryProblems(id, base, base); len(got) != 0 {
+		t.Errorf("an identical pair produced %d problem(s), want none: %+v", len(got), got)
+	}
+
+	drift := cardinalityEntryProblems(id, baselineEntry{Fixture: id, ScanRows: 1, PeakIntermediate: 1}, base)
+	if len(drift) != 1 || !drift[0].remediable {
+		t.Errorf("a scan_rows drift produced %+v; want exactly one REMEDIABLE problem", drift)
+	}
+
+	crossJoin := cardinalityEntryProblems(id,
+		baselineEntry{Fixture: id, ScanRows: 2, PeakIntermediate: 2, HasCrossJoin: true}, base)
+	if len(crossJoin) != 1 || crossJoin[0].remediable {
+		t.Errorf("a newly-appeared CROSS JOIN produced %+v; want exactly one NON-remediable problem", crossJoin)
+	}
 }

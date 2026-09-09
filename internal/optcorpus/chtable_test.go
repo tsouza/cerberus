@@ -56,7 +56,7 @@ func TestCorpusDDL_OnCluster(t *testing.T) {
 			t.Parallel()
 
 			fe := &fakeExecer{}
-			if _, err := NewCHTableSink(context.Background(), fe, tc.cluster); err != nil {
+			if _, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{Cluster: tc.cluster}); err != nil {
 				t.Fatalf("NewCHTableSink(cluster=%q): %v", tc.cluster, err)
 			}
 			// One CREATE, one ADD COLUMN per corpus column, one MODIFY
@@ -81,7 +81,7 @@ func TestCorpusDDL_OnCluster(t *testing.T) {
 func TestCorpusCreateTableSQL_OnClusterPosition(t *testing.T) {
 	t.Parallel()
 
-	sql := corpusCreateTableSQL(clusterName)
+	sql := corpusCreateTableSQL(CorpusTableTopology{Cluster: clusterName})
 	if want := "CREATE TABLE IF NOT EXISTS " + CorpusTableName + " " + onClusterClause + " ("; !strings.Contains(sql, want) {
 		t.Errorf("DDL missing %q\nfull SQL:\n%s", want, sql)
 	}
@@ -92,7 +92,7 @@ func TestCorpusCreateTableSQL_OnClusterPosition(t *testing.T) {
 // that catches a column / type / engine / order-by / TTL drift.
 func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 	t.Parallel()
-	sql := corpusCreateTableSQL("")
+	sql := corpusCreateTableSQL(CorpusTableTopology{})
 
 	wantFragments := []string{
 		"CREATE TABLE IF NOT EXISTS cerberus_router_corpus (",
@@ -128,6 +128,128 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 	}
 }
 
+// TestCorpusCreateTableSQL_EngineFollowsDatabaseReplication pins the engine on
+// BOTH sides of the switch cerberus issue #3241 is about.
+//
+// ON CLUSTER (pinned above) decides where the TABLE exists; the engine decides
+// where the ROWS live, and only a Replicated* engine replicates them. A
+// Replicated DATABASE does not convert a MergeTree — it is accepted verbatim
+// and stays MergeTree — so a plain-MergeTree corpus table on the SUPPORTED
+// single-shard multi-replica path leaves every replica holding only what was
+// written through it, and internal/routerrules' ordinary single-node SELECT
+// then mines one replica's slice as if it were the whole corpus.
+//
+// Both halves matter. Without the first, that partitioning is what ships.
+// Without the second, a fix could satisfy the first by emitting
+// ReplicatedMergeTree unconditionally, which fails at CREATE on every
+// single-node deployment — there is no Keeper to coordinate on.
+func TestCorpusCreateTableSQL_EngineFollowsDatabaseReplication(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		topology CorpusTableTopology
+		want     string
+		reject   string
+	}{
+		{
+			name:     "replicated-database",
+			topology: CorpusTableTopology{DatabaseReplicated: true},
+			want:     "ENGINE = ReplicatedMergeTree",
+			// The bare form is what a Replicated database requires: it
+			// supplies the Keeper coordinates itself and rejects explicit
+			// engine arguments with code 36.
+			reject: "ENGINE = ReplicatedMergeTree(",
+		},
+		{
+			name:     "single-node",
+			topology: CorpusTableTopology{},
+			want:     "ENGINE = MergeTree",
+			reject:   "ENGINE = ReplicatedMergeTree",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sql := corpusCreateTableSQL(tc.topology)
+			if !strings.Contains(sql, tc.want) {
+				t.Errorf("DDL missing %q\nfull SQL:\n%s", tc.want, sql)
+			}
+			if strings.Contains(sql, tc.reject) {
+				t.Errorf("DDL carries %q, which this topology must not emit\nfull SQL:\n%s", tc.reject, sql)
+			}
+		})
+	}
+}
+
+// TestNewCHTableSink_RejectsNonReplicatingDeployedEngine pins the migration half
+// of cerberus issue #3241: emitting the right engine only fixes a table this
+// binary CREATES, and `CREATE TABLE IF NOT EXISTS` is a no-op against a table an
+// older binary already left behind as a plain MergeTree. No ALTER converts one,
+// so the only thing that can distinguish "replicating" from "not" is the engine
+// the SERVER reports — and if construction accepted it anyway, the corpus would
+// go on being mined one replica at a time with nothing saying so.
+//
+// The three cases are the whole truth table: the deployment that needs
+// replication and does not have it FAILS, the one that needs it and has it is
+// built, and the single-node deployment — where a plain MergeTree is correct and
+// there is no Keeper — is untouched by the check.
+func TestNewCHTableSink_RejectsNonReplicatingDeployedEngine(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		topology CorpusTableTopology
+		deployed string
+		wantErr  bool
+	}{
+		{
+			name:     "replicated-deployment-over-plain-mergetree",
+			topology: CorpusTableTopology{DatabaseReplicated: true},
+			deployed: "MergeTree",
+			wantErr:  true,
+		},
+		{
+			name:     "replicated-deployment-over-replicated-mergetree",
+			topology: CorpusTableTopology{DatabaseReplicated: true},
+			deployed: "ReplicatedMergeTree",
+		},
+		{
+			name:     "single-node-deployment-over-plain-mergetree",
+			topology: CorpusTableTopology{},
+			deployed: "MergeTree",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fe := &fakeExecer{deployedEngine: tc.deployed}
+			sink, err := NewCHTableSink(context.Background(), fe, tc.topology)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("NewCHTableSink over a deployed %s engine: %v", tc.deployed, err)
+				}
+				if sink == nil {
+					t.Fatal("NewCHTableSink returned no sink and no error")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("NewCHTableSink over a deployed %s engine on a replicated deployment: "+
+					"want an error, got nil", tc.deployed)
+			}
+			// The operator has to act on this, so the message has to name the
+			// table, the engine the server reported, and the knob that made it
+			// wrong — not merely that something did not line up.
+			for _, want := range []string{CorpusTableName, tc.deployed, "CERBERUS_SCHEMA_DATABASE_REPLICATED"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 // fakeExecer records every statement executed and the batch rows appended, and
 // answers the deployed-schema read from deployedType / absentColumn — keyed by
 // column name, defaulting to the full column list with the types this binary
@@ -136,15 +258,16 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 // is how a least-privilege deployment presents (a CH user may hold CREATE but
 // not ALTER); execErr fails every statement; queryErr fails the schema read.
 type fakeExecer struct {
-	execSQL       []string
-	execErr       error
-	failStatement string
-	failErr       error
-	batchErr      error
-	batch         *fakeBatch
-	deployedType  map[string]string
-	absentColumn  map[string]bool
-	queryErr      error
+	execSQL        []string
+	execErr        error
+	failStatement  string
+	failErr        error
+	batchErr       error
+	batch          *fakeBatch
+	deployedType   map[string]string
+	absentColumn   map[string]bool
+	deployedEngine string
+	queryErr       error
 }
 
 func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
@@ -163,7 +286,7 @@ func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
 //
 // The table name is the query's last bound argument; checking it keeps the fake
 // honest about WHICH table it is answering for.
-func (f *fakeExecer) Query(_ context.Context, _ string, args ...any) (driver.Rows, error) {
+func (f *fakeExecer) Query(_ context.Context, query string, args ...any) (driver.Rows, error) {
 	if f.queryErr != nil {
 		return nil, f.queryErr
 	}
@@ -177,7 +300,18 @@ func (f *fakeExecer) Query(_ context.Context, _ string, args ...any) (driver.Row
 	if table != CorpusTableName {
 		return nil, errors.New("fakeExecer: schema query asked about table " + table)
 	}
-	rows := &fakeRows{}
+	// Construction issues TWO reads against the same table name — the engine
+	// (system.tables) and the column list (system.columns) — so the fake
+	// dispatches on the relation the statement names rather than on the bound
+	// argument they share.
+	if strings.Contains(query, chsql.RenderDDL(chsql.Qual("system", "tables"))) {
+		engine := f.deployedEngine
+		if engine == "" {
+			engine = chsql.RenderDDL(corpusTableEngine(CorpusTableTopology{}))
+		}
+		return &fakeRows{cols: []string{"engine"}, rows: [][]string{{engine}}}, nil
+	}
+	rows := &fakeRows{cols: []string{"name", "type"}}
 	for _, c := range CorpusColumns() {
 		if f.absentColumn[c.Name] {
 			continue
@@ -186,7 +320,7 @@ func (f *fakeExecer) Query(_ context.Context, _ string, args ...any) (driver.Row
 		if !ok {
 			deployed = chsql.RenderDDL(c.Type)
 		}
-		rows.rows = append(rows.rows, [2]string{c.Name, deployed})
+		rows.rows = append(rows.rows, []string{c.Name, deployed})
 	}
 	return rows, nil
 }
@@ -201,10 +335,12 @@ func (f *fakeExecer) executed(want string) bool {
 	return false
 }
 
-// fakeRows is a (name, type) String-pair driver.Rows: exactly the shape the
-// deployed-schema read consumes.
+// fakeRows is an all-String driver.Rows over a fixed column list: exactly the
+// shape both construction reads consume — the (name, type) pairs of the
+// deployed-schema read and the single engine name of the engine read.
 type fakeRows struct {
-	rows [][2]string
+	cols []string
+	rows [][]string
 	next int
 }
 
@@ -217,8 +353,8 @@ func (r *fakeRows) Next() bool {
 }
 
 func (r *fakeRows) Scan(dest ...any) error {
-	if len(dest) != 2 {
-		return errors.New("fakeRows: want exactly two scan destinations")
+	if len(dest) != len(r.cols) {
+		return errors.New("fakeRows: want exactly one scan destination per column")
 	}
 	if r.next == 0 || r.next > len(r.rows) {
 		return errors.New("fakeRows: Scan called outside a row")
@@ -238,7 +374,7 @@ func (r *fakeRows) HasData() bool                    { return r.next < len(r.row
 func (r *fakeRows) ScanStruct(any) error             { return nil }
 func (r *fakeRows) ColumnTypes() []driver.ColumnType { return nil }
 func (r *fakeRows) Totals(...any) error              { return nil }
-func (r *fakeRows) Columns() []string                { return []string{"name", "type"} }
+func (r *fakeRows) Columns() []string                { return r.cols }
 func (r *fakeRows) Close() error                     { return nil }
 func (r *fakeRows) Err() error                       { return nil }
 
@@ -275,7 +411,7 @@ func TestCHTableSink_CreatesTableAndWrites(t *testing.T) {
 	t.Parallel()
 
 	fe := &fakeExecer{}
-	sink, err := NewCHTableSink(context.Background(), fe, "")
+	sink, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{})
 	if err != nil {
 		t.Fatalf("NewCHTableSink: %v", err)
 	}
@@ -488,7 +624,7 @@ func TestNewCHTableSink_RejectsNarrowDeployedColumn(t *testing.T) {
 			t.Parallel()
 
 			fe := &fakeExecer{deployedType: map[string]string{tc.column: tc.deployed}}
-			_, err := NewCHTableSink(context.Background(), fe, "")
+			_, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{})
 			if err == nil {
 				t.Fatalf("NewCHTableSink over a narrow %s column: want an error, got nil", tc.column)
 			}
@@ -535,7 +671,7 @@ func TestNewCHTableSink_WideningIsBestEffort(t *testing.T) {
 				failStatement: alterMarker(col.name),
 				failErr:       errors.New("not enough privileges"),
 			}
-			sink, err := NewCHTableSink(context.Background(), fe, "")
+			sink, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{})
 			if err != nil {
 				t.Fatalf("NewCHTableSink over an already-wide %s with no ALTER grant: %v", col.name, err)
 			}
@@ -562,7 +698,7 @@ func TestNewCHTableSink_NarrowColumnReportsWideningFailure(t *testing.T) {
 		failStatement: alterMarker(exitStatusColumn),
 		failErr:       errors.New(grantErr),
 	}
-	_, err := NewCHTableSink(context.Background(), fe, "")
+	_, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{})
 	if err == nil {
 		t.Fatal("NewCHTableSink over a narrow exit_status column: want an error, got nil")
 	}
@@ -584,7 +720,7 @@ func TestNewCHTableSink_SchemaReadFailureIsFatal(t *testing.T) {
 	t.Parallel()
 
 	fe := &fakeExecer{queryErr: errors.New("system.columns unavailable")}
-	if _, err := NewCHTableSink(context.Background(), fe, ""); err == nil {
+	if _, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{}); err == nil {
 		t.Fatal("NewCHTableSink with an unreadable schema: want an error, got nil")
 	}
 }
@@ -601,7 +737,7 @@ func TestNewCHTableSink_AddColumnIsBestEffort(t *testing.T) {
 		failStatement: addMarker(parallelismColumn),
 		failErr:       errors.New("not enough privileges"),
 	}
-	sink, err := NewCHTableSink(context.Background(), fe, "")
+	sink, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{})
 	if err != nil {
 		t.Fatalf("NewCHTableSink over an already-complete table with no ALTER grant: %v", err)
 	}
@@ -631,7 +767,7 @@ func TestNewCHTableSink_RejectsMissingColumn(t *testing.T) {
 		failStatement: addMarker(shardsObservedColumn),
 		failErr:       errors.New(grantErr),
 	}
-	_, err := NewCHTableSink(context.Background(), fe, "")
+	_, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{})
 	if err == nil {
 		t.Fatalf("NewCHTableSink over a table missing %s: want an error, got nil", shardsObservedColumn)
 	}
@@ -650,7 +786,7 @@ func TestNewCHTableSink_MissingColumnFailsWithoutAnAlterError(t *testing.T) {
 	t.Parallel()
 
 	fe := &fakeExecer{absentColumn: map[string]bool{parallelismColumn: true}}
-	_, err := NewCHTableSink(context.Background(), fe, "")
+	_, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{})
 	if err == nil {
 		t.Fatalf("NewCHTableSink over a table missing %s: want an error, got nil", parallelismColumn)
 	}
@@ -668,7 +804,7 @@ func TestNewCHTableSink_CreateFailureIsFatal(t *testing.T) {
 		failStatement: "CREATE TABLE IF NOT EXISTS " + CorpusTableName,
 		failErr:       errors.New("not enough privileges"),
 	}
-	if _, err := NewCHTableSink(context.Background(), fe, ""); err == nil {
+	if _, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{}); err == nil {
 		t.Fatal("NewCHTableSink with a refused CREATE: want an error, got nil")
 	}
 }
@@ -698,7 +834,7 @@ func TestNewCHTableSink_RejectsRenumberedDeployedColumn(t *testing.T) {
 		exitStatusColumn: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
 			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5, 'error' = 6, 'aborted' = 7)",
 	}}
-	_, err := NewCHTableSink(context.Background(), fe, "")
+	_, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{})
 	if err == nil {
 		t.Fatal("NewCHTableSink over a renumbered exit_status column: want an error, got nil")
 	}

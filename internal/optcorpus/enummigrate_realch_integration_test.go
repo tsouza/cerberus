@@ -88,7 +88,7 @@ func TestCorpusEnumMigrationRealClickHouse(t *testing.T) {
 		t.Fatalf("create the narrow corpus table: %v", err)
 	}
 
-	sink, err := NewCHTableSink(ctx, conn, "")
+	sink, err := NewCHTableSink(ctx, conn, CorpusTableTopology{})
 	if err != nil {
 		t.Fatalf("build CH table sink over the narrow table: %v", err)
 	}

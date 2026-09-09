@@ -121,7 +121,7 @@ func TestCorpusWriteReadRealClickHouse(t *testing.T) {
 	// real sink against real ClickHouse and reading the rows back asserts the
 	// columnar Append landed every column — enums included — correctly.
 	rows := loadCorpusRows(t, "testdata/effectiveness.jsonl")
-	sink, err := optcorpus.NewCHTableSink(ctx, conn, "")
+	sink, err := optcorpus.NewCHTableSink(ctx, conn, optcorpus.CorpusTableTopology{})
 	if err != nil {
 		t.Fatalf("create CH table sink (real CREATE DDL): %v", err)
 	}
