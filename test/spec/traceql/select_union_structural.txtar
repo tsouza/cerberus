@@ -16,7 +16,7 @@ SetOperation op=||
     Filter predicate=(SpanName = "a")
       Scan(otel_traces)
   Project [TraceId, SpanId, Timestamp, SpanName AS name]
-    StructuralJoin op=&> maxDepth=128
+    StructuralJoin op=&>
       Filter predicate=(SpanName = "a")
         Scan(otel_traces)
       Filter predicate=(SpanName = "b")

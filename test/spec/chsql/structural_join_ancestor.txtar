@@ -3,6 +3,6 @@ SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `Pa
 -- args --
 (none)
 -- chplan --
-StructuralJoin op=<< maxDepth=128
+StructuralJoin op=<<
   Scan(otel_traces)
   Scan(otel_traces)
