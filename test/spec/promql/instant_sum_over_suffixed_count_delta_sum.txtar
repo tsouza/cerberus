@@ -185,7 +185,7 @@ This pins the in-window behaviour: sum over the 2 series = 266.
 [149] int64 = 300000000000
 -- chplan --
 Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, Value AS Value]
-  Aggregate groupBy=[] funcs=[FnSum(Value) AS Value]
+  Aggregate groupBy=[] funcs=[FnSum(Value) AS Value] dropEmptyOnNoGroup
     Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
       Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
         Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))

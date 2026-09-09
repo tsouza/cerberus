@@ -94,7 +94,40 @@ INSERT INTO otel_metrics_gauge VALUES
     ('humidity',    map('job', 'sensors', 'host', 'a'), toDateTime64('2026-01-01 00:00:07', 9), 60.0),
     ('humidity',    map('job', 'sensors', 'host', 'b'), toDateTime64('2026-01-01 00:00:08', 9), 55.5),
     ('latency',     map('job', 'api',     'host', 'c'), toDateTime64('2026-01-01 00:00:09', 9), 3.14);
+CREATE OR REPLACE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('latency_bucket', map('job', 'api',     'host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 6,  12.0, [1, 2, 3], [1.0, 2.0, 3.0]),
+    ('latency_bucket', map('job', 'api',     'host', 'b'), toDateTime64('2026-01-01 00:00:01', 9), 10, 30.0, [4, 3, 3], [1.0, 2.0, 3.0]),
+    ('size_bucket',    map('job', 'sensors', 'host', 'a'), toDateTime64('2026-01-01 00:00:02', 9), 4,  8.0,  [2, 1, 1], [0.5, 1.5, 2.5]);
 `
+
+// propertyHistogramTable is the classic-histogram seed the
+// HistogramQuantile stage shape reads. The gauge table carries no
+// BucketCounts / ExplicitBounds arrays, so that shape cannot be
+// generated over it.
+const propertyHistogramTable = "otel_metrics_histogram"
+
+// propertySessionSettings are executed once against the session before
+// any plan runs.
+//
+// The two ClickHouse-native grid aggregates behind RangeWindowGridNative
+// and RangeWindowStaleResample — timeSeriesRateToGrid and
+// timeSeriesResampleToGridWithStaleness — are gated behind this setting
+// and answer UNKNOWN_AGGREGATE_FUNCTION without it. Production reaches
+// them through the internal/chopt capability registry rather than a bare
+// SET; here the session is the harness's own, so enabling it directly is
+// what makes the correctness-critical native arm reachable at all.
+var propertySessionSettings = []string{
+	"SET allow_experimental_time_series_aggregate_functions = 1",
+}
 
 // generatorAlphabet bundles the column / literal vocabulary the
 // generator draws from. Keeping these tight makes most generated plans
@@ -129,6 +162,11 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	rng := rand.New(rand.NewSource(seed))
 
 	db := openPropertyChDB(t)
+	for _, setting := range propertySessionSettings {
+		if _, err := db.Exec(setting); err != nil {
+			t.Fatalf("session setting %q failed: %v", setting, err)
+		}
+	}
 	if _, err := db.Exec(propertyDDL); err != nil {
 		// The DDL is a multi-statement script. chdb-go's driver runs
 		// one statement per Exec, so split on top-level semicolons.
@@ -145,6 +183,13 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 
 	ctx := context.Background()
 	opt := optimizer.Default()
+
+	// verified accumulates the node kinds of plans that actually
+	// completed a round-trip. Counting kinds at GENERATION time would
+	// credit a shape that never executes — every iteration of it takes
+	// the loop's `continue` — so coverage is measured on the plans the
+	// property really checked.
+	verified := map[string]bool{}
 
 	dropBudget := n * maxDroppedPlansPerVerified
 	tried := 0
@@ -177,6 +222,9 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 				dumpPlan(plan), dumpPlan(optimized), errPost)
 		}
 
+		recordVerifiedKinds(verified, plan)
+		recordVerifiedKinds(verified, optimized)
+
 		if !rowsetEqual(gotPre, gotPost) {
 			t.Fatalf("semantic equivalence violated (seed=%d iter=%d)\n--- pre ---\n%s\n--- post ---\n%s\n--- pre rows ---\n%s\n--- post rows ---\n%s",
 				seed, tried, dumpPlan(plan), dumpPlan(optimized),
@@ -188,6 +236,7 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	if testing.Verbose() {
 		t.Logf("property check: %d plans verified (%d dropped) against seed %d", tried, dropped, seed)
 	}
+	assertOptimizerKindsCovered(t, verified)
 }
 
 // maxDroppedPlansPerVerified bounds the generator's drop budget as a
@@ -211,19 +260,23 @@ const maxDroppedPlansPerVerified = 2
 // so callers never have to handle a nil node.
 //
 // Depth budget: at depth 0 the generator picks any node type; once
-// depth ≥ 3 it bottoms out into a Scan to keep trees small. This
-// covers the three plan shapes the optimizer is expected to handle:
+// depth ≥ 3 it bottoms out into a Scan to keep trees small. The leaf
+// grammar covers the shapes the predicate-pushdown batch works on:
 //
 //	Scan(table)
 //	Filter(<expr>, Scan(table))
 //	Filter(<expr>, Filter(<expr>, Scan(table)))   ← fusion target
 //	Project(<projs>, Scan(table))                 ← pushdown target
 //	Filter(<expr>, Project(<projs>, Scan(table))) ← transpose target
+//
+// and the stage arm covers ProjectionPushdown's own shapes (3)–(9),
+// each generated directly over Scan or Filter(Scan) because that is the
+// adjacency applyStageScan matches. See generateStagePlan.
 func generatePlan(rng *rand.Rand, depth int) chplan.Node {
 	if depth >= 3 {
 		return makeScan()
 	}
-	switch rng.Intn(4) {
+	switch rng.Intn(6) {
 	case 0:
 		return makeScan()
 	case 1:
@@ -250,6 +303,8 @@ func generatePlan(rng *rand.Rand, depth int) chplan.Node {
 			},
 			Predicate: generatePredicate(rng, 0),
 		}
+	case 4, 5:
+		return generateStagePlan(rng)
 	}
 	return makeScan()
 }

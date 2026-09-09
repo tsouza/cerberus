@@ -59,6 +59,37 @@ const (
 	logRowMetadataColumns = 4
 )
 
+// sampleColumns is the width of the base metric projection —
+// MetricName, Attributes, TimeUnix, Value — that every other metric
+// shape appends to. It mirrors the production rowsCursor's own probe
+// constant.
+const sampleColumns = 4
+
+// mixedDiscriminatorColumn is the trailing projection alias a
+// float-vs-histogram `or` appends, and mixedColumns is that shape's
+// width. They mirror the production rowsCursor's probe constants (see
+// internal/chclient/cursor.go), duplicated here for the same reason
+// every other constant in this block is: .go-arch-lint.yml confines
+// chclienttest to chclient and testsql, so the alias cannot be imported
+// from the chplan package that declares it.
+//
+// The mixed shape is what a `VectorSetOr` between a float-valued and a
+// histogram-valued operand emits. Every row carries all fourteen
+// columns — the float arm projects typed zero placeholders rather than
+// NULLs — and this trailing UInt8 alone decides whether the row's
+// histogram half is meaningful.
+//
+// Discriminating on the width AND the trailing alias, rather than the
+// alias alone, is what keeps this apart from the thirteen-column
+// histogram-valued shape: appending the discriminator displaces
+// histogramLastColumn from last position, so hasHistogram is false for a
+// mixed result and it would otherwise fall to the four-destination
+// default scan against fourteen columns.
+const (
+	mixedDiscriminatorColumn = "_setop_is_histogram"
+	mixedColumns             = sampleColumns + histogramColumnCount + 1
+)
+
 // Client is a chDB-backed implementation of the Querier interface each
 // handler defines (api/prom.Querier, api/loki.Querier, api/tempo.Querier).
 // All three are subsets of *chclient.Client's surface, so a single struct
@@ -296,7 +327,9 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 		return nil, fmt.Errorf("chclienttest: columns: %w", err)
 	}
 	hasMetadata := len(cols) > 0 && cols[len(cols)-1] == metadataColumn
-	hasHistogram := len(cols) > 0 && cols[len(cols)-1] == histogramLastColumn
+	hasHistogram := len(cols) == sampleColumns+histogramColumnCount &&
+		cols[len(cols)-1] == histogramLastColumn
+	isMixed := len(cols) == mixedColumns && cols[len(cols)-1] == mixedDiscriminatorColumn
 	// The log-row layouts bind no numeric destination at all. Recognise
 	// them by the leading alias plus the exact width, exactly as the
 	// production probeRowShape does, so the four-wide log+metadata layout
@@ -338,6 +371,36 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 				return nil, err
 			}
 			hv = decoded
+		case isMixed:
+			// The mixed shape carries the float destinations AND the
+			// nine histogram cells on every row; the trailing
+			// discriminator says which half this row means. Reuse the
+			// same cells/histogramFromCells normalisation the
+			// histogram-valued arm uses, for the same chdb-go
+			// Parquet-driver reason, and read the discriminator through
+			// it too — chDB hands a UInt8 back as its own native
+			// integer type rather than a Go bool.
+			cells := make([]any, histogramColumnCount)
+			var discriminator any
+			dest := []any{&name, &attrsJSON, &ts, &value}
+			for i := range cells {
+				dest = append(dest, &cells[i])
+			}
+			dest = append(dest, &discriminator)
+			if err := rows.Scan(dest...); err != nil {
+				return nil, fmt.Errorf("chclienttest: scan: %w", err)
+			}
+			isHistogramRow, err := cellFloat(discriminator, mixedDiscriminatorColumn)
+			if err != nil {
+				return nil, fmt.Errorf("chclienttest: mixed discriminator: %w", err)
+			}
+			if isHistogramRow != 0 {
+				decoded, err := histogramFromCells(cells)
+				if err != nil {
+					return nil, err
+				}
+				hv = decoded
+			}
 		// The log-row arms come BEFORE hasMetadata: a log+metadata result
 		// satisfies both predicates, and only the log-row arm binds the
 		// correct destination count (no float).
@@ -828,9 +891,14 @@ func histogramFromCells(cells []any) (*chclient.HistogramValue, error) {
 	}, nil
 }
 
-// cellFloat coerces one driver-native numeric cell to float64. chdb-go
-// returns an integral column as int64 and a floating one as float64, so
-// both are accepted for the count/sum slots the emitter pins to Float64.
+// cellFloat coerces one driver-native numeric cell to float64.
+//
+// chdb-go's Parquet driver hands a numeric column back at the Go width
+// matching the ClickHouse type rather than normalising everything to
+// int64 / float64, so every integer width is accepted: the mixed
+// set-op's `_setop_is_histogram` discriminator is a UInt8 and arrives as
+// a Go uint8, while the count/sum slots the emitter pins to Float64
+// arrive as float64.
 func cellFloat(v any, column string) (float64, error) {
 	switch n := v.(type) {
 	case nil:
@@ -839,11 +907,25 @@ func cellFloat(v any, column string) (float64, error) {
 		return n, nil
 	case float32:
 		return float64(n), nil
+	case int:
+		return float64(n), nil
 	case int64:
 		return float64(n), nil
 	case int32:
 		return float64(n), nil
+	case int16:
+		return float64(n), nil
+	case int8:
+		return float64(n), nil
+	case uint:
+		return float64(n), nil
 	case uint64:
+		return float64(n), nil
+	case uint32:
+		return float64(n), nil
+	case uint16:
+		return float64(n), nil
+	case uint8:
 		return float64(n), nil
 	}
 	return 0, fmt.Errorf("chclienttest: %s is %T, want a number", column, v)

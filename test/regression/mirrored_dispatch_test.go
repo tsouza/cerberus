@@ -377,3 +377,60 @@ func markedSourceLines(t *testing.T, root string) []int {
 	sort.Ints(lines)
 	return lines
 }
+
+// emitMetricNodeFunc names the production classifier that motivated
+// admitting `(bool, error)` results into dispatchscan's classifier
+// predicate.
+const emitMetricNodeFunc = "emitMetricNode"
+
+// TestFallibleClassifierIsScanned pins that dispatchscan reads a
+// classifier which answers yes or no AND reports that it could not
+// decide.
+//
+// internal/chsql's emitMetricNode is a sixteen-arm type switch over
+// chplan.Node deciding whether a node belongs to the metric family;
+// emitNode's default arm consumes its answer to choose between emitting
+// the node and returning ErrUnsupported. It is production dispatch over
+// the shared IR by any reading, but its `(bool, error)` signature put it
+// outside dispatchscan's classifier predicate, so Rule C above could
+// never have compared it against a same-named sibling — the defect was
+// invisible rather than absent.
+//
+// This asserts the scan reaches it. Rule C itself cannot: it only
+// reports names carried by two or more packages, so a classifier with no
+// mate today leaves it silent whether the scan saw the classifier or
+// skipped it.
+func TestFallibleClassifierIsScanned(t *testing.T) {
+	t.Parallel()
+
+	dirs := goPackageDirs(t, internalRoot)
+	sealed := sealedInterfaces(t, dirs)
+	if len(sealed) == 0 {
+		t.Fatal("found no sealed marker interfaces under internal/ — the scan lost its " +
+			"grip on the source shape, so this ratchet is vacuous")
+	}
+
+	found, err := dispatchscan.Classifiers(rangeWindowEmitDir, sealed)
+	if err != nil {
+		t.Fatalf("scan %s: %v", rangeWindowEmitDir, err)
+	}
+
+	for _, c := range found {
+		if c.Func != emitMetricNodeFunc {
+			continue
+		}
+		if c.Interface != "chplan.Node" {
+			t.Errorf("%s classifies %s, want chplan.Node", emitMetricNodeFunc, c.Interface)
+		}
+		if len(c.Arms) == 0 {
+			t.Errorf("%s was scanned with no arms, so nothing could ever be diffed against it",
+				emitMetricNodeFunc)
+		}
+		return
+	}
+
+	t.Errorf("dispatchscan did not find %s in %s. It is a type switch over the sealed "+
+		"chplan.Node deciding node-family membership, so the mirrored-dispatch rules must be "+
+		"able to see it; a classifier that also returns an error is still a classifier",
+		emitMetricNodeFunc, rangeWindowEmitDir)
+}

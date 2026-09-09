@@ -55,6 +55,10 @@ func TestClassifiers(t *testing.T) {
 	wantArms := map[string][]string{
 		"isDerived":  {"*Filter", "*Scan"},
 		"keyedTwice": {"*Project"},
+		// A classifier that can fail is still a classifier: the error
+		// says the answer could not be produced, it is not a second
+		// result the caller consumes.
+		"classifiesOrFails": {"*Project", "*Scan"},
 	}
 	for fn, want := range wantArms {
 		arms, ok := got[fn]
@@ -69,7 +73,7 @@ func TestClassifiers(t *testing.T) {
 
 	// The near-misses. Each is a function the rule must stay away from,
 	// and each fails for a different reason.
-	for _, fn := range []string{"unwrap", "isEmpty", "switchesOnLocal"} {
+	for _, fn := range []string{"unwrap", "isEmpty", "switchesOnLocal", "errorFirst"} {
 		if _, ok := got[fn]; ok {
 			t.Errorf("%s was recognised as a classifier, but it is a near-miss the scan "+
 				"must not read", fn)

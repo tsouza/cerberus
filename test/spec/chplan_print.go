@@ -31,12 +31,102 @@ func PrintChplan(n chplan.Node) string {
 	return b.String()
 }
 
+// printNode renders one node and its subtree.
+//
+// The per-kind arms below reach their structural children through
+// printChild, which records each one it visited. Once the arm returns,
+// printUnvisitedChildren compares that record against the node's own
+// Children() accessor and renders anything the arm failed to reach. That
+// backstop is why a newly added optional subtree — RangeWindow's
+// DeltaPrefixAggregateInput and DownsampleTierInput, MetricsCompare's
+// RootLookup — cannot be silently dropped from a golden by an arm that
+// hard-codes single-child recursion: an unreached child still prints,
+// under an explicit marker naming the omission.
 func printNode(b *strings.Builder, n chplan.Node, depth int) {
-	indent := strings.Repeat("  ", depth)
 	if n == nil {
-		fmt.Fprintf(b, "%s<nil>\n", indent)
+		fmt.Fprintf(b, "%s<nil>\n", strings.Repeat("  ", depth))
 		return
 	}
+	var visited []chplan.Node
+	printNodeArm(b, n, depth, &visited)
+	printUnvisitedChildren(b, n, depth, visited)
+}
+
+// printChild renders one structural child and records that the calling
+// arm reached it, so printUnvisitedChildren can tell a labelled
+// rendering from a forgotten field.
+func printChild(b *strings.Builder, visited *[]chplan.Node, n chplan.Node, depth int) {
+	if n != nil {
+		*visited = append(*visited, n)
+	}
+	printNode(b, n, depth)
+}
+
+// printUnvisitedChildren renders every member of n.Children() the
+// per-kind arm did not reach through printChild.
+//
+// Reaching a child only via this backstop is a defect in the arm rather
+// than a supported rendering, so the marker says so: a golden that grows
+// an `UnvisitedChild` line is telling its reviewer that chplan gained a
+// subtree the printer has no label for.
+func printUnvisitedChildren(b *strings.Builder, n chplan.Node, depth int, visited []chplan.Node) {
+	indent := strings.Repeat("  ", depth)
+	for _, c := range n.Children() {
+		if c == nil || nodeVisited(visited, c) {
+			continue
+		}
+		fmt.Fprintf(b, "%s  UnvisitedChild:\n", indent)
+		printNode(b, c, depth+2)
+	}
+}
+
+// nodeVisited reports whether c is one of the already-rendered children.
+// Comparison is by interface identity: every chplan node kind is a
+// pointer type, so the dynamic values are comparable and two distinct
+// children never collide.
+func nodeVisited(visited []chplan.Node, c chplan.Node) bool {
+	for _, v := range visited {
+		if v == c {
+			return true
+		}
+	}
+	return false
+}
+
+// flag pairs a printed name with the node field it renders.
+type flag struct {
+	name string
+	set  bool
+}
+
+// printFlags appends the name of every set flag, in declaration order.
+// A cleared flag prints nothing, so a golden only carries the modes a
+// plan actually selected.
+func printFlags(b *strings.Builder, flags []flag) {
+	for _, f := range flags {
+		if f.set {
+			b.WriteString(" " + f.name)
+		}
+	}
+}
+
+// printSampleShape renders the Histogram / Mixed pair that several node
+// kinds carry to tell the emitter which sample layout flows through
+// them: float columns, the nine native-histogram columns, or the mixed
+// 14-column shape whose trailing discriminator picks per row. Every one
+// of the three emits different SQL, so the IR has to say which it is.
+//
+// Both flags live on VectorSetOp, Filter and TopK; NaryVectorSetOp and
+// InfoJoin carry Histogram alone and pass false for mixed.
+func printSampleShape(b *strings.Builder, histogram, mixed bool) {
+	printFlags(b, []flag{
+		{"histogram", histogram},
+		{"mixed", mixed},
+	})
+}
+
+func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chplan.Node) {
+	indent := strings.Repeat("  ", depth)
 	switch v := n.(type) {
 	case *chplan.Scan:
 		tbl := v.Table
@@ -66,16 +156,18 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			v.End.Format("2006-01-02T15:04:05.000000000Z"), v.Step)
 	case *chplan.CrossJoin:
 		fmt.Fprintf(b, "%sCrossJoin\n", indent)
-		printNode(b, v.Left, depth+1)
-		printNode(b, v.Right, depth+1)
+		printChild(b, visited, v.Left, depth+1)
+		printChild(b, visited, v.Right, depth+1)
 	case *chplan.UnionAll:
 		fmt.Fprintf(b, "%sUnionAll arms=%d\n", indent, len(v.Inputs))
 		for _, in := range v.Inputs {
-			printNode(b, in, depth+1)
+			printChild(b, visited, in, depth+1)
 		}
 	case *chplan.Filter:
-		fmt.Fprintf(b, "%sFilter predicate=%s\n", indent, printExpr(v.Predicate))
-		printNode(b, v.Input, depth+1)
+		fmt.Fprintf(b, "%sFilter predicate=%s", indent, printExpr(v.Predicate))
+		printSampleShape(b, v.Histogram, v.Mixed)
+		b.WriteString("\n")
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.Project:
 		parts := make([]string, len(v.Projections))
 		for i, p := range v.Projections {
@@ -98,7 +190,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		} else {
 			fmt.Fprintf(b, "%sProject [%s]\n", indent, strings.Join(parts, ", "))
 		}
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.Aggregate:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
@@ -121,11 +213,14 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Having != nil {
 			fmt.Fprintf(b, " having=%s", printExpr(v.Having))
 		}
+		if v.DropEmptyOnNoGroup {
+			b.WriteString(" dropEmptyOnNoGroup")
+		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.Limit:
 		fmt.Fprintf(b, "%sLimit %d\n", indent, v.Count)
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.TopK:
 		dir := "ASC"
 		if v.Desc {
@@ -150,11 +245,12 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if len(v.Columns) > 0 {
 			fmt.Fprintf(b, " columns=[%s]", strings.Join(v.Columns, ", "))
 		}
+		printSampleShape(b, v.Histogram, v.Mixed)
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 		if v.KExpr != nil {
 			fmt.Fprintf(b, "%s  KExpr:\n", indent)
-			printNode(b, v.KExpr, depth+2)
+			printChild(b, visited, v.KExpr, depth+2)
 		}
 	case *chplan.OrderBy:
 		keys := make([]string, len(v.Keys))
@@ -166,7 +262,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			keys[i] = fmt.Sprintf("%s %s", printExpr(k.Expr), dir)
 		}
 		fmt.Fprintf(b, "%sOrderBy [%s]\n", indent, strings.Join(keys, ", "))
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.RangeWindow:
 		fmt.Fprintf(b, "%sRangeWindow func=%s range=%s step=%s",
 			indent, v.Func, v.Range, v.Step)
@@ -226,8 +322,30 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if !v.Start.IsZero() || !v.End.IsZero() {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
+		// The emitter picks a different SQL shape for each of these, so an
+		// IR snapshot that hid them could not tell two plans apart that
+		// ClickHouse executes completely differently — DownsampleTier in
+		// particular makes the emitter read DownsampleTierInput and ignore
+		// Input outright (internal/chsql/range_window.go's emitRangeWindow).
+		printFlags(b, []flag{
+			{"stepAlign", v.StepAlign},
+			{"instantScanBounded", v.InstantScanBounded},
+			{"fixedAccumulatorExtrapolated", v.FixedAccumulatorExtrapolated},
+			{"sortedSlabOverTime", v.SortedSlabOverTime},
+			{"downsampleTier", v.DownsampleTier},
+			{"nativeGroupArray", v.NativeGroupArray},
+			{"distinctSampleRows", v.DistinctSampleRows},
+		})
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
+		if v.DeltaPrefixAggregateInput != nil {
+			fmt.Fprintf(b, "%s  DeltaPrefixAggregateInput:\n", indent)
+			printChild(b, visited, v.DeltaPrefixAggregateInput, depth+2)
+		}
+		if v.DownsampleTierInput != nil {
+			fmt.Fprintf(b, "%s  DownsampleTierInput:\n", indent)
+			printChild(b, visited, v.DownsampleTierInput, depth+2)
+		}
 	case *chplan.RangeWindowGridNative:
 		fmt.Fprintf(b, "%sRangeWindowGridNative func=%s range=%s step=%s",
 			indent, v.Func, v.Range, v.Step)
@@ -258,7 +376,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.RangeWindowGridNativeVectorAgg:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
@@ -271,7 +389,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		fmt.Fprintf(b, "%sRangeWindowGridNativeVectorAgg fn=%s groupBy=[%s] anchorAlias=%s",
 			indent, v.Fn, strings.Join(gb, ", "), v.AnchorAlias)
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.RangeLWR:
 		fmt.Fprintf(b, "%sRangeLWR step=%s lookback=%s", indent, v.Step, v.Lookback)
 		if v.Offset != 0 {
@@ -286,11 +404,15 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.SampleTimestamp {
 			fmt.Fprintf(b, " sample_ts=%s", chplan.RangeLWRSampleTimestampColumn)
 		}
+		printFlags(b, []flag{
+			{"stepAlign", v.StepAlign},
+			{"argAndMaxFusion", v.ArgAndMaxFusion},
+		})
 		if !v.Start.IsZero() || !v.End.IsZero() {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.RangeWindowStaleResample:
 		fmt.Fprintf(b, "%sRangeWindowStaleResample step=%s lookback=%s", indent, v.Step, v.Lookback)
 		if v.Offset != 0 {
@@ -306,7 +428,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.RangeBucketFanout:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
@@ -328,11 +450,15 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			fmt.Fprintf(b, " minSamples=%d", v.MinSamples)
 		}
 		fmt.Fprintf(b, " groupBy=[%s] funcs=[%s]", strings.Join(gb, ", "), strings.Join(aggs, ", "))
+		printFlags(b, []flag{
+			{"stepAlign", v.StepAlign},
+			{"peakIndependentOfGrid", v.PeakIndependentOfGrid},
+		})
 		if !v.Start.IsZero() || !v.End.IsZero() {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.RangeBucketGridNative:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
@@ -352,7 +478,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.VectorJoin:
 		fmt.Fprintf(b, "%sVectorJoin op=%s match=%s card=%s",
 			indent, v.Op, printVectorMatch(v.Match), printVectorCard(v.Card))
@@ -365,27 +491,36 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.StepAligned {
 			b.WriteString(" stepAligned")
 		}
+		if v.ArgAndMaxFusion {
+			b.WriteString(" argAndMaxFusion")
+		}
 		b.WriteString("\n")
-		printNode(b, v.Left, depth+1)
-		printNode(b, v.Right, depth+1)
+		printChild(b, visited, v.Left, depth+1)
+		printChild(b, visited, v.Right, depth+1)
 	case *chplan.VectorSetOp:
 		fmt.Fprintf(b, "%sVectorSetOp op=%s match=%s",
 			indent, v.Op, printVectorMatch(v.Match))
 		if v.StepAligned {
 			b.WriteString(" stepAligned")
 		}
+		printSampleShape(b, v.Histogram, v.Mixed)
+		printFlags(b, []flag{
+			{"mixedHistogramOnLeft", v.MixedHistogramOnLeft},
+			{"mixedDropCollisions", v.MixedDropCollisions},
+		})
 		b.WriteString("\n")
-		printNode(b, v.Left, depth+1)
-		printNode(b, v.Right, depth+1)
+		printChild(b, visited, v.Left, depth+1)
+		printChild(b, visited, v.Right, depth+1)
 	case *chplan.NaryVectorSetOp:
 		fmt.Fprintf(b, "%sNaryVectorSetOp op=%s match=%s arms=%d",
 			indent, v.Op, printVectorMatch(v.Match), len(v.Arms))
 		if v.StepAligned {
 			b.WriteString(" stepAligned")
 		}
+		printSampleShape(b, v.Histogram, false)
 		b.WriteString("\n")
 		for _, arm := range v.Arms {
-			printNode(b, arm, depth+1)
+			printChild(b, visited, arm, depth+1)
 		}
 	case *chplan.InfoJoin:
 		fmt.Fprintf(b, "%sInfoJoin identity=[%s]", indent, strings.Join(v.IdentityLabels, ", "))
@@ -398,31 +533,35 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.MergeInfoMetrics {
 			b.WriteString(" mergeInfoMetrics")
 		}
+		printSampleShape(b, v.Histogram, false)
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
-		printNode(b, v.Info, depth+1)
+		printChild(b, visited, v.Input, depth+1)
+		printChild(b, visited, v.Info, depth+1)
 	case *chplan.StructuralJoin:
 		fmt.Fprintf(b, "%sStructuralJoin op=%s", indent, v.Op)
 		if v.MaxDepth != 0 {
 			fmt.Fprintf(b, " maxDepth=%d", v.MaxDepth)
 		}
+		if v.CandidatePrefilter {
+			b.WriteString(" candidatePrefilter")
+		}
 		b.WriteString("\n")
-		printNode(b, v.Left, depth+1)
-		printNode(b, v.Right, depth+1)
+		printChild(b, visited, v.Left, depth+1)
+		printChild(b, visited, v.Right, depth+1)
 	case *chplan.SetOperation:
 		fmt.Fprintf(b, "%sSetOperation op=%s\n", indent, v.Op)
-		printNode(b, v.Left, depth+1)
-		printNode(b, v.Right, depth+1)
+		printChild(b, visited, v.Left, depth+1)
+		printChild(b, visited, v.Right, depth+1)
 	case *chplan.NestedSetAnnotate:
 		if v.TraceLimit > 0 {
 			fmt.Fprintf(b, "%sNestedSetAnnotate table=%s traceLimit=%d\n", indent, v.SpansTable, v.TraceLimit)
 		} else {
 			fmt.Fprintf(b, "%sNestedSetAnnotate table=%s\n", indent, v.SpansTable)
 		}
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.SearchTraceLimit:
 		fmt.Fprintf(b, "%sSearchTraceLimit traceLimit=%d\n", indent, v.TraceLimit)
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.MetricsAggregate:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
@@ -458,7 +597,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		if v.Inner != nil {
-			printNode(b, v.Inner, depth+1)
+			printChild(b, visited, v.Inner, depth+1)
 		}
 	case *chplan.MetricsSecondStage:
 		fmt.Fprintf(b, "%sMetricsSecondStage op=%s", indent, v.Op)
@@ -477,7 +616,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		if v.Input != nil {
-			printNode(b, v.Input, depth+1)
+			printChild(b, visited, v.Input, depth+1)
 		}
 	case *chplan.MetricsHistogramOverTime:
 		gb := make([]string, len(v.GroupBy))
@@ -510,7 +649,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		if v.Inner != nil {
-			printNode(b, v.Inner, depth+1)
+			printChild(b, visited, v.Inner, depth+1)
 		}
 	case *chplan.MetricsCompare:
 		// Pairs (the full span-attribute explosion) is deliberately
@@ -521,15 +660,21 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.StartNs != 0 || v.EndNs != 0 {
 			fmt.Fprintf(b, " window=(%d, %d]", v.StartNs, v.EndNs)
 		}
-		if v.RootLookup != nil {
-			b.WriteString(" rootLookup=true")
-		}
 		if v.ValueAlias != "" {
 			fmt.Fprintf(b, " valueAlias=%s", v.ValueAlias)
 		}
+		if v.InnerRootScoped {
+			b.WriteString(" innerRootScoped")
+		}
 		b.WriteString("\n")
 		if v.Inner != nil {
-			printNode(b, v.Inner, depth+1)
+			printChild(b, visited, v.Inner, depth+1)
+		}
+		// RootLookup used to be summarised as `rootLookup=true` and never
+		// recursed into, which hid a whole scan subtree from the golden.
+		if v.RootLookup != nil {
+			fmt.Fprintf(b, "%s  RootLookup:\n", indent)
+			printChild(b, visited, v.RootLookup, depth+2)
 		}
 	case *chplan.AbsentOverTime:
 		fmt.Fprintf(b, "%sAbsentOverTime range=%s step=%s", indent, v.Range, v.Step)
@@ -559,7 +704,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.HistogramQuantile:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
@@ -580,8 +725,11 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if len(gb) > 0 {
 			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
 		}
+		if v.UseNativeQuantileAggregate {
+			b.WriteString(" useNativeQuantileAggregate")
+		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.HistogramQuantileNative:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
@@ -600,7 +748,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.HistogramProjection:
 		// Only the projection's own output list is printed. The nine
 		// Histogram*Column source names are a mechanical function of the
@@ -621,7 +769,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			fmt.Fprintf(b, " project=[%s]", strings.Join(gb, ", "))
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.RangeWindowGridNativeInstant:
 		fmt.Fprintf(b, "%sRangeWindowGridNativeInstant func=%s range=%s anchor=%s",
 			indent, v.Func, v.Range, v.Anchor.UTC().Format(time.RFC3339Nano))
@@ -645,7 +793,7 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			fmt.Fprintf(b, " scalars=%v", v.Scalars)
 		}
 		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
+		printChild(b, visited, v.Input, depth+1)
 	case *chplan.HistogramVectorJoin:
 		fmt.Fprintf(b, "%sHistogramVectorJoin match=%s card=%s",
 			indent, printVectorMatch(v.Match), printVectorCard(v.Card))
@@ -656,8 +804,8 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			b.WriteString(" stepAligned")
 		}
 		b.WriteString("\n")
-		printNode(b, v.Left, depth+1)
-		printNode(b, v.Right, depth+1)
+		printChild(b, visited, v.Left, depth+1)
+		printChild(b, visited, v.Right, depth+1)
 	case *chplan.HistogramFloatVectorJoin:
 		fmt.Fprintf(b, "%sHistogramFloatVectorJoin match=%s card=%s",
 			indent, printVectorMatch(v.Match), printVectorCard(v.Card))
@@ -668,8 +816,8 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			b.WriteString(" stepAligned")
 		}
 		b.WriteString("\n")
-		printNode(b, v.Left, depth+1)
-		printNode(b, v.Right, depth+1)
+		printChild(b, visited, v.Left, depth+1)
+		printChild(b, visited, v.Right, depth+1)
 	case *chplan.MixedVectorJoin:
 		fmt.Fprintf(b, "%sMixedVectorJoin match=%s card=%s",
 			indent, printVectorMatch(v.Match), printVectorCard(v.Card))
@@ -680,8 +828,8 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			b.WriteString(" stepAligned")
 		}
 		b.WriteString("\n")
-		printNode(b, v.Left, depth+1)
-		printNode(b, v.Right, depth+1)
+		printChild(b, visited, v.Left, depth+1)
+		printChild(b, visited, v.Right, depth+1)
 	default:
 		// Every node kind must have a printer arm: an opaque leaf would hide
 		// the whole subtree beneath it from the `-- chplan --` golden layer,
@@ -734,7 +882,19 @@ func printExpr(e chplan.Expr) string {
 	case *chplan.MapAccess:
 		return fmt.Sprintf("%s[%s]", printExpr(v.Map), printExpr(v.Key))
 	case *chplan.FieldAccess:
-		return fmt.Sprintf("%s[%q]", printExpr(v.Source), v.Path)
+		// MaterializedColumn being non-empty diverts the emitter off the
+		// JSON-path extraction and onto a plain column read, and
+		// MaterializedColumnNumeric decides whether that column is read
+		// as a number or a string — two different SQL shapes the IR
+		// snapshot could not previously distinguish.
+		if v.MaterializedColumn == "" {
+			return fmt.Sprintf("%s[%q]", printExpr(v.Source), v.Path)
+		}
+		kind := "str"
+		if v.MaterializedColumnNumeric {
+			kind = "num"
+		}
+		return fmt.Sprintf("%s[%q materialized=%s:%s]", printExpr(v.Source), v.Path, v.MaterializedColumn, kind)
 	case *chplan.MapWithoutKeys:
 		return fmt.Sprintf("mapWithout(%s, [%s])", printExpr(v.Map), strings.Join(v.Keys, ", "))
 	case *chplan.MapWithoutEmptyValues:
@@ -756,6 +916,9 @@ func printExpr(e chplan.Expr) string {
 		}
 		if v.Negated {
 			flags += ",not"
+		}
+		if v.TextIndexPrefilter {
+			flags += ",textIndexPrefilter"
 		}
 		return fmt.Sprintf("lineContent(%s, %q, %s)", printExpr(v.Source), v.Pattern, flags)
 	case *chplan.NestedArrayExists:

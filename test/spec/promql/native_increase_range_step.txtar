@@ -127,7 +127,7 @@ INSERT INTO otel_metrics_sum VALUES
 [52] int64 = 1
 -- chplan --
 Project ["" AS MetricName, mapWithoutEmpty(FnMap("cerberus_ql", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
-  Aggregate groupBy=[FnIf(FnMapContainsKey(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], FnIf(FnMapContainsKey(Attributes, "cerberus.ql"), Attributes["cerberus.ql"], Attributes["cerberus/ql"])) AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value]
+  Aggregate groupBy=[FnIf(FnMapContainsKey(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], FnIf(FnMapContainsKey(Attributes, "cerberus.ql"), Attributes["cerberus.ql"], Attributes["cerberus/ql"])) AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value] dropEmptyOnNoGroup
     Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
       UnionAll arms=2
         RangeWindowGridNative func=increase range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
