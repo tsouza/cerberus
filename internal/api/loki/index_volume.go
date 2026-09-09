@@ -31,11 +31,15 @@ const defaultVolumeLimit = 100
 //   - start / end (optional): time range (defaults to last hour)
 //   - limit (optional): top-N row cap (default 100)
 //   - targetLabels (optional): comma-separated label whitelist; when set,
-//     only those keys appear in the per-row metric map and rows that
-//     share the projected keys collapse into one
-//   - aggregateBy (optional): "series" (default, group by full label
-//     set) or "labels" (group by `targetLabels`; equivalent to "series"
-//     when targetLabels is unset)
+//     only those keys appear in the per-row metric map, rows that share
+//     the projected keys collapse into one, and a row must carry EVERY
+//     requested label to be counted at all (see
+//     [targetLabelPresenceMatchers])
+//   - aggregateBy (optional): "series" (the default) or "labels".
+//     `targetLabels` restricts the group key in BOTH modes — upstream's
+//     aggregateBySeries branch builds its series key from
+//     `labelsToMatch` exactly as its labels branch does
+//     (pkg/ingester/instance.go:886-903)
 func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	q := r.FormValue("query")
 	if q == "" {
@@ -55,15 +59,19 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetLabels := parseTargetLabels(r.FormValue("targetLabels"))
-	aggregateBy := r.FormValue("aggregateBy")
+	if err := validateAggregateBy(r.FormValue("aggregateBy")); err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
 
 	matchers, err := selectorMatchers(q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	matchers = append(matchers, targetLabelPresenceMatchers(targetLabels, matchers)...)
 
-	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, targetLabels, aggregateBy)
+	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, targetLabels)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -135,9 +143,8 @@ func buildIndexVolumeSQL(
 	start, end time.Time,
 	limit int,
 	targetLabels []string,
-	aggregateBy string,
 ) (string, []any, error) {
-	groupFrag, err := volumeGroupFrag(s, strategies, targetLabels, aggregateBy)
+	groupFrag, err := volumeGroupFrag(s, strategies, targetLabels)
 	if err != nil {
 		return "", nil, err
 	}
@@ -197,9 +204,8 @@ func volumeGroupFrag(
 	s schema.Logs,
 	strategies chsql.AttrStrategies,
 	targetLabels []string,
-	aggregateBy string,
 ) (chsql.Frag, error) {
-	if len(targetLabels) == 0 || aggregateBy == "series" {
+	if len(targetLabels) == 0 {
 		return attrMapFrag(strategies, s.ResourceAttributesColumn), nil
 	}
 	keys := append([]string(nil), targetLabels...)
@@ -219,6 +225,75 @@ func volumeGroupFrag(
 		})
 	}
 	return chsql.Call("mapFilter", dropAbsent, chsql.Call("map", entries...)), nil
+}
+
+// Loki's two `aggregateBy` options
+// (pkg/storage/stores/index/seriesvolume/volume.go's Series / Labels).
+// The default when the parameter is absent is Series
+// (`DefaultAggregateBy`).
+const (
+	aggregateBySeries = "series"
+	aggregateByLabels = "labels"
+)
+
+// validateAggregateBy mirrors upstream's `volumeAggregateBy`
+// (pkg/loghttp/query.go:741-753): absent means the default, one of the
+// two names is accepted, and anything else is a 400. Cerberus used to
+// accept any string silently, so `aggregateBy=banana` answered over a
+// grouping the client never asked for.
+//
+// The VALUE does not select a group key here, because upstream's does
+// not either: both of its branches restrict the key to `labelsToMatch`
+// (pkg/ingester/instance.go:886-903). Where the two branches genuinely
+// differ is the aggregation SHAPE — upstream's labels branch sums per
+// label NAME across that label's values, a different wire shape from a
+// per-label-set row. Cerberus emits the series shape for both, tracked
+// as issue #3224.
+func validateAggregateBy(raw string) error {
+	switch raw {
+	case "", aggregateBySeries, aggregateByLabels:
+		return nil
+	default:
+		return errors.New("invalid aggregation option")
+	}
+}
+
+// targetLabelPresenceMatchers returns the matchers upstream ADDS for a
+// `targetLabels` request: one `<target>=~".+"` per requested label the
+// selector does not already constrain
+// (pkg/util/series_volume.go:58-65's
+// "Make sure all target labels are included in the matchers").
+//
+// It is not a projection detail — it decides which rows are COUNTED. A
+// stream that does not carry a requested label contributes nothing to an
+// upstream `targetLabels` volume, where cerberus counted it and merely
+// left the key out of its metric map, inflating the volume of the
+// remaining group.
+//
+// Upstream also drops its match-all matcher once a target has added one.
+// Cerberus has no match-all matcher to drop: [selectorMatchers] parses a
+// real stream selector, and an empty-compatible one is already accepted
+// by the permissive parse rather than represented as a nameless matcher.
+func targetLabelPresenceMatchers(targetLabels []string, matchers []*labels.Matcher) []*labels.Matcher {
+	if len(targetLabels) == 0 {
+		return nil
+	}
+	constrained := make(map[string]bool, len(matchers))
+	for _, m := range matchers {
+		constrained[m.Name] = true
+	}
+	// Sorted so the emitted predicate order is deterministic; upstream
+	// iterates a map here and does not care, but a golden does.
+	targets := append([]string(nil), targetLabels...)
+	sort.Strings(targets)
+	var out []*labels.Matcher
+	for _, t := range targets {
+		if constrained[t] {
+			continue
+		}
+		out = append(out, labels.MustNewMatcher(labels.MatchRegexp, t, ".+"))
+	}
+	return out
 }
 
 // parseVolumeLimit decodes the optional `limit` parameter; missing /

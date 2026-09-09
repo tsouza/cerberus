@@ -244,3 +244,117 @@ func TestIndexVolume_TargetLabelsResolveLikeTheSelector(t *testing.T) {
 			"selector LHS: %s\nprojection:   %s", lhs, projectedSQL)
 	}
 }
+
+// TestIndexVolume_TargetLabelsApplyInSeriesMode pins that `targetLabels`
+// restricts the group key in `aggregateBy=series` (and in the default,
+// which IS series) exactly as it does in `aggregateBy=labels`.
+//
+// Upstream's aggregateBySeries branch builds its series key from the
+// same `labelsToMatch` map its labels branch sums into
+// (pkg/ingester/instance.go:886-903), so
+// `aggregateBy=series&targetLabels=job` returns `{job="…"}` rows. Cerberus
+// fell back to the FULL attribute map for that combination, returning
+// one row per distinct label set instead — a different row count and a
+// different per-row volume.
+func TestIndexVolume_TargetLabelsApplyInSeriesMode(t *testing.T) {
+	t.Parallel()
+
+	// The projected-map fingerprint. The full-label-set fallback emits a
+	// bare column reference and never this shape.
+	const projectedMap = "mapFilter((k, v) -> v != ?, map("
+
+	for _, aggregateBy := range []string{"", "series", "labels"} {
+		aggregateBy := aggregateBy
+		name := aggregateBy
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{}
+			srv := newServer(q)
+			t.Cleanup(srv.Close)
+
+			url := srv.URL + `/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&targetLabels=job`
+			if aggregateBy != "" {
+				url += "&aggregateBy=" + aggregateBy
+			}
+			resp, err := http.Get(url)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+			if got := q.LastSQL(); !strings.Contains(got, projectedMap) {
+				t.Fatalf("aggregateBy=%q with targetLabels grouped by the full label set; "+
+					"upstream restricts the key to the target labels in BOTH modes\nsql=%s",
+					aggregateBy, got)
+			}
+		})
+	}
+}
+
+// TestIndexVolume_TargetLabelsRequirePresence pins upstream's
+// "Make sure all target labels are included in the matchers" step
+// (pkg/util/series_volume.go:58-65): every requested label the selector
+// does not already constrain gets a `<target>=~".+"` matcher, so a
+// stream that does not CARRY the label is excluded from the volume
+// rather than counted into a group that omits the key.
+func TestIndexVolume_TargetLabelsRequirePresence(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// `job` is already constrained by the selector and must NOT gain a
+	// second matcher; `env` is not, and must.
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&targetLabels=job,env`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	// The matcher lowering anchors a Loki regexp matcher, so `.+`
+	// reaches ClickHouse as `^(?:.+)$`.
+	const anchoredMatchAny = `^(?:.+)$`
+	var matchAny int
+	for _, a := range q.LastArgs() {
+		if s, ok := a.(string); ok && s == anchoredMatchAny {
+			matchAny++
+		}
+	}
+	if matchAny != 1 {
+		t.Fatalf("bound %d `.+` presence patterns, want exactly 1 (env needs one, "+
+			"job is already constrained by the selector)\nsql=%s\nargs=%v",
+			matchAny, q.LastSQL(), q.LastArgs())
+	}
+}
+
+// TestIndexVolume_InvalidAggregateBy pins upstream's `volumeAggregateBy`
+// (pkg/loghttp/query.go:741-753): absent is the default, `series` and
+// `labels` are accepted, anything else is a 400. Cerberus accepted any
+// string, so `aggregateBy=banana` answered over a grouping the client
+// never asked for.
+func TestIndexVolume_InvalidAggregateBy(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&aggregateBy=banana`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("aggregateBy=banana returned %d, want 400", resp.StatusCode)
+	}
+}
