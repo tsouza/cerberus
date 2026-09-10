@@ -62,7 +62,7 @@ func TestGuardClassification_ExceptionMessageBoundary(t *testing.T) {
 					srv := newServer(querier)
 					path := "/api/v1/query_range?query=up&start=1767225600&end=1767225660&step=60"
 					if !cursor {
-						querier.stubQuerier.err = wrapped
+						querier.err = wrapped
 						path = "/api/v1/query?query=up&time=1767225600"
 					}
 					t.Cleanup(srv.Close)
