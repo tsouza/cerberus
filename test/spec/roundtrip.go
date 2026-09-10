@@ -108,7 +108,10 @@ type RoundTripSections struct {
 type RoundTripResult struct {
 	fixtureName       string
 	projectionColumns []string
-	seeded            bool
+	// tableColumns is the fixture DDL catalog, independent of query output.
+	// It binds wildcard leaves when checking schemas against minimal seeds.
+	tableColumns map[string][]string
+	seeded       bool
 }
 
 // IsRoundTrip reports whether the fixture opted into the

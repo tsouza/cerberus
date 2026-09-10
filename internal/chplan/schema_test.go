@@ -177,6 +177,49 @@ func TestRowTypeMixedFloatNarrowing(t *testing.T) {
 	if IsMixedFloatNarrowing(filter) {
 		t.Fatal("input without a discriminator accepted")
 	}
+	filter.Input = mixed
+	filter.Predicate = &Binary{Op: OpEq, Left: &ColumnRef{Name: MixedDiscriminatorColumn, Qualifier: "other"}, Right: &LitInt{V: 0}}
+	if IsMixedFloatNarrowing(filter) {
+		t.Fatal("qualified foreign column accepted as this input's discriminator")
+	}
+	filter.Predicate.(*Binary).Left = &ColumnRef{Name: MixedDiscriminatorColumn}
+	filter.Input = &Scan{Columns: []string{MixedDiscriminatorColumn, "actual_kind"}, Roles: []Column{{MixedDiscriminatorColumn, RoleOpaque}, {"actual_kind", RoleDiscriminator}}}
+	if IsMixedFloatNarrowing(filter) {
+		t.Fatal("same-spelled opaque column accepted as discriminator")
+	}
+	filter.Predicate.(*Binary).Left = &ColumnRef{Name: "actual_kind"}
+	if !IsMixedFloatNarrowing(filter) {
+		t.Fatal("explicitly declared discriminator name not recognized")
+	}
+	filter.Input = &CrossJoin{Left: mixed, Right: mixed}
+	filter.Predicate.(*Binary).Left = &ColumnRef{Name: MixedDiscriminatorColumn}
+	if IsMixedFloatNarrowing(filter) {
+		t.Fatal("filtering one of two independent discriminators accepted")
+	}
+}
+
+func TestRowTypeCanonicalHistogramPayload(t *testing.T) {
+	full := Schema{Columns: HistogramPayloadColumns()}
+	if !full.HasHistogramPayload() {
+		t.Fatal("complete canonical payload missing")
+	}
+	for i := range full.Columns {
+		partial := Schema{Columns: append(slices.Clone(full.Columns[:i]), full.Columns[i+1:]...)}
+		if partial.HasHistogramPayload() {
+			t.Fatalf("payload missing %s accepted", full.Columns[i].Name)
+		}
+	}
+	raw := Schema{Columns: []Column{{"raw_count", RoleHistogramField}, {"raw_sum", RoleHistogramField}}}
+	if raw.HasHistogramPayload() {
+		t.Fatal("raw storage fields accepted as native payload")
+	}
+	full.Columns[0].Role = RoleOpaque
+	if full.HasHistogramPayload() {
+		t.Fatal("opaque same-named column accepted as histogram field")
+	}
+	if !(Schema{Columns: HistogramPayloadColumns()}).HasHistogramPayload() {
+		t.Fatal("caller mutation changed canonical vocabulary")
+	}
 }
 
 func TestRowTypeOpenCrossJoin(t *testing.T) {

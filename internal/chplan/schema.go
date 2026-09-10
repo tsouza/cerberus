@@ -142,6 +142,23 @@ func histogramColumns() []Column {
 	}
 }
 
+// HistogramPayloadColumns returns the ordered canonical native-histogram
+// payload published by HistogramProjection and understood by the decoder.
+// The returned slice is independent and may be used to build projections.
+func HistogramPayloadColumns() []Column { return histogramColumns() }
+
+// HasHistogramPayload distinguishes the complete public native-histogram
+// payload from raw storage fields and partial intermediate helper columns.
+func (s Schema) HasHistogramPayload() bool {
+	for _, want := range histogramColumns() {
+		got, ok := s.ByName(want.Name)
+		if !ok || got.Role != RoleHistogramField {
+			return false
+		}
+	}
+	return true
+}
+
 // RowShapeFromSchema folds physical columns into the legacy sample vocabulary.
 // Opaque relational outputs have no sample contract and retain its default.
 func RowShapeFromSchema(s Schema) RowShape {
@@ -162,17 +179,31 @@ func RowShapeFromSchema(s Schema) RowShape {
 // IsMixedFloatNarrowing reports an explicit discriminator filter that retains
 // only float rows while physically preserving the mixed payload columns.
 func IsMixedFloatNarrowing(n Node) bool {
+	const floatDiscriminatorValue = 0
 	f, ok := n.(*Filter)
-	return ok && f.Input != nil && f.Input.RowType().Has(RoleDiscriminator) && discriminatorEquals(f.Predicate, 0)
+	if !ok || f.Input == nil {
+		return false
+	}
+	var discriminator string
+	for _, column := range f.Input.RowType().Columns {
+		if column.Role != RoleDiscriminator {
+			continue
+		}
+		if discriminator != "" || column.Name == "" {
+			return false
+		}
+		discriminator = column.Name
+	}
+	return discriminator != "" && discriminatorEquals(f.Predicate, discriminator, floatDiscriminatorValue)
 }
 
-func discriminatorEquals(expr Expr, want int64) bool {
+func discriminatorEquals(expr Expr, name string, want int64) bool {
 	b, ok := expr.(*Binary)
 	if !ok {
 		return false
 	}
 	if b.Op == OpAnd {
-		return discriminatorEquals(b.Left, want) || discriminatorEquals(b.Right, want)
+		return discriminatorEquals(b.Left, name, want) || discriminatorEquals(b.Right, name, want)
 	}
 	if b.Op != OpEq {
 		return false
@@ -180,7 +211,7 @@ func discriminatorEquals(expr Expr, want int64) bool {
 	match := func(column, literal Expr) bool {
 		c, cok := column.(*ColumnRef)
 		v, vok := literal.(*LitInt)
-		return cok && vok && c.Name == MixedDiscriminatorColumn && v.V == want
+		return cok && vok && c.Name == name && c.Qualifier == "" && v.V == want
 	}
 	return match(b.Left, b.Right) || match(b.Right, b.Left)
 }

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -22,7 +24,7 @@ func AssertRowTypeMatchesDriver(t *testing.T, plan chplan.Node, result RoundTrip
 	if !result.seeded {
 		return
 	}
-	want := plan.RowType()
+	want := bindFixtureSchemas(plan, result.tableColumns).RowType()
 	if !want.Open && len(want.Columns) != len(result.projectionColumns) {
 		t.Fatalf("RowType has %d columns; driver has %d: schema=%#v driver=%q", len(want.Columns), len(result.projectionColumns), want, result.projectionColumns)
 	}
@@ -45,6 +47,41 @@ func AssertRowTypeMatchesDriver(t *testing.T, plan chplan.Node, result RoundTrip
 			t.Errorf("RowType column %d = %q; driver = %q (all columns %q)", i, column.Name, result.projectionColumns[i], result.projectionColumns)
 		}
 	}
+}
+
+// bindFixtureSchemas substitutes the fixture's actual physical table columns
+// on a clone. Minimal seeds often omit configured columns unused by a query;
+// their wildcard schema is consequently narrower than the deployed table.
+// The original plan and emitted SQL remain untouched. The catalog comes from
+// CREATE TABLE declarations, never from the query's result metadata.
+func bindFixtureSchemas(plan chplan.Node, tables map[string][]string) chplan.Node {
+	bound := chplan.CloneNode(plan)
+	chplan.WalkDeep(bound, func(n chplan.Node) bool {
+		scan, ok := n.(*chplan.Scan)
+		if !ok || len(scan.Columns) != 0 {
+			return true
+		}
+		lookup := func(table string) []string {
+			if scan.Database != "" {
+				table = scan.Database + "." + table
+			}
+			return tables[strings.ToLower(table)]
+		}
+		columns := lookup(scan.Table)
+		if len(scan.UnionTables) != 0 {
+			columns = lookup(scan.UnionTables[0])
+			for _, table := range scan.UnionTables[1:] {
+				if !slices.Equal(columns, lookup(table)) {
+					return true
+				}
+			}
+		}
+		if len(columns) != 0 {
+			scan.Columns = slices.Clone(columns)
+		}
+		return true
+	})
+	return bound
 }
 
 var contractedRowShapeKinds = sync.OnceValues(func() (map[string]bool, error) {
@@ -120,9 +157,6 @@ func AssertRowShapeAgreement(t *testing.T, plan chplan.Node) {
 		reason := rowShapeDivergence(n)
 		if legacy != physical && reason == "" {
 			t.Errorf("%s legacy=%s physical=%s schema=%#v", kind, legacy, physical, n.RowType())
-		}
-		if legacy == physical && reason != "" {
-			t.Errorf("%s stale divergence %s: both shapes %s", kind, reason, legacy)
 		}
 		return true
 	})

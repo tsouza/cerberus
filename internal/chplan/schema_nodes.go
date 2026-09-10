@@ -6,7 +6,15 @@ func (s *Scan) RowType() Schema {
 	if len(s.Columns) == 0 {
 		return Schema{Columns: slices.Clone(s.Roles), Open: true}
 	}
-	return selectNames(Schema{}, s.Columns, s.Roles)
+	out := Schema{Columns: make([]Column, len(s.Columns))}
+	declared := Schema{Columns: s.Roles}
+	for i, name := range s.Columns {
+		out.Columns[i] = Column{Name: name}
+		if column, ok := declared.ByName(name); ok {
+			out.Columns[i] = column
+		}
+	}
+	return out
 }
 
 func (*OneRow) RowType() Schema { return Schema{Columns: []Column{{Name: "1"}}} }
@@ -119,11 +127,11 @@ func (r *RangeWindowGridNativeInstant) RowType() Schema {
 }
 
 func (r *RangeWindowGridNative) RowType() Schema {
-	out := windowSchema(r.Input.RowType(), r.GroupBy, true, r.TimestampColumn, r.ValueColumn)
+	input := r.Input.RowType()
+	out := windowSchema(input, r.GroupBy, true, r.TimestampColumn, r.ValueColumn)
 	if len(r.Recollapse) == 0 {
 		return out
 	}
-	input := r.Input.RowType()
 	groupNames := make([]string, len(r.GroupBy))
 	for i, key := range r.GroupBy {
 		groupNames[i] = ProjectionOutputName(Projection{Expr: key})
