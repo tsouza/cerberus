@@ -502,11 +502,27 @@ and a fixture change cannot pass its shard-coverage check without naming it.
 The generated files refuse line merging so unrelated additions cannot blend
 with a stale removal.
 
-Enrolment is a closed set rather than an aspiration. A PromQL fixture carries
-either a `-- parity --` section or a `-- parity_exempt --` one declaring, from a
-closed vocabulary of structural reasons (`test/spec/parity_exempt.go`), why it
-cannot be compared against a reference engine; `test/regression/
-parity_coverage_test.go` makes "neither" and "both" failures. One of those
+Enrolment is a closed set rather than an aspiration, and it is closed for all
+three heads. Every PromQL, LogQL and TraceQL fixture carries either a
+`-- parity --` section or a `-- parity_exempt --` one declaring, from a closed
+vocabulary of structural reasons (`test/spec/parity_exempt.go`), why it cannot
+be compared against a reference engine; `test/regression/
+parity_coverage_test.go` makes "neither" and "both" failures, walking the same
+`parityEnrolmentHeads` list the identity baseline does, so a fourth head enrols
+its corpus by appearing in that one place.
+
+A reason is a claim about what the reference engine can be SHOWN, never about
+what has not been got to yet, and each is established by running the fixture
+against the live oracle and reading the harness's own named refusal rather than
+by inspection. Several reasons name a boundary of the in-process oracles in
+particular: `reference-fetch-layer` covers a TraceQL answer that upstream
+produces partly in its storage layer — `= nil`, whose absence sentinel only the
+fetch layer writes, and a span with more than one event or link, whose per-record
+matching is an iterator join rather than a pipeline step — while
+`reference-intrinsic-unsupported` covers an intrinsic upstream's own evaluator
+declines. On the LogQL side `structured-metadata-unobservable` covers an answer
+carrying the synthesised `detected_level` label, which upstream produces at
+ingestion and its in-process querier never runs. One of those
 reasons, `duplicate-timestamp-seed`, covers a seed that deliberately carries two
 metric samples at one `(series, timestamp)` with different values: Prometheus's
 TSDB appender keeps a single sample per timestamp and drops the rest at commit,

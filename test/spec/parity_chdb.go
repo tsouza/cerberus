@@ -221,11 +221,31 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 	// cannot be made and silently making a different, weaker one.
 	compareTimestamps := comparesTimestamps(p.Oracle, eval.Step)
 	if compareTimestamps && sc.ts < 0 {
-		t.Fatalf(
-			"fixture %s: its answer's timestamps participate in the comparison, but the "+
-				"projection (%s) carries no %s column to compare them against",
-			c.Name, strings.Join(cols, ", "), colTimeUnix,
-		)
+		// A LogQL INSTANT answer has no per-row timestamp on the wire, so
+		// a projection that carries no timestamp column is not hiding one
+		// — it has none to hide. internal/api/loki's toVector stamps
+		// EVERY vector sample at the request's evaluation instant and
+		// uses a row's own timestamp only to pick the latest per series,
+		// so the number a row carries never reaches the response. The
+		// windowless range-aggregation path (`count_over_time(...)` with
+		// no `sum by`) projects only (ResourceAttributes, Value) for that
+		// reason.
+		//
+		// This is deliberately not a general escape from the timestamp
+		// comparison. A RANGE query stamps at step anchors that DO reach
+		// the wire, so it still fails here; and an instant projection
+		// that does carry TimeUnix still has it compared, which is what
+		// keeps the 25 already-enrolled instant fixtures checking the
+		// anchor their lowering chose.
+		if p.Oracle == OracleLoki && eval.Step == 0 {
+			compareTimestamps = false
+		} else {
+			t.Fatalf(
+				"fixture %s: its answer's timestamps participate in the comparison, but the "+
+					"projection (%s) carries no %s column to compare them against",
+				c.Name, strings.Join(cols, ", "), colTimeUnix,
+			)
+		}
 	}
 
 	compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps, q.Expr)
@@ -1382,13 +1402,15 @@ type sampleColumns struct {
 // anchor_ts is only subquery scaffolding.
 func locateSampleColumns(cols []string) (sampleColumns, error) {
 	sc := sampleColumns{name: -1, attrs: -1, ts: -1, value: -1, mixedIsHistogram: -1}
-	anchorTS := -1
+	anchorTS, resourceAttrs := -1, -1
 	for i, col := range cols {
 		switch col {
 		case colMetricName:
 			sc.name = i
 		case colAttributes:
 			sc.attrs = i
+		case colResourceAttributes:
+			resourceAttrs = i
 		case colAnchorTS:
 			anchorTS = i
 		case colTimeUnix:
@@ -1401,6 +1423,22 @@ func locateSampleColumns(cols []string) (sampleColumns, error) {
 	}
 	if sc.ts < 0 {
 		sc.ts = anchorTS
+	}
+	// colResourceAttributes is the SECOND name the emitter gives the
+	// label column, and it is a LogQL fact rather than a schema one.
+	// LogQL's windowless range-aggregation path groups by the label map
+	// it has just computed — the stream labels with `detected_level`
+	// folded in — and projects that map under the resource-attribute
+	// column's own name instead of re-aliasing it to Attributes, since
+	// the Loki handler reads it back by that name. So `count_over_time`
+	// answers with (ResourceAttributes, Value) where an AGGREGATED LogQL
+	// query answers with (MetricName, Attributes, TimeUnix, Value).
+	//
+	// Both spellings mean the same field. Attributes stays authoritative
+	// when a projection carries both, the same precedence colTimeUnix
+	// has over colAnchorTS.
+	if sc.attrs < 0 {
+		sc.attrs = resourceAttrs
 	}
 	if sc.attrs < 0 || sc.value < 0 {
 		return sc, fmt.Errorf(

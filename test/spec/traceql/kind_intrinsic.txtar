@@ -6,17 +6,23 @@ SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)
 [0] string = "Client"
 -- seed --
 CREATE TABLE otel_traces (
-    SpanKind String
+    SpanKind String,
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    ('Server'),
-    ('Client'),
-    ('client'),
-    ('Internal');
+INSERT INTO otel_traces (SpanKind, TraceId, SpanId) VALUES
+    ('Server', 'a0000000000000000000000000000001', '0000000000000001'),
+    ('Client', 'a0000000000000000000000000000001', '0000000000000002'),
+    ('client', 'a0000000000000000000000000000001', '0000000000000003'),
+    ('Internal', 'a0000000000000000000000000000001', '0000000000000004');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=(SpanKind = "Client")
   Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

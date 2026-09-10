@@ -405,7 +405,8 @@ func lowerExpHistogramSubqueryRangeFnRange(input chplan.Node, shape histogramAgg
 		TimestampCol:   s.TimestampColumn,
 	}, s, ctx)
 	selected := selectExpHistogramWindowSamples(
-		grouped, aggs, []string{stepGridAnchorColumn, s.AttributesColumn},
+		guardExpHistogramWindowReduction(grouped, ctx), aggs,
+		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		histogramWindowSelectionFor(shape.windowFn),
 	)
 	perSeries := expHistogramWindowReshape(
@@ -510,7 +511,8 @@ func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ct
 		aggs, s, ctx,
 	)
 	selected := selectExpHistogramWindowSamples(
-		grouped, aggs, []string{stepGridAnchorColumn, s.AttributesColumn},
+		guardExpHistogramWindowReduction(grouped, ctx), aggs,
+		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		histogramWindowSelectionFor(shape.windowFn),
 	)
 	perSeries := expHistogramWindowReshape(
@@ -576,7 +578,8 @@ func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape,
 		group = subqueryNameCollisionFilter(group, s, ctx)
 	}
 	selected := selectExpHistogramWindowSamples(
-		minSamplesFilter(group, shape.minSamples()), aggs, []string{s.AttributesColumn},
+		guardExpHistogramWindowReduction(minSamplesFilter(group, shape.minSamples()), ctx),
+		aggs, []string{s.AttributesColumn},
 		histogramWindowSelectionFor(shape.windowFn),
 	)
 	return expHistogramWindowReshape(

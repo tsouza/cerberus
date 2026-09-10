@@ -112,17 +112,50 @@ func TestResourceBoundsFromEnv_NonPositiveFailsFast(t *testing.T) {
 	}
 }
 
-// TestResourceBounds_WithDefaults confirms the zero value resolves to
-// DefaultResourceBounds field-by-field, and a fully-populated value passes
-// through unchanged — the resolution [Lower] / [LowerAt] / [LowerAtRange] /
-// [LowerAtRangeOpts] / [LowerMetadataRange] apply at their own
-// lowering-entry seam.
+// TestResourceBounds_WithDefaults confirms the zero value resolves each
+// constant-defaulted field from DefaultResourceBounds, that the DERIVED
+// field resolves from CHQueryMaxMemory instead (it is deliberately absent
+// from DefaultResourceBounds, so the two are not field-by-field equal), and
+// that a fully-populated value passes through unchanged — the resolution
+// [Lower] / [LowerAt] / [LowerAtRange] / [LowerAtRangeOpts] /
+// [LowerMetadataRange] apply at their own lowering-entry seam.
 func TestResourceBounds_WithDefaults(t *testing.T) {
-	if got, want := (ResourceBounds{}).withDefaults(), DefaultResourceBounds(); got != want {
-		t.Fatalf("ResourceBounds{}.withDefaults() = %+v, want %+v", got, want)
+	zero := (ResourceBounds{}).withDefaults()
+	if got, want := zero.HistogramMergeMaxCostUnits, int64(maxHistogramMergeCostUnits); got != want {
+		t.Fatalf("HistogramMergeMaxCostUnits = %d, want the shipped default %d", got, want)
+	}
+	if got, want := zero.ClassicBucketMergeMaxCostUnits, int64(maxClassicBucketMergeCostUnits); got != want {
+		t.Fatalf("ClassicBucketMergeMaxCostUnits = %d, want the shipped default %d", got, want)
+	}
+	// The exp-histogram ceiling is derived from the deployment's ClickHouse
+	// cap rather than defaulted from a constant, so it is absent from
+	// DefaultResourceBounds by design. A zero cap means the deployment
+	// stamps none, which resolves to the one-GiB grant rather than to
+	// "unbounded" — an unbounded ceiling would disable the guard entirely
+	// on exactly the deployments that never set a cap.
+	if got, want := zero.ExpHistogramWindowMaxCostUnits, expHistogramWindowCostUnitsPerGiB; got != want {
+		t.Fatalf("ExpHistogramWindowMaxCostUnits = %d for an unset cap, want the one-GiB grant %d", got, want)
+	}
+	if DefaultResourceBounds().ExpHistogramWindowMaxCostUnits != 0 {
+		t.Fatal("DefaultResourceBounds must leave ExpHistogramWindowMaxCostUnits unset: it is derived from CHQueryMaxMemory, not a shipped constant")
+	}
+	// A real cap derives a proportionally larger ceiling, so the field is
+	// genuinely a function of the cap and not a second constant.
+	capped := ResourceBounds{CHQueryMaxMemory: 4 * bytesPerGiB}.withDefaults()
+	if got, want := capped.ExpHistogramWindowMaxCostUnits, 4*expHistogramWindowCostUnitsPerGiB; got != want {
+		t.Fatalf("ExpHistogramWindowMaxCostUnits = %d for a 4 GiB cap, want %d", got, want)
 	}
 
-	explicit := ResourceBounds{HistogramMergeMaxCostUnits: 7, ClassicBucketMergeMaxCostUnits: 9}
+	// Fully populated means every resolvable field, the derived one
+	// included — an explicit ceiling must win over the cap-derived value,
+	// which is what makes CERBERUS_PROMQL_EXP_HISTOGRAM_WINDOW_MAX_COST_UNITS
+	// an override rather than a suggestion.
+	explicit := ResourceBounds{
+		HistogramMergeMaxCostUnits:     7,
+		ClassicBucketMergeMaxCostUnits: 9,
+		ExpHistogramWindowMaxCostUnits: 11,
+		CHQueryMaxMemory:               64 * bytesPerGiB,
+	}
 	if got := explicit.withDefaults(); got != explicit {
 		t.Fatalf("a fully-populated ResourceBounds.withDefaults() = %+v, want it unchanged: %+v", got, explicit)
 	}
