@@ -39,7 +39,7 @@ import (
 // Peak per (anchor, series) group, fitted across 21 measured
 // configurations spanning two real metrics and a synthetic width sweep:
 //
-//	bytes  <=  expHistogramWindowCostBytesPerUnit * S * W * (S + W)
+//	bytes  <=  36 * S * W * (S + W)
 //
 // where S is the samples the group's window holds and W the widest stored
 // bucket array in it. The shape is quadratic in S at fixed W (measured
@@ -53,17 +53,19 @@ import (
 // small-S/wide-W corner by 5.9x, and `S^2` alone ignores a 15x width
 // effect. The two-term envelope above is >= the measured peak at every one
 // of the 21 points, with headroom 1.04x .. 2.94x.
+//
+// The 36 in that envelope is the measured bytes one cost unit stands
+// for, and it is the envelope constant rather than the average: the
+// tightest measured point (one real series of
+// `cerberus_queries_duration_exp_hist`, 30 samples of 122-wide buckets)
+// sits at 1.04x, so it is a floor rather than a comfortable margin.
+// Zero-padded synthetic widths are ~2.5x CHEAPER than real varied bucket
+// content at matched (S, W), so a calibration drawn only from synthetic
+// data would be optimistic. It is folded into
+// [expHistogramWindowCostUnitsPerGiB] below rather than named here,
+// because that ceiling is chosen conservatively against a whole query's
+// cap and is not a pure division of it.
 const (
-	// expHistogramWindowCostBytesPerUnit is the measured bytes one cost
-	// unit stands for. It is the envelope constant, not the average: the
-	// tightest measured point (one real series of
-	// `cerberus_queries_duration_exp_hist`, 30 samples of 122-wide
-	// buckets) sits at 1.04x, so this is a floor for the constant rather
-	// than a comfortable margin. Zero-padded synthetic widths are ~2.5x
-	// CHEAPER than real varied bucket content at matched (S, W), so a
-	// calibration drawn only from synthetic data would be optimistic.
-	expHistogramWindowCostBytesPerUnit int64 = 36
-
 	// expHistogramWindowCostUnitsPerGiB is the ceiling granted per GiB of
 	// CERBERUS_CH_QUERY_MAX_MEMORY, and it folds the group count into the
 	// calibration rather than pretending a single group may spend the

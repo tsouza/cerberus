@@ -162,14 +162,16 @@ func TestExpHistogramWindowGuard_CostExpressionShape(t *testing.T) {
 			t.Errorf("emitted guard is missing %q\nSQL: %s", want, sqlStr)
 		}
 	}
-	// uniqExact still appears — the fan-out's own MinSamples HAVING uses
-	// it — but never as the guard's own sample count, which must be the
-	// array length. Asserting the length form above is what pins that;
-	// this asserts the two are not confused by checking the guard's
-	// message and the length expression appear in one statement.
-	if strings.Count(sqlStr, "length(`"+hqWindowTsListAlias+"`)") < 2 {
-		t.Errorf("the cost expression names S twice (S * W * (S + W)); got %d occurrence(s)\nSQL: %s",
-			strings.Count(sqlStr, "length(`"+hqWindowTsListAlias+"`)"), sqlStr)
+	// S appears TWICE in `S * W * (S + W)`. Counting it is what separates
+	// the real envelope from the two monomials the measurement rejected:
+	// a guard emitting `S * W` or `S * S` names S once or names no W, and
+	// either would satisfy every Contains assertion above while bounding
+	// the wrong shape.
+	const wantSOccurrences = 2
+	sTerm := "length(`" + hqWindowTsListAlias + "`)"
+	if got := strings.Count(sqlStr, sTerm); got < wantSOccurrences {
+		t.Errorf("the cost expression must name S %d times (S * W * (S + W)); got %d occurrence(s) of %s\nSQL: %s",
+			wantSOccurrences, got, sTerm, sqlStr)
 	}
 }
 
