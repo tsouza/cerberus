@@ -811,15 +811,15 @@ func SeedTableColumns(seed string) map[string][]string {
 			continue
 		}
 		name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
-		open := strings.IndexByte(stmt, '(')
+		open := strings.IndexByte(trimmed, '(')
 		if open < 0 {
 			continue
 		}
-		closeParen := matchParen(stmt, open)
+		closeParen := matchParen(trimmed, open)
 		if closeParen < 0 {
 			continue
 		}
-		defs := splitTopLevelCommas(stmt[open+1 : closeParen])
+		defs := splitTopLevelCommas(trimmed[open+1 : closeParen])
 		names := make([]string, 0, len(defs))
 		for _, d := range defs {
 			d = strings.TrimSpace(d)
