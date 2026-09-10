@@ -354,12 +354,21 @@ func lowerExpHistogramRangeFnOverSubqueryInput(input chplan.Node, sub *parser.Su
 // include the subquery offset exactly as the ordinary RangeWindow subquery
 // path does; the group identity is the published Attributes map rather than
 // physical-table resource columns that no longer exist above the projection.
+//
+// The reduction carries the name-drop collision guard unconditionally
+// (guardNameDrop=true): all seven FOLD names drop `__name__`, and the
+// SELECT family's own subquery continuations guard on exactly the same
+// footing — including underneath a sum()/avg() aggregation, which
+// [lowerSumOrAvgMixedOrSubquerySelectFn] has done since cerberus issue
+// #3232. The bare-SELECTOR entry point [expHistogramValuedWindowStage]
+// is the one that does not, because its key is the raw table's own series
+// identity rather than a subquery's published Attributes map.
 func expHistogramValuedSubqueryWindowStage(input chplan.Node, shape histogramAggShape, anchor evalAnchor, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	rangeEnd := windowRightBoundExpr(anchor)
 	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)
 	return expHistogramValuedWindowStageBy(
 		input, shape, rangeStart, rangeEnd, s,
-		&chplan.ColumnRef{Name: s.AttributesColumn}, ctx,
+		&chplan.ColumnRef{Name: s.AttributesColumn}, true, ctx,
 	)
 }
 
@@ -375,7 +384,13 @@ func lowerExpHistogramSubqueryRangeFnRange(input chplan.Node, shape histogramAgg
 	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 	winIn = winIn.withLowerers(ctx.lowerers)
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
-	grouped := &chplan.RangeBucketFanout{
+	// Fresh slice, not an in-place append: see
+	// [expHistogramValuedWindowStageBy]'s own doc for why `aggs` must reach
+	// the two stages below exactly as it was built.
+	fanoutAggs := make([]chplan.AggFunc, 0, len(aggs)+1)
+	fanoutAggs = append(fanoutAggs, aggs...)
+	fanoutAggs = append(fanoutAggs, subqueryNameCollisionAgg(s))
+	grouped := subqueryNameCollisionFilter(&chplan.RangeBucketFanout{
 		Input:          input,
 		Start:          ctx.start.UTC(),
 		End:            ctx.end.UTC(),
@@ -384,11 +399,11 @@ func lowerExpHistogramSubqueryRangeFnRange(input chplan.Node, shape histogramAgg
 		Offset:         win.offset,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		GroupByAliases: []string{s.AttributesColumn},
-		AggFuncs:       aggs,
+		AggFuncs:       fanoutAggs,
 		MinSamples:     win.minSamples,
 		AnchorAlias:    stepGridAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
-	}
+	}, s, ctx)
 	selected := selectExpHistogramWindowSamples(
 		grouped, aggs, []string{stepGridAnchorColumn, s.AttributesColumn},
 		histogramWindowSelectionFor(shape.windowFn),
@@ -518,19 +533,47 @@ func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ct
 // fields the quantile path already collects, and Count / Sum folded into
 // the reshaped row.
 func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	return expHistogramValuedWindowStageBy(input, shape, rangeStart, rangeEnd, s, histogramIdentityExpr(s), ctx)
+	return expHistogramValuedWindowStageBy(input, shape, rangeStart, rangeEnd, s, histogramIdentityExpr(s), false, ctx)
 }
 
-func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, identity chplan.Expr, ctx lowerCtx) chplan.Node {
+// expHistogramValuedWindowStageBy reduces one window per series through the
+// FOLD family's own aggregate set.
+//
+// guardNameDrop carries the same decision [selectFnSubqueryAggs] /
+// [selectFnSubqueryNameGuard] carry for the SELECT family, and for the same
+// reason (cerberus issues #3232, #3253): all seven FOLD names drop
+// `__name__`, so a reduction keyed on Attributes ALONE silently merges two
+// series that differ only by name into the one label set reference refuses
+// to answer. It is a parameter rather than an unconditional widening
+// because the bare-selector caller keys on [histogramIdentityExpr] — a raw
+// table's own series identity, which is not a subquery's published
+// Attributes map and is not what this issue measured.
+//
+// The guard's own aggregate is appended into a FRESH slice, never onto
+// `aggs` in place: `aggs` is handed unchanged to
+// [selectExpHistogramWindowSamples] and [expHistogramWindowReshape] below,
+// which derive their projections from the list they are given, and two
+// appends onto one slice with spare capacity write the same backing slot
+// twice.
+func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, identity chplan.Expr, guardNameDrop bool, ctx lowerCtx) chplan.Node {
 	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 	winIn = winIn.withLowerers(ctx.lowerers)
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
-	group := &chplan.Aggregate{
+	groupAggs := make([]chplan.AggFunc, 0, len(aggs)+2)
+	groupAggs = append(groupAggs, aggs...)
+	groupAggs = append(groupAggs, windowSampleCountAgg(s))
+	if guardNameDrop {
+		groupAggs = append(groupAggs, subqueryNameCollisionAgg(s))
+	}
+	group := chplan.Node(&chplan.Aggregate{
 		Input:              input,
 		GroupBy:            []chplan.Expr{identity},
 		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           append(aggs, windowSampleCountAgg(s)),
+		AggFuncs:           groupAggs,
 		DropEmptyOnNoGroup: true,
+	})
+	if guardNameDrop {
+		group = subqueryNameCollisionFilter(group, s, ctx)
 	}
 	selected := selectExpHistogramWindowSamples(
 		minSamplesFilter(group, shape.minSamples()), aggs, []string{s.AttributesColumn},
