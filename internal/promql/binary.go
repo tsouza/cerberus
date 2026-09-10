@@ -419,6 +419,7 @@ func foldSyntheticVectorBinary(
 	opExpr := &chplan.Binary{Op: op, Left: lhs, Right: rhs}
 
 	if isComparison(op) && !returnBool {
+		vec = mixedRowsFloatOnly(vec)
 		return &chplan.Filter{Input: vec, Predicate: opExpr}
 	}
 
@@ -844,6 +845,7 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 
 	if isComparison(op) && !returnBool {
 		// `up > 0.5` — keep all columns, filter on the comparison.
+		inner = mixedRowsFloatOnly(inner)
 		return &chplan.Filter{Input: inner, Predicate: opExpr}, nil
 	}
 
