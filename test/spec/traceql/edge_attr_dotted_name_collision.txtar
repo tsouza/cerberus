@@ -11,16 +11,21 @@ SELECT * FROM `otel_traces` WHERE (if(mapContains(`SpanAttributes`, ?), `SpanAtt
 CREATE TABLE otel_traces (
     Duration UInt64,
     SpanName String,
-    SpanAttributes Map(String, String) MATERIALIZED if(Duration = 10000000, map('name', 'checkout'), if(Duration = 20000000, map('name', 'billing'), map()))
+    SpanAttributes Map(String, String) MATERIALIZED if(Duration = 10000000, map('name', 'checkout'), if(Duration = 20000000, map('name', 'billing'), map())),
+    TraceId String,
+    SpanId String
 ) ENGINE = MergeTree ORDER BY Duration;
-INSERT INTO otel_traces (Duration, SpanName) VALUES
-    (10000000, 'checkout-span'),
-    (20000000, 'billing-span'),
-    (30000000, 'other-span');
+INSERT INTO otel_traces (Duration, SpanName, TraceId, SpanId) VALUES
+    (10000000, 'checkout-span', 'a0000000000000000000000000000001', '0000000000000001'),
+    (20000000, 'billing-span', 'a0000000000000000000000000000001', '0000000000000002'),
+    (30000000, 'other-span', 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
-  ["checkout-span", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 10000000]
+  ["checkout-span", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 10000000]
 ]
 -- chplan --
 Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "name"), SpanAttributes["name"], ResourceAttributes["name"]) = "checkout")
   Scan(otel_traces)
+-- parity_exempt --
+reason: oracle-untyped-attributes
+detail: `{ .name = "checkout" }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

@@ -41,6 +41,19 @@ const (
 	// classic-histogram across-series bucket-merge cost ceiling. See that
 	// constant's own doc for the calibration the shipped default protects.
 	EnvClassicBucketMergeMaxCostUnits = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS"
+
+	// EnvExpHistogramWindowMaxCostUnits overrides the
+	// samples-per-series-per-window pre-rejection's ceiling
+	// (exp_histogram_window_sample_bound.go, cerberus issue #3252).
+	//
+	// Unlike the two above it has no fixed default: unset, the ceiling is
+	// DERIVED from CERBERUS_CH_QUERY_MAX_MEMORY by
+	// [ExpHistogramWindowCostUnitsForMemory], because the units count a
+	// proxy for BYTES and the byte ceiling is itself configurable — the
+	// same reasoning CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS
+	// carries. Setting a positive value pins it and opts out of the
+	// derivation.
+	EnvExpHistogramWindowMaxCostUnits = "CERBERUS_PROMQL_EXP_HISTOGRAM_WINDOW_MAX_COST_UNITS"
 )
 
 // ResourceBounds carries the operator-tunable cost ceilings for promql's
@@ -69,6 +82,23 @@ type ResourceBounds struct {
 	// maxClassicBucketMergeCostUnits — see that constant's own doc for the
 	// real-ClickHouse calibration behind the default.
 	ClassicBucketMergeMaxCostUnits int64
+
+	// ExpHistogramWindowMaxCostUnits bounds `S x W x (S + W)` for one
+	// exponential-histogram window group — S samples, W widest stored
+	// bucket array — as a pre-rejection above the reduction that builds
+	// the window's arrays (exp_histogram_window_sample_bound.go, cerberus
+	// issue #3252). Its default is not a constant: [withDefaults] derives
+	// it from [ResourceBounds.CHQueryMaxMemory], which the boot path fills
+	// from CERBERUS_CH_QUERY_MAX_MEMORY.
+	ExpHistogramWindowMaxCostUnits int64
+
+	// CHQueryMaxMemory is the ClickHouse per-query memory cap the
+	// deployment stamps, in bytes, and it is an INPUT to this struct
+	// rather than a bound of its own: it is what
+	// ExpHistogramWindowMaxCostUnits is derived from when no explicit
+	// override is set. Zero means the deployment stamps no cap, which
+	// [ExpHistogramWindowCostUnitsForMemory] answers for.
+	CHQueryMaxMemory int64
 }
 
 // DefaultResourceBounds returns the shipped, load-bearing defaults —
@@ -100,6 +130,10 @@ func (b ResourceBounds) withDefaults() ResourceBounds {
 	if b.ClassicBucketMergeMaxCostUnits == 0 {
 		b.ClassicBucketMergeMaxCostUnits = def.ClassicBucketMergeMaxCostUnits
 	}
+	if b.ExpHistogramWindowMaxCostUnits == 0 {
+		// Derived, not defaulted: see [EnvExpHistogramWindowMaxCostUnits].
+		b.ExpHistogramWindowMaxCostUnits = ExpHistogramWindowCostUnitsForMemory(b.CHQueryMaxMemory)
+	}
 	return b
 }
 
@@ -118,6 +152,11 @@ func ResourceBoundsFromEnv() (ResourceBounds, error) {
 		return ResourceBounds{}, err
 	}
 	if cfg.ClassicBucketMergeMaxCostUnits, err = envInt64(EnvClassicBucketMergeMaxCostUnits, cfg.ClassicBucketMergeMaxCostUnits); err != nil {
+		return ResourceBounds{}, err
+	}
+	// Left at 0 unless explicitly pinned: [withDefaults] derives it from
+	// CHQueryMaxMemory, which the caller fills from the loaded config.
+	if cfg.ExpHistogramWindowMaxCostUnits, err = envInt64(EnvExpHistogramWindowMaxCostUnits, 0); err != nil {
 		return ResourceBounds{}, err
 	}
 	return cfg, nil

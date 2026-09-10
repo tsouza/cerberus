@@ -8,13 +8,21 @@ SELECT * FROM `otel_traces` WHERE arrayExists(x -> match(x[?], ?), `Events`.`Att
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
-    `Events.Attributes` Array(Map(String, String)) MATERIALIZED if(_idx = 0, [map('exception.message', 'db timeout after 5s')], [map('exception.message', 'connection refused')])
+    `Events.Attributes` Array(Map(String, String)) MATERIALIZED if(_idx = 0, [map('exception.message', 'db timeout after 5s')], [map('exception.message', 'connection refused')]),
+    TraceId String,
+    SpanId String
 ) ENGINE = MergeTree ORDER BY _idx;
-INSERT INTO otel_traces (_idx) VALUES (0), (1);
+INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
+    (0, 'a0000000000000000000000000000001', '0000000000000001'),
+    (1, 'a0000000000000000000000000000001', '0000000000000002');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=nestedArrayExists(Events.Attributes["exception.message"] =~ ".*timeout.*")
   Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

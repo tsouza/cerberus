@@ -18,3 +18,7 @@ Project [FnCast(FnMap(), "Map(String,String)") AS ResourceAttributes, 42 AS Valu
   OneRow
 -- sql --
 SELECT CAST(map(), ?) AS `ResourceAttributes`, toFloat64(?) AS `Value` FROM (SELECT 1)
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full

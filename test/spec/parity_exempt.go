@@ -5,9 +5,16 @@
 // is either enrolled against a real reference engine (`parity:`) or it
 // declares, in a reviewed and closed vocabulary, structurally WHY it
 // cannot be — never neither. test/regression's
-// TestPromQLParityCoverageIsComplete is what enforces the "never neither"
+// TestParityCoverageIsComplete is what enforces the "never neither"
 // half; this file is what keeps the declared reason honest rather than a
 // free-form excuse.
+//
+// What nothing yet re-checks is whether a declared reason is still TRUE.
+// Three of the reasons below name a gap that will be closed rather than a
+// permanent boundary, so their fixtures become enrollable the day the gap
+// lands, and today that transition is invisible. #3261 tracks the check
+// that would catch it: run every exempt fixture against its oracle and
+// fail if the oracle agrees.
 //
 // # Why a new section rather than a new value inside `parity:`
 //
@@ -22,7 +29,7 @@
 // required, some aren't" ambiguity LoadParity's error path exists to
 // prevent — or force meaningless placeholder values onto every exemption.
 // A separate section, mutually exclusive with `parity:` (enforced by
-// TestPromQLParityCoverageIsComplete), keeps both shapes simple and keeps
+// TestParityCoverageIsComplete), keeps both shapes simple and keeps
 // LoadParity's "every key required" invariant intact for the shape it was
 // built for.
 //
@@ -254,7 +261,7 @@ const (
 	// decides the answer outright. Where the two disagree they disagree
 	// about what was READ, not about the query.
 	//
-	// Two shapes fall in this class:
+	// Four shapes fall in this class:
 	//
 	//   - `search_window:` and `search_limit:`, which bound which rows
 	//     cerberus reads and how many it returns. Upstream applies both
@@ -271,6 +278,38 @@ const (
 	//     engine, having no fetch layer, returns the logically correct
 	//     answer instead — so the oracle and the endpoint disagree, and
 	//     cerberus matches the endpoint, which is the contract it ships.
+	//
+	//   - `<attribute> = nil`, whose answer upstream produces with the
+	//     fetch layer and the pipeline acting as two halves of ONE
+	//     mechanism. The grammar rewrites `= nil` to the unary
+	//     `OpNotExists` (Tempo's expr.y), and that operator does not test
+	//     for a nil Static — ast_execute.go compares the resolved value
+	//     against the Static STRING "nil". The sentinel is written by the
+	//     FETCH layer: vparquet4's block_traceql.go turns an OpNotExists
+	//     condition into a key-absence iterator
+	//     (NewIncludeNilStringEqualPredicate + NilSyncIterator) and its
+	//     collector materialises the absent key as NewStaticString("nil").
+	//     An in-process engine handed hand-built spans holds only the
+	//     second half, so the sentinel is never written and `= nil`
+	//     matches nothing at all — not even the spans that genuinely lack
+	//     the attribute. Cerberus answers those spans, which is what real
+	//     `/api/search` answers; upstream's own
+	//     TestBackendNilKeyBlockSearchTraceQL pins that through Fetch.
+	//     The mirror-image `!= nil` is OpExists, which reads the Static's
+	//     type directly and needs no fetch-layer cooperation, so those
+	//     fixtures ARE enrolled and pass.
+	//
+	//   - a span carrying MORE THAN ONE event or more than one link.
+	//     vparquet4 decodes every event's attributes into one flat
+	//     `event.` scope and every link's into one flat `link.` scope, and
+	//     per-record matching is the fetch layer's iterator join, not the
+	//     pipeline's. With two events the flat scope can hold one key
+	//     twice, AttributeFor answers with whichever came first, and the
+	//     in-process oracle would report a confident wrong answer where
+	//     real Tempo matches on the other event.
+	//     test/spec/parityoracle/traceql's validateChildRecords refuses
+	//     that span outright rather than guessing, for the same reason
+	//     rejectNarrowingSections refuses the first shape.
 	//
 	// This is NOT a reason for an ordinary disagreement about a query
 	// both layers evaluate the same way. It requires a NAMED mechanism
@@ -330,12 +369,50 @@ const (
 	// models.
 	//
 	// Unlike the other reasons in this file, this one names a gap that
-	// COULD be closed — by carrying ClickHouse's declared column types
-	// through to a typed static instead of flattening every attribute to
-	// a string. It is recorded on #3183 so the gap is tracked rather
-	// than absorbed, and a fixture wearing this reason becomes
+	// COULD be closed — by carrying an OTel attribute's ORIGINAL type
+	// through the OTel-CH encoding, so that a Map(String, String) value
+	// of '200' reaches the engine as the integer it was before the
+	// exporter stringified it. Nothing in the column records that, which
+	// is why the gap is open rather than merely unimplemented. It is
+	// tracked on #3259, and a fixture wearing this reason becomes
 	// enrollable the day that lands.
 	ReasonOracleUntypedAttributes = "oracle-untyped-attributes"
+
+	// ReasonReferenceIntrinsicUnsupported covers a fixture whose query
+	// uses an intrinsic the reference engine itself does not implement.
+	// Upstream Tempo's evaluator rejects `parent` outright — "intrinsic
+	// (parent) not yet supported" — so there is no reference answer for
+	// cerberus to agree with, whatever it does.
+	//
+	// This is the opposite of ReasonNoComparableOracle, and the two must
+	// not be confused: that one names a gap in RunParity's own dispatch
+	// table, where the upstream endpoint exists and this harness cannot
+	// reach it. Here the harness reaches the engine perfectly well and
+	// the ENGINE declines.
+	//
+	// It is also not ReasonReferenceFetchLayer: nothing outside the
+	// pipeline supplies the answer, because there is no answer.
+	ReasonReferenceIntrinsicUnsupported = "reference-intrinsic-unsupported"
+
+	// ReasonReferencePipelineError covers a LogQL fixture whose seed
+	// deliberately provokes a PIPELINE ERROR — a line the unwrap stage
+	// cannot parse, say — in order to pin how that failure is carried.
+	//
+	// The two engines carry it at different layers. Upstream aborts the
+	// whole query and answers with an error, so there are no samples to
+	// compare. Cerberus carries the failure as data: the offending series
+	// comes back as a zero-valued row wearing `__error__` and
+	// `__error_details__` labels, and internal/api/loki's
+	// pipelineErrorFor turns that row into the same error RESPONSE at the
+	// HTTP layer. The two therefore agree on the wire and differ only in
+	// the row layer this comparator reads, which is the one layer where
+	// the fixture's contract lives.
+	//
+	// This is NOT a reason for a fixture that merely happens to produce
+	// an error the harness finds inconvenient. It requires the error to
+	// be the fixture's OWN subject, visible as an `__error__` label in
+	// its `expected_rows:`.
+	ReasonReferencePipelineError = "reference-pipeline-error"
 )
 
 // parityExemptReasons is the single source of truth for the `reason`
@@ -355,6 +432,8 @@ var parityExemptReasons = []string{
 	ReasonEmittedSQLOnly,
 	ReasonDuplicateSpanSeed,
 	ReasonOracleUntypedAttributes,
+	ReasonReferenceIntrinsicUnsupported,
+	ReasonReferencePipelineError,
 }
 
 // ParityExemptReasons returns the accepted `reason` values, sorted.
@@ -379,7 +458,7 @@ type ParityExempt struct {
 //
 // The bool reports whether the fixture declared an exemption at all. A
 // fixture with neither this section nor `parity:` is not caught here —
-// see TestPromQLParityCoverageIsComplete, the sibling check that makes
+// see TestParityCoverageIsComplete, the sibling check that makes
 // "neither" a failure.
 //
 // A fixture WITH the section but a malformed body IS an error, for the

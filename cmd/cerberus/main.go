@@ -149,7 +149,17 @@ type apiHeads struct {
 // fail-fast contract as buildSolver's own solver.ConfigFromEnv() above: a
 // typo'd or non-positive override aborts startup rather than silently falling
 // back.
-func resolveBoundOverrides() (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
+//
+// chQueryMaxMemory is the loaded ClickHouse per-query memory cap. It is not
+// itself a bound: it is the byte budget cerberus issue #3252's
+// samples-per-series-per-window ceiling is DERIVED from when no explicit
+// override pins it, in the same sentinel-0 shape
+// CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS already uses. Passing
+// it here rather than re-reading the env keeps ONE resolution of the cap —
+// the loader's, which also applies the nested-YAML alias and the byte-size
+// suffix parsing — feeding both the setting cerberus stamps and the bound it
+// sizes against.
+func resolveBoundOverrides(chQueryMaxMemory int64) (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
 	resourceBounds, err := engine.ResourceBoundsFromEnv()
 	if err != nil {
 		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
@@ -158,6 +168,7 @@ func resolveBoundOverrides() (engine.ResourceBoundOverrides, promql.ResourceBoun
 	if err != nil {
 		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
 	}
+	promResourceBounds.CHQueryMaxMemory = chQueryMaxMemory
 	return resourceBounds, promResourceBounds, nil
 }
 
@@ -597,7 +608,7 @@ func run() error {
 	// (one process = one OOM kills all heads today). The Tempo gRPC server is
 	// likewise nil when tempo is off. /healthz + /readyz are mounted below,
 	// unconditionally, in every mode.
-	resourceBounds, promResourceBounds, err := resolveBoundOverrides()
+	resourceBounds, promResourceBounds, err := resolveBoundOverrides(cfg.ClickHouse.MaxQueryMemoryBytes)
 	if err != nil {
 		return err
 	}

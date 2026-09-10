@@ -1492,6 +1492,16 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chsql.RangeBucketGridNativeDensityBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
+	// Cerberus issue #3252's samples-per-series-per-window pre-rejection
+	// (internal/promql's exp_histogram_window_sample_bound.go). Same wire
+	// contract as every arm above: a 422 naming cerberus's own axis, not a
+	// 502 blaming ClickHouse for a limit cerberus chose.
+	case throwIfMessageMatches(err, chplan.ExpHistogramWindowSampleBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.ExpHistogramWindowSampleBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
 	}
 	return nil
 }

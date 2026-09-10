@@ -19,16 +19,17 @@ this fixture fails on both an over- and an under-selective negation.
 -- seed --
 CREATE TABLE otel_traces (
     SpanId String,
-    SpanKind String
+    SpanKind String,
+    TraceId String
 ) ENGINE = MergeTree ORDER BY SpanId;
-INSERT INTO otel_traces (SpanId, SpanKind) VALUES
-    ('aaaa', 'Server'),
-    ('bbbb', 'Client'),
-    ('cccc', 'Internal'),
-    ('dddd', 'Producer');
+INSERT INTO otel_traces (SpanId, SpanKind, TraceId) VALUES
+    ('aaaa', 'Server', 'a0000000000000000000000000000001'),
+    ('bbbb', 'Client', 'a0000000000000000000000000000001'),
+    ('cccc', 'Internal', 'a0000000000000000000000000000001'),
+    ('dddd', 'Producer', 'a0000000000000000000000000000001');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "cccc", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "cccc", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- args --
 [0] string = "Producer"
@@ -39,3 +40,7 @@ Filter predicate=((SpanKind != "Producer") AND FnNot(((SpanKind = "Server") OR (
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` PREWHERE (`SpanKind` != ?) WHERE not(((`SpanKind` = ?) OR (`SpanKind` = ?)))
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

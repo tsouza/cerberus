@@ -19,3 +19,6 @@ INSERT INTO otel_traces VALUES
 -- chplan --
 Filter predicate=(ParentSpanId = "fedcba9876543210")
   Scan(otel_traces)
+-- parity_exempt --
+reason: reference-intrinsic-unsupported
+detail: `{ parent = "fedcba9876543210" }` reads the `parent` intrinsic, which upstream's own evaluator rejects with "intrinsic (parent) not yet supported"

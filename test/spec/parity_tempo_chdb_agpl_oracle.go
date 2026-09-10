@@ -151,6 +151,18 @@ func attrsColumn(name string) spanColumn {
 	}
 }
 
+// arrayColumn reads one of OTel-CH's nested `Events.*` / `Links.*` array
+// columns. Like attrsColumn it goes through toJSONString, because that is
+// the one projection whose result shape does not depend on the element
+// type the seed happened to declare.
+func arrayColumn(name string) spanColumn {
+	return spanColumn{
+		name:    name,
+		missing: "'[]'",
+		read:    func(string) string { return "toJSONString(" + quotedIdent(name) + ")" },
+	}
+}
+
 // spanColumns is the projection, in the order scanSpanRows reads it.
 var spanColumns = []spanColumn{
 	stringColumn("TraceId"),
@@ -182,6 +194,13 @@ var spanColumns = []spanColumn{
 	},
 	attrsColumn("ResourceAttributes"),
 	attrsColumn("SpanAttributes"),
+	stringColumn("ScopeName"),
+	stringColumn("ScopeVersion"),
+	arrayColumn("Events.Name"),
+	arrayColumn("Events.Attributes"),
+	arrayColumn("Links.TraceId"),
+	arrayColumn("Links.SpanId"),
+	arrayColumn("Links.Attributes"),
 }
 
 // readSeededSpans reads the seeded rows back OUT of chDB and turns them
@@ -267,12 +286,16 @@ func scanSpanRows(rows *sql.Rows) ([]oracle.Span, error) {
 			s                      oracle.Span
 			durationNanos, startNs int64
 			resourceJSON, spanJSON string
+			nested                 nestedJSON
 		)
 		if err := rows.Scan(
 			&s.TraceID, &s.SpanID, &s.ParentSpanID,
 			&s.Name, &s.Kind, &s.StatusCode, &s.StatusMessage, &s.ServiceName,
 			&durationNanos, &startNs,
 			&resourceJSON, &spanJSON,
+			&s.ScopeName, &s.ScopeVersion,
+			&nested.eventNames, &nested.eventAttrs,
+			&nested.linkTraceIDs, &nested.linkSpanIDs, &nested.linkAttrs,
 		); err != nil {
 			return nil, fmt.Errorf("scan %s row: %w", tracesTable, err)
 		}
@@ -297,19 +320,151 @@ func scanSpanRows(rows *sql.Rows) ([]oracle.Span, error) {
 		if s.SpanAttrs, err = decodeAttrsJSON(spanJSON); err != nil {
 			return nil, fmt.Errorf("span %s SpanAttributes: %w", s.SpanID, err)
 		}
+		if s.Events, s.Links, err = nested.decode(); err != nil {
+			return nil, fmt.Errorf("span %s nested records: %w", s.SpanID, err)
+		}
 		out = append(out, s)
 	}
 	return out, nil
 }
 
+// nestedJSON is the five `Events.*` / `Links.*` columns as
+// [readSeededSpans] projected them: each a JSON array, one element per
+// child record. OTel-CH models events and links as PARALLEL arrays rather
+// than as an array of structs, so the name at index i and the attribute
+// map at index i belong to the same event.
+type nestedJSON struct {
+	eventNames   string
+	eventAttrs   string
+	linkTraceIDs string
+	linkSpanIDs  string
+	linkAttrs    string
+}
+
+// decode zips the parallel arrays back into records.
+//
+// The arrays are allowed to be of DIFFERENT lengths, and that is not
+// laxity: a fixture seeds only the columns its own query reads, so a
+// `{ event:name = "x" }` fixture declares `Events.Name` and no
+// `Events.Attributes` at all. The record count is therefore the longest
+// array, and a record a shorter array does not reach takes that field's
+// zero value — the same reading the absent column itself would have
+// given.
+func (n nestedJSON) decode() ([]oracle.Event, []oracle.Link, error) {
+	eventNames, err := decodeStringArrayJSON(n.eventNames)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Events.Name: %w", err)
+	}
+	eventAttrs, err := decodeAttrsArrayJSON(n.eventAttrs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Events.Attributes: %w", err)
+	}
+	linkTraceIDs, err := decodeStringArrayJSON(n.linkTraceIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Links.TraceId: %w", err)
+	}
+	linkSpanIDs, err := decodeStringArrayJSON(n.linkSpanIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Links.SpanId: %w", err)
+	}
+	linkAttrs, err := decodeAttrsArrayJSON(n.linkAttrs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Links.Attributes: %w", err)
+	}
+
+	events := make([]oracle.Event, 0, max(len(eventNames), len(eventAttrs)))
+	for i := range max(len(eventNames), len(eventAttrs)) {
+		var e oracle.Event
+		if i < len(eventNames) {
+			e.Name = eventNames[i]
+		}
+		if i < len(eventAttrs) {
+			e.Attrs = eventAttrs[i]
+		}
+		events = append(events, e)
+	}
+
+	linkCount := max(len(linkTraceIDs), max(len(linkSpanIDs), len(linkAttrs)))
+	links := make([]oracle.Link, 0, linkCount)
+	for i := range linkCount {
+		var l oracle.Link
+		if i < len(linkTraceIDs) {
+			l.TraceID = linkTraceIDs[i]
+		}
+		if i < len(linkSpanIDs) {
+			l.SpanID = linkSpanIDs[i]
+		}
+		if i < len(linkAttrs) {
+			l.Attrs = linkAttrs[i]
+		}
+		links = append(links, l)
+	}
+	return events, links, nil
+}
+
+func decodeStringArrayJSON(raw string) ([]string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "[]" {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return nil, fmt.Errorf("decode %q: %w", trimmed, err)
+	}
+	return out, nil
+}
+
+func decodeAttrsArrayJSON(raw string) ([]map[string]string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "[]" {
+		return nil, nil
+	}
+	var maps []json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &maps); err != nil {
+		return nil, fmt.Errorf("decode %q: %w", trimmed, err)
+	}
+	out := make([]map[string]string, 0, len(maps))
+	for _, m := range maps {
+		attrs, err := decodeAttrsJSON(string(m))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, attrs)
+	}
+	return out, nil
+}
+
+// decodeAttrsJSON reads one attribute map.
+//
+// A seed is free to declare Map(String, Int64) rather than OTel-CH's own
+// Map(String, String) — several corpus fixtures do, to model a schema
+// override — so a value arrives as a JSON number rather than a JSON
+// string. It is rendered with its own literal text, which is the reading
+// the package doc already commits to: "every attribute enters the engine
+// as a string, which is the honest reading of what the column holds".
+//
+// Rendering rather than erroring is deliberate. A typed literal on the
+// query side still will not match such an attribute, which is exactly
+// what ReasonOracleUntypedAttributes describes and what those fixtures
+// declare — but that is a comparison the oracle makes, visibly, rather
+// than a read it refuses.
 func decodeAttrsJSON(raw string) (map[string]string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == "{}" {
 		return nil, nil
 	}
-	attrs := map[string]string{}
-	if err := json.Unmarshal([]byte(trimmed), &attrs); err != nil {
+	scalars := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte(trimmed), &scalars); err != nil {
 		return nil, fmt.Errorf("decode %q: %w", trimmed, err)
+	}
+	attrs := make(map[string]string, len(scalars))
+	for k, v := range scalars {
+		text := string(v)
+		var str string
+		if err := json.Unmarshal(v, &str); err == nil {
+			text = str
+		}
+		attrs[k] = text
 	}
 	return attrs, nil
 }
