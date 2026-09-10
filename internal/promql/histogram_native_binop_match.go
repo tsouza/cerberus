@@ -135,6 +135,7 @@ func applyVectorMatchToHistogramOperand(hp chplan.Node, vm *parser.VectorMatchin
 	}
 
 	agg := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              hp,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
@@ -162,7 +163,7 @@ func applyVectorMatchToHistogramOperand(hp chplan.Node, vm *parser.VectorMatchin
 	// a same-name passthrough, matching how mergeTwoHistogramProjections
 	// / compareTwoHistogramProjections cap their own reshaped output.
 	return nativeHistogramProjection(
-		&chplan.Project{Input: agg, Projections: projs},
+		&chplan.Project{Roles: metricRoles(s), Input: agg, Projections: projs},
 		&chplan.ColumnRef{Name: s.MetricNameColumn},
 		&chplan.ColumnRef{Name: s.TimestampColumn},
 		histSchema,

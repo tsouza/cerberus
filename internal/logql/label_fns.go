@@ -74,6 +74,7 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 	// and the Attributes alias makes the output recognisably
 	// Sample-shaped for Lang.ProjectSamples / enclosing binops.
 	return &chplan.Project{
+		Roles: logRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: cols.metricName, Alias: sampleMetricNameCol},

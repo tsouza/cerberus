@@ -72,6 +72,7 @@ func lowerVector(e *syntax.VectorExpr, s schema.Logs) (chplan.Node, error) {
 // the LogQL surface uses.
 func syntheticLogScalar(valueExpr chplan.Expr, s schema.Logs) chplan.Node {
 	return &chplan.Project{
+		Roles: logRoles(s),
 		Input: &chplan.OneRow{},
 		Projections: []chplan.Projection{
 			{Expr: emptyAttrsMap(), Alias: s.ResourceAttributesColumn},

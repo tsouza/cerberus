@@ -211,7 +211,7 @@ func mergeTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorMat
 			Alias: histSchema.TimestampColumn,
 		})
 	}
-	staged := &chplan.Project{Input: join, Projections: stage1}
+	staged := &chplan.Project{Roles: metricRoles(s), Input: join, Projections: stage1}
 
 	// The identical unbounded arrayMap(range(mergedLength), ...) bucket
 	// ladder [histogramBinopMergeProjections] is about to fold below needs
@@ -230,7 +230,7 @@ func mergeTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorMat
 
 	projs := []chplan.Projection{{Expr: &chplan.ColumnRef{Name: histSchema.AttributesColumn}, Alias: histSchema.AttributesColumn}}
 	projs = append(projs, histogramBinopMergeProjections(histSchema)...)
-	reshaped := &chplan.Project{Input: guarded, Projections: projs}
+	reshaped := &chplan.Project{Roles: metricRoles(s), Input: guarded, Projections: projs}
 
 	tsExpr := chplan.Expr(chplan.NowNano())
 	if stepAligned {
@@ -320,7 +320,7 @@ func compareTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorM
 			chplan.Projection{Expr: &chplan.LitString{V: ""}, Alias: histSchema.MetricNameColumn},
 			chplan.Projection{Expr: valueExpr, Alias: histSchema.ValueColumn},
 		)
-		return &chplan.Project{Input: join, Projections: projs}
+		return &chplan.Project{Roles: metricRoles(s), Input: join, Projections: projs}
 	}
 
 	// Non-bool structural filter: only matching (`==`) or mismatching
@@ -337,7 +337,7 @@ func compareTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorM
 		})
 	}
 	projs = append(projs, histogramCompareOutputProjectionsCard(histSchema)...)
-	staged := &chplan.Project{Input: filtered, Projections: projs}
+	staged := &chplan.Project{Roles: metricRoles(s), Input: filtered, Projections: projs}
 
 	nameExpr := chplan.Expr(&chplan.ColumnRef{Name: histSchema.MetricNameColumn})
 	tsExpr := chplan.Expr(chplan.NowNano())

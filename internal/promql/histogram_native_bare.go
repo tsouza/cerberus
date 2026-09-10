@@ -134,7 +134,7 @@ func bareExpHistogramNameExpr(s schema.Metrics) chplan.Expr {
 // lowerHistogramQuantileNative's own input rung apart from the wider
 // aggregate list — see [nativeExpHistBareAggs].
 func expHistogramBareLatest(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
@@ -154,7 +154,7 @@ func expHistogramBareLatest(vs *parser.VectorSelector, s schema.Metrics, ctx low
 // quantile node. The timestamp comes from the fan-out's anchor column,
 // so each step reports at its own grid time.
 func lowerExpHistogramBareRange(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	fanout := buildHistogramBucketFanout(
 		scan, pred, nil, windowFor(vs, instantLookback),
@@ -272,7 +272,7 @@ func lowerExpHistogramBareMatrix(ms *parser.MatrixSelector, vs *parser.VectorSel
 	pred := andExpr(buildPredicate(vs.LabelMatchers, s), timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
 
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	var input chplan.Node = scan
 	if pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}

@@ -419,11 +419,13 @@ func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.
 		}
 		projections = append(projections, chplan.Projection{Expr: newValue, Alias: s.ValueColumn})
 		return &chplan.Project{
+			Roles:       metricRoles(s),
 			Input:       inner,
 			Projections: projections,
 		}
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

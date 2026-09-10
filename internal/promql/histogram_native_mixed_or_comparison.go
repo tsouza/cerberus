@@ -137,6 +137,7 @@ func lowerComparisonOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chpl
 	if !returnBool {
 		filtered := &chplan.Filter{Input: floatRowsOnly, Predicate: predicate}
 		return &chplan.Project{
+			Roles: metricRoles(s),
 			Input: filtered,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -149,6 +150,7 @@ func lowerComparisonOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chpl
 
 	newValue := &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{predicate}}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: floatRowsOnly,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

@@ -1023,6 +1023,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
 	}
 	group := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
@@ -1190,7 +1191,8 @@ func classicBucketWindowReshape(
 	)
 
 	return &chplan.Project{
-		Input:       &chplan.Project{Input: group, Projections: ladder},
+		Roles:       metricRoles(s),
+		Input:       &chplan.Project{Roles: metricRoles(s), Input: group, Projections: ladder},
 		Projections: counts,
 	}
 }

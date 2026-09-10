@@ -467,6 +467,7 @@ func logSampleColumns(inner chplan.Node, s schema.Logs) logSampleShape {
 func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.Expr) chplan.Node {
 	cols := logSampleColumns(inner, s)
 	return &chplan.Project{
+		Roles: logRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: cols.metricName, Alias: "MetricName"},
@@ -499,6 +500,7 @@ func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.
 func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) chplan.Node {
 	cols := logSampleColumns(inner, s)
 	return &chplan.Project{
+		Roles: logRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: cols.metricName, Alias: "MetricName"},

@@ -298,6 +298,7 @@ func mergeTwoHistogramProjections(hpL, hpR chplan.Node, s schema.Metrics, ctx lo
 	}
 
 	merged := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              &chplan.UnionAll{Inputs: []chplan.Node{hpL, hpR}},
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
@@ -307,7 +308,7 @@ func mergeTwoHistogramProjections(hpL, hpR chplan.Node, s schema.Metrics, ctx lo
 	}
 	projs = append(projs, chplan.Projection{Expr: attrsRebuild, Alias: histSchema.AttributesColumn})
 	projs = append(projs, histogramBinopMergeProjections(histSchema)...)
-	reshaped := &chplan.Project{Input: merged, Projections: projs}
+	reshaped := &chplan.Project{Roles: metricRoles(s), Input: merged, Projections: projs}
 
 	tsExpr := chplan.Expr(chplan.NowNano())
 	if stepAligned {

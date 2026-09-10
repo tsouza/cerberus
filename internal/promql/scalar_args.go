@@ -275,6 +275,7 @@ func lowerScalarTopLevel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 // NaN, not a 5xx.
 func scalarValuePlan(input chplan.Node, s schema.Metrics) chplan.Node {
 	agg := &chplan.Aggregate{
+		Roles: metricRoles(s),
 		Input: input,
 		AggFuncs: []chplan.AggFunc{
 			{Fn: chplan.FnCount, Args: nil, Alias: scalarCountAlias},
@@ -283,6 +284,7 @@ func scalarValuePlan(input chplan.Node, s schema.Metrics) chplan.Node {
 		DropEmptyOnNoGroup: false,
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{
@@ -340,6 +342,7 @@ func scalarValuePlan(input chplan.Node, s schema.Metrics) chplan.Node {
 // on the mapFromArrays projection for why the obvious spelling is inert.
 func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 	perStep := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          input,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 		GroupByAliases: []string{s.TimestampColumn},
@@ -349,6 +352,7 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 		},
 	}
 	keyed := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: perStep,
 		Projections: []chplan.Projection{
 			{
@@ -376,6 +380,7 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 		},
 	}
 	folded := &chplan.Aggregate{
+		Roles: metricRoles(s),
 		Input: keyed,
 		AggFuncs: []chplan.AggFunc{
 			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: scalarStepKeyAlias}}, Alias: scalarStepKeysAlias},
@@ -384,6 +389,7 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 		DropEmptyOnNoGroup: false,
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: folded,
 		Projections: []chplan.Projection{
 			{

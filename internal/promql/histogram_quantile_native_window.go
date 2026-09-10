@@ -471,6 +471,7 @@ func expHistogramWindowReshape(
 		})
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: append(
 			projs,
@@ -515,6 +516,7 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 	// this series' own window-folded Count and Sum rather than a
 	// bucket-derived total.
 	group := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},

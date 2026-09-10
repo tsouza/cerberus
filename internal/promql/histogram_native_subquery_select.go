@@ -266,6 +266,7 @@ func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.M
 	groupBy, aliases := selectFnSubqueryKey(windowFn, s)
 	reduce := func(aggs []chplan.AggFunc) chplan.Node {
 		return selectFnSubqueryNameGuard(windowFn, &chplan.Aggregate{
+			Roles:              metricRoles(s),
 			Input:              input,
 			GroupBy:            groupBy,
 			GroupByAliases:     aliases,

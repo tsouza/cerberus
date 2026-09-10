@@ -116,6 +116,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 
 	const cntAlias = "_cerb_n"
 	agg := &chplan.Aggregate{
+		Roles:   metricRoles(s),
 		Input:   inner,
 		GroupBy: nil,
 		AggFuncs: []chplan.AggFunc{{
@@ -177,6 +178,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// (`*float64`) Scan would error with `converting UInt8 to
 	// *float64 is unsupported`.
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: onlyEmpty,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -350,11 +352,12 @@ func lowerAbsencePresenceSelector(vs *parser.VectorSelector, s schema.Metrics, c
 		return lowerVectorSelector(vs, s, ctx)
 	}
 
-	var input chplan.Node = &chplan.Scan{Table: s.ExpHistogramTable}
+	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	if pred := buildPredicate(vs.LabelMatchers, s); pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
@@ -382,6 +385,7 @@ func wrapAbsentOverTimeAtBroadcast(a *chplan.AbsentOverTime, ctx lowerCtx, s sch
 	grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 	joined := &chplan.CrossJoin{Left: grid, Right: a}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: joined,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},

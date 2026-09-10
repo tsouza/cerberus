@@ -248,6 +248,7 @@ func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	}
 
 	return &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          inner,
 		GroupBy:        groupBy,
 		GroupByAliases: aliases,
@@ -361,6 +362,7 @@ func guardNameDropCollisionByTagGroup(inner chplan.Node, s schema.Metrics, ctx l
 	}
 
 	aggregate := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          inner,
 		GroupBy:        groupBy,
 		GroupByAliases: aliases,
@@ -381,7 +383,7 @@ func guardNameDropCollisionByTagGroup(inner chplan.Node, s schema.Metrics, ctx l
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}})
 	}
 
-	return &chplan.Project{Input: aggregate, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: aggregate, Projections: projections}
 }
 
 // collidesOnNameDrop reports whether dropping `__name__` from `inner` can
@@ -541,6 +543,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 	}
 
 	guarded := chplan.Node(&chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          rewritten,
 		GroupBy:        groupBy,
 		GroupByAliases: aliases,
@@ -560,6 +563,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 		// discriminator are still live output columns, not scaffolding the
 		// guard consumed.
 		return &chplan.Project{
+			Roles:       metricRoles(s),
 			Input:       guarded,
 			Projections: mixedSampleProjections(s, &chplan.ColumnRef{Name: s.AttributesColumn}),
 		}
@@ -569,6 +573,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 	// MetricName over the name `label_replace` deliberately preserved.
 	// Naming all four canonical outputs restores the classification.
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: guarded,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},

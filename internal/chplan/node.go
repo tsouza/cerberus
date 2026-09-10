@@ -17,6 +17,10 @@ type Node interface {
 	// Equal reports structural equality with another Node, recursively. Used
 	// by optimizer rule tests to compare before/after plans.
 	Equal(Node) bool
+
+	// RowType describes the columns this node publishes, independently of
+	// RowShapeOf's historical forwarder contract.
+	RowType() Schema
 }
 
 // Walk visits n and every node reachable from it in depth-first pre-order.

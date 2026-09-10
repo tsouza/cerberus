@@ -271,6 +271,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 			tsExpr = chplan.NowNanoMinusStaleness()
 		}
 		return &chplan.Project{
+			Roles: logSampleRoles(),
 			Input: plan,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.LitString{V: ""}, Alias: sampleMetricNameCol},
@@ -374,6 +375,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		})
 	}
 	return &chplan.Project{
+		Roles:       logSampleRoles(),
 		Input:       plan,
 		Projections: projections,
 	}

@@ -403,6 +403,7 @@ func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 // #2667), passed straight through to [histogramBinopBucketWidthBudgetGuardExpr].
 func lowerMixedVVAdditiveArithmetic(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics, maxCostUnits int64) chplan.Node {
 	mergeInputs := &chplan.Project{
+		Roles:       metricRoles(s),
 		Input:       join,
 		Projections: mixedVVHistMergeInputProjections(op, s),
 	}
@@ -435,7 +436,7 @@ func lowerMixedVVAdditiveArithmetic(join *chplan.MixedVectorJoin, op chplan.Bina
 		Alias: mixedDiscriminatorColumn,
 	})
 
-	return &chplan.Project{Input: filtered, Projections: projs}
+	return &chplan.Project{Roles: metricRoles(s), Input: filtered, Projections: projs}
 }
 
 // mixedVVMergedZeroThresholdAlias names the intermediate merged
@@ -700,7 +701,7 @@ func lowerMixedVVScaledArithmetic(join *chplan.MixedVectorJoin, op chplan.Binary
 
 	projs = append(projs, chplan.Projection{Expr: discExpr, Alias: mixedDiscriminatorColumn})
 
-	return &chplan.Project{Input: filtered, Projections: projs}
+	return &chplan.Project{Roles: metricRoles(s), Input: filtered, Projections: projs}
 }
 
 // mixedVVFlipSource picks, per row, which side's field value feeds a
@@ -780,5 +781,5 @@ func lowerMixedVVFloatOnlyArithmetic(join *chplan.MixedVectorJoin, op chplan.Bin
 		Alias: mixedDiscriminatorColumn,
 	})
 
-	return &chplan.Project{Input: filtered, Projections: projs}
+	return &chplan.Project{Roles: metricRoles(s), Input: filtered, Projections: projs}
 }

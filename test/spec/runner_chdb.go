@@ -466,6 +466,7 @@ func runRoundTripSQL(
 	result := RoundTripResult{
 		fixtureName:       c.Name,
 		projectionColumns: append([]string(nil), cols...),
+		tableColumns:      testsql.SeedTableColumns(rt.Seed),
 		seeded:            true,
 	}
 

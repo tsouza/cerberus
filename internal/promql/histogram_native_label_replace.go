@@ -115,7 +115,7 @@ func rewriteHistogramProjectionAttributes(inner chplan.Node, attrs chplan.Expr, 
 	for _, name := range histogramProjectionOutputColumns() {
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}})
 	}
-	rewritten := &chplan.Project{Input: inner, Projections: projections}
+	rewritten := &chplan.Project{Roles: metricRoles(s), Input: inner, Projections: projections}
 
 	aggs := []chplan.AggFunc{
 		{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: s.ValueColumn},
@@ -126,6 +126,7 @@ func rewriteHistogramProjectionAttributes(inner chplan.Node, attrs chplan.Expr, 
 		})
 	}
 	guarded := &chplan.Aggregate{
+		Roles: metricRoles(s),
 		Input: rewritten,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.MetricNameColumn},

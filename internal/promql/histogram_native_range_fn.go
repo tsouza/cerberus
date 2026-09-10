@@ -464,7 +464,7 @@ func lowerExpHistogramRangeFn(shape histogramAggShape, s schema.Metrics, ctx low
 // Filter selects rows against, or the two drift apart.
 func expHistogramRangeFnWindowed(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vs := shape.selector
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
 	anchor, err := anchorFromSelector(vs, ctx)
@@ -495,7 +495,7 @@ func expHistogramRangeFnWindowed(shape histogramAggShape, s schema.Metrics, ctx 
 // [chplan.RangeBucketFanout.MinSamples] (emitted as a HAVING), which is
 // why this path does not repeat the instant stage's minSamplesFilter.
 func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(shape.selector.LabelMatchers, s)
 	win := aggWindowFor(shape)
 
@@ -568,6 +568,7 @@ func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape,
 		groupAggs = append(groupAggs, subqueryNameCollisionAgg(s))
 	}
 	group := chplan.Node(&chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            []chplan.Expr{identity},
 		GroupByAliases:     []string{s.AttributesColumn},

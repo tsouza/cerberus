@@ -125,7 +125,7 @@ func histogramSampleTimestampAgg(s schema.Metrics) []chplan.AggFunc {
 func lowerTimestampOverExpHistogramBareSelector(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	switch rangeGridShapeFor(vs, ctx) {
 	case gridFanout:
-		scan := &chplan.Scan{Table: s.ExpHistogramTable}
+		scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 		pred := buildPredicate(vs.LabelMatchers, s)
 		fanout := buildHistogramBucketFanout(
 			scan, pred, nil, windowFor(vs, instantLookback),
@@ -162,7 +162,7 @@ func lowerTimestampOverExpHistogramBareSelector(vs *parser.VectorSelector, s sch
 // to [expHistogramBareLatest] — same matchers, same instant-window bound —
 // only the aggregate list differs.
 func expHistogramSampleTimestampLatest(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
@@ -187,6 +187,7 @@ func expHistogramSampleTimestampLatest(vs *parser.VectorSelector, s schema.Metri
 func timestampInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 	ts := &chplan.ColumnRef{Name: expHistogramSampleTimestampAlias}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -209,6 +210,7 @@ func timestampRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 	anchor := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rawTs := &chplan.ColumnRef{Name: expHistogramSampleTimestampAlias}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -242,6 +244,7 @@ func timestampRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 func projectExpHistogramEvalInstant(hist chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	ts := evalInstantExpr(s, ctx)
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hist,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

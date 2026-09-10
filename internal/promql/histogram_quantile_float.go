@@ -110,6 +110,7 @@ func lowerHistogramQuantileClassicFloat(
 	// timestamp. `assumeNotNull` is sound because the Filter above is the
 	// only way a row reaches this expression.
 	group := &chplan.Aggregate{
+		Roles: metricRoles(s),
 		Input: bucketed,
 		GroupBy: []chplan.Expr{
 			&chplan.MapWithoutKeys{Map: attrs, Keys: []string{bucketBoundLabel}},
@@ -138,6 +139,7 @@ func lowerHistogramQuantileClassicFloat(
 	// other. The +Inf rung lands last because +Inf is the largest float,
 	// which is what makes the overflow guard below a check on the tail.
 	sorted := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: group,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: hqFloatGroupKeyAlias}, Alias: hqFloatGroupKeyAlias},
@@ -164,6 +166,7 @@ func lowerHistogramQuantileClassicFloat(
 
 	// Layer 2: the histogram-row contract HistogramQuantile consumes.
 	reshaped := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: sorted,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: hqFloatGroupKeyAlias}, Alias: s.AttributesColumn},
@@ -196,6 +199,7 @@ func lowerHistogramQuantileClassicFloat(
 	// above already partitioned by it, so re-stamping would collapse a
 	// range query's anchors onto a single instant.
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

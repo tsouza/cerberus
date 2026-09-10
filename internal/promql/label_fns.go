@@ -198,7 +198,7 @@ func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chpla
 	// columns (the quartet's MetricName/Timestamp/Value, the nine
 	// Histogram*Column outputs, and the trailing discriminator) unchanged.
 	if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
-		return &chplan.Project{Input: inner, Projections: mixedSampleProjections(s, attrs)}
+		return &chplan.Project{Roles: metricRoles(s), Input: inner, Projections: mixedSampleProjections(s, attrs)}
 	}
 	assertValueShapedInput(inner, "projectAttributesOverInner")
 	if shape := chplan.RowShapeOf(inner); shape != chplan.SampleRowShape {
@@ -214,9 +214,10 @@ func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chpla
 			)
 		}
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}})
-		return &chplan.Project{Input: inner, Projections: projections}
+		return &chplan.Project{Roles: metricRoles(s), Input: inner, Projections: projections}
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},

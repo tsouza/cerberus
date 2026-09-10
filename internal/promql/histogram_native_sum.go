@@ -192,7 +192,7 @@ func lowerExpHistogramSumOrAvg(agg *parser.AggregateExpr, vs *parser.VectorSelec
 // grouping. Its output is one row per output series carrying the merged
 // distribution under the schema's own column names.
 func expHistogramGroupMergedInstant(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
@@ -218,7 +218,7 @@ func expHistogramGroupMergedInstant(agg *parser.AggregateExpr, vs *parser.Vector
 // each pod's own newest sample and add the three, not take one newest
 // sample per service.
 func lowerExpHistogramSumOrAvgRange(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	perSeries := buildHistogramBucketFanout(
 		scan, pred, nil, windowFor(vs, instantLookback),
@@ -259,6 +259,7 @@ func expHistogramGroupMergeFanout(perSeries chplan.Node, anchor *chplan.ColumnRe
 		projs = append(projs, chplan.Projection{Expr: anchor, Alias: stepGridAnchorColumn})
 	}
 	merged := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              perSeries,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
@@ -278,7 +279,7 @@ func expHistogramGroupMergeFanout(perSeries chplan.Node, anchor *chplan.ColumnRe
 	}
 	projs = append(projs, fields...)
 	// Routed through expHistogramMergeSortStage first — see its doc.
-	return &chplan.Project{Input: expHistogramMergeSortStage(merged, maxCostUnits), Projections: projs}
+	return &chplan.Project{Roles: metricRoles(s), Input: expHistogramMergeSortStage(merged, maxCostUnits), Projections: projs}
 }
 
 // lowerExpHistogramSumOrAvgOverPlan applies a cross-series SUM/AVG to an
@@ -303,6 +304,7 @@ func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.N
 	groupBy = append([]chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, groupBy...)
 	groupByAliases = append([]string{s.TimestampColumn}, groupByAliases...)
 	merged := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
@@ -315,6 +317,7 @@ func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.N
 		fields = expHistogramAvgScaleProjections(fields, histSchema)
 	}
 	reshaped := &chplan.Project{
+		Roles: metricRoles(s),
 		// Routed through expHistogramMergeSortStage first — see its doc.
 		Input: expHistogramMergeSortStage(merged, maxCostUnits),
 		Projections: append([]chplan.Projection{

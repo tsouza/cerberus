@@ -98,9 +98,11 @@ func (a AggFunc) Equal(other AggFunc) bool {
 // different two-layer shape — see emitAggregateNoGroup); Having and
 // DropEmptyOnNoGroup are not combined by any caller today.
 type Aggregate struct {
-	Input              Node
-	GroupBy            []Expr
-	GroupByAliases     []string
+	Input          Node
+	GroupBy        []Expr
+	GroupByAliases []string
+	// Roles declares public output names synthesized by group keys or reducers.
+	Roles              []Column
 	AggFuncs           []AggFunc
 	Having             Expr
 	DropEmptyOnNoGroup bool
@@ -120,6 +122,9 @@ func (a *Aggregate) Equal(other Node) bool {
 		if a.GroupByAliases[i] != o.GroupByAliases[i] {
 			return false
 		}
+	}
+	if !(Schema{Columns: a.Roles}).Equal(Schema{Columns: o.Roles}) {
+		return false
 	}
 	for i := range a.GroupBy {
 		if !a.GroupBy[i].Equal(o.GroupBy[i]) {

@@ -829,7 +829,7 @@ func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node,
 	if err != nil {
 		return nil, err
 	}
-	var input chplan.Node = &chplan.Scan{Table: s.SpansTable}
+	var input chplan.Node = spanScan(s)
 	// A position-dependent nested-set comparison
 	// (`nestedSetParent = 5`, `nestedSetLeft > 0`, …) lowers to a
 	// reference against a synthetic NestedSet*Column; back it with the
@@ -2076,7 +2076,7 @@ const traceScopedValueAlias = "_cerb_trace_scoped_val"
 // directly. ok is false for any intrinsic other than the three
 // trace-scoped ones.
 func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Node, ok bool) {
-	base := &chplan.Scan{Table: s.SpansTable}
+	base := spanScan(s)
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}
 	groupByAliases := []string{s.TraceIDColumn}
 	rootCond := traceScopedRootSpanCond(s)

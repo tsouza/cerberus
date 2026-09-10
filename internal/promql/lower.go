@@ -855,6 +855,7 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 	// table column onto the wire). Matrix selectors PRESERVE
 	// `__name__` — the samples are raw, not derived.
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: &chplan.Filter{Input: inner, Predicate: pred},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -1194,7 +1195,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		)
 	}
 
-	scan := scanFromTables(tables)
+	scan := scanFromTables(tables, s)
 
 	pred := buildPredicate(matchers, s)
 	// Build the input subtree the LWR / range-vector pipeline consumes.
@@ -1363,7 +1364,7 @@ func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s sch
 			Alias: s.ValueColumn,
 		},
 	)
-	return &chplan.Project{Input: scan, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: scan, Projections: projections}
 }
 
 // needCompanionUnion reports whether the classic-histogram-companion
@@ -1497,7 +1498,7 @@ func buildHistogramCompanionArm(
 	cat *metadataCatalog,
 ) chplan.Node {
 	armMatchers := rewriteMetricName(matchers, bareName)
-	scan := &chplan.Scan{Table: s.HistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.HistogramTable), Table: s.HistogramTable}
 	var armInput chplan.Node = scan
 	if pred := buildPredicate(armMatchers, s); pred != nil {
 		armInput = &chplan.Filter{Input: scan, Predicate: pred}
@@ -1522,7 +1523,7 @@ func buildHistogramCompanionArm(
 			Alias: s.ValueColumn,
 		},
 	)
-	return &chplan.Project{Input: armInput, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: armInput, Projections: projections}
 }
 
 // buildLiteralNameCompanionArm assembles a literal-suffixed-name arm of the
@@ -1554,7 +1555,7 @@ func buildLiteralNameCompanionArm(
 	// value in the canonical Value column (Float64), so no toFloat64 cast is
 	// needed (unlike the histogram arm's UInt64 Count column).
 	armMatchers := rewriteMetricName(matchers, suffixedName)
-	scan := &chplan.Scan{Table: table}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, table), Table: table}
 	var armInput chplan.Node = scan
 	if pred := buildPredicate(armMatchers, s); pred != nil {
 		armInput = &chplan.Filter{Input: scan, Predicate: pred}
@@ -1572,7 +1573,7 @@ func buildLiteralNameCompanionArm(
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 	)
-	return &chplan.Project{Input: armInput, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: armInput, Projections: projections}
 }
 
 // augmentSelectorAttributes wraps `input` with a Project that rebinds
@@ -1625,6 +1626,7 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 		})
 	}
 	return &chplan.Project{
+		Roles:       metricRoles(s),
 		Input:       input,
 		Projections: projections,
 	}
@@ -1660,6 +1662,7 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 // happens to be a no-op, so the rename is load-bearing every time.
 func augmentDeltaPrefixAggregateAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -1730,7 +1733,7 @@ func attachDeltaPrefixAggregateArm(
 // built by the identical selectorAttributesExpr(ctx, s) call the primary
 // arm's own augmentSelectorAttributes uses.
 func buildDeltaPrefixAggregateArm(matchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	scan := &chplan.Scan{Table: s.DeltaPrefixTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.DeltaPrefixTable), Table: s.DeltaPrefixTable}
 	var input chplan.Node = scan
 	if pred := buildPredicate(deltaPrefixAggregateMetricNameMatchers(matchers), s); pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
@@ -1834,7 +1837,7 @@ func attachDownsampleTierArm(
 // projection is built by the identical selectorAttributesExpr(ctx, s) call
 // the primary arm's own augmentSelectorAttributes uses.
 func buildDownsampleTierArm(matchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	scan := &chplan.Scan{Table: schema.DownsampleTierTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, schema.DownsampleTierTable), Table: schema.DownsampleTierTable}
 	var input chplan.Node = scan
 	if pred := buildPredicate(matchers, s); pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
@@ -1852,6 +1855,7 @@ func buildDownsampleTierArm(matchers []*labels.Matcher, s schema.Metrics, ctx lo
 // never does: the tier table's own column names never match a raw Scan's.
 func augmentDownsampleTierAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -1971,12 +1975,12 @@ func rewriteMetricName(matchers []*labels.Matcher, name string) []*labels.Matche
 // TablesForUnknownName never return an empty slice), so a zero-length
 // slice is a programmer error and fails fast rather than emitting an
 // invalid empty Scan.
-func scanFromTables(tables []string) *chplan.Scan {
+func scanFromTables(tables []string, s schema.Metrics) *chplan.Scan {
 	if len(tables) == 0 {
 		panic("promql: scanFromTables called with no candidate tables")
 	}
 	if len(tables) == 1 {
-		return &chplan.Scan{Table: tables[0]}
+		return &chplan.Scan{Roles: metricScanRoles(s, tables[0]), Table: tables[0]}
 	}
 	// Defensive copy: the caller's slice may be a return from
 	// schema.Metrics.TablesFor whose backing array is shared with
@@ -1984,7 +1988,7 @@ func scanFromTables(tables []string) *chplan.Scan {
 	// in-place mutate UnionTables would corrupt the schema; the
 	// copy keeps the plan-tree slice independent.
 	owned := append([]string(nil), tables...)
-	return &chplan.Scan{UnionTables: owned}
+	return &chplan.Scan{Roles: metricRoles(s), UnionTables: owned}
 }
 
 // wrapInstantLatestPerSeries adds the LWR + staleness predicates on
@@ -2028,6 +2032,7 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 	)
 
 	agg := &chplan.Aggregate{
+		Roles: metricRoles(s),
 		Input: filtered,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.MetricNameColumn},
@@ -2052,6 +2057,7 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -2094,6 +2100,7 @@ func wrapMetadataFullRange(scan chplan.Node, pred chplan.Expr, start, end time.T
 		metaValueAlias = "meta_value"
 	)
 	agg := &chplan.Aggregate{
+		Roles: metricRoles(s),
 		Input: input,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.MetricNameColumn},
@@ -2106,6 +2113,7 @@ func wrapMetadataFullRange(scan chplan.Node, pred chplan.Expr, start, end time.T
 		},
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -2301,6 +2309,7 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 	const lwrValueAlias = "lwr_value"
 
 	innerAgg := &chplan.Aggregate{
+		Roles: metricRoles(s),
 		Input: filtered,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.MetricNameColumn},
@@ -2320,6 +2329,7 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 	// the StepGrid's anchor_ts column once the two sides CrossJoin —
 	// the outer Project re-projects anchor_ts into the TimeUnix slot.
 	innerProject := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: innerAgg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -2353,6 +2363,7 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 	// Re-shape the joined output into the canonical Sample 4-column
 	// contract with TimeUnix sourced from the step grid's anchor_ts.
 	out := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: joined,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -4393,6 +4404,7 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 		tsExpr = chplan.NowNanoMinusStaleness()
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: rw,
 		Projections: []chplan.Projection{
 			{Expr: name, Alias: s.MetricNameColumn},
@@ -4673,6 +4685,7 @@ func wrapDropNameCollisionGuard(
 		})
 	}
 	agg := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          node,
 		GroupBy:        groupBy,
 		GroupByAliases: aliases,
@@ -4687,6 +4700,7 @@ func wrapDropNameCollisionGuard(
 		Having: duplicateLabelsetGuardExpr(s, ctx, timeSeriesTagsToGroupExpr(s)),
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: append(
 			projections,
@@ -4770,7 +4784,7 @@ func wrapRangeWindowAtBroadcast(
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{Expr: value, Alias: s.ValueColumn},
 	)
-	return &chplan.Project{Input: joined, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: joined, Projections: projections}
 }
 
 // rangeBucketAlias is the GroupByAliases name [lowerAggregate] gives the
@@ -5008,11 +5022,12 @@ func buildTemporalityUnionVectorAgg(
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: chplan.RangeWindowAnchorColumn},
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 	)
-	deltaArm := &chplan.Project{Input: delta, Projections: deltaProjections}
+	deltaArm := &chplan.Project{Roles: metricRoles(s), Input: delta, Projections: deltaProjections}
 
 	combineGroupBy, combineAliases := temporalityUnionCombineGroupBy(aliases)
 
 	return &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              &chplan.UnionAll{Inputs: []chplan.Node{nativeArm, deltaArm}},
 		GroupBy:            combineGroupBy,
 		GroupByAliases:     combineAliases,
@@ -5081,11 +5096,12 @@ func buildTemporalityUnionAvgVectorAgg(
 		// so it contributes a partial count of 1 — see the type doc above.
 		chplan.Projection{Expr: &chplan.LitFloat{V: 1}, Alias: temporalityUnionPartialCountAlias},
 	)
-	deltaArm := &chplan.Project{Input: delta, Projections: deltaProjections}
+	deltaArm := &chplan.Project{Roles: metricRoles(s), Input: delta, Projections: deltaProjections}
 
 	combineGroupBy, combineAliases := temporalityUnionCombineGroupBy(aliases)
 
 	agg := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          &chplan.UnionAll{Inputs: []chplan.Node{nativeArm, deltaArm}},
 		GroupBy:        combineGroupBy,
 		GroupByAliases: combineAliases,
@@ -5119,7 +5135,7 @@ func buildTemporalityUnionAvgVectorAgg(
 		},
 		Alias: s.ValueColumn,
 	})
-	return &chplan.Project{Input: agg, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: agg, Projections: projections}
 }
 
 // buildTemporalityUnionCountVectorAgg folds an outer count() into the
@@ -5163,11 +5179,12 @@ func buildTemporalityUnionCountVectorAgg(
 		// see the type doc above.
 		chplan.Projection{Expr: &chplan.LitFloat{V: 1}, Alias: s.ValueColumn},
 	)
-	deltaArm := &chplan.Project{Input: delta, Projections: deltaProjections}
+	deltaArm := &chplan.Project{Roles: metricRoles(s), Input: delta, Projections: deltaProjections}
 
 	combineGroupBy, combineAliases := temporalityUnionCombineGroupBy(aliases)
 
 	return &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          &chplan.UnionAll{Inputs: []chplan.Node{nativeArm, deltaArm}},
 		GroupBy:        combineGroupBy,
 		GroupByAliases: combineAliases,
@@ -5357,6 +5374,7 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 		aliases = append(aliases, rangeBucketAlias)
 	}
 	agg := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            groupBy,
 		GroupByAliases:     aliases,
@@ -5594,6 +5612,7 @@ func lowerCountValuesOverPlan(
 	aliases = append(aliases, valueKeyAlias)
 
 	agg := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          input,
 		GroupBy:        groupBy,
 		GroupByAliases: aliases,
@@ -5664,6 +5683,7 @@ func lowerCountValuesOverPlan(
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -6513,6 +6533,7 @@ func buildTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx, 
 		return nil, err
 	}
 	kExpr := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: &chplan.OneRow{},
 		Projections: []chplan.Projection{
 			{Expr: topKDomainExpr(kValue), Alias: s.ValueColumn},
@@ -6623,6 +6644,7 @@ func wrapAggregateForSample(agg chplan.Node, a *parser.AggregateExpr, s schema.M
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

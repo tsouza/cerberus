@@ -46,6 +46,7 @@ func CloneNode(n Node) Node {
 		c := *v
 		c.UnionTables = cloneStrings(v.UnionTables)
 		c.Columns = cloneStrings(v.Columns)
+		c.Roles = append([]Column(nil), v.Roles...)
 		return &c
 	case *Filter:
 		c := *v
@@ -60,6 +61,7 @@ func CloneNode(n Node) Node {
 		c := *v
 		c.Input = CloneNode(v.Input)
 		c.Projections = cloneProjections(v.Projections)
+		c.Roles = append([]Column(nil), v.Roles...)
 		c.Replacements = cloneProjections(v.Replacements)
 		return &c
 	case *Aggregate:
@@ -67,6 +69,7 @@ func CloneNode(n Node) Node {
 		c.Input = CloneNode(v.Input)
 		c.GroupBy = cloneExprs(v.GroupBy)
 		c.GroupByAliases = cloneStrings(v.GroupByAliases)
+		c.Roles = append([]Column(nil), v.Roles...)
 		c.AggFuncs = cloneAggFuncs(v.AggFuncs)
 		c.Having = cloneExpr(v.Having)
 		return &c
