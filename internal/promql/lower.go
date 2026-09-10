@@ -5336,6 +5336,12 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	if err := requireMixedPlanPolicy(input, mixedAggregateFamily(a.Op)); err != nil {
 		return nil, err
 	}
+	// Authorize the original Mixed relation before discarding histogram rows.
+	// Float-only reductions must not aggregate their placeholder Value column;
+	// narrowing this already-lowered relation preserves union shadow precedence.
+	if expHistogramAggDropsHistogramSamples(a.Op) {
+		input = mixedRowsFloatOnly(input)
+	}
 	groupBy, err := aggregateGroupBy(a, s)
 	if err != nil {
 		return nil, err
