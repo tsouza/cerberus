@@ -116,7 +116,8 @@ func TestMixedOperandPolicyAlreadyLoweredShape(t *testing.T) {
 	}{
 		{"mixed unknown family", &chplan.VectorSetOp{Mixed: true}, "unlisted-wrapper", true},
 		{"mixed root-only family", &chplan.VectorSetOp{Mixed: true}, mixedLeafFamily, true},
-		{"mixed known consumer", &chplan.VectorSetOp{Mixed: true}, mixedMathFamily, false},
+		{"mixed known bespoke consumer", &chplan.VectorSetOp{Mixed: true}, mixedDateFamily, false},
+		{"math must use its payload preparation", &chplan.VectorSetOp{Mixed: true}, mixedMathFamily, true},
 		{"ordinary float unchanged", &chplan.Scan{}, "unlisted-wrapper", false},
 		{"histogram-only unchanged", &chplan.HistogramProjection{}, "unlisted-wrapper", false},
 	} {
@@ -192,8 +193,12 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 		for _, family := range families {
 			count++
 			key := mixedWrapperKey{family: family, site: site}
-			if got := mixedOperandPolicies[key]; got != mixedBespoke {
-				t.Errorf("admission %v = %v, want bespoke", key, got)
+			wantPolicy := mixedBespoke
+			if family == mixedMathFamily {
+				wantPolicy = mixedFloatOnly
+			}
+			if got := mixedOperandPolicies[key]; got != wantPolicy {
+				t.Errorf("admission %v = %v, want %v", key, got, wantPolicy)
 			}
 		}
 	}
@@ -227,6 +232,17 @@ func TestMixedOperandPolicyRejectsUnknownBeforeLowering(t *testing.T) {
 func TestMixedOperandPolicyPreservesBespokeResultAndError(t *testing.T) {
 	for key, policy := range mixedOperandPolicies {
 		t.Run(string(key.family)+"/"+string(key.site), func(t *testing.T) {
+			if key.family == mixedMathFamily {
+				called := false
+				plan, err := lowerWithMixedOperandPolicy(key.family, key.site, func() (chplan.Node, error) {
+					called = true
+					return &chplan.OneRow{}, nil
+				})
+				if called || plan != nil || err == nil {
+					t.Fatalf("math mode reached bespoke continuation: called=%v plan=%v err=%v", called, plan, err)
+				}
+				return
+			}
 			if policy != mixedBespoke {
 				t.Fatalf("unmigrated admission has policy %v, want bespoke", policy)
 			}
