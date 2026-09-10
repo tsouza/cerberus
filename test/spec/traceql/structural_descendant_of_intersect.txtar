@@ -60,3 +60,32 @@ StructuralJoin op=>>
 oracle: tempo
 endpoint: /api/search
 scope: full
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] string = "service.name"
+[4] string = "a"
+[5] string = "service.name"
+[6] string = "b"
+[7] string = "service.name"
+[8] string = "a"
+[9] string = "service.name"
+[10] string = "b"
+[11] string = "service.name"
+[12] string = "a"
+[13] string = "service.name"
+[14] string = "b"
+[15] string = "service.name"
+[16] string = "c"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+min_table_rows_to_use_projection_index=0
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (WITH RECURSIVE _struct_closure_2 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM (SELECT * FROM `otel_traces` WHERE ((`ResourceAttributes`[?] = ?) OR (`ResourceAttributes`[?] = ?)) QUALIFY max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) AND max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`) AS _rooted_l WHERE (`TraceId`, `SpanId`) GLOBAL IN (WITH RECURSIVE _struct_rooted_1 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN ((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)))) UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_rooted_1 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_rooted_1)) AS _seed UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure_2 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_2 WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`)

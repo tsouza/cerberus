@@ -29,3 +29,16 @@ MetricsAggregate op=quantile_over_time attr=(Duration / 1e+09) quantiles=[0.95] 
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | quantile_over_time(duration, 0.95)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
+-- args_optimized --
+[0] float64 = 0.95
+[1] float64 = 1e+09
+[2] bool = true
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:node
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT quantileExactInclusive(toFloat64(?))((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT `Duration` FROM `otel_traces` WHERE ?)

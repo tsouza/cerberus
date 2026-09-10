@@ -35,3 +35,20 @@ Filter predicate=((ResourceAttributes["job"] = "api") AND ((((lineContent(Body, 
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{job="api"} |= "error" != "debug" |~ "5[0-9]{2}" !~ "^test" |= "prod"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args_optimized --
+[0] string = "job"
+[1] string = "api"
+[2] string = "error"
+[3] string = "debug"
+[4] string = "5[0-9]{2}"
+[5] string = "^test"
+[6] string = "prod"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) = 0) AND match(`Body`, ?) AND NOT match(`Body`, ?) AND (position(`Body`, ?) > 0)

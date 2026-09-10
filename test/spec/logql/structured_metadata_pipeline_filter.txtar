@@ -46,3 +46,34 @@ SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContai
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{service_name="clickhouse"} | query_kind="Select"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args_optimized --
+[0] string = ""
+[1] string = "service_name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service.name"
+[5] string = "service/name"
+[6] string = "clickhouse"
+[7] string = "query_kind"
+[8] string = "query.kind"
+[9] string = "query/kind"
+[10] string = "query_kind"
+[11] string = "query_kind"
+[12] string = "query.kind"
+[13] string = "query.kind"
+[14] string = "query/kind"
+[15] string = "query_kind"
+[16] string = "query_kind"
+[17] string = "query.kind"
+[18] string = "query.kind"
+[19] string = "query/kind"
+[20] string = "Select"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (if(((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?])), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)

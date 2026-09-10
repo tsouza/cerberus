@@ -42,3 +42,20 @@ Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, 
   OneRow
 -- sql --
 SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, (toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)) + toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?))) AS `Value` FROM (SELECT 1)
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 1000000000
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 1000000000
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+-- sql_optimized --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, (toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)) + toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?))) AS `Value` FROM (SELECT 1)

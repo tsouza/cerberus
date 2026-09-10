@@ -54,3 +54,43 @@ Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{job="api"} | logfmt level="severity" | level="error"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args_optimized --
+[0] string = "job"
+[1] string = "api"
+[2] string = "level"
+[3] string = "level_extracted"
+[4] string = "level"
+[5] int64 = 1
+[6] int64 = 1
+[7] string = "="
+[8] string = " "
+[9] string = "\""
+[10] string = "Array(Tuple(String,String))"
+[11] string = "Array(Tuple(String,String))"
+[12] string = "Map(String,String)"
+[13] string = "severity"
+[14] string = "level"
+[15] string = "level"
+[16] string = "level_extracted"
+[17] string = "level"
+[18] int64 = 1
+[19] int64 = 1
+[20] string = "="
+[21] string = " "
+[22] string = "\""
+[23] string = "Array(Tuple(String,String))"
+[24] string = "Array(Tuple(String,String))"
+[25] string = "Map(String,String)"
+[26] string = "severity"
+[27] string = "level"
+[28] string = "level"
+[29] string = "error"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?]))[?], `LogAttributes`[?]) = ?)

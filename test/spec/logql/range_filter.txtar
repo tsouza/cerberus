@@ -41,3 +41,24 @@ Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(R
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{service_name="api"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args_optimized --
+[0] string = "2026-05-14 12:03:20.000000000"
+[1] int64 = 9
+[2] string = "2026-05-14 12:05:00.000000000"
+[3] int64 = 9
+[4] string = ""
+[5] string = "service_name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service.name"
+[9] string = "service/name"
+[10] string = "api"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` < toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)

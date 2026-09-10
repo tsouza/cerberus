@@ -29,3 +29,16 @@ MetricsSecondStage op=threshold threshold=(> 1) valueAlias=Value
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | rate() | topk(5) > 1` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
+-- args_optimized --
+[0] int64 = 1
+[1] bool = true
+[2] float64 = 1
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:node
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM (SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)) ORDER BY `Value` DESC LIMIT 5) WHERE (`Value` > toFloat64(?))
