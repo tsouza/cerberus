@@ -6,16 +6,21 @@ SELECT * FROM `otel_traces` WHERE (`TraceId` = ?)
 [0] string = "abcdef0123456789"
 -- seed --
 CREATE TABLE otel_traces (
-    TraceId String
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    ('0123456789abcdef'),
-    ('abcdef0123456789'),
-    ('fedcba9876543210');
+INSERT INTO otel_traces (TraceId, SpanId) VALUES
+    ('0123456789abcdef', '0000000000000001'),
+    ('abcdef0123456789', '0000000000000002'),
+    ('fedcba9876543210', '0000000000000003');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "abcdef0123456789"}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "abcdef0123456789"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=(TraceId = "abcdef0123456789")
   Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

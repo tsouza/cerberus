@@ -38,6 +38,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tsouza/cerberus/internal/logql/lsyntax"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/logql"
 )
 
@@ -75,10 +76,16 @@ func evaluateLokiParity(
 		return nil, err
 	}
 	if len(streams) == 0 {
-		return nil, fmt.Errorf(
-			"fixture %s: seed produced no readable streams, so the reference engine would "+
-				"trivially agree with any answer", c.Name,
-		)
+		reads, rerr := logqlExprReadsStreams(q.Expr)
+		if rerr != nil {
+			return nil, fmt.Errorf("fixture %s: %w", c.Name, rerr)
+		}
+		if reads {
+			return nil, fmt.Errorf(
+				"fixture %s: seed produced no readable streams, so the reference engine would "+
+					"trivially agree with any answer", c.Name,
+			)
+		}
 	}
 
 	got, err := oracle.Evaluate(t, streams, oracle.Query{
@@ -270,4 +277,43 @@ func logsTableColumns(db *sql.DB) (map[string]bool, error) {
 		)
 	}
 	return out, nil
+}
+
+// logqlExprReadsStreams is the LogQL analogue of parity_chdb.go's
+// exprReadsSeries: it reports whether the expression reads any LOG
+// SELECTOR, and so whether a zero-stream seed is missing data the query
+// needs or is the query's own correct, data-independent input.
+//
+// `42` and `vector(3)` are the two shapes that read nothing, plus a
+// binary operation both of whose legs read nothing — and the parser folds
+// a literal-literal binop into a single literal before this ever sees it
+// (see mustNewBinOpExpr's "no binop has two literal legs" invariant), so
+// the recursion is a completeness measure rather than a live case.
+//
+// Every OTHER shape is reported as reading streams. Defaulting that way
+// is the safe direction: an unrecognised expression keeps the hard
+// failure above, so a new LogQL construct cannot quietly acquire an
+// empty-seed exemption by not being listed here.
+//
+// The parser is cerberus's own lsyntax, the same one the lowering under
+// test uses, exactly as exprReadsSeries uses promparse. That is not the
+// oracle agreeing with itself: this decides only WHETHER to run the
+// reference engine, never what the reference answers.
+func logqlExprReadsStreams(expr string) (bool, error) {
+	parsed, err := lsyntax.ParseExpr(expr)
+	if err != nil {
+		return false, fmt.Errorf("parse LogQL expression %q: %w", expr, err)
+	}
+	return logqlNodeReadsStreams(parsed), nil
+}
+
+func logqlNodeReadsStreams(e lsyntax.Expr) bool {
+	switch v := e.(type) {
+	case *lsyntax.LiteralExpr, *lsyntax.VectorExpr:
+		return false
+	case *lsyntax.BinOpExpr:
+		return logqlNodeReadsStreams(v.SampleExpr) || logqlNodeReadsStreams(v.RHS)
+	default:
+		return true
+	}
 }
