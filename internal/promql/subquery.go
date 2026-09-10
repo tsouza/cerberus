@@ -162,6 +162,9 @@ func lowerHistogramNativeSubqueryInner(sub *parser.SubqueryExpr, step time.Durat
 		if herr != nil {
 			return nil, true, herr
 		}
+		if err := requireMixedPlanPolicy(plan, mixedSubqueryFamily); err != nil {
+			return nil, true, err
+		}
 		switch chplan.RowShapeOf(plan) {
 		case chplan.HistogramRowShape, chplan.MixedRowShape:
 			return capEmpty(plan), true, nil
@@ -269,6 +272,9 @@ func lowerSubqueryOverUnary(
 		if err != nil {
 			return nil, err
 		}
+		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+			return nil, err
+		}
 		if state == subqueryGridEmpty {
 			inner = emptySubqueryGrid(inner)
 		}
@@ -284,6 +290,9 @@ func lowerSubqueryOverUnary(
 	rangeCtx.inRangeVector = true
 	inner, err := lowerUnary(u, s, rangeCtx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
 		return nil, err
 	}
 	return wrapSubqueryIdentity(sub, inner, step, s, ctx)
@@ -784,6 +793,9 @@ func lowerSubqueryOverInstantCall(
 	if err != nil {
 		return nil, err
 	}
+	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+		return nil, err
+	}
 	if state == subqueryGridEmpty {
 		inner = emptySubqueryGrid(inner)
 	}
@@ -844,6 +856,9 @@ func lowerSubqueryOverBinary(
 	if state != subqueryGridUnavailable {
 		inner, err := lowerBinary(b, s, grid)
 		if err != nil {
+			return nil, err
+		}
+		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
 			return nil, err
 		}
 		if state == subqueryGridEmpty {
@@ -1048,6 +1063,9 @@ func lowerOuterRangeFnOverSubquery(
 		// (deriv, predict_linear, ...) falls through unmatched to this
 		// function's own existing float-only-drop / rejection handling
 		// below, unchanged.
+		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+			return nil, err
+		}
 		if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, shape, outer.Func.Name, sub, s, ctx); matched {
 			return node, err
 		}
@@ -1827,15 +1845,15 @@ var instantTransformFns = map[string]struct{}{
 	// TimeUnix) to a float; the zero-arg forms synthesise an
 	// anchor-stamped row instead and are rejected by the arity half of
 	// [isInstantTransformCall].
-	"year":          {},
-	"month":         {},
-	"day_of_month":  {},
-	"day_of_week":   {},
-	"day_of_year":   {},
-	"days_in_month": {},
-	"hour":          {},
-	"minute":        {},
-	"timestamp":     {},
+	"year":                {},
+	"month":               {},
+	"day_of_month":        {},
+	"day_of_week":         {},
+	"day_of_year":         {},
+	"days_in_month":       {},
+	"hour":                {},
+	"minute":              {},
+	timestampFunctionName: {},
 
 	// Sorting: reference discards the ordering when it folds each
 	// anchor's instant result into the subquery's matrix, so these are
@@ -3086,6 +3104,9 @@ func lowerSubqueryOverCallSubquery(
 		// composition; anything else (deriv, predict_linear, ...) falls
 		// through unmatched to the existing float-only-drop / rejection
 		// handling below, unchanged.
+		if err := requireMixedPlanPolicy(wideInner, mixedSubqueryFamily); err != nil {
+			return nil, err
+		}
 		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, shape, call.Func.Name, sub, innerSub, step, s, ctx); matched {
 			return node, err
 		}

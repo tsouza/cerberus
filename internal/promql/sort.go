@@ -81,13 +81,18 @@ func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	// into the same OrderBy this function's own non-mixed path builds
 	// below.
 	if b, ok := sortOverMixedExpHistogramSetOp(c, s, ctx); ok {
-		return lowerSortOverMixedExpHistogramSetOp(c, b, s, ctx)
+		return lowerWithMixedOperandPolicy(mixedSortFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerSortOverMixedExpHistogramSetOp(c, b, s, ctx)
+		})
 	}
 	inner, err := lower(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
 	}
 	desc := c.Func.Name == "sort_desc"
+	if err := requireMixedPlanPolicy(inner, mixedSortFamily); err != nil {
+		return nil, err
+	}
 	return &chplan.OrderBy{
 		Input: inner,
 		Keys: []chplan.OrderKey{
@@ -167,12 +172,21 @@ func lowerSortByLabelArg(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chpla
 		return hist, err
 	}
 	if b, ok := sortByLabelArgOverMixedExpHistogramSetOp(arg, s, ctx); ok {
-		return lowerSortByLabelArgOverMixedExpHistogramSetOp(b, s, ctx)
+		return lowerWithMixedOperandPolicy(mixedSortByLabelFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerSortByLabelArgOverMixedExpHistogramSetOp(b, s, ctx)
+		})
 	}
 	if dropped, ok, err := lowerExpHistogramDroppingShape(arg, s, ctx); ok {
 		return dropped, err
 	}
-	return lower(arg, s, ctx)
+	inner, err := lower(arg, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(inner, mixedSortByLabelFamily); err != nil {
+		return nil, err
+	}
+	return inner, nil
 }
 
 func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {

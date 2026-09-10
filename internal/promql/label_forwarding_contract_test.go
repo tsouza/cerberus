@@ -67,7 +67,7 @@ func TestAttributeRewriteUnnamedFloatPhysicalColumns(t *testing.T) {
 					var newAttrs chplan.Expr
 					var project *chplan.Project
 					call := func() {
-						project = projectAttributesOverInner(inner, s, func(refs sampleRoleRefs) chplan.Expr {
+						project = mustProjectAttributesOverInner(t, inner, s, func(refs sampleRoleRefs) chplan.Expr {
 							if tc.wantPanic {
 								t.Fatal("invalid role contract reached the rewrite callback")
 							}

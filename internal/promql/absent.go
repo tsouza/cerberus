@@ -107,7 +107,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		// still resolves identically.
 		innerCtx := ctx
 		innerCtx.step = 0
-		inner, err = lowerVectorSetOpOperand(arg, s, innerCtx)
+		inner, err = lowerVectorSetOpOperand(arg, s, innerCtx, mixedAbsentFamily)
 		if err != nil {
 			return nil, err
 		}

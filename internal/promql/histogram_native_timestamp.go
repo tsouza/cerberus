@@ -72,7 +72,9 @@ func lowerTimestampOverExpHistogram(arg parser.Expr, s schema.Metrics, ctx lower
 	// BinaryExpr, never a VectorSelector) and always reports the
 	// evaluation instant for every row.
 	if b, ok := timestampOverMixedExpHistogramSetOp(arg, s, ctx); ok {
-		node, err := lowerTimestampOverMixedExpHistogramSetOp(b, s, ctx)
+		node, err := lowerWithMixedOperandPolicy(mixedTimestampFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerTimestampOverMixedExpHistogramSetOp(b, s, ctx)
+		})
 		return node, true, err
 	}
 	if hist, ok, err := lowerExpHistogramValuedShape(arg, s, ctx); ok {
@@ -193,7 +195,7 @@ func timestampInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: ts, Alias: s.TimestampColumn},
-			{Expr: asFloat64(dateFnExpr("timestamp", nil, ts)), Alias: s.ValueColumn},
+			{Expr: asFloat64(dateFnExpr(timestampFunctionName, nil, ts)), Alias: s.ValueColumn},
 		},
 	}
 }
@@ -216,7 +218,7 @@ func timestampRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: anchor, Alias: s.TimestampColumn},
-			{Expr: asFloat64(dateFnExpr("timestamp", nil, rawTs)), Alias: s.ValueColumn},
+			{Expr: asFloat64(dateFnExpr(timestampFunctionName, nil, rawTs)), Alias: s.ValueColumn},
 		},
 	}
 }
@@ -250,7 +252,7 @@ func projectExpHistogramEvalInstant(hist chplan.Node, s schema.Metrics, ctx lowe
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: ts, Alias: s.TimestampColumn},
-			{Expr: asFloat64(dateFnExpr("timestamp", nil, ts)), Alias: s.ValueColumn},
+			{Expr: asFloat64(dateFnExpr(timestampFunctionName, nil, ts)), Alias: s.ValueColumn},
 		},
 	}
 }

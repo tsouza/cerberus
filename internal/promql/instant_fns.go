@@ -83,14 +83,14 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 		return node, err
 	}
 
-	inner, err := lower(c.Args[0], s, ctx)
+	inner, err := lowerMathOperand(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+	return guardedValueProjection(inner, c.Args[0], s, ctx, mixedMathFamily, func(refs sampleRoleRefs) chplan.Expr {
 		return mathFnValueExpr(chFn, refs.Value)
-	}), nil
+	})
 }
 
 // mathFnValueExpr wraps valueExpr with the CH function instantFnCH maps
@@ -132,14 +132,14 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 		return nil, err
 	}
 
-	inner, err := lower(c.Args[0], s, ctx)
+	inner, err := lowerMathOperand(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+	return guardedValueProjection(inner, c.Args[0], s, ctx, mixedMathFamily, func(refs sampleRoleRefs) chplan.Expr {
 		return roundToNearestValueExpr(refs.Value, tn)
-	}), nil
+	})
 }
 
 // lowerRoundToNearestBound lowers round()'s second argument — the
@@ -165,6 +165,21 @@ func roundToNearestValueExpr(valueExpr, tn chplan.Expr) chplan.Expr {
 		Args: []chplan.Expr{&chplan.Binary{Op: chplan.OpDiv, Left: valueExpr, Right: tn}},
 	}
 	return &chplan.Binary{Op: chplan.OpMul, Left: rounded, Right: tn}
+}
+
+// lowerMathOperand checks admission before any wrapper adds a filter or returns
+// an empty result. A bound filter's legacy Sample shape must not conceal an
+// originally mixed input from the wrapper policy. Callers keep their existing
+// argument evaluation order by invoking this at their original lower seam.
+func lowerMathOperand(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	inner, err := lower(arg, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(inner, mixedMathFamily); err != nil {
+		return nil, err
+	}
+	return inner, nil
 }
 
 // lowerClamp implements the PromQL clamp family:
@@ -220,11 +235,11 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 			fnName = chplan.FnGreatest
 		}
 		if bound, ok := tryScalarLiteral(c.Args[1]); ok {
-			inner, err := lower(c.Args[0], s, ctx)
+			inner, err := lowerMathOperand(c.Args[0], s, ctx)
 			if err != nil {
 				return nil, err
 			}
-			return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+			return guardedValueProjection(inner, c.Args[0], s, ctx, mixedMathFamily, func(refs sampleRoleRefs) chplan.Expr {
 				return &chplan.FuncCall{
 					Fn: fnName,
 					Args: []chplan.Expr{
@@ -232,17 +247,17 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 						&chplan.LitFloat{V: bound},
 					},
 				}
-			}), nil
+			})
 		}
 		boundE, err := lowerScalarArg(c.Args[1], s, ctx)
 		if err != nil {
 			return nil, err
 		}
-		inner, err := lower(c.Args[0], s, ctx)
+		inner, err := lowerMathOperand(c.Args[0], s, ctx)
 		if err != nil {
 			return nil, err
 		}
-		return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+		return guardedValueProjection(inner, c.Args[0], s, ctx, mixedMathFamily, func(refs sampleRoleRefs) chplan.Expr {
 			return nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
 				Fn: fnName,
 				Args: []chplan.Expr{
@@ -250,7 +265,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 					boundE,
 				},
 			})
-		}), nil
+		})
 
 	case "clamp":
 		if len(c.Args) != 3 {
@@ -259,7 +274,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		minB, okMin := tryScalarLiteral(c.Args[1])
 		maxB, okMax := tryScalarLiteral(c.Args[2])
 		if okMin && okMax {
-			inner, err := lower(c.Args[0], s, ctx)
+			inner, err := lowerMathOperand(c.Args[0], s, ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -278,7 +293,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 					Predicate: &chplan.LitBool{V: false},
 				}, nil
 			}
-			return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+			return guardedValueProjection(inner, c.Args[0], s, ctx, mixedMathFamily, func(refs sampleRoleRefs) chplan.Expr {
 				return &chplan.FuncCall{
 					Fn: chplan.FnGreatest,
 					Args: []chplan.Expr{
@@ -289,7 +304,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 						},
 					},
 				}
-			}), nil
+			})
 		}
 
 		// At least one computed bound: bind both sides through
@@ -303,7 +318,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		if err != nil {
 			return nil, err
 		}
-		inner, err := lower(c.Args[0], s, ctx)
+		inner, err := lowerMathOperand(c.Args[0], s, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -324,7 +339,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 				},
 			},
 		}
-		return guardedValueProjection(filtered, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+		return guardedValueProjection(filtered, c.Args[0], s, ctx, mixedMathFamily, func(refs sampleRoleRefs) chplan.Expr {
 			return nanIfExpr(
 				&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
 				&chplan.FuncCall{
@@ -338,7 +353,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 					},
 				},
 			)
-		}), nil
+		})
 	}
 	return nil, fmt.Errorf("promql: unknown clamp function %s", c.Func.Name)
 }

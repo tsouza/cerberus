@@ -60,28 +60,39 @@ func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Nod
 	if b, ok := mixedExpHistogramSetOp(u.Expr, s, ctx); ok {
 		switch u.Op {
 		case parser.ADD:
-			return lowerMixedExpHistogramSetOp(b, s, ctx)
+			return lowerWithMixedOperandPolicy(mixedUnaryFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+				return lowerMixedExpHistogramSetOp(b, s, ctx)
+			})
 		case parser.SUB:
-			return lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, chplan.OpMul, -1, true, s, ctx)
+			return lowerWithMixedOperandPolicy(mixedUnaryFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+				return lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, chplan.OpMul, -1, true, s, ctx)
+			})
 		}
 		return nil, fmt.Errorf("promql: unsupported unary op %v", u.Op)
 	}
 	switch u.Op {
 	case parser.ADD:
 		// Unary `+` is the identity — lower the operand directly.
-		return lower(u.Expr, s, ctx)
+		inner, err := lower(u.Expr, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireMixedPlanPolicy(inner, mixedUnaryFamily); err != nil {
+			return nil, err
+		}
+		return inner, nil
 	case parser.SUB:
 		inner, err := lower(u.Expr, s, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("promql: unary operand: %w", err)
 		}
-		return guardedValueProjection(inner, u.Expr, s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+		return guardedValueProjection(inner, u.Expr, s, ctx, mixedUnaryFamily, func(refs sampleRoleRefs) chplan.Expr {
 			return &chplan.Binary{
 				Op:    chplan.OpSub,
 				Left:  &chplan.LitFloat{V: 0},
 				Right: refs.Value,
 			}
-		}), nil
+		})
 	}
 	return nil, fmt.Errorf("promql: unsupported unary op %v", u.Op)
 }

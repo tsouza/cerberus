@@ -9,6 +9,8 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+const timestampFunctionName = "timestamp"
+
 // lowerDateFn maps PromQL date-component functions to their ClickHouse
 // equivalents. Each function takes one instant-vector argument whose
 // `Value` column is interpreted as a Unix timestamp in seconds — except
@@ -71,7 +73,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// why the generic `lower()` call below cannot answer it: an
 	// exp-histogram-valued argument falls through to
 	// expHistogramSelectorRouting's catch-all rejection without this.
-	if c.Func.Name == "timestamp" {
+	if c.Func.Name == timestampFunctionName {
 		if node, ok, err := lowerTimestampOverExpHistogram(c.Args[0], s, ctx); ok {
 			return node, err
 		}
@@ -110,7 +112,9 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// same value projection this function's own non-mixed path builds
 	// below.
 	if b, ok := dateFnOverMixedExpHistogramSetOp(c, s, ctx); ok {
-		return lowerDateFnOverMixedExpHistogramSetOp(c, b, s, ctx)
+		return lowerWithMixedOperandPolicy(mixedDateFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerDateFnOverMixedExpHistogramSetOp(c, b, s, ctx)
+		})
 	}
 
 	// The argument is lowered under an ARGUMENT ctx rather than the caller's
@@ -122,13 +126,17 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if err != nil {
 		return nil, err
 	}
-	if c.Func.Name != "timestamp" && dateFnExpr(c.Func.Name, nil, nil) == nil {
+	if c.Func.Name != timestampFunctionName && dateFnExpr(c.Func.Name, nil, nil) == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+	family := mixedDateFamily
+	if c.Func.Name == timestampFunctionName {
+		family = mixedTimestampFamily
+	}
+	return guardedValueProjection(inner, c.Args[0], s, ctx, family, func(refs sampleRoleRefs) chplan.Expr {
 		inputSchema := refs.sourceMetrics(s)
 		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(inputSchema), timestampResultExpr(c.Args[0], inputSchema, ctx)))
-	}, carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...), nil
+	}, carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...)
 }
 
 // dateFnArgCtx returns the ctx the date function's argument is lowered under.
@@ -191,7 +199,7 @@ func carriedSampleTimestampColumns(name string, arg parser.Expr, ctx lowerCtx) [
 // instead answers from which seam the argument's OWN lowering takes, not
 // from a step value that means something else on that path.
 func readsRangeSampleTimestamp(name string, arg parser.Expr, ctx lowerCtx) bool {
-	if name != "timestamp" || ctx.step <= 0 || ctx.inRangeVector {
+	if name != timestampFunctionName || ctx.step <= 0 || ctx.inRangeVector {
 		return false
 	}
 	_, isSelector := unwrapVectorSelector(arg)
@@ -382,7 +390,7 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnToHour, Args: []chplan.Expr{valueDT}}
 	case "minute":
 		return &chplan.FuncCall{Fn: chplan.FnToMinute, Args: []chplan.Expr{valueDT}}
-	case "timestamp":
+	case timestampFunctionName:
 		// `timestamp(v)` returns tsRef as float seconds — NOT a
 		// function of Value. Convert the DateTime64(9) expression to
 		// nanoseconds (Int64) and divide by 1e9 to get fractional

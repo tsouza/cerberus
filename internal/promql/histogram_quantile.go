@@ -320,6 +320,9 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		if err != nil {
 			return nil, err
 		}
+		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily); err != nil {
+			return nil, err
+		}
 		return &chplan.Filter{
 			Input:     inner,
 			Predicate: &chplan.LitBool{V: false},
@@ -569,7 +572,7 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 		// No canonicalisation here: the kernel below already binds
 		// Attributes canonically and mapConcat appends to that, so every
 		// row of one logical series gets the same key order.
-		arms = append(arms, projectAttributesOverInner(kernel, s, func(refs sampleRoleRefs) chplan.Expr {
+		arm, err := projectAttributesOverInner(kernel, s, mixedHistogramValueFamily, func(refs sampleRoleRefs) chplan.Expr {
 			return &chplan.FuncCall{
 				Fn: chplan.FnMapMerge,
 				Args: []chplan.Expr{
@@ -583,7 +586,11 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 					},
 				},
 			}
-		}))
+		})
+		if err != nil {
+			return nil, err
+		}
+		arms = append(arms, arm)
 	}
 
 	if len(arms) == 1 {
@@ -1910,7 +1917,9 @@ func lowerHistogramQuantileHistogramValuedArg(
 		if !ok {
 			return nil, false, nil
 		}
-		hist, err = lowerMixedOrHistogramValuedArg(b, s, ctx)
+		hist, err = lowerWithMixedOperandPolicy(mixedHistogramValueFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerMixedOrHistogramValuedArg(b, s, ctx)
+		})
 	}
 	if err != nil {
 		return nil, true, err

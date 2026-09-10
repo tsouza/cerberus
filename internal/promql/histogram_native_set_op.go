@@ -308,15 +308,24 @@ func lowerExpHistogramValuedOrForwardedOperand(expr parser.Expr, s schema.Metric
 // all — lowers unchanged through [lower]: it already produces the
 // canonical Sample row shape [lowerVectorSetOp] needs with no special
 // handling.
-func lowerVectorSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerVectorSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx, family mixedWrapperFamily) (chplan.Node, error) {
 	if isExpHistogramValuedShape(expr, s, ctx) {
 		return lowerExpHistogramSetOpOperand(expr, s, ctx)
 	}
 	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerMixedExpHistogramSetOp(b, s, ctx)
+		return lowerWithMixedOperandPolicy(family, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerMixedExpHistogramSetOp(b, s, ctx)
+		})
 	}
 	if dropped, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
 		return dropped, err
 	}
-	return lower(expr, s, ctx)
+	inner, err := lower(expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(inner, family); err != nil {
+		return nil, err
+	}
+	return inner, nil
 }

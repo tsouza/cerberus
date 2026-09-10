@@ -149,6 +149,13 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 	if err != nil {
 		return nil, err
 	}
+	family := mixedVectorBinaryFamily(op)
+	if err := requireMixedPlanPolicy(left, family); err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(right, family); err != nil {
+		return nil, err
+	}
 
 	// Synthetic-scalar fold: when BOTH legs lower to the canonical
 	// 4-slot synthetic-vector shape ([syntheticScalarVector]), the
@@ -206,9 +213,9 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		rSynth := isSyntheticScalarPlan(right, s) && !isVectorTypedSyntheticOperand(b.RHS)
 		switch {
 		case lSynth && !rSynth:
-			return foldSyntheticVectorBinary(left, right, b.RHS, op, true /*scalarOnLeft*/, b.ReturnBool, s, ctx), nil
+			return foldSyntheticVectorBinary(left, right, b.RHS, op, true /*scalarOnLeft*/, b.ReturnBool, s, ctx)
 		case !lSynth && rSynth:
-			return foldSyntheticVectorBinary(right, left, b.LHS, op, false /*scalarOnLeft*/, b.ReturnBool, s, ctx), nil
+			return foldSyntheticVectorBinary(right, left, b.LHS, op, false /*scalarOnLeft*/, b.ReturnBool, s, ctx)
 		}
 	}
 
@@ -406,7 +413,10 @@ func foldSyntheticVectorBinary(
 	scalarOnLeft, returnBool bool,
 	s schema.Metrics,
 	ctx lowerCtx,
-) chplan.Node {
+) (chplan.Node, error) {
+	if err := requireMixedPlanPolicy(vec, mixedVectorBinaryFamily(op)); err != nil {
+		return nil, err
+	}
 	synthVal := rewriteAnchorToTimeUnix(syntheticValueExpr(synth), s)
 	vecValue := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
 
@@ -420,7 +430,7 @@ func foldSyntheticVectorBinary(
 
 	if isComparison(op) && !returnBool {
 		vec = mixedRowsFloatOnly(vec)
-		return &chplan.Filter{Input: vec, Predicate: opExpr}
+		return &chplan.Filter{Input: vec, Predicate: opExpr}, nil
 	}
 
 	// RangeWindow-aware projection — same rationale as lowerVectorScalar:
@@ -428,7 +438,7 @@ func foldSyntheticVectorBinary(
 	// exposes only (Attributes, Value), so a TimeUnix passthrough would
 	// raise CH UNKNOWN_IDENTIFIER. For a selector / already-canonicalised
 	// vec leg the helper emits the identical 4-column shape.
-	return guardedValueProjection(vec, vecExpr, s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+	return guardedValueProjection(vec, vecExpr, s, ctx, mixedVectorBinaryFamily(op), func(refs sampleRoleRefs) chplan.Expr {
 		scalarValue := rewriteAnchorToTimeUnix(syntheticValueExpr(synth), refs.sourceMetrics(s))
 		var left, right chplan.Expr = refs.Value, scalarValue
 		if scalarOnLeft {
@@ -554,11 +564,11 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
-	left, err := lowerVectorSetOpOperand(b.LHS, s, ctx)
+	left, err := lowerVectorSetOpOperand(b.LHS, s, ctx, mixedSetOperandFamily)
 	if err != nil {
 		return nil, err
 	}
-	right, err := lowerVectorSetOpOperand(b.RHS, s, ctx)
+	right, err := lowerVectorSetOpOperand(b.RHS, s, ctx, mixedSetOperandFamily)
 	if err != nil {
 		return nil, err
 	}
@@ -841,6 +851,9 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	if err != nil {
 		return nil, err
 	}
+	if err := requireMixedPlanPolicy(inner, mixedScalarBinaryFamily(op, scalarOnLeft)); err != nil {
+		return nil, err
+	}
 	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
 	scalarLit := &chplan.LitFloat{V: scalar}
 	var opExpr chplan.Expr
@@ -875,7 +888,7 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	// matrix shape keeps its per-anchor `anchor_ts`. Mirrors the
 	// instant-fn / unary-minus path which already routes through this
 	// helper.
-	return guardedValueProjection(inner, vec, s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+	return guardedValueProjection(inner, vec, s, ctx, mixedScalarBinaryFamily(op, scalarOnLeft), func(refs sampleRoleRefs) chplan.Expr {
 		var left, right chplan.Expr = refs.Value, scalarLit
 		if scalarOnLeft {
 			left, right = scalarLit, refs.Value
@@ -885,5 +898,5 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 			return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{value}}
 		}
 		return value
-	}), nil
+	})
 }

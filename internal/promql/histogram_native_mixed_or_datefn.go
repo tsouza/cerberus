@@ -55,7 +55,7 @@ import (
 // all, so it needs no drop rule — and it is not one of the eight
 // functions cerberus issue #2609 scopes.
 func dateFnOverMixedExpHistogramSetOp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, bool) {
-	if len(c.Args) != 1 || c.Func.Name == "timestamp" {
+	if len(c.Args) != 1 || c.Func.Name == timestampFunctionName {
 		return nil, false
 	}
 	return mixedExpHistogramSetOp(c.Args[0], s, ctx)
@@ -77,7 +77,7 @@ func lowerDateFnOverMixedExpHistogramSetOp(c *parser.Call, b *parser.BinaryExpr,
 	if dateFnExpr(c.Func.Name, nil, nil) == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return guardedValueProjection(floatForAgg, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+	return guardedValueProjection(floatForAgg, c.Args[0], s, ctx, mixedDateFamily, func(refs sampleRoleRefs) chplan.Expr {
 		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(refs.sourceMetrics(s)), nil))
-	}), nil
+	})
 }
