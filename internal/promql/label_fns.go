@@ -181,8 +181,14 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 //     already collapsed each series to a single row — which is why the
 //     timestamp columns are conditional rather than unconditional.
 //
-//   - Every other inner shape keeps the full Sample row, so we forward all
-//     four canonical columns.
+//   - Broadcasts and value-rewrite Projects can retain the legacy Sample
+//     classification despite having dropped MetricName. A closed, float-only
+//     physical schema with a real timestamp proves that absence; materialize
+//     the dropped name as an empty string and retain the canonical sample
+//     layout. Open schemas and outputs carrying any histogram helper or
+//     discriminator retain their prior path, outside this narrow repair.
+//
+//   - Remaining Sample inputs retain the canonical four-column path.
 //
 // The return type is the concrete *chplan.Project rather than the Node
 // interface because [guardLabelRewriteCollision] reads the projection list
@@ -216,11 +222,29 @@ func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chpla
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}})
 		return &chplan.Project{Roles: metricRoles(s), Input: inner, Projections: projections}
 	}
+	metricName := chplan.Projection{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}}
+	physical := inner.RowType()
+	_, hasMetricName := physical.ByName(s.MetricNameColumn)
+	attributes, _ := physical.ByName(s.AttributesColumn)
+	timestamp, _ := physical.ByName(s.TimestampColumn)
+	value, _ := physical.ByName(s.ValueColumn)
+	// A closed float-only Sample output may have dropped its metric name.
+	// Materialize the same empty-name convention as projectValueOverInner,
+	// keeping the real timestamp and canonical layout. Merely removing the
+	// name changes the collision guard to a derived output; a pinned broadcast
+	// is not a RangeWindow grid and that path synthesizes the wrong timestamp.
+	// Any histogram helper/discriminator excludes this narrow repair; this is
+	// not a definition of complete histogram payload or a new payload policy.
+	if !physical.Open && !hasMetricName && !physical.Has(chplan.RoleMetricName) &&
+		!physical.Has(chplan.RoleHistogramField) && !physical.Has(chplan.RoleDiscriminator) &&
+		attributes.Role == chplan.RoleAttributes && timestamp.Role == chplan.RoleTimestamp && value.Role == chplan.RoleValue {
+		metricName = chplan.Projection{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn}
+	}
 	return &chplan.Project{
 		Roles: metricRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
+			metricName,
 			{Expr: attrs, Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
