@@ -310,9 +310,25 @@ func (e *emitter) emitMixedVectorSetOp(s *chplan.VectorSetOp) error {
 	// so it doesn't.
 	windowCols := []Frag{Col(setOpSideCol), sideFlag(0, setOpHasLeftCol)}
 	survives := Or(Eq(Col(setOpSideCol), InlineLit(0)), Eq(Col(setOpHasLeftCol), InlineLit(0)))
-	if s.MixedDropCollisions {
+	switch {
+	case s.MixedDropCollisions:
 		windowCols = []Frag{sideFlag(0, setOpHasLeftCol), sideFlag(1, setOpHasRightCol)}
 		survives = Or(Eq(Col(setOpHasLeftCol), InlineLit(0)), Eq(Col(setOpHasRightCol), InlineLit(0)))
+	case s.MixedAbortOnCollision:
+		// The same two partition-wide flags, read as a rejection rather
+		// than a filter: both set means one match key carries a row from
+		// each arm, which for a FOLD recombination is two series on one
+		// label set. throwIf returns 0 when it does not fire, so `= 0` is
+		// the row-passing predicate — the idiom every emitted guard in
+		// this tree uses, and the reason the expression can ride in the
+		// WHERE the drop mode's own survival test occupies.
+		windowCols = []Frag{sideFlag(0, setOpHasLeftCol), sideFlag(1, setOpHasRightCol)}
+		survives = Eq(
+			Call("throwIf",
+				And(Eq(Col(setOpHasLeftCol), InlineLit(1)), Eq(Col(setOpHasRightCol), InlineLit(1))),
+				InlineLit(chplan.DuplicateLabelsetMessage)),
+			InlineLit(0),
+		)
 	}
 	windowed := NewQuery().
 		Select(append(mixedVectorSetOpOutputCols(s), windowCols...)...).
@@ -768,6 +784,13 @@ func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {
 		// from silently emitting a left-biased union where the caller asked
 		// for a symmetric difference.
 		return fmt.Errorf("%w: VectorSetOp.MixedDropCollisions needs .Mixed with an `or` op", ErrUnsupported)
+	case s.MixedAbortOnCollision && (!s.Mixed || s.Op != chplan.VectorSetOr):
+		return fmt.Errorf("%w: VectorSetOp.MixedAbortOnCollision needs .Mixed with an `or` op", ErrUnsupported)
+	case s.MixedDropCollisions && s.MixedAbortOnCollision:
+		// The two flags name incompatible answers to the same question —
+		// drop the colliding key, or refuse the query. Emitting one of
+		// them silently would make the plan's own intent unreadable.
+		return fmt.Errorf("%w: VectorSetOp.MixedDropCollisions and .MixedAbortOnCollision are mutually exclusive", ErrUnsupported)
 	}
 	return nil
 }

@@ -288,12 +288,22 @@ func lowerExpHistogramFoldOverCallSubqueryInput(wideInner chplan.Node, grid hist
 // [lowerExpHistogramFoldOverCallSubqueryInput] and the float half through
 // an ordinary OuterRange-mode [chplan.RangeWindow] (ITS OuterRange /
 // StepAlign fields already support this grid with no chplan change), then
-// recombining via the SAME [combineMixedAggregateBranches] the ambient-grid
+// recombining via the SAME [combineMixedFoldBranches] the ambient-grid
 // sibling uses — passed stepAligned=true unconditionally rather than
 // ctx.step > 0: both branches are ALWAYS multi-row per OUTER-subquery
 // anchor here (the grid is sub.Range/step, independent of the ambient
 // query's own instant/range mode), unlike the ambient-grid sibling whose
 // branches genuinely collapse to one row per series in instant mode.
+//
+// It used to recombine through [combineMixedAggregateBranches] instead,
+// which drops a match key both branches claim. That is reference's rule
+// for an aggregation GROUP, and there is no aggregation here — this is a
+// fold, so a key both branches claim is two SERIES on one label set, which
+// reference refuses to answer at all (cerberus issue #3253). Routing to
+// the fold sibling is also what makes the hist/float collision VISIBLE:
+// each branch's own name guard counts distinct names inside its own
+// branch, and a cross-branch collision contributes exactly one name to
+// each, so both branch-local counts are 1 and neither guard can fire.
 func lowerMixedFoldOverCallSubqueryInput(wideInner chplan.Node, grid histogramCallSubqueryGrid, windowFn string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	histSchema := histogramProjectionSchema(s)
 	histSchema.AggregationTemporalityColumn = ""
@@ -320,7 +330,7 @@ func lowerMixedFoldOverCallSubqueryInput(wideInner chplan.Node, grid histogramCa
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	return combineMixedAggregateBranches(histFolded, floatFolded, s, true), nil
+	return combineMixedFoldBranches(histFolded, floatFolded, s, true), nil
 }
 
 // nestedCallSubqueryShape reports whether expr — a SubqueryExpr's own
