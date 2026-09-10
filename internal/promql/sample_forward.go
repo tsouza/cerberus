@@ -91,6 +91,28 @@ func projectSampleRoles(
 	row := inner.RowType()
 	completeHistogram := row.HasHistogramPayload()
 	discriminated := row.Has(chplan.RoleDiscriminator)
+	// Private histogram working columns can accompany a real float Value.
+	// Public histogram-role fields or a discriminator claim the wire contract:
+	// validate that contract before a float-row proof may discard its columns.
+	publicHistogram := false
+	for _, field := range chplan.HistogramPayloadColumns() {
+		for _, column := range row.Columns {
+			if column.Name == field.Name && column.Role == chplan.RoleHistogramField {
+				publicHistogram = true
+			}
+		}
+	}
+	if publicHistogram || discriminated {
+		if !completeHistogram {
+			panic("promql: sample forwarder received incomplete public histogram payload")
+		}
+		for _, field := range chplan.HistogramPayloadColumns() {
+			requireUniqueNamedColumn(row, field)
+		}
+		if discriminated {
+			requireSampleRole(row, chplan.RoleDiscriminator)
+		}
+	}
 	floatOnly := !completeHistogram && !discriminated || mixedFloatRowsProven(inner)
 	liveMixed := completeHistogram && discriminated && !floatOnly
 	if !floatOnly && (policy.payload != preserveMixedSamplePayload || !liveMixed) {
