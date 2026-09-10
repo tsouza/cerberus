@@ -303,6 +303,10 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		if err != nil {
 			return nil, err
 		}
+		// Narrow while the operand still carries its Mixed shape. The bound
+		// Filter below has a legacy Sample shape and would otherwise hide
+		// histogram rows from guardedValueProjection's float-only check.
+		inner = mixedRowsFloatOnly(inner)
 		// Runtime mirror of the literal path's maxB < minB fold: keep
 		// rows only while NOT (max < min). NaN bounds compare false —
 		// rows survive and the NaN guard below turns the values NaN,
