@@ -143,6 +143,7 @@ func wrapMetadataCatalog(
 		input = &chplan.Filter{Input: scan, Predicate: combined}
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: catalogProjectionExpr(s, cat), Alias: cat.alias()},

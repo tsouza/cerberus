@@ -431,7 +431,7 @@ func lowerHistogramQuantileClassicBare(
 	// metric name. Strip the conventional `_bucket` suffix off the
 	// `__name__` matcher so a Grafana query of
 	// `rate(<X>_bucket[5m])` filters against `MetricName='<X>'`.
-	scan := &chplan.Scan{Table: s.HistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.HistogramTable), Table: s.HistogramTable}
 	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
@@ -473,6 +473,7 @@ func lowerHistogramQuantileClassicBare(
 	// (MetricName='', Attributes=<gkey>, TimeUnix=now64(9), Value=value).
 	// Mirrors wrapAggregateForSample in lower.go.
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -1129,7 +1130,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// user-supplied label matchers go straight through buildPredicate;
 	// the rate's [range] adds the time-bound window. `_bucket` suffix
 	// strip mirrors the bare-selector path — see stripBucketSuffix.
-	scan := &chplan.Scan{Table: s.HistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.HistogramTable), Table: s.HistogramTable}
 	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
 	anchor, err := anchorFromSelector(vs, ctx)
@@ -1176,6 +1177,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	)
 	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	agg := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              perSeries,
 		GroupBy:            userGroupBy,
 		GroupByAliases:     userAliases,
@@ -1215,6 +1217,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 
 	// Final Sample-row wrapping, same as the bare-selector path.
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -1368,6 +1371,7 @@ func classicBucketFiniteBoundsRestriction(input chplan.Node, s schema.Metrics) c
 	newBucketCounts := &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{pairedCounts, overflowCounts}}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Replacements: []chplan.Projection{
 			{Expr: newBucketCounts, Alias: s.BucketCountsColumn},
@@ -1435,7 +1439,7 @@ func (sh classicBucketShaping) reshape(
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
 		)
-		return &chplan.Project{Input: group, Projections: projections}, false
+		return &chplan.Project{Roles: metricRoles(s), Input: group, Projections: projections}, false
 	}
 
 	// Layer 1: the merged layout (union of every row's bounds) and the
@@ -1469,7 +1473,8 @@ func (sh classicBucketShaping) reshape(
 	)
 
 	return &chplan.Project{
-		Input:       &chplan.Project{Input: group, Projections: merged},
+		Roles:       metricRoles(s),
+		Input:       &chplan.Project{Roles: metricRoles(s), Input: group, Projections: merged},
 		Projections: repaired,
 	}, true
 }
@@ -1834,7 +1839,7 @@ func andExpr(a, b chplan.Expr) chplan.Expr {
 // lookback window. The instant lowering keeps `TimeUnix = now64(9)`
 // because instant queries have a single evaluation anchor.
 func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
@@ -1868,6 +1873,7 @@ func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schem
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -1972,6 +1978,7 @@ func lowerHistogramQuantileNativeOverProjection(hp chplan.Node, phi phiArg, s sc
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -2083,7 +2090,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// Build the Scan + Filter. Same shape as the classic-agg path: the
 	// metric-name + label matchers go through buildPredicate; the
 	// rate's [range] adds the time-bound window.
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
 	anchor, err := anchorFromSelector(vs, ctx)
@@ -2120,6 +2127,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 		shape.agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
 	)
 	agg := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              perSeries,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
@@ -2133,6 +2141,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// the folded {Positive,Negative}{Offset,BucketCounts}. Routed through
 	// expHistogramMergeSortStage first — see its doc for why.
 	rebuilt := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: expHistogramMergeSortStage(agg, ctx.resourceBounds.HistogramMergeMaxCostUnits),
 		Projections: append(
 			[]chplan.Projection{{Expr: attrsRebuild, Alias: s.AttributesColumn}},
@@ -2164,6 +2173,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 
 	// Final Sample-row wrapping, same as the bare-selector / classic-agg paths.
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

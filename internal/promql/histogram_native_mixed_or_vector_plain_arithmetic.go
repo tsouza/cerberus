@@ -76,6 +76,7 @@ func widenPlainVectorToMixedShape(node chplan.Node, s schema.Metrics) chplan.Nod
 	emptyBuckets := func() chplan.Expr { return &chplan.FuncCall{Fn: chplan.FnEmptyArrayFloat64} }
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: node,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},

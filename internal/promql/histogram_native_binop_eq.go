@@ -296,6 +296,7 @@ func compareTwoHistogramProjections(hpL, hpR chplan.Node, ne, returnBool bool, s
 	}
 
 	compared := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              &chplan.UnionAll{Inputs: []chplan.Node{lSide, rSide}},
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
@@ -321,11 +322,11 @@ func compareTwoHistogramProjections(hpL, hpR chplan.Node, ne, returnBool bool, s
 			chplan.Projection{Expr: &chplan.LitString{V: ""}, Alias: histSchema.MetricNameColumn},
 			chplan.Projection{Expr: valueExpr, Alias: histSchema.ValueColumn},
 		)
-		return &chplan.Project{Input: compared, Projections: projs}
+		return &chplan.Project{Roles: metricRoles(s), Input: compared, Projections: projs}
 	}
 
 	projs = append(projs, histogramCompareOutputProjections(histSchema)...)
-	reshaped := &chplan.Project{Input: compared, Projections: projs}
+	reshaped := &chplan.Project{Roles: metricRoles(s), Input: compared, Projections: projs}
 
 	nameExpr := chplan.Expr(&chplan.ColumnRef{Name: histSchema.MetricNameColumn})
 	tsExpr := chplan.Expr(chplan.NowNano())
@@ -352,7 +353,7 @@ func projectHistogramCompareSide(hp chplan.Node, side int64, histSchema schema.M
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}, Alias: col})
 	}
 	projs = append(projs, chplan.Projection{Expr: &chplan.LitInt{V: side}, Alias: histEqSideAlias})
-	return &chplan.Project{Input: hp, Projections: projs}
+	return &chplan.Project{Roles: metricRoles(histSchema), Input: hp, Projections: projs}
 }
 
 // histogramCompareFieldColumns names the nine histogram payload columns

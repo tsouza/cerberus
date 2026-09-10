@@ -145,11 +145,12 @@ func expHistogramCountPresentWindowed(fn string, ms *parser.MatrixSelector, vs *
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
-	var input chplan.Node = &chplan.Scan{Table: s.ExpHistogramTable}
+	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	if pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
 	return &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
@@ -166,7 +167,7 @@ func expHistogramCountPresentWindowed(fn string, ms *parser.MatrixSelector, vs *
 // group with the same value-blind aggregate the instant path uses.
 func lowerExpHistogramCountPresentRange(fn string, ms *parser.MatrixSelector, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	fanout := buildHistogramBucketFanout(
-		&chplan.Scan{Table: s.ExpHistogramTable},
+		&chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable},
 		buildPredicate(vs.LabelMatchers, s), nil,
 		windowFor(vs, ms.Range),
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
@@ -181,6 +182,7 @@ func lowerExpHistogramCountPresentRange(fn string, ms *parser.MatrixSelector, vs
 // this file's own doc for why neither function preserves it.
 func expHistogramCountPresentProjection(input chplan.Node, tsExpr chplan.Expr, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

@@ -337,7 +337,7 @@ func lowerMixedVVCompareFilter(join *chplan.MixedVectorJoin, op chplan.BinaryOp,
 		Alias: mixedDiscriminatorColumn,
 	})
 
-	return &chplan.Project{Input: filtered, Projections: projs}
+	return &chplan.Project{Roles: metricRoles(s), Input: filtered, Projections: projs}
 }
 
 // lowerMixedVVCompareBool answers a comparison WITH `bool`: every
@@ -382,6 +382,7 @@ func lowerMixedVVCompareBool(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s
 	filtered := &chplan.Filter{Input: join, Predicate: keep}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: filtered,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

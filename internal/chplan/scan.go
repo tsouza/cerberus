@@ -33,6 +33,8 @@ type Scan struct {
 	Table       string
 	UnionTables []string
 	Columns     []string
+	// Roles is supplied by the lowering that owns the configured table schema.
+	Roles []Column
 }
 
 func (*Scan) planNode() {}
@@ -45,6 +47,9 @@ func (s *Scan) Equal(other Node) bool {
 		return false
 	}
 	if len(s.Columns) != len(o.Columns) {
+		return false
+	}
+	if !(Schema{Columns: s.Roles}).Equal(Schema{Columns: o.Roles}) {
 		return false
 	}
 	for i := range s.Columns {

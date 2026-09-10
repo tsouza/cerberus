@@ -340,6 +340,7 @@ func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool
 	}
 
 	combined := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: syntheticSource(left),
 		Projections: []chplan.Projection{
 			leftProject.Projections[0], // "" AS MetricName

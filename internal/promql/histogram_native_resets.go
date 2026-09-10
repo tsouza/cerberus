@@ -206,7 +206,7 @@ func lowerExpHistogramResetsOrChanges(shape histogramAggShape, s schema.Metrics,
 // Reference counts the pairs it was handed and stretches nothing.
 func expHistogramResetsWindowed(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vs := shape.selector
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
 	anchor, err := anchorFromSelector(vs, ctx)
@@ -225,6 +225,7 @@ func expHistogramResetsWindowed(shape histogramAggShape, s schema.Metrics, ctx l
 	}
 
 	group := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
@@ -249,7 +250,7 @@ func expHistogramResetsWindowed(shape histogramAggShape, s schema.Metrics, ctx l
 // [chplan.RangeBucketFanout.MinSamples] (emitted as a HAVING), which is
 // why this path does not repeat the instant stage's minSamplesFilter.
 func lowerExpHistogramResetsRange(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(shape.selector.LabelMatchers, s)
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
@@ -302,6 +303,7 @@ func expHistogramPairCountStage(input chplan.Node, windowFn string, keyAliases [
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: append(projs, chplan.Projection{
 			Expr:  expHistogramPairCountExpr(windowFn, s, densified),
@@ -336,6 +338,7 @@ func expHistogramPairCountExpr(windowFn string, s schema.Metrics, densified bool
 // the histogram-valued twin of this same rule).
 func expHistogramPairCountProjection(input chplan.Node, tsExpr chplan.Expr, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

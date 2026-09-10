@@ -109,7 +109,7 @@ func histogramVectorJoinFieldCols(j *chplan.HistogramVectorJoin) []string {
 // histogramVectorJoinAlias names the outer SELECT's output column
 // carrying side's own value of col — `_hq_L_<col>` / `_hq_R_<col>`.
 func histogramVectorJoinAlias(side, col string) string {
-	return "_hq_" + side + "_" + col
+	return chplan.JoinSideAlias("_hq", side, col)
 }
 
 // histogramVectorJoinSideFrag renders one side of the join as a Frag

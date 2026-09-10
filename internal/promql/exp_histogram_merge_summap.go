@@ -250,6 +250,7 @@ const (
 func expHistogramMergeScaleScalarSubquery(perSeries chplan.Node, s schema.Metrics) chplan.Expr {
 	const scalarAlias = "_hq_pass1_merged_scale"
 	agg := &chplan.Aggregate{
+		Roles: metricRoles(s),
 		Input: chplan.CloneNode(perSeries),
 		AggFuncs: []chplan.AggFunc{
 			{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: scalarAlias},
@@ -257,6 +258,7 @@ func expHistogramMergeScaleScalarSubquery(perSeries chplan.Node, s schema.Metric
 	}
 	return &chplan.ScalarSubquery{
 		Input: &chplan.Project{
+			Roles:       metricRoles(s),
 			Input:       agg,
 			Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: scalarAlias}, Alias: scalarAlias}},
 		},
@@ -360,7 +362,7 @@ func expHistogramMergeScaleWindowProject(perSeries chplan.Node, anchor *chplan.C
 			Alias: hqWinTotalGroupCountAlias,
 		},
 	)
-	return &chplan.Project{Input: perSeries, Projections: projs}, expHistogramMergeScaleWindowCols{
+	return &chplan.Project{Roles: metricRoles(s), Input: perSeries, Projections: projs}, expHistogramMergeScaleWindowCols{
 		MergedScale:     &chplan.ColumnRef{Name: hqWinMergedScaleAlias},
 		TotalRowCount:   &chplan.ColumnRef{Name: hqWinTotalRowCountAlias},
 		TotalGroupCount: &chplan.ColumnRef{Name: hqWinTotalGroupCountAlias},
@@ -603,6 +605,7 @@ func expHistogramGroupMergeSumMap(perSeries chplan.Node, anchor *chplan.ColumnRe
 		aggFuncs = append(aggFuncs, expHistogramGroupSeriesCountAgg())
 	}
 	merged := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              mergeInput,
 		GroupBy:            mergeGroupBy,
 		GroupByAliases:     mergeGroupByAliases,
@@ -624,7 +627,7 @@ func expHistogramGroupMergeSumMap(perSeries chplan.Node, anchor *chplan.ColumnRe
 	if isAvg {
 		projs = expHistogramAvgScaleProjections(projs, s)
 	}
-	return &chplan.Project{Input: guarded, Projections: projs}
+	return &chplan.Project{Roles: metricRoles(s), Input: guarded, Projections: projs}
 }
 
 // ExpHistogramMergeLowerer decides how the across-series exponential-

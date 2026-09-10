@@ -198,7 +198,7 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 func compareRootLookup(s schema.Traces) chplan.Node {
 	return &chplan.Aggregate{
 		Input: &chplan.Filter{
-			Input:     &chplan.Scan{Table: s.SpansTable},
+			Input:     spanScan(s),
 			Predicate: traceScopedRootSpanCond(s),
 		},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},

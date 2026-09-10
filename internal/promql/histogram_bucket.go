@@ -167,7 +167,7 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 			Alias: bucketIdxAlias,
 		},
 	)
-	fanout := &chplan.Project{Input: scanOrFilter, Projections: fanoutProjections}
+	fanout := &chplan.Project{Roles: metricRoles(s), Input: scanOrFilter, Projections: fanoutProjections}
 
 	// Outer Project — synthesize the canonical Sample shape with the
 	// suffixed metric name + the `le` label baked into Attributes + the
@@ -239,7 +239,7 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{Expr: cumCount, Alias: s.ValueColumn},
 	)
-	return &chplan.Project{Input: fanout, Projections: outer}
+	return &chplan.Project{Roles: metricRoles(s), Input: fanout, Projections: outer}
 }
 
 // bucketIdxAlias is the CH-safe bare identifier used to surface the

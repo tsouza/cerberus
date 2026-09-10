@@ -445,6 +445,7 @@ func mixedOrSubqueryHistExistsFanout(histBranch chplan.Node, windowRange, offset
 		TimestampCol:   s.TimestampColumn,
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: fanout,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

@@ -111,6 +111,7 @@ func syntheticScalarVector(valueExpr, timeExpr chplan.Expr, s schema.Metrics, ct
 		}
 		valueExpr = rewriteAnchorRefs(valueExpr)
 		return &chplan.Project{
+			Roles: metricRoles(s),
 			Input: &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step},
 			Projections: []chplan.Projection{
 				{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -124,6 +125,7 @@ func syntheticScalarVector(valueExpr, timeExpr chplan.Expr, s schema.Metrics, ct
 		timeExpr = chplan.NowNano()
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: &chplan.OneRow{},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

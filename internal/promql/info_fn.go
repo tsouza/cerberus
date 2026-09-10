@@ -240,6 +240,7 @@ func lowerInfoNonStaticBase(
 	// output needs one named column list to read, not two arms to compare.
 	union := &chplan.UnionAll{Inputs: []chplan.Node{join, ignored}}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: union,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -548,6 +549,7 @@ func collapseInfoSeriesBySignature(node chplan.Node, s schema.Metrics) chplan.No
 	}
 
 	agg := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          node,
 		GroupBy:        groupBy,
 		GroupByAliases: groupByAliases,
@@ -575,6 +577,7 @@ func collapseInfoSeriesBySignature(node chplan.Node, s schema.Metrics) chplan.No
 	// canonical four-column Sample shape lowerInfoJoin's Info field
 	// requires.
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},

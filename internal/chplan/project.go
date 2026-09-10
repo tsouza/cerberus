@@ -18,6 +18,9 @@ func (p Projection) Equal(other Projection) bool {
 type Project struct {
 	Input       Node
 	Projections []Projection
+	// Roles declares public output roles for expressions synthesized here.
+	// Only names in the actual projection participate in RowType.
+	Roles []Column
 
 	// Replacements rewrites named columns IN PLACE on the pass-through
 	// path, rendered as ClickHouse's `* REPLACE (<expr> AS <alias>)`
@@ -46,6 +49,9 @@ func (p *Project) Equal(other Node) bool {
 		if !p.Projections[i].Equal(o.Projections[i]) {
 			return false
 		}
+	}
+	if !(Schema{Columns: p.Roles}).Equal(Schema{Columns: o.Roles}) {
+		return false
 	}
 	for i := range p.Replacements {
 		if !p.Replacements[i].Equal(o.Replacements[i]) {

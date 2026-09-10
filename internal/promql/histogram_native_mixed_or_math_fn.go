@@ -148,6 +148,7 @@ func floatRowsOnlyOverMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metr
 // function's doc comment for the compat-lane history this matches).
 func projectCanonicalFloatValue(floatRowsOnly chplan.Node, s schema.Metrics, newValue chplan.Expr) chplan.Node {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: floatRowsOnly,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

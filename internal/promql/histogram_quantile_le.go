@@ -273,6 +273,7 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Replacements: []chplan.Projection{
 			{Expr: finalBC, Alias: s.BucketCountsColumn},

@@ -82,6 +82,7 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 	}
 
 	agg := &chplan.Aggregate{
+		Roles:              logRoles(s),
 		Input:              input,
 		GroupBy:            groupBy,
 		GroupByAliases:     aliases,
@@ -494,6 +495,7 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 	}
 
 	return &chplan.Project{
+		Roles: logRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: sampleMetricNameCol},

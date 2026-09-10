@@ -132,7 +132,7 @@ func tsOfSampleTimestampAgg(fn string, s schema.Metrics) []chplan.AggFunc {
 func lowerTsOfFirstLastOverExpHistogram(fn string, ms *parser.MatrixSelector, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	switch rangeGridShapeFor(vs, ctx) {
 	case gridFanout:
-		scan := &chplan.Scan{Table: s.ExpHistogramTable}
+		scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 		pred := buildPredicate(vs.LabelMatchers, s)
 		fanout := buildHistogramBucketFanout(
 			scan, pred, nil, windowFor(vs, ms.Range),
@@ -175,7 +175,7 @@ func tsOfSampleTimestampSelected(fn string, ms *parser.MatrixSelector, vs *parse
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
-	var input chplan.Node = &chplan.Scan{Table: s.ExpHistogramTable}
+	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	if pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
@@ -217,6 +217,7 @@ func tsOfRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 func tsOfSelectProjection(inner chplan.Node, tsExpr chplan.Expr, s schema.Metrics) chplan.Node {
 	rawTs := &chplan.ColumnRef{Name: tsOfSampleTimestampAlias}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

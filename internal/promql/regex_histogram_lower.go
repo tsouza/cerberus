@@ -63,7 +63,7 @@ func regexHistogramNamePredicate(names []*labels.Matcher, s schema.Metrics) chpl
 }
 
 func regexHistogramScanTable(table string, s schema.Metrics, matchers []*labels.Matcher) chplan.Node {
-	scan := &chplan.Scan{Table: table}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, table), Table: table}
 	if pred := buildPredicate(matchers, s); pred != nil {
 		return &chplan.Filter{Input: scan, Predicate: pred}
 	}
@@ -86,6 +86,7 @@ func buildRegexHistogramCompanionArmTable(
 ) chplan.Node {
 	input := regexHistogramScanTable(table, s, scanMatchers)
 	project := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: append([]chplan.Projection{
 			{Expr: syntheticMetricNameExpr(s, suffix), Alias: s.MetricNameColumn},
@@ -185,7 +186,7 @@ func buildRegexHistogramBucketArm(
 // real Value, and sourceColumn mirrors expHistogramSelectorRouting's
 // choice of s.CountColumn as the placeholder.
 func buildRegexExpHistogramBareArm(s schema.Metrics, cat *metadataCatalog, matchers []*labels.Matcher, sourceColumn string) chplan.Node {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	var input chplan.Node = scan
 	if pred := buildPredicate(matchers, s); pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
@@ -205,11 +206,11 @@ func buildRegexExpHistogramBareArm(s schema.Metrics, cat *metadataCatalog, match
 			Alias: s.ValueColumn,
 		},
 	)
-	return &chplan.Project{Input: input, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: input, Projections: projections}
 }
 
 func buildRegexMetricArm(s schema.Metrics, cat *metadataCatalog, matchers []*labels.Matcher) chplan.Node {
-	scan := scanFromTables(s.TablesForUnknownName())
+	scan := scanFromTables(s.TablesForUnknownName(), s)
 	var input chplan.Node = scan
 	if pred := buildPredicate(matchers, s); pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
@@ -223,7 +224,7 @@ func buildRegexMetricArm(s schema.Metrics, cat *metadataCatalog, matchers []*lab
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 	)
-	return &chplan.Project{Input: input, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: input, Projections: projections}
 }
 
 func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {

@@ -193,6 +193,7 @@ func dropExpHistogramSamples(input chplan.Node, s schema.Metrics) chplan.Node {
 // add a second, redundant one.
 func floatShapedExpHistogramDrop(alreadyEmpty chplan.Node, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: alreadyEmpty,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

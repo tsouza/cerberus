@@ -382,7 +382,7 @@ func scaleHistogramProjection(hp chplan.Node, op chplan.BinaryOp, scale chplan.E
 	}
 
 	return nativeHistogramProjection(
-		&chplan.Project{Input: hp, Projections: projs},
+		&chplan.Project{Roles: metricRoles(s), Input: hp, Projections: projs},
 		&chplan.LitString{V: ""},
 		&chplan.ColumnRef{Name: s.TimestampColumn},
 		histSchema,

@@ -87,7 +87,7 @@ func expHistogramOverTimeWindowed(shape histogramAggShape, s schema.Metrics, ctx
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
-	var input chplan.Node = &chplan.Scan{Table: s.ExpHistogramTable}
+	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	if pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
@@ -114,7 +114,7 @@ func lowerExpHistogramOverTimeRange(shape histogramAggShape, s schema.Metrics, c
 
 	perSeries := expHistogramWindowReshape(
 		guardExpHistogramWindowReduction(buildHistogramBucketFanout(
-			&chplan.Scan{Table: s.ExpHistogramTable},
+			&chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable},
 			buildPredicate(shape.selector.LabelMatchers, s),
 			nil,
 			win,

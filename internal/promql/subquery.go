@@ -520,6 +520,7 @@ func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
 		})
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: inner,
 		Projections: append(
 			projections,
@@ -2007,6 +2008,7 @@ func lowerSubqueryOverAbsent(
 
 	matrixShape := func(inner chplan.Node) chplan.Node {
 		return &chplan.Project{
+			Roles: metricRoles(s),
 			Input: inner,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -2097,6 +2099,7 @@ func lowerAbsentOverTimeOverSubquery(
 		// or cyclically self-reference — the input relation's column of
 		// the same name.
 		Input: &chplan.Project{
+			Roles: metricRoles(s),
 			Input: inner,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -2275,6 +2278,7 @@ func lowerSubqueryOverAggregate(
 	}
 
 	innerAgg := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              matrix,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupAliases,
@@ -2292,6 +2296,7 @@ func lowerSubqueryOverAggregate(
 	groupKeyAliases := groupAliases[:len(groupAliases)-1]
 	attrsExpr := buildAttributesFromAggregate(agg, groupKeyAliases)
 	wrapped := chplan.Node(&chplan.Project{
+		Roles: metricRoles(s),
 		Input: innerAgg,
 		Projections: []chplan.Projection{
 			{Expr: attrsExpr, Alias: s.AttributesColumn},
@@ -2343,6 +2348,7 @@ func wrapSubqueryQuantilePhiGuard(
 ) (chplan.Node, error) {
 	matrixValueWrap := func(value chplan.Expr) chplan.Node {
 		return &chplan.Project{
+			Roles: metricRoles(s),
 			Input: wrapped,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -2448,6 +2454,7 @@ func lowerSubqueryOverTopK(
 			return nil, fmt.Errorf("promql: subquery over %s K: %w", agg.Op.String(), err)
 		}
 		kExpr = &chplan.Project{
+			Roles: metricRoles(s),
 			Input: &chplan.OneRow{},
 			Projections: []chplan.Projection{
 				{Expr: topKDomainExpr(kValue), Alias: s.ValueColumn},
@@ -2592,6 +2599,7 @@ func lowerSubqueryOverLimitRatio(
 
 	const anchorAlias = "anchor_ts"
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: &chplan.Filter{Input: matrix, Predicate: pred},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -2651,6 +2659,7 @@ func lowerSubqueryOverCountValues(
 	aliases = append(aliases, anchorAlias)
 
 	innerAgg := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          matrix,
 		GroupBy:        groupBy,
 		GroupByAliases: aliases,
@@ -2709,6 +2718,7 @@ func lowerSubqueryOverCountValues(
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: innerAgg,
 		Projections: []chplan.Projection{
 			{Expr: attrs, Alias: s.AttributesColumn},

@@ -132,5 +132,5 @@ func mixedVectorJoinFieldCols(j *chplan.MixedVectorJoin) []string {
 // internal/promql/histogram_native_binop_card.go's histJoinFieldAlias
 // already carry).
 func mixedVectorJoinAlias(side, col string) string {
-	return "_mvj_" + side + "_" + col
+	return chplan.JoinSideAlias("_mvj", side, col)
 }

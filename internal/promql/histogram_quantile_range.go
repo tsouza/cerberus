@@ -160,6 +160,7 @@ func fanoutWindowBoundsExpr(anchorRef chplan.Expr, win histogramWindow) (start, 
 // two groups — each keeping only its own subset's newest sample.
 func latestSampleAgg(input chplan.Node, aggs []chplan.AggFunc, s schema.Metrics) chplan.Node {
 	return &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
@@ -239,6 +240,7 @@ func latestArgMax(col string, s schema.Metrics) chplan.AggFunc {
 func broadcastHistogramAtPin(inner chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: &chplan.CrossJoin{Left: grid, Right: inner},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -263,7 +265,7 @@ func lowerHistogramQuantileClassicBareRange(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
-	scan := &chplan.Scan{Table: s.HistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.HistogramTable), Table: s.HistogramTable}
 	// `_bucket` suffix strip — see stripBucketSuffix in
 	// histogram_quantile.go. Grafana classic-histogram dashboards
 	// fire `rate(<X>_bucket[r])`; the OTel-CH histogram row carries
@@ -295,7 +297,7 @@ func lowerHistogramQuantileClassicAggRange(
 	ctx lowerCtx,
 ) chplan.Node {
 	vs := shape.selector
-	scan := &chplan.Scan{Table: s.HistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.HistogramTable), Table: s.HistogramTable}
 	// `_bucket` suffix strip — see stripBucketSuffix in
 	// histogram_quantile.go.
 	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
@@ -332,6 +334,7 @@ func lowerHistogramQuantileClassicAggRange(
 	)
 	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	collapse := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              perSeries,
 		GroupBy:            append([]chplan.Expr{anchorRef}, userGroupBy...),
 		GroupByAliases:     append([]string{stepGridAnchorColumn}, userAliases...),
@@ -441,6 +444,7 @@ func histogramRangeQuantileTree(
 	hq = ctx.lowerers.QuantileRankWalk.LowerQuantileRankWalk(hq)
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -483,7 +487,7 @@ func lowerHistogramQuantileNativeBareRange(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
 	groupBy := []chplan.Expr{histogramIdentityExpr(s)}
@@ -531,7 +535,7 @@ func lowerHistogramQuantileNativeAggRange(
 	ctx lowerCtx,
 ) chplan.Node {
 	vs := shape.selector
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
 	// Two stages, like the instant native sibling — see
@@ -592,6 +596,7 @@ func buildHistogramNativeRangeTree(
 		{Expr: &chplan.ColumnRef{Name: s.SumColumn}, Alias: s.SumColumn},
 	}...)
 	rebuilt := &chplan.Project{
+		Roles:       metricRoles(s),
 		Input:       agg,
 		Projections: rebuiltProjs,
 	}
@@ -620,6 +625,7 @@ func buildHistogramNativeRangeTree(
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -703,6 +709,7 @@ func buildHistogramNativeRangeTreeMerge(
 	// Stage 2: the user's aggregation across those per-series rows,
 	// within each anchor.
 	agg := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              perSeries,
 		GroupBy:            append([]chplan.Expr{anchorRef}, userGroupBy...),
 		GroupByAliases:     append([]string{stepGridAnchorColumn}, userAliases...),
@@ -714,6 +721,7 @@ func buildHistogramNativeRangeTreeMerge(
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
 	// Routed through expHistogramMergeSortStage first — see its doc.
 	rebuilt := &chplan.Project{
+		Roles: metricRoles(s),
 		Input: expHistogramMergeSortStage(agg, ctx.resourceBounds.HistogramMergeMaxCostUnits),
 		Projections: append(
 			[]chplan.Projection{
@@ -748,6 +756,7 @@ func buildHistogramNativeRangeTreeMerge(
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hq,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

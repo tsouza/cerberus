@@ -145,6 +145,7 @@ func lowerExpHistogramCountOrGroupOverPlan(agg *parser.AggregateExpr, input chpl
 	}
 
 	reduced := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
@@ -152,6 +153,7 @@ func lowerExpHistogramCountOrGroupOverPlan(agg *parser.AggregateExpr, input chpl
 		DropEmptyOnNoGroup: true,
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: reduced,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -232,7 +234,7 @@ func lowerExpHistogramCount(agg *parser.AggregateExpr, vs *parser.VectorSelector
 // sample projection: the filtered scan collapsed to the newest in-window
 // sample per series, then counted across series by the user's grouping.
 func expHistogramCountInstant(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
@@ -251,7 +253,7 @@ func expHistogramCountInstant(agg *parser.AggregateExpr, vs *parser.VectorSelect
 // one staleness window per step anchor, keyed on SERIES identity — and
 // stage 2 is the across-series count within each anchor.
 func lowerExpHistogramCountRange(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	perSeries := buildHistogramBucketFanout(
 		scan, pred, nil, windowFor(vs, instantLookback),
@@ -299,6 +301,7 @@ func expHistogramGroupCount(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 		projs = append(projs, chplan.Projection{Expr: anchor, Alias: stepGridAnchorColumn})
 	}
 	counted := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          perSeries,
 		GroupBy:        groupBy,
 		GroupByAliases: groupByAliases,
@@ -319,7 +322,7 @@ func expHistogramGroupCount(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 		// wrap a second toFloat64 around an already-float column.
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 	)
-	return &chplan.Project{Input: counted, Projections: projs}
+	return &chplan.Project{Roles: metricRoles(s), Input: counted, Projections: projs}
 }
 
 // expHistogramCountProjection caps the counted subtree with the ordinary
@@ -328,6 +331,7 @@ func expHistogramGroupCount(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 // [aggregatedHistogramProjection] applies on the histogram-valued side.
 func expHistogramCountProjection(input chplan.Node, tsExpr chplan.Expr, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

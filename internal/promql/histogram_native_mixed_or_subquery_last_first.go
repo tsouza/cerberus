@@ -157,6 +157,7 @@ func lowerMixedOrSubqueryLastFirstRange(mixedRel chplan.Node, sub *parser.Subque
 // level up in Mixed-row width.
 func mixedLastFirstWindowed(windowFn string, mixedRel chplan.Node, histSchema, s schema.Metrics) chplan.Node {
 	return &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              mixedRel,
 		GroupBy:            mixedLastFirstSeriesKey(s),
 		GroupByAliases:     mixedLastFirstSeriesKeyAliases(s),
@@ -273,5 +274,5 @@ func mixedLastFirstProjection(input chplan.Node, tsExpr chplan.Expr, histSchema,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: histSchema.NegativeBucketCountsColumn}, Alias: histSchema.NegativeBucketCountsColumn},
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.MixedDiscriminatorColumn}, Alias: chplan.MixedDiscriminatorColumn},
 	)
-	return &chplan.Project{Input: input, Projections: projs}
+	return &chplan.Project{Input: input, Projections: projs, Roles: metricRoles(s)}
 }

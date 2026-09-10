@@ -95,6 +95,8 @@ func TestLower(t *testing.T) {
 			t.Fatalf("Emit(optimized plan): %v", err)
 		}
 		roundTripResult := spec.RunRoundTripSQL(t, c, optSQL, optArgs)
+		spec.AssertRowTypeMatchesDriver(t, optimized, roundTripResult)
+		spec.AssertRowShapeAgreement(t, plan)
 
 		// A fixture carrying a `parity:` section is additionally answered
 		// by the REAL upstream Loki engine over the same seeded data, and

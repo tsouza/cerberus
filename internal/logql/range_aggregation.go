@@ -168,6 +168,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		{Expr: valueExpr, Alias: rangeAggSynthValueColumn},
 	}
 	projected := &chplan.Project{
+		Roles:       logRoles(s),
 		Input:       innerNode,
 		Projections: projections,
 	}
@@ -305,6 +306,7 @@ func lowerAbsentOverTime(e *syntax.RangeAggregationExpr, s schema.Logs, lc lower
 	const tsAlias = sampleTimeUnixCol
 	a := &chplan.AbsentOverTime{
 		Input: &chplan.Project{
+			Roles: logRoles(s),
 			Input: inner,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: tsAlias},
@@ -1011,7 +1013,7 @@ func materialiseParserMergedLabels(
 		projected[col] = true
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}})
 	}
-	return &chplan.Project{Input: inner, Projections: projections}, &chplan.ColumnRef{Name: mergedAlias}
+	return &chplan.Project{Roles: logRoles(s), Input: inner, Projections: projections}, &chplan.ColumnRef{Name: mergedAlias}
 }
 
 // unwrapSeriesIdentity derives the `| unwrap` shape's series identity,

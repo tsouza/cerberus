@@ -179,6 +179,7 @@ func lowerMulOrDivScaleOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op c
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

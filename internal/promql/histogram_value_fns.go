@@ -164,7 +164,7 @@ func lowerHistogramValueFnInstant(
 	// reads the newest sample per series, then surface now64(9) as the
 	// instant eval anchor. Without the aggregation the bare scan emits
 	// every historical sample per series.
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
@@ -181,6 +181,7 @@ func lowerHistogramValueFnInstant(
 	agg := latestSampleAgg(input, histogramValueLatestAggs(s), s)
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -214,11 +215,12 @@ func lowerHistogramValueFnPerSample(
 	value chplan.Expr,
 	s schema.Metrics,
 ) chplan.Node {
-	var input chplan.Node = &chplan.Scan{Table: s.ExpHistogramTable}
+	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	if pred := buildPredicate(vs.LabelMatchers, s); pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -300,6 +302,7 @@ func lowerHistogramValueFnOverProjection(
 		return nil, err
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: hp,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -367,7 +370,7 @@ func lowerHistogramValueFnRange(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
-	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
@@ -379,6 +382,7 @@ func lowerHistogramValueFnRange(
 	)
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

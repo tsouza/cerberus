@@ -427,6 +427,7 @@ func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node
 		groupByAliases = append([]string{bucketAlias}, groupByAliases...)
 	}
 	merged := &chplan.Aggregate{
+		Roles:              metricRoles(s),
 		Input:              input,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
@@ -444,6 +445,7 @@ func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: merged,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -513,6 +515,7 @@ func canonicalizeMixedFloatArmForAgg(input chplan.Node, s schema.Metrics) chplan
 		return input
 	}
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},

@@ -127,6 +127,7 @@ func lowerArithmeticOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chpl
 	}
 
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: floatRowsOnly,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},

@@ -124,6 +124,7 @@ func wrapMixedHistogramPartition(mixed chplan.Node, s schema.Metrics) *chplan.Hi
 // placeholder histogram columns and the discriminator.
 func wrapMixedFloatPartition(mixed chplan.Node, s schema.Metrics) *chplan.Project {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: mixedDiscriminatorFilter(mixed, mixedDiscriminatorFloat),
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},

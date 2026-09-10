@@ -114,7 +114,7 @@ func expHistogramLastFirstWindowed(fn string, ms *parser.MatrixSelector, vs *par
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
-	var input chplan.Node = &chplan.Scan{Table: s.ExpHistogramTable}
+	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	if pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
@@ -129,7 +129,7 @@ func expHistogramLastFirstWindowed(fn string, ms *parser.MatrixSelector, vs *par
 // or a folded distribution.
 func lowerExpHistogramLastFirstRange(fn string, ms *parser.MatrixSelector, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	fanout := buildHistogramBucketFanout(
-		&chplan.Scan{Table: s.ExpHistogramTable},
+		&chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable},
 		buildPredicate(vs.LabelMatchers, s), nil,
 		windowFor(vs, ms.Range),
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},

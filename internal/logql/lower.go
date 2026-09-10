@@ -388,7 +388,12 @@ func lower(expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 // the emitted SQL honours the request's wire-format window — see
 // [andFoldTimeWindow] for which upper bound each query shape gets.
 func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.Node {
-	scan := &chplan.Scan{Table: s.LogsTable}
+	scan := &chplan.Scan{Table: s.LogsTable, Roles: []chplan.Column{
+		{Name: s.ResourceAttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.TraceIDColumn, Role: chplan.RoleTraceID},
+		{Name: s.SpanIDColumn, Role: chplan.RoleSpanID},
+	}}
 	pred := buildMatchersPredicate(e.Mts, s)
 	pred = andFoldTimeWindow(pred, s, lc)
 	if pred == nil {

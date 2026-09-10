@@ -160,6 +160,7 @@ func mixedPairCountStage(input chplan.Node, windowFn string, keyAliases []string
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
 	}
 	return &chplan.Project{
+		Roles: metricRoles(histSchema),
 		Input: input,
 		Projections: append(projs, chplan.Projection{
 			Expr:  mixedPairCountExpr(windowFn, histSchema, densified),
@@ -307,6 +308,7 @@ func lowerMixedOrSubqueryResetsOrChangesInput(mixedRel chplan.Node, sub *parser.
 	}
 
 	group := &chplan.Aggregate{
+		Roles:          metricRoles(s),
 		Input:          mixedRel,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		GroupByAliases: []string{s.AttributesColumn},

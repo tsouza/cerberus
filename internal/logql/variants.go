@@ -366,7 +366,7 @@ func fuseVariantArms(arms []chplan.Node) (*chplan.RangeWindow, bool) {
 	shared = append(shared, base.Projections[valueIdx+1:]...)
 
 	fused := *windows[0]
-	fused.Input = &chplan.Project{Input: base.Input, Projections: shared}
+	fused.Input = &chplan.Project{Roles: logSampleRoles(), Input: base.Input, Projections: shared}
 	// Func / ValueColumn describe no single arm now: each arm names its own
 	// pair, and ValueColumn becomes the OUTPUT alias the unpivot writes.
 	fused.Func = ""
@@ -528,6 +528,7 @@ func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) 
 	}
 
 	return &chplan.Project{
+		Roles: logRoles(s),
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: cols.metricName, Alias: sampleMetricNameCol},
@@ -561,6 +562,7 @@ func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) chplan
 		},
 	}
 	return &chplan.Project{
+		Roles: logRoles(s),
 		Input: top,
 		Projections: []chplan.Projection{
 			{Expr: cols.metricName, Alias: sampleMetricNameCol},

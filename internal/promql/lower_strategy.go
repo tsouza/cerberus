@@ -683,6 +683,7 @@ func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) c
 // empty literal for either caller.
 func derivedRateArm(input chplan.Node, s schema.Metrics) *chplan.Project {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -1622,6 +1623,7 @@ func (n NativeIrateLowerer) LowerIrate(rw *chplan.RangeWindow, s schema.Metrics)
 // literal.
 func derivedIrateArm(input chplan.Node, s schema.Metrics) *chplan.Project {
 	return &chplan.Project{
+		Roles: metricRoles(s),
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
