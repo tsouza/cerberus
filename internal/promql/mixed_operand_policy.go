@@ -149,12 +149,12 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedCountValuesFamily, mixedPlanAdmission}:       mixedBespoke,
 }
 
-func lowerWithMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, lower func() (chplan.Node, error)) (chplan.Node, error) {
+func lowerWithMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, build func() (chplan.Node, error)) (chplan.Node, error) {
 	key := mixedWrapperKey{family: family, site: site}
 	if err := requireMixedBespokePolicy(key, mixedOperandPolicies[key]); err != nil {
 		return nil, err
 	}
-	return lower()
+	return build()
 }
 
 func requireMixedBespokePolicy(key mixedWrapperKey, policy mixedOperandPolicy) error {
