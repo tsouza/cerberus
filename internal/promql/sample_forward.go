@@ -99,34 +99,7 @@ func projectSampleRoles(
 	if liveMixed && !layout.canonical {
 		panic("promql: mixed sample forwarding requires a canonical envelope")
 	}
-	refs := sampleRoleRefs{
-		Attributes: requireSampleRole(row, chplan.RoleAttributes),
-		Value:      requireSampleRole(row, chplan.RoleValue),
-	}
-	if layout.canonical || layout.anchored {
-		refs.Timestamp = requireSampleRole(row, chplan.RoleTimestamp)
-	}
-	if layout.anchored {
-		refs.Anchor = requireSampleRole(row, chplan.RoleAnchor)
-	}
-	if layout.canonical && policy.name == preserveSampleName {
-		if row.Has(chplan.RoleMetricName) {
-			refs.MetricName = requireSampleRole(row, chplan.RoleMetricName)
-		} else if column, exists := row.ByName(s.MetricNameColumn); exists {
-			if column.Role != chplan.RoleOpaque {
-				panic("promql: configured metric-name column carries a conflicting role")
-			}
-			// Compatibility boundary pinned by the missing-name repair: an
-			// existing configured name is not a missing name, even when its
-			// producer has not attached a role. Never synthesize over it.
-			requireUniqueNamedColumn(row, column)
-			refs.MetricName = &chplan.ColumnRef{Name: column.Name}
-		} else if row.Open || row.Has(chplan.RoleHistogramField) || discriminated {
-			// The missing-name float repair permits canonical synthesis only
-			// for a closed float output, never an unknown or payload envelope.
-			panic("promql: sample forwarder cannot synthesize a missing metric name for an unknown or histogram output")
-		}
-	}
+	refs := resolveSampleRoleRefs(row, s, policy, layout)
 	var histogram []chplan.Projection
 	var discriminator *chplan.ColumnRef
 	if liveMixed {
@@ -169,6 +142,38 @@ func projectSampleRoles(
 		projections = append(projections, sampleForwardColumn(discriminator, mixedDiscriminatorColumn, false))
 	}
 	return &chplan.Project{Input: inner, Roles: metricRoles(s), Projections: projections}
+}
+
+func resolveSampleRoleRefs(row chplan.Schema, s schema.Metrics, policy sampleProjectionPolicy, layout sampleProjectionLayout) sampleRoleRefs {
+	refs := sampleRoleRefs{
+		Attributes: requireSampleRole(row, chplan.RoleAttributes),
+		Value:      requireSampleRole(row, chplan.RoleValue),
+	}
+	if layout.canonical || layout.anchored {
+		refs.Timestamp = requireSampleRole(row, chplan.RoleTimestamp)
+	}
+	if layout.anchored {
+		refs.Anchor = requireSampleRole(row, chplan.RoleAnchor)
+	}
+	if layout.canonical && policy.name == preserveSampleName {
+		if row.Has(chplan.RoleMetricName) {
+			refs.MetricName = requireSampleRole(row, chplan.RoleMetricName)
+		} else if column, exists := row.ByName(s.MetricNameColumn); exists {
+			if column.Role != chplan.RoleOpaque {
+				panic("promql: configured metric-name column carries a conflicting role")
+			}
+			// Compatibility boundary pinned by the missing-name repair: an
+			// existing configured name is not a missing name, even when its
+			// producer has not attached a role. Never synthesize over it.
+			requireUniqueNamedColumn(row, column)
+			refs.MetricName = &chplan.ColumnRef{Name: column.Name}
+		} else if row.Open || row.Has(chplan.RoleHistogramField) || row.Has(chplan.RoleDiscriminator) {
+			// The missing-name float repair permits canonical synthesis only
+			// for a closed float output, never an unknown or payload envelope.
+			panic("promql: sample forwarder cannot synthesize a missing metric name for an unknown or histogram output")
+		}
+	}
+	return refs
 }
 
 func requireSampleRole(row chplan.Schema, role chplan.ColumnRole) *chplan.ColumnRef {

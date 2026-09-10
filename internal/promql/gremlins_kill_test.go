@@ -931,21 +931,6 @@ func TestAbsentAttrsMap_NameSkipContinuesPastLaterMatchers(t *testing.T) {
 	}
 }
 
-// mixedDiscriminatorMarkerProject is a *chplan.Project whose single
-// projection publishes chplan.MixedDiscriminatorColumn — the one shape
-// [chplan.RowShapeOf] recognises as chplan.MixedRowShape (see that
-// function's own doc comment). Used below purely to make
-// guardLabelRewriteCollision's `mixed` local report true without
-// depending on a real mixed-`or` lowering.
-func mixedDiscriminatorMarkerProject(input chplan.Node) *chplan.Project {
-	return &chplan.Project{
-		Input: input,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: chplan.MixedDiscriminatorColumn}, Alias: chplan.MixedDiscriminatorColumn},
-		},
-	}
-}
-
 // TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop pins that a
 // mixed-payload column does not swallow the projection after it: the
 // payload column is skipped by the `continue` under
