@@ -8,12 +8,14 @@ SELECT * FROM (SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT
 [2] float64 = 1
 -- seed --
 CREATE TABLE otel_traces (
-    Duration UInt64
+    Duration UInt64,
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (10000000),
-    (20000000),
-    (30000000);
+INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
+    (10000000, 'a0000000000000000000000000000001', '0000000000000001'),
+    (20000000, 'a0000000000000000000000000000001', '0000000000000002'),
+    (30000000, 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
   [3]
@@ -24,3 +26,6 @@ MetricsSecondStage op=threshold threshold=(> 1) valueAlias=Value
     MetricsAggregate op=rate valueAlias=Value
       Filter predicate=true
         Scan(otel_traces)
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | rate() | topk(5) > 1` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

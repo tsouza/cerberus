@@ -67,7 +67,6 @@ package traceql
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -96,6 +95,32 @@ type Span struct {
 	// free to populate only one, so the two are merged in
 	// resourceAttributes below rather than one being preferred.
 	ServiceName string
+
+	// ScopeName and ScopeVersion back the `instrumentation:` intrinsics.
+	// They are OTel-CH's own scalar columns, not attribute maps.
+	ScopeName    string
+	ScopeVersion string
+
+	// Events and Links are the span's nested child records, read back
+	// from OTel-CH's `Events.*` and `Links.*` array columns. See
+	// [scopedChildRecords] for why at most one of each is accepted.
+	Events []Event
+	Links  []Link
+}
+
+// Event is one entry of a span's `Events.*` nested columns: the event
+// name plus that event's own attribute map.
+type Event struct {
+	Name  string
+	Attrs map[string]string
+}
+
+// Link is one entry of a span's `Links.*` nested columns: the linked
+// span's identity plus that link's own attribute map.
+type Link struct {
+	TraceID string
+	SpanID  string
+	Attrs   map[string]string
 }
 
 // resourceAttributes is the span's resource scope as the engine must see
@@ -257,6 +282,9 @@ func buildTrace(t trace) (builtTrace, error) {
 			)
 		}
 		present[s.SpanID] = true
+		if err := validateChildRecords(s); err != nil {
+			return builtTrace{}, err
+		}
 	}
 
 	var roots []Span
@@ -404,6 +432,12 @@ func newEngineSpan(s Span, meta traceMeta, parentLeft, left, right int32) tempot
 
 	resourceAttrs := appendScoped(nil, tempotraceql.AttributeScopeResource, s.resourceAttributes())
 
+	eventAttrs, linkAttrs := s.childScopeAttrs()
+	instrumentationAttrs := []vparquet4.SpanAttr{
+		{Attr: tempotraceql.IntrinsicInstrumentationNameAttribute, Value: tempotraceql.NewStaticString(s.ScopeName)},
+		{Attr: tempotraceql.IntrinsicInstrumentationVersionAttribute, Value: tempotraceql.NewStaticString(s.ScopeVersion)},
+	}
+
 	// The `trace:` intrinsics are per-TRACE facts that upstream's decoder
 	// nonetheless hangs off every span, because the engine resolves an
 	// attribute through whichever span it is currently evaluating.
@@ -418,16 +452,83 @@ func newEngineSpan(s Span, meta traceMeta, parentLeft, left, right int32) tempot
 	}
 
 	return vparquet4.NewSpan(vparquet4.SpanData{
-		ID:                 []byte(s.SpanID),
-		StartTimeUnixNanos: s.StartUnixNano,
-		DurationNanos:      s.DurationNanos,
-		NestedSetParent:    parentLeft,
-		NestedSetLeft:      left,
-		NestedSetRight:     right,
-		SpanAttrs:          spanAttrs,
-		ResourceAttrs:      resourceAttrs,
-		TraceAttrs:         traceAttrs,
+		ID:                   []byte(s.SpanID),
+		StartTimeUnixNanos:   s.StartUnixNano,
+		DurationNanos:        s.DurationNanos,
+		NestedSetParent:      parentLeft,
+		NestedSetLeft:        left,
+		NestedSetRight:       right,
+		SpanAttrs:            spanAttrs,
+		ResourceAttrs:        resourceAttrs,
+		TraceAttrs:           traceAttrs,
+		EventAttrs:           eventAttrs,
+		LinkAttrs:            linkAttrs,
+		InstrumentationAttrs: instrumentationAttrs,
 	})
+}
+
+// childScopeAttrs renders the span's events and links into the flat
+// `event.` and `link.` attribute scopes upstream's own decoder builds.
+//
+// The flattening is upstream's, not this package's invention: vparquet4
+// decodes every event's attributes into ONE EventAttrs slice and every
+// link's into ONE LinkAttrs slice, and the engine's AttributeFor resolves
+// a scoped read against that flat slice. Per-event and per-link matching
+// happens in Tempo's FETCH layer, which this in-process oracle does not
+// run.
+//
+// That is exactly why [validateChildRecords] refuses a span carrying more
+// than one event or more than one link: with two events the flat slice
+// can hold the same key twice, AttributeFor answers with whichever came
+// first, and the oracle would report a confident wrong answer where real
+// Tempo matches on the other event. One event and one link per span is
+// the region where the flat model and the fetch layer cannot disagree.
+func (s Span) childScopeAttrs() (events, links []vparquet4.SpanAttr) {
+	for _, e := range s.Events {
+		events = append(events, vparquet4.SpanAttr{
+			Attr:  tempotraceql.IntrinsicEventNameAttribute,
+			Value: tempotraceql.NewStaticString(e.Name),
+		})
+		events = appendScoped(events, tempotraceql.AttributeScopeEvent, e.Attrs)
+	}
+	for _, l := range s.Links {
+		links = append(links,
+			vparquet4.SpanAttr{
+				Attr:  tempotraceql.IntrinsicLinkTraceIDAttribute,
+				Value: tempotraceql.NewStaticString(l.TraceID),
+			},
+			vparquet4.SpanAttr{
+				Attr:  tempotraceql.IntrinsicLinkSpanIDAttribute,
+				Value: tempotraceql.NewStaticString(l.SpanID),
+			},
+		)
+		links = appendScoped(links, tempotraceql.AttributeScopeLink, l.Attrs)
+	}
+	return events, links
+}
+
+// validateChildRecords refuses a span the flat event/link model cannot
+// represent faithfully. See [Span.childScopeAttrs] for why more than one
+// of either is the boundary.
+func validateChildRecords(s Span) error {
+	const maxFlattenableChildRecords = 1
+	if len(s.Events) > maxFlattenableChildRecords {
+		return fmt.Errorf(
+			"span %s carries %d events; the in-process oracle flattens every event's attributes "+
+				"into one `event.` scope, so a second event's value for the same key would be "+
+				"invisible to it while real Tempo's fetch layer matches on it",
+			s.SpanID, len(s.Events),
+		)
+	}
+	if len(s.Links) > maxFlattenableChildRecords {
+		return fmt.Errorf(
+			"span %s carries %d links; the in-process oracle flattens every link's attributes "+
+				"into one `link.` scope, so a second link's value for the same key would be "+
+				"invisible to it while real Tempo's fetch layer matches on it",
+			s.SpanID, len(s.Links),
+		)
+	}
+	return nil
 }
 
 // appendScoped adds an attribute map under one scope, in sorted key order
@@ -455,10 +556,10 @@ func appendScoped(
 // column — which several fixtures seed by DEFAULT — is Unset, the same
 // reading upstream's own decoder gives an absent status.
 func statusFromColumn(code string) tempotraceql.Status {
-	switch strings.ToLower(strings.TrimSpace(code)) {
-	case "error":
+	switch code {
+	case "Error":
 		return tempotraceql.StatusError
-	case "ok":
+	case "Ok":
 		return tempotraceql.StatusOk
 	default:
 		return tempotraceql.StatusUnset
@@ -466,18 +567,29 @@ func statusFromColumn(code string) tempotraceql.Status {
 }
 
 // kindFromColumn decodes the OTel-CH SpanKind column, which holds TitleCase
-// strings. An empty column is Unspecified.
+// strings. Anything else — an empty column, or any other spelling — is
+// Unspecified.
+//
+// The match is EXACT, for the same reason statusFromColumn's is: the
+// TitleCase spelling is the storage encoding the OTel-CH exporter writes,
+// so a case-folding decode would not be leniency about presentation, it
+// would be the oracle recognising a value the column cannot hold. It
+// would also make the oracle disagree with cerberus about data rather
+// than about the query — cerberus emits `SpanKind = 'Client'` verbatim
+// (internal/traceql/lower.go's kind rendering), so a row spelling the
+// kind any other way is a non-match on the cerberus side and must be one
+// here too.
 func kindFromColumn(kind string) tempotraceql.Kind {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "internal":
+	switch kind {
+	case "Internal":
 		return tempotraceql.KindInternal
-	case "client":
+	case "Client":
 		return tempotraceql.KindClient
-	case "server":
+	case "Server":
 		return tempotraceql.KindServer
-	case "producer":
+	case "Producer":
 		return tempotraceql.KindProducer
-	case "consumer":
+	case "Consumer":
 		return tempotraceql.KindConsumer
 	default:
 		return tempotraceql.KindUnspecified

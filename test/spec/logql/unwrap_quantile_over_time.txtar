@@ -673,3 +673,7 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
 [
   [{"detected_level": "unknown", "job": "api", "msg": "ok"}, 3.4]
 ]
+
+-- parity_exempt --
+reason: structured-metadata-unobservable
+detail: `quantile_over_time(0.95, {job="api"} | logfmt | unwrap latency [5m])` answers with the synthesised `detected_level` label, which upstream produces at ingestion and its in-process querier never runs
