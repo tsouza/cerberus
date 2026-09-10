@@ -1242,43 +1242,13 @@ func classifyDrainError(err error) error {
 }
 
 // throwIfMessageMatches reports whether err carries msg as a throwIf guard's
-// message — checked two ways, in order of trust:
-//
-//  1. Typed: errors.As against *chclient.ThrowIfError, which itself only
-//     wraps an error chain carrying a genuine ClickHouse code-395 exception
-//     (errors.As against *clickhouse.Exception). This is what a real,
-//     production data-plane query — anything through chclient.Client and
-//     the native TCP driver — always produces, and it is strictly
-//     trustworthy: the code already confirms this is a deliberate throwIf
-//     abort before the text is even inspected, so HasPrefix on the
-//     driver-decoded Message cannot be fooled by ambient formatting.
-//  2. Fallback: a raw substring check on err.Error(). This exists only for
-//     internal/chclienttest's chDB-backed handler tests — chdb-go returns
-//     errors through Go's generic database/sql/driver interface with no
-//     structured exception type at all (confirmed: it is a different
-//     driver library from clickhouse-go/v2, and errors.As against
-//     *clickhouse.Exception never matches a chdb-go error), so no typed
-//     signal exists to check there. The messages this project uses are
-//     specific enough (e.g. "range window sample fanout exceeds the
-//     series-times-anchors resource bound") that a plain substring match
-//     is not meaningfully riskier in a test-only, non-production path.
-//
-// An earlier version of this file string-matched a single GUESSED prefix
-// ("DB::Exception: " or "message: ") directly against err.Error() with no
-// typed path at all, and that guess silently differed between chdb's
-// CLI-style rendering and the native driver's bare "code: %d, message: %s"
-// — every one of these guards, including #2385's pre-existing histogram
-// merge budget, was unmatchable against real production traffic until this
-// was caught investigating #2429.
+// message. guardExceptionMessage verifies the exception code and extracts
+// its message on both typed production dials and the untyped chDB path.
+// Only a message prefix matches: failing SQL can contain every guard literal
+// without any of those guards having fired.
 func throwIfMessageMatches(err error, msg string) bool {
-	if err == nil {
-		return false
-	}
-	var tie *chclient.ThrowIfError
-	if errors.As(err, &tie) {
-		return strings.HasPrefix(tie.Message, msg)
-	}
-	return strings.Contains(err.Error(), msg)
+	guard, ok := guardExceptionMessage(err)
+	return ok && strings.HasPrefix(guard, msg)
 }
 
 // duplicateSeriesTagsMessage extracts the clean, client-facing sentence
@@ -1294,22 +1264,14 @@ func throwIfMessageMatches(err error, msg string) bool {
 // the extracted sentence instead of a bool, and the caller forwards it
 // verbatim.
 //
-// Detection mirrors throwIfMessageMatches's own two tiers (see that
-// function's doc for why both exist): chclient.ThrowIfMessage's typed path
-// for production traffic (and chdb-go's own typed exceptions), falling
-// back to a raw err.Error() scan for chdb-go's untyped
-// database/sql/driver error shape, which carries no structured exception
-// at all.
+// Detection uses the same verified exception message as throwIfMessageMatches;
+// the dynamic prefix must start that message, never occur inside SQL text.
 func duplicateSeriesTagsMessage(err error) (string, bool) {
-	if err == nil {
+	msg, ok := guardExceptionMessage(err)
+	if !ok {
 		return "", false
 	}
-	if msg, ok := chclient.ThrowIfMessage(err); ok {
-		if clean, ok := extractDuplicateSeriesTagsMessage(msg); ok {
-			return clean, true
-		}
-	}
-	return extractDuplicateSeriesTagsMessage(err.Error())
+	return extractDuplicateSeriesTagsMessage(msg)
 }
 
 // duplicateSeriesTagsTrailerMarker is where ClickHouse's own "while
@@ -1321,18 +1283,14 @@ func duplicateSeriesTagsMessage(err error) (string, bool) {
 // table/column aliases (e.g. "__table1.attrs").
 const duplicateSeriesTagsTrailerMarker = ": while executing '"
 
-// extractDuplicateSeriesTagsMessage finds
-// chplan.DuplicateSeriesTagsMessagePrefix inside raw — which may carry a
-// "Code: NNN. DB::Exception: " envelope ahead of it (chdb-go's CLI-style
-// err.Error() rendering) or nothing at all (the native driver's
-// already-decoded Message field) — and returns just the clean sentence
-// with ClickHouse's own trailer stripped.
+// extractDuplicateSeriesTagsMessage accepts an already-decoded message
+// beginning with chplan.DuplicateSeriesTagsMessagePrefix and strips
+// ClickHouse's execution trailer from the client-facing sentence.
 func extractDuplicateSeriesTagsMessage(raw string) (string, bool) {
-	idx := strings.Index(raw, chplan.DuplicateSeriesTagsMessagePrefix)
-	if idx < 0 {
+	if !strings.HasPrefix(raw, chplan.DuplicateSeriesTagsMessagePrefix) {
 		return "", false
 	}
-	msg := raw[idx:]
+	msg := raw
 	if trailer := strings.Index(msg, duplicateSeriesTagsTrailerMarker); trailer >= 0 {
 		msg = msg[:trailer]
 	}
