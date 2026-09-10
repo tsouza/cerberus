@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_mixed_or_datefn.go:lowerDateFnOverMixedExpHistogramSetOp#2f3ea020",
       "message": "promql: unknown date function %s",
       "class": "internal",
-      "rationale": "dateFnOverMixedExpHistogramSetOp admits only the eight known date-component names and excludes timestamp. lowerDateFn calls lowerDateFnOverMixedExpHistogramSetOp only after that recognizer succeeds, so dateFnExpr recognizes the name during validation with nil operands before role-based expression construction.",
+      "rationale": "lowerCall routes only its known date-function names to lowerDateFn. Within that admitted set, dateFnOverMixedExpHistogramSetOp excludes timestamp and checks the argument shape; it does not independently whitelist date names. lowerDateFn reaches lowerDateFnOverMixedExpHistogramSetOp only after this recognizer succeeds, leaving the eight date-component names covered by dateFnExpr during validation with nil operands before role-based expression construction.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -17,6 +17,7 @@
         "cited": [
           "dateFnExpr",
           "dateFnOverMixedExpHistogramSetOp",
+          "lowerCall",
           "lowerDateFn",
           "lowerDateFnOverMixedExpHistogramSetOp"
         ]
