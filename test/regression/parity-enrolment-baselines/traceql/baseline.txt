@@ -2,6 +2,7 @@ and_two_attrs.txtar
 attr_in_or_fold.txtar
 attr_not_nil.txtar
 attr_regex_no_overmatch.txtar
+bool_attr.txtar
 child_of.txtar
 duration_ge.txtar
 duration_gt.txtar
@@ -118,3 +119,5 @@ trace_scoped_root_service_eq.txtar
 unary_minus_duration.txtar
 unary_not_compound_and_operand.txtar
 unary_not_double_negation.txtar
+unscoped_bool_attr.txtar
+unscoped_bool_attr_false.txtar

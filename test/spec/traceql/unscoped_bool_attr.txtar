@@ -18,9 +18,10 @@ INSERT INTO otel_traces (TraceId, SpanId, _hit) VALUES
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0],
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000003", "__cerberus_traceID": "a0000000000000000000000000000003", "cache.hit": "true"}, "1970-01-01T00:00:00Z", 0]
 ]
--- parity_exempt --
-reason: oracle-untyped-attributes
-detail: `{ .cache.hit = true }` compares against a typed boolean literal; the oracle carries every attribute as a Go string, so the reference can never match, while OTel-CH really does store the value as the string this fixture seeds. Probed directly: enrolled against `oracle: tempo` this fixture reports "reference engine matched 0 span(s), cerberus 1", which is the harness's flattening rather than a disagreement about the answer
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
 -- args --
 [0] string = "cache.hit"
 [1] string = "cache.hit"
