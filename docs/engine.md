@@ -369,7 +369,10 @@ insurance (0 fires on the current corpus); `FilterRangeWindowTranspose`,
 `FlattenVectorSetOp` all fire on real queries. `FlattenVectorSetOp` only
 flattens the associative `or` / `and` operators — `unless` is not
 associative, so an `unless` chain keeps its binary shape. The rule set
-carries only rules that can fire.
+carries only rules that can fire: there is no `FilterProjectTranspose`
+(no lowering emits `Filter(Project)`, so the rule would never match) and
+no `MVSubstitution` (the default schema ships no live rollups, so a
+substitution rule would be a guaranteed no-op).
 
 The optimiser is gated by termination, decision-pin, rule-interaction,
 property, and gremlins (mutation) tests.
@@ -379,10 +382,12 @@ property, and gremlins (mutation) tests.
 An instant windowed range aggregation (`rate` / `increase` /
 `*_over_time` / …) reads per-sample rows out of MergeTree and
 `groupArray`s them per series at the innermost level before the
-post-`groupArray` `arrayFilter` discards out-of-window samples. See
-[`engine.background.md`](engine.background.md) for the unbounded-read failure
-mode this contract prevents, and for why it is an IR-level property rather
-than an emitter detail.
+post-`groupArray` `arrayFilter` discards out-of-window samples. If that
+innermost read carries no time predicate, ClickHouse cannot prune
+granules and materialises the full per-series retention — tens of
+millions of rows on a prod instant query. A bound that lived only in the
+emitter would be easy to forget as new `groupArray` emitters land, so it
+is an IR-level property instead.
 
 An instant windowed-array **leaf**
 RangeWindow (`OuterRange == 0`, and `Input` is **not** a
@@ -454,13 +459,16 @@ partial states with `-Merge`; the outer level renames each
 before. The row shape reaching a wrapping `Aggregate` is identical
 either way, so nothing downstream branches on which shape was emitted.
 
-See [`engine.background.md`](engine.background.md) for why the `-State` / `-Merge`
-combinator pair — rather than arithmetic over two finished grids — is what
-keeps the rewrite value-preserving.
-
-`Recollapse` is consequently only populated for range functions whose
-`-State`/`-Merge` pair is proven exact under merged states; every other node
-passes an empty list and emits the two-level shape byte for byte. Lowering owns the eligibility decision
+The combinator pair — rather than arithmetic over two finished grids —
+is what makes the rewrite value-preserving. Label shaping is
+many-to-one, so several raw series can carry one output identity, and
+their samples must be POOLED before the window function runs; merging
+partial states pools samples, whereas combining finished grids computes
+a different number and yields NULL wherever one contributor holds too
+few samples in the window. `Recollapse` is consequently only populated
+for range functions whose `-State`/`-Merge` pair is proven exact under
+merged states; every other node passes an empty list and emits the
+two-level shape byte for byte. Lowering owns the eligibility decision
 (`hoistShaping` in `internal/promql`), the emitter owns the rendering,
 and `docs/clickhouse-optimizations.md` covers the `ts_grid_recollapse`
 capability gate.
@@ -473,9 +481,13 @@ timestamps. Consumers that need the request's outer grid (routing, cost
 accounting, telemetry) discover it through the
 `chplan.GridCarrier` interface rather than by enumerating node kinds.
 
-`Step > 0` is the only range-vs-instant discriminator a consumer may branch
-on. See [`engine.background.md`](engine.background.md) for the silent failure
-mode a type switch over grid-bearing node kinds produces instead.
+This is a correctness contract, not a style choice. A consumer written
+as a type switch has to list every grid-bearing node, and the failure
+mode when it misses one is **silent**: the walk finds no carrier, the
+consumer reads a zero grid, and a zero grid is indistinguishable from a
+genuine instant query — so a range query gets filed under the wrong
+evaluation mode instead of raising an error. `Step > 0` is the only
+range-vs-instant discriminator a consumer may branch on.
 
 The carrier set is closed in both directions.
 `internal/chplan/grid_carrier.go` holds a compile-time list proving
@@ -649,15 +661,12 @@ A short list, because the engine's narrow scope is deliberate:
   (`internal/engine/anchor_budget.go`) measures one series' anchor
   grid against `Config.MaxQuerySamples` and returns the same
   Prom-shaped 422 upstream Prometheus returns once a subquery
-  would load more than `query.max-samples` into memory. See
-  [`engine.background.md`](engine.background.md) for why that bound is a rejection
-  rather than a streaming fusion.
+  would load more than `query.max-samples` into memory. Fusing the
+  reducer families into streaming passes would serve grids
+  upstream refuses, and a drop-in gateway's answer set is upstream's
+  answer set — so the bound is a rejection, which also keeps one
+  head's grid from exhausting the process the other two share.
 
 These boundaries keep the engine's surface small enough that
 adding a new query head — or a new extension point — is a local
 change rather than a refactor.
-
----
-
-For the rationale behind these choices — alternatives considered, incidents,
-measurements — see [engine.background.md](engine.background.md).

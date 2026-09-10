@@ -235,6 +235,21 @@ per-layer "catches X / misses Y" guidance.
     `docs/specs/<change>.md`. Requirements, history, and progress live in the GitHub issue/PR. Durable
     behavior belongs in stable subsystem docs or code comments, without checks that require an issue
     ID or a transient spec path.
+20. **A document is split by kind of content, and only when the split earns it.** `XXX.md`
+    describes **what it is** — the contract, the interface, the behaviour, the procedure — written
+    timelessly, with no rationale, history, or alternatives considered. `XXX.background.md` carries
+    **everything else**: why it is what it is, why it is not what it is not, the alternatives
+    rejected and the reason, the incidents that shaped it, the measurements behind a constant. The
+    test for a sentence is whether deleting it changes what a reader *does* (→ `XXX.md`) or only
+    what they understand about the decision (→ `XXX.background.md`). Rationale is never deleted,
+    only moved: a `.md` stripped of its why with no `.background.md` to receive it has lost
+    information. `XXX.md` ends with a single pointer to its background.
+
+    Split only when the background clears **both** floors — `lines(background) / lines(main) >=
+    0.05` **and** `lines(background) >= 50`. Below either, leave the document whole. The ratio
+    catches a rounding error of rationale in a small doc; the absolute floor catches a stub carved
+    out of a huge one, which the ratio alone waves through. `docs/configuration.md` is generated
+    (invariant 9) — its shape changes in the generator, never by hand.
 
 ## Workflow for a non-trivial change
 

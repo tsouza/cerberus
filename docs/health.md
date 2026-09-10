@@ -100,16 +100,18 @@ still answer.
   exactly one head, so this *is* "this head's breaker is open": a tripped
   tempo Deployment leaves its Service while the prom and loki Deployments,
   whose own heads are healthy, keep serving.
-- In **combined mode** one tripped head leaves two working ones behind; the
-  phases are reported and the pod stays in its Service.
+- In **combined mode** one tripped head leaves two working ones behind.
+  Evicting the pod there would take those two down for a fault that is
+  already contained — the whole point of per-head breakers — and, since the
+  breakers trip on a shared ClickHouse, would tend to evict every replica at
+  once. So the phases are reported and the pod stays in its Service.
 
 A head whose breaker is `half-open` is admitting a recovery probe rather
 than failing, and does not count toward exhaustion.
 
-Heads this process does not serve are never reported and never counted.
-
-See [`health.background.md`](health.background.md) for why combined mode
-does not evict, and why unserved heads are excluded.
+Heads this process does not serve are never reported and never counted: a
+head that was never built has no requests to fail, and counting it would
+evict pods for a breaker nothing can reach.
 
 ## `/info` — metadata fingerprint
 
@@ -294,7 +296,8 @@ Cerberus binds its HTTP listener fast: with
 `CERBERUS_AUTO_CREATE_SCHEMA=false` and a reachable ClickHouse, the
 gap from process spawn to first `200 OK` on `/healthz` is well under
 2 seconds. The benchmark in `test/e2e/startup_bench_test.go` enforces
-this with a 2500 ms ceiling.
+this with a 2500 ms ceiling (target < 2000 ms, plus a 500 ms safety
+margin to absorb CI scheduler jitter).
 
 Run it locally with:
 
@@ -307,7 +310,9 @@ The benchmark is build-tagged (`startup_bench`), so regular `just test`
 skips it (the file isn't compiled without the tag). CI runs it as an
 informational job in `.github/workflows/e2e.yml` (`startup-bench` job)
 on push-to-main, nightly, and manual dispatch — it is **not** a required
-PR gate.
+PR gate, so a slow VM doesn't block merges, but a real regression (e.g.
+a new synchronous startup hook that blocks the listener bind) shows up
+on the very next merge.
 
 When `CERBERUS_AUTO_CREATE_SCHEMA=true`, the startup hook that applies
 the OTel ClickHouse DDL runs synchronously **before** the listener
@@ -329,8 +334,11 @@ demoted to a WARN log, and the process serves immediately:
 - `/readyz` → `503` (the CH ping fails),
 
 flipping `/readyz` to `200` as soon as ClickHouse answers — no restart
-needed. Fail-fast remains for misconfiguration that can never succeed
-(bad env values, invalid connection options).
+needed. This is the readiness-gating contract Kubernetes expects: a
+replica scaled up while ClickHouse is saturated waits out the outage out
+of the Service endpoints instead of converting it into a
+CrashLoopBackOff. Fail-fast remains for misconfiguration that can never
+succeed (bad env values, invalid connection options).
 
 The preflight is a deliberately **stricter** contract, and it is on by
 default. `CERBERUS_REQUIREMENTS_CHECK` (the boot-time CH-version + schema
@@ -362,7 +370,3 @@ is the transient absent-schema case above). Set
 - Capability re-probe behind the live `/info` optimization fields:
   `cmd/cerberus/chopt_reprobe.go`.
 - Startup benchmark: `test/e2e/startup_bench_test.go`.
-
----
-
-For the rationale behind these choices — alternatives considered, incidents, measurements — see [health.background.md](health.background.md).
