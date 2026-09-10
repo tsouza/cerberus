@@ -31,6 +31,9 @@ func TestMixedOperandPolicyControlsActualDispatch(t *testing.T) {
 		{`abs(` + nested + `)`, mixedMathFamily, mixedPlanAdmission},
 		{`clamp(` + nested + `, 2, 1)`, mixedMathFamily, mixedPlanAdmission},
 		{`label_replace(` + nested + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedPlanAdmission},
+		{`label_replace(` + direct + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedRootAdmission},
+		{`label_join(` + direct + `, "dst", "-", "job")`, mixedLabelFamily, mixedRootAdmission},
+		{`label_join(` + nested + `, "dst", "-", "job")`, mixedLabelFamily, mixedPlanAdmission},
 		{`sort(` + direct + `)`, mixedSortFamily, mixedOperandAdmission},
 		{`scalar(` + direct + `)`, mixedScalarFamily, mixedOperandAdmission},
 		{`absent(` + direct + `)`, mixedAbsentFamily, mixedOperandAdmission},
@@ -194,8 +197,11 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			count++
 			key := mixedWrapperKey{family: family, site: site}
 			wantPolicy := mixedBespoke
-			if family == mixedMathFamily {
+			switch family {
+			case mixedMathFamily:
 				wantPolicy = mixedFloatOnly
+			case mixedLabelFamily:
+				wantPolicy = mixedPreserve
 			}
 			if got := mixedOperandPolicies[key]; got != wantPolicy {
 				t.Errorf("admission %v = %v, want %v", key, got, wantPolicy)
@@ -232,14 +238,14 @@ func TestMixedOperandPolicyRejectsUnknownBeforeLowering(t *testing.T) {
 func TestMixedOperandPolicyPreservesBespokeResultAndError(t *testing.T) {
 	for key, policy := range mixedOperandPolicies {
 		t.Run(string(key.family)+"/"+string(key.site), func(t *testing.T) {
-			if key.family == mixedMathFamily {
+			if key.family == mixedMathFamily || key.family == mixedLabelFamily {
 				called := false
 				plan, err := lowerWithMixedOperandPolicy(key.family, key.site, func() (chplan.Node, error) {
 					called = true
 					return &chplan.OneRow{}, nil
 				})
 				if called || plan != nil || err == nil {
-					t.Fatalf("math mode reached bespoke continuation: called=%v plan=%v err=%v", called, plan, err)
+					t.Fatalf("migrated mode reached bespoke continuation: called=%v plan=%v err=%v", called, plan, err)
 				}
 				return
 			}

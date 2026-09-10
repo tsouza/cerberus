@@ -5,21 +5,19 @@
       "site": "internal/promql/label_fns.go:labelReplaceAttributesBuilder#8c37a823",
       "message": "promql: label_replace expects 5 arguments, got %d",
       "class": "internal",
-      "rationale": "Parser-enforced arity: label_replace requires exactly five arguments. lowerLabelReplace and labelReplaceAttributes pass the same parsed Call to labelReplaceAttributesBuilder; lowerLabelCallOverMixedExpHistogramSetOp is reached only after labelCallOverMixedExpHistogramSetOp independently checks the same exact arity.",
+      "rationale": "Parser-enforced arity: label_replace requires exactly five arguments. labelReplaceAttributes forwards the same parsed Call for histogram-only lowering. lowerLabelCall receives the original Call from lowerLabelReplace or from the root adapter whose labelCallOverMixedExpHistogramSetOp recognizer checks the same exact arity. The shared kernel selects this builder only for label_replace and validates before operand lowering, so the caller consolidation introduces no new argument shapes.",
       "evidence": {
         "guard": [
           "if len(c.Args) != 5"
         ],
         "callers": [
           "labelReplaceAttributes",
-          "lowerLabelCallOverMixedExpHistogramSetOp",
-          "lowerLabelReplace"
+          "lowerLabelCall"
         ],
         "cited": [
           "labelCallOverMixedExpHistogramSetOp",
           "labelReplaceAttributes",
-          "labelReplaceAttributesBuilder",
-          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelCall",
           "lowerLabelReplace"
         ]
       }
@@ -42,8 +40,7 @@
         ],
         "callers": [
           "labelReplaceAttributes",
-          "lowerLabelCallOverMixedExpHistogramSetOp",
-          "lowerLabelReplace"
+          "lowerLabelCall"
         ]
       },
       "since": "2026-08-05"

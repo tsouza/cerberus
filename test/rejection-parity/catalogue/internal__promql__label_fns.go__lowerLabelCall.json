@@ -1,0 +1,27 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:lowerLabelCall#82719db8",
+      "message": "promql: internal invariant violated: %s is not a label-only mixed set-op consumer",
+      "class": "internal",
+      "rationale": "The ordinary lowerCall dispatcher calls lowerLabelReplace only for label_replace and lowerLabelJoin only for label_join; both adapters preserve that Call. The mixed root adapter is reached only through labelCallOverMixedExpHistogramSetOp, which recognizes precisely the same two names. The shared kernel does not recurse or change Func.Name. Thus its switch covers every production caller; the unchanged invariant error has moved from the mixed adapter to this shared dispatcher, not become a wire rejection.",
+      "evidence": {
+        "guard": [
+          "default of switch c.Func.Name over [case fnLabelReplace; case fnLabelJoin; default]"
+        ],
+        "callers": [
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelJoin",
+          "lowerLabelReplace"
+        ],
+        "cited": [
+          "labelCallOverMixedExpHistogramSetOp",
+          "lowerCall",
+          "lowerLabelJoin",
+          "lowerLabelReplace"
+        ]
+      }
+    }
+  ]
+}

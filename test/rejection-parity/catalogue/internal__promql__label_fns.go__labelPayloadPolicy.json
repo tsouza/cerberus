@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:labelPayloadPolicy#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "internal",
+      "rationale": "This is a fail-closed registration invariant. lowerLabelCallOverMixedExpHistogramSetOp passes the fixed root site after its label-only recognizer, and projectAttributesOverInner invokes this resolver only for a Mixed input with the actual label-rewrite family and the fixed existing-plan site. Both entries are registered as mixedPreserve; the resolver maps that mode to the forwarder's preserveMixedSamplePayload behavior. The table is not query-configurable. Missing sites and incompatible modes are synthetic authority-test cases, not states a parsed production dispatch can supply; ordinary float inputs retain their prior route.",
+      "evidence": {
+        "guard": [
+          "default of switch mixedOperandPolicies[key] over [case mixedPreserve; default]"
+        ],
+        "callers": [
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "projectAttributesOverInner"
+        ],
+        "cited": [
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "projectAttributesOverInner"
+        ]
+      }
+    }
+  ]
+}
