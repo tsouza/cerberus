@@ -15,6 +15,7 @@
           "requireMixedPlanPolicy"
         ],
         "cited": [
+          "labelPayloadPolicy",
           "lowerWithMixedOperandPolicy",
           "mathPayloadPreparation",
           "prepareMathValueInput",
