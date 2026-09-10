@@ -41,7 +41,7 @@ func TestHistogramValuedWindowAggregateCapacity(t *testing.T) {
 		construct string
 		buildPlan func() chplan.Node
 	}{
-		{"fanout", 1, "histogram_native_range_fn.go:`len(aggs)+1`", func() chplan.Node {
+		{"fanout", 1, "histogram_native_range_fn.go:lowerExpHistogramSubqueryRangeFnRange:`len(aggs)+1`", func() chplan.Node {
 			return lowerExpHistogramSubqueryRangeFnRange(&chplan.OneRow{}, shape, 0, s, lowerCtx{step: time.Minute})
 		}},
 		{"instant", 2, "histogram_native_range_fn.go:`len(aggs)+2`", func() chplan.Node {
