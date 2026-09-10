@@ -676,9 +676,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// doc comment for why only the DROP-family ops (not MUL / histogram-
 	// left DIV, and not comparisons) are recognised here.
 	if b, op, scalar, scalarOnLeft, ok := arithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedArithmeticFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerArithmeticOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
-		})
+		plan, err := lowerArithmeticOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
 		return plan, true, err
 	}
 	// A scalar comparison binop (`==`, `!=`, `<`, `<=`, `>`, `>=`, with or

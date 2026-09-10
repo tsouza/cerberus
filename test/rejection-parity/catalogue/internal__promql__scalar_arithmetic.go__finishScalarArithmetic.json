@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_arithmetic.go:finishScalarArithmetic#3c7a287d",
+      "message": "promql: unknown scalar arithmetic projection boundary %d",
+      "class": "internal",
+      "rationale": "The only production callers are lowerVectorScalar and lowerArithmeticOverMixedExpHistogramSetOp. They supply scalarArithmeticGuarded and scalarArithmeticCanonical respectively as source constants, never as query-derived data. No parsed query can choose a different projection boundary; this error protects the internal finalizer contract and rejects before inspecting the input.",
+      "evidence": {
+        "guard": [
+          "if boundary != scalarArithmeticGuarded \u0026\u0026 boundary != scalarArithmeticCanonical"
+        ],
+        "callers": [
+          "lowerArithmeticOverMixedExpHistogramSetOp",
+          "lowerVectorScalar"
+        ],
+        "cited": [
+          "lowerArithmeticOverMixedExpHistogramSetOp",
+          "lowerVectorScalar"
+        ]
+      }
+    }
+  ]
+}

@@ -851,6 +851,9 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	if err != nil {
 		return nil, err
 	}
+	if mixedScalarBinaryFamily(op, scalarOnLeft) == mixedArithmeticFamily {
+		return finishScalarArithmetic(inner, vec, s, ctx, op, scalar, scalarOnLeft, scalarArithmeticGuarded)
+	}
 	if err := requireMixedPlanPolicy(inner, mixedScalarBinaryFamily(op, scalarOnLeft)); err != nil {
 		return nil, err
 	}
