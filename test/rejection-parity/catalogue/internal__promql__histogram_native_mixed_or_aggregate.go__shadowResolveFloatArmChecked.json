@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_mixed_or_aggregate.go:shadowResolveFloatArmChecked#6cdf660e",
       "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
       "class": "internal",
-      "rationale": "cerberus PR #2624 (finding 10) deduped the identical `if b.ReturnBool { return nil, fmt.Errorf(...) }` guard three composer families used to repeat inline — scalar() (lowerScalarArgOverMixedExpHistogramSetOp), sort()/sort_desc() (lowerSortOverMixedExpHistogramSetOp) and the date-component family (lowerDateFnOverMixedExpHistogramSetOp) — into this single shared helper, which is now the guard's only construction site. The underlying claim is unchanged from each of those three composers' own former rationale (histogram_native_mixed_or_sort.go's own identical check, cerberus issue #2605, and its siblings #2346/#2595/#2600/#2609/#2611): every caller reaches this guard only via shadowResolveMixedExpHistogramOperands with a `b` that dateFnOverMixedExpHistogramSetOp / scalarArgOverMixedExpHistogramSetOp / sortOverMixedExpHistogramSetOp matched through mixedExpHistogramSetOp, which requires b.Op == parser.LOR — `or` is a set operator, never a comparison, so the parser can never have set ReturnBool on it, regardless of which of the three callers reached this now-shared check.",
+      "rationale": "The parser rejects bool on non-comparison operators. lowerDateFnOverMixedExpHistogramSetOp receives the identical binary node returned by dateFnOverMixedExpHistogramSetOp; lowerScalarArgOverMixedExpHistogramSetOp receives the node from scalarArgOverMixedExpHistogramSetOp; lowerSortFloatOperand receives the node from sortOverMixedExpHistogramSetOp. Each recognizer delegates to mixedExpHistogramSetOp, which requires parser.LOR. None replaces the node before shadowResolveFloatArmChecked. LOR is a set union, never a comparison, so the parsed AST cannot carry ReturnBool. The sort operand policy authorizes the same checked loader without changing its AST or shadow resolution. This guard is reachable only through internal malformed-AST construction.",
       "evidence": {
         "guard": [
           "if b.ReturnBool"
@@ -13,16 +13,16 @@
         "callers": [
           "lowerDateFnOverMixedExpHistogramSetOp",
           "lowerScalarArgOverMixedExpHistogramSetOp",
-          "lowerSortOverMixedExpHistogramSetOp"
+          "lowerSortFloatOperand"
         ],
         "cited": [
           "dateFnOverMixedExpHistogramSetOp",
           "lowerDateFnOverMixedExpHistogramSetOp",
           "lowerScalarArgOverMixedExpHistogramSetOp",
-          "lowerSortOverMixedExpHistogramSetOp",
+          "lowerSortFloatOperand",
           "mixedExpHistogramSetOp",
           "scalarArgOverMixedExpHistogramSetOp",
-          "shadowResolveMixedExpHistogramOperands",
+          "shadowResolveFloatArmChecked",
           "sortOverMixedExpHistogramSetOp"
         ]
       }

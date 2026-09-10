@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/sort.go:prepareSortOperand#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "internal",
+      "rationale": "This is a fail-closed registration invariant, not a query rejection. lowerSortFloatOperand calls prepareSortOperand only for the sort operand and existing-plan sites, both registered mixedFloatOnly in mixedOperandPolicies. The direct site checks policy before checked shadow resolution; the existing-plan site is consulted only after original lowering succeeds and yields Mixed. Ordinary samples bypass it and histogram/drop early identities are unchanged. Queries cannot mutate the policy table or choose an unsupported site or mode; only internal misuse and authority tests reach this error.",
+      "evidence": {
+        "guard": [
+          "if mixedOperandPolicies[key] != mixedFloatOnly"
+        ],
+        "callers": [
+          "lowerSortFloatOperand"
+        ],
+        "cited": [
+          "lowerSortFloatOperand",
+          "prepareSortOperand"
+        ]
+      }
+    }
+  ]
+}
