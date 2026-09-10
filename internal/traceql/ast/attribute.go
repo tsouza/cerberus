@@ -5,14 +5,25 @@ import (
 )
 
 // Attribute is a reference to a span/resource/trace field or an intrinsic.
-// All four fields are exported because lowering reads them directly and
-// compares Attribute values for the zero value, so the struct is kept
-// comparable (no slice/map fields).
+// All fields are exported because lowering reads them directly and compares
+// Attribute values for the zero value, so the struct is kept comparable (no
+// slice/map fields).
 type Attribute struct {
 	Name      string
 	Scope     AttributeScope
 	Parent    bool
 	Intrinsic Intrinsic
+	// Spelling records which ScopedIntrinsic* surface spelling produced
+	// Intrinsic, for the handful of intrinsics reachable through both a
+	// bare identifier and a scope-colon form (span:status vs status,
+	// trace:duration vs duration, …) that lower and validate identically —
+	// Intrinsic itself always holds the bare constant so every existing
+	// switch over it keeps seeing one value regardless of spelling. It is
+	// IntrinsicNone (the zero value) for a bare spelling and for any
+	// intrinsic with only one spelling (span:id, event:name, …), whose own
+	// Intrinsic.String() already renders the sole scoped form. Read only
+	// by String(); see scopedIntrinsic in parser.go for where it is set.
+	Spelling Intrinsic
 }
 
 func (Attribute) isFieldExpression() {}
@@ -76,7 +87,13 @@ func (a Attribute) String() string {
 	}
 
 	name := a.Name
-	if a.Intrinsic != IntrinsicNone {
+	switch {
+	case a.Spelling != IntrinsicNone:
+		// A scoped spelling of an intrinsic that also has a bare form
+		// (span:status, trace:duration, …): render the surface spelling
+		// the query used, not the bare Intrinsic it resolves to.
+		name = a.Spelling.String()
+	case a.Intrinsic != IntrinsicNone:
 		name = a.Intrinsic.String()
 	}
 
