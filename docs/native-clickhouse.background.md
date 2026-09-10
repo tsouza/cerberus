@@ -72,4 +72,4 @@ reasons are substantive:
 So cerberus stays a consumer of ClickHouse's shipped native features, not a
 contributor of new ones. If that calculus changes — a genuinely novel
 aggregate with no upstream equivalent and clear cross-track value — this
-document is where the reasoning to revisit lives.
+document is where that reasoning is recorded.
