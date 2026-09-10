@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -413,6 +414,70 @@ func TestParseScopedIntrinsics(t *testing.T) {
 			attr := bin.LHS.(Attribute)
 			if attr.Intrinsic != tc.in {
 				t.Errorf("Intrinsic = %v; want %v", attr.Intrinsic, tc.in)
+			}
+		})
+	}
+}
+
+// TestScopedIntrinsicSpellingRoundTrip pins issue #3270: the eight scoped
+// intrinsic spellings that also have a bare form (span:status vs status,
+// trace:duration vs duration, …) must round-trip through String() as the
+// spelling the query actually used, not be canonicalised onto the bare
+// form. impliedType must also agree between the two spellings of the same
+// intrinsic, since they denote the same field and must lower identically.
+func TestScopedIntrinsicSpellingRoundTrip(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		scoped, bare string
+		in           Intrinsic
+	}{
+		{`span:status = error`, `status = error`, IntrinsicStatus},
+		{`span:statusMessage = "x"`, `statusMessage = "x"`, IntrinsicStatusMessage},
+		{`span:duration > 1s`, `duration > 1s`, IntrinsicDuration},
+		{`span:name = "x"`, `name = "x"`, IntrinsicName},
+		{`span:kind = server`, `kind = server`, IntrinsicKind},
+		{`trace:rootName = "x"`, `rootName = "x"`, IntrinsicTraceRootSpan},
+		{`trace:rootService = "x"`, `rootServiceName = "x"`, IntrinsicTraceRootService},
+		{`trace:duration > 1s`, `traceDuration > 1s`, IntrinsicTraceDuration},
+	}
+	attrOf := func(t *testing.T, expr string) Attribute {
+		t.Helper()
+		sf := firstElem(t, "{ "+expr+" }").(*SpansetFilter)
+		bin := sf.Expression.(*BinaryOperation)
+		attr, ok := bin.LHS.(Attribute)
+		if !ok {
+			t.Fatalf("LHS = %T; want Attribute", bin.LHS)
+		}
+		return attr
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.scoped, func(t *testing.T) {
+			t.Parallel()
+			scopedSpelling := tc.scoped[:strings.IndexByte(tc.scoped, ' ')]
+			bareSpelling := tc.bare[:strings.IndexByte(tc.bare, ' ')]
+
+			scoped := attrOf(t, tc.scoped)
+			if scoped.Intrinsic != tc.in {
+				t.Errorf("scoped Intrinsic = %v; want %v", scoped.Intrinsic, tc.in)
+			}
+			if got := scoped.String(); got != scopedSpelling {
+				t.Errorf("scoped String() = %q; want %q (the spelling used)", got, scopedSpelling)
+			}
+
+			bare := attrOf(t, tc.bare)
+			if bare.Intrinsic != tc.in {
+				t.Errorf("bare Intrinsic = %v; want %v", bare.Intrinsic, tc.in)
+			}
+			// Control: the bare spelling must still round-trip bare, never
+			// picking up a scope it was never written with.
+			if got := bare.String(); got != bareSpelling {
+				t.Errorf("bare String() = %q; want %q (bare, unchanged)", got, bareSpelling)
+			}
+
+			if scoped.impliedType() != bare.impliedType() {
+				t.Errorf("impliedType diverges: scoped=%v bare=%v; the two spellings must lower identically",
+					scoped.impliedType(), bare.impliedType())
 			}
 		})
 	}

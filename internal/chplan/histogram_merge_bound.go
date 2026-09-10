@@ -23,3 +23,12 @@ package chplan
 // ClickHouse discover the cost by allocating it (issue #2385: 19 production
 // MEMORY_LIMIT_EXCEEDED failures, up to 6.31 GiB, from exactly this shape).
 const HistogramMergeBudgetMessage = "native histogram merge exceeds the series-per-group or merged-bucket-width resource bound"
+
+// ExpHistogramWindowSampleBudgetMessage is the abort text for cerberus
+// issue #3252's samples-per-series-per-window pre-rejection
+// (internal/promql's exp_histogram_window_sample_bound.go). It names the
+// AXIS rather than the operator, because that axis — how densely one
+// series is sampled inside one window — is the thing an operator can act
+// on: shorten the range, coarsen the step of an inner subquery, or raise
+// CERBERUS_CH_QUERY_MAX_MEMORY, which the ceiling is derived from.
+const ExpHistogramWindowSampleBudgetMessage = "exponential-histogram window exceeds the samples-per-series-per-window resource bound"

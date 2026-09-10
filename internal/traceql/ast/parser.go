@@ -799,68 +799,79 @@ func bareIntrinsic(k tokenKind) (Intrinsic, bool) {
 func (c *cursor) parseScopedIntrinsic() Attribute {
 	scope := c.advance().kind
 	field := c.advance().kind
-	in, ok := scopedIntrinsic(scope, field)
+	in, spelling, ok := scopedIntrinsic(scope, field)
 	if !ok {
 		c.fail("syntax error: %s is not a valid scoped intrinsic", field)
 	}
-	return NewIntrinsic(in)
+	attr := NewIntrinsic(in)
+	attr.Spelling = spelling
+	return attr
 }
 
-func scopedIntrinsic(scope, field tokenKind) (Intrinsic, bool) {
+// scopedIntrinsic resolves a scope-colon token pair (span:, trace:, …) to
+// the intrinsic it names. Lowering and validation dispatch on that bare
+// Intrinsic alone, so a scoped spelling that also has a bare form
+// (span:status vs status, trace:duration vs duration, …) resolves to the
+// SAME Intrinsic constant its bare twin does — behaviour is identical
+// either way, only the surface text differs. spelling carries that surface
+// text, as the matching ScopedIntrinsic* constant, for Attribute.String()
+// to render; it is IntrinsicNone for a field with only one spelling
+// (span:id, event:name, …), whose own Intrinsic already renders scoped.
+func scopedIntrinsic(scope, field tokenKind) (in, spelling Intrinsic, ok bool) {
 	switch scope {
 	case tokTraceColon:
 		switch field {
 		case tokIDuration:
-			return IntrinsicTraceDuration, true
+			return IntrinsicTraceDuration, ScopedIntrinsicTraceDuration, true
 		case tokRootName:
-			return IntrinsicTraceRootSpan, true
+			return IntrinsicTraceRootSpan, ScopedIntrinsicTraceRootName, true
 		case tokRootService:
-			return IntrinsicTraceRootService, true
+			return IntrinsicTraceRootService, ScopedIntrinsicTraceRootService, true
 		case tokID:
-			return IntrinsicTraceID, true
+			return IntrinsicTraceID, IntrinsicNone, true
 		}
 	case tokSpanColon:
 		switch field {
 		case tokIDuration:
-			return IntrinsicDuration, true
+			return IntrinsicDuration, ScopedIntrinsicSpanDuration, true
 		case tokName:
-			return IntrinsicName, true
+			return IntrinsicName, ScopedIntrinsicSpanName, true
 		case tokKind:
-			return IntrinsicKind, true
+			return IntrinsicKind, ScopedIntrinsicSpanKind, true
 		case tokStatus:
-			return IntrinsicStatus, true
+			return IntrinsicStatus, ScopedIntrinsicSpanStatus, true
 		case tokStatusMessage:
-			return IntrinsicStatusMessage, true
+			return IntrinsicStatusMessage, ScopedIntrinsicSpanStatusMessage, true
 		case tokID:
-			return IntrinsicSpanID, true
+			return IntrinsicSpanID, IntrinsicNone, true
 		case tokParentID:
-			return IntrinsicParentID, true
+			return IntrinsicParentID, IntrinsicNone, true
 		case tokChildCount:
-			return IntrinsicChildCount, true
+			return IntrinsicChildCount, IntrinsicNone, true
 		}
 	case tokEventColon:
 		switch field {
 		case tokName:
-			return IntrinsicEventName, true
+			return IntrinsicEventName, IntrinsicNone, true
 		case tokTimeSinceStart:
-			return IntrinsicEventTimeSinceStart, true
+			return IntrinsicEventTimeSinceStart, IntrinsicNone, true
 		}
 	case tokLinkColon:
 		switch field {
 		case tokTraceID:
-			return IntrinsicLinkTraceID, true
+			return IntrinsicLinkTraceID, IntrinsicNone, true
 		case tokSpanID:
-			return IntrinsicLinkSpanID, true
+			return IntrinsicLinkSpanID, IntrinsicNone, true
 		}
 	case tokInstrColon:
 		switch field {
 		case tokName:
-			return IntrinsicInstrumentationName, true
+			return IntrinsicInstrumentationName, IntrinsicNone, true
 		case tokVersion:
-			return IntrinsicInstrumentationVersion, true
+			return IntrinsicInstrumentationVersion, IntrinsicNone, true
 		}
 	}
-	return IntrinsicNone, false
+	return IntrinsicNone, IntrinsicNone, false
 }
 
 func (c *cursor) parseAttributeField() Attribute {
