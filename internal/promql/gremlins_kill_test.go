@@ -966,16 +966,25 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	stepKeyedAgg := &chplan.Aggregate{GroupByAliases: []string{s.TimestampColumn}}
-	mixedMarker := mixedDiscriminatorMarkerProject(stepKeyedAgg)
-
 	const extraStepCol = "extra_step_col"
+	columns := append(chplan.HistogramPayloadColumns(),
+		chplan.Column{Name: chplan.MixedDiscriminatorColumn, Role: chplan.RoleDiscriminator},
+		chplan.Column{Name: extraStepCol},
+		chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp})
+	stepKeyedAgg := &chplan.Aggregate{Input: sampleForwardTestInput(columns...)}
+	for _, column := range columns {
+		stepKeyedAgg.GroupBy = append(stepKeyedAgg.GroupBy, &chplan.ColumnRef{Name: column.Name})
+		stepKeyedAgg.GroupByAliases = append(stepKeyedAgg.GroupByAliases, column.Name)
+	}
 	rewritten := &chplan.Project{
-		Input: mixedMarker,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: chplan.HistogramCountColumn}, Alias: chplan.HistogramCountColumn},
-			{Expr: &chplan.ColumnRef{Name: extraStepCol}, Alias: extraStepCol},
-		},
+		Input: stepKeyedAgg,
+	}
+	for _, column := range columns[:len(columns)-1] {
+		rewritten.Projections = append(rewritten.Projections,
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name})
+	}
+	if output := rewritten.RowType(); !output.HasHistogramPayload() || !output.Has(chplan.RoleDiscriminator) {
+		t.Fatalf("fixture must expose complete mixed payload: %#v", output)
 	}
 
 	plan := guardLabelRewriteCollision(rewritten, s)
@@ -987,6 +996,9 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 
 	found := false
 	for _, alias := range agg.GroupByAliases {
+		if alias == chplan.HistogramCountColumn || alias == chplan.MixedDiscriminatorColumn {
+			t.Fatalf("mixed payload %q reached group keys instead of being carried", alias)
+		}
 		if alias == extraStepCol {
 			found = true
 		}
@@ -1014,9 +1026,19 @@ func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	stepKeyedAgg := &chplan.Aggregate{GroupByAliases: []string{s.TimestampColumn}}
-
 	const colA, colB = "col_a", "col_b"
+	stepKeyedAgg := &chplan.Aggregate{
+		Input: sampleForwardTestInput(
+			chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+			chplan.Column{Name: colA}, chplan.Column{Name: colB},
+		),
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.TimestampColumn},
+			&chplan.ColumnRef{Name: colA},
+			&chplan.ColumnRef{Name: colB},
+		},
+		GroupByAliases: []string{s.TimestampColumn, colA, colB},
+	}
 	rewritten := &chplan.Project{
 		Input: stepKeyedAgg,
 		Projections: []chplan.Projection{
