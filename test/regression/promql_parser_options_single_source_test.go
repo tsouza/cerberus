@@ -34,6 +34,22 @@ package regression
 // Vendored upstream snapshots under compatibility/*/upstream/** are outside
 // cerberus's authorship boundary (the same exclusion forbid-skip.mjs applies)
 // and are not rewritten to call cerberus code.
+//
+// ONE MORE NAMED EXCEPTION, for the opposite reason (cerberus issue #3271):
+// test/spec/parityoracle/promql/oracle.go. That package's own doc states its
+// one rule as "it imports NOTHING from internal/{promql,...}" — enforced
+// mechanically by TestParityOracleImportsNoCerberusLowering, which forbids it
+// from importing internal/promql/promparse (or anything else under
+// internal/promql) precisely because an oracle sharing configuration with the
+// system under test cannot disagree with it about the thing they share. That
+// rule and this one point the same file in opposite directions unless this
+// gate names it explicitly: the oracle MUST construct its own upstream parser
+// independently of promparse.New, matching promqltest.TestParserOpts (a
+// broader, deliberately more permissive grammar than promparse.New's — see
+// oracle.go's own Evaluate doc for why that asymmetry is safe) rather than
+// cerberus's production configuration. It cannot be a _test.go file either:
+// Evaluate is called from other packages' _test.go files, and an external
+// test file cannot import another package's _test.go declarations.
 
 import (
 	"fmt"
@@ -54,6 +70,13 @@ const upstreamPromQLParserPkg = "github.com/prometheus/prometheus/promql/parser"
 // promparseImplFile is the ONE file allowed to call the upstream constructor —
 // the implementation of the shared configuration, not a consumer of it.
 const promparseImplFile = "internal/promql/promparse/promparse.go"
+
+// oracleParserFile is the ONLY other file allowed to call the upstream
+// constructor, and for the opposite reason: it is the reference oracle,
+// architecturally forbidden from consuming promparse.New (see the package
+// doc above). Its independent parser.Options are documented at that file's
+// own EnableDelayedNameRemoval declaration.
+const oracleParserFile = "test/spec/parityoracle/promql/oracle.go"
 
 // promparseSelector is the call every consumer makes instead.
 const promparseSelector = "promparse.New"
@@ -94,7 +117,7 @@ func TestPromQLParserOptionsHaveASingleSource(t *testing.T) {
 		if parseErr != nil {
 			return fmt.Errorf("parse %s: %w", rel, parseErr)
 		}
-		if rel != promparseImplFile {
+		if rel != promparseImplFile && rel != oracleParserFile {
 			for _, pos := range directParserConstructions(file) {
 				offenders = append(offenders, fmt.Sprintf("%s: %s", rel, pos))
 			}

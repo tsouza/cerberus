@@ -67,6 +67,55 @@ const lookbackDelta = 5 * time.Minute
 // than because of the query.
 const maxSamples = 1_000_000
 
+// EnableDelayedNameRemoval is the ONE promql.EngineOpts field this oracle
+// deliberately sets OPPOSITE to promqltest.NewTestEngine's own hardcoded
+// default (which is true). Everything else this package's engine builds
+// with matches that helper's defaults exactly.
+//
+// # Why this exists (cerberus issue #3271)
+//
+// Cerberus grades PromQL against two independent reference surfaces: this
+// oracle, which builds its own promql.Engine in-process, and the
+// compat lane (compatibility/prometheus/), which runs a real, separately
+// started `prom/prometheus:v3.11.3` server. "Matches the reference" has
+// exactly one meaning only if both surfaces run the engine the same way.
+//
+// compatibility/prometheus/docker-compose.yml enables only
+// `promql-experimental-functions` on that server, so
+// promql-delayed-name-removal runs at Prometheus's own documented default,
+// which is OFF (docs/feature_flags.md). promqltest.NewTestEngine hardcodes
+// it ON, which used to make this oracle silently disagree with the real
+// server on the one shape where the flag changes the ANSWER rather than
+// merely an internal bookkeeping detail: a name-dropping fold over a
+// colliding histogram/float `or` raises "vector cannot contain metrics
+// with the same labelset" with the flag off and silently answers ONE
+// histogram-valued series (discarding the float sample) with it on —
+// found because #3262's mixed-fold refusal was correct against the compat
+// lane and wrong against this oracle.
+//
+// Invariant 7 (CLAUDE.md) makes compatibility — the real server — the
+// source of truth for all three heads. That default is also not a moving
+// target here: promql-delayed-name-removal has been an opt-in,
+// EXPERIMENTAL feature flag since its introduction (upstream #14477, 3.6.0)
+// straight through the v3.11.3 tag the compat lane pins — including two
+// rounds of its OWN bugfixes in that span (upstream #17161, #17678, both
+// already released well before 3.11.3, neither one covering this shape) —
+// with no changelog signal that it is close to becoming Prometheus's
+// default. Aligning this oracle DOWN to the real server's OFF default is
+// therefore aligning to the stable, documented, currently-shipping
+// behaviour, not chasing a setting that is about to change under it.
+//
+// test/regression/promql_oracle_engine_parity_test.go pins this constant
+// against the literal `--enable-feature=` line in that compose file, so a
+// future change to either side that reintroduces the divergence fails
+// there instead of surfacing as a silent, per-fixture disagreement again.
+//
+// The oracle's PARSER options (TestParserOpts, below) are NOT held to the
+// same rule and intentionally stay more permissive than the compat
+// server's grammar — see Evaluate's own doc for why an accept/reject
+// difference is not the same class of problem as an answer difference.
+const EnableDelayedNameRemoval = false
+
 // Series is one input time series: an identifying label set plus its
 // samples, exactly as they were read back out of ClickHouse.
 type Series struct {
@@ -204,7 +253,17 @@ func (q Query) IsRange() bool { return q.Step > 0 }
 // attribute a failure precisely: a Prometheus PARSE error on a fixture's
 // query usually means the fixture exercises a cerberus extension that
 // upstream does not accept, which is a fact about the fixture and not a
-// parity failure.
+// parity failure. That reasoning is why the engine below keeps
+// promqltest.TestParserOpts' permissive grammar (experimental functions,
+// extended range selectors, duration expressions, binop fill modifiers)
+// even though the compat server enables only one of those upstream
+// feature flags: the compat lane's job is to prove cerberus's ACCEPT/
+// REJECT boundary matches the real server, while this oracle's job is
+// only to answer whatever cerberus itself already accepted — a broader
+// grammar here just means fewer fixtures go unattempted, it never
+// widens what counts as a passing ANSWER. [EnableDelayedNameRemoval] is
+// held to the opposite, stricter rule because it changes answers, not
+// acceptance — see its own doc.
 func Evaluate(tb testing.TB, series []Series, q Query) ([]Result, error) {
 	tb.Helper()
 
@@ -215,7 +274,32 @@ func Evaluate(tb testing.TB, series []Series, q Query) ([]Result, error) {
 		return nil, err
 	}
 
-	engine := promqltest.NewTestEngine(tb, false, lookbackDelta, maxSamples)
+	// Built explicitly, rather than via promqltest.NewTestEngine, so that
+	// EnableDelayedNameRemoval can be set to this package's own constant
+	// instead of that helper's hardcoded true. Every other field mirrors
+	// NewTestEngine's own defaults exactly.
+	engine := promqltest.NewTestEngineWithOpts(tb, promql.EngineOpts{
+		MaxSamples: maxSamples,
+		Timeout:    100 * time.Second,
+		NoStepSubqueryIntervalFn: func(int64) int64 {
+			return (1 * time.Minute).Milliseconds()
+		},
+		EnableAtModifier:         true,
+		EnableNegativeOffset:     true,
+		LookbackDelta:            lookbackDelta,
+		EnableDelayedNameRemoval: EnableDelayedNameRemoval,
+		UseStartTimestamps:       true,
+		// This is the one other site test/regression's
+		// TestPromQLParserOptionsHaveASingleSource (#2971) names as exempt
+		// from routing through internal/promql/promparse.New, and for the
+		// opposite reason that gate exists for: this package is
+		// architecturally forbidden from importing promparse (or anything
+		// else under internal/promql — see this file's own package doc and
+		// TestParityOracleImportsNoCerberusLowering), so it cannot share
+		// cerberus's production parser configuration even though the gate
+		// would otherwise want it to.
+		Parser: parser.NewParser(promqltest.TestParserOpts),
+	})
 	ctx := context.Background()
 
 	var query promql.Query

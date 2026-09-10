@@ -507,6 +507,7 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		printFlags(b, []flag{
 			{"mixedHistogramOnLeft", v.MixedHistogramOnLeft},
 			{"mixedDropCollisions", v.MixedDropCollisions},
+			{"mixedAbortOnCollision", v.MixedAbortOnCollision},
 		})
 		b.WriteString("\n")
 		printChild(b, visited, v.Left, depth+1)
