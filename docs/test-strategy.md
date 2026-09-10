@@ -1376,6 +1376,27 @@ suite carry the discipline:
    distinguishable.** This is pattern #11 (DEFEAT-MUTANT) — the
    codebase loses clarity to satisfy the mutation tool. Don't do it.
 
+Before picking a remedy, ask **why the mutant was reachable at all**. A
+mutant reported LIVED is by definition COVERED, and in an emitter
+package that coverage routinely comes from somewhere that pins nothing.
+An emitter's real tests are build-tagged (`//go:build chdb`,
+`//go:build integration`) because emitted SQL is proven against an
+engine, and the mutation lane compiles the UNTAGGED build, so for it
+those tests do not exist. What is left untagged is often only a
+DISCRIMINATION test — `chplan_ir_discriminates_test.go` asserts two
+plans emit *different* SQL, never what either one emits — which
+executes the emitter's lines while asserting nothing about them.
+Covered-and-unpinned is remedy 2 every time and never remedy 1: the
+mutant is not equivalent, it is undefended, and no coverage floor can
+see the difference. The tell is a source file with no untagged
+`<file>_mutation_test.go` beside it. Cerberus issue #3221 found 21 of
+`phase2-other`'s 27 survivors in three files in exactly that state,
+after #2338 and #2741 had each closed the same leg's failure as an
+instance; that issue's answer to "should the clustered files become
+curated legs of their own" — no, plus the graduation rule that replaces
+the question — is recorded in `mutation-phases.mjs`'s own
+`phase2-other` comment.
+
 Remedies 1 and 2 are opposite verdicts on one mutant, so recording both
 means one of them is false — and it is almost always the kill, because a
 `// TestX kills …` header costs nothing to write. Two mutants on `main`
