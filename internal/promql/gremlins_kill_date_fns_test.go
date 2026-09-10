@@ -16,7 +16,7 @@ const readsRangeSampleTimestampStep = 30 * time.Second
 // TestReadsRangeSampleTimestamp_OnlyTheTimestampFunction kills the
 // INVERT_LOGICAL mutant on the FIRST `||` of
 //
-//	date_fns.go:`name != "timestamp" || ctx.step <= 0 || ctx.inRangeVector`
+//	date_fns.go:`name != timestampFunctionName || ctx.step <= 0 || ctx.inRangeVector`
 //
 // All three of this guard's mutants live on that one construct, so each note
 // names the operator it rewrites rather than a position within the line.
@@ -52,14 +52,14 @@ func TestReadsRangeSampleTimestamp_OnlyTheTimestampFunction(t *testing.T) {
 	if readsRangeSampleTimestamp("day_of_week", arg, ctx) {
 		t.Fatal("readsRangeSampleTimestamp(\"day_of_week\", <selector>, step>0) = true; only " +
 			"`timestamp` reads the range sample's own timestamp (the `||`->`&&` mutants on " +
-			"date_fns.go:`name != \"timestamp\" || ctx.step <= 0 || ctx.inRangeVector` both " +
+			"date_fns.go:`name != timestampFunctionName || ctx.step <= 0 || ctx.inRangeVector` both " +
 			"stop the name check disqualifying on its own)")
 	}
 }
 
 // TestReadsRangeSampleTimestamp_RequiresPositiveStep kills TWO mutants on
 //
-//	date_fns.go:`name != "timestamp" || ctx.step <= 0 || ctx.inRangeVector`
+//	date_fns.go:`name != timestampFunctionName || ctx.step <= 0 || ctx.inRangeVector`
 //
 // both of which stop a zero step disqualifying on its own:
 //
@@ -88,7 +88,7 @@ func TestReadsRangeSampleTimestamp_RequiresPositiveStep(t *testing.T) {
 		t.Fatal("readsRangeSampleTimestamp(\"timestamp\", <selector>, step=0) = true; a zero step " +
 			"is the instant lowering, which has no per-step grid to read a sample timestamp " +
 			"against (the `<=`->`<` mutant on " +
-			"date_fns.go:`name != \"timestamp\" || ctx.step <= 0 || ctx.inRangeVector` " +
+			"date_fns.go:`name != timestampFunctionName || ctx.step <= 0 || ctx.inRangeVector` " +
 			"admits it, since a step is never negative)")
 	}
 }

@@ -553,9 +553,9 @@ func TestCountOrGroupOverMixedExpHistogramSetOp_RecognizesCountAndGroup(t *testi
 // ---------------------------------------------------------------------
 
 // TestDateFnOverMixedExpHistogramSetOp_ArgCountAndTimestampExclusion
-// kills the three mutants on histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == "timestamp"`:
+// kills the three mutants on histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == timestampFunctionName`:
 //
-//	if len(c.Args) != 1 || c.Func.Name == "timestamp" {
+//	if len(c.Args) != 1 || c.Func.Name == timestampFunctionName {
 //	    return nil, false
 //	}
 //
@@ -563,7 +563,7 @@ func TestCountOrGroupOverMixedExpHistogramSetOp_RecognizesCountAndGroup(t *testi
 // shape for these date fns), the mutated first disjunct becomes true and
 // wrongly rejects. Killed by the year(...) assertion.
 //
-// `c.Func.Name == "timestamp"` → `!=`: with Func.Name="year" (not
+// `c.Func.Name == timestampFunctionName` → `!=`: with Func.Name="year" (not
 // "timestamp"), the mutated second disjunct ("year" != "timestamp")
 // becomes true and wrongly rejects EVERY normal date-fn call. Also
 // killed by the year(...) assertion.
@@ -594,16 +594,16 @@ func TestDateFnOverMixedExpHistogramSetOp_ArgCountAndTimestampExclusion(t *testi
 	yearCall := &parser.Call{Func: parser.MustGetFunction("year"), Args: parser.Expressions{binExpr}}
 	if _, ok := dateFnOverMixedExpHistogramSetOp(yearCall, s, lowerCtx{}); !ok {
 		t.Fatalf("year(<mixed or>) not recognized (the `len(c.Args) != 1`→`==` or " +
-			"`c.Func.Name == \"timestamp\"`→`!=` mutants on " +
-			"histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == \"timestamp\"` " +
+			"`c.Func.Name == timestampFunctionName`→`!=` mutants on " +
+			"histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == timestampFunctionName` " +
 			"would reject it)")
 	}
 
 	tsCall := &parser.Call{Func: parser.MustGetFunction("timestamp"), Args: parser.Expressions{binExpr}}
 	if _, ok := dateFnOverMixedExpHistogramSetOp(tsCall, s, lowerCtx{}); ok {
 		t.Fatalf("timestamp(<mixed or>) wrongly recognized (the `||`→`&&` or " +
-			"`c.Func.Name == \"timestamp\"`→`!=` mutants on " +
-			"histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == \"timestamp\"` " +
+			"`c.Func.Name == timestampFunctionName`→`!=` mutants on " +
+			"histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == timestampFunctionName` " +
 			"would accept it)")
 	}
 }
