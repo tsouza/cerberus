@@ -153,50 +153,39 @@ default"](#upgrading-into-the-hotcold-default) hazard above: it fails loudly
 for the same additive-only-policy reason, it just now happens by DEFAULT
 rather than only on a deliberate mode change.
 
-This loud-failure claim is codified as a repeatable `bwc-minio` e2e check,
-not just asserted in a comment: the lane's `mode-toggle` scenario installs
-and seeds a real object-storage cluster, `helm upgrade`s it into hot-cold
-mode without pinning `hotVolume.enabled: false`, and asserts the bundled
-ClickHouse pod's own startup validation refuses with `Unknown storage policy
-... (UNKNOWN_POLICY)` — never a silent success, a generic non-ready pod, or a
-plain timeout. It has also been reproduced manually against a real
-ClickHouse + MinIO fed the chart's own rendered config. See the
+This loud-failure claim is codified as a repeatable `bwc-minio` e2e check:
+the lane's `mode-toggle` scenario installs and seeds a real object-storage
+cluster, `helm upgrade`s it into hot-cold mode without pinning
+`hotVolume.enabled: false`, and asserts the bundled ClickHouse pod's own
+startup validation refuses with `Unknown storage policy ...
+(UNKNOWN_POLICY)` — never a silent success, a generic non-ready pod, or a
+plain timeout. See the
 [Support / validation matrix](#support--validation-matrix) below for its
 exact status pending this leg's first `bwc-minio` CI run.
 
 ## Multi-replica consistency
 
 `clickhouse.bundled.replicas > 1` auto-enables a Keeper ensemble and
-`ReplicatedMergeTree`. That raises a question independent of storage tiering:
-can a single incoming cerberus request's multiple ClickHouse statements — in
-particular, every sharded-pushdown time-range fan-out — land on different,
-asynchronously-replicating replicas and produce a torn composite result?
+`ReplicatedMergeTree`.
 
-Verified directly against `internal/chclient`, `internal/solver/executor.go`,
-and the vendored `clickhouse-go/v2` driver: the bundled chart defaults
-`CERBERUS_CH_ADDR` to a **single-element** address list (the ClusterIP Service
-name), which makes `CERBERUS_CH_CONN_OPEN_STRATEGY` mathematically irrelevant
-regardless of value — both of the driver's dial strategies resolve to the same
-single address. The actual determinant of which backend pod a connection
-reaches is **kube-proxy's per-new-TCP-connection Service DNAT**, which no
-client-side setting controls.
+The bundled chart defaults `CERBERUS_CH_ADDR` to a **single-element** address
+list (the ClusterIP Service name), which makes
+`CERBERUS_CH_CONN_OPEN_STRATEGY` mathematically irrelevant regardless of
+value — both of the driver's dial strategies resolve to the same single
+address. The actual determinant of which backend pod a connection reaches is
+**kube-proxy's per-new-TCP-connection Service DNAT**, which no client-side
+setting controls.
 
-A client-side fix (pinning one pooled connection per request) was considered
-and rejected: the sharded-pushdown solver dispatches its K shard statements
-**concurrently** (`errgroup.SetLimit`), a single native ClickHouse connection
-serves one query at a time, and no primitive in `clickhouse-go/v2`'s public
-API supports pinning multiple concurrent connections to one replica without a
-driver fork.
-
-The chosen fix instead adds `sessionAffinity: ClientIP` (default on) to the
-bundled ClickHouse's ClusterIP Service, with a configurable affinity window
+The bundled ClickHouse's ClusterIP Service therefore carries
+`sessionAffinity: ClientIP` (default on), with a configurable affinity window
 (`clickhouse.bundled.service.sessionAffinityTimeoutSeconds`, default `10800`
 seconds = 3 hours): every new connection a given cerberus pod opens routes to
 the **same** replica for the affinity window, closing cross-replica divergence
 within a single multi-statement request — including every sharded-pushdown
-fan-out — with **zero code changes** and no dependency on fan-out concurrency.
-Set `clickhouse.bundled.service.sessionAffinity: "None"` to opt back out to
-plain kube-proxy per-connection routing.
+fan-out. Set `clickhouse.bundled.service.sessionAffinity: "None"` to opt back
+out to plain kube-proxy per-connection routing. See
+[`helm-clickhouse.background.md`](helm-clickhouse.background.md) for the
+client-side alternative that was considered and rejected.
 
 **What this does NOT claim.** `sessionAffinity` does not eliminate temporal
 read-skew from concurrent ingestion during a request — ClickHouse has no
@@ -283,22 +272,15 @@ zookeeperPath`) and to `internal/solver`'s own query-time-range "shard" — see
 `internal/chopt/topology.go`'s terminology table for the full picture.
 
 **`count: 1` (default) renders byte-identical to today's chart** — same
-StatefulSet/Service names, same `cluster.xml` shape — verified by a real diff
-against this chart's pre-#3077 tree across every `ci/*.yaml` fixture, locked
-in permanently by `chart-render-assert.mjs`'s own dataShards.count=1
-assertions (a one-time base comparison would stop meaning anything once
-main eventually **is** this code; the structural assertions keep catching a
-future regression regardless).
+StatefulSet/Service names, same `cluster.xml` shape — locked in permanently
+by `chart-render-assert.mjs`'s own `dataShards.count=1` assertions.
 
 **`count > 1` renders every shard, INCLUDING index 0**, via a `range` —
 `<fullname>-datashard-<i>` StatefulSets, `<headlessName>-datashard-<i>`
 headless Services, a `<fullname>-datashard-<i>` ClusterIP Service, each with
 its own `macros-datashard-<i>.xml` ConfigMap key — aliased to `macros.xml`
-via the `config` ConfigMap volume's own `items[].path` list (a separate
-`subPath`-mounted volume was tried first and rejected: mounting one
-ConfigMap key via `subPath` into a directory another volume already
-populates fails on a real cluster) — replacing today's single hardcoded
-`<shard>01</shard>` literal — never a silent partial rename. `remote_servers.xml` (in the shared, cluster-global
+via the `config` ConfigMap volume's own `items[].path` list — replacing
+today's single hardcoded `<shard>01</shard>` literal — never a silent partial rename. `remote_servers.xml` (in the shared, cluster-global
 `cluster.xml` key) lists every shard's every replica identically on every
 pod, and carries a `<secret>` read from the environment so a Distributed
 query forwards the ORIGINATING user's identity to its peers. That secret is
@@ -309,15 +291,14 @@ connections to each node keep working and hide the cause. Supply it with
 `clickhouse.bundled.interserverSecret`, or name your own Secret with
 `interserverExistingSecret`; the render refuses `dataShards.count > 1`
 without one. A single shard with `replicas > 1` forwards across replicas the
-same way and should set it too — it is not required there only because
-requiring it would break an existing single-shard deployment on upgrade. Keeper auto-enables from `dataShards.count > 1` alone, independent of
+same way and should set it too. Keeper auto-enables from `dataShards.count > 1` alone, independent of
 `replicas`: ClickHouse's own `ON CLUSTER` DDL-coordination mechanism (which
 every per-shard `CREATE ... ON CLUSTER` statement relies on) needs Keeper
 regardless of per-shard replica count. Each per-shard StatefulSet/Service
-pair carries a `cerberus.io/data-shard: "<i>"` discriminator label — without
-it, every per-shard StatefulSet would share an IDENTICAL, overlapping pod
-selector, and multiple StatefulSet controllers reconciling the same
-selector would fight over pod ownership.
+pair carries a `cerberus.io/data-shard: "<i>"` discriminator label, which
+keeps their pod selectors disjoint. See
+[`helm-clickhouse.background.md`](helm-clickhouse.background.md) for the
+reasoning behind the render's per-shard choices.
 
 **`dataShards.fanoutCap` — the cluster-wide admission budget.** cerberus's
 `DataShardFanoutGate` (`docs/solver.md`, point 5) bounds how many per-shard
@@ -356,8 +337,7 @@ no cerberus templating needed) — unless the operator has already set
 `schema.replicated.enabled` or `schema.TABLE_ENGINE` themselves, which always
 wins. Either way, BOTH mechanisms draw on the SAME `{shard}`/`{replica}`
 macro slot `macros-datashard-<i>.xml` populates with a DISTINCT `<shard>`
-value per data shard — the "intentional convergence" issue #3077's own
-acceptance criteria calls out — and
+value per data shard, and
 `internal/schema/ddl`'s `TestDataShardCount_ReplicatedCombination` pins that
 the single-data-shard Replicated-database form (an operator's own explicit
 choice, or the `replicas == 1` default path) renders correctly alongside
@@ -385,50 +365,16 @@ fresh install at the target `count` has no such hazard.
 
 ### Validation status: experimental, exercised by an informational e2e lane
 
-`count > 1` has been proven at the render/kubeconform layer (every
-`ci/*.yaml` fixture plus the dedicated dataShards assertions in
-`chart-render-assert.mjs`) plus a REAL manual k3d run performed while
-building issue #3077 — not merely a hypothetical plan:
-
-1. A k3d cluster (`k3d cluster create`, single k3s node) with the chart's
-   `clickhouse.bundled.enabled=true`, `hotVolume.enabled=true`,
-   `objectStorage.enabled=false` (hot-only, no MinIO dependency),
-   `dataShards.count=2` rendered and `kubectl apply`'d directly (no cerberus
-   image build needed for this DDL-focused proof). Both
-   `rn-cerberus-clickhouse-datashard-{0,1}-0` pods and the 3-node Keeper
-   ensemble reached `Running`/`1/1 Ready`.
-2. `system.macros` on each pod confirmed the per-shard macro split:
-   shard 0's pod carries `shard=01`, shard 1's `shard=02`, both
-   `cluster=bwc_cluster`; `system.clusters` showed both shards' single
-   replica each under `bwc_cluster`.
-3. `internal/schema/ddl.RenderAll`'s ACTUAL generated statements (invoked
-   directly against `Config{Database: "otel_ddl_test", Cluster:
-   "bwc_cluster", DataShardCount: 2}`, the Logs signal) — the real
-   production code path, not a hand-written approximation — executed
-   without error via `CREATE TABLE ... ON CLUSTER bwc_cluster` against
-   **both** shards: `otel_logs_local` (plain `MergeTree()`, since this run
-   used `bundled.replicas: 1`), its curated Body-codec `ALTER`, and the
-   `otel_logs` `Distributed` wrapper.
-4. A row inserted directly into shard 0's `otel_logs_local` and a different
-   row inserted directly into shard 1's `otel_logs_local` (the recommended
-   direct-to-local write pattern — see
-   [`operations.md`](operations.md#clickhouse-cluster-data-shard-topology-distributed-engine-tables))
-   were BOTH returned by a single `SELECT ... FROM otel_ddl_test.otel_logs`
-   issued against the `Distributed` wrapper from shard 0 — and, in a
-   separate hand-built table, a manual `cluster('bwc_cluster', 'otel',
-   'test_metric_local')` query from shard 0 likewise returned all 4 rows
-   split across both shards' local tables.
-
-The cluster was torn down (`k3d cluster delete`) after the run; nothing from
-it persists. This proves the ClickHouse-side DDL/query mechanics genuinely
-work on a real multi-node cluster. Since then the `datashard` e2e lane (next
-paragraph) has taken over as the standing proof: a built cerberus image
-inside the cluster, the full Go e2e correctness suite, and a real concurrent
-PromQL/LogQL/TraceQL burst through the sharded-pushdown path, at both
-`count: 2` and `count: 4`. That lane asserts correctness, memory
-apportionment, and the admission-control ceiling in both of its scopes — per
-cerberus process and cluster-wide, the latter being `dataShards.fanoutCap`
-apportioned across the cerberus replica count (its current result is stated
+`count > 1` is proven at the render/kubeconform layer (every `ci/*.yaml`
+fixture plus the dedicated dataShards assertions in
+`chart-render-assert.mjs`), and the `datashard` e2e lane is its standing
+runtime proof: a built cerberus image inside the cluster, the full Go e2e
+correctness suite, and a real concurrent PromQL/LogQL/TraceQL burst through
+the sharded-pushdown path, at both `count: 2` and `count: 4`. That lane
+asserts correctness, memory apportionment, and the admission-control ceiling
+in both of its scopes — per cerberus process and cluster-wide, the latter
+being `dataShards.fanoutCap` apportioned across the cerberus replica count
+(its current result is stated
 in [`operations.md`'s e2e-hardening section](operations.md#multi-data-shard-e2e-hardening-leg)).
 The feature is EXPERIMENTAL because no production support is offered for it:
 the lane is informational, never a PR or release gate. Every
@@ -436,112 +382,73 @@ compat/migration harness in this repository remains single-shard-only by
 permanent, stated design (see
 [`operations.md`'s scoping section](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard)).
 
-Issue #3079 adds the `datashard` e2e leg (`.github/workflows/e2e.yml`) that
-runs exactly this combination — a built cerberus image, a real concurrent
-PromQL/LogQL/TraceQL load burst through the solver's sharded-pushdown path,
-at both `dataShards.count: 2` and `dataShards.count: 4` — in CI, and asserts
-the real ClickHouse-side admission-control ceiling and memory apportionment
-against `system.query_log`. See
+The lane lives in `.github/workflows/e2e.yml` and runs exactly this
+combination — a built cerberus image, a real concurrent PromQL/LogQL/TraceQL
+load burst through the solver's sharded-pushdown path, at both
+`dataShards.count: 2` and `dataShards.count: 4` — in CI, and asserts the real
+ClickHouse-side admission-control ceiling and memory apportionment against
+`system.query_log`. See
 [`operations.md`'s own section](operations.md#multi-data-shard-e2e-hardening-leg)
-for exactly what it checks.
+for exactly what it checks, and
+[`helm-clickhouse.background.md`](helm-clickhouse.background.md) for the
+manual k3d run that preceded the lane.
 
 ### Hot/cold default compatibility: the object-disk path is shard-agnostic; sessionAffinity's new gap
 
-Two questions #3077 inherited from #3075's now-merged storage tiering +
-sessionAffinity work, checked against the ACTUAL merged shape rather than
-assumed:
+Two properties of the storage-tiering + `sessionAffinity` work hold under
+`dataShards.count > 1`:
 
 - **The object-disk path template needs no per-shard macro.** `storage.xml`
   (`cerberus.clickhouse.storageXML`) references no `{shard}`/`{replica}`
   macro anywhere, and is mounted from the SAME cluster-global ConfigMap key
-  on every pod of every shard regardless of `dataShards.count` — verified by
-  reading the merged template directly. This is safe, not merely
-  unchanged-by-oversight: ClickHouse's S3/GCS/Azure object-disk implementation
-  names each part's remote object key with its own UUID-derived component
-  specifically so multiple independent ClickHouse instances (here, N data
-  shards, each with its own independent local `metadata` PVC tracking which
-  remote keys belong to it) can safely share one bucket/prefix without
-  collision — locating a shard's own parts is a function of that shard's
-  local metadata database, never of the shared object-store namespace. So
-  `objectStorage.path` stays a single, chart-wide value; nothing here needed
-  a `-datashard-<i>` suffix.
-- **sessionAffinity's consistency guarantee gained a new gap once a
-  `Distributed` fan-out came into play — investigated and CLOSED by issue
-  #3086, not silently assumed solved.** `sessionAffinity: ClientIP` (see
+  on every pod of every shard regardless of `dataShards.count`. Multiple
+  data shards safely share one bucket/prefix, so `objectStorage.path` stays
+  a single, chart-wide value; nothing here needs a `-datashard-<i>` suffix.
+- **`sessionAffinity` alone does not pin remote-shard replica selection;
+  `internal/chclient` does.** `sessionAffinity: ClientIP` (see
   ["Multi-replica consistency"](#multi-replica-consistency) above) pins a
   cerberus pod's connection to ONE replica **within the shard that
-  Service's selector reaches** — under `dataShards.count > 1` each per-shard
-  Service pair still provides that guarantee for ITS OWN shard, so a
-  multi-statement request that only ever touches shard 0 (e.g. because
+  Service's selector reaches** — under `dataShards.count > 1` each
+  per-shard Service pair still provides that guarantee for ITS OWN shard,
+  so a multi-statement request that only ever touches shard 0 (e.g. because
   `CERBERUS_CH_ADDR` defaults there) still gets the same closed
-  cross-replica-divergence property it always did. What sessionAffinity
-  CANNOT reach: once that one pinned connection issues a query against the
-  `Distributed` wrapper table, ClickHouse's OWN internal replica-selection
-  logic (the `load_balancing` setting) picks which replica of EVERY OTHER
-  shard to read from — a decision made entirely inside ClickHouse, invisible
-  to and uncoordinated by any k8s Service. Whether two separate statements in
-  the same cerberus-issued multi-statement request (e.g. a sharded-pushdown
-  time-range fan-out, now composing with a DATA-shard fan-out) could land on
-  two DIFFERENT replicas of the SAME remote shard — reopening exactly the
-  divergence risk sessionAffinity exists to close, just one level removed —
-  was the open question issue #3086 set out to answer.
-
-  **Resolution: closed by an unconditional `internal/chclient` settings pin,
-  not merely documented as a residual risk.** ClickHouse's own default is
-  `load_balancing=random` (verified against `src/Core/Settings.cpp` at the
-  pinned `v25.8.1.5101-lts` tag — NOT `round_robin` as this issue's own
-  problem statement assumed before the source was actually read), which picks
-  arbitrarily among a shard's least-erroring replicas on EVERY call — the
-  DEFAULT itself is what reopens the divergence risk. Cerberus now stamps
-  `load_balancing=first_or_random` + `load_balancing_first_offset=0`
-  UNCONDITIONALLY on every data-plane query (`internal/chclient/
-  distributed_query_settings.go`, mirroring the #3078 `skip_unavailable_
-  shards` / `fallback_to_stale_replicas_for_distributed_queries` pins): per
-  `src/Common/GetPriorityForLoadBalancing.cpp` (same pinned tag),
-  `first_or_random` gives priority 0 to the replica at the configured offset
-  and priority 1 to every other replica, so — absent any recorded connection
-  errors — EVERY statement against a remote shard's `Distributed` connection
-  pool deterministically selects that ONE offset-0 replica (this chart's
-  `<replica>` list is rendered in StatefulSet-ordinal order with no
-  `<priority>` tag, so offset 0 always names that shard's own `-0` pod). The
-  selection state (`PoolWithFailoverBase::Pool::error_count`) lives on the
-  ClickHouse SERVER process cerberus's own sessionAffinity already pins to,
-  not on any per-client state, so the resulting guarantee is actually
-  STRONGER than sessionAffinity's own: every statement from every cerberus
-  pod converges on the same physical replica per remote shard, cluster-wide,
-  for as long as that replica stays healthy — not merely "for the lifetime of
-  one client's affinity window." See `internal/chclient/
-  distributed_query_settings.go`'s own doc comment for the full citation
-  chain (including why `first_or_random` was chosen over the equally
-  deterministic `in_order`) and
+  cross-replica-divergence property it always did. Which replica of every
+  OTHER shard a `Distributed` query reads from is decided inside ClickHouse
+  by the `load_balancing` setting, invisible to and uncoordinated by any k8s
+  Service. Cerberus therefore stamps `load_balancing=first_or_random` +
+  `load_balancing_first_offset=0` UNCONDITIONALLY on every data-plane query
+  (`internal/chclient/distributed_query_settings.go`), so — absent any
+  recorded connection errors — every statement against a remote shard's
+  `Distributed` connection pool deterministically selects that ONE offset-0
+  replica (this chart's `<replica>` list is rendered in StatefulSet-ordinal
+  order with no `<priority>` tag, so offset 0 always names that shard's own
+  `-0` pod). See
   [`operations.md`'s per-query-setting table](operations.md#per-query-setting--distributed-behavior)
   for the `Distributed`-forwarding analysis.
 
-  **Trade-off, documented not hidden — PERMANENT, not a bug to keep
-  chasing.** This pin concentrates every cerberus read against a remote
-  shard's `Distributed` connection on that shard's ONE offset-0 replica while
-  it stays healthy; the shard's other replicas serve durability/failover
-  only, not read-scaling, for as long as this pin stands. This is the same
-  correctness-over-throughput trade cerberus already makes for the #3078
-  pins, applied one level further down the replica-selection stack — an
-  operator who needs read-scaling across a shard's replicas can override
-  `load_balancing` via a server-side settings profile (cerberus's own default
-  never silently reverts to unpredictable divergence risk instead). Verified
-  empirically on a real multi-replica-per-shard k3d cluster by the
-  `datashard-replica-affinity` e2e leg
-  (`.github/workflows/e2e.yml`, `.github/scripts/
-  e2e-datashard-replica-affinity-verify.mjs`): every remote-shard child
-  statement within a genuinely solver-split (`kEff > 1`) trace is asserted
-  to land on the SAME `system.query_log.hostname` — and specifically on each
-  shard's own ordinal-0 pod, confirming the mechanism, not just its
-  consequence.
+  **The trade-off.** This pin concentrates every cerberus read against a
+  remote shard's `Distributed` connection on that shard's ONE offset-0
+  replica while it stays healthy; the shard's other replicas serve
+  durability/failover only, not read-scaling, for as long as this pin
+  stands. An operator who needs read-scaling across a shard's replicas
+  overrides `load_balancing` via a server-side settings profile. The
+  behaviour is verified empirically on a real multi-replica-per-shard k3d
+  cluster by the `datashard-replica-affinity` e2e leg
+  (`.github/workflows/e2e.yml`,
+  `.github/scripts/e2e-datashard-replica-affinity-verify.mjs`): every
+  remote-shard child statement within a genuinely solver-split (`kEff > 1`)
+  trace is asserted to land on the SAME `system.query_log.hostname` — and
+  specifically on each shard's own ordinal-0 pod, confirming the mechanism,
+  not just its consequence.
+
+  See [`helm-clickhouse.background.md`](helm-clickhouse.background.md) for
+  how the pin was arrived at and why the trade-off is permanent.
 
 ## What's out of scope
 
 The verification of `internal/chopt`'s per-query settings against a real
 `Distributed` table and the runtime proof of `dataShards.count > 1` under
-concurrent load were delivered by epic #3074's later sub-issues, not by the
-chart itself: the settings analysis is
+concurrent load live outside this chart: the settings analysis is
 [`operations.md`'s Distributed-query settings section](operations.md#clickhouse-distributed-query-settings-error-taxonomy-and-known-risks),
 and the runtime proof is the `datashard` e2e lane
 ([Validation status](#validation-status-experimental-exercised-by-an-informational-e2e-lane)
@@ -577,14 +484,16 @@ replicates, the corpus table is created with a bare `ReplicatedMergeTree` and
 its rows replicate instead of accumulating per replica.
 
 What the corpus never does is reuse `schema.TABLE_ENGINE`'s own expression. It
-reads that knob as a declaration and emits its own engine, because the
-expression's Keeper path belongs to the signal tables and its engine family was
-chosen for them — a `ReplacingMergeTree` pinned there would dedupe corpus rows
-by their sort key. The bare form needs no path of its own: the server derives
-one per table from `default_replica_path`.
+reads that knob as a declaration and emits its own bare form, which needs no
+path of its own: the server derives one per table from
+`default_replica_path`.
 
 Under `dataShards.count > 1` one gap remains, and it IS this boundary rather
 than a defect. The corpus gets no `Distributed` wrapper, so rows never leave
 the shard they were written on — the same local/Distributed split that is
 base-signal-tables-only. It costs nothing on the query path, which never reads
 the corpus. Within each shard's replica set the corpus does replicate.
+
+---
+
+For the rationale behind these choices — alternatives considered, incidents, measurements — see [helm-clickhouse.background.md](helm-clickhouse.background.md).

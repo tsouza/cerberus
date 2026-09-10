@@ -12,7 +12,8 @@ Prometheus Conformance Program tooling) against a real `prom/prometheus`
 against real Loki / Tempo; TraceQL additionally has no third-party
 conformance suite to draw on, so its corpus is author-written and its
 numerical confidence is honestly lower (see
-[Per-head confidence](#per-head-confidence) below).
+[Per-head confidence](compatibility.background.md#per-head-confidence)
+below).
 
 > **What gates vs. what scores.** All four `compatibility/<head>` checks
 > (the three per-language legs plus `compatibility/prometheus-forced-route`)
@@ -123,23 +124,6 @@ branch as shields.io badge JSON; the README shows them live. On
   `:9095`, not multiplexed onto its HTTP port the way cerberus's h2c
   listener is).
 
-## Per-head confidence
-
-The three legs are *not* equally strong, and the docs should not imply
-they are:
-
-| Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
-| ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, full parity, no allow-list               |
-| LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
-| TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
-
-All three run against a real reference backend on identical seeded data,
-so each catches genuine semantic divergence. The difference is *corpus
-provenance and breadth*: PromQL inherits an externally-curated standard;
-TraceQL's coverage is only as wide as the author wrote it. Raising
-TraceQL's confidence is the top improvement item.
-
 ## Scope: single ClickHouse data shard
 
 All three harnesses target a single-node/single-data-shard ClickHouse — a
@@ -224,15 +208,6 @@ Every diff against a reference backend is a real bug — with one
 qualification that is about the *comparison*, not about any case: two
 `float64` answers are compared with a relative tolerance, not with `==`.
 
-Cerberus accumulates in ClickHouse and the reference engine accumulates
-in Go, and floating-point addition is not associative, so the same
-samples folded in a different order land a few ULPs (units in the last
-place) apart. Two independent libm implementations of a transcendental
-function are permitted the same freedom: IEEE-754 requires each to be
-*correctly rounded* for its own algorithm, not to agree bit-for-bit with
-the other. Both are facts about IEEE-754 arithmetic; neither is a
-lowering bug, and neither is chaseable in cerberus's SQL.
-
 `oracle.EqualValues` (`test/spec/parityoracle/promql/oracle.go`) is the
 single comparator, and `summationReorderRelativeTolerance` is the single
 number. It is derived, not fitted: the standard backward-error bound for
@@ -244,27 +219,21 @@ value — about `9.09e-13`.
 - **This is not an allow-list.** One tolerance applies to every value on
   every fixture. No fixture can opt into it, widen it, or be excused by
   it; there is no `parity:` key and no `scope:` value that reaches it.
-- **It still catches real divergence.** The measured divergences it
-  accepts — for example `2 atan2 up`'s 1-ULP libm difference (reference
-  `1.3734007669450157` vs. cerberus `1.373400766945016`,
-  [#1985](https://github.com/tsouza/cerberus/issues/1985)), `^`'s 2-ULP
-  difference ([#2598](https://github.com/tsouza/cerberus/issues/2598)),
-  native exponential-histogram interpolation's 1-5 ULPs
-  ([#2024](https://github.com/tsouza/cerberus/issues/2024)), and native
-  `increase()`'s reordered window sums
-  ([#2909](https://github.com/tsouza/cerberus/issues/2909)) — all sit
-  three to four orders of magnitude *inside* the bound, while the
-  smallest genuine disagreement the round-trip lane has produced
-  (`3.03e-2` relative) sits ten orders *outside* it.
-  `TestEqualValuesRejectsRealDivergence` pins that separation with a
+- **It still catches real divergence.** The divergences the bound accepts
+  are ULP-scale and sit orders of magnitude inside it, while the smallest
+  genuine disagreement the round-trip lane has produced sits orders outside
+  it. `TestEqualValuesRejectsRealDivergence` pins that separation with a
   required headroom factor, so the tolerance cannot be widened toward a
   real disagreement without a test going red.
 - **Production pushdown is unchanged.** Cerberus still evaluates
   vector-involving `atan2`, `^`, and window sums in ClickHouse SQL
-  rather than in Go. Buffering results client-side to chase bit-for-bit
-  agreement on the 17th significant digit would mean abandoning
-  cerberus's push-down/never-buffer-unboundedly architecture for a
-  divergence with no practical monitoring impact.
+  rather than in Go.
+
+See
+[`compatibility.background.md`](compatibility.background.md#why-the-parity-oracle-compares-with-a-relative-tolerance)
+for why bit-for-bit agreement is not reachable here, the measured
+divergences behind the bound, and why results are not buffered
+client-side to chase it.
 
 ## Upstream-skip baseline (LogQL)
 
@@ -449,32 +418,18 @@ Four verdicts, all fatal:
 | ARRIVED-FAILING | a case new to the corpus diverges on arrival | fix the engine                   |
 | UNRECORDED      | a case new to the corpus passes              | move the baseline so it is gated |
 
-`VANISHED` and `UNRECORDED` are loud rather than silent on purpose. A
-divergence must never be retired by deleting or renaming its case, and
-corpus coverage must never shrink unnoticed — so a disappearance is a
-failure that names the missing IDs. Likewise, a newly-passing case that
-nobody records is a case no future run is gated on, which means the
-ratchet has not actually ratcheted. `ARRIVED-FAILING` is fatal for the
-same reason the project has no allow-lists: "it wasn't passing before" is
-exactly the reasoning an allow-list encodes, and accepting it would let a
-corpus refresh import known-bad behaviour under a green check.
-
 The rosters live in
 [`compatibility/parity-baseline/`](../compatibility/parity-baseline/manifest.json).
 The shared loader reconstructs `heads.<name>.{passed,total,cases}`, one
 entry per head (`prometheus`, `loki`, `tempo`, `tempo-grpc`). Their sizes
 are stated there and nowhere else: the selected head's deterministic
-buckets are synced from its `compat-cases.json`, so a second copy in this
-page would be a hand-typed restatement that every corpus-adding PR has to
-re-type — and that two such PRs conflict over. `doc-counts.mjs` fails the
-build if one comes back.
+buckets are synced from its `compat-cases.json`, and `doc-counts.mjs`
+fails the build if a second copy of one of those counts comes back into
+this page.
 
 The baseline records **full parity** for every head — the ratchet asserts
 `passed == total == cases.length`, so the tree has no shape in which a
-divergence can be recorded as acceptable. That is what keeps it the
-opposite of the deleted `expected-failures.json`: an allow-list names the
-cases you are permitted to fail, whereas this roster names the cases that
-must pass, and every entry on it is an obligation.
+divergence can be recorded as acceptable.
 
 It cannot flake. Each case ID is built from that case's static corpus
 identity (query text, endpoint, suite, lane) and never from
@@ -526,3 +481,8 @@ discover a query that cerberus mishandles but the corpus doesn't cover:
 Cerberus-specific cases (OTel-CH schema quirks, ClickHouse-only edge
 cases) belong in `test/spec/<head>/` as TXTAR fixtures, not in the
 compatibility harness.
+
+---
+
+For the rationale behind these choices — alternatives considered, incidents,
+measurements — see [compatibility.background.md](compatibility.background.md).
