@@ -20,7 +20,9 @@ import (
 // replicatedServerConfig is a single-node ClickHouse config that turns on an
 // embedded clickhouse-keeper, points the server's ZooKeeper client at it, and
 // defines the {shard} / {replica} macros — the minimum a Replicated database
-// engine needs to coordinate. It is deliberately a ONE-node cluster: that is
+// engine needs to coordinate. internal/optcorpus's replicated lane
+// (replicated_realch_integration_test.go, cerberus issue #3241) raises the same
+// server shape for the corpus table; a Keeper-timing fix here is owed there too. It is deliberately a ONE-node cluster: that is
 // enough to prove the DDL cerberus emits is ACCEPTED by ClickHouse and that the
 // tables register in system.replicas (i.e. they actually replicate DATA), which
 // is the exact behaviour string-assertion unit tests can never observe.

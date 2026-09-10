@@ -94,27 +94,34 @@ const releaseRegen = "just capture-release-perf-baseline <version>"
 // situations produced the difference. The gate could not previously tell them
 // apart, so it said "a real regression" for both (cerberus issue #3244):
 //
-//   - RATIFIED SINCE THE RELEASE. The fixture's current measurement matches the
-//     committed ROLLING baseline, which means some PR between that release and
-//     now measured this exact value, re-recorded the row, and had the change
-//     reviewed. #3214's LogQL `[start, end)` fix is the worked example: a
-//     half-open entry window legitimately stops scanning the endpoint sample,
-//     so logql/range_filter went from 2 scan rows to 1 — correct, reviewed, and
-//     not a regression of anything. It is still reported, because a difference
-//     against what actually shipped is exactly what this gate exists to
-//     surface; it just is not a defect to root-cause, and it clears on its own
-//     at the next cut, when `just release-prep` freezes today's rolling
-//     baseline as the new reference.
-//   - LIVE DRIFT. The current measurement does not match the rolling baseline
-//     either, so TestCardinalityRatchet is failing on this fixture too and
-//     nobody has reviewed this value. That is the regression case, and it is
-//     root-caused, never recorded.
+//   - RECORDED SINCE THE RELEASE. The fixture's current measurement is exactly
+//     what the committed ROLLING baseline holds, so some PR between that
+//     release and now measured this value and re-recorded the row. #3214's
+//     LogQL `[start, end)` fix is the worked example: a half-open entry window
+//     legitimately stops scanning the endpoint sample, so logql/range_filter
+//     went from 2 scan rows to 1. What that establishes is that the value was
+//     RECORDED, not that the release-over-release delta is fine — this gate
+//     exists precisely because a cycle's worth of individually-justified
+//     re-baselines can sum to something none of them shows (see
+//     `just capture-release-perf-baseline`'s own doc and issue #3150). So the
+//     remedy sends the reader to that PR's justification, measured against the
+//     release value, rather than to a defect hunt that will find nothing.
+//   - LIVE DRIFT. The current measurement is not what the rolling baseline
+//     holds either, so nothing has reviewed this value at all —
+//     TestCardinalityRatchet is failing on this fixture too whenever the
+//     difference runs in its direction. That is the root-cause case.
 //
-// Neither branch is an escape hatch: both still FAIL. What changes is that the
-// reader is told which one they are looking at, rather than being told to
-// root-cause a change that was already reviewed and ratified — which is the
-// dead end issue #3244 hit. The frozen reference is never re-cut on a fix
-// branch in either case.
+// Neither branch is an escape hatch: both still FAIL, and neither regenerates
+// anything. What changes is that the reader is told which one they are looking
+// at instead of being sent to root-cause a value some PR already recorded on
+// purpose — the dead end issue #3244 hit.
+//
+// The discriminator is cardinalityEntryMatches, an EQUALITY, deliberately not
+// "cardinalityEntryProblems is empty". That function is a one-sided ratchet: it
+// stays silent on a fan_factor that fell, a recursion that got shallower and a
+// fixture that became measurable, so a current value the rolling baseline does
+// NOT hold would read as recorded. That is the wrong verdict on exactly the
+// unreviewed drift this gate is for.
 //
 // rolling is the committed rolling baseline row for this fixture and ok says
 // whether one exists. It always should: TestCardinalityBaselineCoversTheCorpus
@@ -129,17 +136,20 @@ func releaseRemedy(version, id string, cur, rolling baselineEntry, ok bool) stri
 			"`%s` records it, and TestCardinalityBaselineCoversTheCorpus is the gate that should have "+
 			"caught the gap.", rollingPath, cardinalityRegen)
 	}
-	if len(cardinalityEntryProblems(id, cur, rolling)) == 0 {
-		return fmt.Sprintf("This is a CHANGE SINCE v%s, not a fresh regression: the current measurement "+
-			"matches the committed rolling baseline (%s), so it was recorded and reviewed by the PR that "+
-			"made it. Nothing is regenerated here — a frozen release reference moves only at a release "+
-			"cut, and `just release-prep` freezes today's rolling baseline as the next release's "+
-			"reference, which clears this (docs/operations.md, \"The release ritual\").", version, rollingPath)
+	if cardinalityEntryMatches(cur, rolling) {
+		return fmt.Sprintf("This is a CHANGE SINCE v%s: the current measurement is exactly what the "+
+			"committed rolling baseline records (%s), so some PR between v%s and now measured this "+
+			"value and re-recorded the row. Read that PR's justification against v%s's value — this "+
+			"gate's whole job is the SUM of a cycle's individually-justified re-baselines, which no "+
+			"single one of them shows. Nothing is regenerated here either way: a frozen release "+
+			"reference moves only at a release cut, where `just release-prep` freezes today's rolling "+
+			"baseline as the next release's reference (docs/operations.md, \"The release ritual\").",
+			version, rollingPath, version, version)
 	}
-	return fmt.Sprintf("This is LIVE DRIFT, not a change ratified since v%s: the current measurement does "+
-		"not match the committed rolling baseline either (%s), so TestCardinalityRatchet is failing on "+
-		"this fixture too and nobody has reviewed this value. Root-cause it; re-cutting the frozen v%s "+
-		"reference is never the fix.", version, rollingPath, version)
+	return fmt.Sprintf("This is LIVE DRIFT, not a change recorded since v%s: the current measurement is "+
+		"not what the committed rolling baseline records either (%s), so nothing has reviewed this "+
+		"value at all. Root-cause it; re-cutting the frozen v%s reference is never the fix.",
+		version, rollingPath, version)
 }
 
 // releaseBaselineVersion returns the semver-highest subdirectory name under
@@ -247,16 +257,29 @@ func TestReleasePerfRegression(t *testing.T) {
 	}
 
 	// The ROLLING baseline is the second reference this gate reads, and it reads
-	// it for one purpose only: to tell a difference the corpus already ratified
-	// between releases from one nobody has reviewed. It is never compared
-	// against for the verdict — every difference below is still a failure
-	// against the FROZEN reference (cerberus issue #3244).
-	rolling := profile.FilterShardMap(shard, loadBaseline(t))
+	// it for ONE purpose: to tell a difference some PR already recorded between
+	// releases from one nothing has looked at. It is never compared against for
+	// the verdict — every difference below is still a failure against the FROZEN
+	// reference (cerberus issue #3244).
+	//
+	// Its integrity is deliberately NOT fatal here, unlike in
+	// TestCardinalityRatchet, which owns that tree. This gate's verdict does not
+	// depend on it, so an unreadable rolling tree degrades the WORDING of a
+	// failure rather than replacing this gate's own answer with a different
+	// gate's complaint; releaseRemedy says so in as many words when a row is
+	// missing.
+	rollingAll, rollingErr := cardinalityShards.load()
+	if rollingErr != nil {
+		t.Logf("the rolling baseline is unreadable (%v) — every difference below is reported without "+
+			"the recorded/live-drift distinction; %s owns that tree", rollingErr, baselinePath)
+	}
+	rolling := profile.FilterShardMap(shard, rollingAll)
 
 	for _, id := range matched {
 		rollingEntry, haveRolling := rolling[id]
-		compareCardinalityEntry(t, id, current[id], release[id],
-			releaseRemedy(version, id, current[id], rollingEntry, haveRolling))
+		compareCardinalityEntry(t, id, current[id], release[id], func() string {
+			return releaseRemedy(version, id, current[id], rollingEntry, haveRolling)
+		})
 	}
 	t.Logf("release perf regression gate: %d fixture(s) checked against v%s", len(matched), version)
 }
@@ -289,15 +312,25 @@ func TestReleaseRemedy_DistinguishesRatifiedChangeFromLiveDrift(t *testing.T) {
 	// its rolling baseline both say 1.
 	current := baselineEntry{Fixture: id, ScanRows: 1, PeakIntermediate: 1}
 
-	ratified := releaseRemedy(version, id, current, baselineEntry{Fixture: id, ScanRows: 1, PeakIntermediate: 1}, true)
-	// A rolling row that ALSO disagrees with the measurement — the rolling
-	// ratchet is red on this fixture too, so nothing has reviewed this value.
+	recorded := releaseRemedy(version, id, current, baselineEntry{Fixture: id, ScanRows: 1, PeakIntermediate: 1}, true)
+	// A rolling row that ALSO disagrees with the measurement, in the direction
+	// the ratchet reports.
 	live := releaseRemedy(version, id, current, baselineEntry{Fixture: id, ScanRows: 7, PeakIntermediate: 7}, true)
 	absent := releaseRemedy(version, id, current, baselineEntry{}, false)
+	// The case the discriminator is actually easy to get wrong on: the rolling
+	// row disagrees in the direction the RATCHET IGNORES. fan_factor 3.0 against
+	// a recorded 5.0 is a decrease, which TestCardinalityRatchet allows without
+	// comment — so "the ratchet is silent" would call this recorded, when the
+	// rolling baseline plainly holds a different number and nothing measured
+	// 3.0 on purpose. Only an equality gets it right.
+	fanFactor := func(v float64) *float64 { return &v }
+	asymmetric := releaseRemedy(version, id,
+		baselineEntry{Fixture: id, FanFactor: fanFactor(3), ScanRows: 1, PeakIntermediate: 3},
+		baselineEntry{Fixture: id, FanFactor: fanFactor(5), ScanRows: 1, PeakIntermediate: 5}, true)
 
-	if ratified == live {
-		t.Fatalf("a ratified between-release change and live drift produce the SAME remedy, which is the "+
-			"whole defect issue #3244 reports:\n%s", ratified)
+	if recorded == live {
+		t.Fatalf("a change recorded between releases and live drift produce the SAME remedy, which is "+
+			"the whole defect issue #3244 reports:\n%s", recorded)
 	}
 	for _, tc := range []struct {
 		name string
@@ -306,19 +339,29 @@ func TestReleaseRemedy_DistinguishesRatifiedChangeFromLiveDrift(t *testing.T) {
 		deny []string
 	}{
 		{
-			name: "ratified",
-			got:  ratified,
-			// It must name the reference version, say plainly that this is not
-			// a regression, and point at the cut that clears it.
-			want: []string{"CHANGE SINCE v" + version, "rolling baseline", "just release-prep", baselinePath},
+			name: "recorded-since-the-release",
+			got:  recorded,
+			// It must name the reference version, say plainly that the value
+			// was recorded, and send the reader at the recording PR's own
+			// justification rather than at a defect hunt.
+			want: []string{"CHANGE SINCE v" + version, "rolling baseline", "justification", baselinePath},
 			// Root-causing is exactly the wrong instruction here.
 			deny: []string{"Root-cause"},
 		},
 		{
 			name: "live-drift",
 			got:  live,
-			want: []string{"LIVE DRIFT", "TestCardinalityRatchet", "Root-cause", baselinePath},
-			deny: []string{"just release-prep"},
+			want: []string{"LIVE DRIFT", "Root-cause", baselinePath},
+			deny: []string{"CHANGE SINCE"},
+		},
+		{
+			// The whole point of the asymmetric fixture: a difference the
+			// ratchet would not report is still a difference, so this must
+			// land on the SAME side as live drift, never on "recorded".
+			name: "rolling-disagrees-in-the-direction-the-ratchet-ignores",
+			got:  asymmetric,
+			want: []string{"LIVE DRIFT", "Root-cause"},
+			deny: []string{"CHANGE SINCE"},
 		},
 		{
 			name: "no-rolling-row",

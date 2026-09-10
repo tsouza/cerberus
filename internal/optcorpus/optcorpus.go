@@ -365,7 +365,7 @@ type Row struct {
 	// replayed offline. They are zero-valued when the dispatch carried no
 	// routing classification (Solver off / unclassified head) — Route is then
 	// "" and the scalar columns are 0. The field shape stays column-for-column
-	// aligned with the cerberus_router_corpus MergeTree (see chtable.go) so the
+	// aligned with the cerberus_router_corpus table (see chtable.go) so the
 	// JSONL and CH-table sinks write the same Row.
 	NAnchors    uint32 `json:"n_anchors"`
 	Fanout      uint32 `json:"fanout"`

@@ -81,6 +81,22 @@ const (
 // enough: the property under test is whether ClickHouse registers the corpus
 // table as a REPLICA at all, which is a per-table engine fact, not a
 // multi-node one.
+//
+// It is the same server shape internal/schema/ddl's own replicated lane raises
+// (ddl_replicated_integration_test.go). The two are not shared: a common home
+// would be a new internal/** test package, which invariant 16 makes a
+// registration of its own in .go-arch-lint.yml and the coverage-floor ledger,
+// and it would couple two independent integration lanes' container bootstraps.
+// They are cross-referenced instead, so a Keeper-timing fix to either is
+// visibly owed to the other.
+//
+// This lane pins queryExitCHImage (the CH_TEST_IMAGE `just
+// router-corpus-integration` already pre-pulls) rather than the older floor
+// image its sibling uses: that a BARE ReplicatedMergeTree is valid DDL on
+// cerberus's minimum supported server is that lane's claim and is pinned there,
+// while this one asks a different question — whether the corpus table in
+// particular registers as a replica — and reusing the recipe's own image keeps
+// the lane to one server pull.
 const replicatedServerConfigTemplate = `<clickhouse>
     <keeper_server>
         <tcp_port>9181</tcp_port>
@@ -137,7 +153,7 @@ func TestCorpusReplicatedEngineRealClickHouse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryExitCHStartTimeout)
 	defer cancel()
 
-	bootstrap := startReplicatedCH(ctx, t)
+	bootstrap, addr := startReplicatedCH(ctx, t)
 
 	createDB := chsql.CreateDatabase(replicatedCorpusDatabase).
 		IfNotExists().
@@ -147,7 +163,7 @@ func TestCorpusReplicatedEngineRealClickHouse(t *testing.T) {
 		t.Fatalf("create the Replicated database (%s): %v", createDB, err)
 	}
 
-	conn := openReplicatedCH(ctx, t, replicatedCorpusDatabase)
+	conn := openReplicatedCH(ctx, t, addr, replicatedCorpusDatabase)
 
 	topology := CorpusTableTopology{DatabaseReplicated: true}
 	sink, err := NewCHTableSink(ctx, conn, topology)
@@ -206,12 +222,12 @@ func TestCorpusReplicatedEngineRealClickHouse(t *testing.T) {
 }
 
 // startReplicatedCH spins up a ClickHouse configured with an embedded Keeper and
-// {shard}/{replica} macros, and returns a connection bound to the built-in
+// {shard}/{replica} macros. It returns a connection bound to the built-in
 // `default` database — the Replicated one does not exist yet, exactly like a
-// cold bootstrap against a clustered ClickHouse. The container's address is
-// recorded on the test so openReplicatedCH can dial it again once the database
-// exists.
-func startReplicatedCH(ctx context.Context, t *testing.T) driver.Conn {
+// cold bootstrap against a clustered ClickHouse — plus the container's
+// native-protocol address, so the caller can dial it a second time once the
+// Replicated database does exist.
+func startReplicatedCH(ctx context.Context, t *testing.T) (driver.Conn, string) {
 	t.Helper()
 
 	cfgPath := filepath.Join(t.TempDir(), "replicated.xml")
@@ -240,23 +256,17 @@ func startReplicatedCH(ctx context.Context, t *testing.T) driver.Conn {
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
-	replicatedCHAddr = host + ":" + port.Port()
+	addr := host + ":" + port.Port()
 
-	return openReplicatedCH(ctx, t, replicatedBootstrapDB)
+	return openReplicatedCH(ctx, t, addr, replicatedBootstrapDB), addr
 }
 
-// replicatedCHAddr is the running container's native-protocol address, set by
-// startReplicatedCH so the second dial (into the Replicated database, once it
-// exists) reaches the same server. The lane runs one container per test and does
-// not run in parallel, so a package-level value is the whole state it needs.
-var replicatedCHAddr string
-
-// openReplicatedCH dials the running container, bound to database.
-func openReplicatedCH(ctx context.Context, t *testing.T, database string) driver.Conn {
+// openReplicatedCH dials the container at addr, bound to database.
+func openReplicatedCH(ctx context.Context, t *testing.T, addr, database string) driver.Conn {
 	t.Helper()
 
 	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{replicatedCHAddr},
+		Addr: []string{addr},
 		Auth: clickhouse.Auth{
 			Database: database,
 			Username: replicatedCorpusUser,

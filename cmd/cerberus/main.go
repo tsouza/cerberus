@@ -1759,7 +1759,8 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 	)
 }
 
-// corpusSinkModeCHTable selects the cerberus_router_corpus MergeTree sink.
+// corpusSinkModeCHTable selects the cerberus_router_corpus table sink (whose
+// MergeTree-family engine follows the deployment — see optcorpus.CorpusTableTopology).
 const corpusSinkModeCHTable = "chtable"
 
 // buildCorpusSink selects the durable corpus sink from CHOptCorpus.SinkMode:
@@ -1781,12 +1782,15 @@ func buildCorpusSink(ctx context.Context, logger *slog.Logger, conn optcorpus.CH
 		// SchemaProvisioning fields into internal/schema/ddl's Config.Cluster
 		// and DatabaseEngine.Replicated), so the corpus table exists on every
 		// node of a distributed-DDL cluster (cerberus issue #3225) AND
-		// replicates its rows wherever the signal tables beside it do
-		// (cerberus issue #3241). Reading those knobs here rather than adding
-		// corpus-specific ones keeps "what does this deployment look like" a
-		// single source of truth; they are read independently of
-		// CERBERUS_AUTO_CREATE_SCHEMA because this sink creates its own table
-		// whether or not that hook runs.
+		// replicates its rows on the Replicated-DATABASE path the chart renders
+		// for single-shard `replicas > 1` (cerberus issue #3241). A classic
+		// ON CLUSTER deployment that replicates through the THIRD knob,
+		// SchemaProvisioning.TableEngine, is NOT covered — see
+		// optcorpus.CorpusTableTopology and cerberus issue #3250. Reading these
+		// knobs here rather than adding corpus-specific ones keeps "what does
+		// this deployment look like" a single source of truth; they are read
+		// independently of CERBERUS_AUTO_CREATE_SCHEMA because this sink
+		// creates its own table whether or not that hook runs.
 		sink, err := optcorpus.NewCHTableSink(ctx, conn, optcorpus.CorpusTableTopology{
 			Cluster:            cfg.SchemaProvisioning.Cluster,
 			DatabaseReplicated: cfg.SchemaProvisioning.DatabaseReplicated,
