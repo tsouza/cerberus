@@ -548,6 +548,21 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerSumOrAvgOverMixedExpHistogramSetOp(agg, b, s, ctx)
 		return plan, true, err
 	}
+	// `sum`/`avg` [by/without] wrapping a FOLD-family range function
+	// (rate/increase/delta/irate/idelta/sum_over_time/avg_over_time) over a
+	// SUBQUERY whose own inner is that same mixed shape (cerberus issue
+	// #3265 Part 2 — `sum(rate((a or b)[range:step]))`). Checked right after
+	// the non-subquery case for the identical reason: neither
+	// [lowerExpHistogramValuedShape] nor [rangeFnOverExpHistogramSubquery]
+	// (which requires a PURELY histogram-valued subquery inner) can have
+	// resolved this shape, so nothing above this line has consumed it yet.
+	// histogram_native_mixed_or_subquery_outer_aggregate_fold.go has the
+	// composition's own doc comment for why this needs its own machinery
+	// distinct from this package's other subquery/aggregate composers.
+	if agg, sub, windowFn, b, ok := sumOrAvgOverMixedOrSubqueryFoldFn(expr, s, ctx); ok {
+		plan, err := lowerSumOrAvgOverMixedOrSubqueryFoldFn(agg, sub, windowFn, b, s, ctx)
+		return plan, true, err
+	}
 	// `count`/`group` [by/without] wrapping that same mixed shape
 	// (cerberus issue #2595 — the sum/avg composition's own sibling this
 	// function's earlier doc comment named as deliberately unattempted).
