@@ -18,6 +18,7 @@ package promql
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -25,6 +26,67 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/test/capmutant"
 )
+
+// TestHistogramValuedWindowAggregateCapacity pins the fresh aggregate slices
+// returned through RangeBucketFanout.AggFuncs and Aggregate.AggFuncs. The
+// ARITHMETIC_BASE substitutions change those exported slices' finished capacity,
+// not just an unobservable temporary allocation.
+func TestHistogramValuedWindowAggregateCapacity(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	shape := histogramAggShape{windowFn: rateWindowFn, windowRange: time.Minute}
+	aggregates := len(expHistogramValuedWindowAggs(s, shape.windowFn))
+	for _, tc := range []struct {
+		name      string
+		extra     int
+		construct string
+		buildPlan func() chplan.Node
+	}{
+		{"fanout", 1, "histogram_native_range_fn.go:lowerExpHistogramSubqueryRangeFnRange:`len(aggs)+1`", func() chplan.Node {
+			return lowerExpHistogramSubqueryRangeFnRange(&chplan.OneRow{}, shape, 0, s, lowerCtx{step: time.Minute})
+		}},
+		{"instant", 2, "histogram_native_range_fn.go:`len(aggs)+2`", func() chplan.Node {
+			return expHistogramValuedWindowStageBy(&chplan.OneRow{}, shape, &chplan.LitInt{}, &chplan.LitInt{}, s, &chplan.ColumnRef{Name: s.AttributesColumn}, true, lowerCtx{})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capmutant.AssertKilled(t, capmutant.Hint{
+				Construct: tc.construct,
+				Positions: []capmutant.Position{{Name: "additional aggregate capacity", Op: "+"}},
+				Eval: func(t testing.TB, ops []string) (int, bool) {
+					return capmutant.Eval(t, []int{aggregates, tc.extra}, ops)
+				},
+				Observe: func(t *testing.T) (int, int) {
+					var found []chplan.AggFunc
+					chplan.Walk(tc.buildPlan(), func(n chplan.Node) bool {
+						switch node := n.(type) {
+						case *chplan.RangeBucketFanout:
+							if tc.name == "fanout" {
+								found = node.AggFuncs
+							}
+						case *chplan.Aggregate:
+							if tc.name == "instant" {
+								found = node.AggFuncs
+							}
+						}
+						return true
+					})
+					if found == nil {
+						t.Fatal("window aggregate output not found")
+					}
+					return len(found), cap(found)
+				},
+				Build: func(hint int) (int, int) {
+					funcs := make([]chplan.AggFunc, 0, hint)
+					funcs = append(funcs, make([]chplan.AggFunc, aggregates)...)
+					for range tc.extra {
+						funcs = append(funcs, chplan.AggFunc{})
+					}
+					return len(funcs), cap(funcs)
+				},
+			})
+		})
+	}
+}
 
 // capHintProjections reads the `Projections` slice of the [chplan.Project] n
 // is, failing the test when the node is some other shape — a navigation that

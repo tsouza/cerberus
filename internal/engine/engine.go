@@ -281,6 +281,28 @@ func strategyFor(meta Meta) string {
 	return "native"
 }
 
+// QuerySettingsProbe records the plan-dependent settings and enabled rules for a
+// query without executing it. Settings excludes client- and request-level knobs.
+type QuerySettingsProbe struct {
+	Settings    map[string]any
+	EnabledOpts []string
+}
+
+// ProbeQuerySettings uses the same rule composition as query execution. Callers
+// supply the optimized plan, resolved rules, and statement memory cap; a fixed
+// rules.Now makes result-cache eligibility reproducible in diagnostics and tests.
+func ProbeQuerySettings(plan chplan.Node, rules SettingsRules, memCap int64) QuerySettingsProbe {
+	ctx := context.Background()
+	if planHasTSGridNative(plan) {
+		ctx = chclient.WithTSGridSetting(ctx)
+	}
+	ctx = applySharedQuerySettings(ctx, plan, memCap, rules)
+	return QuerySettingsProbe{
+		Settings:    chclient.QuerySettingsFromContext(ctx),
+		EnabledOpts: rules.enabledOpts(),
+	}
+}
+
 // execContext wraps the execute-stage ctx with any per-plan ClickHouse
 // settings the emitted plan requires. Today the single rule is: when the
 // optimized plan contains a chplan.RangeWindowGridNative node (the

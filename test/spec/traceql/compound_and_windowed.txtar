@@ -31,3 +31,26 @@ SetOperation op=&&
 -- parity_exempt --
 reason: emitted-sql-only
 detail: `{ resource.service.name = "a" } && { span.http.status_code = 500 }` carries no `seed:` or `expected_rows:` — it pins the emitted SQL for this shape, and executes no answer for any oracle to compare
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] int64 = 1782571392000000000
+[4] int64 = 1782573192000000000
+[5] string = "service.name"
+[6] string = "a"
+[7] string = "http.status_code"
+[8] int64 = 500
+[9] string = "service.name"
+[10] string = "a"
+[11] string = "http.status_code"
+[12] int64 = 500
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND ((`ResourceAttributes`[?] = ?) OR (toFloat64OrNull(`SpanAttributes`[?]) = ?)) QUALIFY max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) AND max((toFloat64OrNull(`SpanAttributes`[?]) = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`)

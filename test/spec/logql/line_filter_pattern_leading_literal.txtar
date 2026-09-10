@@ -61,3 +61,50 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (arrayFold((_c
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{job="api"} |> "error: <_>"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args_optimized --
+[0] string = "job"
+[1] string = "api"
+[2] int64 = 0
+[3] int64 = 0
+[4] int64 = 1
+[5] int64 = 0
+[6] int64 = -1
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 1
+[10] int64 = 0
+[11] int64 = 1
+[12] int64 = -1
+[13] int64 = 0
+[14] int64 = 1
+[15] int64 = 1
+[16] string = "error: "
+[17] int64 = 0
+[18] int64 = 0
+[19] int64 = 0
+[20] int64 = 0
+[21] int64 = 0
+[22] int64 = 1
+[23] int64 = 0
+[24] int64 = -1
+[25] int64 = 1
+[26] int64 = 0
+[27] int64 = 1
+[28] int64 = 0
+[29] int64 = 1
+[30] int64 = -1
+[31] int64 = 0
+[32] int64 = 1
+[33] int64 = 1
+[34] string = "error: "
+[35] int64 = 0
+[36] int64 = 0
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) >= ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) != length(`Body`))

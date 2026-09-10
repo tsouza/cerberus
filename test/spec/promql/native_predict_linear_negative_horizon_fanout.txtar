@@ -84,3 +84,31 @@ Project ["" AS MetricName, mapWithoutEmpty(FnMap("host", gkey_0)) AS Attributes,
           Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
 SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', anchor_ts, tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', anchor_ts, tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value FROM (SELECT `Attributes`, `anchor_ts`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS window_pairs FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 600000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 600000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(600000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`) WHERE length(`window_pairs`) >= 2) GROUP BY `gkey_0`, `bucket_ts`)
+-- args_optimized --
+[0] string = ""
+[1] string = "host"
+[2] string = "host"
+[3] float64 = -3600
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = ""
+[10] string = "service_name"
+[11] string = "disk_used_bytes"
+[12] string = "disk.used.bytes"
+[13] string = "disk.used/bytes"
+[14] string = "disk.used_bytes"
+[15] string = "disk/used/bytes"
+[16] string = "disk/used_bytes"
+[17] string = "disk_used.bytes"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=2;rw;union
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', anchor_ts, tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', anchor_ts, tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value FROM (SELECT `Attributes`, `anchor_ts`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS window_pairs FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 600000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 600000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(600000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`) WHERE length(`window_pairs`) >= 2) GROUP BY `gkey_0`, `bucket_ts`)

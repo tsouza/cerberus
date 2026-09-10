@@ -64,3 +64,35 @@ SELECT coalesce(nullIf(if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapC
 Project [FnCoalesce(FnNullIf(FnIf(FnMapContainsKey(Attributes, "deployment_environment"), Attributes["deployment_environment"], FnIf(FnMapContainsKey(Attributes, "deployment.environment"), Attributes["deployment.environment"], Attributes["deployment/environment"])), ""), FnNullIf(FnIf(FnMapContainsKey(ResourceAttributes, "deployment_environment"), ResourceAttributes["deployment_environment"], FnIf(FnMapContainsKey(ResourceAttributes, "deployment.environment"), ResourceAttributes["deployment.environment"], ResourceAttributes["deployment/environment"])), ""), FnNullIf(ResourceAttributes["deployment-environment"], ""), "") AS value]
   Filter predicate=(((MetricName IN ("requests_total", "requests.total", "requests/total")) AND (TimeUnix >= FnToDateTime64("1970-01-01 00:01:40.000000000", 9))) AND (TimeUnix <= FnToDateTime64("1970-01-01 00:08:20.000000000", 9)))
     Scan(otel_metrics_sum)
+-- args_optimized --
+[0] string = "deployment_environment"
+[1] string = "deployment_environment"
+[2] string = "deployment.environment"
+[3] string = "deployment.environment"
+[4] string = "deployment/environment"
+[5] string = ""
+[6] string = "deployment_environment"
+[7] string = "deployment_environment"
+[8] string = "deployment.environment"
+[9] string = "deployment.environment"
+[10] string = "deployment/environment"
+[11] string = ""
+[12] string = "deployment-environment"
+[13] string = ""
+[14] string = ""
+[15] string = "requests_total"
+[16] string = "requests.total"
+[17] string = "requests/total"
+[18] string = "1970-01-01 00:01:40.000000000"
+[19] int64 = 9
+[20] string = "1970-01-01 00:08:20.000000000"
+[21] int64 = 9
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT coalesce(nullIf(if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])), ?), nullIf(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])), ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `TimeUnix` FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))

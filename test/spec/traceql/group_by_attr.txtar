@@ -28,3 +28,19 @@ Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[FnAny(
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | by(resource.service.name)` groups the spanset: its rows carry __cerberus_traceID and no __cerberus_spanID because each is a group representative, not a span, so there is no span set for runTempoParity to compare
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_traceDurationNs"
+[3] string = "service.name"
+[4] int64 = 1
+[5] bool = true
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `MetricName` AS `MetricName`, mapConcat(`ResourceAttrs`, map(?, `TraceId`, ?, `ParentSpanId`, ?, toString((`TraceEndNs` - `TraceStartNs`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?) GROUP BY `GroupKey`)

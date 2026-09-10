@@ -45,3 +45,23 @@ Project [Attributes, +Inf AS Value]
         Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
 SELECT `Attributes`, (1.0/0) AS `Value` FROM (SELECT `Attributes`, if(length(window_vals) > 0, arrayReduce('quantileExactInclusive(0.5)', window_vals), nan) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(1000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS `series_array` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(1000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1)
+-- args_optimized --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "latency_ms"
+[8] string = "latency.ms"
+[9] string = "latency/ms"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;rw;union
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `Attributes`, (1.0/0) AS `Value` FROM (SELECT `Attributes`, if(length(window_vals) > 0, arrayReduce('quantileExactInclusive(0.5)', window_vals), nan) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(1000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS `series_array` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(1000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1)

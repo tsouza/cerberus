@@ -30,3 +30,23 @@ Filter predicate=((FnIf(FnMapContainsKey(SpanAttributes, "a"), FnToFloat64OrNull
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ .a + .b > 10 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] string = "a"
+[4] string = "a"
+[5] string = "a"
+[6] string = "b"
+[7] string = "b"
+[8] string = "b"
+[9] int64 = 10
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ((if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?])) + if(mapContains(`SpanAttributes`, ?), toFloat64OrNull(`SpanAttributes`[?]), toFloat64OrNull(`ResourceAttributes`[?]))) > ?))

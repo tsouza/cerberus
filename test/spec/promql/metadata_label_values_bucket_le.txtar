@@ -77,3 +77,53 @@ Project [FnCoalesce(FnNullIf(Attributes["le"], ""), FnNullIf(ResourceAttributes[
       Project [MetricName AS MetricName, Attributes AS Attributes, ResourceAttributes AS ResourceAttributes, ServiceName AS ServiceName, TimeUnix AS TimeUnix, ExplicitBounds AS ExplicitBounds, BucketCounts AS BucketCounts, FnArrayJoin(FnArrayEnumerate(BucketCounts)) AS le_idx]
         Filter predicate=(MetricName IN ("latency_seconds", "latency.seconds", "latency/seconds"))
           Scan(otel_metrics_histogram)
+-- args_optimized --
+[0] string = "le"
+[1] string = ""
+[2] string = "le"
+[3] string = ""
+[4] string = ""
+[5] string = "latency_seconds_bucket"
+[6] string = "le"
+[7] string = "+Inf"
+[8] float64 = 0
+[9] int64 = 0
+[10] int64 = 0
+[11] int64 = 1
+[12] int64 = 1
+[13] int64 = 0
+[14] int64 = 0
+[15] int64 = 1
+[16] int64 = 1
+[17] int64 = 1
+[18] int64 = 0
+[19] int64 = 1
+[20] int64 = 1
+[21] int64 = 1
+[22] int64 = 1
+[23] int64 = 1
+[24] int64 = 1
+[25] int64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] int64 = 2
+[29] int64 = 1
+[30] int64 = 1
+[31] int64 = 1
+[32] int64 = 1
+[33] string = "latency_seconds"
+[34] string = "latency.seconds"
+[35] string = "latency/seconds"
+[36] string = "1970-01-01 00:01:40.000000000"
+[37] int64 = 9
+[38] string = "1970-01-01 00:08:20.000000000"
+[39] int64 = 9
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT * FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `ResourceAttributes` AS `ResourceAttributes`, `ServiceName` AS `ServiceName`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `ResourceAttributes` AS `ResourceAttributes`, `ServiceName` AS `ServiceName`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT `Attributes`, `BucketCounts`, `ExplicitBounds`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?))))) WHERE ((`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?))))

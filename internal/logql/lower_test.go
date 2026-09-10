@@ -73,12 +73,6 @@ func TestLower(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 
-		spec.Match(t, c, map[string]string{
-			"sql":    sqlStr,
-			"args":   formatArgs(args),
-			"chplan": spec.PrintChplan(plan),
-		})
-
 		// Every real lowered plan must pass the fail-closed
 		// scan-time-bound invariant (see AssertScanTimeBoundAccepts):
 		// the LogQL unwrap / *_over_time leaves are instant
@@ -94,6 +88,14 @@ func TestLower(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit(optimized plan): %v", err)
 		}
+		spec.Match(t, c, map[string]string{
+			"sql":            sqlStr,
+			"args":           formatArgs(args),
+			"chplan":         spec.PrintChplan(plan),
+			"sql_optimized":  optSQL,
+			"args_optimized": formatArgs(optArgs),
+			"settings":       spec.FormatQuerySettings(optimized),
+		})
 		roundTripResult := spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 
 		// A fixture carrying a `parity:` section is additionally answered
