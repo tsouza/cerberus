@@ -164,6 +164,7 @@ func TestSampleForwardFloatNarrowingIsConservative(t *testing.T) {
 	input := sampleForwardTestInput(columns...)
 	equal := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "kind"}, Right: &chplan.LitInt{V: 0}}
 	narrowed := &chplan.Filter{Input: input, Predicate: equal}
+	ordered := &chplan.OrderBy{Input: narrowed}
 	for _, tc := range []struct {
 		name string
 		node chplan.Node
@@ -171,6 +172,13 @@ func TestSampleForwardFloatNarrowingIsConservative(t *testing.T) {
 	}{
 		{name: "unfiltered", node: input},
 		{name: "equal", node: narrowed, okay: true},
+		{name: "ordered_float_subset", node: ordered, okay: true},
+		{name: "filter_over_order", node: &chplan.Filter{Input: ordered, Predicate: &chplan.LitBool{V: true}}, okay: true},
+		{name: "order_filter_order", node: &chplan.OrderBy{Input: &chplan.Filter{Input: ordered, Predicate: &chplan.LitBool{V: true}}}, okay: true},
+		{name: "ordered_unrestricted_mixed", node: &chplan.OrderBy{Input: input}},
+		{name: "ordered_or_is_not_proof", node: &chplan.OrderBy{Input: &chplan.Filter{Input: input, Predicate: &chplan.Binary{Op: chplan.OpOr, Left: equal, Right: &chplan.LitBool{V: true}}}}},
+		{name: "ordered_project_barrier", node: &chplan.OrderBy{Input: &chplan.Project{Input: narrowed}}},
+		{name: "ordered_qualified_is_not_proof", node: &chplan.OrderBy{Input: &chplan.Filter{Input: input, Predicate: &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "kind", Qualifier: "other"}, Right: &chplan.LitInt{V: 0}}}}},
 		{name: "extra_filter", node: &chplan.Filter{Input: narrowed, Predicate: &chplan.LitBool{V: true}}, okay: true},
 		{name: "and", node: &chplan.Filter{Input: input, Predicate: &chplan.Binary{Op: chplan.OpAnd, Left: equal, Right: &chplan.LitBool{V: true}}}, okay: true},
 		{name: "or", node: &chplan.Filter{Input: input, Predicate: &chplan.Binary{Op: chplan.OpOr, Left: equal, Right: &chplan.LitBool{V: true}}}},
@@ -181,6 +189,9 @@ func TestSampleForwardFloatNarrowingIsConservative(t *testing.T) {
 		}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if got := mixedFloatRowsProven(tc.node); got != tc.okay {
+				t.Fatalf("float subset proof=%v, want %v", got, tc.okay)
+			}
 			call := func() {
 				plan := projectSampleRoles(tc.node, s,
 					sampleProjectionPolicy{name: dropSampleName, payload: floatSamplePayload},

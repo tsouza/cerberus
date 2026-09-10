@@ -9,9 +9,41 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/test/spec"
 )
+
+func TestSortNestedMixedOuterProjection(t *testing.T) {
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, format := range []string{
+		`abs(%s)`,
+		`round(%s)`,
+		`clamp_min(%s, 0)`,
+		`label_replace(%s, "series", "$1", "series", "(.*)")`,
+	} {
+		query := fmt.Sprintf(format, `sort(sort_by_label(latency_exp_hist or num_cpus, "job"))`)
+		t.Run(query, func(t *testing.T) {
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, schema.DefaultOTelMetrics(), at, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := chsql.Emit(context.Background(), plan); err != nil {
+				t.Fatalf("raw emission: %v", err)
+			}
+			optimized := spec.AssertScanTimeBoundAccepts(t, plan)
+			if _, _, err := chsql.Emit(context.Background(), optimized); err != nil {
+				t.Fatalf("optimized emission: %v", err)
+			}
+		})
+	}
+}
 
 func TestSortNestedMixedNarrowsBeforeOrdering(t *testing.T) {
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})

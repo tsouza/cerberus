@@ -62,6 +62,35 @@ func TestSortNestedMixedFloatOnly_ChDB(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/%v/%s", fn, histFirst, wrapper), func(t *testing.T) {
 					checkSortFloatTuples(t, query, direct, seed, want, 0)
 				})
+				if wrapper == "" {
+					continue
+				}
+				for _, outer := range []struct {
+					name, format string
+					keepMetric   bool
+				}{
+					{"abs", "abs(%s)", false},
+					{"round", "round(%s)", false},
+					{"clamp_min", "clamp_min(%s, 0)", false},
+					{"label_replace", `label_replace(%s, "series", "$1", "series", "(.*)")`, true},
+				} {
+					t.Run(fmt.Sprintf("%s/%v/%s/outer_%s", fn, histFirst, wrapper, outer.name), func(t *testing.T) {
+						outerWant := slices.Clone(want)
+						if !outer.keepMetric {
+							for i := range outerWant {
+								outerWant[i].metric = ""
+							}
+						}
+						outerQuery := fmt.Sprintf(outer.format, query)
+						outerDirect := fmt.Sprintf(outer.format, direct)
+						// Label projection already reorders a directly sorted input.
+						// Pin its payload/membership here, and final sort order below.
+						checkSortFloatTuplesWithOrder(t, outerQuery, outerDirect, seed, outerWant, 0, !outer.keepMetric)
+						if outer.keepMetric {
+							checkSortFloatTuples(t, fn+"("+outerQuery+")", fn+"("+outerDirect+")", seed, want, 0)
+						}
+					})
+				}
 			}
 		}
 		for index, control := range []struct {
@@ -95,6 +124,11 @@ func TestSortNestedMixedFloatOnly_ChDB(t *testing.T) {
 }
 
 func checkSortFloatTuples(t *testing.T, query, direct, seed string, want []sortFloatTuple, step time.Duration) {
+	t.Helper()
+	checkSortFloatTuplesWithOrder(t, query, direct, seed, want, step, true)
+}
+
+func checkSortFloatTuplesWithOrder(t *testing.T, query, direct, seed string, want []sortFloatTuple, step time.Duration, ordered bool) {
 	t.Helper()
 	const permissions = 0o600
 	expected := make([][]any, 0, len(want))
@@ -133,6 +167,9 @@ func checkSortFloatTuples(t *testing.T, query, direct, seed string, want []sortF
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, _, err := chsql.Emit(context.Background(), plan); err != nil {
+			t.Fatalf("raw emission for %s: %v", query, err)
+		}
 		optimized := spec.AssertScanTimeBoundAccepts(t, plan)
 		sql, args, err := chsql.Emit(context.Background(), optimized)
 		if err != nil {
@@ -164,8 +201,10 @@ func checkSortFloatTuples(t *testing.T, query, direct, seed string, want []sortF
 	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatal(err)
 	}
-	if step > 0 {
-		// query_range compares series membership per step, not vector order.
+	if step > 0 || !ordered {
+		// Range queries and outer label projections compare membership; every
+		// root-sort instant query retains the exact ordered tuple assertion.
+		want = slices.Clone(want)
 		compare := func(a, b sortFloatTuple) int {
 			return cmp.Or(cmp.Compare(a.timestamp, b.timestamp), cmp.Compare(a.metric, b.metric), cmp.Compare(a.series, b.series))
 		}
