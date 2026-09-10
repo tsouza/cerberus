@@ -657,15 +657,17 @@ const settingGroupByTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes
 // One byte rather than a tuned size because the measurement says the value is
 // insensitive anywhere below the conversion point and there is no honest
 // number between "convert at once" and ClickHouse's own default. Real
-// ClickHouse 26.6, the same exp-histogram panel query
+// ClickHouse 26.6.4.55, the same exp-histogram panel query
 // (`histogram_quantile(0.95, sum by (…) (rate(<exp-hist>[5m])))`, 10 series),
-// peak memory_usage by threshold at 21 anchors: 1 B 39.72, 1 MB 36.44, 2 MB
-// 39.24, 4 MB 40.83, 8 MB 39.18, 16 MB 426.16, 32 MB 426.18, 50 MB (default)
-// 426.15 MiB. At 61 anchors: 1 B 76.92, 1 MB 65.51, 16 MB 75.09, 32 MB 85.77,
-// 50 MB 992.33 MiB. The curve is FLAT below the conversion point and steps
-// straight to the unbounded fan-out above it, so any sub-knee value buys the
-// same win; 1 buys it for every plan, including one whose per-group state is
-// larger than a tuned constant would have anticipated.
+// peak memory_usage by threshold at 21 anchors: 1 B 26.50, 1 MB 26.48, 4 MB
+// 26.48, 8 MB 26.50, 16 MB 157.38, 32 MB 157.38, 50 MB (default) 157.38 MiB.
+// The curve is FLAT below the conversion point and steps straight to the
+// unbounded fan-out above it, so any sub-knee value buys the same win; 1 buys
+// it for every plan, including one whose per-group state is larger than a
+// tuned constant would have anticipated. The knee itself moves with the plan
+// -- it sat between 8 and 16 MB here and between 32 and 50 MB at 61 anchors on
+// an earlier revision of the same lowering -- which is the other reason not to
+// name a number near it.
 //
 // Stamping it does NOT disable the sibling row threshold
 // (group_by_two_level_threshold, default 100000 keys): ClickHouse converts

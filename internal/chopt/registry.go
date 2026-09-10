@@ -2136,18 +2136,18 @@ const (
 	// block to the array stages stacked above it.
 	//
 	// The peak memory of every exp-histogram window query is set by that
-	// conversion and by nothing else. Measured on a real ClickHouse 26.6, the
-	// SAME query with two-level DISABLED versus at its 50 MB default versus
-	// forced: 21 anchors 426.15 / 426.16 / 37.86 MiB; 61 anchors 992.33 /
-	// 992.33 / 77.69 MiB; 361 anchors 6855.67 / 317.15 / 317.44 MiB. Below
-	// the default the disabled and default columns are IDENTICAL -- the
+	// conversion and by nothing else. Measured on a real ClickHouse 26.6.4.55,
+	// the SAME query with two-level DISABLED versus at its 50 MB default
+	// versus stamped: 21 anchors 157.38 / 157.38 / 26.67 MiB; 61 anchors
+	// 383.43 / 383.43 / 53.09 MiB; 361 anchors 2451.64 / 249.91 / 249.90 MiB.
+	// Below the default the disabled and default columns are IDENTICAL -- the
 	// aggregator never converts and the fan-out is unbounded; past it the
-	// default converts on its own and forcing changes nothing. Cerberus
+	// default converts on its own and stamping changes nothing. Cerberus
 	// stamped neither threshold, so which side of that line a query landed on
 	// was incidental in series count x samples x stored bucket width, and the
-	// curve reads as "more anchors, LESS memory" across the boundary (317 MiB
-	// at 361 anchors against 992 MiB at 61) -- which is exactly how a query's
-	// headroom becomes unpredictable for an operator sizing
+	// curve reads as "more anchors, LESS memory" across the boundary (249.91
+	// MiB at 361 anchors against 383.43 MiB at 61) -- which is exactly how a
+	// query's headroom becomes unpredictable for an operator sizing
 	// CERBERUS_CH_QUERY_MAX_MEMORY.
 	//
 	// It is RESULT-EQUIVALENT: two-level aggregation is an execution
