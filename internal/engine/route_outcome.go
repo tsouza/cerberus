@@ -175,6 +175,16 @@ func classifyRouteOutcomeAfter(route routememo.Route, err error, elapsed time.Du
 // The operator remedy is unchanged and is not routing: size
 // CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_{ROWS,DENSITY_UNITS} for the metric's
 // real, un-apportioned cost.
+// Cerberus issue #3252's ExpHistogramWindowSampleBudgetMessage is
+// deliberately NOT here, and the exclusion is arithmetic rather than
+// caution. That bound counts samples-per-series-per-WINDOW: the window is
+// the query's own `[range]`, and time slicing narrows the request's
+// [start, end] while leaving every anchor's lookback exactly as wide. So
+// each shard re-evaluates the identical windows, charges the identical
+// per-group cost, and fails identically — escalating to route B would be
+// the "dispatch to fail again" loop this list exists to prevent. The
+// operator remedy is the range itself, a coarser inner subquery step, or
+// CERBERUS_CH_QUERY_MAX_MEMORY, which the ceiling is derived from.
 var timeSliceableResourceBoundMessages = []string{
 	chsql.RangeBucketFanoutBudgetMessage,
 	chsql.RangeLWRFanoutBudgetMessage,

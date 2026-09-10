@@ -461,8 +461,8 @@ elsewhere, so they are enumerated here:
 - **`CERBERUS_SHARD_MAX_OUTPUT_ROWS`** (int64, default `2000000`) -
   the per-request output-row ceiling across all shards combined.
 
-Six further resource-bound safety ceilings (five from issue #2667, the last
-from issue #2733) are resolved by `internal/chsql` and
+Seven further resource-bound safety ceilings (five from issue #2667, then
+issue #2733's and issue #3252's) are resolved by `internal/chsql` and
 `internal/promql` rather than by the loader
 documented above - those two packages may not import `internal/config`
 (`.go-arch-lint.yml`), so each owns a small, self-contained env-parsing file
@@ -493,8 +493,24 @@ instead (`internal/engine/resource_bound_env.go`,
   past it is one the server refuses to parse anyway, so the bound turns a raw
   driver `code 62` into a cerberus error naming the query shape. Raise it
   only alongside `max_query_size` on the server itself.
+- **`CERBERUS_PROMQL_EXP_HISTOGRAM_WINDOW_MAX_COST_UNITS`** (int64, no fixed
+  default) - the samples-per-series-per-window ceiling for an
+  exponential-histogram window fold, spent as `S x W x (S + W)` where `S` is
+  the samples one series contributes to one window and `W` its widest stored
+  bucket array
+  (`internal/promql/exp_histogram_window_sample_bound.go`).
+  Unlike the six above it has **no fixed default**: unset, the ceiling is
+  DERIVED from `CERBERUS_CH_QUERY_MAX_MEMORY`
+  (`ExpHistogramWindowCostUnitsForMemory`), because the units it counts are a
+  proxy for BYTES and the byte budget is itself configurable - the same
+  reasoning `CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS` carries.
+  Setting a positive value pins it and opts out of the derivation.
+  A rejection here is **not** relieved by sharding: time slicing narrows the
+  request window while leaving every anchor's lookback as wide, so each shard
+  re-evaluates the identical windows at the identical per-group cost. The
+  remedies are a shorter range, a coarser inner subquery step, or more memory.
 
-All six reject a malformed or non-positive override at startup rather than
+All seven reject a malformed or non-positive override at startup rather than
 silently falling back to the default or admitting every query; see each
 constant's own doc for the calibration its shipped default protects.
 

@@ -374,7 +374,8 @@ func lowerExpHistogramFoldOverCallSubqueryInput(wideInner chplan.Node, grid hist
 	aggs := expHistogramValuedWindowAggs(histSchema, windowFn)
 	grouped := guardedCallSubqueryFanout(wideInner, grid, anchor, aggs, win.minSamples, s, ctx)
 	selected := selectExpHistogramWindowSamples(
-		grouped, aggs, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn},
+		guardExpHistogramWindowReduction(grouped, ctx), aggs,
+		[]string{chplan.RangeWindowAnchorColumn, s.AttributesColumn},
 		histogramWindowSelectionFor(windowFn),
 	)
 	perSeries := expHistogramWindowReshape(
