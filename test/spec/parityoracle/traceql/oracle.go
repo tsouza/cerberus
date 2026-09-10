@@ -61,12 +61,17 @@
 // encoding disagreement would show up as a total mismatch on the very first
 // enrolled fixture, not as a subtly wrong answer. Every attribute therefore
 // enters the engine as a string, which is the honest reading of what the
-// column holds.
+// column holds — EXCEPT for the one case attrTypeHints exists to handle
+// (see its doc comment): an attribute the query itself compares against a
+// typed literal, where cerberus casts the stored string rather than
+// stringifying the literal, and the oracle must cast it the same way to
+// stay an honest comparison rather than a storage-encoding artifact.
 package traceql
 
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -163,14 +168,15 @@ type Result struct {
 func Evaluate(tb testing.TB, spans []Span, query string) ([]Result, error) {
 	tb.Helper()
 
-	_, evaluate, _, _, _, err := tempotraceql.Compile(query)
+	root, evaluate, _, _, _, err := tempotraceql.Compile(query)
 	if err != nil {
 		return nil, fmt.Errorf("reference engine rejected the query: %w", err)
 	}
+	hints := collectAttrTypeHints(root)
 
 	var out []Result
 	for _, trace := range groupByTrace(spans) {
-		built, err := buildTrace(trace)
+		built, err := buildTrace(trace, hints)
 		if err != nil {
 			return nil, err
 		}
@@ -270,7 +276,7 @@ type builtTrace struct {
 //     to match plain filters, and never a match for any structural
 //     operator. Numbering it as a root here would invent a relationship
 //     upstream does not see.
-func buildTrace(t trace) (builtTrace, error) {
+func buildTrace(t trace, hints attrTypeHints) (builtTrace, error) {
 	children := map[string][]Span{}
 	present := make(map[string]bool, len(t.spans))
 	for _, s := range t.spans {
@@ -303,7 +309,7 @@ func buildTrace(t trace) (builtTrace, error) {
 	meta := traceMetaOf(t, roots)
 
 	add := func(s Span, parentLeft, left, right int32) {
-		engineSpan := newEngineSpan(s, meta, parentLeft, left, right)
+		engineSpan := newEngineSpan(s, meta, parentLeft, left, right, hints)
 		built.spans = append(built.spans, engineSpan)
 		built.idOf[engineSpan] = s.SpanID
 	}
@@ -412,7 +418,7 @@ func traceMetaOf(t trace, roots []Span) traceMeta {
 
 // newEngineSpan constructs the vparquet4 span the engine will evaluate,
 // populating the same attribute scopes upstream's own parquet decoder does.
-func newEngineSpan(s Span, meta traceMeta, parentLeft, left, right int32) tempotraceql.Span {
+func newEngineSpan(s Span, meta traceMeta, parentLeft, left, right int32, hints attrTypeHints) tempotraceql.Span {
 	spanAttrs := []vparquet4.SpanAttr{
 		{Attr: tempotraceql.IntrinsicSpanIDAttribute, Value: tempotraceql.NewStaticString(s.SpanID)},
 		{Attr: tempotraceql.IntrinsicParentIDAttribute, Value: tempotraceql.NewStaticString(s.ParentSpanID)},
@@ -428,11 +434,11 @@ func newEngineSpan(s Span, meta traceMeta, parentLeft, left, right int32) tempot
 		{Attr: tempotraceql.IntrinsicNestedSetLeftAttribute, Value: tempotraceql.NewStaticInt(int(left))},
 		{Attr: tempotraceql.IntrinsicNestedSetRightAttribute, Value: tempotraceql.NewStaticInt(int(right))},
 	}
-	spanAttrs = appendScoped(spanAttrs, tempotraceql.AttributeScopeSpan, s.SpanAttrs)
+	spanAttrs = appendScoped(spanAttrs, tempotraceql.AttributeScopeSpan, s.SpanAttrs, hints)
 
-	resourceAttrs := appendScoped(nil, tempotraceql.AttributeScopeResource, s.resourceAttributes())
+	resourceAttrs := appendScoped(nil, tempotraceql.AttributeScopeResource, s.resourceAttributes(), hints)
 
-	eventAttrs, linkAttrs := s.childScopeAttrs()
+	eventAttrs, linkAttrs := s.childScopeAttrs(hints)
 	instrumentationAttrs := []vparquet4.SpanAttr{
 		{Attr: tempotraceql.IntrinsicInstrumentationNameAttribute, Value: tempotraceql.NewStaticString(s.ScopeName)},
 		{Attr: tempotraceql.IntrinsicInstrumentationVersionAttribute, Value: tempotraceql.NewStaticString(s.ScopeVersion)},
@@ -483,16 +489,17 @@ func newEngineSpan(s Span, meta traceMeta, parentLeft, left, right int32) tempot
 // first, and the oracle would report a confident wrong answer where real
 // Tempo matches on the other event. One event and one link per span is
 // the region where the flat model and the fetch layer cannot disagree.
-func (s Span) childScopeAttrs() (events, links []vparquet4.SpanAttr) {
+func (s Span) childScopeAttrs(hints attrTypeHints) (events, links []vparquet4.SpanAttr) {
 	for _, e := range s.Events {
 		events = append(events, vparquet4.SpanAttr{
 			Attr:  tempotraceql.IntrinsicEventNameAttribute,
 			Value: tempotraceql.NewStaticString(e.Name),
 		})
-		events = appendScoped(events, tempotraceql.AttributeScopeEvent, e.Attrs)
+		events = appendScoped(events, tempotraceql.AttributeScopeEvent, e.Attrs, hints)
 	}
 	for _, l := range s.Links {
-		links = append(links,
+		links = append(
+			links,
 			vparquet4.SpanAttr{
 				Attr:  tempotraceql.IntrinsicLinkTraceIDAttribute,
 				Value: tempotraceql.NewStaticString(l.TraceID),
@@ -502,7 +509,7 @@ func (s Span) childScopeAttrs() (events, links []vparquet4.SpanAttr) {
 				Value: tempotraceql.NewStaticString(l.SpanID),
 			},
 		)
-		links = appendScoped(links, tempotraceql.AttributeScopeLink, l.Attrs)
+		links = appendScoped(links, tempotraceql.AttributeScopeLink, l.Attrs, hints)
 	}
 	return events, links
 }
@@ -532,9 +539,14 @@ func validateChildRecords(s Span) error {
 }
 
 // appendScoped adds an attribute map under one scope, in sorted key order
-// so construction is deterministic.
+// so construction is deterministic. Each value is a Go string — the honest
+// reading of the Map(String, String) column it came from — UNLESS hints
+// says the query itself compares this key against a typed literal, in
+// which case coerceAttrValue reads it as that type instead (see
+// attrTypeHints's doc comment for why this is sound and cerberus does the
+// same coercion).
 func appendScoped(
-	dst []vparquet4.SpanAttr, scope tempotraceql.AttributeScope, attrs map[string]string,
+	dst []vparquet4.SpanAttr, scope tempotraceql.AttributeScope, attrs map[string]string, hints attrTypeHints,
 ) []vparquet4.SpanAttr {
 	keys := make([]string, 0, len(attrs))
 	for k := range attrs {
@@ -544,10 +556,167 @@ func appendScoped(
 	for _, k := range keys {
 		dst = append(dst, vparquet4.SpanAttr{
 			Attr:  tempotraceql.NewScopedAttribute(scope, false, k),
-			Value: tempotraceql.NewStaticString(attrs[k]),
+			Value: coerceAttrValue(attrs[k], attrHint(hints, scope, k)),
 		})
 	}
 	return dst
+}
+
+// attrHint looks up the type hint for a concretely-scoped attribute
+// (span.foo, resource.foo, …), falling back to the hint recorded for the
+// UNSCOPED spelling of the same name (.foo) when there is no scope-specific
+// one. An unscoped query attribute resolves against span first, then
+// resource — the same search order cerberus's own lowering emits as
+// `if(mapContains(SpanAttributes, k), SpanAttributes[k], ResourceAttributes[k])`
+// — so a comparison written as `.foo = true` must coerce whichever of the
+// two concrete maps actually holds `foo`, not only a hit under
+// AttributeScopeNone (which nothing in either map is ever stored under).
+func attrHint(hints attrTypeHints, scope tempotraceql.AttributeScope, name string) tempotraceql.StaticType {
+	if hint := hints[attrTypeHintKey{scope: scope, name: name}]; hint != tempotraceql.TypeNil {
+		return hint
+	}
+	return hints[attrTypeHintKey{scope: tempotraceql.AttributeScopeNone, name: name}]
+}
+
+// --- attribute type hints (issue #3259) --------------------------------
+//
+// OTel-ClickHouse stores every ordinary span/resource attribute as
+// Map(String, String), which loses the original OTel value type (an
+// IntValue and a StringValue holding "500" land in the same cell) —
+// unrecoverably, since nothing in the column records which one it was.
+// That loss is real and belongs to the exporter's schema, not to this
+// harness; nothing here tries to undo it.
+//
+// What this harness CAN observe, without recovering that lost type, is
+// what cerberus itself does with the string: internal/traceql/lower.go
+// casts the STORED STRING to match whatever type the QUERY'S OWN LITERAL
+// is (`toFloat64OrNull` for a numeric/duration literal, the literal
+// stringified to match a boolean attribute's encoding) rather than
+// trusting a type the string was never guaranteed to carry. Mirroring that
+// same per-comparison cast here — keyed off the query's literal type, not
+// off guessing from the string's shape — lets the oracle agree with
+// cerberus for exactly the fixtures that exercise it, with no schema
+// change and no risk to any fixture that does not: a key never compared
+// against a typed literal keeps reading as a plain string, unchanged.
+//
+// Guessing from the string's shape ALONE (e.g. "every numeric-looking
+// value is a number") would be unsound, not merely imprecise: a fixture
+// seeding a genuinely STRING attribute whose value happens to look
+// numeric — an account ID "500" queried as `{ span.account_id = "500" }`
+// — would then get silently retyped to Int, mismatching the query's own
+// String literal and turning a passing fixture into a false parity
+// failure. Reading the QUERY's literal type instead of the VALUE's shape
+// is what keeps this sound: cerberus's own coercion is equally
+// query-driven (a String literal never gets cast either), so this mirrors
+// the fact under test rather than inventing a new one.
+
+// attrTypeHintKey identifies one ordinary (non-intrinsic) attribute by
+// scope and name. Parent-qualified references (`parent.span.foo`) resolve
+// through the SAME per-span attribute set on whichever span the engine is
+// currently walking, so the hint is keyed on scope+name only — the parent
+// bit changes which span's map is consulted, never what type that span's
+// value should be read as.
+type attrTypeHintKey struct {
+	scope tempotraceql.AttributeScope
+	name  string
+}
+
+// attrTypeHints maps an attribute to the StaticType a fixture's query
+// compares it against, for the coercible types (TypeBoolean, TypeInt,
+// TypeFloat, TypeDuration). A key absent from the map — the common case —
+// reads as a plain string, same as before this mechanism existed.
+type attrTypeHints map[attrTypeHintKey]tempotraceql.StaticType
+
+// isCoercibleHintType reports whether t is a type coerceAttrValue knows
+// how to recover from a stored string. TypeString itself, and every other
+// StaticType, is deliberately excluded: a String comparison never coerces
+// (matching cerberus, which only casts for a NUMERIC or BOOLEAN literal),
+// and the array/status/kind types have no single scalar parse to attempt.
+func isCoercibleHintType(t tempotraceql.StaticType) bool {
+	switch t {
+	case tempotraceql.TypeBoolean, tempotraceql.TypeInt, tempotraceql.TypeFloat, tempotraceql.TypeDuration:
+		return true
+	default:
+		return false
+	}
+}
+
+// collectAttrTypeHints walks a compiled query's spanset-filter pipeline —
+// the portion Evaluate's SpansetFilterFunc actually runs — and records,
+// for every ordinary attribute compared against a coercible literal, which
+// type that comparison implies. An attribute reached only through an
+// intrinsic, or only ever compared against a String (or another
+// attribute), is not recorded, and its value keeps reading as a string.
+func collectAttrTypeHints(root *tempotraceql.RootExpr) attrTypeHints {
+	hints := attrTypeHints{}
+
+	record := func(candidate, literal tempotraceql.FieldExpression) {
+		attr, ok := candidate.(tempotraceql.Attribute)
+		if !ok || attr.Intrinsic != tempotraceql.IntrinsicNone {
+			return
+		}
+		static, ok := literal.(tempotraceql.Static)
+		if !ok || !isCoercibleHintType(static.Type) {
+			return
+		}
+		hints[attrTypeHintKey{scope: attr.Scope, name: attr.Name}] = static.Type
+	}
+
+	var walkField func(tempotraceql.FieldExpression)
+	walkField = func(e tempotraceql.FieldExpression) {
+		switch n := e.(type) {
+		case *tempotraceql.BinaryOperation:
+			record(n.LHS, n.RHS)
+			record(n.RHS, n.LHS)
+			walkField(n.LHS)
+			walkField(n.RHS)
+		case tempotraceql.UnaryOperation:
+			walkField(n.Expression)
+		}
+	}
+
+	var walkSpanset func(tempotraceql.SpansetExpression)
+	walkSpanset = func(e tempotraceql.SpansetExpression) {
+		switch n := e.(type) {
+		case *tempotraceql.SpansetFilter:
+			walkField(n.Expression)
+		case tempotraceql.SpansetOperation:
+			walkSpanset(n.LHS)
+			walkSpanset(n.RHS)
+		}
+	}
+
+	for _, el := range root.Pipeline.Elements {
+		if se, ok := el.(tempotraceql.SpansetExpression); ok {
+			walkSpanset(se)
+		}
+	}
+	return hints
+}
+
+// coerceAttrValue reads raw as hint's type when hint is coercible and raw
+// actually parses as that type, matching the ONE cast cerberus's own
+// lowering performs for the same Map(String, String) column
+// (internal/traceql/lower.go's coerceNumericFieldAccess /
+// coerceBoolFieldAccess): Int, Float and Duration all fold to a float
+// comparison in both engines (upstream Static.compare/Equals treat them as
+// one numeric family), so a single ParseFloat covers all three — cerberus
+// itself never distinguishes them either, casting every numeric literal's
+// peer through the same toFloat64OrNull. A value that does not parse as
+// the hinted type — or a key with no hint at all — reads as the plain
+// string the column holds, the same as every other attribute.
+func coerceAttrValue(raw string, hint tempotraceql.StaticType) tempotraceql.Static {
+	switch hint {
+	case tempotraceql.TypeBoolean:
+		if b, err := strconv.ParseBool(raw); err == nil {
+			return tempotraceql.NewStaticBool(b)
+		}
+	case tempotraceql.TypeInt, tempotraceql.TypeFloat, tempotraceql.TypeDuration:
+		if f, err := strconv.ParseFloat(raw, 64); err == nil {
+			return tempotraceql.NewStaticFloat(f)
+		}
+	}
+	return tempotraceql.NewStaticString(raw)
 }
 
 // statusFromColumn decodes the OTel-CH StatusCode column.

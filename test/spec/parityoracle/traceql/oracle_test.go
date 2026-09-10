@@ -281,3 +281,120 @@ func TestUnparseableQueryIsAnError(t *testing.T) {
 		t.Fatal("a query the reference engine cannot parse must be an error, not an empty answer")
 	}
 }
+
+// --- attribute type coercion (issue #3259) -----------------------------
+//
+// Every span/resource attribute reaches this package as a Go string — the
+// honest reading of the Map(String, String) column OTel-CH stores it in.
+// Without the coercion these tests pin, a query comparing such an
+// attribute against a NON-STRING literal (a bool, an int, a float, a
+// duration) could never match on the reference side: upstream's Static
+// equality is type-strict, so String("500") != Int(500) regardless of the
+// text. Cerberus, reading the identical column, casts the STRING to the
+// literal's type instead (internal/traceql/lower.go's
+// coerceNumericFieldAccess / coerceBoolFieldAccess) — these tests confirm
+// the oracle now performs the SAME per-comparison cast.
+
+func numericAttrSpans() []oracle.Span {
+	return []oracle.Span{
+		{TraceID: "t", SpanID: "low", SpanAttrs: map[string]string{"http.status_code": "200"}},
+		{TraceID: "t", SpanID: "high", SpanAttrs: map[string]string{"http.status_code": "503"}},
+	}
+}
+
+// TestNumericAttributeOrderingCoercion covers the ordering comparisons
+// (`>=`, `<`) cerberus lowers through `toFloat64OrNull`.
+func TestNumericAttributeOrderingCoercion(t *testing.T) {
+	got := evaluate(t, numericAttrSpans(), `{ span.http.status_code >= 500 }`)
+	requireResults(t, got, oracle.Result{TraceID: "t", SpanID: "high"})
+
+	got = evaluate(t, numericAttrSpans(), `{ span.http.status_code < 500 }`)
+	requireResults(t, got, oracle.Result{TraceID: "t", SpanID: "low"})
+}
+
+// TestNumericAttributeEqualityCoercion covers `=`/`!=`, which cerberus
+// casts identically to ordering for a numeric literal (unlike a boolean
+// literal, which goes the other direction — see
+// TestBooleanAttributeCoercion).
+func TestNumericAttributeEqualityCoercion(t *testing.T) {
+	got := evaluate(t, numericAttrSpans(), `{ span.http.status_code = 503 }`)
+	requireResults(t, got, oracle.Result{TraceID: "t", SpanID: "high"})
+}
+
+// TestFloatAttributeCoercion pins a non-integer literal, and that a
+// resource-scoped attribute coerces the same way a span-scoped one does.
+func TestFloatAttributeCoercion(t *testing.T) {
+	spans := []oracle.Span{
+		{TraceID: "t", SpanID: "a", ResourceAttrs: map[string]string{"queue.depth_ratio": "1.5"}},
+		{TraceID: "t", SpanID: "b", ResourceAttrs: map[string]string{"queue.depth_ratio": "0.2"}},
+	}
+	got := evaluate(t, spans, `{ resource.queue.depth_ratio = 1.5 }`)
+	requireResults(t, got, oracle.Result{TraceID: "t", SpanID: "a"})
+}
+
+// TestDurationAttributeCoercion pins a duration literal against an
+// attribute holding a plain nanosecond count as its string — the shape
+// `{ 100ms < event.duration }` names in issue #3259. Int, Float and
+// Duration are one numeric family on both sides of this comparison (see
+// coerceAttrValue's doc comment), so 150_000_000 parses and compares
+// correctly against 100ms (100_000_000ns) with no unit-specific branch.
+func TestDurationAttributeCoercion(t *testing.T) {
+	spans := []oracle.Span{
+		{TraceID: "t", SpanID: "slow-event", SpanAttrs: map[string]string{"queue.wait": "150000000"}},
+		{TraceID: "t", SpanID: "fast-event", SpanAttrs: map[string]string{"queue.wait": "50000000"}},
+	}
+	got := evaluate(t, spans, `{ 100ms < span.queue.wait }`)
+	requireResults(t, got, oracle.Result{TraceID: "t", SpanID: "slow-event"})
+}
+
+// TestBooleanAttributeCoercion covers the scoped and unscoped spellings
+// bool_attr.txtar / unscoped_bool_attr.txtar pin as fixtures: the unscoped
+// form must coerce whichever concrete map (span or resource) actually
+// carries the key, not only a lookup under the unscoped key itself, since
+// neither map is ever populated under AttributeScopeNone.
+func TestBooleanAttributeCoercion(t *testing.T) {
+	spanScoped := []oracle.Span{
+		{TraceID: "t", SpanID: "hit", SpanAttrs: map[string]string{"cache.hit": "true"}},
+		{TraceID: "t", SpanID: "miss", SpanAttrs: map[string]string{"cache.hit": "false"}},
+	}
+	requireResults(t, evaluate(t, spanScoped, `{ span.cache.hit = true }`),
+		oracle.Result{TraceID: "t", SpanID: "hit"})
+
+	unscopedOnResource := []oracle.Span{
+		{TraceID: "t", SpanID: "hit", ResourceAttrs: map[string]string{"cache.hit": "true"}},
+		{TraceID: "t", SpanID: "miss", ResourceAttrs: map[string]string{"cache.hit": "false"}},
+	}
+	requireResults(t, evaluate(t, unscopedOnResource, `{ .cache.hit = true }`),
+		oracle.Result{TraceID: "t", SpanID: "hit"})
+}
+
+// TestStringLiteralNeverCoercesAttribute is the soundness control: an
+// attribute whose value happens to look numeric must NOT be silently
+// retyped when the query itself compares it against a STRING literal.
+// Coercion is driven by the QUERY's literal type, never by guessing from
+// the stored value's shape — guessing would misclassify a genuine string
+// attribute like an account ID that happens to read "500", turning this
+// passing case into a false parity failure (see attrTypeHints's doc
+// comment in oracle.go for why shape-based inference is unsound).
+func TestStringLiteralNeverCoercesAttribute(t *testing.T) {
+	spans := []oracle.Span{
+		{TraceID: "t", SpanID: "a", SpanAttrs: map[string]string{"account_id": "500"}},
+	}
+	got := evaluate(t, spans, `{ span.account_id = "500" }`)
+	requireResults(t, got, oracle.Result{TraceID: "t", SpanID: "a"})
+}
+
+// TestUnrelatedKeyNeverCoercesFromAnotherQuery is a second soundness
+// control: comparing ONE key against a numeric literal must not leak a
+// numeric-typed reading onto a DIFFERENT key that this same query compares
+// against a string. Each key's hint is independent.
+func TestUnrelatedKeyNeverCoercesFromAnotherQuery(t *testing.T) {
+	spans := []oracle.Span{
+		{TraceID: "t", SpanID: "a", SpanAttrs: map[string]string{
+			"http.status_code": "500",
+			"account_id":       "500",
+		}},
+	}
+	got := evaluate(t, spans, `{ span.http.status_code = 500 && span.account_id = "500" }`)
+	requireResults(t, got, oracle.Result{TraceID: "t", SpanID: "a"})
+}
