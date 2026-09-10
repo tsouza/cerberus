@@ -259,11 +259,11 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 // #3232): grouping by Attributes ALONE merges two series that differ only
 // by `__name__`, which is exactly the pair reference refuses to answer once
 // the drop collapses them onto one label set. The two preserving names are
-// excluded because they keep `__name__` in their output, so nothing of
-// theirs can collide there.
+// excluded because they keep `__name__` in their output — and for exactly
+// that reason they key ON it instead ([selectFnSubqueryKey], cerberus issue
+// #3253) rather than carrying no series-identity answer at all.
 func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
-	aliases := []string{s.AttributesColumn}
+	groupBy, aliases := selectFnSubqueryKey(windowFn, s)
 	reduce := func(aggs []chplan.AggFunc) chplan.Node {
 		return selectFnSubqueryNameGuard(windowFn, &chplan.Aggregate{
 			Input:              input,
@@ -275,7 +275,7 @@ func selectFnOverSubqueryWindowed(windowFn string, input chplan.Node, s schema.M
 	}
 	switch windowFn {
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
-		return reduce(nativeExpHistBareAggsDirectional(windowFn, s))
+		return reduce(nativeExpHistValuedLatestAggsDirectional(windowFn, s))
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
 		return reduce([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, s)})
 	case resetsWindowFn, changesWindowFn:
@@ -331,6 +331,32 @@ func selectFnSubqueryNameGuard(windowFn string, node chplan.Node, s schema.Metri
 	return subqueryNameCollisionFilter(node, s, ctx)
 }
 
+// selectFnSubqueryKey is the third half of the same split, and the one
+// cerberus issue #3253 added: WHICH identity the reduction groups on.
+//
+// A name-dropping name reduces on Attributes alone — its output carries no
+// `__name__`, so two names under one label set are one output series, and
+// [selectFnSubqueryNameGuard] is what refuses to answer it. A
+// name-PRESERVING name (last_over_time / first_over_time) publishes the
+// selected sample's own `__name__`, so its output identity is the PAIR:
+// reducing on Attributes alone merged the two series and then argMax'd a
+// single name out of them, which published one of the pair and DELETED the
+// other, where reference folds per series and answers both.
+//
+// The wider key is only ever too COARSE to be wrong, never too fine: where
+// `__name__` is uniform within an Attributes group — every ordinary
+// single-metric query — the two keys partition the relation identically.
+// The key expressions are [mixedLastFirstSeriesKey]'s, shared rather than
+// re-derived: the Mixed-shape sibling reached the same conclusion first
+// (cerberus issue #3227) and a second spelling of one key is a spelling
+// that can drift.
+func selectFnSubqueryKey(windowFn string, s schema.Metrics) ([]chplan.Expr, []string) {
+	if selectFnDropsSeriesName(windowFn) {
+		return []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}, []string{s.AttributesColumn}
+	}
+	return mixedLastFirstSeriesKey(s), mixedLastFirstSeriesKeyAliases(s)
+}
+
 // lowerSelectFnOverSubqueryRange is the query_range shape: one
 // `[sub.Range]` window per step anchor via [chplan.RangeBucketFanout] over
 // the subquery-anchor relation directly — the range-mode counterpart of
@@ -350,6 +376,7 @@ func selectFnSubqueryNameGuard(windowFn string, node chplan.Node, s schema.Metri
 // resolving it per function.
 func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRange, offset time.Duration, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
+	groupBy, aliases := selectFnSubqueryKey(windowFn, s)
 	// Same guard the other two grid modes carry
 	// ([selectFnSubqueryNameGuard]), on the per-(series, anchor) buckets
 	// this mode reduces to instead of the per-series groups they do. The
@@ -365,8 +392,8 @@ func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRa
 			Step:           ctx.step,
 			Lookback:       windowRange,
 			Offset:         offset,
-			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-			GroupByAliases: []string{s.AttributesColumn},
+			GroupBy:        groupBy,
+			GroupByAliases: aliases,
 			AggFuncs:       selectFnSubqueryAggs(windowFn, aggs, s),
 			MinSamples:     stalenessMinSamples,
 			AnchorAlias:    stepGridAnchorColumn,
@@ -375,7 +402,7 @@ func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRa
 	}
 	switch windowFn {
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, fanout(nativeExpHistBareAggsDirectional(windowFn, s)), anchorRef, s)
+		return capSelectFnOverSubquery(windowFn, fanout(nativeExpHistValuedLatestAggsDirectional(windowFn, s)), anchorRef, s)
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
 		return capSelectFnOverSubquery(windowFn, fanout([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, s)}), anchorRef, s)
 	case resetsWindowFn, changesWindowFn:

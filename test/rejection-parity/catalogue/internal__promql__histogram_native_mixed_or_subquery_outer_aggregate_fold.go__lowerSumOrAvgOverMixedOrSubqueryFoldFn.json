@@ -1,0 +1,70 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_subquery_outer_aggregate_fold.go:lowerSumOrAvgOverMixedOrSubqueryFoldFn#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerSumOrAvgOverMixedExpHistogramSetOp's identical check for the root-only sibling composition (histogram_native_mixed_or_aggregate.go) and lowerSumOrAvgMixedOrSubqueryOuterFn's identical check for the aggregation-inside-the-subquery sibling (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — b is the SAME mixedExpHistogramSetOp-matched `or` BinaryExpr those two composers check, which the parser can never hand a `bool` modifier.",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramFamily"
+        ],
+        "cited": [
+          "lowerSumOrAvgMixedOrSubqueryOuterFn",
+          "lowerSumOrAvgOverMixedExpHistogramSetOp",
+          "mixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_subquery_outer_aggregate_fold.go:lowerSumOrAvgOverMixedOrSubqueryFoldFn#91084197",
+      "message": "promql: subquery step must be positive, got %s",
+      "class": "internal",
+      "rationale": "the PromQL parser rejects negative subquery steps; zero is the valid default handled before this guard — the same reasoning lowerSumOrAvgMixedOrSubqueryOuterFn's identical check (histogram_native_mixed_or_subquery_aggregate_range_fn.go) already rests on for the same sub.Step field.",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool",
+          "if step \u003c 0"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramFamily"
+        ],
+        "cited": [
+          "lowerSumOrAvgMixedOrSubqueryOuterFn"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_subquery_outer_aggregate_fold.go:lowerSumOrAvgOverMixedOrSubqueryFoldFn#d4ecb9e5",
+      "message": "promql: histogram-valued subquery requires query eval-time context (use LowerAt)",
+      "class": "internal",
+      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it, and sumOrAvgOverMixedOrSubqueryFoldFn's own subqueryHasEvalAnchor check already declines to match in that case — subqueryHasEvalAnchor is false exactly when subqueryGridCtx reports subqueryGridUnavailable, which is the state this guard tests — so this branch is unreachable even from that entry point, the identical reasoning lowerSumOrAvgMixedOrSubqueryOuterFn's own identical check (histogram_native_mixed_or_subquery_aggregate_range_fn.go) already rests on.",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool",
+          "past returning if step \u003c 0",
+          "past returning if err != nil",
+          "if state == subqueryGridUnavailable"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramFamily"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange",
+          "lowerSumOrAvgMixedOrSubqueryOuterFn",
+          "subqueryGridCtx",
+          "subqueryHasEvalAnchor",
+          "sumOrAvgOverMixedOrSubqueryFoldFn"
+        ]
+      }
+    }
+  ]
+}

@@ -356,26 +356,28 @@ const (
 	// disagreement about them is an ordinary bug to fix at the source.
 	ReasonDuplicateSpanSeed = "duplicate-span-seed"
 
-	// ReasonOracleUntypedAttributes covers a TraceQL fixture whose query
-	// compares an attribute against a NON-STRING literal — a boolean, a
-	// bare integer, a float.
+	// ReasonOracleUntypedAttributes covered a TraceQL fixture whose query
+	// compared an attribute against a NON-STRING literal — a boolean, a
+	// bare integer, a float — before #3259's attrTypeHints mechanism
+	// (test/spec/parityoracle/traceql/oracle.go) closed the general case:
+	// the oracle now reads such an attribute's stored string as the type
+	// the QUERY's own literal implies, the same per-comparison coercion
+	// cerberus's own lowering performs on the identical Map(String,
+	// String) column, rather than always handing the reference engine a
+	// String static no typed literal could ever match. No fixture wears
+	// this reason any more (bool_attr.txtar / unscoped_bool_attr.txtar /
+	// unscoped_bool_attr_false.txtar were its only three, and are now
+	// enrolled for real against `oracle: tempo`).
 	//
-	// test/spec/parityoracle/traceql's Span carries ResourceAttrs and
-	// SpanAttrs as map[string]string, so every attribute reaching the
-	// reference engine is a String static and a typed literal can never
-	// match on that side, whatever cerberus does. Cerberus is right here:
-	// OTel-CH stores a boolean span attribute as the string 'true' in a
-	// Map(String, String), which is exactly what such a fixture's seed
-	// models.
-	//
-	// Unlike the other reasons in this file, this one names a gap that
-	// COULD be closed — by carrying an OTel attribute's ORIGINAL type
-	// through the OTel-CH encoding, so that a Map(String, String) value
-	// of '200' reaches the engine as the integer it was before the
-	// exporter stringified it. Nothing in the column records that, which
-	// is why the gap is open rather than merely unimplemented. It is
-	// tracked on #3259, and a fixture wearing this reason becomes
-	// enrollable the day that lands.
+	// The reason stays declared, not removed, because attrTypeHints is
+	// sound rather than complete: it only recovers a type the fixture's
+	// OWN query states directly in a comparison its AST walk reaches. An
+	// attribute whose non-string nature is observable only some other
+	// way — through a metrics pipeline stage the walk does not cover, or
+	// a comparison shape it does not recognize — would still reach the
+	// reference engine as a plain string, and a fixture exercising that
+	// residual gap earns this reason again with a `detail` naming
+	// specifically what attrTypeHints could not see.
 	ReasonOracleUntypedAttributes = "oracle-untyped-attributes"
 
 	// ReasonReferenceIntrinsicUnsupported covers a fixture whose query

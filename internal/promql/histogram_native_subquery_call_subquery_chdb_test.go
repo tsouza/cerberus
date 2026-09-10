@@ -6,7 +6,7 @@
 // MixedRowShape `wideInner`, not merely that the emitted plan's Go shape
 // looks right.
 //
-// # Why innerSub.Expr is a set-op, not a bare selector or rate(...)
+// # Which innerSub.Expr reaches this composition, and which does not
 //
 // [lowerSubquery]'s own dispatch tries [lowerHistogramNativeSubqueryInner]
 // FIRST: it treats sub.Expr — here `<fn>(<inner-sub>)` — as if IT were a
@@ -21,15 +21,28 @@
 // PRE-EXISTING #2545/#2569 continuations before [lowerSubqueryOverCallSubquery]
 // is ever reached — that composition was already correct.
 //
-// [isExpHistogramValuedShape] does NOT recognise a bare `and`/`or`/`unless`
-// set-op (that recognition lives only in [lowerVectorSetOpOperand], reached
-// exclusively through the generic lowerBinary → lowerVectorSetOp path —
-// see histogram_native_mixed_or_subquery_further_setop_range_fn.go's own
-// doc for the identical reasoning one nesting level up), so a
-// `(<a>) and/or (<b>)` innerSub.Expr is the shape that genuinely reaches
-// [lowerSubqueryOverCallSubquery] with a Histogram/Mixed-shaped wideInner —
-// exercising cerberus issue #2726's new code, not its #2545/#2569
-// predecessor.
+// **A bare `and`/`or`/`unless` set-op of two exp-histograms is intercepted
+// the same way, and every `HistAnd` case below is therefore a test of those
+// single-level continuations rather than of #2726's own.** This file
+// originally reasoned the opposite, on the premise that
+// [isExpHistogramValuedShape] does not recognise a set-op. That premise
+// held when #2726 was written and stopped holding when cerberus issue
+// #2324 added [expHistogramSetOp] to that predicate; the doc had not
+// caught up, and cerberus issue #3253 measured the consequence — no
+// `HistAnd` query in this file builds an OuterRange-mode
+// [chplan.RangeBucketFanout] at all. They are kept because the ANSWERS
+// they pin are real end-to-end answers to real queries; only the claim
+// about which continuation produces them was wrong.
+//
+// The MixedRowShape cases below do reach [lowerSubqueryOverCallSubquery]:
+// a mixed float/histogram `or` is not histogram-valued, so no single-level
+// recognizer claims it. So does a NON-default-matching exp-histogram binop
+// (`<a> + on(x) <b>`), which [isExpHistogramValuedShape] deliberately
+// withholds recognition from while [lowerExpHistogramHistogramBinop] still
+// lowers it to a HistogramRowShape relation — that is the shape
+// TestSubqueryCallSubquery_HistBinop_*_ChDB uses to exercise the
+// HistogramRowShape arms for real. The routing of all three is pinned in
+// the default lane by histogram_native_subquery_call_subquery_routing_test.go.
 //
 // Every case here lowers the doubly-nested SubqueryExpr as the BARE plan
 // root (via promql.LowerAt, mirroring TestLowerSubquery_CallNested's own
@@ -143,9 +156,14 @@ func callSubqOuterAnchors() []time.Time {
 	return out
 }
 
-// TestSubqueryCallSubquery_HistAnd_LastOverTime_ChDB proves the
-// SELECT-family dispatch (lowerSelectFnOverCallSubqueryInput) for a
-// HistogramRowShape wideInner produced by a bare `and` set-op inner.
+// TestSubqueryCallSubquery_HistAnd_LastOverTime_ChDB pins the ANSWER to
+// last_over_time over a doubly-bracketed pure-histogram `and` set-op. It
+// routes through the single-level continuation
+// ([lowerSelectFnOverExpHistogramSubqueryInput]) rather than
+// lowerSelectFnOverCallSubqueryInput — see this file's header — so what it
+// proves is that the composition answers correctly, not which continuation
+// answered. TestSubqueryCallSubquery_HistBinop_LastOverTime_ChDB is the
+// case that reaches the doubly-nested SELECT-family dispatch.
 func TestSubqueryCallSubquery_HistAnd_LastOverTime_ChDB(t *testing.T) {
 	fixture := newChDBFixture(t, callSubqHistAndSeed())
 	s := schema.DefaultOTelMetrics()
@@ -169,11 +187,14 @@ func TestSubqueryCallSubquery_HistAnd_LastOverTime_ChDB(t *testing.T) {
 	}
 }
 
-// TestSubqueryCallSubquery_HistAnd_Rate_ChDB proves the FOLD-family
-// dispatch (lowerExpHistogramFoldOverCallSubqueryInput) for the same
-// HistogramRowShape wideInner: rate folds wideInner's own per-inner-anchor
-// histograms into a boundary-corrected rate at each outer anchor instead
-// of erroring or dropping to empty.
+// TestSubqueryCallSubquery_HistAnd_Rate_ChDB pins the ANSWER to rate over
+// the same doubly-bracketed pure-histogram `and`: a boundary-corrected
+// rate at each outer anchor instead of an error or an empty drop. Like its
+// last_over_time sibling it routes through the single-level continuation
+// ([lowerExpHistogramRangeFnOverSubqueryInput]), not
+// lowerExpHistogramFoldOverCallSubqueryInput —
+// TestSubqueryCallSubquery_HistBinop_Rate_ChDB is the case that reaches
+// that one.
 func TestSubqueryCallSubquery_HistAnd_Rate_ChDB(t *testing.T) {
 	fixture := newChDBFixture(t, callSubqHistAndSeed())
 	s := schema.DefaultOTelMetrics()
@@ -327,9 +348,10 @@ func TestSubqueryCallSubquery_MixedOr_ResetsChanges_ChDB(t *testing.T) {
 	}
 }
 
-// TestSubqueryCallSubquery_HistAnd_FirstOverTime_ChDB proves the
-// SELECT-family dispatch for first_over_time — the EARLIEST, not latest,
-// in-window sample — over a HistogramRowShape wideInner. Every 2m/1m
+// TestSubqueryCallSubquery_HistAnd_FirstOverTime_ChDB pins the answer for
+// first_over_time — the EARLIEST, not latest, in-window sample — over the
+// pure-histogram `and` this file's header says is answered by the
+// single-level continuation, not by #2726's own. Every 2m/1m
 // window at outer anchor T holds exactly wideInner's two samples at
 // (T-1m) and T, so first_over_time must read the (T-1m) one.
 func TestSubqueryCallSubquery_HistAnd_FirstOverTime_ChDB(t *testing.T) {
@@ -355,9 +377,10 @@ func TestSubqueryCallSubquery_HistAnd_FirstOverTime_ChDB(t *testing.T) {
 	}
 }
 
-// TestSubqueryCallSubquery_HistAnd_CountPresentOverTime_ChDB proves the
-// SELECT-family dispatch for count_over_time / present_over_time over a
-// HistogramRowShape wideInner: every one of this file's 2m/1m windows
+// TestSubqueryCallSubquery_HistAnd_CountPresentOverTime_ChDB pins the
+// answer for count_over_time / present_over_time over the pure-histogram
+// `and` (single-level continuation — see this file's header): every one of
+// this file's 2m/1m windows
 // contains exactly two of wideInner's own per-inner-anchor rows (spaced
 // one minute apart, epoch-aligned), so count_over_time must read exactly
 // 2 and present_over_time exactly 1 at every one of the ten outer
@@ -394,10 +417,10 @@ func TestSubqueryCallSubquery_HistAnd_CountPresentOverTime_ChDB(t *testing.T) {
 	}
 }
 
-// TestSubqueryCallSubquery_HistAnd_SumAvgOverTime_ChDB proves the
-// FOLD-family dispatch for sum_over_time / avg_over_time — pure additive
-// folds with no boundary/reset correction, unlike rate's — over a
-// HistogramRowShape wideInner. Every 2m/1m window at outer anchor T
+// TestSubqueryCallSubquery_HistAnd_SumAvgOverTime_ChDB pins the answer for
+// sum_over_time / avg_over_time — pure additive folds with no
+// boundary/reset correction, unlike rate's — over the pure-histogram `and`
+// (single-level continuation — see this file's header). Every 2m/1m window at outer anchor T
 // holds exactly wideInner's two samples at (T-1m) and T (Count = T and
 // T+1 respectively, in the seed's own minute-index-plus-one pattern), so
 // both functions' results are exact arithmetic, not merely non-empty.
@@ -438,8 +461,9 @@ func TestSubqueryCallSubquery_HistAnd_SumAvgOverTime_ChDB(t *testing.T) {
 	}
 }
 
-// TestSubqueryCallSubquery_HistAnd_IrateIdelta_ChDB proves the FOLD-family
-// dispatch for irate / idelta over a HistogramRowShape wideInner: both
+// TestSubqueryCallSubquery_HistAnd_IrateIdelta_ChDB pins the answer for
+// irate / idelta over the pure-histogram `and` (single-level continuation
+// — see this file's header): both
 // read only the window's LAST TWO samples with no boundary
 // extrapolation (histogramWindowSelectionFor's histogramWindowLastTwo),
 // so — like sum_over_time/avg_over_time, unlike rate/increase/delta —
@@ -479,9 +503,9 @@ func TestSubqueryCallSubquery_HistAnd_IrateIdelta_ChDB(t *testing.T) {
 	}
 }
 
-// TestSubqueryCallSubquery_HistAnd_IncreaseDelta_ChDB proves the
-// FOLD-family dispatch for increase / delta over a HistogramRowShape
-// wideInner. Both apply reference's boundary-extrapolation factor (the
+// TestSubqueryCallSubquery_HistAnd_IncreaseDelta_ChDB pins the answer for
+// increase / delta over the pure-histogram `and` (single-level
+// continuation — see this file's header). Both apply reference's boundary-extrapolation factor (the
 // same machinery rate's own sibling test declines to hand-derive
 // exactly), so the check here is genuine-execution plus a
 // fold-consistency invariant a broken dispatch (or a broken per-field
@@ -518,9 +542,10 @@ func TestSubqueryCallSubquery_HistAnd_IncreaseDelta_ChDB(t *testing.T) {
 	}
 }
 
-// TestSubqueryCallSubquery_HistAnd_TsOfFirstLastOverTime_ChDB proves the
-// SELECT-family dispatch for ts_of_first_over_time / ts_of_last_over_time
-// over a HistogramRowShape wideInner: each reports the UNIX-second
+// TestSubqueryCallSubquery_HistAnd_TsOfFirstLastOverTime_ChDB pins the
+// answer for ts_of_first_over_time / ts_of_last_over_time over the
+// pure-histogram `and` (single-level continuation — see this file's
+// header): each reports the UNIX-second
 // timestamp of the earliest/latest wideInner sample in the outer anchor's
 // window, which — same window shape as first_over_time/last_over_time —
 // is exactly (T-1m) / T.
@@ -558,10 +583,13 @@ func TestSubqueryCallSubquery_HistAnd_TsOfFirstLastOverTime_ChDB(t *testing.T) {
 }
 
 // TestSubqueryCallSubquery_HistAnd_LastOverTime_Pinned_ChDB proves the
-// `@`-pinned code path: buildOuterRangeSubqueryFanout's End comes from
-// subqueryAnchor(grid.outerSub, ctx), which for a LITERAL `@ <ts>` on the
+// `@`-pinned code path: the reducing fan-out's End comes from
+// subqueryAnchor(sub, ctx), which for a LITERAL `@ <ts>` on the
 // outer subquery bracket must resolve from the AST's own pinned
-// timestamp, never from the ambient LowerAt eval time. Lowered here at a
+// timestamp, never from the ambient LowerAt eval time. (The fan-out is
+// the single-level continuation's, not buildOuterRangeSubqueryFanout's —
+// see this file's header; the pin question is the same one either way.)
+// Lowered here at a
 // deliberately WRONG ambient anchor (evalTS+999h) with the correct
 // evalTS pinned via `@` in the query text — the results must be
 // byte-identical to TestSubqueryCallSubquery_HistAnd_LastOverTime_ChDB's
@@ -636,12 +664,13 @@ func TestSubqueryCallSubquery_MixedOr_LastOverTime_Pinned_ChDB(t *testing.T) {
 	}
 }
 
-// TestSubqueryCallSubquery_HistAnd_ResetsChanges_ChDB proves the
-// SELECT-family dispatch for resets / changes over a HistogramRowShape
-// wideInner (the `shape == chplan.HistogramRowShape` arm of
-// [lowerHistogramOrMixedCallSubqueryInput] — a DIFFERENT dispatch line
-// than TestSubqueryCallSubquery_MixedOr_ResetsChanges_ChDB's MixedRowShape
-// case). Every window holds exactly the two consecutive samples
+// TestSubqueryCallSubquery_HistAnd_ResetsChanges_ChDB pins the answer for
+// resets / changes over the pure-histogram `and` (single-level
+// continuation — see this file's header;
+// TestSubqueryCallSubquery_HistBinop_ResetsChanges_ChDB is the case that
+// reaches [lowerHistogramOrMixedCallSubqueryInput]'s
+// `shape == chplan.HistogramRowShape` arm).
+// Every window holds exactly the two consecutive samples
 // (T-1m, T), both from a monotonically increasing counter, so resets must
 // read exactly 0 and changes exactly 1 at every anchor.
 func TestSubqueryCallSubquery_HistAnd_ResetsChanges_ChDB(t *testing.T) {
