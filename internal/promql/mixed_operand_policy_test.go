@@ -197,9 +197,10 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			count++
 			key := mixedWrapperKey{family: family, site: site}
 			wantPolicy := mixedBespoke
-			if family == mixedMathFamily {
+			switch family {
+			case mixedMathFamily:
 				wantPolicy = mixedFloatOnly
-			} else if family == mixedLabelFamily {
+			case mixedLabelFamily:
 				wantPolicy = mixedPreserve
 			}
 			if got := mixedOperandPolicies[key]; got != wantPolicy {
