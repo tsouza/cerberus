@@ -168,29 +168,45 @@ func (r *corpusStringRows) Close() error                     { return nil }
 func (r *corpusStringRows) Err() error                       { return nil }
 
 // TestBuildCorpusSink_ThreadsTheDeploymentTopology pins the WIRING between
-// config and the corpus DDL — the seam both cerberus issue #3225 and #3241 were
-// lost in, and the one no test in internal/optcorpus can reach.
+// config and the corpus DDL — the seam cerberus issues #3225, #3241 and #3250
+// were all lost in, and the one no test in internal/optcorpus can reach.
 //
 // Every optcorpus test constructs a CorpusTableTopology by hand, so deleting
-// either field from buildCorpusSink's literal leaves that whole package green
+// any field from buildCorpusSink's literal leaves that whole package green
 // while a real deployment silently goes back to a table that exists on one node
-// (#3225) or holds rows on one replica (#3241). Only a test that starts from a
+// (#3225) or holds rows on one replica (#3241 on the Replicated-database path,
+// #3250 on the classic ON CLUSTER one). Only a test that starts from a
 // config.Config and reads the emitted statement closes that.
 //
-// The two cases are the two topologies the chart actually renders on the
-// SUPPORTED paths: the single-node default, and single-shard `replicas > 1`,
-// where the chart sets CERBERUS_SCHEMA_DATABASE_REPLICATED. The classic
-// ON CLUSTER + explicit-engine shape is cerberus issue #3250.
+// The four cases are the four topologies an operator can actually configure:
+// the single-node default; single-shard `replicas > 1`, where the chart sets
+// CERBERUS_SCHEMA_DATABASE_REPLICATED; a classic ON CLUSTER cluster whose
+// operator pinned a replicating CERBERUS_SCHEMA_TABLE_ENGINE, which the chart
+// renders under dataShards.count > 1 and an operator can configure by hand
+// against their own cluster; and a classic cluster with nothing to replicate
+// to, which must NOT be handed a Replicated engine.
+//
+// The replicating classic case also denies the operator's own expression: what
+// is threaded is the DECLARATION that this deployment replicates, never DDL, so
+// no part of the signal tables' Keeper path or engine family may appear in the
+// corpus statement.
 func TestBuildCorpusSink_ThreadsTheDeploymentTopology(t *testing.T) {
 	t.Parallel()
 
-	const clusterName = "bwc_cluster"
+	const (
+		clusterName = "bwc_cluster"
+		// classicReplicatedTableEngine is verbatim what the bundled chart
+		// renders into schema.TABLE_ENGINE for the SIGNAL tables on the classic
+		// ON CLUSTER path.
+		classicReplicatedTableEngine = "ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')"
+	)
 	for _, tc := range []struct {
-		name       string
-		cluster    string
-		replicated bool
-		want       []string
-		deny       []string
+		name        string
+		cluster     string
+		replicated  bool
+		tableEngine string
+		want        []string
+		deny        []string
 	}{
 		{
 			name: "single-node",
@@ -204,7 +220,18 @@ func TestBuildCorpusSink_ThreadsTheDeploymentTopology(t *testing.T) {
 			deny:       []string{"ON CLUSTER"},
 		},
 		{
-			name:    "classic-cluster",
+			name:        "classic-cluster-with-replicating-engine",
+			cluster:     clusterName,
+			tableEngine: classicReplicatedTableEngine,
+			want:        []string{"ON CLUSTER `" + clusterName + "`", "ENGINE = ReplicatedMergeTree"},
+			deny: []string{
+				"ENGINE = ReplicatedMergeTree(",
+				"/clickhouse/tables/",
+				"{replica}",
+			},
+		},
+		{
+			name:    "classic-cluster-without-replication",
 			cluster: clusterName,
 			want:    []string{"ON CLUSTER `" + clusterName + "`", "ENGINE = MergeTree"},
 			deny:    []string{"ENGINE = ReplicatedMergeTree"},
@@ -217,6 +244,7 @@ func TestBuildCorpusSink_ThreadsTheDeploymentTopology(t *testing.T) {
 			cfg.CHOptCorpus.SinkMode = corpusSinkModeCHTable
 			cfg.SchemaProvisioning.Cluster = tc.cluster
 			cfg.SchemaProvisioning.DatabaseReplicated = tc.replicated
+			cfg.SchemaProvisioning.TableEngine = tc.tableEngine
 
 			conn := &recordingCorpusConn{}
 			sink, _, ok := buildCorpusSink(context.Background(), discardLogger(), conn, cfg)

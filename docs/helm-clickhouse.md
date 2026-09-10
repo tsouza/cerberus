@@ -568,18 +568,23 @@ carve-out. Its table is provisioned by the corpus sink rather than by
 <CERBERUS_SCHEMA_CLUSTER>` on its own `CREATE` and `ALTER` statements — which
 the chart always sets under `dataShards.count > 1` — so the table exists on
 every node and an INSERT is correct wherever it lands. It also resolves its
-ENGINE from `CERBERUS_SCHEMA_DATABASE_REPLICATED`, so on the SUPPORTED
-single-shard `replicas > 1` path — where the chart makes `otel` a `Replicated`
-database — the corpus rows replicate instead of accumulating per replica
-(issue #3241).
+ENGINE from the two knobs that decide whether the SIGNAL tables replicate —
+`CERBERUS_SCHEMA_DATABASE_REPLICATED` on the single-shard `replicas > 1` path,
+where the chart makes `otel` a `Replicated` database, and
+`schema.TABLE_ENGINE` on the classic `ON CLUSTER` path, which is what
+`dataShards.count > 1` renders. Wherever either says this deployment
+replicates, the corpus table is created with a bare `ReplicatedMergeTree` and
+its rows replicate instead of accumulating per replica.
 
-Under `dataShards.count > 1` it does neither. The corpus gets no `Distributed`
-wrapper, so rows never leave the shard they were written on — that part IS this
-boundary, and it costs nothing on the query path, which never reads the corpus.
-But this combination is also the one where the chart leaves
-`CERBERUS_SCHEMA_DATABASE_REPLICATED` unset and gives the SIGNAL tables an
-explicit `ReplicatedMergeTree(...)` through `schema.TABLE_ENGINE` instead — a
-knob the corpus sink does not read. So with `replicas > 1` on top, the corpus
-table stays a plain `MergeTree` and accumulates per REPLICA as well as per
-shard, and nothing reports it. That half is a gap, not a boundary, and it is
-tracked in issue #3250.
+What the corpus never does is reuse `schema.TABLE_ENGINE`'s own expression. It
+reads that knob as a declaration and emits its own engine, because the
+expression's Keeper path belongs to the signal tables and its engine family was
+chosen for them — a `ReplacingMergeTree` pinned there would dedupe corpus rows
+by their sort key. The bare form needs no path of its own: the server derives
+one per table from `default_replica_path`.
+
+Under `dataShards.count > 1` one gap remains, and it IS this boundary rather
+than a defect. The corpus gets no `Distributed` wrapper, so rows never leave
+the shard they were written on — the same local/Distributed split that is
+base-signal-tables-only. It costs nothing on the query path, which never reads
+the corpus. Within each shard's replica set the corpus does replicate.

@@ -162,40 +162,26 @@ var reconciledEnumColumns = []reconciledEnumColumn{
 }
 
 // CorpusTableTopology is the ClickHouse deployment shape the corpus table has
-// to be provisioned for. Both fields are read from resolved knobs
+// to be provisioned for. Every field is read from a resolved knob
 // internal/schema/ddl already threads into every statement the auto-create hook
 // emits, rather than from a second, corpus-only notion of "what does this
 // cluster look like".
 //
-// It reads two of the THREE knobs that decide the signal tables' engine. The
-// third, SchemaProvisioning.TableEngine (CERBERUS_SCHEMA_TABLE_ENGINE), is how
-// a classic ON CLUSTER deployment supplies an explicit
-// `ReplicatedMergeTree('/path', '{replica}')` — a whole engine EXPRESSION,
-// which the typed chsql CreateTable builder has no way to carry and which
-// carries semantics chosen for a different table (a ReplacingMergeTree pinned
-// for the signal tables would silently dedupe corpus rows by their sort key).
-// So on that topology the corpus table is still a plain MergeTree and still
-// partitions per replica, and verifyTableEngine below is silent about it:
-// cerberus issue #3250, filed rather than guessed at here.
-//
-// The two fields answer two DIFFERENT questions, and getting one right does not
-// answer the other — that split is cerberus issues #3225 and #3241:
+// The fields answer two DIFFERENT questions, and getting one right does not
+// answer the other — that split is cerberus issues #3225, #3241 and #3250:
 //
 //   - Cluster answers WHERE THE TABLE EXISTS. It renders `ON CLUSTER <name>`
 //     into the CREATE and both ALTERs, so a classic distributed-DDL deployment
 //     gets the table on every node instead of on whichever one served this
 //     connection. Empty renders no clause at all.
-//   - DatabaseReplicated answers WHERE THE ROWS LIVE. A Replicated DATABASE
-//     replicates the DDL on its own (which is why such a deployment leaves
-//     Cluster empty — the two are mutually exclusive), but it does NOT convert
-//     a MergeTree into a ReplicatedMergeTree, so a plain-MergeTree corpus table
-//     is accepted inside one and every replica then holds only the rows written
-//     THROUGH it. The offline reader (internal/routerrules) issues an ordinary
-//     single-node SELECT, so a calibration run against such a deployment mines
-//     one replica's slice and reports it as the whole corpus. Setting this
-//     emits the bare ReplicatedMergeTree engine instead, the same engine
-//     internal/schema/ddl's own defaultTableEngine resolves for the signal
-//     tables under a Replicated database.
+//   - DatabaseReplicated and TableEngine answer WHERE THE ROWS LIVE, one per
+//     topology. Neither engine cerberus can be handed converts itself: a
+//     plain-MergeTree corpus table is ACCEPTED on a replicating deployment, and
+//     every replica then holds only the rows written THROUGH it. The offline
+//     reader (internal/routerrules) issues an ordinary single-node SELECT, so a
+//     calibration run against such a deployment mines one replica's slice and
+//     reports it as the whole corpus. replicates() is where the two are read as
+//     the one question they are.
 //
 // The zero value is the single-node default: no cluster clause, plain MergeTree.
 type CorpusTableTopology struct {
@@ -203,8 +189,69 @@ type CorpusTableTopology struct {
 	Cluster string
 
 	// DatabaseReplicated is CERBERUS_SCHEMA_DATABASE_REPLICATED
-	// (internal/schema/ddl DatabaseEngine.Replicated).
+	// (internal/schema/ddl DatabaseEngine.Replicated). A Replicated DATABASE
+	// replicates the DDL on its own, which is why such a deployment leaves
+	// Cluster empty — the two are mutually exclusive.
 	DatabaseReplicated bool
+
+	// TableEngine is CERBERUS_SCHEMA_TABLE_ENGINE (internal/schema/ddl
+	// Config.Engine): the engine EXPRESSION an operator pins for the SIGNAL
+	// tables, which on a classic ON CLUSTER cluster is how those tables
+	// replicate at all (typically
+	// `ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}',
+	// '{replica}')`, the form the chart's own dataShards.count > 1 template
+	// renders).
+	//
+	// It is read as a DECLARATION, never as DDL. The only thing asked of it is
+	// replicates()'s yes/no — does this deployment replicate its tables? — and
+	// its text never reaches a statement cerberus emits. That distinction is
+	// the whole design of cerberus issue #3250, and both halves of it matter:
+	//
+	//   - Splicing the expression in would need a raw-expression escape hatch
+	//     in the typed chsql builder (CLAUDE.md invariant 10), and it would
+	//     reuse another table's KEEPER COORDINATES: an operator path that
+	//     names a literal table rather than the `{table}` macro would point the
+	//     corpus table at a signal table's replica path.
+	//   - It would also inherit the FAMILY. A ReplacingMergeTree pinned for the
+	//     signal tables would silently dedupe corpus rows by
+	//     ORDER BY (shape_id, n_anchors, fanout) — collapsing the corpus to one
+	//     row per shape, a correctness loss strictly worse than the
+	//     partitioning being fixed.
+	//
+	// So the corpus resolves its OWN engine (see corpusTableEngine): the bare
+	// ReplicatedMergeTree, whose Keeper path comes from the server's
+	// default_replica_path (`/clickhouse/tables/{uuid}/{shard}` out of the box)
+	// and is therefore per-table by construction.
+	TableEngine string
+}
+
+// replicates reports whether this deployment replicates its tables, and so
+// whether the corpus table has to as well. The two knobs are two spellings of
+// one property — a Replicated database on the single-shard chart path, an
+// operator-pinned replicating engine on a classic ON CLUSTER cluster — and the
+// corpus needs the same answer from both, since the consequence of getting it
+// wrong (a per-replica slice mined as the whole corpus) is identical.
+//
+// A classic cluster with a non-replicating engine is a real, correct topology:
+// a multi-shard, single-replica deployment has nothing to replicate TO, and
+// emitting a Replicated engine there would demand a Keeper the deployment need
+// not have. So this asks what the operator DECLARED, not merely whether a
+// cluster name is set.
+func (t CorpusTableTopology) replicates() bool {
+	return t.DatabaseReplicated || engineReplicates(t.TableEngine)
+}
+
+// engineReplicates reports whether an operator-supplied engine EXPRESSION names
+// a DATA-replicating MergeTree-family engine, by the one property that decides
+// it: ClickHouse names every such engine with the Replicated prefix. Leading
+// whitespace is trimmed because a YAML-supplied value carries it; nothing else
+// is normalised, because ClickHouse engine names are case-SENSITIVE — a
+// `replicatedMergeTree` this accepted would be a CREATE the server rejects.
+//
+// An empty expression is the upstream default (a plain MergeTree), which does
+// not replicate.
+func engineReplicates(engine string) bool {
+	return strings.HasPrefix(strings.TrimSpace(engine), replicatedEngineFamilyPrefix)
 }
 
 // NewCHTableSink builds a CH-table sink over conn and reconciles the corpus
@@ -213,8 +260,8 @@ type CorpusTableTopology struct {
 //	CREATE TABLE IF NOT EXISTS   — makes the table on a fresh deployment.
 //	verify the ENGINE            — reads system.tables back and fails
 //	                               construction when the deployed engine cannot
-//	                               replicate on a deployment whose database
-//	                               does. First, because that verdict does not
+//	                               replicate on a deployment whose tables
+//	                               do. First, because that verdict does not
 //	                               depend on any column below it.
 //	ALTER TABLE ADD COLUMN       — appends each CorpusColumns() entry a table
 //	                               created by an older binary was made without.
@@ -557,9 +604,10 @@ func parseEnum8Value(rs []rune) (int64, int, bool) {
 //
 // The ENGINE is the other half, and it answers a different question than the
 // clause above: ON CLUSTER decides where the table EXISTS, the engine decides
-// where the ROWS live (see CorpusTableTopology). corpusTableEngine picks it from
-// the same DatabaseReplicated knob internal/schema/ddl resolves the signal
-// tables' engine from.
+// where the ROWS live (see CorpusTableTopology). corpusTableEngine reads it from
+// the same two knobs — CERBERUS_SCHEMA_DATABASE_REPLICATED and
+// CERBERUS_SCHEMA_TABLE_ENGINE — that decide whether the SIGNAL tables
+// replicate, so the corpus replicates exactly where they do.
 func corpusCreateTableSQL(topology CorpusTableTopology) string {
 	return chsql.CreateTable(CorpusTableName).
 		IfNotExists().
@@ -572,16 +620,33 @@ func corpusCreateTableSQL(topology CorpusTableTopology) string {
 }
 
 // corpusTableEngine resolves the corpus table's engine from the deployment
-// topology, mirroring internal/schema/ddl's own defaultTableEngine: the BARE
-// ReplicatedMergeTree under a Replicated database (which supplies the Keeper
-// coordinates itself, and rejects explicit engine arguments with code 36), the
-// plain MergeTree otherwise.
+// topology: the BARE ReplicatedMergeTree wherever the deployment replicates its
+// tables (see CorpusTableTopology.replicates), the plain MergeTree otherwise.
 //
 // Only a Replicated* engine replicates a table's DATA. Without this the corpus
-// is partitioned per replica on the SUPPORTED single-shard multi-replica path
-// and the offline calibration silently mines one replica's slice of it —
-// cerberus issue #3241, the exact defect internal/schema/ddl already carries
-// TestApply_ReplicatedDatabase for on the signal tables.
+// is partitioned per replica and the offline calibration silently mines one
+// replica's slice of it — cerberus issue #3241 on the Replicated-database path,
+// #3250 on the classic ON CLUSTER one; the exact defect internal/schema/ddl
+// already carries TestApply_ReplicatedDatabase for on the signal tables.
+//
+// ONE engine covers both replicating topologies, and the bare form is required
+// by one and sufficient for the other:
+//
+//   - Inside a Replicated database the arguments must be omitted — the
+//     database's own Replicated(...) coordinates supply the Keeper path and
+//     replica name, and explicit arguments are REJECTED with code 36.
+//   - On a classic ON CLUSTER cluster the arguments may be omitted, because the
+//     server resolves them from default_replica_path / default_replica_name,
+//     whose out-of-the-box values are `/clickhouse/tables/{uuid}/{shard}` and
+//     `{replica}`. An ON CLUSTER CREATE against an Atomic database assigns ONE
+//     table UUID across every node, so the replicas of the corpus table share a
+//     Keeper path and no other table can collide with it. That is why cerberus
+//     never needs the operator's own engine EXPRESSION here, only their
+//     declaration that this deployment replicates (see TableEngine).
+//
+// A deployment whose macros or default_replica_path cannot satisfy the bare
+// form fails at CREATE, which fails sink construction — loudly, with the
+// server's own error, rather than by quietly seeding a per-replica corpus.
 //
 // The policy is stated here rather than shared with internal/schema/ddl for two
 // reasons, neither of them the arch-lint edge (.go-arch-lint.yml forbids
@@ -589,24 +654,22 @@ func corpusCreateTableSQL(topology CorpusTableTopology) string {
 // chsql.DefaultTableEngine would clear that). First, the two do not actually
 // agree in the non-replicated case: ddl's default is upstream's `MergeTree()`
 // WITH parentheses, preserved because its rendered DDL is a committed golden,
-// while this builder emits the bare `MergeTree`. Second, the shared half — that
-// a Replicated database needs the BARE ReplicatedMergeTree and rejects explicit
-// arguments with code 36 — already lives in one place, chsql's own
-// EngineReplicatedMergeTree doc, which both call sites cite.
+// while this builder emits the bare `MergeTree`. Nor do they agree in the
+// replicated one — ddl SPLICES the operator's expression into upstream's
+// templates for the signal tables, which is precisely what the corpus must not
+// do. Second, the shared half — that a Replicated database needs the BARE
+// ReplicatedMergeTree and rejects explicit arguments with code 36 — already
+// lives in one place, chsql's own EngineReplicatedMergeTree doc, which both
+// call sites cite.
 //
-// Two topologies keep a partial corpus after this, and they are different
-// things. A multi-DATA-shard deployment (the EXPERIMENTAL
-// CERBERUS_CH_DATA_SHARDS > 1 path) holds a per-shard slice: this engine
-// replicates WITHIN a replica set, and the corpus gets no Distributed wrapper —
-// the deliberate boundary docs/helm-clickhouse.md states, the local/Distributed
-// split being base-signal-tables-only. A classic ON CLUSTER deployment whose
-// operator supplies an explicit replicating engine through
-// CERBERUS_SCHEMA_TABLE_ENGINE keeps a per-REPLICA slice, which is the #3241
-// defect itself surviving on a topology this change does not reach — cerberus
-// issue #3250. Neither is reached by the supported single-shard replicated
-// path, and nothing on the query path reads the corpus in any of them.
+// One topology keeps a partial corpus after this: a multi-DATA-shard deployment
+// (the EXPERIMENTAL CERBERUS_CH_DATA_SHARDS > 1 path) holds a per-shard slice,
+// because this engine replicates WITHIN a replica set and the corpus gets no
+// Distributed wrapper — the deliberate boundary docs/helm-clickhouse.md states,
+// the local/Distributed split being base-signal-tables-only. Nothing on the
+// query path reads the corpus.
 func corpusTableEngine(topology CorpusTableTopology) chsql.Frag {
-	if topology.DatabaseReplicated {
+	if topology.replicates() {
 		return chsql.EngineReplicatedMergeTree()
 	}
 	return chsql.EngineMergeTree()
@@ -619,44 +682,69 @@ func corpusTableEngine(topology CorpusTableTopology) chsql.Frag {
 // its rows", which is the property verifyTableEngine checks.
 const replicatedEngineFamilyPrefix = "Replicated"
 
+// envSchemaDatabaseReplicated and envSchemaTableEngine name the two
+// operator-facing knobs that can declare a deployment replicating. The
+// engine-mismatch error quotes whichever one applies, because an operator can
+// only act on the knob they actually set — being told about the other one on a
+// classic cluster is being told to look in the wrong place.
+//
+// They are spelled here rather than imported from internal/config, which
+// .go-arch-lint.yml gives optcorpus no edge to; internal/config's own
+// SchemaProvisioning doc is the counterpart, and CorpusTableTopology's fields
+// name the knobs they mirror.
+const (
+	envSchemaDatabaseReplicated = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
+	envSchemaTableEngine        = "CERBERUS_SCHEMA_TABLE_ENGINE"
+)
+
 // verifyTableEngine fails when the DEPLOYED engine cannot replicate the corpus
-// rows on a deployment whose database does. deployed is read back from
+// rows on a deployment whose tables do. deployed is read back from
 // system.tables — the server's own answer — because that is the only thing that
 // distinguishes a table this binary just created from one an older binary left
 // behind: `CREATE TABLE IF NOT EXISTS` is a no-op against an existing table
 // however its engine is declared, and no ALTER converts a MergeTree into a
 // ReplicatedMergeTree.
 //
+// This is the backstop, not the fix. corpusTableEngine makes a table cerberus
+// CREATES replicate on both replicating topologies; this catches the one case
+// that cannot reach — a table already deployed as a plain MergeTree, by an
+// older binary or by hand.
+//
 // Failing construction disables the reconciler (see cmd/cerberus's
-// buildCorpusSink), which is the honest outcome and the one cerberus issue
-// #3241 asks for: a corpus fitted to one replica's rows and reported as if it
-// were the whole corpus is worse than no corpus at all, because nothing in the
-// go/no-go analysis says which of the two it read. The data plane is untouched
-// either way. The message names the remediation, because there is exactly one:
-// the corpus is a 30-day rolling calibration sample (see corpusRetention), so
-// dropping the table and letting the next start recreate it costs at most that
-// window and nothing a query ever reads.
+// buildCorpusSink), which is the honest outcome and the one cerberus issues
+// #3241 and #3250 ask for: a corpus fitted to one replica's rows and reported
+// as if it were the whole corpus is worse than no corpus at all, because
+// nothing in the go/no-go analysis says which of the two it read. The data
+// plane is untouched either way. The message names the remediation, because
+// there is exactly one: the corpus is a 30-day rolling calibration sample (see
+// corpusRetention), so dropping the table and letting the next start recreate
+// it costs at most that window and nothing a query ever reads.
 func verifyTableEngine(deployed string, topology CorpusTableTopology) error {
-	// A deployment whose database does not replicate is not thereby a
-	// deployment whose ROWS do not need to: a classic ON CLUSTER cluster
-	// replicates through CERBERUS_SCHEMA_TABLE_ENGINE instead, which
-	// CorpusTableTopology does not carry, so this check is silent there.
-	// That silence is cerberus issue #3250, not an assertion that the corpus
-	// is complete.
-	if !topology.DatabaseReplicated {
+	if !topology.replicates() {
 		return nil
 	}
 	if strings.HasPrefix(deployed, replicatedEngineFamilyPrefix) {
 		return nil
 	}
+	// Which knob declared this deployment replicating decides both what the
+	// operator is pointed at and how the DROP propagates — a Replicated
+	// database carries it to every replica itself, a classic cluster needs the
+	// ON CLUSTER clause topology.Cluster renders. The remedy is built by the
+	// same typed DDL surface the CREATE is, so the cluster name comes back
+	// quoted rather than pasted.
+	declaredBy, propagation := envSchemaDatabaseReplicated,
+		"the Replicated database propagates the DROP itself; do not repeat it per replica"
+	if !topology.DatabaseReplicated {
+		declaredBy, propagation = envSchemaTableEngine,
+			"the ON CLUSTER clause carries the DROP to every node; do not repeat it per node"
+	}
+	drop := chsql.DropTable("", CorpusTableName).OnCluster(topology.Cluster).SQL()
 	return fmt.Errorf("optcorpus: deployed %s engine %q does not replicate its rows, but this deployment's "+
-		"database does (CERBERUS_SCHEMA_DATABASE_REPLICATED): each replica would hold only the rows written "+
-		"through it and the offline calibration would mine one replica's slice as if it were the whole corpus. "+
-		"A Replicated database does not convert a MergeTree, and no ALTER does either — DROP TABLE %s (the "+
-		"Replicated database propagates the DROP itself; do not repeat it per replica) and restart, which "+
-		"recreates it with the %sMergeTree engine (the corpus is a rolling %d-day sample, so nothing older "+
-		"than that is lost)",
-		CorpusTableName, deployed, CorpusTableName, replicatedEngineFamilyPrefix, corpusRetentionDays)
+		"tables do (%s): each replica would hold only the rows written through it and the offline calibration "+
+		"would mine one replica's slice as if it were the whole corpus. Nothing converts a deployed engine — "+
+		"not a Replicated database, not any ALTER — so run `%s` (%s) and restart, which recreates it with the "+
+		"%sMergeTree engine (the corpus is a rolling %d-day sample, so nothing older than that is lost)",
+		CorpusTableName, deployed, declaredBy, drop, propagation, replicatedEngineFamilyPrefix, corpusRetentionDays)
 }
 
 // readDeployedEngine reads the corpus table's DEPLOYED engine family name out of
