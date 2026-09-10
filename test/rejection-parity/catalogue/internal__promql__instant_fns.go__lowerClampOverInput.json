@@ -1,0 +1,72 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClampOverInput#dd15dfed",
+      "message": "promql: clamp expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces clamp's three-argument signature. lowerClamp forwards the original parsed call from lowerCall; lowerMathCall reaches this shared kernel only for the clamp family, and its direct mixed-root adapter additionally checks the call's arity in mathCallOverMixedExpHistogramSetOp. Neither path rewrites the argument slice, so a parsed clamp cannot reach this arity guard.",
+      "evidence": {
+        "guard": [
+          "case \"clamp\" of switch c.Func.Name",
+          "if len(c.Args) != 3"
+        ],
+        "callers": [
+          "lowerClamp",
+          "lowerMathCall"
+        ],
+        "cited": [
+          "lowerCall",
+          "lowerClamp",
+          "lowerMathCall",
+          "mathCallOverMixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClampOverInput#e15d3cf4",
+      "message": "promql: unknown clamp function %s",
+      "class": "internal",
+      "rationale": "The ordinary caller lowerClamp is selected by lowerCall only for clamp, clamp_min, or clamp_max. The shared dispatcher lowerMathCall invokes this kernel only from its explicit case for those same three names; its mixed-root input is checked by mathCallOverMixedExpHistogramSetOp. All three names are handled by the switch above, so the trailing unknown-function error requires an internally fabricated call, not a parsed query.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch c.Func.Name over [case \"clamp_max\", \"clamp_min\"; case \"clamp\"]"
+        ],
+        "callers": [
+          "lowerClamp",
+          "lowerMathCall"
+        ],
+        "cited": [
+          "lowerCall",
+          "lowerClamp",
+          "lowerMathCall",
+          "mathCallOverMixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClampOverInput#f69a3fbc",
+      "message": "promql: %s expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces the two-argument signatures of clamp_min and clamp_max. lowerClamp forwards the original parsed call from lowerCall, while the shared dispatcher lowerMathCall and its direct-root recognizer mathCallOverMixedExpHistogramSetOp preserve that call and validate this family's arity. Neither route changes the argument slice, so the two-argument guard cannot fail for a parsed query.",
+      "evidence": {
+        "guard": [
+          "case \"clamp_max\", \"clamp_min\" of switch c.Func.Name",
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerClamp",
+          "lowerMathCall"
+        ],
+        "cited": [
+          "lowerCall",
+          "lowerClamp",
+          "lowerMathCall",
+          "mathCallOverMixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}

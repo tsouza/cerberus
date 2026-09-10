@@ -5,7 +5,7 @@
       "site": "internal/promql/mixed_operand_policy.go:requireMixedBespokePolicy#efa3d4e1",
       "message": "promql: mixed operand is not admitted for %s at %s",
       "class": "internal",
-      "rationale": "This is a fail-closed registration invariant, not a rejection of an admitted query shape. lowerWithMixedOperandPolicy is invoked inside existing matched root/operand branches with explicit family/site constants; requireMixedPlanPolicy is invoked by existing mixed consumers with their real family. Every current pair is registered as bespoke in mixedOperandPolicies. The scalar/vector binary and aggregate family classifiers cover the operators their parser-checked dispatches can pass; their empty fallback represents an invalid internal operator, not a parseable route. Missing registrations and non-bespoke modes are exercised with synthetic calls or temporary table mutation in the authority tests. The production table has no external configuration or query-controlled entries, and ordinary float/histogram-only plans bypass this mixed-only check. A future caller or payload-mode migration must update this claim rather than silently treat a new wire rejection as internal.",
+      "rationale": "This is a fail-closed registration invariant for the callers still routed through the bespoke guard, not a semantic rejection of an admitted query shape. lowerWithMixedOperandPolicy uses explicit matched root/operand family-site pairs, and requireMixedPlanPolicy authorizes existing mixed consumers with their real family. Every production pair that reaches this guard with a Mixed input is registered as bespoke. Math is no longer such a pair: mathPayloadPreparation resolves its separate root and existing-plan mixedFloatOnly rows, and prepareMathValueInput narrows before the ordinary guarded projection reaches requireMixedPlanPolicy, which bypasses the resulting non-Mixed input. The binary and aggregate family classifiers cover their parser-checked operators; unknown internal operators, missing registrations, and unsupported modes are exercised only by synthetic calls or authority-test table mutation. The table is not query-controlled. Any new caller or payload-mode migration must re-verify these separate routing claims.",
       "evidence": {
         "guard": [
           "if policy != mixedBespoke"
@@ -16,6 +16,8 @@
         ],
         "cited": [
           "lowerWithMixedOperandPolicy",
+          "mathPayloadPreparation",
+          "prepareMathValueInput",
           "requireMixedPlanPolicy"
         ]
       }

@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_math_fn.go:mathPayloadPreparation#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "internal",
+      "rationale": "This is a fail-closed registration invariant, not a semantic rejection of a query. The production callers request only the math root and existing-plan sites, both registered as mixedFloatOnly in mixedOperandPolicies. lowerMathCallOverMixedExpHistogramSetOp authorizes the root before invoking its union loader; lowerMathOperand authorizes an already-lowered Mixed operand, and prepareMathValueInput applies the same registered handler when a value consumer needs it. The selected handler narrows float rows after union shadowing; a terminal literal-inverted clamp still checks authorization but does not consume payload. No query can modify the table or choose a different site or mode. Missing entries and unsupported modes are reachable only through internal misuse or authority-test table mutation; changing a production registration or caller requires re-verifying this claim.",
+      "evidence": {
+        "guard": [
+          "default of switch mixedOperandPolicies[key] over [case mixedFloatOnly; default]"
+        ],
+        "callers": [
+          "lowerMathOperand",
+          "prepareMixedMathOperand"
+        ],
+        "cited": [
+          "lowerMathCallOverMixedExpHistogramSetOp",
+          "lowerMathOperand",
+          "prepareMathValueInput"
+        ]
+      }
+    }
+  ]
+}

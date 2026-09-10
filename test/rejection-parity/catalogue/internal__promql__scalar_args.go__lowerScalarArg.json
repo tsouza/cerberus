@@ -5,7 +5,7 @@
       "site": "internal/promql/scalar_args.go:lowerScalarArg#29d3d126",
       "message": "promql: %s() is not a supported scalar argument",
       "class": "internal",
-      "rationale": "The parser's type checker admits only scalar() / time() / pi() as scalar-returning calls; pi() folds via TryFoldScalar before this dispatch, and the other two are handled — the arm guards future upstream scalar functions.",
+      "rationale": "The parser's type checker admits only scalar, time, and pi as scalar-returning calls. TryFoldScalar handles pi before this dispatch, and scalar and time have explicit cases. The shared lowerClampOverInput and lowerRoundToNearestBound callers forward the original parser-typechecked scalar bound arguments, as the separate math builders did; they do not admit vector-valued calls into this scalar position. Thus the trailing unsupported-call site is an internal guard against an unregistered scalar function, not a current wire rejection.",
       "evidence": {
         "guard": [
           "past returning if v, ok := TryFoldScalar(e); ok",
@@ -19,8 +19,7 @@
           "histogramFractionBound",
           "holtWintersFactors",
           "limitRatioPredicate",
-          "lowerClamp",
-          "lowerClampOverMixedExpHistogramSetOp",
+          "lowerClampOverInput",
           "lowerHistogramQuantile",
           "lowerHistogramQuantiles",
           "lowerPredictLinear",
@@ -37,7 +36,9 @@
           "wrapSubqueryQuantilePhiGuard"
         ],
         "cited": [
-          "TryFoldScalar"
+          "TryFoldScalar",
+          "lowerClampOverInput",
+          "lowerRoundToNearestBound"
         ]
       }
     },
@@ -46,7 +47,7 @@
       "site": "internal/promql/scalar_args.go:lowerScalarArg#7acf48a0",
       "message": "promql: unsupported scalar argument %T",
       "class": "internal",
-      "rationale": "The scalar-typed expression space is closed by the parser's type checker: literal trees fold, Paren/Unary/Binary recurse, and the three scalar-returning calls are handled — no parseable scalar argument reaches the default arm.",
+      "rationale": "The parser restricts this position to scalar-typed expressions: literal trees fold through TryFoldScalar, parentheses and unary/binary scalar expressions recurse, and the three scalar-returning calls are handled. Vector expressions occur only inside scalar and are sent to lowerScalarVectorArg instead. The shared lowerClampOverInput and lowerRoundToNearestBound kernels preserve these original typed bounds without constructing another AST variant, so their changed caller inventory does not create a parsed path to this final default.",
       "evidence": {
         "guard": [
           "past returning if v, ok := TryFoldScalar(e); ok",
@@ -59,8 +60,7 @@
           "histogramFractionBound",
           "holtWintersFactors",
           "limitRatioPredicate",
-          "lowerClamp",
-          "lowerClampOverMixedExpHistogramSetOp",
+          "lowerClampOverInput",
           "lowerHistogramQuantile",
           "lowerHistogramQuantiles",
           "lowerPredictLinear",
@@ -75,6 +75,12 @@
           "threadOuterRangeFnScalars",
           "wrapQuantilePhiGuard",
           "wrapSubqueryQuantilePhiGuard"
+        ],
+        "cited": [
+          "TryFoldScalar",
+          "lowerClampOverInput",
+          "lowerRoundToNearestBound",
+          "lowerScalarVectorArg"
         ]
       }
     },
@@ -83,7 +89,7 @@
       "site": "internal/promql/scalar_args.go:lowerScalarArg#a14c0271",
       "message": "promql: scalar() expects 1 argument, got %d",
       "class": "internal",
-      "rationale": "The PromQL parser enforces scalar()'s single-argument arity at parse time.",
+      "rationale": "The PromQL parser enforces scalar's single vector argument before lowering. Shared math kernels forward their original scalar-typed bound expressions unchanged; they do not create or alter scalar calls. Therefore this arity check remains an internal malformed-AST guard despite the consolidated caller inventory.",
       "evidence": {
         "guard": [
           "past returning if v, ok := TryFoldScalar(e); ok",
@@ -98,8 +104,7 @@
           "histogramFractionBound",
           "holtWintersFactors",
           "limitRatioPredicate",
-          "lowerClamp",
-          "lowerClampOverMixedExpHistogramSetOp",
+          "lowerClampOverInput",
           "lowerHistogramQuantile",
           "lowerHistogramQuantiles",
           "lowerPredictLinear",
