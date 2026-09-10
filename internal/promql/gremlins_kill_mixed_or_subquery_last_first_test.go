@@ -62,12 +62,12 @@ func TestLowerMixedOrSubqueryLastFirstInput_RangeModePinnedTakesBroadcast(t *tes
 
 // TestMixedLastFirstAggs_PickDirection kills the CONDITIONALS_NEGATION
 // mutant (`==` -> `!=`) at
-// histogram_native_mixed_or_subquery_last_first.go:`if windowFn == firstOverTimeWindowFn`, inside mixedLastFirstAggs:
+// histogram_native_mixed_or_subquery_last_first.go:`if windowFn == firstOverTimeWindowFn`, inside mixedLastFirstPick:
 //
-//	pick := latestArgMax
 //	if windowFn == firstOverTimeWindowFn {
-//	    pick = earliestArgMin
+//	    return earliestArgMin
 //	}
+//	return latestArgMax
 //
 // last_over_time must pick via argMax (latest); first_over_time must
 // pick via argMin (earliest) — the negation swaps both.
@@ -77,12 +77,12 @@ func TestMixedLastFirstAggs_PickDirection(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	histSchema := histogramProjectionSchema(s)
 
-	last := mixedLastFirstAggs(lastOverTimeWindowFn, histSchema)
+	last := mixedLastFirstSeriesKeyedAggs(lastOverTimeWindowFn, histSchema)
 	if last[0].Fn != chplan.FnArgMax {
 		t.Fatalf("last_over_time first agg Fn = %v, want FnArgMax (mutant `==`->`!=` at "+
 			"histogram_native_mixed_or_subquery_last_first.go:`if windowFn == firstOverTimeWindowFn`)", last[0].Fn)
 	}
-	first := mixedLastFirstAggs(firstOverTimeWindowFn, histSchema)
+	first := mixedLastFirstSeriesKeyedAggs(firstOverTimeWindowFn, histSchema)
 	if first[0].Fn != chplan.FnArgMin {
 		t.Fatalf("first_over_time first agg Fn = %v, want FnArgMin (mutant `==`->`!=` at "+
 			"histogram_native_mixed_or_subquery_last_first.go:`if windowFn == firstOverTimeWindowFn`)", first[0].Fn)

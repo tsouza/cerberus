@@ -847,6 +847,57 @@ func TestCreateTableAs(t *testing.T) {
 	}
 }
 
+// TestDropTable pins DropTableBuilder across the shapes internal/optcorpus
+// quotes as the engine-mismatch remedy: unqualified (the connection's own
+// database), database-qualified, and carrying the ON CLUSTER clause a classic
+// distributed-DDL deployment needs so the DROP reaches every node rather than
+// repairing one of N.
+//
+// The cluster name is asserted BACKTICK-QUOTED, including one that needs the
+// quotes. That is the whole reason this statement is built rather than
+// concatenated: the remedy is a statement an operator pastes, and an unquoted
+// name would come back as one they cannot run.
+func TestDropTable(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		database string
+		table    string
+		cluster  string
+		want     string
+	}{
+		{
+			name:  "unqualified",
+			table: "cerberus_router_corpus",
+			want:  "DROP TABLE cerberus_router_corpus",
+		},
+		{
+			name:     "database-qualified",
+			database: "otel",
+			table:    "cerberus_router_corpus",
+			want:     "DROP TABLE otel.cerberus_router_corpus",
+		},
+		{
+			name:    "on-cluster",
+			table:   "cerberus_router_corpus",
+			cluster: "bwc_cluster",
+			want:    "DROP TABLE cerberus_router_corpus ON CLUSTER `bwc_cluster`",
+		},
+		{
+			name:    "on-cluster-name-needing-quotes",
+			table:   "cerberus_router_corpus",
+			cluster: "prod cluster",
+			want:    "DROP TABLE cerberus_router_corpus ON CLUSTER `prod cluster`",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DropTable(tc.database, tc.table).OnCluster(tc.cluster).SQL()
+			if got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestEngineAggregatingMergeTree pins the bare AggregatingMergeTree /
 // ReplicatedAggregatingMergeTree engine clauses — no positional arguments,
 // mirroring EngineMergeTree / EngineReplicatedMergeTree.
