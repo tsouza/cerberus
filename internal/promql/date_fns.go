@@ -110,7 +110,9 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// same value projection this function's own non-mixed path builds
 	// below.
 	if b, ok := dateFnOverMixedExpHistogramSetOp(c, s, ctx); ok {
-		return lowerDateFnOverMixedExpHistogramSetOp(c, b, s, ctx)
+		return lowerWithMixedOperandPolicy(mixedDateFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerDateFnOverMixedExpHistogramSetOp(c, b, s, ctx)
+		})
 	}
 
 	// The argument is lowered under an ARGUMENT ctx rather than the caller's

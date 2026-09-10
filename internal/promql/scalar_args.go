@@ -207,7 +207,9 @@ func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 	// the histogram side is discarded entirely rather than merely
 	// dropped-then-counted.
 	if b, ok := scalarArgOverMixedExpHistogramSetOp(v, s, ctx); ok {
-		return lowerScalarArgOverMixedExpHistogramSetOp(b, s, ctx)
+		return lowerWithMixedOperandPolicy(mixedScalarFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerScalarArgOverMixedExpHistogramSetOp(b, s, ctx)
+		})
 	}
 	node, err := lower(v, s, ctx)
 	if err != nil {
@@ -227,6 +229,9 @@ func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 	// [mixedRowsFloatOnly] applies the identical "skip every H-set
 	// sample" narrowing [lowerScalarArgOverMixedExpHistogramSetOp] above
 	// gives the direct shape (cerberus issue #2611's own rule).
+	if err := requireMixedPlanPolicy(node, mixedScalarFamily); err != nil {
+		return nil, err
+	}
 	return mixedRowsFloatOnly(node), nil
 }
 

@@ -92,7 +92,9 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	// function's own enrichment pipeline independently is what that
 	// requires.
 	if b, ok := infoArgOverMixedExpHistogramSetOp(c.Args[0], s, ctx); ok {
-		return lowerInfoOverMixedExpHistogramSetOp(c, b, s, ctx)
+		return lowerWithMixedOperandPolicy(mixedInfoFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerInfoOverMixedExpHistogramSetOp(c, b, s, ctx)
+		})
 	}
 
 	// A histogram-valued base (a bare exponential-histogram selector,
@@ -133,6 +135,9 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return nil, err
 	}
 
+	if err := requireMixedPlanPolicy(base, mixedInfoFamily); err != nil {
+		return nil, err
+	}
 	nameMatchers, dataMatchers, err := infoSecondArgMatchers(c)
 	if err != nil {
 		return nil, err

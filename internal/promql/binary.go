@@ -149,6 +149,13 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 	if err != nil {
 		return nil, err
 	}
+	family := mixedVectorBinaryFamily(op)
+	if err := requireMixedPlanPolicy(left, family); err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(right, family); err != nil {
+		return nil, err
+	}
 
 	// Synthetic-scalar fold: when BOTH legs lower to the canonical
 	// 4-slot synthetic-vector shape ([syntheticScalarVector]), the
@@ -553,11 +560,11 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
-	left, err := lowerVectorSetOpOperand(b.LHS, s, ctx)
+	left, err := lowerVectorSetOpOperand(b.LHS, s, ctx, mixedSetOperandFamily)
 	if err != nil {
 		return nil, err
 	}
-	right, err := lowerVectorSetOpOperand(b.RHS, s, ctx)
+	right, err := lowerVectorSetOpOperand(b.RHS, s, ctx, mixedSetOperandFamily)
 	if err != nil {
 		return nil, err
 	}
@@ -838,6 +845,9 @@ func lowerVectorVectorOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool, ctx lowerCtx) (chplan.Node, error) {
 	inner, err := lowerScalarBinopOperand(vec, s, ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(inner, mixedScalarBinaryFamily(op, scalarOnLeft)); err != nil {
 		return nil, err
 	}
 	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}

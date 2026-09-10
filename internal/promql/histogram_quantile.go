@@ -320,6 +320,9 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		if err != nil {
 			return nil, err
 		}
+		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily); err != nil {
+			return nil, err
+		}
 		return &chplan.Filter{
 			Input:     inner,
 			Predicate: &chplan.LitBool{V: false},
@@ -1910,7 +1913,9 @@ func lowerHistogramQuantileHistogramValuedArg(
 		if !ok {
 			return nil, false, nil
 		}
-		hist, err = lowerMixedOrHistogramValuedArg(b, s, ctx)
+		hist, err = lowerWithMixedOperandPolicy(mixedHistogramValueFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerMixedOrHistogramValuedArg(b, s, ctx)
+		})
 	}
 	if err != nil {
 		return nil, true, err
