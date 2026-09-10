@@ -29,3 +29,19 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND not(arrayExist
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{job="api"} != ip("10.0.0.1-10.0.0.3")` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args_optimized --
+[0] string = "job"
+[1] string = "api"
+[2] string = "10.0.0.1"
+[3] string = "10.0.0.3"
+[4] int64 = 0
+[5] string = "[0-9.]+"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND not(arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4(?)) AND (toIPv4OrNull(_cerb_ip) <= toIPv4(?))), ?), extractAll(`Body`, ?)))

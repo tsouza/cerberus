@@ -49,3 +49,14 @@ RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value group
       StepGrid start=2025-12-31T23:56:00.000000000Z end=2026-01-01T00:00:00.000000000Z step=1m0s
 -- sql --
 SELECT `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2025-12-31 23:56:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`))) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] float64 = 1
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw;sg
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+-- sql_optimized --
+SELECT `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2025-12-31 23:56:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`))) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`

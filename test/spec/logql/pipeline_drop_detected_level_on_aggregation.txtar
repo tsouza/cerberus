@@ -31,3 +31,17 @@ SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(
 -- parity_exempt --
 reason: structured-metadata-unobservable
 detail: seed populates SeverityText (INFO), which upstream's in-process querier discards before the pipeline runs, so `count_over_time({job="api"} | drop detected_level [5m])` would be answered over different data on the two sides
+-- args_optimized --
+[0] string = "detected_level"
+[1] int64 = 1
+[2] string = "job"
+[3] string = "api"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapFilter((k, v) -> not((k = ?)), `ResourceAttributes`)) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`

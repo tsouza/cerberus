@@ -22,3 +22,13 @@ SELECT CAST(map(), ?) AS `ResourceAttributes`, toFloat64(?) AS `Value` FROM (SEL
 oracle: loki
 endpoint: /api/v1/query
 scope: full
+-- args_optimized --
+[0] string = "Map(String,String)"
+[1] float64 = 42
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+-- sql_optimized --
+SELECT CAST(map(), ?) AS `ResourceAttributes`, toFloat64(?) AS `Value` FROM (SELECT 1)

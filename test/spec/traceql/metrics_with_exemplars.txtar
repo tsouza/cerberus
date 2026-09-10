@@ -29,3 +29,16 @@ MetricsAggregate op=count_over_time groupBy=[ResourceAttributes["service.name"] 
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | count_over_time() by (resource.service.name)` projects a per-trace aggregate rather than a spanset, so it carries no span identity for runTempoParity's WHICH-SPANS-MATCHED comparison
+-- args_optimized --
+[0] string = "service.name"
+[1] int64 = 1
+[2] bool = true
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:node
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT `ResourceAttributes` FROM `otel_traces` WHERE ?) GROUP BY `service.name`

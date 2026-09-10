@@ -107,3 +107,47 @@ Project [MetricName, Attributes, TimeUnix, Value]
                 Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
 SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, any(`Value`) AS `Value`, any(`TimeUnix`) AS `TimeUnix` FROM (SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, concat(?, arrayFirst((x, p) -> p != ?, [extractGroups(`Attributes`[?], ?)[?], extractGroups(`Attributes`[?], ?)[?]], [extractGroups(`Attributes`[?], ?)[?], extractGroups(`Attributes`[?], ?)[?]]))))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))) GROUP BY `Attributes`, `MetricName` HAVING (throwIf((count() > ?), 'vector cannot contain metrics with the same labelset') = ?))
+-- args_optimized --
+[0] string = "host"
+[1] string = "^(?s:(?:web-(?P<dup>[a-z]*)-)?(?P<dup>[0-9]+))$"
+[2] string = "service"
+[3] string = "host"
+[4] string = "svc-"
+[5] string = "svc-"
+[6] string = ""
+[7] string = "host"
+[8] string = "^(?s:(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+))$"
+[9] int64 = 2
+[10] string = "host"
+[11] string = "^(?s:(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+))$"
+[12] int64 = 3
+[13] string = "host"
+[14] string = "^(?s:(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+))$"
+[15] int64 = 1
+[16] string = "host"
+[17] string = "^(?s:(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+))$"
+[18] int64 = 3
+[19] string = "service_name"
+[20] string = "service.name"
+[21] string = "service_name"
+[22] string = "service.name"
+[23] string = "service_name"
+[24] string = ""
+[25] string = "service_name"
+[26] string = "temperature"
+[27] string = "2026-01-01 00:00:01.000000000"
+[28] int64 = 9
+[29] string = "2026-01-01 00:00:01.000000000"
+[30] int64 = 9
+[31] int64 = 300000000000
+[32] int64 = 1
+[33] int64 = 0
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=2;union
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, any(`Value`) AS `Value`, any(`TimeUnix`) AS `TimeUnix` FROM (SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, concat(?, arrayFirst((x, p) -> p != ?, [extractGroups(`Attributes`[?], ?)[?], extractGroups(`Attributes`[?], ?)[?]], [extractGroups(`Attributes`[?], ?)[?], extractGroups(`Attributes`[?], ?)[?]]))))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))) GROUP BY `Attributes`, `MetricName` HAVING (throwIf((count() > ?), 'vector cannot contain metrics with the same labelset') = ?))

@@ -32,3 +32,18 @@ MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | rate() by (resource.service.name, span.kind, span.http.method)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
+-- args_optimized --
+[0] string = "service.name"
+[1] string = "kind"
+[2] string = "http.method"
+[3] int64 = 1
+[4] bool = true
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:node
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `kind`, `SpanAttributes`[?] AS `http.method`, toFloat64(count(?)) AS `Value` FROM (SELECT `ResourceAttributes`, `SpanAttributes` FROM `otel_traces` WHERE ?) GROUP BY `service.name`, `kind`, `http.method`

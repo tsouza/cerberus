@@ -61,3 +61,51 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(mapCon
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{job="api"} | logfmt | addr = ip("192.168.0.0/16")` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args_optimized --
+[0] string = "job"
+[1] string = "api"
+[2] string = "_extracted"
+[3] int64 = 1
+[4] int64 = 1
+[5] string = "="
+[6] string = " "
+[7] string = "\""
+[8] string = "Array(Tuple(String,String))"
+[9] string = "Array(Tuple(String,String))"
+[10] string = "Map(String,String)"
+[11] string = "__error__"
+[12] bool = true
+[13] string = "_extracted"
+[14] int64 = 1
+[15] int64 = 1
+[16] string = "="
+[17] string = " "
+[18] string = "\""
+[19] string = "Array(Tuple(String,String))"
+[20] string = "Array(Tuple(String,String))"
+[21] string = "Map(String,String)"
+[22] string = "addr"
+[23] bool = false
+[24] string = "192.168.0.0"
+[25] string = "192.168.255.255"
+[26] int64 = 0
+[27] string = "_extracted"
+[28] int64 = 1
+[29] int64 = 1
+[30] string = "="
+[31] string = " "
+[32] string = "\""
+[33] string = "Array(Tuple(String,String))"
+[34] string = "Array(Tuple(String,String))"
+[35] string = "Map(String,String)"
+[36] string = "addr"
+[37] string = "[0-9.]+"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), ?, not(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?)), ?, arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4(?)) AND (toIPv4OrNull(_cerb_ip) <= toIPv4(?))), ?), extractAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], ?)))

@@ -38,3 +38,31 @@ SELECT coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), 
 Project [FnCoalesce(FnNullIf(Attributes["region"], ""), FnNullIf(ResourceAttributes["region"], ""), "") AS value]
   Filter predicate=((((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "api") AND (MetricName IN ("requests_total", "requests.total", "requests/total"))) AND (TimeUnix >= FnToDateTime64("1970-01-01 00:01:40.000000000", 9))) AND (TimeUnix <= FnToDateTime64("1970-01-01 00:08:20.000000000", 9)))
     Scan(otel_metrics_sum)
+-- args_optimized --
+[0] string = "region"
+[1] string = ""
+[2] string = "region"
+[3] string = ""
+[4] string = ""
+[5] string = "requests_total"
+[6] string = "requests.total"
+[7] string = "requests/total"
+[8] string = "job"
+[9] string = ""
+[10] string = "job"
+[11] string = ""
+[12] string = ""
+[13] string = "api"
+[14] string = "1970-01-01 00:01:40.000000000"
+[15] int64 = 9
+[16] string = "1970-01-01 00:08:20.000000000"
+[17] int64 = 9
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `TimeUnix` FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))

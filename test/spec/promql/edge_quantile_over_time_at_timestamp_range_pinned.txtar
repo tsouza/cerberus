@@ -74,3 +74,37 @@ SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS 
   [{"job": "api"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 20],
   [{"job": "api"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 20]
 ]
+-- args_optimized --
+[0] float64 = 0.5
+[1] float64 = 0.5
+[2] float64 = 0.5
+[3] float64 = 0.5
+[4] float64 = 0.5
+[5] float64 = 0.5
+[6] float64 = 0.5
+[7] float64 = 0.5
+[8] float64 = 0.5
+[9] string = "service_name"
+[10] string = "service.name"
+[11] string = "service_name"
+[12] string = "service.name"
+[13] string = "service_name"
+[14] string = ""
+[15] string = "service_name"
+[16] string = "http_requests_total"
+[17] string = "http.requests.total"
+[18] string = "http.requests/total"
+[19] string = "http.requests_total"
+[20] string = "http/requests/total"
+[21] string = "http/requests_total"
+[22] string = "http_requests.total"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;rw;sg;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, multiIf(isNaN(toFloat64(?)), nan, toFloat64(?) < 0, (-1.0/0), toFloat64(?) > 1, (1.0/0), arraySort(window_vals)[toUInt32(floor((toFloat64(?) * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((toFloat64(?) * toFloat64(length(window_vals) - 1)) - floor((toFloat64(?) * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((toFloat64(?) * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((toFloat64(?) * toFloat64(length(window_vals) - 1)) - floor((toFloat64(?) * toFloat64(length(window_vals) - 1))))) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:00.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS `series_array` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1) AS R)

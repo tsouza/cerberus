@@ -315,18 +315,13 @@ func TestLowerClamp_MixedBoundsTakeComputedPath(t *testing.T) {
 	}
 }
 
-// TestFoldBinaryScalar_DivByZeroNegativeBranches pins the `<` boundary
-// at scalar.go:foldBinaryScalar:`if lhs < 0` in its DIV case. That
-// branch returns -Inf for any strictly-negative LHS divided by zero. The
-// sibling `if lhs == 0` branch just above it already handles the 0/0 case
-// (NaN), and the fall-through returns +Inf. A boundary mutant would
-// either misclassify the lhs=0 case (already caught earlier in the
-// switch) or shift the negative/positive split — pinning two opposite
-// signs catches both.
+// TestFoldBinaryScalar_DivByZeroNegativeBranches checks signed infinities
+// and NaN for division by positive zero through the public folding surface.
+// TestTryFoldScalarDivisionIEEE754 also covers negative zero and NaN inputs.
 //
 // Driven via TryFoldScalar on `(-1) / 0` (parses as
 // BinaryExpr{UnaryExpr{NumberLiteral{1}}, DIV, NumberLiteral{0}}) so
-// the kill ties to the public surface.
+// the assertions exercise the public surface.
 func TestFoldBinaryScalar_DivByZeroNegativeBranches(t *testing.T) {
 	t.Parallel()
 

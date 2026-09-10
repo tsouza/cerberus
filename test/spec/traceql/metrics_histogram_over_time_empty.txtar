@@ -28,3 +28,16 @@ MetricsHistogramOverTime attr=Duration duration=true bucketAlias=__bucket valueA
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{ resource.service.name = "frontend" } | histogram_over_time(duration)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
+-- args_optimized --
+[0] int64 = 1
+[1] string = "service.name"
+[2] string = "frontend"
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:node
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT pow(2, ceil(log2(toFloat64(`Duration`)))) / 1000000000 AS `__bucket`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) WHERE `Duration` >= 2 GROUP BY `__bucket`
