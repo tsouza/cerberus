@@ -599,6 +599,68 @@ func (c *CreateTableBuilder) SQL() string {
 	return RenderDDL(c.frag())
 }
 
+// --- DROP TABLE surface ---
+//
+// DropTableBuilder renders `DROP TABLE [<db>.]<table> [ON CLUSTER x]`.
+//
+// Cerberus never drops a table on its own: dropping data is an OPERATOR
+// decision, and no cerberus code path issues this statement. It exists so a
+// remedy cerberus PRINTS is rendered by the same typed surface that renders
+// the statements cerberus RUNS — internal/optcorpus's engine-mismatch error
+// tells an operator to drop the corpus table, and on a classic ON CLUSTER
+// deployment that statement needs the cluster clause or it repairs one node
+// out of N. Composing that sentence with `+` would also hand back an unquoted
+// cluster name, which breaks on exactly the names OnCluster's backtick-quoting
+// exists for.
+
+// DropTableBuilder builds a DROP TABLE statement.
+type DropTableBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	cluster  string // "" => no ON CLUSTER clause
+}
+
+// DropTable starts a DROP TABLE builder for [<database>.]<table>. An empty
+// database emits no qualifier, so a table the connection's own database owns is
+// referenced bare — the same convention CreateTable and AlterTableAddColumn
+// follow.
+func DropTable(database, table string) *DropTableBuilder {
+	return &DropTableBuilder{database: database, table: table}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the DROP reaches every node of
+// a classic distributed-DDL deployment, the way the CREATE that made the table
+// did. A Replicated database propagates the DROP itself and needs no clause; an
+// empty name (the default) leaves it off.
+func (d *DropTableBuilder) OnCluster(name string) *DropTableBuilder {
+	d.cluster = name
+	return d
+}
+
+// frag assembles the statement from typed pieces — keyword tokens via ddlToken,
+// bare database/table identifiers via BareIdent, the optional ON CLUSTER clause
+// via the typed constructor. No raw token is written here.
+func (d *DropTableBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("DROP TABLE ")(b)
+		if d.database != "" {
+			BareIdent(d.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(d.table)(b)
+		if d.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(d.cluster)(b)
+		}
+	}
+}
+
+// SQL renders the DROP TABLE statement to ClickHouse text via RenderDDL (which
+// asserts the no-positional-bindings DDL invariant).
+func (d *DropTableBuilder) SQL() string {
+	return RenderDDL(d.frag())
+}
+
 // --- ALTER TABLE ... ADD PROJECTION surface ---
 //
 // AddProjectionBuilder renders `ALTER TABLE <db>.<table> ADD PROJECTION IF

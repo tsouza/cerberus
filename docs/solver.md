@@ -1389,26 +1389,33 @@ To answer it the engine closes the loop the optimization corpus
   into a `ReplicatedMergeTree` — the plain engine is accepted, and each replica
   then holds only the rows written through it, while the offline reader's
   ordinary single-node `SELECT` mines that one slice as if it were the whole
-  corpus. So the sink emits the bare `ReplicatedMergeTree` whenever
-  `CERBERUS_SCHEMA_DATABASE_REPLICATED` is set — the same engine
-  `internal/schema/ddl` resolves for the signal tables under a `Replicated`
-  database — and the plain `MergeTree` otherwise. Because `CREATE … IF NOT
-  EXISTS` is a no-op against a table an older binary already created, and no
-  `ALTER` converts an engine, construction also reads the DEPLOYED engine back
-  from `system.tables` and **fails** on a replicated deployment whose corpus
-  table cannot replicate, naming the one remedy: drop it and let the next start
-  recreate it (the corpus is a rolling 30-day sample).
-- **What that does NOT cover.** The sink reads two of the three knobs that
-  decide the signal tables' engine; the third,
-  `CERBERUS_SCHEMA_TABLE_ENGINE`, is how a classic `ON CLUSTER` deployment
-  supplies an explicit `ReplicatedMergeTree('/path', '{replica}')`. It is a
-  whole engine EXPRESSION, which the typed `chsql` builder cannot carry and
-  whose semantics were chosen for a different table, so the corpus table stays a
-  plain `MergeTree` there and the verify above is silent — the #3241 defect
-  surviving on a topology this does not reach, tracked in issue #3250. A
-  multi-DATA-shard deployment additionally holds a per-shard slice, since the
-  corpus gets no `Distributed` wrapper, by the same permanent boundary
-  `docs/helm-clickhouse.md` states for the auxiliary tables.
+  corpus. So the sink emits the bare `ReplicatedMergeTree` wherever the
+  deployment replicates its tables, and the plain `MergeTree` otherwise. Two
+  knobs say so, one per topology: `CERBERUS_SCHEMA_DATABASE_REPLICATED` under a
+  `Replicated` database, and a replicating `CERBERUS_SCHEMA_TABLE_ENGINE` on a
+  classic `ON CLUSTER` cluster. One engine serves both — the bare form is
+  REQUIRED inside a `Replicated` database (explicit arguments are rejected with
+  `code 36`) and SUFFICIENT on a classic cluster, where the server resolves the
+  Keeper path from `default_replica_path` (`/clickhouse/tables/{uuid}/{shard}`
+  out of the box) and an `ON CLUSTER` `CREATE` gives every node the same table
+  UUID. Because `CREATE … IF NOT EXISTS` is a no-op against a table an older
+  binary already created, and no `ALTER` converts an engine, construction also
+  reads the DEPLOYED engine back from `system.tables` and **fails** on a
+  replicating deployment whose corpus table cannot replicate, naming the one
+  remedy: drop it (with the cluster clause, where there is one) and let the
+  next start recreate it — the corpus is a rolling 30-day sample.
+- **`CERBERUS_SCHEMA_TABLE_ENGINE` is read as a declaration, never as DDL.**
+  Cerberus asks it one question — does this deployment replicate its tables? —
+  and emits its own typed engine. Threading the operator's expression into the
+  corpus statement would reuse the SIGNAL tables' Keeper coordinates, which
+  collide with them whenever that path names a literal table rather than the
+  `{table}` macro, and it would inherit their engine FAMILY: a
+  `ReplacingMergeTree` pinned for the signal tables would silently dedupe
+  corpus rows by `ORDER BY (shape_id, n_anchors, fanout)`.
+- **What that does NOT cover.** A multi-DATA-shard deployment holds a per-shard
+  slice, since the corpus gets no `Distributed` wrapper, by the same permanent
+  boundary `docs/helm-clickhouse.md` states for the auxiliary tables. Within
+  each shard's replica set it does replicate.
 - **A sink that cannot be built disables the reconciler**, logged at startup
   with the underlying error; it does not silently switch modes. There is no
   fallback from `chtable` to `jsonl` — an operator who asked for the CH table

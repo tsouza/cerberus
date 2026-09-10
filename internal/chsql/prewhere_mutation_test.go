@@ -134,27 +134,89 @@ func TestSortRankForMinimum(t *testing.T) {
 	}
 }
 
+// TestCollectColumnRefsMaterializedFieldAccess defends the materialized-column
+// branch of collectColumnRefs' FieldAccess arm
+// (prewhere.go:`if v.MaterializedColumn != ""`).
+//
+// Mutation CONDITIONALS_NEGATION inverts it to `== ""`, which swaps the two
+// arms: a materialized attribute reference then records the empty string and
+// walks the wide Source map instead of the narrow column the emitter actually
+// reads, and an UNmaterialized one records the empty string instead of walking
+// Source at all. Both directions change what classifyPredicate reports, and
+// therefore whether the predicate is PREWHERE-eligible — a materialized
+// FieldAccess over a wide map would be judged wide-touching and demoted to
+// WHERE, which is precisely the pushdown this arm exists to enable. Both
+// shapes are asserted because either alone leaves half the swap unpinned.
+func TestCollectColumnRefsMaterializedFieldAccess(t *testing.T) {
+	t.Parallel()
+	shape := TableShape{WideColumns: []string{"SpanAttributes"}}
+
+	materialized := &chplan.FieldAccess{
+		Source:             &chplan.ColumnRef{Name: "SpanAttributes"},
+		Path:               "http.status_code",
+		MaterializedColumn: "HttpStatusCode",
+	}
+	cols, _, wide := classifyPredicate(materialized, shape)
+	if len(cols) != 1 || cols[0] != "HttpStatusCode" {
+		t.Errorf("classifyPredicate(materialized FieldAccess) cols = %v, want [HttpStatusCode]", cols)
+	}
+	if wide {
+		t.Errorf("classifyPredicate(materialized FieldAccess) touchesWide = true; the narrow column is what the emitter reads")
+	}
+
+	unmaterialized := &chplan.FieldAccess{
+		Source: &chplan.ColumnRef{Name: "SpanAttributes"},
+		Path:   "http.status_code",
+	}
+	cols, _, wide = classifyPredicate(unmaterialized, shape)
+	if len(cols) != 1 || cols[0] != "SpanAttributes" {
+		t.Errorf("classifyPredicate(unmaterialized FieldAccess) cols = %v, want [SpanAttributes]", cols)
+	}
+	if !wide {
+		t.Errorf("classifyPredicate(unmaterialized FieldAccess) touchesWide = false; it reads the wide map")
+	}
+}
+
 // TestIsNarrowIntegerDiscriminatorFinalReturnLogical defends
 // isNarrowIntegerDiscriminator's final return
 // (prewhere.go:`columnOK && literalOK`): the chain
 // `columnOK && literalOK && column.Qualifier == "" && shape.IsInteger...
 // && sortRankFor(...) < 0`.
 //
-// Mutation INVERT_LOGICAL turns the FIRST `&&` (between columnOK and
-// literalOK) into `||`. Go's `&&` binds tighter than `||`, so the mutant
-// parses as `columnOK || (literalOK && qualifier=="" && isDiscriminator &&
-// rank<0)`: any predicate whose left/right operand resolves to a bare
-// ColumnRef — columnOK true — would report true regardless of whether the
-// OTHER operand is even an integer literal. We feed a column-to-column
-// equality (`ServiceName = OtherCol`): columnOK becomes true (one side is a
-// ColumnRef) but literalOK is false (neither side is a LitInt), so the
-// correct answer is false. The `||` mutant would return true.
+// Mutation INVERT_LOGICAL turns the FIRST `&&` into `||`. gremlins mutates the
+// AST and re-prints with go/printer, so the mutant is
+// `(columnOK || literalOK) && column.Qualifier == "" && …` — the OR is
+// re-parenthesised to preserve the tree, NOT the `columnOK || (literalOK &&
+// …)` a reader gets by retyping the operator in the source (cerberus issue
+// #3215 is the worked example of that mistake, and this test was one of its
+// victims: its first cut fed `ServiceName = OtherCol` with only ServiceName
+// registered as a discriminator, which the real mutant also answers false for,
+// because after the swap guard `column` is OtherCol and
+// IsIntegerDiscriminatorColumn rejects it).
+//
+// The discriminating input is a column-to-column equality whose RIGHT operand
+// is the registered discriminator. The swap guard then leaves columnOK true
+// (Right is a ColumnRef) and literalOK false (Left is not a LitInt), and the
+// rest of the chain holds, so the original's `&&` answers false while the
+// mutant's `||` answers true.
 func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{
 		WideColumns:                 []string{"Body"},
 		IntegerDiscriminatorColumns: []string{"ServiceName"},
 	}
+	// columnOK true, literalOK false, and the surviving `column` IS the
+	// registered discriminator: the `||` mutant reports true here.
+	colEqDiscriminator := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "OtherCol"},
+		Right: &chplan.ColumnRef{Name: "ServiceName"},
+	}
+	if isNarrowIntegerDiscriminator(colEqDiscriminator, shape) {
+		t.Errorf("isNarrowIntegerDiscriminator(OtherCol = ServiceName) = true, want false (neither operand is a LitInt)")
+	}
+
+	// The mirror orientation, which the original also rejects.
 	colEqCol := &chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  &chplan.ColumnRef{Name: "ServiceName"},
@@ -175,23 +237,6 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 	}
 }
 
-// CI-TIMING NOISE, not a test gap — cerberus issue #2741.
-//
-// prewhere.go:`columnOK && literalOK` (INVERT_LOGICAL, the same mutation
-// TestIsNarrowIntegerDiscriminatorFinalReturnLogical above defends) showed
-// LIVED on the v1.19.0 release-gate's phase2-other run despite this test
-// existing and being correct. Reproduced locally per cerberus issue #2730's
-// precedent (manual mutation-and-revert, no CI resource contention): apply
-// exactly this mutation by hand (`columnOK && literalOK` →
-// `columnOK || literalOK`) and `go test -run
-// '^TestIsNarrowIntegerDiscriminatorFinalReturnLogical$' ./internal/chsql/`
-// fails as expected; revert and it passes. #2730 root-caused this exact
-// class for phase4-promql-h: an unrelated flaky test elsewhere in the same
-// whole-package `go test` run can corrupt gremlins' exit-code read for an
-// otherwise-correctly-killed mutant. No code or test change follows from
-// this — the fix is the documentation trail so the next occurrence isn't
-// re-investigated from scratch.
-//
 // NOT KILLABLE — documented, not defended by a test.
 //
 // The INVERT_LOOPCTRL mutants of the three terminal `break`s in prewhere.go.

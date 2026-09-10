@@ -28,13 +28,21 @@ import (
 // and the Tempo head answers it with 400 and the reference backend's own
 // wording, exactly as the reference does.
 //
-// Two of the reference's rules are deliberately NOT adopted, because
-// cerberus answers queries the reference declines rather than mirroring
-// the rejection (see #2035):
-//   - UnaryOperation's `intrinsic = nil` rejection — `{ kind != nil }` is
-//     in cerberus's own corpus and lowers to a real predicate.
-//   - Attribute's parent-scope unsupported-error — `{ parent = "<hex>" }`
-//     lowers against ParentSpanId.
+// One of the reference's rules is deliberately NOT adopted, because
+// cerberus answers a query the reference declines rather than mirroring
+// the rejection (see #2035): Attribute's parent-scope unsupported-error —
+// `{ parent = "<hex>" }` lowers against ParentSpanId.
+//
+// UnaryOperation's `<x> = nil` rejection used to be listed beside it, on
+// the grounds that `{ kind != nil }` is in cerberus's own corpus and
+// lowers to a real predicate. That reasoning never supported the
+// conclusion: the reference's guard is `o.Op == OpNotExists` alone, so
+// `!= nil` (OpExists) was never within the rule's reach and adopting it
+// costs `{ kind != nil }` nothing. The rule was in fact enforced all
+// along, one stage too late — in the lowering, whose errors the Tempo
+// head answers 422 (internal/api/tempo/errclass.go's ErrClassLower)
+// where the reference answers 400. validateNilComparison below now
+// applies it here, in the stage the reference applies it in (#3260).
 
 // typeMismatchFormat reproduces the reference backend's own wording for a
 // mismatched binary operation, verbatim. A client (or a compatibility
@@ -53,6 +61,19 @@ const illegalOperationTypesFormat = "illegal operation for the given types: %s"
 // illegalOperationTypesFormat (singular "type", matching the reference
 // verbatim) — `-name`: unary `-` requires a numeric operand.
 const illegalOperationTypeFormat = "illegal operation for the given type: %s"
+
+// intrinsicNilFormat reproduces the reference's wording for
+// `<intrinsic> = nil` — `{ span:status = nil }`. An intrinsic is a
+// property every span has by construction, so it can never be absent and
+// the comparison can only be a mistake in the query text. The `%s=nil`
+// spacing (no spaces around the `=`) is the reference's own, verbatim.
+const intrinsicNilFormat = "%s=nil is not valid because intrinsics cannot be nil"
+
+// resourceServiceNameNilFormat reproduces the reference's wording for the
+// second clause of the same rule — `{ resource.service.name = nil }`.
+// service.name is the one resource attribute OTLP makes mandatory, so
+// like an intrinsic it is never absent.
+const resourceServiceNameNilFormat = "%s=nil is not valid because resource.service.name cannot be nil"
 
 // aggregateNumericFormat reproduces the reference's wording for an
 // aggregate (`max` / `min` / `sum` / `avg`) whose inner expression cannot
@@ -556,11 +577,74 @@ func isParentMarker(e typedExpression) bool {
 }
 
 // validateUnaryOperand applies the reference's unary operand-type rule —
-// `{ -name = "a" }`: unary `-` requires a numeric operand.
+// `{ -name = "a" }`: unary `-` requires a numeric operand — after the
+// `= nil` rule, in the reference's own order (pkg/traceql/ast_validate.go's
+// `UnaryOperation.validate` checks the nil clause before it reads
+// impliedType).
 func validateUnaryOperand(o UnaryOperation) error {
+	if err := validateNilComparison(o); err != nil {
+		return err
+	}
 	t := o.Expression.impliedType()
 	if !o.Op.unaryTypesValid(t) {
 		return newValidationError(illegalOperationTypeFormat, o.String())
+	}
+	return nil
+}
+
+// resourceServiceNameAttribute is the one NON-intrinsic attribute the
+// reference singles out in its `= nil` rule, spelled the way the
+// reference spells it (pkg/traceql/ast_validate.go compares against
+// `NewScopedAttribute(AttributeScopeResource, false, "service.name")`).
+var resourceServiceNameAttribute = NewScopedAttribute(AttributeScopeResource, false, "service.name")
+
+// validateNilComparison applies the reference's `<x> = nil` rejection
+// (pkg/traceql/ast_validate.go's `UnaryOperation.validate`, repeated at
+// fetch time by tempodb/encoding/vparquet4's `checkConditions`, and
+// listed as invalid in pkg/traceql/test_examples.yaml).
+//
+// The predicate is narrow on three axes, and widening any of them would
+// take a working query off a dashboard:
+//
+//   - The OPERATOR. Only OpNotExists — the node both `{ x = nil }` and
+//     `{ nil = x }` fold to — is covered. `!= nil` (OpExists) is legal on
+//     every operand, and load-bearing: Grafana Traces Drilldown appends
+//     `&& <groupBy> != nil` to every breakdown query it issues.
+//   - The OPERAND SHAPE. Only a bare Attribute. A compound operand
+//     (`{ (span.a + 1) = nil }`) always evaluates to a non-nil Static, so
+//     the reference folds it to a constant rather than rejecting it.
+//   - The ATTRIBUTE. Any intrinsic, plus resource.service.name and
+//     nothing else. An ordinary user attribute may legitimately be absent
+//     in any scope, `{ span.foo = nil }` included, and `service.name` is
+//     special only under the resource scope — `{ span.service.name = nil }`
+//     and `{ .service.name = nil }` both stay accepted.
+//
+// The parent qualifier is the one place this reads wider than the
+// reference's literal expression, and it has to. The reference compares
+// the whole Attribute struct, parent flag included, so
+// `parent.resource.service.name` misses this clause there — but only
+// because `Attribute.validate` a few lines further on rejects EVERY
+// parent-scoped attribute as unsupported, so the reference rejects that
+// query anyway. cerberus supports the parent scope (#2035), and the
+// reason resource.service.name can never be nil — OTLP mandates it on
+// every resource — holds for the parent span's resource identically.
+// Matching on scope and name therefore rejects exactly the set the
+// reference rejects, where struct equality would have let one member of
+// it through.
+func validateNilComparison(o UnaryOperation) error {
+	if o.Op != OpNotExists {
+		return nil
+	}
+	attr, ok := o.Expression.(Attribute)
+	if !ok {
+		return nil
+	}
+	switch {
+	case attr.Intrinsic != IntrinsicNone:
+		return newValidationError(intrinsicNilFormat, attr)
+	case attr.Scope == resourceServiceNameAttribute.Scope &&
+		attr.Name == resourceServiceNameAttribute.Name:
+		return newValidationError(resourceServiceNameNilFormat, attr)
 	}
 	return nil
 }

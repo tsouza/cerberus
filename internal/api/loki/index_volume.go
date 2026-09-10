@@ -198,85 +198,123 @@ const (
 // against SELECT and ARRAY JOIN aliases before FROM columns.
 const volumeLabelNameAlias = "label_name"
 
-// buildIndexVolumeSQL builds the SELECT used by /index/volume. Upstream's
-// `aggregateBy` picks between two genuinely different response shapes —
-// the two branches of upstream's `getVolume` (`pkg/ingester/instance.go`) —
-// so it picks between two SQL shapes here too.
+// The two columns the stored-key pre-aggregation hands up to the
+// served-key aggregation above it. Same constraint as
+// [volumeLabelNameAlias]: names no `otel_logs` column carries.
+const (
+	volumeStoredLabelsAlias = "stored_labels"
+	volumeStoredBytesAlias  = "stored_bytes"
+)
+
+// buildIndexVolumeSQL builds the SELECT used by /index/volume. Two
+// aggregation levels, because the endpoint's answer is keyed by a label
+// set the STORE does not hold:
 //
-// # aggregateBy=series (and the default)
-//
-// Keyed by the label SET — one row per distinct series:
-//
-//	SELECT
-//	    mapSort(<group-key-frag>) AS labels,
-//	    sum(length(`Body`)) AS bytes
-//	FROM `otel_logs`
-//	WHERE <matchers> AND <time bounds>
+//	SELECT <served-key-frag> AS labels, sum(`stored_bytes`) AS bytes
+//	FROM (
+//	    SELECT mapSort(<group-key-frag>) AS `stored_labels`,
+//	           sum(length(`Body`))       AS `stored_bytes`
+//	    FROM `otel_logs`
+//	    WHERE <matchers> AND <time bounds>
+//	    GROUP BY `stored_labels`
+//	)
 //	GROUP BY labels
 //	ORDER BY bytes DESC
 //	LIMIT <n> WITH TIES
 //
-// `<group-key-frag>` is one of:
+// The inner level is the whole of the old query minus its cut: one row
+// per distinct STORED label set, carrying that set's byte volume.
+// `<group-key-frag>` is one of
 //
 //   - `ResourceAttributes` (default — full label set)
 //   - `mapFilter((k, v) -> v != ”, map(?, <value expr>, …))` when
 //     `targetLabels` is set
 //
-// The group key is the WHOLE label-set Map, so it carries the canonical
-// key-order wrap (canonicalLabelsFrag). Without it one logical stream
-// delivered under two OTLP key orders groups as two rows, each holding
-// half the byte volume — and, because the wrap sits inside the aliased
-// projection that GROUP BY / ORDER BY / LIMIT all read, the split also
-// corrupts the top-N ranking: a genuinely-top stream can be halved out of
-// the returned set entirely. mapFilter preserves the source map's key
-// order, so the projected form needs the wrap just as much as the bare
-// column does; wrapping the outer frag covers both branches at once.
-// There is no Go-side re-aggregation here — handleIndexVolume loops rows
-// straight into VectorSample — so this SQL is the only place the split
-// can be closed.
+// wrapped in canonicalLabelsFrag, so one logical stream delivered under
+// two OTLP key orders is one group rather than two half-volume ones.
+//
+// The outer level regroups on [normalizedLabelsFrag] — the served label
+// set — and sums. That second grouping is the fix for #3246: `a.b` and
+// `a_b` are two stored keys and one served name, so without it the
+// response carried two vector samples under one byte-identical label set,
+// each holding part of one series' volume. It cannot be done in Go after
+// the fact, because merging changes the volumes the cut is a function of:
+// a served group assembled from rows that all sit below the cap can
+// outrank one above it, so no superset the SQL can name in terms of the
+// STORED volumes is guaranteed to contain the correct top-N.
 //
 // # aggregateBy=labels
 //
 // Keyed by the bare label NAME, summing across every value that label
 // takes — `{service_name="a"}` at 10 B and `{service_name="b"}` at 5 B
-// are ONE `service_name` row of 15 B, not two rows:
+// are ONE `service_name` row of 15 B, not two rows. Same inner level;
+// the outer one explodes instead of regrouping:
 //
-//	SELECT
-//	    map(`label_name`, '') AS labels,
-//	    sum(length(`Body`)) AS bytes
-//	FROM `otel_logs`
-//	ARRAY JOIN mapKeys(<group-key-frag>) AS `label_name`
-//	WHERE <matchers> AND <time bounds>
+//	SELECT map(`label_name`, ”) AS labels, sum(`stored_bytes`) AS bytes
+//	FROM ( <the same inner level> )
+//	ARRAY JOIN mapKeys(<served-key-frag>) AS `label_name`
 //	GROUP BY labels
 //	ORDER BY bytes DESC
 //	LIMIT <n> WITH TIES
 //
 // ARRAY JOIN is upstream's own `s.labels.Range` over each stream, in
-// `getVolume`, expressed in ClickHouse: it replicates each matched row
-// once per label the row's
-// stream carries, so `sum(length(Body))` charges the row's full byte
-// count to every one of its labels — exactly `labelVolumes[l.Name] +=
-// size`. A row whose projected map is empty explodes to nothing and
-// contributes nothing, which is the same thing ranging over a stream's
-// own labels does. `<group-key-frag>` is shared with the series shape,
-// so `targetLabels` restricts the exploded key set identically.
+// `getVolume`, expressed in ClickHouse: it replicates each group once per
+// label its streams carry, so `sum(stored_bytes)` charges the group's
+// full byte count to every one of its labels — exactly
+// `labelVolumes[l.Name] += size`. A group whose map is empty explodes to
+// nothing and contributes nothing, which is the same thing ranging over a
+// stream's own labels does. Exploding the SERVED keys rather than the
+// stored ones matters here too, and for the same reason one layer down: a
+// stream carrying both `a.b` and `a_b` is one `a_b` label upstream, so it
+// owes one charge, not two.
 //
 // The one-entry `map(label_name, ”)` reproduces upstream's decode:
 // `toPrometheusData` (`pkg/querier/queryrange/volume.go`) builds this
 // mode's metric with `labels.FromStrings(name, "")`, a single label whose
-// NAME is the volume's name and whose VALUE is empty. Keeping
-// the wire shape a Map here — rather than returning a bare String and
-// re-wrapping in Go — is what lets both modes share one
-// chclient.QueryIndexVolume decode and one GROUP BY / ORDER BY / LIMIT
-// tail. No canonical-key-order wrap is needed on a map literal built from
-// a single key.
+// NAME is the volume's name and whose VALUE is empty. Keeping the wire
+// shape a Map here — rather than returning a bare String and re-wrapping
+// in Go — is what lets both modes share one chclient.QueryIndexVolume
+// decode and one GROUP BY / ORDER BY / LIMIT tail.
 //
-// Sharing that tail is also what gives this shape the WITH TIES cut
-// below for free, and it needs one just as much: label NAMES tie on byte
-// volume at least as readily as label sets do, and this shape's key goes
-// through the same OTel-to-Prometheus rewrite on the way out — the
-// exploded key is a raw attribute name, and `toPrometheusData`'s
-// single-label metric carries its normalized spelling.
+// # The cut
+//
+// `bytes` is deliberately the ONLY sort key, and the cut is deliberately
+// WITH TIES.
+//
+// `bytes` alone is not a total order, so a plain `LIMIT n` over it returns
+// whichever equal-volume groups the aggregation happened to emit first —
+// an order ClickHouse does not promise to repeat (the parallel merge order
+// is not fixed), so the returned SET varied run to run. Adding a second
+// sort key would fix that, but only by settling the tie HERE, over a
+// spelling of the label set that is not the one the response is ranked by:
+// upstream compares `seriesLabels.String()`, and `strconv.Quote`'s
+// escaping of arbitrary attribute VALUES is not something this layer
+// reproduces. So a SQL tie-break is not merely a different arbitrary
+// choice, it is a WRONG one on exactly the rows a cap discards.
+//
+// WITH TIES declines to make the choice at all: every row that ties with
+// the n-th on `bytes` comes back, so the returned set is
+// `{bytes > B} ∪ {bytes = B}` for B the n-th largest volume. That set is a
+// pure function of the data — no merge order can perturb it, which is the
+// determinism the second sort key was there for — and it CONTAINS the
+// correct top-n under any tie-break, because a tie-break only ever
+// reorders rows of one volume and every row of the boundary volume is in
+// it. That argument holds only because the grouping above it is FINAL:
+// the volumes WITH TIES compares are the ones the response serves, which
+// is what the outer regrouping buys and what #3246 showed the single-level
+// shape did not have. [rankIndexVolumeRows] then applies upstream's own
+// comparator over the served names and takes the first `limit`, which is
+// where the choice belongs.
+//
+// The cost is the size of the boundary tie group: the rows shipped beyond
+// `limit` are exactly the equal-volume groups the cap fell inside of, and
+// never any group of a lower volume. That is data-dependent rather than
+// capped by `limit`, so the row count is left to the drain budget every
+// other metadata endpoint is already bounded by (chclient's
+// drainBudgetExceeded, which aborts the request with the Loki
+// "maximum … reached" 400) rather than to a second cap here — a cap of our
+// own would have to choose which tied groups to drop, which is the very
+// choice this clause exists to avoid making.
 //
 // All identifiers and bound keys flow through Builder helpers — no
 // fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
@@ -289,72 +327,54 @@ func buildIndexVolumeSQL(
 	targetLabels []string,
 	aggregateBy string,
 ) (string, []any, error) {
-	groupFrag, err := volumeGroupFrag(s, strategies, targetLabels)
+	stored, err := storedVolumeQuery(s, strategies, matchers, start, end, targetLabels)
 	if err != nil {
 		return "", nil, err
 	}
+	served := normalizedLabelsFrag(chsql.Col(volumeStoredLabelsAlias))
+	bytesFrag := chsql.As(chsql.Call("sum", chsql.Col(volumeStoredBytesAlias)), "bytes")
 
-	sb := chsql.NewQuery().
-		From(chsql.Col(s.LogsTable)).
-		WithAttrStrategies(strategies)
+	sb := chsql.NewQuery().From(chsql.Subquery(stored))
 	if aggregateBy == aggregateByLabels {
-		sb.Select(
-			chsql.As(volumeLabelNameMapFrag(), "labels"),
-			chsql.As(bytesAggFrag(s.BodyColumn), "bytes"),
-		).ArrayJoin(chsql.As(chsql.Call("mapKeys", groupFrag), volumeLabelNameAlias))
+		sb.Select(chsql.As(volumeLabelNameMapFrag(), "labels"), bytesFrag).
+			ArrayJoin(chsql.As(chsql.Call("mapKeys", served), volumeLabelNameAlias))
 	} else {
-		sb.Select(
-			chsql.As(canonicalLabelsFrag(groupFrag), "labels"),
-			chsql.As(bytesAggFrag(s.BodyColumn), "bytes"),
-		)
+		sb.Select(chsql.As(served, "labels"), bytesFrag)
 	}
-
-	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
-		return "", nil, err
-	}
-
 	sb.GroupBy(chsql.Col("labels")).
 		OrderBy(chsql.Col("bytes"), true).
-		// `bytes` is deliberately the ONLY sort key, and the cut is
-		// deliberately WITH TIES.
-		//
-		// `bytes` alone is not a total order, so a plain `LIMIT n` over it
-		// returns whichever equal-volume groups the aggregation happened
-		// to emit first — an order ClickHouse does not promise to repeat
-		// (the parallel merge order is not fixed), so the returned SET
-		// varied run to run. Adding a second sort key would fix that, but
-		// only by settling the tie HERE, over the group key as STORED. The
-		// tie upstream settles is over the label-set string it SERVES, and
-		// `format.NormalizeLabelMap` reverses the collation of some key
-		// pairs on the way out (`a.b` before `aZ` stored, `a_b` after it
-		// served) — so a SQL tie-break is not merely a different arbitrary
-		// choice, it is a WRONG one on exactly the rows a cap discards.
-		//
-		// WITH TIES declines to make the choice at all: every row that
-		// ties with the n-th on `bytes` comes back, so the returned set is
-		// `{bytes > B} ∪ {bytes = B}` for B the n-th largest volume. That
-		// set is a pure function of the data — no merge order can perturb
-		// it, which is the determinism the second sort key was there for —
-		// and it CONTAINS the correct top-n under any tie-break, because a
-		// tie-break only ever reorders rows of one volume and every row of
-		// the boundary volume is in it. rankIndexVolumeRows then applies
-		// upstream's own comparator over the served names and takes the
-		// first `limit`, which is where the choice belongs.
-		//
-		// The cost is the size of the boundary tie group: the rows shipped
-		// beyond `limit` are exactly the equal-volume groups the cap fell
-		// inside of, and never any group of a lower volume. That is
-		// data-dependent rather than capped by `limit`, so the row count is
-		// left to the drain budget every other metadata endpoint is already
-		// bounded by (chclient's drainBudgetExceeded, which aborts the
-		// request with the Loki "maximum … reached" 400) rather than to a
-		// second cap here — a cap of our own would have to choose which
-		// tied groups to drop, which is the very choice this clause exists
-		// to avoid making before normalization.
 		LimitWithTies(int64(limit))
 
 	sqlStr, args := sb.Build()
 	return sqlStr, args, nil
+}
+
+// storedVolumeQuery builds the inner, STORED-key level of
+// [buildIndexVolumeSQL] — one row per distinct stored label set with that
+// set's byte volume, uncut. Both `aggregateBy` shapes read the same one.
+func storedVolumeQuery(
+	s schema.Logs,
+	strategies chsql.AttrStrategies,
+	matchers []*labels.Matcher,
+	start, end time.Time,
+	targetLabels []string,
+) (*chsql.QueryBuilder, error) {
+	groupFrag, err := volumeGroupFrag(s, strategies, targetLabels)
+	if err != nil {
+		return nil, err
+	}
+	sb := chsql.NewQuery().
+		From(chsql.Col(s.LogsTable)).
+		WithAttrStrategies(strategies).
+		Select(
+			chsql.As(canonicalLabelsFrag(groupFrag), volumeStoredLabelsAlias),
+			chsql.As(bytesAggFrag(s.BodyColumn), volumeStoredBytesAlias),
+		)
+	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
+		return nil, err
+	}
+	sb.GroupBy(chsql.Col(volumeStoredLabelsAlias))
+	return sb, nil
 }
 
 // volumeGroupFrag picks the CH expression that produces the row's

@@ -150,61 +150,19 @@ func TestLower_RootIdiomLiteralVariants(t *testing.T) {
 	}
 }
 
-// TestLower_NilComparisonRejections pins the nil-comparison forms
-// reference Tempo itself rejects — and ONLY those. Reference
-// validation (pkg/traceql/ast_validate.go UnaryOperation.validate)
-// rejects `= nil` on every intrinsic and on resource.service.name;
-// vparquet4's checkConditions errors on any childCount condition.
-// Everything else — including `!= nil` on intrinsics, which the
-// Traces Drilldown app stamps on every intrinsic breakdown groupBy —
-// must lower (see TestLower_NilComparisonSemantics).
-func TestLower_NilComparisonRejections(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelTraces()
-	cases := []struct {
-		name    string
-		query   string
-		wantSub string
-	}{
-		{
-			name:    "intrinsic_eq_nil_kind",
-			query:   `{ kind = nil }`,
-			wantSub: "intrinsics cannot be nil",
-		},
-		{
-			name:    "intrinsic_eq_nil_name",
-			query:   `{ name = nil }`,
-			wantSub: "intrinsics cannot be nil",
-		},
-		{
-			name:    "intrinsic_eq_nil_literal_first",
-			query:   `{ nil = status }`,
-			wantSub: "intrinsics cannot be nil",
-		},
-		{
-			name:    "resource_service_name_eq_nil",
-			query:   `{ resource.service.name = nil }`,
-			wantSub: "resource.service.name cannot be nil",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			expr, err := tempo.Parse(tc.query)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.query, err)
-			}
-			_, err = traceql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("Lower(%q) succeeded; want error containing %q", tc.query, tc.wantSub)
-			}
-			if !strings.Contains(err.Error(), tc.wantSub) {
-				t.Errorf("Lower(%q) error %q does not contain %q", tc.query, err, tc.wantSub)
-			}
-		})
-	}
-}
+// The nil-comparison forms reference Tempo itself rejects —
+// `<intrinsic> = nil` and `resource.service.name = nil` — are rejected
+// at PARSE now, not here: they are reference validation rules
+// (pkg/traceql/ast_validate.go's `UnaryOperation.validate`), so cerberus
+// applies them in the stage the reference applies them in and the Tempo
+// head answers them 400 rather than 422 (#3260). Their pins live in
+// internal/traceql/ast/validate_test.go
+// (TestParseRejectsNilComparisonOnIntrinsic and friends), and the
+// lowering's own belt-and-braces guard — the sibling of the reference's
+// second copy in vparquet4's `checkConditions` — is pinned white-box in
+// nil_comparison_guard_test.go. Everything else, `!= nil` on intrinsics
+// included (the Traces Drilldown app stamps it on every breakdown
+// groupBy), must lower: see TestLower_NilComparisonSemantics below.
 
 // TestLower_NilComparisonSemantics pins the lowered predicate for every
 // accepted nil-comparison shape, derived from reference Tempo:

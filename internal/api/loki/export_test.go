@@ -1,5 +1,7 @@
 package loki
 
+import "github.com/tsouza/cerberus/internal/chsql"
+
 // SetOnQueryRangeDrain installs the test-observable eager-drain hook on the
 // handler. The hook fires once per /loki/api/v1/query_range request with
 // res.Inspected — the number of rows h.Engine.Query pulled from ClickHouse
@@ -26,3 +28,21 @@ func (h *Handler) SetOnQueryRangeDrain(fn func(int64)) {
 // can assert the exact wording without hand-duplicating it — a drifted
 // copy would pass even after the production string changed.
 const TailCapCloseReason = tailCapCloseReason
+
+// The served-label-set expression, exposed to the chdb-tagged
+// differential test in package loki_test so it can run the SQL twin over
+// the same corpus [format.NormalizeLabelMap] is run over. The frag has
+// exactly one production caller (buildIndexVolumeSQL) and no reason to be
+// part of the package's surface, so the export lives here.
+//
+// StoredLabelsAlias is the column the rendered expression reads — the
+// alias /index/volume's stored-key pre-aggregation publishes, which the
+// differential test supplies its corpus under and the emitted-SQL shape
+// pins name.
+const StoredLabelsAlias = volumeStoredLabelsAlias
+
+// NormalizedLabelsSQL renders exactly what buildIndexVolumeSQL emits over
+// [StoredLabelsAlias].
+func NormalizedLabelsSQL() (string, []any) {
+	return chsql.Render(normalizedLabelsFrag(chsql.Col(volumeStoredLabelsAlias)))
+}

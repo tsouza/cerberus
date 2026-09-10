@@ -1030,7 +1030,11 @@ the upstream OTel ClickHouse exporter templates; only the database engine,
   if the engine isn't replicated by the cluster default, an explicit
   `CERBERUS_SCHEMA_TABLE_ENGINE=ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')`.
   `ON CLUSTER` and the Replicated database engine are mutually exclusive —
-  pick one.
+  pick one. A replicating `CERBERUS_SCHEMA_TABLE_ENGINE` also tells the
+  router-calibration corpus table that this deployment replicates, so it is
+  created with a bare `ReplicatedMergeTree` of its own — cerberus never reuses
+  your engine expression for it, since that expression's Keeper path and engine
+  family belong to the signal tables. Same `system.replicas` check as above.
 - **Externally-managed database.** When the database is provisioned by your
   cluster tooling (common for a Replicated database, whose Keeper path and
   macros are an infra concern), set `CERBERUS_AUTO_CREATE_DATABASE=false`:
