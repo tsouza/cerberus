@@ -221,17 +221,21 @@ func sampleForwardColumn(ref *chplan.ColumnRef, output string, materialize bool)
 	return projection
 }
 
-// Additional filters preserve an already-proven float-only subset. They cannot
-// turn an OR predicate into a proof or reintroduce removed histogram rows.
+// Additional filters and ordering preserve an already-proven float-only subset.
+// Neither can introduce histogram rows or change their payload. Other nodes
+// remain proof barriers; an OR predicate is never itself a narrowing proof.
 func mixedFloatRowsProven(inner chplan.Node) bool {
 	for {
 		if chplan.IsMixedFloatNarrowing(inner) {
 			return true
 		}
-		filter, ok := inner.(*chplan.Filter)
-		if !ok {
+		switch node := inner.(type) {
+		case *chplan.Filter:
+			inner = node.Input
+		case *chplan.OrderBy:
+			inner = node.Input
+		default:
 			return false
 		}
-		inner = filter.Input
 	}
 }
