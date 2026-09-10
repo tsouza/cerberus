@@ -69,8 +69,8 @@ func TestIndexVolume_HappyPath(t *testing.T) {
 	if !strings.Contains(lastSQL, "LIMIT 100") {
 		t.Errorf("default limit absent: %q", lastSQL)
 	}
-	if !strings.Contains(lastSQL, "mapSort(`ResourceAttributes`) AS `labels`") {
-		t.Errorf("default group key should be the canonicalised full RA map: %q", lastSQL)
+	if !strings.Contains(lastSQL, "mapSort(`ResourceAttributes`) AS `"+loki.StoredLabelsAlias+"`") {
+		t.Errorf("stored-key pre-aggregation should group by the canonicalised full RA map: %q", lastSQL)
 	}
 }
 
