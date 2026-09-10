@@ -94,3 +94,44 @@ func TestRouteBExecCtx_SettingsMatchRouteAAtK1(t *testing.T) {
 			routeA, routeB)
 	}
 }
+
+// TestRouteBExecCtx_ExpHistogramTwoLevelStampedOnBothRoutes closes the
+// vacuity hole TestRouteBExecCtx_SettingsMatchRouteAAtK1 leaves for a
+// plan-shape-gated stamp. That test compares route A's and route B's whole
+// settings maps on routeBTestPlan() — a bare Scan — so a key that only ever
+// appears on an exp-histogram plan is equal-because-absent on both sides and
+// the assertion says nothing about it. This one hands BOTH seams a plan that
+// actually satisfies the predicate and asserts the key is present, with the
+// same value, on each.
+//
+// Sizing is not part of the comparison because it cannot differ: the
+// threshold is absolute rather than cap-relative (see
+// expHistogramTwoLevelThresholdBytes), so unlike the spill thresholds there
+// is no shard-apportioned variant for route B to get wrong.
+func TestRouteBExecCtx_ExpHistogramTwoLevelStampedOnBothRoutes(t *testing.T) {
+	t.Parallel()
+
+	const memCap = int64(8 << 30)
+	rules := routeBParityRules()
+	rules.ExpHistogramTwoLevel = true
+	plan := expHistogramWindowPlan()
+
+	e := &Engine{Settings: rules}
+	routeACtx, _ := e.execContext(context.Background(), plan, "promql", &solver.Decision{K: 1})
+	routeBCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, &solver.Decision{K: 1},
+		plan, memCap, rules, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+
+	routeA := chclient.QuerySettingsFromContext(routeACtx)
+	routeB := chclient.QuerySettingsFromContext(routeBCtx)
+	wantA, okA := routeA[settingGroupByTwoLevelThresholdBytes]
+	if !okA {
+		t.Fatalf("route A did not stamp %s on an exp-histogram window plan", settingGroupByTwoLevelThresholdBytes)
+	}
+	wantB, okB := routeB[settingGroupByTwoLevelThresholdBytes]
+	if !okB {
+		t.Fatalf("route B did not stamp %s on an exp-histogram window plan — a routed shard would run unbounded", settingGroupByTwoLevelThresholdBytes)
+	}
+	if wantA != wantB {
+		t.Fatalf("%s = %v on route A but %v on route B", settingGroupByTwoLevelThresholdBytes, wantA, wantB)
+	}
+}

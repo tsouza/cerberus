@@ -401,6 +401,12 @@ func applySharedQuerySettings(ctx context.Context, plan chplan.Node, memCap int6
 	// series row are freed row-by-row instead of retained across an entire
 	// vectorized block (cerberus issue #3046).
 	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
+	// Windowed exponential-histogram plans only, and only when the
+	// exp_histogram_two_level feature resolved in: force ClickHouse's
+	// aggregator to its two-level table so the array stages above the
+	// per-series groupArray see 256 small blocks instead of one whole-state
+	// block (cerberus issue #3247).
+	ctx = applyExpHistogramTwoLevelBound(ctx, plan, rules.ExpHistogramTwoLevel)
 	// The DARK, flag-gated rules (workload, log_comment shape id, result
 	// cache, aggregation-in-order, condition cache, lazy materialisation,
 	// trace-id bitmap filter). Each is OFF unless its CERBERUS_* flag is set,

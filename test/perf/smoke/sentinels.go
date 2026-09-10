@@ -102,6 +102,24 @@ func (f ServerFloor) String() string {
 // corpus is what asserts the stamp actually reaches the server.
 const settingMaxBytesBeforeExternalJoin = "max_bytes_before_external_join"
 
+// settingGroupByTwoLevelThresholdBytes is the ClickHouse setting naming the
+// aggregation-state size at which the aggregator converts to its two-level
+// hash table, which internal/engine's applyExpHistogramTwoLevelBound stamps
+// on a windowed exponential-histogram plan (cerberus issue #3247). Declared
+// here rather than imported for the reason the sibling above gives: the
+// engine's own const is unexported, and this package asserting the literal
+// ClickHouse records is the point.
+const settingGroupByTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes"
+
+// wantExpHistogramTwoLevelThresholdBytes is the exact value ClickHouse
+// records for that setting under the stamp: "1", the smallest value that
+// ARMS the byte threshold. It is written as a literal rather than derived
+// from internal/engine's expHistogramTwoLevelThresholdBytes so the assertion
+// pins the value #3247 measured, not whatever that const currently holds --
+// "0" in particular would DISABLE the threshold and make the mechanism inert
+// while a derived expectation stayed green.
+const wantExpHistogramTwoLevelThresholdBytes = "1"
+
 // joinSpillCapDenominator mirrors internal/engine/spill.go's
 // spillCapDenominator: applyJoinSpillSettings stamps spillThreshold(cap),
 // which is the live per-query memory cap divided by this. Both engine
@@ -213,8 +231,22 @@ var Sentinels = []Sentinel{
 		// PRIMARY sentinel — this is what actually broke in #2364. Hits
 		// chplan.HistogramQuantileNative / HistogramProjection ->
 		// applyNativeHistogramAnalyzerFix directly.
+		//
+		// It carries a SECOND memory-bounding mechanism as of cerberus issue
+		// #3247: applyExpHistogramTwoLevelBound stamps
+		// group_by_two_level_threshold_bytes on exactly this plan shape (an
+		// exponential-histogram node over a chplan.RangeBucketFanout), because
+		// the per-series groupArray state is otherwise handed to the array
+		// stages above it as ONE block. Both mechanisms fire on this one
+		// query, so it is asserted here rather than duplicated into a sentinel
+		// whose request would be identical.
+		//
+		// RequiredQuerySettings is what makes BOTH falsifiable: the stamps are
+		// result-equivalent, so peak memory and HTTP status alone would look
+		// the same with either mechanism deleted (only lower/higher, and the
+		// committed bound is a ceiling, not a band). See the field's own doc.
 		Name:      "native_histogram_quantile",
-		Mechanism: "applyNativeHistogramAnalyzerFix (internal/engine/query_settings_rules.go)",
+		Mechanism: "applyNativeHistogramAnalyzerFix + applyExpHistogramTwoLevelBound (internal/engine/query_settings_rules.go)",
 		Path:      "/api/v1/query_range",
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
@@ -223,6 +255,13 @@ var Sentinels = []Sentinel{
 		},
 		Window: sentinelWindow,
 		Step:   sentinelStep,
+		RequiredQuerySettings: func(int64) map[string]string {
+			// Not sized from the memory cap: the threshold is absolute, not
+			// cap-relative (see expHistogramTwoLevelThresholdBytes).
+			return map[string]string{
+				settingGroupByTwoLevelThresholdBytes: wantExpHistogramTwoLevelThresholdBytes,
+			}
+		},
 	},
 	{
 		// Spill, unconditional: applySpillSettings fires on EVERY data-plane

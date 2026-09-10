@@ -128,7 +128,7 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache)
@@ -148,7 +148,7 @@ func TestResolve_Auto_NativeAggregatesOffBelow259(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, off := range []string{
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -165,7 +165,7 @@ func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache)
@@ -193,28 +193,28 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 		{
 			name:   "24.8 only aggregation_in_order",
 			server: v(24, 8),
-			want:   []string{FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
+			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
 			name:   "25.3 adds condition_cache, no native aggregates",
 			server: v(25, 3),
-			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
+			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
 			name:   "25.6 below the 25.9 native floor (closed-window aggregates)",
 			server: v(25, 6),
-			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
+			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
 			name:   "25.8 still below the 25.9 native floor",
 			server: v(25, 8),
-			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
+			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
 			name:   "25.9 adds eleven ts_grid_* features (left-open window; ts_grid_changes stays opt-in)",
 			server: v(25, 9),
 			want: []string{
-				FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
+				FeatureAggregationInOrder, FeatureExpHistogramTwoLevel, FeatureConditionCache, FeatureLagInFrameAdjacency,
 				FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 				FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 				FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache,
@@ -283,7 +283,7 @@ func TestResolve_Auto_OldServerExcludesUnsupportedStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
 	if set.Has(FeatureConditionCache) {
 		t.Error("auto enabled condition_cache on 24.8; needs 25.3")
 	}
@@ -433,7 +433,7 @@ func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(auto,columnar_result_decode): %v", err)
 	}
-	assertSet(t, set,
+	assertSet(t, set, FeatureExpHistogramTwoLevel,
 		FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -452,7 +452,7 @@ func TestResolve_AutoPlusOptIn_AutoSetStillVersionGated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode, FeatureResultCache)
 	if len(warns) != 0 {
 		t.Errorf("auto-skip in a composed selection emitted warnings %v; want none", warns)
 	}
@@ -596,7 +596,7 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta)
@@ -664,6 +664,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureTraceIDExternalTable:         {ID: FeatureTraceIDExternalTable, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTSGridTagGroups:              {ID: FeatureTSGridTagGroups, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTSThrowDuplicateSeriesIf:     {ID: FeatureTSThrowDuplicateSeriesIf, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureExpHistogramTwoLevel:         {ID: FeatureExpHistogramTwoLevel, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))
@@ -701,7 +702,7 @@ func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, native := range []string{
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -729,7 +730,7 @@ func TestResolve_Auto_CapabilityUnreachable_DropsNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, native := range []string{FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets} {
 		if set.Has(native) {
 			t.Errorf("auto enabled %q on an unreachable-capability server; want it dropped", native)
@@ -745,7 +746,7 @@ func TestResolve_Auto_CapabilityUnknown_DropsNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency)
 }
 
 func TestResolve_ExplicitTSGrid_CapabilityForbidden_EnforcingFatal(t *testing.T) {

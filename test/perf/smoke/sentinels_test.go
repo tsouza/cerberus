@@ -267,3 +267,51 @@ func TestSentinels_StepIsPromWireParseable(t *testing.T) {
 		t.Fatal("no sentinel declared a positive Step — the gate is inert")
 	}
 }
+
+// TestSentinels_ExpHistogramTwoLevelStampIsAsserted pins what makes the
+// exp-histogram half of the native_histogram_quantile sentinel falsifiable:
+// it must require the group_by_two_level_threshold_bytes stamp
+// applyExpHistogramTwoLevelBound (cerberus issue #3247) applies. Without that
+// requirement the sentinel measures only peak memory and HTTP status, and the
+// committed bound is a CEILING — so deleting the mechanism would raise the
+// measured peak by roughly an order of magnitude and still pass as long as it
+// stayed under a bound calibrated before the mechanism existed.
+func TestSentinels_ExpHistogramTwoLevelStampIsAsserted(t *testing.T) {
+	base := SentinelsForFloor(FloorBase)
+	var s *Sentinel
+	for i := range base {
+		if base[i].Name == "native_histogram_quantile" {
+			s = &base[i]
+			break
+		}
+	}
+	if s == nil {
+		t.Fatalf("SentinelsForFloor(FloorBase) has no native_histogram_quantile sentinel")
+	}
+
+	query := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("query")
+	if !strings.Contains(query, "rate(") {
+		t.Errorf("exp-histogram sentinel query %q calls no range function — without a window fan-out "+
+			"planHasExpHistogramWindowGrouping never matches and the stamp could not fire", query)
+	}
+	if !strings.Contains(query, NativeHistogramMetric) {
+		t.Errorf("exp-histogram sentinel query %q does not reference %s, so it lowers to no "+
+			"exponential-histogram node", query, NativeHistogramMetric)
+	}
+	if s.Step <= 0 {
+		t.Errorf("exp-histogram sentinel Step = %v; a single-anchor (instant) grid builds a plain "+
+			"chplan.Aggregate rather than the RangeBucketFanout the predicate requires", s.Step)
+	}
+
+	const cap1GiB int64 = 1 << 30
+	got := s.RequiredSettings(cap1GiB)
+	want := map[string]string{settingGroupByTwoLevelThresholdBytes: wantExpHistogramTwoLevelThresholdBytes}
+	if len(got) != len(want) {
+		t.Fatalf("exp-histogram sentinel RequiredSettings = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("exp-histogram sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}

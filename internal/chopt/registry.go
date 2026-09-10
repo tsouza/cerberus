@@ -2127,6 +2127,55 @@ const (
 	// fielded production history yet — only a version-floor and shape
 	// verification, the same bar those siblings shipped AutoSelect: true on.
 	FeatureTSThrowDuplicateSeriesIf = "ts_throw_duplicate_series_if"
+
+	// FeatureExpHistogramTwoLevel stamps a near-zero
+	// group_by_two_level_threshold_bytes on a plan carrying a WINDOWED
+	// exponential-histogram per-series grouping, so ClickHouse's aggregator
+	// converts to its two-level hash table immediately instead of holding the
+	// whole per-series groupArray state in ONE block and handing that one
+	// block to the array stages stacked above it.
+	//
+	// The peak memory of every exp-histogram window query is set by that
+	// conversion and by nothing else. Measured on a real ClickHouse 26.6.4.55,
+	// the SAME query with two-level DISABLED versus at its 50 MB default
+	// versus stamped: 21 anchors 157.38 / 157.38 / 26.67 MiB; 61 anchors
+	// 383.43 / 383.43 / 53.09 MiB; 361 anchors 2451.64 / 249.91 / 249.90 MiB.
+	// Below the default the disabled and default columns are IDENTICAL -- the
+	// aggregator never converts and the fan-out is unbounded; past it the
+	// default converts on its own and stamping changes nothing. Cerberus
+	// stamped neither threshold, so which side of that line a query landed on
+	// was incidental in series count x samples x stored bucket width, and the
+	// curve reads as "more anchors, LESS memory" across the boundary (249.91
+	// MiB at 361 anchors against 383.43 MiB at 61) -- which is exactly how a
+	// query's headroom becomes unpredictable for an operator sizing
+	// CERBERUS_CH_QUERY_MAX_MEMORY.
+	//
+	// It is RESULT-EQUIVALENT: two-level aggregation is an execution
+	// strategy, and the rows it emits are the rows the single-level table
+	// would have emitted.
+	//
+	// MinVersion is AlwaysAvailable. group_by_two_level_threshold_bytes has
+	// existed for years before cerberus's 24.8 floor and is not gated behind
+	// any allow_experimental_* setting, so there is no version to gate on and
+	// RequiresExperimentalTSGrid is false.
+	//
+	// AutoSelect is true, for the reason FeatureJoinSpill gives: an unbounded
+	// peak that aborts with MEMORY_LIMIT_EXCEEDED is an availability bug, not
+	// an optimization opportunity, and the stamp is result-equivalent.
+	// Stability is Stable -- unlike FeatureJoinSpill's 26.4-fresh setting,
+	// this one has years of upstream history; what is new here is only
+	// cerberus's decision to stamp it.
+	//
+	// The PLAN-SHAPE GATE is not optional and is not conservatism for its own
+	// sake: forcing two-level costs a fixed ~18 MiB (the 256 sub-tables' own
+	// allocation) on an aggregation whose per-group state is scalar. Measured
+	// on the same server, `sum by (event) (rate(counter[5m]))` over 225 series
+	// went 6.69 -> 25.83 MiB and the bare `sum by (event) (counter)` 6.34 ->
+	// 23.88 MiB -- a 3.8-3.9x REGRESSION for no gain, which is why this is
+	// never stamped globally. See internal/engine's
+	// applyExpHistogramTwoLevelBound for the predicate and for the shapes
+	// deliberately left outside it.
+	FeatureExpHistogramTwoLevel = "exp_histogram_two_level"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -2549,6 +2598,15 @@ var registry = []Feature{
 		AutoSelect: true,
 		Doc:        "swap the duplicate-labelset guard's HAVING from throwIf(uniqExact(MetricName) > 1, <static message>) to timeSeriesThrowDuplicateSeriesIf, which names the actual colliding tags (server >= 26.2, no experimental gate, no measured downside -- #3038)",
 	},
+	{
+		ID:         FeatureExpHistogramTwoLevel,
+		MinVersion: AlwaysAvailable,
+		Stability:  Stable,
+		AutoSelect: true,
+		Doc: "stamp group_by_two_level_threshold_bytes=1 on a windowed exponential-histogram plan so the aggregator " +
+			"converts to its two-level table at once instead of feeding the array stages one whole-state block " +
+			"(result-equivalent, no version floor, measured 157 -> 27 MiB at 21 anchors and 383 -> 53 MiB at 61 -- #3247)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -2563,7 +2621,8 @@ var registry = []Feature{
 // trace_id_bitmap_filter, arg_and_max_fusion, result_cache,
 // lazy_materialization, explain_estimate, cardinality_probe,
 // full_text_index, text_index_line_filter, trace_id_external_table,
-// ts_tag_groups, ts_throw_duplicate_series_if). The copy
+// ts_tag_groups, ts_throw_duplicate_series_if, exp_histogram_two_level).
+// The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the
 // table.

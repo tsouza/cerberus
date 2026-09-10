@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -422,5 +423,133 @@ func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T)
 
 	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
 		t.Errorf("non-histogram plan: enable_analyzer = %v; want absent", got)
+	}
+}
+
+// expHistogramWindowPlan builds the minimal plan shape
+// applyExpHistogramTwoLevelBound targets: an exponential-histogram node
+// (HistogramQuantileNative) over the per-anchor window fan-out
+// (RangeBucketFanout) — the two conjuncts
+// planHasExpHistogramWindowGrouping requires. It mirrors what
+// internal/promql's histogram_quantile-over-rate lowering builds for a
+// query_range request (see test/spec/promql/exp_histogram_rate_range.txtar's
+// own -- chplan -- snapshot, whose node roster is
+// HistogramProjection/RangeBucketFanout/Scan/Filter/Project).
+func expHistogramWindowPlan() chplan.Node {
+	return &chplan.HistogramQuantileNative{
+		Input: &chplan.RangeBucketFanout{
+			Input: &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		},
+	}
+}
+
+// TestApplyExpHistogramTwoLevelBound_WindowedExpHistogramStampsThreshold — the
+// positive arm. A windowed exponential-histogram plan gets
+// group_by_two_level_threshold_bytes stamped so ClickHouse's aggregator
+// converts to its two-level table at once (cerberus issue #3247).
+func TestApplyExpHistogramTwoLevelBound_WindowedExpHistogramStampsThreshold(t *testing.T) {
+	// wantThresholdBytes is the LITERAL byte threshold the #3247 measurement
+	// validated (see expHistogramTwoLevelThresholdBytes's own doc), not a
+	// reference to the const under test: computing the expectation from that
+	// const would pass under any value it happened to hold — including 0,
+	// which DISABLES the threshold rather than arming it, and would make this
+	// whole rule a no-op while the test stayed green.
+	const wantThresholdBytes = 1
+
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), expHistogramWindowPlan(), true)
+
+	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
+		t.Errorf("group_by_two_level_threshold_bytes = %v; want %v", got, want)
+	}
+}
+
+// TestApplyExpHistogramTwoLevelBound_DisabledStampsNothing — the feature-flag
+// arm. With the exp_histogram_two_level feature absent from the resolved set
+// (an operator who listed CERBERUS_CH_OPTIMIZATIONS without it), the same plan
+// carries no stamp.
+func TestApplyExpHistogramTwoLevelBound_DisabledStampsNothing(t *testing.T) {
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), expHistogramWindowPlan(), false)
+
+	if got := settingValue(ctx, settingGroupByTwoLevelThresholdBytes); got != nil {
+		t.Errorf("feature disabled: group_by_two_level_threshold_bytes = %v; want absent", got)
+	}
+}
+
+// TestApplyExpHistogramTwoLevelBound_ClassicBucketLadderStampsNothing — the
+// conjunct that separates this predicate from a bare "is there a window
+// fan-out" check. The CLASSIC histogram bucket ladder builds the SAME
+// chplan.RangeBucketFanout node (internal/promql/
+// histogram_quantile_classic_native.go) but carries no exponential-histogram
+// node, and measured 75.00 -> 76.67 MiB under the stamp — a cost, not a win.
+// It must not be stamped.
+func TestApplyExpHistogramTwoLevelBound_ClassicBucketLadderStampsNothing(t *testing.T) {
+	plan := &chplan.RangeBucketFanout{
+		Input:                 &chplan.Scan{Table: "otel_metrics_histogram"},
+		PeakIndependentOfGrid: true,
+	}
+
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), plan, true)
+
+	if got := settingValue(ctx, settingGroupByTwoLevelThresholdBytes); got != nil {
+		t.Errorf("classic bucket ladder: group_by_two_level_threshold_bytes = %v; want absent", got)
+	}
+}
+
+// TestApplyExpHistogramTwoLevelBound_BareExpHistogramSelectorStampsNothing —
+// the OTHER conjunct. A bare exponential-histogram selector reaches
+// HistogramProjection with no window fan-out beneath it, builds no per-series
+// groupArray state to split, and measured 18.15 -> 18.63 MiB under the stamp.
+// It must not be stamped either — which is what makes this predicate narrower
+// than planHasNativeHistogramMerge, whose own doc accepts exactly this
+// over-match.
+func TestApplyExpHistogramTwoLevelBound_BareExpHistogramSelectorStampsNothing(t *testing.T) {
+	plan := &chplan.HistogramProjection{
+		Input: &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+	}
+
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), plan, true)
+
+	if got := settingValue(ctx, settingGroupByTwoLevelThresholdBytes); got != nil {
+		t.Errorf("bare exp-histogram selector: group_by_two_level_threshold_bytes = %v; want absent", got)
+	}
+}
+
+// TestApplyExpHistogramTwoLevelBound_NestedStampsThreshold — the WalkDeep arm.
+// A windowed exponential-histogram subtree nested inside a scalar-binding Expr
+// slot (which chplan.Walk does not follow) is still found, mirroring
+// TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize. The answer
+// gates a memory bound, so missing the nested case would leave exactly the
+// unbounded peak this rule exists to close.
+func TestApplyExpHistogramTwoLevelBound_NestedStampsThreshold(t *testing.T) {
+	// Literal, not expHistogramTwoLevelThresholdBytes — see the sibling
+	// wantThresholdBytes's own doc for why.
+	const wantThresholdBytes = 1
+
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Projections: []chplan.Projection{{
+			Expr:  &chplan.ScalarSubquery{Input: expHistogramWindowPlan()},
+			Alias: "Value",
+		}},
+	}
+
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), plan, true)
+
+	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
+		t.Errorf("nested: group_by_two_level_threshold_bytes = %v; want %v", got, want)
+	}
+}
+
+// TestSettingsRulesEnabledOpts_ReportsExpHistogramTwoLevel pins the corpus id
+// the reconciler records for this rule. internal/engine may not import
+// internal/chopt (.go-arch-lint.yml), so the id is a raw literal on both
+// sides; this test is what keeps the two spellings from drifting apart
+// silently.
+func TestSettingsRulesEnabledOpts_ReportsExpHistogramTwoLevel(t *testing.T) {
+	if got := (SettingsRules{ExpHistogramTwoLevel: true}).enabledOpts(); !slices.Contains(got, "exp_histogram_two_level") {
+		t.Errorf("enabledOpts() = %v; want it to contain %q", got, "exp_histogram_two_level")
+	}
+	if got := (SettingsRules{}).enabledOpts(); slices.Contains(got, "exp_histogram_two_level") {
+		t.Errorf("enabledOpts() with the rule off = %v; want no exp_histogram_two_level", got)
 	}
 }
