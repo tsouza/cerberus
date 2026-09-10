@@ -11,14 +11,16 @@ SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `kind`,
 -- seed --
 CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String),
-    SpanAttributes Map(String, String)
+    SpanAttributes Map(String, String),
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET')),
-    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET')),
-    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET')),
-    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET')),
-    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET'));
+INSERT INTO otel_traces (ResourceAttributes, SpanAttributes, TraceId, SpanId) VALUES
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET'), 'a0000000000000000000000000000001', '0000000000000001'),
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET'), 'a0000000000000000000000000000001', '0000000000000002'),
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET'), 'a0000000000000000000000000000001', '0000000000000003'),
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET'), 'a0000000000000000000000000000001', '0000000000000004'),
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET'), 'a0000000000000000000000000000001', '0000000000000005');
 -- expected_rows --
 [
   ["frontend", "Client", "GET", 5]
@@ -27,3 +29,7 @@ INSERT INTO otel_traces VALUES
 MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name, SpanAttributes["kind"] AS kind|span.kind, SpanAttributes["http.method"] AS http.method|span.http.method] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
+
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | rate() by (resource.service.name, span.kind, span.http.method)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

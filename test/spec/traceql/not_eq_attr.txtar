@@ -9,14 +9,24 @@ SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND (`Res
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
-    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', if(_idx = 0, 'frontend', if(_idx = 1, 'backend', 'db')))
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', if(_idx = 0, 'frontend', if(_idx = 1, 'backend', 'db'))),
+    TraceId String,
+    SpanId String
 ) ENGINE = MergeTree ORDER BY _idx;
-INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
+INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
+    (0, 'a0000000000000000000000000000001', '0000000000000001'),
+    (1, 'a0000000000000000000000000000001', '0000000000000002'),
+    (2, 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "db"}, "1970-01-01T00:00:00Z", 0],
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "frontend"}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000003", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "db"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=(FnMapContainsKey(ResourceAttributes, "service.name") AND (ResourceAttributes["service.name"] != "backend"))
   Scan(otel_traces)
+
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

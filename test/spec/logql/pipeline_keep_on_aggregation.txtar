@@ -31,3 +31,8 @@ RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value gro
       Scan(otel_logs)
 -- sql --
 SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapFilter((k, v) -> ((k IN (?, ?, ?)) OR (k = ?)), `ResourceAttributes`)) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`
+
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full

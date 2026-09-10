@@ -3,12 +3,14 @@
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64,
-    ResourceAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (100000000, map('service.name', 'frontend')),
-    (300000000, map('service.name', 'frontend')),
-    (200000000, map('service.name', 'backend'));
+INSERT INTO otel_traces (Duration, ResourceAttributes, TraceId, SpanId) VALUES
+    (100000000, map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000001'),
+    (300000000, map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000002'),
+    (200000000, map('service.name', 'backend'), 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
   ["backend", 0.2],
@@ -24,3 +26,7 @@ MetricsAggregate op=avg_over_time attr=(Duration / 1e+09) groupBy=[ResourceAttri
     Scan(otel_traces)
 -- sql --
 SELECT `ResourceAttributes`[?] AS `service.name`, avg((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `service.name`
+
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | avg_over_time(duration) by (resource.service.name)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

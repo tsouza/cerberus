@@ -7,12 +7,14 @@ SELECT max((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_tra
 [1] bool = true
 -- seed --
 CREATE TABLE otel_traces (
-    Duration UInt64
+    Duration UInt64,
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (50000000),
-    (200000000),
-    (100000000);
+INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
+    (50000000, 'a0000000000000000000000000000001', '0000000000000001'),
+    (200000000, 'a0000000000000000000000000000001', '0000000000000002'),
+    (100000000, 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
   [0.2]
@@ -21,3 +23,7 @@ INSERT INTO otel_traces VALUES
 MetricsAggregate op=max_over_time attr=(Duration / 1e+09) valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
+
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | max_over_time(duration)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

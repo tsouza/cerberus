@@ -9,12 +9,14 @@ SELECT `ResourceAttributes`[?] AS `service.name`, pow(2, ceil(log2(toFloat64(`Du
 -- seed --
 CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String),
-    Duration UInt64
+    Duration UInt64,
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (map('service.name', 'frontend'), 1024),
-    (map('service.name', 'frontend'), 1024),
-    (map('service.name', 'frontend'), 1024);
+INSERT INTO otel_traces (ResourceAttributes, Duration, TraceId, SpanId) VALUES
+    (map('service.name', 'frontend'), 1024, 'a0000000000000000000000000000001', '0000000000000001'),
+    (map('service.name', 'frontend'), 1024, 'a0000000000000000000000000000001', '0000000000000002'),
+    (map('service.name', 'frontend'), 1024, 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
   ["frontend", 0.000001024, 3]
@@ -23,3 +25,7 @@ INSERT INTO otel_traces VALUES
 MetricsHistogramOverTime attr=Duration duration=true groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] bucketAlias=__bucket valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
+
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | histogram_over_time(duration) by (resource.service.name)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

@@ -3,12 +3,16 @@
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
-    SpanAttributes Map(String, String) MATERIALIZED map('a', if(_idx = 0, '7', '3'), 'b', if(_idx = 0, '8', '4'))
+    SpanAttributes Map(String, String) MATERIALIZED map('a', if(_idx = 0, '7', '3'), 'b', if(_idx = 0, '8', '4')),
+    TraceId String,
+    SpanId String
 ) ENGINE = MergeTree ORDER BY _idx;
-INSERT INTO otel_traces (_idx) VALUES (0), (1);
+INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
+    (0, 'a0000000000000000000000000000001', '0000000000000001'),
+    (1, 'a0000000000000000000000000000001', '0000000000000002');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- args --
 [0] int64 = 0
@@ -20,3 +24,7 @@ Filter predicate=((0 - (FnToFloat64OrNull(SpanAttributes["a"]) + FnToFloat64OrNu
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE ((? - (toFloat64OrNull(`SpanAttributes`[?]) + toFloat64OrNull(`SpanAttributes`[?]))) < ?)
+
+-- parity_exempt --
+reason: oracle-untyped-attributes
+detail: `{ -(span.a + span.b) < -10 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

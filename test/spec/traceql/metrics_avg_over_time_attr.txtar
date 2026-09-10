@@ -2,12 +2,14 @@
 {} | avg_over_time(span.latency_ms)
 -- seed --
 CREATE TABLE otel_traces (
-    SpanAttributes Map(String, String)
+    SpanAttributes Map(String, String),
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (map('latency_ms', '10')),
-    (map('latency_ms', '20')),
-    (map('latency_ms', '30'));
+INSERT INTO otel_traces (SpanAttributes, TraceId, SpanId) VALUES
+    (map('latency_ms', '10'), 'a0000000000000000000000000000001', '0000000000000001'),
+    (map('latency_ms', '20'), 'a0000000000000000000000000000001', '0000000000000002'),
+    (map('latency_ms', '30'), 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
   [20]
@@ -21,3 +23,7 @@ MetricsAggregate op=avg_over_time attr=FnToFloat64OrNull(SpanAttributes["latency
     Scan(otel_traces)
 -- sql --
 SELECT avg(toFloat64OrNull(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
+
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{} | avg_over_time(span.latency_ms)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

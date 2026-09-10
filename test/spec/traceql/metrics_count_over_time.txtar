@@ -8,12 +8,14 @@ SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`
 [2] string = "frontend"
 -- seed --
 CREATE TABLE otel_traces (
-    ResourceAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (map('service.name', 'frontend')),
-    (map('service.name', 'frontend')),
-    (map('service.name', 'backend'));
+INSERT INTO otel_traces (ResourceAttributes, TraceId, SpanId) VALUES
+    (map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000001'),
+    (map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000002'),
+    (map('service.name', 'backend'), 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
   [2]
@@ -22,3 +24,7 @@ INSERT INTO otel_traces VALUES
 MetricsAggregate op=count_over_time valueAlias=Value
   Filter predicate=(ResourceAttributes["service.name"] = "frontend")
     Scan(otel_traces)
+
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ resource.service.name = "frontend" } | count_over_time()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

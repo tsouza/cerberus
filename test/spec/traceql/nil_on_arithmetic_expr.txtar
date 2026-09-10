@@ -2,15 +2,16 @@
 { (span.a + 1) != nil }
 -- seed --
 CREATE TABLE otel_traces (
-    SpanId String
+    SpanId String,
+    TraceId String
 ) ENGINE = MergeTree ORDER BY SpanId;
-INSERT INTO otel_traces (SpanId) VALUES
-    ('aaaa'),
-    ('bbbb');
+INSERT INTO otel_traces (SpanId, TraceId) VALUES
+    ('aaaa', 'a0000000000000000000000000000001'),
+    ('bbbb', 'a0000000000000000000000000000001');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0],
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "bbbb", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "bbbb", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- args --
 [0] bool = true
@@ -19,3 +20,8 @@ Filter predicate=true
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE ?
+
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

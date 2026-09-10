@@ -6,17 +6,24 @@ SELECT * FROM `otel_traces` WHERE (`Duration` >= ?)
 [0] int64 = 1000000000
 -- seed --
 CREATE TABLE otel_traces (
-    Duration UInt64
+    Duration UInt64,
+    TraceId String,
+    SpanId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (500000000),
-    (1000000000),
-    (2000000000);
+INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
+    (500000000, 'a0000000000000000000000000000001', '0000000000000001'),
+    (1000000000, 'a0000000000000000000000000000001', '0000000000000002'),
+    (2000000000, 'a0000000000000000000000000000001', '0000000000000003');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 1000000000],
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 2000000000]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 1000000000],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000003", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 2000000000]
 ]
 -- chplan --
 Filter predicate=(Duration >= 1000000000)
   Scan(otel_traces)
+
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

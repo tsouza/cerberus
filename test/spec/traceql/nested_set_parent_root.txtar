@@ -7,18 +7,24 @@ SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)
 -- seed --
 CREATE TABLE otel_traces (
     SpanId String,
-    ParentSpanId String
+    ParentSpanId String,
+    TraceId String
 ) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    ('aaaa', ''),
-    ('bbbb', 'aaaa'),
-    ('cccc', 'bbbb'),
-    ('dddd', '');
+INSERT INTO otel_traces (SpanId, ParentSpanId, TraceId) VALUES
+    ('aaaa', '', 'a0000000000000000000000000000001'),
+    ('bbbb', 'aaaa', 'a0000000000000000000000000000001'),
+    ('cccc', 'bbbb', 'a0000000000000000000000000000001'),
+    ('dddd', '', 'a0000000000000000000000000000001');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0],
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "dddd", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "dddd", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=(ParentSpanId = "")
   Scan(otel_traces)
+
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

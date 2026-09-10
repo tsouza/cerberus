@@ -7,17 +7,23 @@ SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?)
 -- seed --
 CREATE TABLE otel_traces (
     SpanId String,
-    ResourceAttributes Map(String, String) MATERIALIZED if(SpanId != 'bbbb', map('service.name', 'checkout'), map())
+    ResourceAttributes Map(String, String) MATERIALIZED if(SpanId != 'bbbb', map('service.name', 'checkout'), map()),
+    TraceId String
 ) ENGINE = MergeTree ORDER BY SpanId;
-INSERT INTO otel_traces (SpanId) VALUES
-    ('aaaa'),
-    ('bbbb'),
-    ('cccc');
+INSERT INTO otel_traces (SpanId, TraceId) VALUES
+    ('aaaa', 'a0000000000000000000000000000001'),
+    ('bbbb', 'a0000000000000000000000000000001'),
+    ('cccc', 'a0000000000000000000000000000001');
 -- expected_rows --
 [
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": "", "service.name": "checkout"}, "1970-01-01T00:00:00Z", 0],
-  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "cccc", "__cerberus_traceID": "", "service.name": "checkout"}, "1970-01-01T00:00:00Z", 0]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "checkout"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "cccc", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "checkout"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=FnMapContainsKey(ResourceAttributes, "service.name")
   Scan(otel_traces)
+
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
