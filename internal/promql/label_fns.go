@@ -22,20 +22,7 @@ import (
 // every code path — so we re-assert the StringLiteral shape here with
 // clear errors instead of panicking on a bad cast.
 func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	attrs, err := labelReplaceAttributesBuilder(c)
-	if err != nil {
-		return nil, err
-	}
-
-	inner, err := lower(c.Args[0], s, ctx)
-	if err != nil {
-		return nil, err
-	}
-	project, err := projectAttributesOverInner(inner, s, mixedLabelFamily, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) })
-	if err != nil {
-		return nil, err
-	}
-	return guardLabelRewriteCollision(project, s), nil
+	return lowerLabelCall(c, s, func() (chplan.Node, error) { return lower(c.Args[0], s, ctx) })
 }
 
 // labelReplaceAttributes validates label_replace's static arguments and
@@ -99,12 +86,29 @@ func labelReplaceAttributesBuilder(c *parser.Call) (func(chplan.Expr) chplan.Exp
 // joined value is the empty string, which our emit path drops via the
 // outer mapFilter — leaving the dst label absent on the wire.
 func lowerLabelJoin(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	attrs, err := labelJoinAttributesBuilder(c)
+	return lowerLabelCall(c, s, func() (chplan.Node, error) { return lower(c.Args[0], s, ctx) })
+}
+
+// lowerLabelCall validates the label expression before requesting its vector,
+// then shares the same role projection and collision guard for ordinary and
+// admitted mixed operands. Histogram-only roots keep their existing lowering.
+func lowerLabelCall(c *parser.Call, s schema.Metrics, load func() (chplan.Node, error)) (chplan.Node, error) {
+	var (
+		attrs func(chplan.Expr) chplan.Expr
+		err   error
+	)
+	switch c.Func.Name {
+	case fnLabelReplace:
+		attrs, err = labelReplaceAttributesBuilder(c)
+	case fnLabelJoin:
+		attrs, err = labelJoinAttributesBuilder(c)
+	default:
+		return nil, fmt.Errorf("promql: internal invariant violated: %s is not a label-only mixed set-op consumer", c.Func.Name)
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	inner, err := lower(c.Args[0], s, ctx)
+	inner, err := load()
 	if err != nil {
 		return nil, err
 	}
@@ -173,11 +177,32 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 // payload policies while replacing only its label map. Pure histogram inputs
 // remain on their existing histogram-aware lowering path.
 func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, family mixedWrapperFamily, build func(sampleRoleRefs) chplan.Expr) (*chplan.Project, error) {
-	if err := requireMixedPlanPolicy(inner, family); err != nil {
-		return nil, err
+	payload := preserveMixedSamplePayload
+	if chplan.RowShapeOf(inner) == chplan.MixedRowShape && family == mixedLabelFamily {
+		var err error
+		payload, err = labelPayloadPolicy(mixedPlanAdmission)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if err := requireMixedPlanPolicy(inner, family); err != nil {
+			return nil, err
+		}
 	}
 	return projectSampleRoles(inner, s,
-		sampleProjectionPolicy{name: preserveSampleName, payload: preserveMixedSamplePayload},
+		sampleProjectionPolicy{name: preserveSampleName, payload: payload},
 		legacySampleProjectionLayout(inner),
 		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{attributes: build(refs)} }), nil
+}
+
+// labelPayloadPolicy maps this family's table mode to the forwarder's actual
+// payload behavior. No other family is admitted by this resolver.
+func labelPayloadPolicy(site mixedAdmissionSite) (samplePayloadPolicy, error) {
+	key := mixedWrapperKey{family: mixedLabelFamily, site: site}
+	switch mixedOperandPolicies[key] {
+	case mixedPreserve:
+		return preserveMixedSamplePayload, nil
+	default:
+		return floatSamplePayload, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
+	}
 }

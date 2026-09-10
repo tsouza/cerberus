@@ -638,9 +638,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// histogram_native_mixed_or_label.go has the composition's own doc
 	// comment for why it needs no bespoke reduction the way sum/avg did.
 	if call, b, ok := labelCallOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedLabelFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerLabelCallOverMixedExpHistogramSetOp(call, b, s, ctx)
-		})
+		plan, err := lowerLabelCallOverMixedExpHistogramSetOp(call, b, s, ctx)
 		return plan, true, err
 	}
 	// Direct mixed math uses the same kernels as ordinary inputs. The adapter
