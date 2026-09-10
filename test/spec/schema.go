@@ -25,6 +25,7 @@ func AssertRowTypeMatchesDriver(t *testing.T, plan chplan.Node, result RoundTrip
 		return
 	}
 	want := bindFixtureSchemas(plan, result.tableColumns).RowType()
+	comparedNamedColumns := 0
 	if !want.Open && len(want.Columns) != len(result.projectionColumns) {
 		t.Fatalf("RowType has %d columns; driver has %d: schema=%#v driver=%q", len(want.Columns), len(result.projectionColumns), want, result.projectionColumns)
 	}
@@ -32,6 +33,7 @@ func AssertRowTypeMatchesDriver(t *testing.T, plan chplan.Node, result RoundTrip
 		if column.Name == "" {
 			continue
 		}
+		comparedNamedColumns++
 		if want.Open {
 			found := false
 			for _, name := range result.projectionColumns {
@@ -46,6 +48,9 @@ func AssertRowTypeMatchesDriver(t *testing.T, plan chplan.Node, result RoundTrip
 		} else if column.Name != result.projectionColumns[i] {
 			t.Errorf("RowType column %d = %q; driver = %q (all columns %q)", i, column.Name, result.projectionColumns[i], result.projectionColumns)
 		}
+	}
+	if !t.Failed() {
+		t.Logf("RowType driver verified: root=%T open=%t compared_named_columns=%d", plan, want.Open, comparedNamedColumns)
 	}
 }
 
