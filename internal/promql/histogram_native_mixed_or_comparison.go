@@ -52,7 +52,7 @@ import (
 // histogram row's placeholder Value into a live comparison would silently
 // evaluate against a meaningless number instead of being rejected or
 // dropped, which is exactly the hazard histogram_shape_guard.go's
-// [assertValueShapedInput] exists to catch for the two GENERIC
+// [projectSampleRoles] exists to catch for the two GENERIC
 // forwarders. This file avoids it the same way its two siblings do: by
 // never reaching a generic forwarder with a Mixed node in the first
 // place.

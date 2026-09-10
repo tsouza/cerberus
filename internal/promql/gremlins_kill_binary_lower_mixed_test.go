@@ -51,7 +51,7 @@ func lowerMixedOrAt(t *testing.T, q string) chplan.Node {
 // clampFamilyNewValue lowers a clamp-family call directly wrapping a
 // mixed float/histogram `or` and returns the Value projection's
 // expression — the last of the four canonical projections
-// [projectCanonicalFloatValue] builds.
+// [projectValueOverInner] builds.
 func clampFamilyNewValue(t *testing.T, q string) chplan.Expr {
 	t.Helper()
 	plan := lowerMixedOrAt(t, q)

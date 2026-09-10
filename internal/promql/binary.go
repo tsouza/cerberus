@@ -422,16 +422,23 @@ func foldSyntheticVectorBinary(
 		return &chplan.Filter{Input: vec, Predicate: opExpr}
 	}
 
-	var newValue chplan.Expr = opExpr
-	if isComparison(op) && returnBool {
-		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{opExpr}}
-	}
 	// RangeWindow-aware projection — same rationale as lowerVectorScalar:
 	// a bare INSTANT RangeWindow vec leg (`sum_over_time(m[5m]) - time()`)
 	// exposes only (Attributes, Value), so a TimeUnix passthrough would
 	// raise CH UNKNOWN_IDENTIFIER. For a selector / already-canonicalised
 	// vec leg the helper emits the identical 4-column shape.
-	return guardedValueProjection(vec, vecExpr, s, ctx, newValue)
+	return guardedValueProjection(vec, vecExpr, s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+		scalarValue := rewriteAnchorToTimeUnix(syntheticValueExpr(synth), refs.sourceMetrics(s))
+		var left, right chplan.Expr = refs.Value, scalarValue
+		if scalarOnLeft {
+			left, right = scalarValue, refs.Value
+		}
+		value := &chplan.Binary{Op: op, Left: left, Right: right}
+		if isComparison(op) && returnBool {
+			return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{value}}
+		}
+		return value
+	})
 }
 
 // rewriteAnchorToTimeUnix walks expr and replaces every
@@ -855,10 +862,6 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	// audit (#355) — this projection site accounts for ~36 of the 107
 	// `__name__`-retention diffs (scalar-on-{left,right} arithmetic +
 	// scalar `bool` compare + folded-scalar-in-bool cases).
-	newValue := chplan.Expr(opExpr)
-	if isComparison(op) && returnBool {
-		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{opExpr}}
-	}
 	// projectValueOverInner is RangeWindow-aware: for a selector input it
 	// emits the canonical (MetricName="", Attributes, TimeUnix, Value)
 	// shape (byte-identical to the hand-rolled Project this replaced); for
@@ -870,5 +873,15 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	// matrix shape keeps its per-anchor `anchor_ts`. Mirrors the
 	// instant-fn / unary-minus path which already routes through this
 	// helper.
-	return guardedValueProjection(inner, vec, s, ctx, newValue), nil
+	return guardedValueProjection(inner, vec, s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+		var left, right chplan.Expr = refs.Value, scalarLit
+		if scalarOnLeft {
+			left, right = scalarLit, refs.Value
+		}
+		value := &chplan.Binary{Op: op, Left: left, Right: right}
+		if isComparison(op) && returnBool {
+			return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{value}}
+		}
+		return value
+	}), nil
 }

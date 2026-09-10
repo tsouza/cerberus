@@ -31,24 +31,26 @@ func TestAttributeRewriteUnnamedFloatPhysicalColumns(t *testing.T) {
 				columns   []chplan.Column
 				open      bool
 				emptyName bool
+				wantPanic bool
+				nameRef   string
 			}{
 				{name: "grid", columns: []chplan.Column{attributes, anchor, timestamp, value}, emptyName: true},
 				{name: "timestamp_without_anchor", columns: []chplan.Column{attributes, timestamp, value}, emptyName: true},
-				{name: "anchor_without_timestamp", columns: []chplan.Column{attributes, anchor, value}},
-				{name: "neither_timestamp", columns: []chplan.Column{attributes, value}},
+				{name: "anchor_without_timestamp", columns: []chplan.Column{attributes, anchor, value}, wantPanic: true},
+				{name: "neither_timestamp", columns: []chplan.Column{attributes, value}, wantPanic: true},
 				{name: "name_preserved", columns: []chplan.Column{metric, attributes, timestamp, value}},
 				{name: "opaque_name_preserved", columns: []chplan.Column{{Name: s.MetricNameColumn}, attributes, timestamp, value}},
-				{name: "other_metric_role_preserved", columns: []chplan.Column{{Name: "another_metric", Role: chplan.RoleMetricName}, attributes, timestamp, value}},
-				{name: "open_unknown_name", columns: []chplan.Column{attributes, anchor, timestamp, value}, open: true},
-				{name: "opaque_outputs", columns: []chplan.Column{{Name: s.AttributesColumn}, {Name: s.ValueColumn}}},
-				{name: "missing_attributes", columns: []chplan.Column{timestamp, value}},
-				{name: "missing_value", columns: []chplan.Column{attributes, timestamp}},
-				{name: "opaque_attributes", columns: []chplan.Column{{Name: s.AttributesColumn}, timestamp, value}},
-				{name: "opaque_timestamp", columns: []chplan.Column{attributes, {Name: s.TimestampColumn}, value}},
-				{name: "opaque_value", columns: []chplan.Column{attributes, timestamp, {Name: s.ValueColumn}}},
-				{name: "histogram_payload_retains_legacy_boundary", columns: append([]chplan.Column{attributes, anchor, timestamp, value}, chplan.HistogramPayloadColumns()...)},
-				{name: "histogram_helper_retains_legacy_boundary", columns: []chplan.Column{attributes, timestamp, value, {Name: chplan.HistogramCountColumn, Role: chplan.RoleHistogramField}}},
-				{name: "discriminator_retains_legacy_boundary", columns: []chplan.Column{attributes, timestamp, value, {Name: "sample_kind", Role: chplan.RoleDiscriminator}}},
+				{name: "other_metric_role_preserved", columns: []chplan.Column{{Name: "another_metric", Role: chplan.RoleMetricName}, attributes, timestamp, value}, nameRef: "another_metric"},
+				{name: "open_unknown_name", columns: []chplan.Column{attributes, anchor, timestamp, value}, open: true, wantPanic: true},
+				{name: "opaque_outputs", columns: []chplan.Column{{Name: s.AttributesColumn}, {Name: s.ValueColumn}}, wantPanic: true},
+				{name: "missing_attributes", columns: []chplan.Column{timestamp, value}, wantPanic: true},
+				{name: "missing_value", columns: []chplan.Column{attributes, timestamp}, wantPanic: true},
+				{name: "opaque_attributes", columns: []chplan.Column{{Name: s.AttributesColumn}, timestamp, value}, wantPanic: true},
+				{name: "opaque_timestamp", columns: []chplan.Column{attributes, {Name: s.TimestampColumn}, value}, wantPanic: true},
+				{name: "opaque_value", columns: []chplan.Column{attributes, timestamp, {Name: s.ValueColumn}}, wantPanic: true},
+				{name: "histogram_payload_retains_legacy_boundary", columns: append([]chplan.Column{attributes, anchor, timestamp, value}, chplan.HistogramPayloadColumns()...), wantPanic: true},
+				{name: "histogram_helper_retains_legacy_boundary", columns: []chplan.Column{attributes, timestamp, value, {Name: chplan.HistogramCountColumn, Role: chplan.RoleHistogramField}}, wantPanic: true},
+				{name: "discriminator_retains_legacy_boundary", columns: []chplan.Column{attributes, timestamp, value, {Name: "sample_kind", Role: chplan.RoleDiscriminator}}, wantPanic: true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					scan := &chplan.Scan{Roles: slices.Clone(tc.columns)}
@@ -62,8 +64,24 @@ func TestAttributeRewriteUnnamedFloatPhysicalColumns(t *testing.T) {
 					if got := chplan.RowShapeOf(inner); got != chplan.SampleRowShape {
 						t.Fatalf("fixture legacy shape = %v, want Sample", got)
 					}
-					newAttrs := &chplan.MapWithoutKeys{Map: &chplan.ColumnRef{Name: s.AttributesColumn}, Keys: []string{"remove_me"}}
-					project := projectAttributesOverInner(inner, s, newAttrs)
+					var newAttrs chplan.Expr
+					var project *chplan.Project
+					call := func() {
+						project = projectAttributesOverInner(inner, s, func(refs sampleRoleRefs) chplan.Expr {
+							if tc.wantPanic {
+								t.Fatal("invalid role contract reached the rewrite callback")
+							}
+							newAttrs = &chplan.MapWithoutKeys{Map: refs.Attributes, Keys: []string{"remove_me"}}
+							return newAttrs
+						})
+					}
+					if tc.wantPanic {
+						// Keep every malformed-shape control: the role-driven API
+						// now fails closed instead of constructing invalid references.
+						capturePanic(t, call)
+						return
+					}
+					call()
 					if project.Input != inner {
 						t.Fatal("rewrite changed its input")
 					}
@@ -85,8 +103,12 @@ func TestAttributeRewriteUnnamedFloatPhysicalColumns(t *testing.T) {
 						}
 					} else {
 						column, ok := nameProjection.Expr.(*chplan.ColumnRef)
-						if !ok || column.Name != s.MetricNameColumn || nameProjection.Alias != "" {
-							t.Fatalf("name projection = %#v, want unchanged %s reference", nameProjection, s.MetricNameColumn)
+						wantName, wantAlias := s.MetricNameColumn, ""
+						if tc.nameRef != "" {
+							wantName, wantAlias = tc.nameRef, s.MetricNameColumn
+						}
+						if !ok || column.Name != wantName || nameProjection.Alias != wantAlias {
+							t.Fatalf("name projection = %#v, want %s reference with alias %q", nameProjection, wantName, wantAlias)
 						}
 					}
 				})

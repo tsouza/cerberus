@@ -61,25 +61,13 @@ import (
 // those same three mechanisms fits its own shape, so this file's own
 // doc does not re-enumerate them; see each file's own header for its
 // specific recognizer. That is
-// a deliberate scope line, not an oversight: every generic forwarder
-// (projectValueOverInner, projectAttributesOverInner) that reads `Value`
-// unconditionally would silently drop the histogram on a Mixed result's
-// histogram-shaped rows, where Value is only ever the placeholder — see
-// [assertValueShapedInput] (histogram_shape_guard.go), which panics if a
-// Mixed node reaches [projectValueOverInner] or bypasses
-// [projectAttributesOverInner]'s own MixedRowShape branch. `abs(a or b)`
-// for a mixed `a or b` is one of those explicitly recognized wrappers
-// rather than a fall-through: histogram_native_mixed_or_math_fn.go's own
-// root-only recognizer ([mathFnOverMixedExpHistogramSetOp]) covers every
-// entry in instant_fns.go's instantFnCH table — abs(), ceil(), floor(),
-// sqrt(), the log/trig/deg-rad families, sgn(), and round()'s default
-// one-arg form — by filtering the union down to its float-shaped rows
-// and applying the CH function there, which is exactly what reference's
-// own simpleFloatFunc does when it skips histogram-valued samples. It
-// READS the payload and still never hands a Mixed node to a generic
-// forwarder: it builds its own projection mirroring
-// [projectValueOverInner]'s canonical-shape branch instead of calling
-// it.
+// an explicit scope boundary. The shared [projectSampleRoles] core validates
+// the actual payload before a value rewrite and refuses live mixed histograms
+// unless an explicit payload policy can preserve them. The existing mixed math
+// family retains its root-only recognizer and float discriminator filter.
+// After that proof, it shares [projectValueOverInner] with an explicit canonical,
+// alias-materializing layout. This does not lift wrapper-family admission or
+// add a duplicate-label collision Aggregate.
 //
 // `sum`/`avg` [by/without] wrapping a mixed `or` DOES compose, since
 // cerberus issue #2346: histogram_native_mixed_or_aggregate.go's own

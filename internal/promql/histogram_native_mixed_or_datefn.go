@@ -74,9 +74,10 @@ func lowerDateFnOverMixedExpHistogramSetOp(c *parser.Call, b *parser.BinaryExpr,
 
 	// tsRef is nil: [dateFnExpr] only consults it for "timestamp", which
 	// [dateFnOverMixedExpHistogramSetOp] never recognises.
-	newValue := dateFnExpr(c.Func.Name, valueAsDateTime(s), nil)
-	if newValue == nil {
+	if dateFnExpr(c.Func.Name, nil, nil) == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return guardedValueProjection(floatForAgg, c.Args[0], s, ctx, asFloat64(newValue)), nil
+	return guardedValueProjection(floatForAgg, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(refs.sourceMetrics(s)), nil))
+	}), nil
 }

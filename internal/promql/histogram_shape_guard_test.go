@@ -16,8 +16,8 @@ import (
 // made loud.
 //
 // These tests are the ratchet on the assertion itself. Deleting
-// assertValueShapedInput, or widening chplan.RowShapeOf so a
-// HistogramProjection stops answering HistogramRowShape, fails here
+// projectSampleRoles, or losing a HistogramProjection's complete payload
+// declaration, fails here
 // rather than in a numeric diff nobody attributes to this change.
 
 // histogramShapedInput returns a minimal plan node that publishes
@@ -45,13 +45,13 @@ func TestProjectForwarders_PanicOnHistogramShapedInput(t *testing.T) {
 		{
 			name: "projectValueOverInner",
 			call: func() {
-				projectValueOverInner(histogramShapedInput(), s, &chplan.LitFloat{V: 1})
+				projectValueOverInner(histogramShapedInput(), s, sampleProjectionLayout{canonical: true}, func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: 1} })
 			},
 		},
 		{
 			name: "projectAttributesOverInner",
 			call: func() {
-				projectAttributesOverInner(histogramShapedInput(), s, &chplan.ColumnRef{Name: s.AttributesColumn})
+				projectAttributesOverInner(histogramShapedInput(), s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes })
 			},
 		},
 	}
@@ -61,8 +61,8 @@ func TestProjectForwarders_PanicOnHistogramShapedInput(t *testing.T) {
 			// The message must name the forwarder that needs teaching
 			// and the shape it refused, so the failure is actionable
 			// without reading this test.
-			if !strings.Contains(msg, tc.name) {
-				t.Errorf("panic message does not name the forwarder %q: %s", tc.name, msg)
+			if !strings.Contains(msg, "sample forwarder") {
+				t.Errorf("panic message does not name the shared forwarder: %s", msg)
 			}
 			if !strings.Contains(msg, chplan.HistogramRowShape.String()) {
 				t.Errorf("panic message does not name the %s shape: %s", chplan.HistogramRowShape, msg)
@@ -80,7 +80,7 @@ func TestProjectForwarders_PanicOnHistogramShapedInput(t *testing.T) {
 // someone widened the condition by accident.
 func TestProjectForwarders_AcceptEveryNonHistogramShape(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
-	scan := &chplan.Scan{Table: "otel_metrics_gauge"}
+	scan := &chplan.Scan{Table: "otel_metrics_gauge", Roles: metricRoles(s)}
 	inputs := []struct {
 		name  string
 		node  chplan.Node
@@ -89,12 +89,12 @@ func TestProjectForwarders_AcceptEveryNonHistogramShape(t *testing.T) {
 		{name: "sample", node: scan, shape: chplan.SampleRowShape},
 		{
 			name:  "grid-window",
-			node:  &chplan.RangeWindow{Input: scan, OuterRange: 1},
+			node:  &chplan.RangeWindow{Input: scan, OuterRange: 1, TimestampColumn: s.TimestampColumn, ValueColumn: s.ValueColumn, GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}},
 			shape: chplan.GridWindowRowShape,
 		},
 		{
 			name:  "reduced-window",
-			node:  &chplan.RangeWindow{Input: scan},
+			node:  &chplan.RangeWindow{Input: scan, TimestampColumn: s.TimestampColumn, ValueColumn: s.ValueColumn, GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}},
 			shape: chplan.ReducedWindowRowShape,
 		},
 	}
@@ -104,10 +104,10 @@ func TestProjectForwarders_AcceptEveryNonHistogramShape(t *testing.T) {
 				t.Fatalf("fixture publishes %s, want %s", got, in.shape)
 			}
 			// Both forwarders must return a projection rather than panic.
-			if got := projectValueOverInner(in.node, s, &chplan.LitFloat{V: 1}); got == nil {
+			if got := projectValueOverInner(in.node, s, legacySampleProjectionLayout(in.node), func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: 1} }); got == nil {
 				t.Error("projectValueOverInner returned nil")
 			}
-			if got := projectAttributesOverInner(in.node, s, &chplan.ColumnRef{Name: s.AttributesColumn}); got == nil {
+			if got := projectAttributesOverInner(in.node, s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes }); got == nil {
 				t.Error("projectAttributesOverInner returned nil")
 			}
 		})

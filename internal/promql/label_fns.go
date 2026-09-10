@@ -22,7 +22,7 @@ import (
 // every code path — so we re-assert the StringLiteral shape here with
 // clear errors instead of panicking on a bad cast.
 func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	attrs, err := labelReplaceAttributes(c, s)
+	attrs, err := labelReplaceAttributesBuilder(c)
 	if err != nil {
 		return nil, err
 	}
@@ -31,13 +31,21 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 	if err != nil {
 		return nil, err
 	}
-	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) }), s), nil
 }
 
 // labelReplaceAttributes validates label_replace's static arguments and
 // returns the Attributes expression shared by the ordinary sample lowering
 // and the histogram-valued root lowering.
 func labelReplaceAttributes(c *parser.Call, s schema.Metrics) (chplan.Expr, error) {
+	build, err := labelReplaceAttributesBuilder(c)
+	if err != nil {
+		return nil, err
+	}
+	return build(&chplan.ColumnRef{Name: s.AttributesColumn}), nil
+}
+
+func labelReplaceAttributesBuilder(c *parser.Call) (func(chplan.Expr) chplan.Expr, error) {
 	if len(c.Args) != 5 {
 		return nil, fmt.Errorf("promql: label_replace expects 5 arguments, got %d", len(c.Args))
 	}
@@ -63,17 +71,18 @@ func labelReplaceAttributes(c *parser.Call, s schema.Metrics) (chplan.Expr, erro
 		return nil, fmt.Errorf("promql: label_replace: %w", err)
 	}
 
-	attrs := &chplan.LabelReplace{
-		Map:              &chplan.ColumnRef{Name: s.AttributesColumn},
-		Dst:              dst,
-		Replacement:      chRepl.Template,
-		Segments:         chRepl.Segments,
-		ProbedRegex:      chRepl.ProbedRegex,
-		Src:              src,
-		Regex:            regex,
-		EmptyReplacement: qlcommon.EmptyCapturesReplacement(replacement),
-	}
-	return attrs, nil
+	return func(input chplan.Expr) chplan.Expr {
+		return &chplan.LabelReplace{
+			Map:              input,
+			Dst:              dst,
+			Replacement:      chRepl.Template,
+			Segments:         chRepl.Segments,
+			ProbedRegex:      chRepl.ProbedRegex,
+			Src:              src,
+			Regex:            regex,
+			EmptyReplacement: qlcommon.EmptyCapturesReplacement(replacement),
+		}
+	}, nil
 }
 
 // lowerLabelJoin lowers
@@ -86,7 +95,7 @@ func labelReplaceAttributes(c *parser.Call, s schema.Metrics) (chplan.Expr, erro
 // joined value is the empty string, which our emit path drops via the
 // outer mapFilter — leaving the dst label absent on the wire.
 func lowerLabelJoin(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	attrs, err := labelJoinAttributes(c, s)
+	attrs, err := labelJoinAttributesBuilder(c)
 	if err != nil {
 		return nil, err
 	}
@@ -95,12 +104,20 @@ func lowerLabelJoin(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node
 	if err != nil {
 		return nil, err
 	}
-	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) }), s), nil
 }
 
 // labelJoinAttributes validates label_join's string arguments and builds the
 // label-map expression shared by ordinary float rows and histogram rows.
 func labelJoinAttributes(c *parser.Call, s schema.Metrics) (chplan.Expr, error) {
+	build, err := labelJoinAttributesBuilder(c)
+	if err != nil {
+		return nil, err
+	}
+	return build(&chplan.ColumnRef{Name: s.AttributesColumn}), nil
+}
+
+func labelJoinAttributesBuilder(c *parser.Call) (func(chplan.Expr) chplan.Expr, error) {
 	if len(c.Args) < 3 {
 		return nil, fmt.Errorf("promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d", len(c.Args))
 	}
@@ -121,13 +138,14 @@ func labelJoinAttributes(c *parser.Call, s schema.Metrics) (chplan.Expr, error) 
 		srcs = append(srcs, src)
 	}
 
-	attrs := &chplan.LabelJoin{
-		Map:       &chplan.ColumnRef{Name: s.AttributesColumn},
-		Dst:       dst,
-		Separator: separator,
-		Srcs:      srcs,
-	}
-	return attrs, nil
+	return func(input chplan.Expr) chplan.Expr {
+		return &chplan.LabelJoin{
+			Map:       input,
+			Dst:       dst,
+			Separator: separator,
+			Srcs:      srcs,
+		}
+	}, nil
 }
 
 // stringArg extracts a static string literal from a Call argument,
@@ -143,137 +161,12 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 	return sl.Val, nil
 }
 
-// projectAttributesOverInner wraps inner with a Project that keeps every
-// other column and replaces only Attributes with the new attrs
-// expression. Mirrors projectValueOverInner (instant_fns.go) but
-// targets the Attributes column instead of Value.
-//
-// Which columns "every other column" means is DERIVED from the inner row
-// shape ([chplan.RowShapeOf]) rather than from the inner node's kind. The
-// projection references its inputs by name, so a listed column the inner
-// scope does not expose is a ClickHouse code 47 and an unlisted column the
-// layer above still reads is a silently emptied response — both of which
-// this helper has shipped, once per shape it guessed at:
-//
-//   - A WINDOWED row shape has already grouped MetricName away. Listing it
-//     emitted `SELECT MetricName, … FROM (<windowed subquery>)`:
-//
-//     Code: 47. DB::Exception: Unknown expression identifier `MetricName`
-//
-//     for `label_replace(rate(m[5m]), …)` at /api/v1/query_range whenever
-//     the ts_grid_range lowering was active, because the classifier used
-//     to be a `*chplan.RangeWindow` type assertion and that path builds a
-//     `*chplan.RangeWindowGridNative` with the identical row shape.
-//
-//   - A GRID window (one row per (series, anchor)) does NOT lose its
-//     timestamp: it publishes the anchor both as
-//     [chplan.RangeWindowAnchorColumn] and as `anchor_ts AS TimeUnix`.
-//     Listing only Attributes and Value therefore does not describe the
-//     input, it CONTRADICTS it — api/prom.wrapWithSampleProjection reads
-//     the anchor column back off the plan root to bucket each series'
-//     points, and dropping it left that wrapper selecting an identifier
-//     that no longer existed. Forwarding both mirrors what
-//     [projectValueOverInner] does for the same shape, and for the same
-//     two reasons: the matrix wrapper reads the anchor, and a step-aligned
-//     vector-vector join reads TimeUnix off each arm.
-//
-//   - A REDUCED window genuinely has no timestamp to forward — it has
-//     already collapsed each series to a single row — which is why the
-//     timestamp columns are conditional rather than unconditional.
-//
-//   - Broadcasts and value-rewrite Projects can retain the legacy Sample
-//     classification despite having dropped MetricName. A closed, float-only
-//     physical schema with a real timestamp proves that absence; materialize
-//     the dropped name as an empty string and retain the canonical sample
-//     layout. Open schemas and outputs carrying any histogram helper or
-//     discriminator retain their prior path, outside this narrow repair.
-//
-//   - Remaining Sample inputs retain the canonical four-column path.
-//
-// The return type is the concrete *chplan.Project rather than the Node
-// interface because [guardLabelRewriteCollision] reads the projection list
-// back to learn which canonical columns this rewrite actually exposes —
-// the same derive-don't-declare question [chplan.IsDerivedShape] answers
-// for the emitter and the HTTP layer.
-func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chplan.Expr) *chplan.Project {
-	// MixedRowShape (cerberus issue #2449): checked BEFORE
-	// assertValueShapedInput, which still panics on this shape for every
-	// OTHER caller (see histogram_shape_guard.go's doc comment). A label
-	// rewrite touches only Attributes, so it needs no per-payload branch
-	// at all — [mixedSampleProjections] forwards the other thirteen
-	// columns (the quartet's MetricName/Timestamp/Value, the nine
-	// Histogram*Column outputs, and the trailing discriminator) unchanged.
-	if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
-		return &chplan.Project{Roles: metricRoles(s), Input: inner, Projections: mixedSampleProjections(s, attrs)}
-	}
-	assertValueShapedInput(inner, "projectAttributesOverInner")
-	if shape := chplan.RowShapeOf(inner); shape != chplan.SampleRowShape {
-		projections := []chplan.Projection{{Expr: attrs, Alias: s.AttributesColumn}}
-		if shape == chplan.GridWindowRowShape {
-			projections = append(
-				projections,
-				chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}},
-				chplan.Projection{
-					Expr:  &chplan.ColumnRef{Name: s.TimestampColumn},
-					Alias: s.TimestampColumn,
-				},
-			)
-		}
-		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}})
-		return &chplan.Project{Roles: metricRoles(s), Input: inner, Projections: projections}
-	}
-	metricName := chplan.Projection{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}}
-	physical := inner.RowType()
-	_, hasMetricName := physical.ByName(s.MetricNameColumn)
-	attributes, _ := physical.ByName(s.AttributesColumn)
-	timestamp, _ := physical.ByName(s.TimestampColumn)
-	value, _ := physical.ByName(s.ValueColumn)
-	// A closed float-only Sample output may have dropped its metric name.
-	// Materialize the same empty-name convention as projectValueOverInner,
-	// keeping the real timestamp and canonical layout. Merely removing the
-	// name changes the collision guard to a derived output; a pinned broadcast
-	// is not a RangeWindow grid and that path synthesizes the wrong timestamp.
-	// Any histogram helper/discriminator excludes this narrow repair; this is
-	// not a definition of complete histogram payload or a new payload policy.
-	if !physical.Open && !hasMetricName && !physical.Has(chplan.RoleMetricName) &&
-		!physical.Has(chplan.RoleHistogramField) && !physical.Has(chplan.RoleDiscriminator) &&
-		attributes.Role == chplan.RoleAttributes && timestamp.Role == chplan.RoleTimestamp && value.Role == chplan.RoleValue {
-		metricName = chplan.Projection{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn}
-	}
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: inner,
-		Projections: []chplan.Projection{
-			metricName,
-			{Expr: attrs, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
-		},
-	}
-}
-
-// mixedSampleProjections builds the fourteen-column projection list a
-// [chplan.MixedRowShape] node's SELECT publishes (cerberus issue #2449):
-// MetricName, attrs (Attributes, rewritten or forwarded verbatim), the
-// schema Timestamp, Value, the nine Histogram*Column outputs, and the
-// trailing [mixedDiscriminatorColumn]. Shared by
-// [projectAttributesOverInner]'s MixedRowShape branch (attrs is the
-// caller's rewrite expression) and [guardLabelRewriteCollision]'s
-// canonical re-projection (duplicate_labelset_guard.go; attrs is a plain
-// `Attributes` column reference forwarding the ALREADY-rewritten column
-// the guard's Aggregate exposes) — both need byte-identical column names
-// and order, since internal/chclient's cursor decodes a Mixed result by
-// probing the FINAL SELECT's column names, not by node type.
-func mixedSampleProjections(s schema.Metrics, attrs chplan.Expr) []chplan.Projection {
-	projections := []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
-		{Expr: attrs, Alias: s.AttributesColumn},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
-	}
-	for _, name := range histogramProjectionOutputColumns() {
-		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}})
-	}
-	projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: mixedDiscriminatorColumn}})
-	return projections
+// projectAttributesOverInner preserves the wrapper's name and live mixed
+// payload policies while replacing only its label map. Pure histogram inputs
+// remain on their existing histogram-aware lowering path.
+func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, build func(sampleRoleRefs) chplan.Expr) *chplan.Project {
+	return projectSampleRoles(inner, s,
+		sampleProjectionPolicy{name: preserveSampleName, payload: preserveMixedSamplePayload},
+		legacySampleProjectionLayout(inner),
+		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{attributes: build(refs)} })
 }
