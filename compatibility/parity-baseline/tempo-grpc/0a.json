@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo-grpc",
   "bucket": "0a",
-  "cases": []
+  "cases": [
+    "search | intrinsic_eq_nil_rejected"
+  ]
 }

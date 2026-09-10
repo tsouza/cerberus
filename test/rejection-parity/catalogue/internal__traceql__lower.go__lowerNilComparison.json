@@ -22,8 +22,8 @@
       "head": "traceql",
       "site": "internal/traceql/lower.go:lowerNilComparison#fca86ae4",
       "message": "traceql: %s = nil is not valid because resource.service.name cannot be nil",
-      "class": "rejection",
-      "trigger_query": "{ resource.service.name = nil }",
+      "class": "internal",
+      "rationale": "the parse-stage validator rejects `resource.service.name = nil` before lowering — validateNilComparison in internal/traceql/ast, which is the stage the reference applies this rule in (pkg/traceql/ast_validate.go) and the one whose errors the Tempo head answers 400 rather than 422 — so no wire query reaches this guard. It is retained rather than deleted because falling through it would emit a NOT mapContains(ResourceAttributes, 'service.name') predicate that is false on every conforming span; internal/traceql/nil_comparison_guard_test.go calls lowerNilComparison directly, past Parse, so unreachable does not decay into untested",
       "evidence": {
         "guard": [
           "past returning if attr.Intrinsic != traceql.IntrinsicNone",
@@ -31,6 +31,9 @@
         ],
         "callers": [
           "lowerUnaryOperation"
+        ],
+        "cited": [
+          "lowerNilComparison"
         ]
       }
     }

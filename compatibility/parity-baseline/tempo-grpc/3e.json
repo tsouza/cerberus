@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo-grpc",
   "bucket": "3e",
-  "cases": []
+  "cases": [
+    "search | resource_service_name_eq_nil_rejected"
+  ]
 }

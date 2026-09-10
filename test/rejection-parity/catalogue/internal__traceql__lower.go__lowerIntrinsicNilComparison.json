@@ -21,14 +21,17 @@
       "head": "traceql",
       "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#5c445f2a",
       "message": "traceql: %s = nil is not valid because intrinsics cannot be nil",
-      "class": "rejection",
-      "trigger_query": "{ kind = nil }",
+      "class": "internal",
+      "rationale": "the parse-stage validator rejects `\u003cintrinsic\u003e = nil` before lowering — validateNilComparison in internal/traceql/ast, which is the stage the reference applies this rule in (pkg/traceql/ast_validate.go) and the one whose errors the Tempo head answers 400 rather than 422 — so no wire query reaches this guard. It is retained rather than deleted, as the sibling of the reference's own second copy in vparquet4's checkConditions: everything below it in lowerIntrinsicNilComparison computes the OpExists answer, so an OpNotExists falling through would lower to a filter matching every span. internal/traceql/nil_comparison_guard_test.go calls it directly, past Parse, so unreachable does not decay into untested",
       "evidence": {
         "guard": [
           "if op == traceql.OpNotExists"
         ],
         "callers": [
           "lowerNilComparison"
+        ],
+        "cited": [
+          "lowerIntrinsicNilComparison"
         ]
       }
     },

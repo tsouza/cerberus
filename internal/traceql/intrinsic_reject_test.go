@@ -266,7 +266,9 @@ func TestUnaryNotReferenceBugParity(t *testing.T) {
 // legitimately still rejects: upstream's own validate rule forbids
 // `<intrinsic> = nil` for EVERY intrinsic, so it is not a childCount
 // inconsistency — and keeping it here stops a "fix" that simply
-// accepted everything from passing.
+// accepted everything from passing. That one rejects at PARSE since
+// #3260, the stage the reference rejects it in, so it is asserted
+// against Parse rather than Lower.
 func TestChildCountAnswersOneStatusClassForEveryOperator(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
@@ -288,11 +290,7 @@ func TestChildCountAnswersOneStatusClassForEveryOperator(t *testing.T) {
 	}
 
 	const rejected = `{ span:childCount = nil }`
-	expr, err := tempo.Parse(rejected)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", rejected, err)
-	}
-	if _, err := traceql.Lower(context.Background(), expr, s); err == nil {
-		t.Errorf("Lower(%q): want a rejection (upstream forbids `<intrinsic> = nil`), got none", rejected)
+	if _, err := tempo.Parse(rejected); err == nil {
+		t.Errorf("Parse(%q): want a rejection (upstream forbids `<intrinsic> = nil`), got none", rejected)
 	}
 }
