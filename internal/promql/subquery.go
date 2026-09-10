@@ -1845,15 +1845,15 @@ var instantTransformFns = map[string]struct{}{
 	// TimeUnix) to a float; the zero-arg forms synthesise an
 	// anchor-stamped row instead and are rejected by the arity half of
 	// [isInstantTransformCall].
-	"year":          {},
-	"month":         {},
-	"day_of_month":  {},
-	"day_of_week":   {},
-	"day_of_year":   {},
-	"days_in_month": {},
-	"hour":          {},
-	"minute":        {},
-	"timestamp":     {},
+	"year":                {},
+	"month":               {},
+	"day_of_month":        {},
+	"day_of_week":         {},
+	"day_of_year":         {},
+	"days_in_month":       {},
+	"hour":                {},
+	"minute":              {},
+	timestampFunctionName: {},
 
 	// Sorting: reference discards the ordering when it folds each
 	// anchor's instant result into the subquery's matrix, so these are

@@ -55,7 +55,7 @@ import (
 // all, so it needs no drop rule — and it is not one of the eight
 // functions cerberus issue #2609 scopes.
 func dateFnOverMixedExpHistogramSetOp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, bool) {
-	if len(c.Args) != 1 || c.Func.Name == "timestamp" {
+	if len(c.Args) != 1 || c.Func.Name == timestampFunctionName {
 		return nil, false
 	}
 	return mixedExpHistogramSetOp(c.Args[0], s, ctx)

@@ -2972,7 +2972,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	case "vector":
 		return lowerVector(c, s, ctx)
 	case "year", "month", "day_of_month", "day_of_week", "day_of_year",
-		"days_in_month", "hour", "minute", "timestamp":
+		"days_in_month", "hour", "minute", timestampFunctionName:
 		return lowerDateFn(c, s, ctx)
 	case "sort", "sort_desc":
 		return lowerSort(c, s, ctx)

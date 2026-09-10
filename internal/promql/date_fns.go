@@ -9,6 +9,8 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+const timestampFunctionName = "timestamp"
+
 // lowerDateFn maps PromQL date-component functions to their ClickHouse
 // equivalents. Each function takes one instant-vector argument whose
 // `Value` column is interpreted as a Unix timestamp in seconds — except
@@ -71,7 +73,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// why the generic `lower()` call below cannot answer it: an
 	// exp-histogram-valued argument falls through to
 	// expHistogramSelectorRouting's catch-all rejection without this.
-	if c.Func.Name == "timestamp" {
+	if c.Func.Name == timestampFunctionName {
 		if node, ok, err := lowerTimestampOverExpHistogram(c.Args[0], s, ctx); ok {
 			return node, err
 		}
@@ -124,11 +126,11 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if err != nil {
 		return nil, err
 	}
-	if c.Func.Name != "timestamp" && dateFnExpr(c.Func.Name, nil, nil) == nil {
+	if c.Func.Name != timestampFunctionName && dateFnExpr(c.Func.Name, nil, nil) == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
 	family := mixedDateFamily
-	if c.Func.Name == "timestamp" {
+	if c.Func.Name == timestampFunctionName {
 		family = mixedTimestampFamily
 	}
 	return guardedValueProjection(inner, c.Args[0], s, ctx, family, func(refs sampleRoleRefs) chplan.Expr {
@@ -197,7 +199,7 @@ func carriedSampleTimestampColumns(name string, arg parser.Expr, ctx lowerCtx) [
 // instead answers from which seam the argument's OWN lowering takes, not
 // from a step value that means something else on that path.
 func readsRangeSampleTimestamp(name string, arg parser.Expr, ctx lowerCtx) bool {
-	if name != "timestamp" || ctx.step <= 0 || ctx.inRangeVector {
+	if name != timestampFunctionName || ctx.step <= 0 || ctx.inRangeVector {
 		return false
 	}
 	_, isSelector := unwrapVectorSelector(arg)
@@ -388,7 +390,7 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnToHour, Args: []chplan.Expr{valueDT}}
 	case "minute":
 		return &chplan.FuncCall{Fn: chplan.FnToMinute, Args: []chplan.Expr{valueDT}}
-	case "timestamp":
+	case timestampFunctionName:
 		// `timestamp(v)` returns tsRef as float seconds — NOT a
 		// function of Value. Convert the DateTime64(9) expression to
 		// nanoseconds (Int64) and divide by 1e9 to get fractional
