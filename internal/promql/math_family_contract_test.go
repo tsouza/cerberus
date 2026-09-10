@@ -2,6 +2,7 @@ package promql
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -121,5 +122,31 @@ func TestMathFamilyInvertedLiteralTopology(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMathFamilyNestedInvertedLiteralPreservesOperand(t *testing.T) {
+	for _, union := range []string{"latency_exp_hist or num_cpus", "num_cpus or latency_exp_hist"} {
+		for _, sort := range []string{"sort_by_label", "sort_by_label_desc"} {
+			operand := sort + "(" + union + ", \"job\")"
+			t.Run(operand, func(t *testing.T) {
+				original, err := mathFamilyContractLower(t, operand)
+				if err != nil || chplan.RowShapeOf(original) != chplan.MixedRowShape {
+					t.Fatalf("operand must independently lower to Mixed: %T, %v", original, err)
+				}
+				plan, err := mathFamilyContractLower(t, "clamp("+operand+", 2, 1)")
+				if err != nil {
+					t.Fatal(err)
+				}
+				empty, ok := plan.(*chplan.Filter)
+				if !ok {
+					t.Fatalf("terminal empty root=%T, want original Filter(false)", plan)
+				}
+				predicate, ok := empty.Predicate.(*chplan.LitBool)
+				if !ok || predicate.V || !reflect.DeepEqual(empty.Input, original) {
+					t.Fatalf("terminal empty must preserve original Mixed operand without payload narrowing: %#v", empty)
+				}
+			})
+		}
 	}
 }

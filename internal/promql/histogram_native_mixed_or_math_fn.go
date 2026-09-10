@@ -60,14 +60,24 @@ func lowerMathCallOverMixedExpHistogramSetOp(call *parser.Call, b *parser.Binary
 // the left still shadows a colliding float on the right. Existing-plan callers
 // invoke this only for Mixed inputs and before adding a bounds Filter.
 func prepareMixedMathOperand(site mixedAdmissionSite, load mathOperandLoader) (chplan.Node, error) {
+	prepare, err := mathPayloadPreparation(site)
+	if err != nil {
+		return nil, err
+	}
+	inner, err := load()
+	if err != nil {
+		return nil, err
+	}
+	return prepare(inner), nil
+}
+
+// mathPayloadPreparation resolves executable payload behavior. An admission
+// check may retain this policy without running it for a terminal empty result.
+func mathPayloadPreparation(site mixedAdmissionSite) (func(chplan.Node) chplan.Node, error) {
 	key := mixedWrapperKey{family: mixedMathFamily, site: site}
 	switch mixedOperandPolicies[key] {
 	case mixedFloatOnly:
-		inner, err := load()
-		if err != nil {
-			return nil, err
-		}
-		return mixedRowsFloatOnly(inner), nil
+		return mixedRowsFloatOnly, nil
 	default:
 		return nil, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
 	}

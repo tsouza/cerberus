@@ -176,6 +176,19 @@ func lowerMathOperand(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.N
 	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
 		return inner, nil
 	}
+	if _, err := mathPayloadPreparation(mixedPlanAdmission); err != nil {
+		return nil, err
+	}
+	return inner, nil
+}
+
+// prepareMathValueInput is deliberately later than admission: a terminal
+// literal-inverted clamp returns its original Filter(false) input unchanged.
+// Value consumers narrow here, before any bounds Filter can hide Mixed shape.
+func prepareMathValueInput(inner chplan.Node) (chplan.Node, error) {
+	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+		return inner, nil
+	}
 	return prepareMixedMathOperand(mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
 }
 
@@ -320,6 +333,11 @@ func lowerClampOverInput(c *parser.Call, s schema.Metrics, ctx lowerCtx, load ma
 		if err != nil {
 			return nil, err
 		}
+		// Narrow first: the bounds Filter below has a legacy Sample shape.
+		inner, err = prepareMathValueInput(inner)
+		if err != nil {
+			return nil, err
+		}
 		// Runtime mirror of the literal path's maxB < minB fold: keep
 		// rows only while NOT (max < min). NaN bounds compare false —
 		// rows survive and the NaN guard below turns the values NaN,
@@ -386,6 +404,10 @@ func lowerMathCall(c *parser.Call, s schema.Metrics, ctx lowerCtx, chFn chplan.F
 func finishMathValue(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx, finish mathFinalization, build func(sampleRoleRefs) chplan.Expr) (chplan.Node, error) {
 	switch finish {
 	case ordinaryGuarded:
+		inner, err := prepareMathValueInput(inner)
+		if err != nil {
+			return nil, err
+		}
 		return guardedValueProjection(inner, arg, s, ctx, mixedMathFamily, build)
 	case directCanonical:
 		return projectValueOverInner(inner, s, sampleProjectionLayout{canonical: true, materializeAliases: true}, build), nil
