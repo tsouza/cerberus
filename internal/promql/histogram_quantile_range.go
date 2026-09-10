@@ -681,12 +681,12 @@ func buildHistogramNativeRangeTreeMerge(
 	winIn = winIn.withLowerers(ctx.lowerers)
 	fold := histogramWindowFold(shape.windowFn, winIn)
 	perSeries := expHistogramWindowReshape(
-		buildHistogramBucketFanout(
+		guardExpHistogramWindowReduction(buildHistogramBucketFanout(
 			scan, pred, nil, win,
 			[]chplan.Expr{histogramIdentityExpr(s)},
 			[]string{s.AttributesColumn},
 			expHistogramValuedWindowAggs(s, shape.windowFn), s, ctx,
-		),
+		), ctx),
 		expHistogramValuedWindowAggs(s, shape.windowFn),
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		resets,

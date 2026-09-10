@@ -554,7 +554,7 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 	winIn = winIn.withLowerers(ctx.lowerers)
 	fold := histogramWindowFold(shape.windowFn, winIn)
 	return expHistogramWindowReshape(
-		minSamplesFilter(group, shape.minSamples()),
+		guardExpHistogramWindowReduction(minSamplesFilter(group, shape.minSamples()), ctx),
 		expHistogramValuedWindowAggs(s, shape.windowFn),
 		[]string{s.AttributesColumn},
 		resets,
