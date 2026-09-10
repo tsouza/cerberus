@@ -411,7 +411,8 @@ Lowering changes that alter the IR but not the SQL surface here.
 The three lowering harnesses also record `-- sql_optimized --` and
 `-- args_optimized --` from the same optimized plan their chDB roundtrip executes.
 TraceQL search fixtures include the reconstructed search wrapper in this pair.
-`-- settings --` records the production engine's plan-dependent settings under a
+`-- settings --` records the resolved feature IDs as `enabled_opts` and the
+production engine's plan-dependent settings under a
 fixed capability profile: all optional plan-dependent rules enabled, default OTel
 schemas, a 1 GiB statement memory cap, five-minute result-cache lag and TTL, and
 `2026-01-01T00:00:01Z` as the current time. This pins eligibility changes without

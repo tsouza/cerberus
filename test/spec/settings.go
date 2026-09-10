@@ -38,14 +38,11 @@ func FormatQuerySettings(plan chplan.Node) string {
 		Logs:                       schema.DefaultOTelLogs(),
 		Traces:                     schema.DefaultOTelTraces(),
 	}, probeQueryMemoryCap)
-	keys := make([]string, 0, len(probe.Settings))
-	for key := range probe.Settings {
-		keys = append(keys, key)
+	sort.Strings(probe.EnabledOpts)
+	lines := []string{"enabled_opts=" + strings.Join(probe.EnabledOpts, ",")}
+	for key, value := range probe.Settings {
+		lines = append(lines, fmt.Sprintf("%s=%v", key, value))
 	}
-	sort.Strings(keys)
-	var out strings.Builder
-	for _, key := range keys {
-		fmt.Fprintf(&out, "%s=%v\n", key, probe.Settings[key])
-	}
-	return out.String()
+	sort.Strings(lines)
+	return strings.Join(lines, "\n") + "\n"
 }

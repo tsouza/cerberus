@@ -18,6 +18,10 @@ func TestFormatQuerySettings(t *testing.T) {
 		},
 	}
 	got := FormatQuerySettings(plan)
+	const enabledOptions = "enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter\n"
+	if !strings.Contains(got, enabledOptions) {
+		t.Errorf("settings do not record the resolved feature profile:\n%s", got)
+	}
 	if !strings.Contains(got, "query_plan_optimize_lazy_materialization=1\n") {
 		t.Fatalf("settings probe did not activate on the eligible shape:\n%s", got)
 	}
