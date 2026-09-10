@@ -16,10 +16,9 @@ alert-firing parity): they stand up a real external ruler as lab
 infrastructure. Layer 14 is a harness around the whole operator journey, not
 a claim that the `cerberus migrate` tool itself grew those capabilities.
 
-The harness code, compose files, seeders, and workflow land in follow-up build
-PRs in the [phase order](#8-phased-build-order) below. This document is the
-canonical anchor: the 26 stories in [section 4](#4-the-26-migration-user-stories)
-are the source of truth the coverage ratchet diffs against.
+This document is the canonical anchor: the 26 stories in
+[section 4](#4-the-26-migration-user-stories) are the source of truth the
+coverage ratchet diffs against.
 
 ## 1. Goal and placement
 
@@ -29,10 +28,7 @@ stories require. The lane proves the operator journey end-to-end: harvest →
 explain → classify → rulegraph → schema → verify → gate → cut over →
 decommission, against real ClickHouse and a real reference Prometheus.
 
-**Why scheduled, not a PR gate.** The heavier tiers stand up multi-container
-stacks (Prometheus + OTel collector + ClickHouse + cerberus, plus a shadow
-ruler + Alertmanager) and seed minutes of rolling telemetry with target
-restarts. That is far too heavy and too slow to sit on the required PR path. It
+**Trigger posture — scheduled, not a PR gate.** The lane
 runs on the **same trigger posture as the existing `dashboard` lane**: nightly
 `schedule` cron + `workflow_dispatch` + **informational on push-to-main**, and
 never on `pull_request`, so it is not a branch-protection check. Informational
@@ -40,7 +36,7 @@ does **not** mean tolerated — a red migration lane is a real failure to fix or
 revert from main, exactly as the [CI-gate inventory](test-strategy.md#ci-gates)
 already says of every informational lane.
 
-**Placement — new Layer 14.** It slots directly above Layer 13 (live-stack
+**Placement — Layer 14.** It slots directly above Layer 13 (live-stack
 chaos): the slowest layer, asserting a workflow contract rather than a code
 contract. `docs/test-strategy.md` carries a single at-a-glance row pointing
 here; the full scenario map, tier design, and workflow shape live in this
@@ -717,11 +713,8 @@ lands as a false positive plus a false negative.
 **Timing skew is bounded and measured, not asserted zero.** The two schedulers
 cannot be phase-locked: Prometheus offsets a group's evaluation by
 `hash(group, file) % interval`, Grafana ticks epoch-aligned, and prom v3.11.3
-has no `align_evaluation_time_on_interval` to turn that off. Observed live, the
-two rulers fire the same correct alert about three seconds apart, which
-straddles a 10s quantization boundary roughly as often as not — so demanding
-zero quantized skew would fail on a healthy substrate. Section 5 names that
-sub-interval difference as not a cerberus artifact. `DiffAlertStreams`
+has no `align_evaluation_time_on_interval` to turn that off. Section 5 names
+that sub-interval difference as not a cerberus artifact. `DiffAlertStreams`
 therefore owns the verdict that cannot be blamed on scheduling (false positives
 and false negatives, both zero), and `SkewBoundHolds` owns the magnitude
 quantization throws away — bounded by one evaluation interval plus the
@@ -738,8 +731,8 @@ clean.
 
 #### MIG-19: how recorded-series parity is proven
 
-MIG-19's older assertion — every landed sample reproduces a live re-evaluation
-of its source expression at the instant it was recorded — covers the write-back
+Every landed sample reproduces a live re-evaluation of its source expression at
+the instant it was recorded. That covers the write-back
 path end to end, but has cerberus on BOTH sides: a cerberus evaluation bug moves
 the recorded value and the re-evaluation identically and cancels out.
 
@@ -747,7 +740,7 @@ The oracle that closes it is the incumbent's engine. Reference Prometheus holds
 its own copy of the same source samples, remote-written from the one fixture
 that produced the ClickHouse rows, and every landed sample must equal what THAT
 engine computes for the same expression at the same instant, under the same
-exact-parity epsilon. cerberus now stands on exactly one side.
+exact-parity epsilon. cerberus stands on exactly one side.
 
 The incumbent's own recorded series is held to that same engine on the
 incumbent's own evaluation grid. Without it the incumbent's `record:` rule could
@@ -770,9 +763,7 @@ landed there — the same trap the shadow side avoids by reading raw ClickHouse
 rows. The recovered instant is rounded to the nearest millisecond, which is
 exact rather than a concession: Prometheus stores every sample timestamp as an
 int64 count of milliseconds, so anything finer is float noise from the wire
-encoding. Skipping that rounding made a re-evaluation land 77ns off the ruler's
-own instant and, over the ramp, showed up as a 2.7e-06 divergence against a
-1e-09 epsilon.
+encoding.
 
 Two further assertions exist so the verdict cannot hold by construction,
 because the value comparison alone has two silent degenerate modes:
@@ -783,21 +774,16 @@ because the value comparison alone has two silent degenerate modes:
    exactly what a ruler evaluating at the provisioned interval produces there,
    with strictly increasing timestamps — a dropped tick or a duplicated write
    fails it.
-2. **A flat series makes every comparison zero against zero.** The earlier
-   fixture accrued exactly one idle-second per wall-clock second, so
-   `1 - rate(...)` was 0.0 everywhere and "landed equals re-evaluated" held
-   whether or not the write-back path preserved anything. The source series is
-   now seeded with a **ramped** counter rate, and the scenario asserts the
-   landed samples are not all one value.
+2. **A flat series makes every comparison zero against zero.** The source
+   series is seeded with a **ramped** counter rate, and the scenario asserts
+   the landed samples are not all one value.
 
 The Tier-2 scenarios that seed this rule's source series each write it under
 their own `seed_scope` label. They share one long-lived ClickHouse and one
 metric name, so without distinct identities MIG-09's seed and MIG-13/MIG-19's
 seed interleave into a single non-monotonic series, every interleaving reads as
-a counter reset, and the recording rule's output stops meaning anything —
-observed on the first live Tier-2 run as a landed sample of `0.05` against a
-re-evaluation of `-27.8`, a negative CPU utilisation. Overlapping windows are
-fine; colliding identities are not. The MWMBR fixture carries the same scope for
+a counter reset, and the recording rule's output stops meaning anything.
+Overlapping windows are fine; colliding identities are not. The MWMBR fixture carries the same scope for
 the same reason, and both rules keep it as a grouping key so each run gets its
 own series and its own alert identity.
 
@@ -854,7 +840,7 @@ test/e2e/migration/
 The `seed/` generators and the `tolerances/` registry belong to the tiers
 that need them: a seed profile drives a live backend, and the first
 epsilon is derived from a measured margin on one, so both arrive with
-Tier 1 ([section 8](#8-phased-build-order)). The offline tier reads
+Tier 1. The offline tier reads
 committed fixtures and asserts exact equality, so it needs neither.
 
 Scenarios are **Gherkin feature files driven by `godog`** (the Cucumber
@@ -946,9 +932,7 @@ parsing Gherkin itself:
   author remembering a step.
 - `MODE=attest` closes the gap between *enumerated* and *executed*. `verify`
   walks feature files, so a scenario that never ran counts exactly the same as
-  one that passed — the shape that let a branch report "30/30 across 26/26
-  stories; 0 violations" while its five Tier-2 scenarios had never executed
-  once, their job skipped by a `needs:` cascade. `attest` reads every tier's
+  one that passed. `attest` reads every tier's
   run report back and holds each counted scenario to *appeared in a report,
   with every step passed*. It attests only the tiers this run **selected**
   (`emit`'s `tiers` output, the same value the roll-up reads), so a dispatch
@@ -1217,17 +1201,7 @@ instead of ossifying at whatever number was first written down.
   schema (MIG-10 keeps DDL application a deliberate human step) and never mutate
   a real Grafana; the synthetic Grafana in the stack is the only thing driven.
 
-### 6.4. The PASS-assertion pin, and what it is compensating for
-
-The ratchet derives its anchors *live* from this document, which means the
-anchor is editable in the same commit as the code it anchors. It checks a
-scenario's tier tag against the **Tier(s)** column but never looked at the PASS
-assertion's *text*, so narrowing a PASS cell was always a valid route to "full
-coverage": weaken what the document demands, implement the weaker thing, stay
-green. That happened twice in one session — MIG-23's "the old backend is kept
-read-only as a historical tier" clause was deleted, and MIG-18's PASS assertion
-was narrowed from an incumbent-vs-shadow notification-stream diff to a
-single-ruler lifecycle in the same commit that implemented the narrower thing.
+### 6.4. The PASS-assertion pin
 
 `test/e2e/migration/pass-assertions.pin.json` records the SHA-256 of every
 section-6 PASS cell (and its **Tier(s)** cell), and `MODE=verify` fails on any
@@ -1239,13 +1213,12 @@ less", sitting next to the commit that implements less. There is no
 regeneration command, on purpose: the failure prints the new hash to paste,
 because a one-command re-pin is a re-pin nobody reads. The pin is hashed over
 whitespace-normalised text, so a markdownlint reflow or a column realignment is
-not a failure while a wording change is.
+not a failure while a wording change is. See
+[`migration-testing.background.md`](migration-testing.background.md) for the
+narrowings that made the pin necessary.
 
 One known gap between a PASS cell and what the lane executes today, recorded
-here so it is legible rather than buried. (MIG-18's dual-ruler gap was the
-other; it closed when the Tier-2 substrate grew its incumbent leg — a second
-ruler, its own Alertmanager and its own receiver — and the pin moved in the same
-diff as the scenarios that earned it.)
+here so it is legible rather than buried.
 
 - **MIG-23.** The PASS cell says queries reaching back before ClickHouse's
   ingest-start "transparently route to the incumbent read path". That
@@ -1330,44 +1303,14 @@ into the one place ground truth exists.
 | three-signal          | metrics + logs + traces; exemplars; span-metrics + service-graph; `trace_id` across logs and traces                                                                            | cross-signal correlation hops; `trace_id` as an indexed first-class column; trace assembly with late/sampled spans                                   | MIG-21                               |
 | regulated-airgapped   | no live backend permitted for assess; explicit compliance-retention mandate                                                                                                    | offline-only harvest/explain/classify/rulegraph/gate must run air-gapped; retention-runway compliance gate; decommission authorization artifact      | MIG-01/03/04/05/25/26 (offline half) |
 
-## 8. Phased build order
+## 8. Build and run order
 
-Cheapest-first, so value lands before the heavy infra, and each phase's
-assertions become the trust anchor the next depends on.
+Tier 2 depends on Tier 1: firing parity cannot be proven before query parity, so
+MIG-18 and MIG-24 gate on MIG-16 and MIG-17 being green (`migration-tier2 needs
+migration-tier1`), the same "ruler-first only after result parity" ordering the
+stories themselves demand.
 
-**Phase 1 — Tier-0 offline (build first).** The `godog` runner + the step
-library + `test/e2e/migration/cmd/scenarios/` + the coverage ratchet +
-`migration-e2e.mjs` + the
-`migration-e2e.yml` skeleton running Tier-0 only. Scenarios MIG-01, MIG-03,
-MIG-04, MIG-05, MIG-10 (render half), MIG-14 (lookback compute), MIG-26 (gate
-compute), plus the `gate` fold. Lands the eight archetype `rules/` +
-`dashboards/` + `expected/` fixtures (the seed telemetry generators come in
-Phase 2). Dependencies: none beyond the merged CLI — no Docker, seconds to run,
-so it ships and starts catching regressions immediately.
+---
 
-These seven scenarios are entirely predicate kinds 1 and 2, so Phase 1 also
-fixes the scenario language cheaply: it proves the tag vocabulary, the
-strict-mode + `.feature` lint discipline, and the "relation named in prose,
-arithmetic in Go" split against real scenarios before the heavier tiers commit
-to them. `tolerances/` stays empty until Phase 2 — the first ε is derived from a
-measured margin on a live backend, never guessed ahead of one.
-
-**Phase 2 — Tier-1 dual-backend.** `docker-compose.dual.yml` (Prometheus,
-Loki, Tempo, OTel collector, ClickHouse, cerberus) + collector config + the
-per-archetype `seed/` declarations (incl. the pod-restart counter-reset +
-`container_id`-churn shape). Scenarios MIG-02, MIG-06, MIG-07, MIG-08, MIG-10
-(diff half), MIG-11, MIG-12, MIG-13 (read-back half), MIG-14 (live TTL),
-MIG-15, MIG-16, MIG-17, MIG-20, MIG-21, MIG-22, MIG-23, MIG-25, MIG-26 (live
-TTL). Dependencies: Phase-1 corpora
-feed `verify --corpus`; reuses e2e.yml's free-disk-space + docker-hub-login +
-log-dump patterns. MIG-08's faults are `docker compose kill/pause/stop` on the
-compose stack — the Layer-13 `chaos-run.mjs` primitives are k3d/NetworkPolicy
-and do not apply to a compose substrate.
-
-**Phase 3 — Tier-2 ruler.** `docker-compose.ruler.yml` extending the dual stack
-with a query-only external ruler → cerberus and a dead-end Alertmanager.
-Scenarios MIG-09, MIG-13 (write-back half), MIG-18, MIG-19 (write-back timing),
-MIG-24. Dependencies: the recording-rule landing zone from Phase 2, and —
-critically — firing parity cannot be proven before query parity: MIG-18/24 gate
-on MIG-16/17 being green (`migration-tier2 needs migration-tier1`), the same
-"ruler-first only after result parity" ordering the stories themselves demand.
+For the rationale behind these choices — alternatives considered, incidents,
+measurements — see [migration-testing.background.md](migration-testing.background.md).

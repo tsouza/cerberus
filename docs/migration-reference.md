@@ -23,8 +23,9 @@ subcommands.
 | `cerberus migrate inventory` | Probe live sources for the cardinality that drives OOM risk                    | `--source`, `--top`, `--window`, `--loki-source`, `--loki-selector`, `--tempo-source`, `--json`, `--out`                                  | live (Prometheus always; Loki optional) |
 | `cerberus migrate gate`      | Fold the artifacts into one cutover go/no-go decision                          | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`               | offline                                 |
 
-The legacy `migrate --schema` root flag is now the `schema` subcommand, and the
-legacy `migrate --rules` root shorthand folded into `explain --rules`.
+See
+[`migration-reference.background.md`](migration-reference.background.md) for
+the root flags these subcommands replaced.
 
 ### Setting fallbacks
 
@@ -115,13 +116,11 @@ runtime; inventory refuses to infer it from `prometheus.yml`, and a source that
 404s the status endpoint is a hard error.
 
 `--loki-source` adds a per-selector section, ranking the `--loki-selector` set
-you supply by streams matched via Loki's `/loki/api/v1/index/stats`. Loki
-exposes no whole-tenant top-N cardinality call the way Prometheus's TSDB status
-does, so the operator names what to rank rather than the tool guessing.
+you supply by streams matched via Loki's `/loki/api/v1/index/stats`. The
+operator names what to rank; the tool never guesses at the set.
 
 `--tempo-source` records a fixed, specifically-reasoned out-of-scope entry
-rather than a fabricated number: Tempo's span/block storage has no head-block or
-ranked-cardinality-stats API analogous to either other head.
+rather than a fabricated number.
 
 **`rulegraph`** — links each recording rule's `record:` output series to the
 dashboard/alert consumers that read it. `--loki-rules` extends this to Loki's
@@ -131,13 +130,10 @@ ones, and linked by the same PromQL-shaped consumers (a dashboard panel or a
 Prometheus rule reading the remote-written metric by name) rulegraph already
 scans.
 
-Loki `alert:` rules are never harvested for this graph — a LogQL alerting expr
-is a log-stream selector, not a metric-name reference, so it can never consume a
-recorded series, and feeding it through the PromQL extractor would only
-manufacture spurious unparseable-consumer skips. Tempo has no rule concept in
-this sense: its metrics-generator is a fixed-shape, config-driven span-metric
-emitter with no user-authored rule file for a `--tempo-rules` flag to point at,
-so no such flag exists.
+Loki `alert:` rules are never harvested for this graph. Tempo contributes no
+rules at all: there is no `--tempo-rules` flag. See
+[`migration-reference.background.md`](migration-reference.background.md) for
+why each is excluded.
 
 ## How `verify` decides two results agree
 
@@ -292,9 +288,7 @@ checked. Read those buckets too.
 The non-matrix replay parameters — the log-stream `limit` of 5000 and its
 `backward` direction, the trace-search `limit` of 1000 and its spans-per-set of
 100 — are **pinned constants, not flags**, and are recorded in the `--report`
-artifact. They decide how much of a result is truncated, i.e. how much the gate
-can judge, so an operator knob would silently change what parity *means* between
-two runs. Trace-by-id and tag-discovery probes carry no limit of their own to
+artifact. Trace-by-id and tag-discovery probes carry no limit of their own to
 pin: a trace-by-id fetch is a direct row-by-id lookup, and a discovery probe
 enumerates whatever the window covers.
 
@@ -332,8 +326,7 @@ green-light a family that compared nothing.
 **zero queries** also blocks, since an empty corpus proves no support coverage.
 
 **rulegraph** — any *consumed* recorded series blocks (it must stay
-materialized). An unparseable consumer expression also blocks, because
-"orphan ⇒ safe to drop" is unsound once a consumer was dropped. A
+materialized). An unparseable consumer expression also blocks. A
 Loki-ruler-sourced recorded series (from `--loki-rules`) is the identical
 `RecordedNode` shape as a Prometheus one, distinguished only by its `loki-rule:`
 source prefix, and blocks through this same rule — the reported reason names the
@@ -356,10 +349,9 @@ Exit 0 — and only exit 0 — means you are cleared to cut over.
 - **Three comparison families.** `verify` judges the **metric matrix** — PromQL,
   LogQL metric queries, TraceQL metrics queries — the **LogQL log stream**, and
   the **TraceQL trace search**, each under its own definition of equality. A
-  TraceQL `compare()` selects its attribute inventory by a topN ranking neither
-  backend's wire contract specifies, so no definition of equality holds for it;
-  it is counted and reported `out_of_scope` with the reason, never silently
-  dropped and never guessed at.
+  TraceQL `compare()` has no definition of equality at all; it is counted and
+  reported `out_of_scope` with the reason, never silently dropped and never
+  guessed at.
 - **Query-result parity, not alert-firing parity.** `verify` diffs query
   results; it does not re-implement `for:` durations or Alertmanager routing.
 - **File-based harvest.** Harvest inputs are rule YAML and exported dashboard
@@ -367,3 +359,7 @@ Exit 0 — and only exit 0 — means you are cleared to cut over.
 - **Read-only.** The tool never provisions schema or mutates Grafana; applying
   the rendered DDL and flipping the datasource are deliberate steps you run
   yourself.
+
+---
+
+For the rationale behind these choices — alternatives considered, incidents, measurements — see [migration-reference.background.md](migration-reference.background.md).

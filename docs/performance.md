@@ -34,9 +34,7 @@ Two architectural invariants frame the whole approach:
   happen server-side, where CH parallelises a single MergeTree scan across
   cores. Route A bounds memory with `max_memory_usage`, the sample budget, an
   11k-point resolution cap, and a streaming cursor; it is byte-identical to the
-  pipeline cerberus has always shipped. (Loki's query-frontend exists because
-  object storage has no parallel scan — that constraint doesn't transfer to CH,
-  so route A stays the default rather than a scatter-gather frontend.)
+  pipeline cerberus has always shipped.
 - **The sharded-pushdown solver is the exception — ON by default (`auto`),
   narrow by construction.** Route A holds one CH statement per request for the
   overwhelming majority of traffic; the solver handles the single class route A
@@ -218,12 +216,9 @@ every PR) to *broad* (corpus-wide, nightly).
    all profile *structural* proxies for cost — fan factor, cardinality,
    scaling exponents — measured against chDB or in-process. None of them runs
    a real ClickHouse server and reads back real per-query memory, which is
-   exactly the blind spot that let #2358 ship: a fix validated only by a
-   manual timing comparison on CI-fixture-scale data silently removed a CSE
-   fold the emitter relied on, and 6h8m later prod hit
-   `MEMORY_LIMIT_EXCEEDED` (#2364) — invisible to every layer above because
-   the failure mode was memory, not fan-out shape, and only appeared at real
-   cardinality on a real server. This layer drives the mounted production
+   exactly the blind spot this layer closes — see
+   [`performance.background.md`](performance.background.md) for the incident
+   that produced it. This layer drives the mounted production
    `prom` + `tempo` handlers over real HTTP against a real ClickHouse
    (testcontainers-go), seeded at the scale each of #2364's own root-cause
    mechanisms (the native-histogram analyzer fix, the unconditional spill
@@ -334,10 +329,8 @@ source; it stops on a `WITH`-prefixed subquery (a CTE reference or a
 pre-rendered subquery splice — the union-gated `&&` `SetIntersect` fallback
 in `internal/chsql/set_op.go` is the current example, reached only by the
 arm shapes the single-pass window gate cannot fuse) and, structurally via
-`EXPLAIN`, on any `RECURSIVE` CTE step. Before #1519 those stages silently
-flattened to `fan_factor = 1.00` — the profiler reported "no fan-out" on
-exactly the constructs it exists to catch. `profile.Record.FanFactor` is
-now a `*float64`: nil (JSON `null`) whenever `UncountableLevels` is
+`EXPLAIN`, on any `RECURSIVE` CTE step. `profile.Record.FanFactor` is
+a `*float64`: nil (JSON `null`) whenever `UncountableLevels` is
 nonzero, never a fabricated `1.00`. The ratchet is null-aware rather than
 null-blind: a fixture whose current run is `null` must match what the
 committed baseline already says — `null` on both sides passes (already
@@ -371,7 +364,7 @@ hard-gates **both** axes on this shape. `unless` is not associative
 its binary nesting by construction — the one set-op shape that does not
 linearise, because flattening it would change results.
 
-## Rate-range windowing: why the fan-out ships as the default
+## Rate-range windowing: the fan-out
 
 `sum(rate(metric[5m]))` as a `query_range` (e.g. 1h @ 15s = **240 anchors**)
 over the OTel-CH counter table is the one metrics shape route A cannot fold
@@ -380,91 +373,15 @@ doesn't apply (see the
 [`range query (240 steps)` note in benchmarks.md](benchmarks.md#end-to-end-the-query_range-path)).
 The emit fans each sample into the `~Range/Step` overlapping windows it belongs
 to (`arrayJoin`), groups + sorts per `(series, anchor)`, then applies
-Prometheus's `extrapolatedRate`. That fan-out *looks* like the expensive part,
-and every instinct says to attack the data movement. The alternatives don't win
-at realistic scale; this section is the rationale for why the fan-out is the
-right default.
+Prometheus's `extrapolatedRate`. Its peak memory therefore grows with
+`series × anchors`, while its wall time is dominated by the per-anchor
+extrapolation arithmetic rather than by the scan.
 
-The numbers below come from real ClickHouse 24.8, 8-core (a bench host at the
-supported deployment floor of CH 24.8) — not chDB; the benchmarks.md curves run
-in-process chDB, these are prod CH.
-
-### The bottleneck is the extrapolation arithmetic, not the scan
-
-The single load-bearing fact: the bare table scan is **14 ms**, fully
-page-cached. The wall is **~98% per-anchor Prometheus-extrapolation
-arithmetic** — `extrapolatedRate` evaluated once per `(series, anchor)` window.
-It is compute, not data movement. The route-A fan-out scale curve:
-
-| samples | wall  | peak mem |
-| ------- | ----- | -------- |
-| 100k    | 0.45s | —        |
-| 300k    | 0.57s | 0.76 GiB |
-| 500k    | 0.79s | —        |
-| 1M      | 1.5s  | —        |
-| 5M      | 7.6s  | 5.47 GiB |
-
-The realistic-scale reading is the decision: **a normal 1h panel
-(~1000 series × 15s ≈ 200–500k samples) is already sub-second on what we
-ship.** 5M samples is **5000 fully-sampled series** — a high-cardinality stress
-case, not a panel anyone draws. At realistic scale the fan-out is already
-Prometheus-class, and the extrapolation-arithmetic floor (~1.7–2s at high
-cardinality) — *not* the data movement — is what every alternative has to beat.
-None do.
-
-### Why the alternatives don't win on wall time
-
-Each row is an alternative to the fan-out, with the numbers that decide it. The
-common thread: every one of them optimizes data movement (memory or
-cardinality), while the irreducible cost at realistic scale is the per-anchor
-extrapolation arithmetic — so none of them moves the wall-time floor.
-
-| alternative                            | what it does                                                        | result                                                                             | why it doesn't win on wall                                                                                                                                                                                                                                                                                      |
-| -------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Anchor-grid **sharding** (route B)     | K parallel shards over disjoint anchor sub-grids                    | **+8% slower** AND **8× scan amplification** (40M vs 5M `read_rows`)               | the 5m lookback straddles shards, so every shard re-scans the whole table. Sharding is a MEMORY mechanism — it divides the per-statement peak so the unbounded class clears the cap; it is not a wall-time optimization, which is exactly why route B is reserved for that class and route A stays the default. |
-| **ASOF JOIN** boundary lookup          | window-function enrichment instead of `arrayJoin`                   | cardinality down (fan_factor **5.83 → 1.0**) but wall **6.31s → 36.90s** worse     | ASOF + window enrichment is far slower than `arrayJoin` + `GROUP BY`, and the cardinality ratchet is blind to wall so it wouldn't catch the regression.                                                                                                                                                         |
-| **MV substitution / downsampling**     | rollup the 14 ms scan                                               | attacks the wrong axis; also lossy                                                 | breaks exact parity; the default schema ships no rollups, so a `MVSubstitution` rule would be a guaranteed no-op (the optimizer carries no such rule).                                                                                                                                                          |
-| **Naive single-pass array**            | per-anchor `arrayCount` / `arrayFirstIndex` over a per-series array | **6.9s**                                                                           | per-anchor LINEAR rescans — same `O(n × windows)` class as the fan-out; cuts memory ~5× but not wall.                                                                                                                                                                                                           |
-| **`arrayReduceInRanges`** segment-tree | range-aggregate the per-series sample array                         | dominated                                                                          | cannot produce the reset-adjusted increase — counter resets are a global per-series property needing the cumulative prefix-sum, which a segment-tree doesn't carry.                                                                                                                                             |
-| **B2 prefix-sum / two-pointer**        | the asymptotically-optimal single pass, byte-exact parity           | loses at realistic scale, wins only past ~1M (crossover **~1M**)                   | the optimal algorithm is the wrong *default* because the extrapolation arithmetic is the floor, not the data movement it optimizes. See below.                                                                                                                                                                  |
-
-The B2 prefix-sum / two-pointer deserves the detail, because it is the
-*asymptotically optimal* answer and it still loses as a default:
-
-| samples | B2 (optimal single-pass) | fan-out (shipped) | verdict                         |
-| ------- | ------------------------ | ----------------- | ------------------------------- |
-| 300k    | 1.69s / 2.2 GiB          | 0.57s / 0.76 GiB  | fan-out **3× faster**           |
-| 5M      | 3.75s / 1.23 GiB         | 7.58s / 5.47 GiB  | B2 **2× faster, 4.4× less mem** |
-
-The crossover sits near **1M samples** — above realistic panel scale. B2 wins
-only in the high-cardinality stress regime, and it wins on *memory* and *wall*
-there because it stops materializing the pair set. But at the scale real panels
-run, the extrapolation-arithmetic floor dominates the data movement B2
-optimizes, so the optimal algorithm is **3× slower** than the fan-out it was
-meant to replace.
-
-### Why the fan-out is the default
-
-At realistic scale it is already Prometheus-class, and every alternative
-**loses at realistic scale** because they all optimize data movement while the
-irreducible cost is the per-anchor extrapolation arithmetic. Sharding and ASOF
-and single-pass each cut memory or cardinality — the axes the cardinality
-ratchet watches — but pay for it in wall, and wall is the axis the user feels.
-(Sharding's memory win is still the right tool for the unbounded class, which is
-why route B exists for it — but it is a memory mechanism, not a wall-time one,
-so it is not the default for the bounded majority.) The fan-out is the right
-default until the arithmetic floor itself moves.
-
-> Every wall/memory number in this section is **prose** — a real benchmark
-> run, hand-transcribed into this file, with no CI gate keeping it honest.
-> That gap is exactly what let #2358 ship unnoticed: a real-CH fix validated
-> only by a manual timing comparison at CI-fixture scale, with nothing
-> re-measuring memory at realistic cardinality, silently regressed peak
-> memory 6h8m later (#2364). `test/perf/smoke` (the assurance framework's
-> [layer 5](#how-fast-is-kept-fast--the-assurance-framework), in the required
-> `strict-scan` job) closes that specific gap for the incident's own three
-> mechanisms: it is a live, per-PR ClickHouse memory measurement, not a
-> point-in-time table like the ones above.
+The fan-out is the default for the bounded majority of rate-range traffic. See
+[`performance.background.md`](performance.background.md) for the measurement
+campaign behind that choice: the scale curve, the alternatives that were built
+and rejected, and the crossover past which the asymptotically optimal
+single-pass finally wins.
 
 ## Native rate: exactness vs. scale (should I enable it?)
 
@@ -501,9 +418,10 @@ results match Prometheus exactly.**
 
 It is also fast at the scale real dashboards run. A normal 1h panel
 (~1000 series × 15s ≈ 200–500k samples) is comfortably **sub-second** on the
-shipped fan-out (the scale curve above tops out at 0.79s for 500k samples). The
-one place it strains is memory: the fan-out materializes one intermediate row
-per `(sample, anchor)` pair, so its peak memory grows with
+shipped fan-out (the scale curve in
+[`performance.background.md`](performance.background.md) tops out at 0.79s for
+500k samples). The one place it strains is memory: the fan-out materializes one
+intermediate row per `(sample, anchor)` pair, so its peak memory grows with
 **series × anchors**. Push that high enough — millions of samples over a wide,
 fine-grained grid — and a single statement's peak crosses the per-query memory
 cap (`CERBERUS_CH_QUERY_MAX_MEMORY`, **1 GiB** by default), and the query is
@@ -589,16 +507,6 @@ established, Prometheus-exact path. The full env-var contract and CH-version
 constraint live in
 [`operations.md`](operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-259).
 
-### The lesson
-
-The bottleneck for rate-range is the **per-anchor extrapolation arithmetic
-(irreducible)**, not data movement. So data-movement optimizations
-(sharding / ASOF / MV / single-pass) don't help at realistic scale — and
-realistic scale is already fast. When an optimization targets memory or
-cardinality but the user-felt cost is wall, confirm which axis actually
-dominates *before* building the alternative: here, four of them were built
-before the 14 ms scan vs ~98%-arithmetic split was measured.
-
 ## See also
 
 - [`benchmarks.md`](benchmarks.md) — live before/after wins, scaling curves,
@@ -618,3 +526,8 @@ before the 14 ms scan vs ~98%-arithmetic split was measured.
   [#3074](https://github.com/tsouza/cerberus/issues/3074)) this document's
   fan-out "shard" is unrelated to, and this framework's own blind spot
   under it (see above).
+
+---
+
+For the rationale behind these choices — alternatives considered, incidents,
+measurements — see [performance.background.md](performance.background.md).

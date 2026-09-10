@@ -245,11 +245,8 @@ from a classic one, so it routes on that suffix alone
 `_bucket` series or `le` label:
 `histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))`
 is the whole expression, not `sum by (le, cerberus_ql) (rate(..._bucket[5m]))`.
-The switch removes this metric from the class of risk a wide classic
-histogram carries under the `RangeBucketGridNative` query-time cost guard
-(`internal/chsql/range_bucket_grid_native_bound.go`) — this metric already
-tripped that guard once, at a 24h self-monitoring window, before the
-guard's own recalibration fixed that specific incident.
+See [`observability.background.md`](observability.background.md) for the
+incident behind the switch.
 
 #### ClickHouse connection lifecycle
 
@@ -324,11 +321,6 @@ instruments. One breaker fronts each logical head, so every series is keyed on
 | `cerberus_ch_breaker_trips_total`                | counter | `head`, `cause` | Cumulative CLOSED→OPEN trips, split by why the breaker tripped.                  |
 | `cerberus_ch_breaker_statement_rejections_total` | counter | `head`          | ClickHouse rejections classified as statement-scoped and deliberately uncounted. |
 
-The phase rides the gauge's numeric LEVEL, never a `state` label: an OTel
-observable gauge only overwrites the series it re-observes, so a phase-keyed
-label would orphan the previous phase's series and leave a recovered breaker
-still exporting `state="open"=1` forever.
-
 A trip is the highest-blast-radius event cerberus has — it fast-fails every
 query behind that head with a 503. It does not by itself flip `/readyz`:
 readiness pings through a dedicated `probe` breaker, reports the tripped head
@@ -347,10 +339,9 @@ exhaustion. `cause` names which kind of backend trouble caused the trip:
 Statement-scoped rejections — a syntax error, an unknown column, an
 unsatisfiable setting combination — can never trip the breaker. ClickHouse
 answering a statement with a typed exception is positive proof it is serving,
-and counting those turns a handful of bad queries into a shed-everything
-outage: exactly what happened when ~21 code-704 rejections became 1015 compat
-divergences and read like a total engine regression for 32 hours. They are
-counted separately instead, and the pair is what makes triage decidable:
+and counting those would turn a handful of bad queries into a shed-everything
+outage. They are counted separately instead, and the pair is what makes triage
+decidable:
 
 - rising `statement_rejections_total` with a flat `trips_total` — cerberus is
   emitting SQL ClickHouse declines. The backend is fine; look at the query
@@ -380,28 +371,26 @@ label cardinality is fixed:
 family. `cerberus_error_reason` is not, and cannot be: upstream wire
 parity pins two statuses onto three meanings. Every head answers a query
 wall-clock timeout with **503** because upstream Prometheus and Loki do,
-and answers a per-query budget refusal with **422** — so a status-derived
-reason would file every timeout under `backend_unavailable`,
-indistinguishable from a real ClickHouse outage, and every capacity
-refusal under `bad_request`, indistinguishable from a malformed query.
-The handler that already classified the failure therefore records the
-reason directly (`telemetry.SetReason`, on a request-scoped cell the query
-middleware installs), and the middleware prefers it over its
-status-derived default. The wire bytes are unchanged; a handler that
-records nothing is classified from its status exactly as before. A
-recovered panic stays pinned to `internal` whatever the handler recorded.
+and answers a per-query budget refusal with **422**. The handler that
+already classified the failure therefore records the reason directly
+(`telemetry.SetReason`, on a request-scoped cell the query middleware
+installs), and the middleware prefers it over its status-derived default.
+The wire bytes are unchanged; a handler that records nothing is classified
+from its status exactly as before. A recovered panic stays pinned to
+`internal` whatever the handler recorded.
 
 A client cancellation is the third meaning those two statuses collide,
-and the one where the heads disagreed outright: Tempo answers **499**,
+and the one where the heads disagree on the wire: Tempo answers **499**,
 deliberately outside the 5xx band so a client hanging up is never read as
 "cerberus is unhealthy", while Prometheus and Loki answer **503** to stay
-byte-compatible with upstream's own `errorCanceled` envelope. Derived
-from the status, the same event read `bad_request` on one head and
-`backend_unavailable` on the other two, and neither is true. It now
-travels the same route as the other two: `httperr.TelemetryReason` names
-a `context.Canceled` failure `canceled` for every head, and the two
-constructors that restate the message in upstream's wording — and so
-destroy the sentinel — carry the reason on the error itself.
+byte-compatible with upstream's own `errorCanceled` envelope. The reason
+label travels the same route as the other two regardless:
+`httperr.TelemetryReason` names a `context.Canceled` failure `canceled`
+for every head, and the two constructors that restate the message in
+upstream's wording — and so destroy the sentinel — carry the reason on the
+error itself. See
+[`observability.background.md`](observability.background.md) for what a
+status-derived reason would have made of these three collisions.
 
 A cancellation still counts as `result="error"`, because the query was
 not answered. It is the one error reason expected in normal operation
@@ -447,26 +436,20 @@ added to one is a failure until it is added to all three.
 The duration ladders are explicit (the SDK default is
 millisecond-shaped, and these instruments record seconds). Both reach
 the minute scale on purpose: a gateway fronting an analytical database
-can serve a request slower than any single-digit-second bound, and
-every observation past the top FINITE bucket is unresolvable — the
-`+Inf` bucket has no upper bound for `histogram_quantile` to
-interpolate against, so once it holds more than 5% of the observations
-p95 and p99 both collapse onto the top finite bound and the slow tail
-disappears exactly where an investigation needs it. `execute` carries
-the ClickHouse round trip, so the stage ladder has to reach as far up
-as the query ladder.
+can serve a request slower than any single-digit-second bound. `execute`
+carries the ClickHouse round trip, so the stage ladder has to reach as far
+up as the query ladder. See
+[`observability.background.md`](observability.background.md) for what
+happens to p95/p99 when the top finite bucket is set too low.
 
 #### Stage attribution
 
-`cerberus_pipeline_stage_duration_seconds` carries `cerberus_ql`
-because one process serves all three heads: without it, a slow `parse`
-or `execute` cannot be attributed to a language, and the metric would
-only be separable in a deployment that happened to split the heads into
-separate processes — a property of that deployment, not of the metric.
-The stages (`parse` / `lower` / `optimize` / `emit` / `execute`) do not
-sum to the request duration: response materialisation and the row drain
-sit outside them, and on the streaming paths the drain runs while the
-response is being written. Use `cerberus_queries_duration_exp_hist` for
+`cerberus_pipeline_stage_duration_seconds` carries `cerberus_ql`, so a
+slow `parse` or `execute` is attributable to a language in a process that
+serves all three heads. The stages (`parse` / `lower` / `optimize` / `emit` /
+`execute`) do not sum to the request duration: response materialisation and
+the row drain sit outside them, and on the streaming paths the drain runs
+while the response is being written. Use `cerberus_queries_duration_exp_hist` for
 the end-to-end number and the stage histogram for the breakdown within
 the engine.
 
@@ -482,26 +465,12 @@ under `err`:
 {"level":"WARN","msg":"otel: self-telemetry pipeline error","component":"otel","err":"..."}
 ```
 
-`WARN` rather than `INFO` because the condition is actionable and
-degrading: an export failure means the gateway has lost its OWN
-telemetry, which is precisely what an operator reaches for when
-diagnosing a failure. The fixed message plus the `component` field make
-the rate of these expressible as an alert.
+The fixed message plus the `component` field make the rate of these
+expressible as an alert.
 
 ### Query failure log line
 
-Before this, a query that failed against ClickHouse — a timeout, an
-OOM / memory-limit abort, a ClickHouse exception, a caller cancellation,
-or any other non-`ok` exit — left no trace in `kubectl logs` at all. The
-only record was cerberus's own ClickHouse-side performance corpus
-(`internal/optcorpus`, `docs/router-rules.md`), which is off by default
-(`CERBERUS_CH_OPT_CORPUS_ENABLED`) and, even when on, is written on an
-interval into a table an operator troubleshooting "things are slow" has
-no reason to think of querying. A routine incident investigation ended
-up as a multi-hour ClickHouse-side deep-dive instead of a five-minute
-`grep`.
-
-`internal/engine` now logs one `WARN`-level, structured line at every
+`internal/engine` logs one `WARN`-level, structured line at every
 seam where a dispatched query's outcome resolves to something other
 than a clean finish — the eager `Query` / `QueryPlan` path (every PromQL
 instant query, every LogQL query, every eager TraceQL query), the
@@ -569,3 +538,8 @@ hanging.
 Leave `CERBERUS_OTLP_ENDPOINT` unset (or set to the empty string). The
 process installs no-op providers; otelhttp middleware still wraps the
 mux but every span is silently dropped.
+
+---
+
+For the rationale behind these choices — alternatives considered, incidents,
+measurements — see [observability.background.md](observability.background.md).

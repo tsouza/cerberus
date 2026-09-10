@@ -317,22 +317,6 @@ all hold, and
 `test/regression/merge_queue_test.go` rejects any third form that is not
 provably false on the queue.
 
-**Why `coverage` reports NOT MEASURED on a pull request instead of measuring
-something cheap.** The obvious proposal — run the default-tag lane on PRs, since
-`coverage-default` completes in about three minutes while `coverage-chdb` runs
-35-50 — fails on soundness, not on cost. The committed floors in
-`test/coverage-floor/` are measured from the MERGED `default+chdb` profile, and a
-chdb-tagged run compiles and reaches code the default-tag run cannot. Comparing a
-default-only profile against those floors therefore reports drops that are not
-real, for every package whose coverage comes from chdb-tagged tests.
-`coverage-summary.mjs` already refuses that comparison for this exact reason
-(`resolveLanes` against `FULL_LANES`, and `COVERAGE_REQUIRE_LANES` to stop a
-silently narrowed profile passing as a full one). Making a PR-time measurement
-sound would need a second, default-only ledger carrying its own ratchet — a
-doubling of the floor surface. Until someone wants to own that, the honest answer
-on a pull request is to say plainly that nothing was measured, which is what the
-verdict does.
-
 **A queued entry is held to the pull-request posture, not the push posture.** The
 queue answers the contexts branch protection asks a *PR* for, so the lanes that
 short-circuit on an ordinary PR (`coverage`, `property`) short-circuit in the
@@ -601,42 +585,21 @@ worth one — see that issue's closing PR for the reasoning.
 
 Every chdb-tagged test binary loads libchdb.so — an embedded ClickHouse —
 with `dlopen`, and chdb-go caches ONE process-wide session for the life of
-the process. Its driver's `(*conn).Close` is a no-op, so `db.Close()` does
-not shut the native engine down; nothing on the Go side ever does.
-
-That asymmetry is invisible to a plain `go test`, because Go's `os.Exit`
-reaches the `exit_group` syscall directly and libchdb's C++ static
-destructors never run. It is NOT invisible under `-race`: `os.Exit` first
-calls `runtime_beforeExit` → `runtime.racefini` → `__tsan_fini`, which — per
-the Go runtime's own comment on `racefini` — "will run C atexit functions
-and C++ destructors". Those destructors then tore libchdb down while its
-engine was still live, and the process died with
-
-```text
-SIGSEGV: segmentation violation
-runtime.racefini()
-os.runtime_beforeExit(0x0)
-os.Exit(0x0)
-```
-
-at a constant offset inside `libchdb.so`, **after** every test in the binary
-had already passed — turning a suite in which nothing failed into a failed
-lane. `os.Exit(0x0)` in that trace is the tell: the exit code was zero.
-
-`internal/chdbsession.CloseForExit` closes the cached session before the
-binary exits, so those destructors run against an already-shut-down engine.
-It is per-package by necessity — `TestMain` is the only process-exit seam Go
-offers and it is declared per package — so
+the process; nothing on the Go side ever shuts it down. Running such a
+binary under `-race` crashes the process on exit unless
+`internal/chdbsession.CloseForExit` closes that cached session first — see
+[test-strategy.background.md](test-strategy.background.md) for the crash
+mechanism. Calling it first makes the native teardown run against an
+already-shut-down engine. It is per-package by necessity — `TestMain` is the
+only process-exit seam Go offers and it is declared per package — so
 `test/regression/chdb_race_exit_test.go` is the ratchet: it walks the tree
 for chdb-tagged test files and fails any package whose `TestMain` does not
 call it. Without that gate a newly added chdb-tagged package would silently
 reintroduce the crash.
 
 The `chdb` CI job still runs without `-race`, for cost rather than
-correctness. Measured over the four `internal/api` packages, `-race` costs
-between 1.5x (`prom`, 131s → 201s — it is already the long pole) and 5x
-(`tempo/grpc`, 0.4s → 2.1s) in wall clock. The difference now is that a
-developer or agent CAN run
+correctness — see the background doc for the measured overhead. A developer
+or agent CAN run
 `go test -race -tags chdb,agpl_oracle,chdb_agpl_oracle ./...` to chase a
 suspected data race across the complete chDB-tagged surface, which before was
 structurally impossible.
@@ -1180,11 +1143,8 @@ A context deadline — the run bound plus a compile allowance — bounds compila
 and the run together, as a backstop. No `-timeout` can bound a compile that has
 hung, because there is no test binary yet to enforce one.
 
-The split is the fix for #2910. Before it the fork had only the context
-deadline, and it was set BELOW the run leash, so the run leash could never fire
-and compile time was charged to the budget meant to bound execution. On a leg
-compiling in 12.7-15.8s against a 15s budget, a mutant whose test reached a
-verdict in 0.3s was recorded `TIMED OUT` having never run a line of test code.
+See [test-strategy.background.md](test-strategy.background.md) for the
+incident (#2910) that split these two bounds apart.
 
 The other half of that fix is how a verdict is read. `go test` reports a failing
 test, a package that does not build and a test that ran past its `-timeout` all
@@ -1213,19 +1173,9 @@ sized from — a hold that expired first would exit 0 and book a memory runaway 
 `LIVED` rather than `TIMED OUT`.
 
 It is measured because the dominant cost is a COMPILE, and a compile's cost is a
-property of the package and the runner rather than of the test suite. Measured
-per mutant on an 8-core machine, against the flat 15s the lane used to declare:
-
-| scope             | compile + link | test run |
-| ----------------- | -------------- | -------- |
-| `internal/chsql`  | 12.7-14.4s     | 0.31s    |
-| `internal/promql` | 8.4-8.7s       | 2.07s    |
-
-80-98% of the budget went to the compiler, so every contended runner pushed
-ordinary mutants over it and gremlins recorded them as `TIMED OUT` — which the
-gate then scored as detections (#2903, and the "Timed-out mutants" section
-below). Measuring sized the number to what it was really bounding; splitting the
-bounds stopped it having to bound both.
+property of the package and the runner rather than of the test suite — see
+[test-strategy.background.md](test-strategy.background.md) for the
+per-package measurements (#2903) that established this.
 
 `MUTANT_TIMEOUT_MIN` is the floor a measurement may raise but never lower, so a
 probe that cannot measure anything leaves the lane exactly where it was.
@@ -1242,16 +1192,11 @@ derives `--timeout-coefficient` as `ceil(budget / 1s)`, so
 `coefficient x max(elapsed, 1s)` is at least the budget for any elapsed time and
 the measured budget is the sole budget on every invocation.
 
-The coefficient is passed on BOTH of `mutation-run.mjs`'s invocations, and the
-second is why this matters. When the changed-line run finds zero executable
-mutants the script reruns the phase in full, in the same job, with the build
-cache already warmed by the first run: `coverage_elapsed` collapses from ~50s to
-~0.4s, clamps up to gremlins' 1s floor, and the derived budget drops to 5s —
-under `internal/promql`'s real ~6.6s recompile+link+run cost. Every mutant then
-times out, and because gremlins counts a timed-out mutant in neither the efficacy
-ratio nor `mutants_total`, the leg reported `Timed out: 295 / Test efficacy:
-0.00%` on pull requests while the identical leg on push-to-main — one
-cold-cache invocation, the intended budget — reported 99.65% (#2692).
+The coefficient is passed on BOTH of `mutation-run.mjs`'s invocations, because
+the changed-line run reruns the phase in full, in the same job, when it finds
+zero executable mutants — see the background doc for the incident (#2692) a
+warmed build cache on that second invocation caused before this neutralisation
+existed.
 
 ### Which timeout is which, and which one counts
 
@@ -1309,27 +1254,11 @@ collapsed, and why the gate's status set is CLOSED — a status it does not
 recognise fails the run rather than being dropped from both sides of the ratio,
 which would raise a leg's score for free.
 
-The gate used to break it — it counted EVERY timeout as a detection, on the
-premise that a mutant exhausting the budget broke termination rather than lost a
-race with the compiler. Under one undifferentiated budget that premise was
-false, and the per-mutant costs in "Per-mutant time budget" above falsify it.
-Two signatures in the reports confirm it, and every mutant in both would be a
-backstop `TIMED OUT` today — the compile is what consumed the budget, and the
-compile is what the backstop covers — so the narrow reading above credits none
-of them:
-
-- Runs 33542904091 (red) and 33551271099 (green) recorded the SAME 486 kills on
-  `phase4-promql-lower`. The whole 94.00% -> 97.01% swing was 16 mutants moving
-  `LIVED` -> `TIMED OUT`, on a runner that was 44% slower (coverage 53.2s vs
-  36.8s). Matching mutants across the two revisions by source text, 18 of the
-  red run's 31 survivors — short-circuit boolean guards and slice-capacity
-  arithmetic, none of which can unbound a loop — were booked as detections.
-- gremlins runs each mutant with `-failfast`, so a killed mutant exits at its
-  first failing test while a survivor must run the suite to the end. Starvation
-  therefore converts SURVIVORS preferentially, which makes the bias monotone
-  rather than noisy. Run 33522074818 is the endpoint: all four `internal/chsql`
-  legs reported 100.00% with `lived: 0`, over 1266 mutants of which 1230 timed
-  out.
+The gate used to break this rule, counting EVERY timeout as a detection on
+the premise that a mutant exhausting the budget broke termination rather
+than lost a race with the compiler — see
+[test-strategy.background.md](test-strategy.background.md) for the two run
+signatures that falsified that premise.
 
 The three halves are paired, and none of them is optional. The split leash
 (#2929) is what makes the run bound mean the run. The measured budget keeps an
@@ -1618,16 +1547,10 @@ comments are never searched, so a citation cannot resolve to one.
 
 A `file.go:613` citation is rejected outright, and so are its
 `file.go:613:22`, `file.go:108-109` and `file.go:97:23/29/38`
-variants. The reason is measurable rather than stylistic: replaying the
-200 first-parent commits before the gate landed against the citations
-they would have carried, a line-number citation was invalidated **575
-times, and in 573 of those the construct it named was never touched** —
-the number rotted because unrelated lines moved above it. Two commits
-in that window changed a cited line, which is exactly when a human must
-re-read the adjudication. A third of the citations on `main` had
-already drifted onto a comment or a blank line by the time this was
-measured (cerberus issue #2953). Naming the construct removes that
-class instead of detecting it.
+variants — naming the construct removes the class of rot a line number
+carries instead of merely detecting it after the fact. See
+[test-strategy.background.md](test-strategy.background.md) for the
+measurement (cerberus issue #2953) behind that call.
 
 An **upstream** file cannot be cited this way at all: a line number in
 Prometheus, Loki, Tempo or Grafana is unverifiable from here and rots
@@ -1673,22 +1596,11 @@ comparison, no arithmetic operator and no loop-control token, the note
 must say what it is anchoring and where the real mutant sits, or it is
 claiming something no run can confirm.
 
-No gate enforces this either, and the mechanical version was built and
-measured before being rejected. Resolving every kill-claim citation
-through the resolver above and testing the resolved line against the
-mutant inventory a completed `mutation` run reports flags **16 of the
-235 citations** that land in a file the lane measures, across every
-phase of the lane — and all 16 are
-correct locator citations of the four kinds above, including every
-example in this section. Precision is zero, and the rule cannot be
-tightened into one a note could satisfy: the two ways to clear it are to
-drop the citation out of the sentence that claims the kill, which is the
-citation requirement this section exists to impose, or to invent a
-unique construct where the source deliberately repeats one. A gate whose
-only compliant forms are worse than the violation is a false-positive
-machine, and the residue it would catch — a kill claim naming an anchor
-without naming its mutant — is one sentence of reviewer attention
-(cerberus issue #2966).
+No gate enforces this either: a mechanical version was built and measured
+before being rejected as a false-positive machine with zero precision (cerberus
+issue #2966) — see the background doc. The residue it would have caught — a
+kill claim naming an anchor without naming its mutant — is left to reviewer
+attention.
 
 #### The same address, written as prose
 
@@ -1840,18 +1752,11 @@ the sentence but to keep it from carrying load:
   structure, and no derivation replaces them. Say what was measured and
   on what, so a reader can re-measure rather than trust.
 
-No gate enforces this, and one was weighed and rejected on measurement
-rather than taste. Across the 340 adjudication blocks on `main`, the
-integers that restate a source-countable fact are outnumbered roughly
-three to one by digits that are simply operands of a quoted expression
-(`i == 1`, `Step=0`), and the same class of claim is written as a
-spelled-out numeral ("four conjuncts", "three join keys") more often
-than as a digit at all. A checker keyed on digits is therefore blind to
-most of what it would need to model, which is the one thing a gate here
-may not be: a set that silently shrinks is worse than no set. Reviewer
-attention plus the four rules above is the control, and the first rule
-is what makes the other three cheap — a number that lives in an
-assertion cannot rot without a test going red.
+No gate enforces this: a mechanical checker was weighed and rejected on
+measurement rather than taste — see the background doc. Reviewer attention
+plus the four rules above is the control, and the first rule is what makes
+the other three cheap — a number that lives in an assertion cannot rot
+without a test going red.
 
 ### Non-terminating mutants and a leg's irreducible ceiling
 
@@ -2189,55 +2094,22 @@ worth knowing before you hit it: it is rebuilt from a compatibility run's
 `compat-cases.json` artefact and therefore **cannot** be regenerated
 locally.
 
-#### `-merge` only protects a LOCAL git merge — verified 2026-08-04
-
-`-merge` is a built-in git merge driver, honoured by any git CLIENT that
-reads `.gitattributes`: a local `git merge`, `git rebase`, or `git pull`.
-Cerberus's actual merge paths on GitHub are mostly SERVER-SIDE — the "Update
-branch" button, `gh pr merge --squash`, and the mergeability precomputation
-that decides whether a PR shows conflict-free — and nothing had verified
-those honour `.gitattributes` at all (issue #1568, spun out of #1567 while
-adding the gate above).
-
-They do not. Verified empirically 2026-08-04: two throwaway branches pushed
-to this repo, each inserting one new record at a different, non-overlapping
-line offset into one `-merge`-guarded generated baseline off the same base
-commit, produced a throwaway PR that `gh pr view --json mergeable` reported
-as `"mergeable":"MERGEABLE"` — while a LOCAL `git merge` of the identical
-branch pair, run in a scratch worktree, refused with "Cannot merge binary
-files" / `CONFLICT (content)`, exactly as `.gitattributes` documents. The
-throwaway PR was closed unmerged and both branches deleted immediately after.
-
-Auditing every `-merge` path for what actually protects it turned up good
-news: nearly all of them already carry a content-exact ratchet that
-regenerates the artefact from source and diffs it against the committed file
-— `TestCardinalityRatchet` / `TestSolverDecisionRatchet` / `TestScaleWallPin`
-(`perf-guards`), `TestCatalogueIsRegenerable` and the surface-parity
-inventory tests (`check`), `compat-ratchet.mjs` (`compatibility/*`),
-`coverage-summary.mjs` (`coverage`), and the Tier-0 migration goldens via
-`go test -tags=migration ./test/e2e/migration/tiers/tier0-offline/...`
-(`lint`). Those are the strong "re-run the generator on the merge commit and
-diff it" defence #1568 asked for, and they were already there for most of
-the list. `check`, `coverage` and `lint` are REQUIRED and PR-blocking, so
-those three ratchets stop a corrupted merge before it lands. `perf-guards`
-and `compat-ratchet.mjs` (`compatibility/*`) are release-gate lanes (#2230):
-they still run their real ratchet unconditionally on every push to `main`, so
-a corrupted merge is still caught and reported, but no longer PRE-merge —
-the defence is detection on the landed commit, not prevention of the landing.
-That is an accepted, deliberate narrowing of this specific guarantee for
-those two ratchets, traded for keeping them off the ordinary-PR critical
-path; release.yml's preflight still refuses to publish past a red one.
-
-The residual gap is procedural rather than a missing validator: branch
-protection's "require branches to be up to date before merging" is OFF
-(`strict: false` as of this writing), so a stale PR's squash-merge computes
-its diff against whatever `main` has moved to WITHOUT re-running any of the
-checks above against the resulting content. Turning `strict: true` on closes
-that window — it forces the "Update branch" step, which re-runs every
-required check (including all of the above) against the exact content that
-will land — and is recommended to the maintainer as a follow-up; it is a
-branch-protection admin setting, not a code change, so no PR flips it
-unilaterally.
+Server-side GitHub merges (the "Update branch" button, `gh pr merge
+--squash`, mergeability precomputation) do not honour `.gitattributes`
+`-merge` the way a local `git merge` does — see
+[test-strategy.background.md](test-strategy.background.md) for how that gap
+was found and what actually closes it. In practice nearly every `-merge`
+path also carries a content-exact ratchet that regenerates the artefact from
+source and diffs it against the committed file — `TestCardinalityRatchet` /
+`TestSolverDecisionRatchet` / `TestScaleWallPin` (`perf-guards`),
+`TestCatalogueIsRegenerable` and the surface-parity inventory tests
+(`check`), `compat-ratchet.mjs` (`compatibility/*`), `coverage-summary.mjs`
+(`coverage`), and the Tier-0 migration goldens via `go test
+-tags=migration ./test/e2e/migration/tiers/tier0-offline/...` (`lint`).
+`check`, `coverage` and `lint` are REQUIRED and PR-blocking, so those three
+ratchets stop a corrupted merge before it lands; `perf-guards` and
+`compat-ratchet.mjs` (`compatibility/*`) are release-gate lanes (#2230) that
+still catch a corrupted merge on push to `main`, just not pre-merge.
 
 `.github/scripts/generated-baseline-structural-guard.mjs`, wired into the
 required `forbid-skip` job, adds a fast, dependency-free structural
@@ -2311,3 +2183,7 @@ PR time; the `forbid-skip` job now runs them directly. No test in that grep take
 a `page` fixture, so the step installs `@playwright/test` with the browser download
 suppressed and runs in about a second — no stack, no browser, and nothing off the
 network beyond the seven packages `npm ci` fetches.
+
+---
+
+For the rationale behind these choices — alternatives considered, incidents, measurements — see [test-strategy.background.md](test-strategy.background.md).
