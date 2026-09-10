@@ -75,12 +75,13 @@ const (
 	replicatedKeeperOperationTimeout = 60 * time.Second
 )
 
-// replicatedServerConfigTemplate turns on an embedded clickhouse-keeper, points
-// the server's ZooKeeper client at it, and defines the {shard} / {replica}
-// macros — the minimum a Replicated database needs to coordinate. One node is
-// enough: the property under test is whether ClickHouse registers the corpus
-// table as a REPLICA at all, which is a per-table engine fact, not a
-// multi-node one.
+// replicatedServerConfigTemplate is keeperServerConfigSection alone — an
+// embedded clickhouse-keeper, a ZooKeeper client pointed at it, and the
+// {shard} / {replica} macros, which is the minimum a Replicated database needs
+// to coordinate and everything it needs (it replicates DDL itself, so no
+// <remote_servers> cluster is defined here). One node is enough: the property
+// under test is whether ClickHouse registers the corpus table as a REPLICA at
+// all, which is a per-table engine fact, not a multi-node one.
 //
 // It is the same server shape internal/schema/ddl's own replicated lane raises
 // (ddl_replicated_integration_test.go). The two are not shared: a common home
@@ -97,8 +98,20 @@ const (
 // while this one asks a different question — whether the corpus table in
 // particular registers as a replica — and reusing the recipe's own image keeps
 // the lane to one server pull.
-const replicatedServerConfigTemplate = `<clickhouse>
-    <keeper_server>
+const replicatedServerConfigTemplate = "<clickhouse>\n" + keeperServerConfigSection + "</clickhouse>\n"
+
+// keeperServerConfigSection is the server body BOTH real-ClickHouse replication
+// lanes need: an embedded clickhouse-keeper, a ZooKeeper client pointed at it,
+// and the {shard} / {replica} macros. It carries no <clickhouse> wrapper so each
+// lane can add its own sections — the classic ON CLUSTER lane adds
+// <remote_servers>, which a Replicated database neither has nor needs.
+//
+// It is shared rather than copied because its one %d is a Keeper TIMING knob:
+// the container's wait strategy covers ClickHouse's HTTP endpoint, not the
+// Keeper election, so a saturated runner can accept SQL before the single
+// Keeper node serves its first coordination request. A fix to that hazard is
+// owed to both lanes, and a copy is how one of them silently would not get it.
+const keeperServerConfigSection = `    <keeper_server>
         <tcp_port>9181</tcp_port>
         <server_id>1</server_id>
         <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
@@ -125,7 +138,6 @@ const replicatedServerConfigTemplate = `<clickhouse>
         <shard>01</shard>
         <replica>replica1</replica>
     </macros>
-</clickhouse>
 `
 
 // TestCorpusReplicatedEngineRealClickHouse is the behavioural pin for cerberus

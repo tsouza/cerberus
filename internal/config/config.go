@@ -627,8 +627,8 @@ type SchemaProvisioning struct {
 	// deployment.
 	Cluster string
 
-	// TableEngine (CERBERUS_SCHEMA_TABLE_ENGINE) overrides the table engine.
-	// Empty renders the upstream default `MergeTree()` — or, when
+	// TableEngine (CERBERUS_SCHEMA_TABLE_ENGINE) overrides the SIGNAL tables'
+	// engine. Empty renders the upstream default `MergeTree()` — or, when
 	// DatabaseReplicated is set, the bare `ReplicatedMergeTree` (no args): a
 	// Replicated database does NOT auto-convert MergeTree, so the tables need a
 	// replicated engine to replicate their DATA, and inside a Replicated
@@ -636,6 +636,14 @@ type SchemaProvisioning struct {
 	// args are rejected, code 36). Set this only to pin a non-default engine —
 	// e.g. a classic ON CLUSTER cluster needing an explicit
 	// `ReplicatedMergeTree('/path', '{replica}')`.
+	//
+	// It has one further, read-only effect. A value naming a Replicated* engine
+	// is how a classic ON CLUSTER deployment DECLARES that it replicates, so
+	// the router-calibration corpus table (which internal/schema/ddl does not
+	// provision) is created with a replicating engine of its own rather than
+	// accumulating per replica. Only that yes/no is read: this expression is
+	// never spliced into the corpus DDL, whose Keeper path and engine family
+	// must be the corpus's own — see optcorpus.CorpusTableTopology.
 	TableEngine string
 
 	// TTL (CERBERUS_SCHEMA_TTL) is the DEFAULT retention applied to every

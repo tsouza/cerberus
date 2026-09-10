@@ -22,6 +22,19 @@ const clusterName = "bwc_cluster"
 // configured — and must NOT carry when one is not.
 const onClusterClause = "ON CLUSTER `" + clusterName + "`"
 
+// classicReplicatedTableEngine is the CERBERUS_SCHEMA_TABLE_ENGINE value a
+// classic ON CLUSTER deployment carries — verbatim the expression the bundled
+// chart renders for the SIGNAL tables under dataShards.count > 1, and the
+// shape internal/config's own knob doc names. Cerberus reads it only as a
+// declaration that this deployment replicates; the tests below pin that none of
+// it reaches the corpus DDL.
+const classicReplicatedTableEngine = "ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')"
+
+// nonReplicatingTableEngine is the counterpart an operator pins on a classic
+// cluster with nothing to replicate to (multi-shard, single-replica): a cluster
+// name is set, but the tables do not replicate and the corpus must not either.
+const nonReplicatingTableEngine = "MergeTree()"
+
 // TestCorpusDDL_OnCluster pins the whole reconciliation's cluster-awareness on
 // BOTH sides of the switch: with a cluster configured EVERY statement
 // construction issues carries `ON CLUSTER`, and with none configured NOT ONE of
@@ -128,22 +141,30 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 	}
 }
 
-// TestCorpusCreateTableSQL_EngineFollowsDatabaseReplication pins the engine on
-// BOTH sides of the switch cerberus issue #3241 is about.
+// TestCorpusCreateTableSQL_EngineFollowsDeploymentReplication pins the engine
+// on EVERY side of the switch cerberus issues #3241 and #3250 are about.
 //
 // ON CLUSTER (pinned above) decides where the TABLE exists; the engine decides
-// where the ROWS live, and only a Replicated* engine replicates them. A
-// Replicated DATABASE does not convert a MergeTree — it is accepted verbatim
-// and stays MergeTree — so a plain-MergeTree corpus table on the SUPPORTED
-// single-shard multi-replica path leaves every replica holding only what was
-// written through it, and internal/routerrules' ordinary single-node SELECT
-// then mines one replica's slice as if it were the whole corpus.
+// where the ROWS live, and only a Replicated* engine replicates them. Nothing
+// converts a plain MergeTree — neither a Replicated DATABASE nor a cluster
+// definition — so a plain-MergeTree corpus table on a replicating deployment
+// leaves every replica holding only what was written through it, and
+// internal/routerrules' ordinary single-node SELECT then mines one replica's
+// slice as if it were the whole corpus.
 //
-// Both halves matter. Without the first, that partitioning is what ships.
-// Without the second, a fix could satisfy the first by emitting
-// ReplicatedMergeTree unconditionally, which fails at CREATE on every
-// single-node deployment — there is no Keeper to coordinate on.
-func TestCorpusCreateTableSQL_EngineFollowsDatabaseReplication(t *testing.T) {
+// The four cases are the four real topologies, and each rejects the mistake it
+// invites:
+//
+//   - A Replicated database (#3241) and a classic ON CLUSTER cluster whose
+//     operator pinned a replicating engine (#3250) BOTH need a replicating
+//     corpus table. Both get the BARE ReplicatedMergeTree, and the classic case
+//     rejects the operator's own expression appearing in the DDL — the corpus
+//     must not inherit another table's Keeper coordinates or engine family.
+//   - A single-node deployment and a classic cluster with a NON-replicating
+//     engine (a multi-shard, single-replica deployment, which has nothing to
+//     replicate to and need run no Keeper) must NOT get one: emitting
+//     ReplicatedMergeTree there fails at CREATE.
+func TestCorpusCreateTableSQL_EngineFollowsDeploymentReplication(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -162,10 +183,32 @@ func TestCorpusCreateTableSQL_EngineFollowsDatabaseReplication(t *testing.T) {
 			reject: "ENGINE = ReplicatedMergeTree(",
 		},
 		{
+			name: "classic-cluster-with-replicating-engine",
+			topology: CorpusTableTopology{
+				Cluster:     clusterName,
+				TableEngine: classicReplicatedTableEngine,
+			},
+			want: "ENGINE = ReplicatedMergeTree",
+			// The operator's expression is a DECLARATION, never DDL: its
+			// Keeper path belongs to the SIGNAL tables, and its family was
+			// chosen for them. The corpus emits its own bare engine, whose
+			// path the server derives per table from default_replica_path.
+			reject: "ENGINE = ReplicatedMergeTree(",
+		},
+		{
 			name:     "single-node",
 			topology: CorpusTableTopology{},
 			want:     "ENGINE = MergeTree",
 			reject:   "ENGINE = ReplicatedMergeTree",
+		},
+		{
+			name: "classic-cluster-without-replication",
+			topology: CorpusTableTopology{
+				Cluster:     clusterName,
+				TableEngine: nonReplicatingTableEngine,
+			},
+			want:   "ENGINE = MergeTree",
+			reject: "ENGINE = ReplicatedMergeTree",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -177,6 +220,47 @@ func TestCorpusCreateTableSQL_EngineFollowsDatabaseReplication(t *testing.T) {
 			}
 			if strings.Contains(sql, tc.reject) {
 				t.Errorf("DDL carries %q, which this topology must not emit\nfull SQL:\n%s", tc.reject, sql)
+			}
+		})
+	}
+}
+
+// TestEngineReplicates pins the predicate that reads CERBERUS_SCHEMA_TABLE_ENGINE
+// as a DECLARATION — the whole of what cerberus asks of an operator-supplied
+// engine expression (cerberus issue #3250).
+//
+// Two properties are load-bearing and neither is obvious:
+//
+//   - It is case-SENSITIVE. ClickHouse engine names are, so a
+//     `replicatedMergeTree` accepted here would make cerberus emit a
+//     ReplicatedMergeTree corpus table on a deployment whose own signal-table
+//     CREATE the server rejects — reading a typo as a topology.
+//   - It matches the FAMILY, not one engine. A ReplicatedReplacingMergeTree
+//     pinned for the signal tables still says "this deployment replicates", and
+//     the corpus still needs a replicating engine; what it must not do is
+//     inherit that engine, which corpusTableEngine's own test pins.
+func TestEngineReplicates(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		engine string
+		want   bool
+	}{
+		{name: "empty-is-the-plain-mergetree-default", engine: ""},
+		{name: "plain-mergetree", engine: nonReplicatingTableEngine},
+		{name: "replicated-mergetree-with-coordinates", engine: classicReplicatedTableEngine, want: true},
+		{name: "bare-replicated-mergetree", engine: "ReplicatedMergeTree", want: true},
+		{name: "another-replicated-family-member", engine: "ReplicatedReplacingMergeTree('/p', '{replica}')", want: true},
+		{name: "leading-whitespace-from-yaml", engine: "  ReplicatedMergeTree", want: true},
+		{name: "wrong-case-is-not-an-engine-clickhouse-accepts", engine: "replicatedMergeTree('/p', '{replica}')"},
+		{name: "replacing-is-not-replicating", engine: "ReplacingMergeTree"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := engineReplicates(tc.engine); got != tc.want {
+				t.Errorf("engineReplicates(%q) = %v; want %v", tc.engine, got, tc.want)
 			}
 		})
 	}
@@ -220,44 +304,86 @@ func TestNewCHTableSink_EngineReadFailureIsFatal(t *testing.T) {
 }
 
 // TestNewCHTableSink_RejectsNonReplicatingDeployedEngine pins the migration half
-// of cerberus issue #3241: emitting the right engine only fixes a table this
-// binary CREATES, and `CREATE TABLE IF NOT EXISTS` is a no-op against a table an
-// older binary already left behind as a plain MergeTree. No ALTER converts one,
-// so the only thing that can distinguish "replicating" from "not" is the engine
-// the SERVER reports — and if construction accepted it anyway, the corpus would
-// go on being mined one replica at a time with nothing saying so.
+// of cerberus issues #3241 and #3250: emitting the right engine only fixes a
+// table this binary CREATES, and `CREATE TABLE IF NOT EXISTS` is a no-op against
+// a table an older binary already left behind as a plain MergeTree. No ALTER
+// converts one, so the only thing that can distinguish "replicating" from "not"
+// is the engine the SERVER reports — and if construction accepted it anyway, the
+// corpus would go on being mined one replica at a time with nothing saying so.
 //
-// Three of the 2x2's four cells are covered: the deployment that needs
-// replication and does not have it FAILS, the one that needs it and has it is
-// built, and the single-node deployment — where a plain MergeTree is correct and
-// there is no Keeper — is untouched by the check. The fourth, a REPLICATING
-// engine deployed on a non-replicated deployment, is deliberately unchecked:
-// replicating more than the deployment asked for costs correctness nothing, and
-// refusing it would brick a deployment that turned replication off after the
-// table was made.
+// Both replicating topologies are covered on both sides — a Replicated database
+// (#3241) and a classic ON CLUSTER cluster whose operator declared a replicating
+// engine (#3250) each FAIL over a deployed plain MergeTree and are BUILT over a
+// deployed replicating one. The two non-replicating topologies — single-node,
+// and a classic cluster with nothing to replicate to — are untouched by the
+// check, where a plain MergeTree is correct and there may be no Keeper at all.
+//
+// The one cell deliberately left unchecked is a REPLICATING deployed engine on a
+// non-replicating deployment: replicating more than the deployment asked for
+// costs correctness nothing, and refusing it would brick a deployment that
+// turned replication off after the table was made.
+//
+// The message is asserted per topology, not generically. An operator can only
+// act on the knob they actually set, and the DROP they are handed has to reach
+// every node it must: on a classic cluster that means carrying ON CLUSTER, or
+// the remedy repairs one node out of N and the next start fails the same way.
 func TestNewCHTableSink_RejectsNonReplicatingDeployedEngine(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name     string
-		topology CorpusTableTopology
-		deployed string
-		wantErr  bool
+		name      string
+		topology  CorpusTableTopology
+		deployed  string
+		wantErr   bool
+		wantInErr []string
 	}{
 		{
-			name:     "replicated-deployment-over-plain-mergetree",
+			name:     "replicated-database-over-plain-mergetree",
 			topology: CorpusTableTopology{DatabaseReplicated: true},
 			deployed: "MergeTree",
 			wantErr:  true,
+			wantInErr: []string{
+				"CERBERUS_SCHEMA_DATABASE_REPLICATED",
+				"DROP TABLE " + CorpusTableName,
+			},
 		},
 		{
-			name:     "replicated-deployment-over-replicated-mergetree",
+			name:     "replicated-database-over-replicated-mergetree",
 			topology: CorpusTableTopology{DatabaseReplicated: true},
+			deployed: "ReplicatedMergeTree",
+		},
+		{
+			name: "classic-cluster-over-plain-mergetree",
+			topology: CorpusTableTopology{
+				Cluster:     clusterName,
+				TableEngine: classicReplicatedTableEngine,
+			},
+			deployed: "MergeTree",
+			wantErr:  true,
+			wantInErr: []string{
+				"CERBERUS_SCHEMA_TABLE_ENGINE",
+				"DROP TABLE " + CorpusTableName + " " + onClusterClause,
+			},
+		},
+		{
+			name: "classic-cluster-over-replicated-mergetree",
+			topology: CorpusTableTopology{
+				Cluster:     clusterName,
+				TableEngine: classicReplicatedTableEngine,
+			},
 			deployed: "ReplicatedMergeTree",
 		},
 		{
 			name:     "single-node-deployment-over-plain-mergetree",
 			topology: CorpusTableTopology{},
+			deployed: "MergeTree",
+		},
+		{
+			name: "classic-cluster-without-replication-over-plain-mergetree",
+			topology: CorpusTableTopology{
+				Cluster:     clusterName,
+				TableEngine: nonReplicatingTableEngine,
+			},
 			deployed: "MergeTree",
 		},
 	} {
@@ -276,13 +402,14 @@ func TestNewCHTableSink_RejectsNonReplicatingDeployedEngine(t *testing.T) {
 				return
 			}
 			if err == nil {
-				t.Fatalf("NewCHTableSink over a deployed %s engine on a replicated deployment: "+
+				t.Fatalf("NewCHTableSink over a deployed %s engine on a replicating deployment: "+
 					"want an error, got nil", tc.deployed)
 			}
 			// The operator has to act on this, so the message has to name the
-			// table, the engine the server reported, and the knob that made it
-			// wrong — not merely that something did not line up.
-			for _, want := range []string{CorpusTableName, tc.deployed, "CERBERUS_SCHEMA_DATABASE_REPLICATED"} {
+			// table, the engine the server reported, the knob that made it
+			// wrong, and the exact statement that repairs it — not merely that
+			// something did not line up.
+			for _, want := range append([]string{CorpusTableName, tc.deployed}, tc.wantInErr...) {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q does not name %q", err, want)
 				}
