@@ -931,21 +931,6 @@ func TestAbsentAttrsMap_NameSkipContinuesPastLaterMatchers(t *testing.T) {
 	}
 }
 
-// mixedDiscriminatorMarkerProject is a *chplan.Project whose single
-// projection publishes chplan.MixedDiscriminatorColumn — the one shape
-// [chplan.RowShapeOf] recognises as chplan.MixedRowShape (see that
-// function's own doc comment). Used below purely to make
-// guardLabelRewriteCollision's `mixed` local report true without
-// depending on a real mixed-`or` lowering.
-func mixedDiscriminatorMarkerProject(input chplan.Node) *chplan.Project {
-	return &chplan.Project{
-		Input: input,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: chplan.MixedDiscriminatorColumn}, Alias: chplan.MixedDiscriminatorColumn},
-		},
-	}
-}
-
 // TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop pins that a
 // mixed-payload column does not swallow the projection after it: the
 // payload column is skipped by the `continue` under
@@ -966,16 +951,25 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	stepKeyedAgg := &chplan.Aggregate{GroupByAliases: []string{s.TimestampColumn}}
-	mixedMarker := mixedDiscriminatorMarkerProject(stepKeyedAgg)
-
 	const extraStepCol = "extra_step_col"
+	columns := append(chplan.HistogramPayloadColumns(),
+		chplan.Column{Name: chplan.MixedDiscriminatorColumn, Role: chplan.RoleDiscriminator},
+		chplan.Column{Name: extraStepCol},
+		chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp})
+	stepKeyedAgg := &chplan.Aggregate{Input: sampleForwardTestInput(columns...)}
+	for _, column := range columns {
+		stepKeyedAgg.GroupBy = append(stepKeyedAgg.GroupBy, &chplan.ColumnRef{Name: column.Name})
+		stepKeyedAgg.GroupByAliases = append(stepKeyedAgg.GroupByAliases, column.Name)
+	}
 	rewritten := &chplan.Project{
-		Input: mixedMarker,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: chplan.HistogramCountColumn}, Alias: chplan.HistogramCountColumn},
-			{Expr: &chplan.ColumnRef{Name: extraStepCol}, Alias: extraStepCol},
-		},
+		Input: stepKeyedAgg,
+	}
+	for _, column := range columns[:len(columns)-1] {
+		rewritten.Projections = append(rewritten.Projections,
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name})
+	}
+	if output := rewritten.RowType(); !output.HasHistogramPayload() || !output.Has(chplan.RoleDiscriminator) {
+		t.Fatalf("fixture must expose complete mixed payload: %#v", output)
 	}
 
 	plan := guardLabelRewriteCollision(rewritten, s)
@@ -987,6 +981,9 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 
 	found := false
 	for _, alias := range agg.GroupByAliases {
+		if alias == chplan.HistogramCountColumn || alias == chplan.MixedDiscriminatorColumn {
+			t.Fatalf("mixed payload %q reached group keys instead of being carried", alias)
+		}
 		if alias == extraStepCol {
 			found = true
 		}
@@ -1014,9 +1011,19 @@ func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	stepKeyedAgg := &chplan.Aggregate{GroupByAliases: []string{s.TimestampColumn}}
-
 	const colA, colB = "col_a", "col_b"
+	stepKeyedAgg := &chplan.Aggregate{
+		Input: sampleForwardTestInput(
+			chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+			chplan.Column{Name: colA}, chplan.Column{Name: colB},
+		),
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.TimestampColumn},
+			&chplan.ColumnRef{Name: colA},
+			&chplan.ColumnRef{Name: colB},
+		},
+		GroupByAliases: []string{s.TimestampColumn, colA, colB},
+	}
 	rewritten := &chplan.Project{
 		Input: stepKeyedAgg,
 		Projections: []chplan.Projection{

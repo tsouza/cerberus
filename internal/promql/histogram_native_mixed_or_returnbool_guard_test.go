@@ -21,7 +21,7 @@ import (
 // unexported helper against a hand-built AST rather than a parsed query —
 // the same "defensive guard against an unreachable-through-any-parseable-
 // query state" contract this codebase applies elsewhere (e.g.
-// assertValueShapedInput, histogram_shape_guard.go). A future 4th
+// projectSampleRoles, histogram_shape_guard.go). A future 4th
 // composer skipping this guard on a synthetic/rewritten BinaryExpr would
 // otherwise silently mis-lower rather than error.
 func TestShadowResolveFloatArmChecked_RejectsReturnBool(t *testing.T) {

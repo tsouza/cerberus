@@ -88,8 +88,9 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 		return nil, err
 	}
 
-	newValue := mathFnValueExpr(chFn, &chplan.ColumnRef{Name: s.ValueColumn})
-	return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
+	return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+		return mathFnValueExpr(chFn, refs.Value)
+	}), nil
 }
 
 // mathFnValueExpr wraps valueExpr with the CH function instantFnCH maps
@@ -136,8 +137,9 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 		return nil, err
 	}
 
-	newValue := roundToNearestValueExpr(&chplan.ColumnRef{Name: s.ValueColumn}, tn)
-	return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
+	return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+		return roundToNearestValueExpr(refs.Value, tn)
+	}), nil
 }
 
 // lowerRoundToNearestBound lowers round()'s second argument — the
@@ -222,14 +224,15 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 			if err != nil {
 				return nil, err
 			}
-			newValue := &chplan.FuncCall{
-				Fn: fnName,
-				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: s.ValueColumn},
-					&chplan.LitFloat{V: bound},
-				},
-			}
-			return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
+			return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+				return &chplan.FuncCall{
+					Fn: fnName,
+					Args: []chplan.Expr{
+						refs.Value,
+						&chplan.LitFloat{V: bound},
+					},
+				}
+			}), nil
 		}
 		boundE, err := lowerScalarArg(c.Args[1], s, ctx)
 		if err != nil {
@@ -239,14 +242,15 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		if err != nil {
 			return nil, err
 		}
-		newValue := nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
-			Fn: fnName,
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.ValueColumn},
-				boundE,
-			},
-		})
-		return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
+		return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+			return nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
+				Fn: fnName,
+				Args: []chplan.Expr{
+					refs.Value,
+					boundE,
+				},
+			})
+		}), nil
 
 	case "clamp":
 		if len(c.Args) != 3 {
@@ -274,18 +278,18 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 					Predicate: &chplan.LitBool{V: false},
 				}, nil
 			}
-			valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
-			newValue := &chplan.FuncCall{
-				Fn: chplan.FnGreatest,
-				Args: []chplan.Expr{
-					&chplan.LitFloat{V: minB},
-					&chplan.FuncCall{
-						Fn:   chplan.FnLeast,
-						Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, valueRef},
+			return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+				return &chplan.FuncCall{
+					Fn: chplan.FnGreatest,
+					Args: []chplan.Expr{
+						&chplan.LitFloat{V: minB},
+						&chplan.FuncCall{
+							Fn:   chplan.FnLeast,
+							Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, refs.Value},
+						},
 					},
-				},
-			}
-			return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
+				}
+			}), nil
 		}
 
 		// At least one computed bound: bind both sides through
@@ -320,122 +324,42 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 				},
 			},
 		}
-		valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
-		newValue := nanIfExpr(
-			&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
-			&chplan.FuncCall{
-				Fn: chplan.FnGreatest,
-				Args: []chplan.Expr{
-					minE,
-					&chplan.FuncCall{
-						Fn:   chplan.FnLeast,
-						Args: []chplan.Expr{maxE, valueRef},
+		return guardedValueProjection(filtered, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+			return nanIfExpr(
+				&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
+				&chplan.FuncCall{
+					Fn: chplan.FnGreatest,
+					Args: []chplan.Expr{
+						minE,
+						&chplan.FuncCall{
+							Fn:   chplan.FnLeast,
+							Args: []chplan.Expr{maxE, refs.Value},
+						},
 					},
 				},
-			},
-		)
-		return guardedValueProjection(filtered, c.Args[0], s, ctx, newValue), nil
+			)
+		}), nil
 	}
 	return nil, fmt.Errorf("promql: unknown clamp function %s", c.Func.Name)
 }
 
-// projectValueOverInner wraps inner with a Project that keeps the
-// label-bearing columns and replaces Value with newValue.
-//
-// The set of forwarded columns depends on the inner shape:
-//
-//   - LWR / Aggregate / Project / Filter / Scan: Attributes / Timestamp
-//     flow through unchanged; MetricName is replaced with an empty
-//     string to match PromQL's "drop __name__ on derived samples"
-//     rule — every caller (instant math fns, clamp family, unary
-//     minus, date fns, quantile-out-of-range fold) produces a derived
-//     sample that Prom strips `__name__` from. The previous shape
-//     (forwarding `MetricName` verbatim) caused ~30+ of the 107
-//     compat-lane diffs in Pool-AU's audit (#355) for queries like
-//     `abs(metric)` showing Metric: metric{...} on cerberus vs
-//     Metric: {...} on reference Prometheus.
-//
-//   - A WINDOWED row shape ([chplan.RowShapeOf] answers anything but
-//     [chplan.SampleRowShape]): the reducer already dropped `__name__`,
-//     so no MetricName is forwarded and this branch matches Prom
-//     semantics by construction. A GRID window additionally publishes
-//     the per-anchor timestamp under two names and both are forwarded; a
-//     REDUCED window has collapsed each series to one row and has no
-//     timestamp to forward at all.
-//
-// The shape is DERIVED from the inner node rather than read off its kind.
-// A `*chplan.RangeWindow` type assertion answers "is this one node kind",
-// not "what does my input expose", and the two came apart the moment
-// `*chplan.RangeWindowGridNative` grew the identical row shape:
-// `abs(rate(m[5m]))` on the ts_grid_range path took the canonical branch
-// and published `(” AS MetricName, Attributes, TimeUnix, Value)` where
-// the fan-out publishes `(Attributes, anchor_ts, TimeUnix, Value)`.
-//
-// That divergence does not fail ClickHouse on its own — this branch
-// SYNTHESISES the name rather than referencing it, and the TimeUnix it
-// forwards IS the grid anchor under its other name — but it makes the
-// two strategies publish different columns for one row shape, which is
-// exactly the substitutability [chplan.RangeWindowGridNative] documents. The
-// same spelling in [projectAttributesOverInner] REFERENCES MetricName
-// and is a live ClickHouse code 47. Routing both halves through one
-// classifier is what stops them answering differently.
-//
-// The text-equality goldens in test/spec/promql/ track both shapes; see
-// e.g. `edge_abs_over_rate.txtar` (instant fn over rate) and
-// `unary_minus_rate.txtar` (unary minus over rate).
-func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.Expr) chplan.Node {
-	assertValueShapedInput(inner, "projectValueOverInner")
-	if shape := chplan.RowShapeOf(inner); shape != chplan.SampleRowShape {
-		projections := []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
-		}
-		// A GRID window (range-mode subqueries + range-mode
-		// `rate`/`*_over_time` queries with Step > 0, and every
-		// timeSeries*ToGrid native node) exposes `anchor_ts` as the
-		// per-row per-anchor timestamp. The outer
-		// wrapWithSampleProjection reads it back through this Project
-		// (when `isMatrixRangeWindow` walks past the value-rewrite
-		// Project layer); forwarding the column keeps the per-anchor
-		// time-bucketing intact for callers like `abs(avg_over_time(…))`.
-		//
-		// A grid window ALSO surfaces `anchor_ts AS TimeUnix`
-		// (the schema timestamp column — see range_window.go
-		// `outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))`).
-		// A step-aligned vector↔vector join reads that column off each
-		// arm via `argMax(Value, TimeUnix)` / `As(Col(TimeUnix), …)`;
-		// when a scalar-wrapped arm (`100 * rate(…)`) feeds the join,
-		// dropping TimeUnix here makes the join wrapper reference a
-		// column that never materialises, so CH fails with code 47
-		// `Unknown expression identifier 'TimeUnix'` / `_join_TimeUnix`.
-		// Forward it so the scalar arm carries the same join-key columns
-		// the bare-rate arm does. The non-join path is unaffected: its
-		// outer wrapWithSampleProjection reads `anchor_ts`, not TimeUnix,
-		// and an extra subquery column is harmless.
-		if shape == chplan.GridWindowRowShape {
-			projections = append(
-				projections,
-				chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}},
-				chplan.Projection{
-					Expr:  &chplan.ColumnRef{Name: s.TimestampColumn},
-					Alias: s.TimestampColumn,
-				},
-			)
-		}
-		projections = append(projections, chplan.Projection{Expr: newValue, Alias: s.ValueColumn})
-		return &chplan.Project{
-			Roles:       metricRoles(s),
-			Input:       inner,
-			Projections: projections,
-		}
-	}
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: inner,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-			{Expr: newValue, Alias: s.ValueColumn},
-		},
+// projectValueOverInner applies the wrapper's float-only, drop-name policy.
+// The temporary legacy adapter selects only its temporal/materialization
+// envelope; actual input names are resolved from roles before build runs.
+func projectValueOverInner(inner chplan.Node, s schema.Metrics, layout sampleProjectionLayout, build func(sampleRoleRefs) chplan.Expr) chplan.Node {
+	return projectSampleRoles(inner, s,
+		sampleProjectionPolicy{name: dropSampleName, payload: floatSamplePayload},
+		layout,
+		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{value: build(refs)} })
+}
+
+// legacySampleProjectionLayout preserves the existing temporal/materialization
+// boundary until the legacy shape contract is reconciled. It must not choose
+// a wrapper's name or payload policy, and it never supplies input column names.
+func legacySampleProjectionLayout(inner chplan.Node) sampleProjectionLayout {
+	shape := chplan.RowShapeOf(inner)
+	return sampleProjectionLayout{
+		canonical: shape != chplan.GridWindowRowShape && shape != chplan.ReducedWindowRowShape,
+		anchored:  shape == chplan.GridWindowRowShape,
 	}
 }

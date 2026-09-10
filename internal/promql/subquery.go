@@ -701,7 +701,7 @@ func lowerSubqueryOverCall(
 		// NaN constant replaces the Value column. rw.OuterRange > 0 here,
 		// so the Project keeps the matrix (Attributes, anchor_ts,
 		// TimeUnix, Value) shape the enclosing reducer reads.
-		return projectValueOverInner(rw, s, value), nil
+		return projectValueOverInner(rw, s, legacySampleProjectionLayout(rw), func(sampleRoleRefs) chplan.Expr { return value }), nil
 	}
 	return rw, nil
 }
@@ -1208,7 +1208,7 @@ func lowerOuterRangeFnOverSubquery(
 	if replaceValue {
 		// quantile_over_time's out-of-range-phi fold. That fn drops
 		// `__name__`, so nameExpr is nil here by construction.
-		return projectValueOverInner(rw, s, value), nil
+		return projectValueOverInner(rw, s, legacySampleProjectionLayout(rw), func(sampleRoleRefs) chplan.Expr { return value }), nil
 	}
 	if nameExpr != nil {
 		// The subquery sibling of the matrix/instant name-preservation wrap
@@ -3120,7 +3120,7 @@ func lowerSubqueryOverCallSubquery(
 		return nil, err
 	}
 	if replaceValue {
-		return projectValueOverInner(rw, s, value), nil
+		return projectValueOverInner(rw, s, legacySampleProjectionLayout(rw), func(sampleRoleRefs) chplan.Expr { return value }), nil
 	}
 	return rw, nil
 }

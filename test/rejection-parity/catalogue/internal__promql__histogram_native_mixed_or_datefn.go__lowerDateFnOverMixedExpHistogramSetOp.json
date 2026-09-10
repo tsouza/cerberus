@@ -5,11 +5,11 @@
       "site": "internal/promql/histogram_native_mixed_or_datefn.go:lowerDateFnOverMixedExpHistogramSetOp#2f3ea020",
       "message": "promql: unknown date function %s",
       "class": "internal",
-      "rationale": "dateFnOverMixedExpHistogramSetOp only matches when c.Func.Name is one of the eight known date-component names lowerCall already filtered to reach lowerDateFn, minus \"timestamp\" (excluded by its own guard) — dateFnExpr always recognises the remainder, same reasoning as lowerDateFn's own identical dead branch (date_fns.go, cerberus issue #2498). The preceding `if b.ReturnBool` guard this branch used to sit behind moved into the shared shadowResolveFloatArmChecked helper (histogram_native_mixed_or_aggregate.go, cerberus PR #2624's finding-10 ReturnBool-guard dedup) — it no longer appears in this function's own guard chain, but it played no part in this claim: the claim is purely about dateFnExpr's name coverage, unaffected by where the bool-modifier check lives.",
+      "rationale": "lowerCall routes only its known date-function names to lowerDateFn. Within that admitted set, dateFnOverMixedExpHistogramSetOp excludes timestamp and checks the argument shape; it does not independently whitelist date names. lowerDateFn reaches lowerDateFnOverMixedExpHistogramSetOp only after this recognizer succeeds, leaving the eight date-component names covered by dateFnExpr during validation with nil operands before role-based expression construction.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
-          "if newValue == nil"
+          "if dateFnExpr(c.Func.Name, nil, nil) == nil"
         ],
         "callers": [
           "lowerDateFn"
@@ -19,7 +19,7 @@
           "dateFnOverMixedExpHistogramSetOp",
           "lowerCall",
           "lowerDateFn",
-          "shadowResolveFloatArmChecked"
+          "lowerDateFnOverMixedExpHistogramSetOp"
         ]
       }
     }

@@ -24,7 +24,7 @@ import (
 //   - A single-arg math function, round(v, to_nearest), clamp*, or
 //     timestamp() reached instant_fns.go's/date_fns.go's generic lower()
 //     fallback, got back a Mixed node, and PANICKED in
-//     projectValueOverInner's assertValueShapedInput (finding B).
+//     projectValueOverInner's projectSampleRoles (finding B).
 //   - scalar(...) reached scalar_args.go's generic lower() fallback and
 //     silently ran count()/any(Value) over the Mixed union's fourteen
 //     columns UNFILTERED — reading the histogram side's placeholder

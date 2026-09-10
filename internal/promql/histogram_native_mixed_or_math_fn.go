@@ -117,8 +117,9 @@ func lowerMathFnOverMixedExpHistogramSetOp(call *parser.Call, b *parser.BinaryEx
 		return nil, err
 	}
 
-	newValue := mathFnValueExpr(chFn, &chplan.ColumnRef{Name: s.ValueColumn})
-	return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+	return projectValueOverInner(floatRowsOnly, s, sampleProjectionLayout{canonical: true, materializeAliases: true}, func(refs sampleRoleRefs) chplan.Expr {
+		return mathFnValueExpr(chFn, refs.Value)
+	}), nil
 }
 
 // floatRowsOnlyOverMixedExpHistogramSetOp lowers the Mixed
@@ -136,27 +137,6 @@ func floatRowsOnlyOverMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metr
 		return nil, err
 	}
 	return mixedDiscriminatorFilter(inner, mixedDiscriminatorFloat), nil
-}
-
-// projectCanonicalFloatValue re-projects a float-rows-only plan (an
-// [floatRowsOnlyOverMixedExpHistogramSetOp] result) onto the canonical
-// float-Sample quartet with newValue as Value. MetricName is forced to
-// "" rather than forwarded, mirroring [projectValueOverInner]'s
-// canonical-shape branch: every derived sample this file's callers build
-// (a math function or round()'s to_nearest rewrite) matches Prom's own
-// DropName rule stripping `__name__` from a derived sample (see that
-// function's doc comment for the compat-lane history this matches).
-func projectCanonicalFloatValue(floatRowsOnly chplan.Node, s schema.Metrics, newValue chplan.Expr) chplan.Node {
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: floatRowsOnly,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: newValue, Alias: s.ValueColumn},
-		},
-	}
 }
 
 // roundToNearestOverMixedExpHistogramSetOp recognises `round(v, n)` (the
@@ -200,8 +180,9 @@ func lowerRoundToNearestOverMixedExpHistogramSetOp(call *parser.Call, b *parser.
 		return nil, err
 	}
 
-	newValue := roundToNearestValueExpr(&chplan.ColumnRef{Name: s.ValueColumn}, tn)
-	return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+	return projectValueOverInner(floatRowsOnly, s, sampleProjectionLayout{canonical: true, materializeAliases: true}, func(refs sampleRoleRefs) chplan.Expr {
+		return roundToNearestValueExpr(refs.Value, tn)
+	}), nil
 }
 
 // clampOverMixedExpHistogramSetOp recognises `clamp`/`clamp_min`/
@@ -250,20 +231,15 @@ func clampOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx low
 // float-rows-only input instead of over [lower](call.Args[0], ...)'s
 // ordinary result.
 //
-// Unlike [lowerClamp]'s own bare-argument path, this composition does not
-// route the result through [guardedValueProjection]'s duplicate-labelset
-// Aggregate: [projectCanonicalFloatValue] is used instead, identical to
-// [lowerMathFnOverMixedExpHistogramSetOp] and
-// [lowerRoundToNearestOverMixedExpHistogramSetOp] just above — see
-// [projectCanonicalFloatValue]'s own doc comment for why every wrapper
-// composed over this Mixed-set-op shape shares that choice.
+// Unlike [lowerClamp]'s ordinary path, this composition retains its direct
+// projection without [guardedValueProjection]'s collision Aggregate. The shared
+// [projectValueOverInner] receives an explicit canonical, alias-materializing
+// layout, preserving the mixed family's existing SQL boundary.
 func lowerClampOverMixedExpHistogramSetOp(call *parser.Call, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	floatRowsOnly, err := floatRowsOnlyOverMixedExpHistogramSetOp(b, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
 
 	switch call.Func.Name {
 	case "clamp_max", "clamp_min":
@@ -272,21 +248,23 @@ func lowerClampOverMixedExpHistogramSetOp(call *parser.Call, b *parser.BinaryExp
 			fnName = chplan.FnGreatest
 		}
 		if bound, ok := tryScalarLiteral(call.Args[1]); ok {
-			newValue := &chplan.FuncCall{
-				Fn:   fnName,
-				Args: []chplan.Expr{valueRef, &chplan.LitFloat{V: bound}},
-			}
-			return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+			return projectValueOverInner(floatRowsOnly, s, sampleProjectionLayout{canonical: true, materializeAliases: true}, func(refs sampleRoleRefs) chplan.Expr {
+				return &chplan.FuncCall{
+					Fn:   fnName,
+					Args: []chplan.Expr{refs.Value, &chplan.LitFloat{V: bound}},
+				}
+			}), nil
 		}
 		boundE, err := lowerScalarArg(call.Args[1], s, ctx)
 		if err != nil {
 			return nil, err
 		}
-		newValue := nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
-			Fn:   fnName,
-			Args: []chplan.Expr{valueRef, boundE},
-		})
-		return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+		return projectValueOverInner(floatRowsOnly, s, sampleProjectionLayout{canonical: true, materializeAliases: true}, func(refs sampleRoleRefs) chplan.Expr {
+			return nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
+				Fn:   fnName,
+				Args: []chplan.Expr{refs.Value, boundE},
+			})
+		}), nil
 
 	case "clamp":
 		minB, okMin := tryScalarLiteral(call.Args[1])
@@ -301,19 +279,20 @@ func lowerClampOverMixedExpHistogramSetOp(call *parser.Call, b *parser.BinaryExp
 					Input:     floatRowsOnly,
 					Predicate: &chplan.LitBool{V: false},
 				}
-				return projectCanonicalFloatValue(empty, s, valueRef), nil
+				return projectValueOverInner(empty, s, sampleProjectionLayout{canonical: true, materializeAliases: true}, func(refs sampleRoleRefs) chplan.Expr { return refs.Value }), nil
 			}
-			newValue := &chplan.FuncCall{
-				Fn: chplan.FnGreatest,
-				Args: []chplan.Expr{
-					&chplan.LitFloat{V: minB},
-					&chplan.FuncCall{
-						Fn:   chplan.FnLeast,
-						Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, valueRef},
+			return projectValueOverInner(floatRowsOnly, s, sampleProjectionLayout{canonical: true, materializeAliases: true}, func(refs sampleRoleRefs) chplan.Expr {
+				return &chplan.FuncCall{
+					Fn: chplan.FnGreatest,
+					Args: []chplan.Expr{
+						&chplan.LitFloat{V: minB},
+						&chplan.FuncCall{
+							Fn:   chplan.FnLeast,
+							Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, refs.Value},
+						},
 					},
-				},
-			}
-			return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+				}
+			}), nil
 		}
 
 		minE, err := lowerScalarArg(call.Args[1], s, ctx)
@@ -337,20 +316,21 @@ func lowerClampOverMixedExpHistogramSetOp(call *parser.Call, b *parser.BinaryExp
 				},
 			},
 		}
-		newValue := nanIfExpr(
-			&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
-			&chplan.FuncCall{
-				Fn: chplan.FnGreatest,
-				Args: []chplan.Expr{
-					minE,
-					&chplan.FuncCall{
-						Fn:   chplan.FnLeast,
-						Args: []chplan.Expr{maxE, valueRef},
+		return projectValueOverInner(filtered, s, sampleProjectionLayout{canonical: true, materializeAliases: true}, func(refs sampleRoleRefs) chplan.Expr {
+			return nanIfExpr(
+				&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
+				&chplan.FuncCall{
+					Fn: chplan.FnGreatest,
+					Args: []chplan.Expr{
+						minE,
+						&chplan.FuncCall{
+							Fn:   chplan.FnLeast,
+							Args: []chplan.Expr{maxE, refs.Value},
+						},
 					},
 				},
-			},
-		)
-		return projectCanonicalFloatValue(filtered, s, newValue), nil
+			)
+		}), nil
 	}
 	return nil, fmt.Errorf("promql: unknown clamp function %s", call.Func.Name)
 }

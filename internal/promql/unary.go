@@ -75,12 +75,13 @@ func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Nod
 		if err != nil {
 			return nil, fmt.Errorf("promql: unary operand: %w", err)
 		}
-		newValue := &chplan.Binary{
-			Op:    chplan.OpSub,
-			Left:  &chplan.LitFloat{V: 0},
-			Right: &chplan.ColumnRef{Name: s.ValueColumn},
-		}
-		return guardedValueProjection(inner, u.Expr, s, ctx, newValue), nil
+		return guardedValueProjection(inner, u.Expr, s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+			return &chplan.Binary{
+				Op:    chplan.OpSub,
+				Left:  &chplan.LitFloat{V: 0},
+				Right: refs.Value,
+			}
+		}), nil
 	}
 	return nil, fmt.Errorf("promql: unsupported unary op %v", u.Op)
 }

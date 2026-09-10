@@ -434,7 +434,7 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	if !replaceValue {
 		return window, nil
 	}
-	return projectValueOverInner(window, s, value), nil
+	return projectValueOverInner(window, s, legacySampleProjectionLayout(window), func(sampleRoleRefs) chplan.Expr { return value }), nil
 }
 
 // outOfRangePhiInf reports whether phi falls outside PromQL's valid

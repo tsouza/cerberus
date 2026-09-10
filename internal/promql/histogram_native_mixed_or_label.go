@@ -41,7 +41,7 @@ import (
 // Deliberately its own sibling recognizer, not a widening of
 // [mixedExpHistogramSetOp]'s own registration: that leaf recognizer
 // stays root-only (its own doc comment's "impossible state" argument for
-// [assertValueShapedInput] still holds for every wrapper this file does
+// [projectSampleRoles] still holds for every wrapper this file does
 // NOT recognise), and every OTHER wrapper around a mixed `or` (`abs(a or
 // b)`, `(a or b) + 1`, and so on) still falls through to
 // internal/promql/binary.go's lowerVectorSetOp rejection unchanged — see
@@ -83,14 +83,14 @@ func labelCallOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx
 // the trailing discriminator through its duplicate-labelset Aggregate.
 func lowerLabelCallOverMixedExpHistogramSetOp(call *parser.Call, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	var (
-		attrs chplan.Expr
+		attrs func(chplan.Expr) chplan.Expr
 		err   error
 	)
 	switch call.Func.Name {
 	case fnLabelReplace:
-		attrs, err = labelReplaceAttributes(call, s)
+		attrs, err = labelReplaceAttributesBuilder(call)
 	case fnLabelJoin:
-		attrs, err = labelJoinAttributes(call, s)
+		attrs, err = labelJoinAttributesBuilder(call)
 	default:
 		return nil, fmt.Errorf("promql: internal invariant violated: %s is not a label-only mixed set-op consumer", call.Func.Name)
 	}
@@ -103,5 +103,5 @@ func lowerLabelCallOverMixedExpHistogramSetOp(call *parser.Call, b *parser.Binar
 		return nil, err
 	}
 
-	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) }), s), nil
 }

@@ -25,7 +25,7 @@ import (
 // specific `sum`/`avg` composition instead of widening the leaf
 // recognizer's own registration: [mixedExpHistogramSetOp] still never
 // nests under anything (its doc comment's "impossible state" argument
-// for [assertValueShapedInput] stays true), and every wrapper OTHER than
+// for [projectSampleRoles] stays true), and every wrapper OTHER than
 // a direct `sum`/`avg` around a mixed `or` (`abs(a or b)`, a further
 // binop) keeps falling through to the pre-existing rejection unchanged.
 // A windowed/derived float arm (cerberus issue #2333's own axis) DOES

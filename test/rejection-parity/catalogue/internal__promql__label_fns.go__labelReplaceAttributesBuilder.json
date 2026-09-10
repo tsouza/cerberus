@@ -1,0 +1,52 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:labelReplaceAttributesBuilder#8c37a823",
+      "message": "promql: label_replace expects 5 arguments, got %d",
+      "class": "internal",
+      "rationale": "Parser-enforced arity: label_replace requires exactly five arguments. lowerLabelReplace and labelReplaceAttributes pass the same parsed Call to labelReplaceAttributesBuilder; lowerLabelCallOverMixedExpHistogramSetOp is reached only after labelCallOverMixedExpHistogramSetOp independently checks the same exact arity.",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 5"
+        ],
+        "callers": [
+          "labelReplaceAttributes",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelReplace"
+        ],
+        "cited": [
+          "labelCallOverMixedExpHistogramSetOp",
+          "labelReplaceAttributes",
+          "labelReplaceAttributesBuilder",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelReplace"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:labelReplaceAttributesBuilder#d11e3df4",
+      "message": "promql: label_replace: %w",
+      "class": "divergence",
+      "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?:(?P\u003cdup\u003ea?)|y)*(?P\u003cdup\u003eb)\")",
+      "tracking_issue": 1956,
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 5",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if err != nil"
+        ],
+        "callers": [
+          "labelReplaceAttributes",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelReplace"
+        ]
+      },
+      "since": "2026-08-05"
+    }
+  ]
+}

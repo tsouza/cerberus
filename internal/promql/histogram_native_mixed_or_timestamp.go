@@ -39,7 +39,7 @@ import (
 // Attributes (present, and meaning-identical, on both a float-shaped and
 // a histogram-shaped row) and never Value, so it needs no
 // MixedRowShape-aware branching of its own — the
-// [assertValueShapedInput] panic never applies here because this
+// [projectSampleRoles] panic never applies here because this
 // projection is hand-built directly (mirroring
 // [timestampInstantProjection]/[timestampRangeProjection]'s own raw
 // `&chplan.Project{}` construction), never routed through the generic

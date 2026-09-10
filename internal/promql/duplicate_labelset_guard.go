@@ -71,11 +71,12 @@ func guardedValueProjection(
 	arg parser.Expr,
 	s schema.Metrics,
 	ctx lowerCtx,
-	newValue chplan.Expr,
+	newValue func(sampleRoleRefs) chplan.Expr,
 	carry ...string,
 ) chplan.Node {
 	inner = mixedRowsFloatOnly(inner)
-	return projectValueOverInner(guardNameDropCollision(inner, arg, s, ctx, carry...), s, newValue)
+	inner = guardNameDropCollision(inner, arg, s, ctx, carry...)
+	return projectValueOverInner(inner, s, legacySampleProjectionLayout(inner), newValue)
 }
 
 // guardKeysOnTimestamp reports whether a collision guard over `inner` must
@@ -464,25 +465,17 @@ func pinnedMetricName(e parser.Expr) string {
 // classification survives the guard.
 //
 // A [chplan.MixedRowShape] rewrite (cerberus issue #2449:
-// `label_replace`/`label_join` composing over a mixed float/histogram
-// `or`) is detected via [chplan.RowShapeOf] on `rewritten.Input` — the
-// Mixed VectorSetOp [projectAttributesOverInner]'s own MixedRowShape
-// branch sits directly on — and takes its own path through both loops
-// below: the nine Histogram*Column outputs and the trailing
-// [mixedDiscriminatorColumn] are neither the output identity (so they
-// must NOT join the group key the way a step column would) nor
-// meaningless (so they must NOT be silently dropped the way an unaliased
-// computed projection is) — they are per-row PAYLOAD, exactly like
-// Value, and are guarded the identical way: pre-seeded into `aggs` as
-// `any()` up front and skipped when the loop reaches them by name. The
-// final re-projection also has to carry all fourteen columns rather than
-// collapsing to the canonical four, or the discriminator and the
-// histogram payload never reach the wire.
+// A mixed label rewrite is identified by its own complete histogram payload
+// and discriminator roles. Those outputs are per-row payload, not group keys,
+// so the guard carries each through any() after the HAVING proves a group has
+// one input row. The shared forwarder restores the same canonical order and
+// aliases after that Aggregate rather than dropping the histogram payload.
 func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chplan.Node {
 	cols := canonicalSampleColumns(s)
 	canonical := chplan.ProjectExposesCanonical(rewritten, cols)
 	keyOnStep := guardKeysOnTimestamp(rewritten, s)
-	mixed := chplan.RowShapeOf(rewritten.Input) == chplan.MixedRowShape
+	output := rewritten.RowType()
+	mixed := output.HasHistogramPayload() && output.Has(chplan.RoleDiscriminator)
 
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	aliases := []string{s.AttributesColumn}
@@ -504,7 +497,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 	// input shape: a canonical rewrite exposes the four Sample columns, a
 	// rewrite over a matrix RangeWindow exposes (Attributes, anchor_ts,
 	// TimeUnix, Value), a rewrite over a Mixed set op exposes all fourteen
-	// (mixedSampleProjections, label_fns.go), and one over an instant
+	// (projectSampleRoles), and one over an instant
 	// RangeWindow exposes only (Attributes, Value). An Aggregate outputs
 	// exactly its key plus its aggregates, so any column left out here is
 	// DROPPED — and dropping `anchor_ts` silently empties the matrix
@@ -557,31 +550,18 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 		// unchanged.
 		return guarded
 	}
-	if mixed {
-		// A canonical Mixed rewrite must stay fourteen-columns-wide, not
-		// collapse to the plain four: the histogram payload and the
-		// discriminator are still live output columns, not scaffolding the
-		// guard consumed.
-		return &chplan.Project{
-			Roles:       metricRoles(s),
-			Input:       guarded,
-			Projections: mixedSampleProjections(s, &chplan.ColumnRef{Name: s.AttributesColumn}),
-		}
-	}
-	// A canonical rewrite must STAY canonical: an Aggregate is classified
-	// derived-shape, which would make the HTTP layer stamp an empty
-	// MetricName over the name `label_replace` deliberately preserved.
-	// Naming all four canonical outputs restores the classification.
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: guarded,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
-		},
-	}
+	// Restore the canonical boundary without maintaining a second projection
+	// enumeration. Mixed rewrites historically materialize the attributes alias;
+	// plain sample rewrites leave it bare. Both retain identical output order.
+	return projectSampleRoles(guarded, s,
+		sampleProjectionPolicy{name: preserveSampleName, payload: preserveMixedSamplePayload},
+		sampleProjectionLayout{canonical: true},
+		func(refs sampleRoleRefs) sampleRoleRewrite {
+			if mixed {
+				return sampleRoleRewrite{attributes: refs.Attributes}
+			}
+			return sampleRoleRewrite{}
+		})
 }
 
 // mixedPayloadColumns names the [chplan.MixedRowShape] columns

@@ -5414,7 +5414,7 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if phi, ok := tryScalarLiteral(a.Param); ok {
 		if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
-			return projectValueOverInner(wrapped, s, &chplan.LitFloat{V: infValue}), nil
+			return projectValueOverInner(wrapped, s, legacySampleProjectionLayout(wrapped), func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: infValue} }), nil
 		}
 		return wrapped, nil
 	}
@@ -5428,8 +5428,9 @@ func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema
 	if err != nil {
 		return nil, err
 	}
-	return projectValueOverInner(wrapped, s,
-		outOfRangePhiGuardExpr(phiE, &chplan.ColumnRef{Name: s.ValueColumn})), nil
+	return projectValueOverInner(wrapped, s, legacySampleProjectionLayout(wrapped), func(refs sampleRoleRefs) chplan.Expr {
+		return outOfRangePhiGuardExpr(phiE, refs.Value)
+	}), nil
 }
 
 // lowerCountValues lowers `count_values("label", expr) [by(g) | without(g)]`.
@@ -5863,7 +5864,7 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 // answer false for a `limitk`/`limit_ratio` operand, falls through to the
 // plain `lower()` path, and receives the SAME histogram-shaped plan
 // [lowerLimitKInput] always produced — just without ever being told to
-// expect it, tripping [assertValueShapedInput]'s panic in
+// expect it, tripping [projectSampleRoles]'s panic in
 // histogram_shape_guard.go instead of dropping the sample the way
 // reference's float-only functions do for every other histogram-valued
 // operand.

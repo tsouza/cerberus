@@ -1,0 +1,28 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:labelJoinAttributesBuilder#c71ab88a",
+      "message": "promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d",
+      "class": "internal",
+      "rationale": "Parser-enforced arity: label_join requires at least the vector, destination label, and separator arguments. lowerLabelJoin and labelJoinAttributes pass the same parsed Call to labelJoinAttributesBuilder; lowerLabelCallOverMixedExpHistogramSetOp is reached only after labelCallOverMixedExpHistogramSetOp independently checks the same minimum arity.",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) \u003c 3"
+        ],
+        "callers": [
+          "labelJoinAttributes",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelJoin"
+        ],
+        "cited": [
+          "labelCallOverMixedExpHistogramSetOp",
+          "labelJoinAttributes",
+          "labelJoinAttributesBuilder",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelJoin"
+        ]
+      }
+    }
+  ]
+}

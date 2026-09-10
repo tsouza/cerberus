@@ -5,22 +5,22 @@
       "site": "internal/promql/date_fns.go:lowerDateFn#2f3ea020",
       "message": "promql: unknown date function %s",
       "class": "internal",
-      "rationale": "internal dispatch: lowerCall routes only the known date-function names here, and dateFnOverMixedExpHistogramSetOp (cerberus issue #2609) matches only when c.Func.Name is one of the same known names minus \"timestamp\" (its own guard excludes that one by name) — neither path can hand dateFnExpr a name it does not recognise",
+      "rationale": "Internal dispatch: lowerCall routes only the known date-function names to lowerDateFn. The explicit timestamp branch bypasses dateFnExpr validation; every remaining admitted name is covered by dateFnExpr, including its validation call with nil operands before the role-based builder runs.",
       "evidence": {
         "guard": [
           "past returning if len(c.Args) \u003e 1",
           "past returning if len(c.Args) == 0",
           "past returning if b, ok := dateFnOverMixedExpHistogramSetOp(c, s, ctx); ok",
           "past returning if err != nil",
-          "if newValue == nil"
+          "if c.Func.Name != \"timestamp\" \u0026\u0026 dateFnExpr(c.Func.Name, nil, nil) == nil"
         ],
         "callers": [
           "lowerCall"
         ],
         "cited": [
           "dateFnExpr",
-          "dateFnOverMixedExpHistogramSetOp",
-          "lowerCall"
+          "lowerCall",
+          "lowerDateFn"
         ]
       }
     },

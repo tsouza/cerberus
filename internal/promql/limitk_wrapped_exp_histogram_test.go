@@ -15,7 +15,7 @@ import (
 // `limit_ratio(R, <exp-hist selector>)`, wrapped by a further float-only
 // function or arithmetic operator, used to PANIC inside
 // [chplan.RowShapeOf]'s consumer histogram_shape_guard.go's
-// assertValueShapedInput rather than either computing correctly or
+// projectSampleRoles rather than either computing correctly or
 // cleanly rejecting.
 //
 // Root cause: [lowerLimitKInput] (cerberus issue #2518) already recognises
