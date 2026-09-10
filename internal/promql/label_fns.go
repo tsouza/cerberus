@@ -31,7 +31,11 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 	if err != nil {
 		return nil, err
 	}
-	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) }), s), nil
+	project, err := projectAttributesOverInner(inner, s, mixedLabelFamily, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) })
+	if err != nil {
+		return nil, err
+	}
+	return guardLabelRewriteCollision(project, s), nil
 }
 
 // labelReplaceAttributes validates label_replace's static arguments and
@@ -104,7 +108,11 @@ func lowerLabelJoin(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node
 	if err != nil {
 		return nil, err
 	}
-	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) }), s), nil
+	project, err := projectAttributesOverInner(inner, s, mixedLabelFamily, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) })
+	if err != nil {
+		return nil, err
+	}
+	return guardLabelRewriteCollision(project, s), nil
 }
 
 // labelJoinAttributes validates label_join's string arguments and builds the
@@ -164,9 +172,12 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 // projectAttributesOverInner preserves the wrapper's name and live mixed
 // payload policies while replacing only its label map. Pure histogram inputs
 // remain on their existing histogram-aware lowering path.
-func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, build func(sampleRoleRefs) chplan.Expr) *chplan.Project {
+func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, family mixedWrapperFamily, build func(sampleRoleRefs) chplan.Expr) (*chplan.Project, error) {
+	if err := requireMixedPlanPolicy(inner, family); err != nil {
+		return nil, err
+	}
 	return projectSampleRoles(inner, s,
 		sampleProjectionPolicy{name: preserveSampleName, payload: preserveMixedSamplePayload},
 		legacySampleProjectionLayout(inner),
-		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{attributes: build(refs)} })
+		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{attributes: build(refs)} }), nil
 }

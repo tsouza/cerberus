@@ -572,7 +572,7 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 		// No canonicalisation here: the kernel below already binds
 		// Attributes canonically and mapConcat appends to that, so every
 		// row of one logical series gets the same key order.
-		arms = append(arms, projectAttributesOverInner(kernel, s, func(refs sampleRoleRefs) chplan.Expr {
+		arm, err := projectAttributesOverInner(kernel, s, mixedHistogramValueFamily, func(refs sampleRoleRefs) chplan.Expr {
 			return &chplan.FuncCall{
 				Fn: chplan.FnMapMerge,
 				Args: []chplan.Expr{
@@ -586,7 +586,11 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 					},
 				},
 			}
-		}))
+		})
+		if err != nil {
+			return nil, err
+		}
+		arms = append(arms, arm)
 	}
 
 	if len(arms) == 1 {

@@ -28,6 +28,9 @@ func TestMixedOperandPolicyControlsActualDispatch(t *testing.T) {
 		site   mixedAdmissionSite
 	}{
 		{`abs(` + direct + `)`, mixedMathFamily, mixedRootAdmission},
+		{`abs(` + nested + `)`, mixedMathFamily, mixedPlanAdmission},
+		{`clamp(` + nested + `, 2, 1)`, mixedMathFamily, mixedPlanAdmission},
+		{`label_replace(` + nested + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedPlanAdmission},
 		{`sort(` + direct + `)`, mixedSortFamily, mixedOperandAdmission},
 		{`scalar(` + direct + `)`, mixedScalarFamily, mixedOperandAdmission},
 		{`absent(` + direct + `)`, mixedAbsentFamily, mixedOperandAdmission},
@@ -63,6 +66,44 @@ func TestMixedOperandPolicyControlsActualDispatch(t *testing.T) {
 				t.Fatalf("missing authorization did not reject actual dispatch: %v", err)
 			}
 		})
+	}
+}
+
+func mustProjectAttributesOverInner(t *testing.T, inner chplan.Node, s schema.Metrics, build func(sampleRoleRefs) chplan.Expr) *chplan.Project {
+	t.Helper()
+	project, err := projectAttributesOverInner(inner, s, mixedLabelFamily, build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project
+}
+
+func TestMixedOperandPolicyComputedClampChecksOriginalOperand(t *testing.T) {
+	const operand = `sort_by_label(latency_exp_hist or num_cpus, "job")`
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	s := schema.DefaultOTelMetrics()
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	innerExpr, err := p.ParseExpr(operand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := LowerAt(context.Background(), innerExpr, s, at, at)
+	if err != nil || chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+		t.Fatalf("operand must independently lower to Mixed: %T, %v", inner, err)
+	}
+	key := mixedWrapperKey{family: mixedMathFamily, site: mixedPlanAdmission}
+	policy := mixedOperandPolicies[key]
+	delete(mixedOperandPolicies, key)
+	t.Cleanup(func() { mixedOperandPolicies[key] = policy })
+	expr, err := p.ParseExpr(`clamp(` + operand + `, scalar(vector(2)), scalar(vector(1)))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Test denial before the unmarked bound Filter is constructed. This is not
+	// an assertion that the admitted wrapper's downstream behavior is correct.
+	_, err = LowerAt(context.Background(), expr, s, at, at)
+	if err == nil || !strings.Contains(err.Error(), "mixed operand is not admitted for math-round-clamp at existing-plan") {
+		t.Fatalf("computed clamp bypassed original-operand authorization: %v", err)
 	}
 }
 

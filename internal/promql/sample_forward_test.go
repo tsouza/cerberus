@@ -106,7 +106,7 @@ func TestSampleForwardAttributeCallbackUsesActualNames(t *testing.T) {
 		chplan.Column{Name: "input_timestamp", Role: chplan.RoleTimestamp},
 		chplan.Column{Name: "input_value", Role: chplan.RoleValue},
 	)
-	plan := projectAttributesOverInner(input, s, func(refs sampleRoleRefs) chplan.Expr {
+	plan := mustProjectAttributesOverInner(t, input, s, func(refs sampleRoleRefs) chplan.Expr {
 		return &chplan.LabelJoin{Map: refs.Attributes, Dst: "combined", Separator: "-", Srcs: []string{"job", "instance"}}
 	})
 	if got := plan.RowType(); !got.Equal(chplan.Schema{Columns: metricRoles(s)}) {
@@ -289,7 +289,7 @@ func TestSampleForwardPayloadAdmission(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := sampleForwardTestInput(append(metricRoles(s), tc.extra...)...)
 			call := func() {
-				plan := projectAttributesOverInner(input, s, func(refs sampleRoleRefs) chplan.Expr {
+				plan := mustProjectAttributesOverInner(t, input, s, func(refs sampleRoleRefs) chplan.Expr {
 					if !tc.okay {
 						t.Fatal("unsupported payload reached attribute builder")
 					}
@@ -331,7 +331,7 @@ func TestSampleForwardMissingNameAdmissionIsClosedFloatOnly(t *testing.T) {
 				input.Columns = nil
 			}
 			capturePanic(t, func() {
-				projectAttributesOverInner(input, s, func(sampleRoleRefs) chplan.Expr {
+				mustProjectAttributesOverInner(t, input, s, func(sampleRoleRefs) chplan.Expr {
 					t.Fatal("unproven missing name reached attribute builder")
 					return nil
 				})

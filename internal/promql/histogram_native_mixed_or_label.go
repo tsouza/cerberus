@@ -103,5 +103,9 @@ func lowerLabelCallOverMixedExpHistogramSetOp(call *parser.Call, b *parser.Binar
 		return nil, err
 	}
 
-	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) }), s), nil
+	project, err := projectAttributesOverInner(inner, s, mixedLabelFamily, func(refs sampleRoleRefs) chplan.Expr { return attrs(refs.Attributes) })
+	if err != nil {
+		return nil, err
+	}
+	return guardLabelRewriteCollision(project, s), nil
 }

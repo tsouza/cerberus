@@ -51,7 +51,7 @@ func TestProjectForwarders_PanicOnHistogramShapedInput(t *testing.T) {
 		{
 			name: "projectAttributesOverInner",
 			call: func() {
-				projectAttributesOverInner(histogramShapedInput(), s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes })
+				mustProjectAttributesOverInner(t, histogramShapedInput(), s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes })
 			},
 		},
 	}
@@ -107,7 +107,7 @@ func TestProjectForwarders_AcceptEveryNonHistogramShape(t *testing.T) {
 			if got := projectValueOverInner(in.node, s, legacySampleProjectionLayout(in.node), func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: 1} }); got == nil {
 				t.Error("projectValueOverInner returned nil")
 			}
-			if got := projectAttributesOverInner(in.node, s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes }); got == nil {
+			if got := mustProjectAttributesOverInner(t, in.node, s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes }); got == nil {
 				t.Error("projectAttributesOverInner returned nil")
 			}
 		})

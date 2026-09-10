@@ -71,12 +71,16 @@ func guardedValueProjection(
 	arg parser.Expr,
 	s schema.Metrics,
 	ctx lowerCtx,
+	family mixedWrapperFamily,
 	newValue func(sampleRoleRefs) chplan.Expr,
 	carry ...string,
-) chplan.Node {
+) (chplan.Node, error) {
+	if err := requireMixedPlanPolicy(inner, family); err != nil {
+		return nil, err
+	}
 	inner = mixedRowsFloatOnly(inner)
 	inner = guardNameDropCollision(inner, arg, s, ctx, carry...)
-	return projectValueOverInner(inner, s, legacySampleProjectionLayout(inner), newValue)
+	return projectValueOverInner(inner, s, legacySampleProjectionLayout(inner), newValue), nil
 }
 
 // guardKeysOnTimestamp reports whether a collision guard over `inner` must

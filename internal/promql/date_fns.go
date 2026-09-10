@@ -127,10 +127,14 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if c.Func.Name != "timestamp" && dateFnExpr(c.Func.Name, nil, nil) == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return guardedValueProjection(inner, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+	family := mixedDateFamily
+	if c.Func.Name == "timestamp" {
+		family = mixedTimestampFamily
+	}
+	return guardedValueProjection(inner, c.Args[0], s, ctx, family, func(refs sampleRoleRefs) chplan.Expr {
 		inputSchema := refs.sourceMetrics(s)
 		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(inputSchema), timestampResultExpr(c.Args[0], inputSchema, ctx)))
-	}, carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...), nil
+	}, carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...)
 }
 
 // dateFnArgCtx returns the ctx the date function's argument is lowered under.

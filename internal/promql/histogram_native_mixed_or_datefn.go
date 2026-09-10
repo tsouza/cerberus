@@ -77,7 +77,7 @@ func lowerDateFnOverMixedExpHistogramSetOp(c *parser.Call, b *parser.BinaryExpr,
 	if dateFnExpr(c.Func.Name, nil, nil) == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return guardedValueProjection(floatForAgg, c.Args[0], s, ctx, func(refs sampleRoleRefs) chplan.Expr {
+	return guardedValueProjection(floatForAgg, c.Args[0], s, ctx, mixedDateFamily, func(refs sampleRoleRefs) chplan.Expr {
 		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(refs.sourceMetrics(s)), nil))
-	}), nil
+	})
 }

@@ -151,7 +151,10 @@ func TestFoldSyntheticVectorBinary_ReturnBoolOnlyWrapsComparisons(t *testing.T) 
 	// the raw Binary. Mutant `&&`→`||` at
 	// binary.go:foldSyntheticVectorBinary:`if isComparison(op) && returnBool`
 	// would wrap it in toFloat64 regardless.
-	plan := foldSyntheticVectorBinary(synth, vec, vecExpr, chplan.OpAdd, true, true, s, lowerCtx{})
+	plan, err := foldSyntheticVectorBinary(synth, vec, vecExpr, chplan.OpAdd, true, true, s, lowerCtx{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	proj, ok := plan.(*chplan.Project)
 	if !ok {
 		t.Fatalf("foldSyntheticVectorBinary result = %T, want *chplan.Project", plan)
