@@ -93,6 +93,9 @@ func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	if err := requireMixedPlanPolicy(inner, mixedSortFamily); err != nil {
 		return nil, err
 	}
+	// A preserving wrapper can hide a mixed union from the direct recognizer.
+	// Resolve the complete operand first, then drop histograms before sorting.
+	inner = mixedRowsFloatOnly(inner)
 	return &chplan.OrderBy{
 		Input: inner,
 		Keys: []chplan.OrderKey{
