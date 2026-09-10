@@ -581,12 +581,15 @@ func TestParseRejectsNilComparisonOnIntrinsic(t *testing.T) {
 		want  string // the attribute the message must name
 	}{
 		// The three forms issue #3260 reports, in the reference's own
-		// invalid-query corpus (pkg/traceql/test_examples.yaml).
-		{`{ span:status = nil }`, "status"},
+		// invalid-query corpus (pkg/traceql/test_examples.yaml). The
+		// scoped spelling names itself in the message (#3270) — the
+		// reference does the same, since it never canonicalises
+		// span:status onto its bare twin either.
+		{`{ span:status = nil }`, "span:status"},
 		{`{ name = nil }`, "name"},
 		// Written the other way round: the grammar folds `nil = x` to the
 		// same OpNotExists node, and the reference lists both spellings.
-		{`{ nil = span:status }`, "status"},
+		{`{ nil = span:status }`, "span:status"},
 		// Every intrinsic, not an enumerated subset — the reference's
 		// clause is `attr.Intrinsic != IntrinsicNone`.
 		{`{ kind = nil }`, "kind"},
