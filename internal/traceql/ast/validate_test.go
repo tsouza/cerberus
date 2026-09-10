@@ -566,3 +566,122 @@ func TestParseAcceptsWhatReferenceAccepts(t *testing.T) {
 		})
 	}
 }
+
+// TestParseRejectsNilComparisonOnIntrinsic pins the reference's
+// `<intrinsic> = nil` rejection (pkg/traceql/ast_validate.go's
+// `UnaryOperation.validate`, mirrored at fetch time by vparquet4's
+// `checkConditions`). Before issue #3260 cerberus enforced this at
+// LOWERING instead, which is a different error class: the Tempo head
+// answers a lowering error 422 (errclass.go's ErrClassLower) where the
+// reference answers 400, so a query the reference calls malformed came
+// back to Grafana as "valid TraceQL cerberus cannot serve".
+func TestParseRejectsNilComparisonOnIntrinsic(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string // the attribute the message must name
+	}{
+		// The three forms issue #3260 reports, in the reference's own
+		// invalid-query corpus (pkg/traceql/test_examples.yaml).
+		{`{ span:status = nil }`, "status"},
+		{`{ name = nil }`, "name"},
+		// Written the other way round: the grammar folds `nil = x` to the
+		// same OpNotExists node, and the reference lists both spellings.
+		{`{ nil = span:status }`, "status"},
+		// Every intrinsic, not an enumerated subset — the reference's
+		// clause is `attr.Intrinsic != IntrinsicNone`.
+		{`{ kind = nil }`, "kind"},
+		{`{ duration = nil }`, "duration"},
+		{`{ span:childCount = nil }`, "span:childCount"},
+		{`{ nestedSetLeft = nil }`, "nestedSetLeft"},
+		{`{ trace:id = nil }`, "trace:id"},
+		// The rule reaches inside a boolean tree and through a pipeline,
+		// so a walk that only inspected the top-level filter still fails.
+		{`{ span.foo = "a" && name = nil }`, "name"},
+		{`{ name = nil } | rate()`, "name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			_, err := Parse(tc.query)
+			if err == nil {
+				t.Fatalf("Parse(%q) = nil error, want an intrinsic-nil rejection", tc.query)
+			}
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Parse(%q) error = %T (%v), want *ValidationError", tc.query, err, err)
+			}
+			msg := verr.Error()
+			want := "invalid TraceQL query: " + tc.want + "=nil is not valid because intrinsics cannot be nil"
+			if msg != want {
+				t.Errorf("Parse(%q) message = %q, want %q", tc.query, msg, want)
+			}
+		})
+	}
+}
+
+// TestParseRejectsNilComparisonOnResourceServiceName pins the second
+// clause of the same reference rule: resource.service.name is mandatory
+// on every OTLP resource, so it can never be absent.
+func TestParseRejectsNilComparisonOnResourceServiceName(t *testing.T) {
+	for _, q := range []string{
+		`{ resource.service.name = nil }`,
+		`{ nil = resource.service.name }`,
+		// The quoted spelling names the same attribute.
+		`{ resource."service.name" = nil }`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			_, err := Parse(q)
+			if err == nil {
+				t.Fatalf("Parse(%q) = nil error, want a resource.service.name rejection", q)
+			}
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Parse(%q) error = %T (%v), want *ValidationError", q, err, err)
+			}
+			want := "invalid TraceQL query: resource.service.name=nil is not valid because resource.service.name cannot be nil"
+			if got := verr.Error(); got != want {
+				t.Errorf("Parse(%q) message = %q, want %q", q, got, want)
+			}
+		})
+	}
+}
+
+// TestParseAcceptsLegalNilComparisons is the other half of the ratchet.
+// The reference's rule covers `= nil` (OpNotExists) on an intrinsic or on
+// resource.service.name and NOTHING else; every query here is one the
+// reference answers, and over-rejecting any of them would take a working
+// panel off a dashboard — including the `<groupBy> != nil` conjunct
+// Grafana Traces Drilldown stamps on every breakdown query.
+func TestParseAcceptsLegalNilComparisons(t *testing.T) {
+	queries := []string{
+		// A user attribute may legitimately be absent, in every scope.
+		`{ span.foo = nil }`,
+		`{ .foo = nil }`,
+		`{ resource.foo = nil }`,
+		`{ event.exception.type = nil }`,
+		`{ link.foo = nil }`,
+		`{ instrumentation.foo = nil }`,
+		// service.name is special ONLY in the resource scope: the same
+		// name under another scope (or none) is an ordinary attribute.
+		`{ span.service.name = nil }`,
+		`{ .service.name = nil }`,
+		// `!= nil` (OpExists) is untouched by the rule on BOTH clauses —
+		// the reference's guard is `o.Op == OpNotExists` alone.
+		`{ name != nil }`,
+		`{ kind != nil }`,
+		`{ status != nil }`,
+		`{ span:childCount != nil }`,
+		`{ resource.service.name != nil }`,
+		`{ nil != name }`,
+		`{ nil != resource.service.name }`,
+		// A compound operand is not an Attribute, so neither clause
+		// applies — the reference folds it to a constant instead.
+		`{ (span.a + 1) = nil }`,
+	}
+	for _, q := range queries {
+		t.Run(q, func(t *testing.T) {
+			if _, err := Parse(q); err != nil {
+				t.Errorf("Parse(%q) = %v, want it accepted", q, err)
+			}
+		})
+	}
+}

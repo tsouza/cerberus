@@ -1248,8 +1248,9 @@ shipping
 # children, which pin that `kind != nil` is constant-true, NOT an
 # enum-zero check. For attributes it is key existence. The rejected
 # forms (`<intrinsic> = nil`, `resource.service.name = nil` — both
-# 400 on reference, ast_validate.go) cannot ride the corpus (200-shaped
-# cases only); internal/traceql/nested_set_nil_test.go pins them.
+# 400 on reference, ast_validate.go) ride the corpus on the
+# status-parity axis rather than the body axis — see
+# intrinsic_eq_nil_rejected and resource_service_name_eq_nil_rejected.
 
 -- name --
 kind_not_nil
@@ -1665,6 +1666,58 @@ name_gt_int_rejected
 # code (modules/frontend/combiner/common.go's erroredResponse).
 -- query --
 { name > 3 }
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
+intrinsic_eq_nil_rejected
+# An intrinsic is a property every span has by construction, so it can
+# never be absent: reference Tempo rejects `<intrinsic> = nil` at
+# validation for EVERY intrinsic ("intrinsics cannot be nil",
+# pkg/traceql/ast_validate.go's UnaryOperation.validate, repeated at
+# fetch time by vparquet4's checkConditions and listed invalid in
+# pkg/traceql/test_examples.yaml).
+#
+# The STATUS is the whole point of this case, which is why it is here
+# and not only in a unit test. cerberus rejected this all along, but in
+# the lowering, and the Tempo head answers a lowering error 422
+# (internal/api/tempo/errclass.go's ErrClassLower) where the reference
+# answers 400 — so the two backends disagreed about whether the query
+# was malformed or merely unservable, and nothing graded that (#3260).
+# Moving the rule into the parse-stage validator settles it at 400;
+# this case is what holds it there against both backends live.
+#
+# The `!= nil` twin must NOT join it: OpExists is outside the
+# reference's rule and is load-bearing for Grafana Traces Drilldown.
+# It rides the body axis as kind_not_nil / status_not_nil /
+# name_not_nil above.
+-- query --
+{ span:status = nil }
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
+resource_service_name_eq_nil_rejected
+# The second clause of the same reference rule: service.name is the one
+# resource attribute OTLP makes mandatory, so like an intrinsic it is
+# never absent and `= nil` can only be a mistake in the query text
+# ("resource.service.name cannot be nil"). Graded on status for the
+# same reason as intrinsic_eq_nil_rejected above.
+#
+# Its accepted siblings elsewhere in this corpus pin that the rule is
+# no wider than the reference's: `resource.service.name != nil`
+# (OpExists) and `span.http.method = nil` (an ordinary attribute, which
+# may legitimately be absent) both ride the body axis.
+-- query --
+{ resource.service.name = nil }
 -- endpoint --
 search
 -- expect_status --
