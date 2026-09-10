@@ -17,11 +17,12 @@ func metricRoles(s schema.Metrics) []chplan.Column {
 }
 
 func metricScanRoles(s schema.Metrics, table string) []chplan.Column {
+	const aggregateStorageIdentityColumns = 2
 	roles := metricRoles(s)
 	if (s.DeltaPrefixTable != "" && table == s.DeltaPrefixTable) || table == schema.DownsampleTierTable {
 		// These storage relations contain bucket boundaries and aggregate
 		// states, not the raw sample timestamp/value columns.
-		return roles[:2]
+		return roles[:aggregateStorageIdentityColumns]
 	}
 	if table == s.HistogramTable || table == s.ExpHistogramTable {
 		// Histogram storage has no float Value; the histogram lowering
