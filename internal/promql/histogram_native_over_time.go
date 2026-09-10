@@ -113,7 +113,7 @@ func lowerExpHistogramOverTimeRange(shape histogramAggShape, s schema.Metrics, c
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 
 	perSeries := expHistogramWindowReshape(
-		buildHistogramBucketFanout(
+		guardExpHistogramWindowReduction(buildHistogramBucketFanout(
 			&chplan.Scan{Table: s.ExpHistogramTable},
 			buildPredicate(shape.selector.LabelMatchers, s),
 			nil,
@@ -123,7 +123,7 @@ func lowerExpHistogramOverTimeRange(shape histogramAggShape, s schema.Metrics, c
 			aggs,
 			s,
 			ctx,
-		),
+		), ctx),
 		aggs,
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		nil,
