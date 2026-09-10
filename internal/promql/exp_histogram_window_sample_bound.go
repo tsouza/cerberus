@@ -142,6 +142,13 @@ func expHistogramWindowSamplesExpr() chplan.Expr {
 	}
 }
 
+// expHistogramWindowWidthParam is the `arrayMap` lambda's parameter in
+// [expHistogramWindowWidthExpr] — one bucket array of the group. It is
+// named here rather than inline so
+// TestExpHistogramWindowGuard_LambdaParamIsBare can assert the emitted
+// spelling against the same identifier the emitter uses.
+const expHistogramWindowWidthParam = "bw"
+
 // expHistogramWindowWidthExpr is W: the widest stored bucket array in the
 // group, positive and negative summed.
 //
@@ -160,6 +167,15 @@ func expHistogramWindowSamplesExpr() chplan.Expr {
 // what this expression claims is a lower bound on the true width, which
 // makes the guard conservative in the admitting direction for it.
 func expHistogramWindowWidthExpr() chplan.Expr {
+	// The body refers to the lambda's own parameter, so it is a
+	// [chplan.BareIdent] and not a [chplan.ColumnRef]. The distinction is
+	// not cosmetic: ColumnRef renders backtick-quoted, which spells the
+	// parameter as a base-column lookup, and every ColumnRef-walking
+	// analysis in the tree — projection derivation, the containment
+	// guards, the chdb fan-out self-sufficiency check — then counts `bw`
+	// as a column the scan must supply. [chplan.BareIdent] exists for
+	// exactly this, and [chplan.RangeWindowGridNative.RecollapseReadColumns]
+	// states the invariant it relies on.
 	widest := func(alias string) chplan.Expr {
 		return &chplan.FuncCall{
 			Fn: chplan.FnArrayMax,
@@ -167,10 +183,10 @@ func expHistogramWindowWidthExpr() chplan.Expr {
 				Fn: chplan.FnArrayMap,
 				Args: []chplan.Expr{
 					&chplan.Lambda{
-						Params: []string{"bw"},
+						Params: []string{expHistogramWindowWidthParam},
 						Body: &chplan.FuncCall{
 							Fn:   chplan.FnLength,
-							Args: []chplan.Expr{&chplan.ColumnRef{Name: "bw"}},
+							Args: []chplan.Expr{&chplan.BareIdent{Name: expHistogramWindowWidthParam}},
 						},
 					},
 					&chplan.ColumnRef{Name: alias},

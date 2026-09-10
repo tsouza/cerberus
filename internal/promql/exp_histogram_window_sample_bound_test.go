@@ -313,3 +313,47 @@ func TestWrapExpHistogramWindowSampleGuard_NonPositiveCeilingOmitsTheGuard(t *te
 		})
 	}
 }
+
+// TestExpHistogramWindowGuard_LambdaParamIsBare pins the one spelling in
+// the cost expression that is not free: the `arrayMap` lambda's own
+// parameter must render as a BARE identifier.
+//
+// Spelling it as a [chplan.ColumnRef] emits `bw -> length(`bw`)`, which
+// executes on ClickHouse but LIES to every ColumnRef-walking analysis in
+// the tree: the parameter reads as a base-column lookup that the scan
+// beneath must supply. The observable cost was a chdb-tagged failure —
+// the merge() fan-out self-sufficiency check
+// ([testsql.CheckSeedCoversFanOut]) demanded a fan-out arm declare a
+// column "bw" that no metrics table has and no seed could ever create —
+// but the projection and containment walks read the same node, so the
+// backtick is a defect wherever it appears, not only under chdb.
+//
+// The assertion is on the ABSENCE of the quoted form rather than the
+// presence of the bare one, because "bw" appears bare in the parameter
+// position either way: only the body's spelling discriminates.
+func TestExpHistogramWindowGuard_LambdaParamIsBare(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		rangeMode bool
+	}{
+		{"range", `rate(latency_exp_hist[5m])`, true},
+		{"instant", `rate(latency_exp_hist[5m])`, false},
+		{"quantile", `histogram_quantile(0.9, rate(latency_exp_hist[5m]))`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sqlStr := expHistWindowGuardSQL(t, tc.query, tc.rangeMode)
+			if !strings.Contains(sqlStr, "arrayMap(") {
+				t.Fatalf("guard did not emit its arrayMap width term at all, so this test would pass vacuously\nSQL: %s", sqlStr)
+			}
+			if quoted := "`" + expHistogramWindowWidthParam + "`"; strings.Contains(sqlStr, quoted) {
+				t.Errorf("the arrayMap lambda parameter is emitted as %s — a backtick-quoted base-column lookup; it must be a chplan.BareIdent\nSQL: %s",
+					quoted, sqlStr)
+			}
+		})
+	}
+}
