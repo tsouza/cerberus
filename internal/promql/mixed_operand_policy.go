@@ -50,7 +50,7 @@ const (
 	mixedSortFamily             mixedWrapperFamily = "sort"
 	mixedSortByLabelFamily      mixedWrapperFamily = "sort-by-label"
 	mixedDateFamily             mixedWrapperFamily = "date"
-	mixedTimestampFamily        mixedWrapperFamily = "timestamp"
+	mixedTimestampFamily        mixedWrapperFamily = "timestamp-eval"
 	mixedInfoFamily             mixedWrapperFamily = "info"
 	mixedHistogramValueFamily   mixedWrapperFamily = "histogram-value"
 	mixedLimitFamily            mixedWrapperFamily = "limitk-ratio"
