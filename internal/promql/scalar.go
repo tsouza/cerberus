@@ -91,15 +91,8 @@ func foldBinaryScalar(op parser.ItemType, lhs, rhs float64) (float64, bool) {
 	case parser.MUL:
 		return lhs * rhs, true
 	case parser.DIV:
-		if rhs == 0 {
-			if lhs == 0 {
-				return math.NaN(), true
-			}
-			if lhs < 0 {
-				return math.Inf(-1), true
-			}
-			return math.Inf(1), true
-		}
+		// Prometheus scalarBinop uses IEEE-754 division directly, including
+		// the denominator's zero sign and NaN propagation.
 		return lhs / rhs, true
 	case parser.MOD:
 		if rhs == 0 {
