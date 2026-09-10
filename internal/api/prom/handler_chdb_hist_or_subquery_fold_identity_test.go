@@ -17,6 +17,15 @@
 //     sum_over_time, avg_over_time) drop it, so the two folds land on one
 //     label set and `Matrix.ContainsSameLabelset()` refuses the query.
 //     Cerberus reduced on Attributes alone and answered ONE series.
+//
+// Both arms here are exponential histograms deliberately. The cross-TYPE
+// (histogram/float) sibling of this collision is NOT covered here: the two
+// reference surfaces cerberus grades against disagree about it —
+// test/spec's parity oracle runs promqltest.NewTestEngine, which forces
+// `EnableDelayedNameRemoval`, while compatibility/prometheus runs the real
+// server, which defaults it off — and the answer flips between them. A
+// pure-histogram collision raises under BOTH, which is why this file is
+// the half that can be pinned today.
 //   - last_over_time / first_over_time keep it, so the answer is TWO
 //     series. Cerberus reduced on Attributes alone and then argMax'd a
 //     single `__name__` out of the merged group, publishing one of the
@@ -249,117 +258,4 @@ func histOrFoldVector(t *testing.T, baseURL, query string, at time.Time) []histO
 		t.Fatalf("%s: decode vector: %v; body=%s", query, err, body)
 	}
 	return vec
-}
-
-// histOrFoldMixedSeed is [histOrFoldSeed]'s cross-TYPE twin: the shadowed
-// arm is a gauge rather than a second exp-histogram, sampled on exactly
-// the same grid so the two files' anchor arithmetic is one derivation.
-//
-// This is the shape #3253's second part is about. The mixed fold splits
-// the relation on its discriminator, folds each half separately and
-// recombines, so a hist/float collision is CROSS-BRANCH: the histogram arm
-// is the only name in the histogram branch and the float arm is the only
-// name in the float branch, each branch's distinct-`__name__` count is 1,
-// and neither branch-local guard can fire. The collision is visible only
-// at the recombination, where one match key carries a row from each side.
-func histOrFoldMixedSeed(t *testing.T, start time.Time, floatAttrs, histAttrs string) string {
-	t.Helper()
-	at := func(d time.Duration) string {
-		return start.Add(d).Format("2006-01-02 15:04:05.000000000")
-	}
-	return metaShapedMetricsDDL + fmt.Sprintf(
-		`
-INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
-    ('latency_float', '', '', %[5]s, toDateTime64('%[1]s', 9), 1.0),
-    ('latency_float', '', '', %[5]s, toDateTime64('%[2]s', 9), 2.0);
-INSERT INTO otel_metrics_exponential_histogram
-    (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES
-    ('latency_exp_hist', '', '', %[6]s, toDateTime64('%[3]s', 9), 10, 20.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
-    ('latency_exp_hist', '', '', %[6]s, toDateTime64('%[4]s', 9), 12, 24.0, 0, 0, 0, [1, 2, 3, 6], 0, []);`,
-		at(30*time.Second), at(time.Minute+30*time.Second),
-		at(3*time.Minute+30*time.Second), at(4*time.Minute+30*time.Second),
-		floatAttrs, histAttrs,
-	)
-}
-
-// histOrFoldMixedQuery brackets one name over the mixed float/histogram
-// `or`. The histogram is the LHS, as in the issue's own repro; upstream's
-// answer does not depend on which arm leads (measured against the
-// reference engine both ways).
-func histOrFoldMixedQuery(name string) string {
-	return fmt.Sprintf("%s((latency_exp_hist or latency_float)%s)", name, histOrFoldSubqueryRange)
-}
-
-// TestQuery_MixedOrSubqueryFoldFamily_DuplicateLabelset_ChDB is #3253's
-// second part at the wire, instant shape. Before the recombination
-// learned to reject a match key both branches claim, these answered 200
-// with a single histogram-valued series and the float arm's own fold
-// missing from the answer entirely.
-func TestQuery_MixedOrSubqueryFoldFamily_DuplicateLabelset_ChDB(t *testing.T) {
-	start, end, _ := histOrFoldWindow()
-	srv, _ := newChDBServer(t, histOrFoldMixedSeed(t, start, "map('x', '1')", "map('x', '1')"))
-
-	for _, name := range histOrFoldNames {
-		query := histOrFoldMixedQuery(name)
-		t.Run(query, func(t *testing.T) {
-			status, body := getBody(t, fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
-				srv.URL, url.QueryEscape(query), end.Unix()))
-			assertDuplicateLabelsetRejected(t, body, status, query)
-		})
-	}
-}
-
-// TestQueryRange_MixedOrSubqueryFoldFamily_DuplicateLabelset_ChDB is the
-// same seven over /api/v1/query_range. The recombination is the same node
-// in both modes, but the two branches reduce through different ones
-// (chplan.RangeBucketFanout and an OuterRange-mode chplan.RangeWindow), so
-// running both is what proves the rejection rides on the union rather than
-// on either branch's own reduction.
-func TestQueryRange_MixedOrSubqueryFoldFamily_DuplicateLabelset_ChDB(t *testing.T) {
-	start, end, step := histOrFoldWindow()
-	srv, _ := newChDBServer(t, histOrFoldMixedSeed(t, start, "map('x', '1')", "map('x', '1')"))
-
-	for _, name := range histOrFoldNames {
-		query := histOrFoldMixedQuery(name)
-		t.Run(query, func(t *testing.T) {
-			status, body := getBody(t, fmt.Sprintf(
-				"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
-				srv.URL, url.QueryEscape(query), start.Unix(), end.Unix(), int(step.Seconds()),
-			))
-			assertDuplicateLabelsetRejected(t, body, status, query)
-		})
-	}
-}
-
-// TestQuery_MixedOrSubqueryFoldFamily_DistinctLabelsets_ChDB is the
-// discriminating control for the cross-branch rejection, and it is
-// stricter than its pure-histogram sibling: the recombination's match key
-// is (Attributes, timestamp), so a guard that fired on "both branches
-// produced a row" rather than "both produced a row on ONE key" would
-// reject here too. Disjoint attributes must still answer two series, one
-// per arm.
-func TestQuery_MixedOrSubqueryFoldFamily_DistinctLabelsets_ChDB(t *testing.T) {
-	start, end, _ := histOrFoldWindow()
-	srv, _ := newChDBServer(t, histOrFoldMixedSeed(t,
-		start, "map('x', '1', 'pod', 'f1')", "map('x', '1', 'pod', 'h1')"))
-
-	for _, name := range histOrFoldNames {
-		query := histOrFoldMixedQuery(name)
-		t.Run(query, func(t *testing.T) {
-			vec := histOrFoldVector(t, srv.URL, query, end)
-			if len(vec) != 2 {
-				t.Fatalf("%s: got %d series, want 2 (pod=f1 and pod=h1 are distinct label sets, "+
-					"so nothing collides and nothing may abort): %+v", query, len(vec), vec)
-			}
-			seen := map[string]bool{}
-			for _, s := range vec {
-				seen[s.Metric["pod"]] = true
-			}
-			for _, want := range []string{"f1", "h1"} {
-				if !seen[want] {
-					t.Errorf("%s: expected a series with pod=%q, got %v", query, want, seen)
-				}
-			}
-		})
-	}
 }

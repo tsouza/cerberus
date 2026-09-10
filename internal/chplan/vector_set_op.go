@@ -175,31 +175,6 @@ type VectorSetOp struct {
 	// rejects it anywhere else rather than silently ignoring it.
 	MixedDropCollisions bool
 
-	// MixedAbortOnCollision is MixedDropCollisions' sibling for the shape
-	// where the two branches are two SERIES rather than two members of one
-	// aggregation group: a Mixed FOLD recombination
-	// (internal/promql's combineMixedFoldBranchesRejectingCollisions,
-	// cerberus issue #3253). There, a match key carrying rows from both
-	// arms is not a group whose members disagreed on value type — the
-	// branches are window-pure, so each series is histogram-typed or
-	// float-typed for its whole window — it is TWO distinct series that
-	// landed on one label set once the fold dropped `__name__`. Reference
-	// Prometheus refuses to build that vector at all, so the union aborts
-	// with [DuplicateLabelsetMessage] instead of dropping either side.
-	//
-	// This is the only place the collision can be SEEN: each branch's own
-	// name guard counts distinct names within its own branch, and a
-	// hist/float collision contributes exactly one name to each, so both
-	// branch-local counts are 1. The union's match key is the same
-	// (Attributes, timestamp) partition MixedDropCollisions already
-	// computes its two side flags over, so the abort reads quantities the
-	// emitter builds either way.
-	//
-	// Meaningful only alongside Mixed with Op == VectorSetOr, and
-	// mutually exclusive with MixedDropCollisions; the emitter rejects
-	// both violations rather than silently ignoring them.
-	MixedAbortOnCollision bool
-
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
@@ -221,7 +196,7 @@ func (s *VectorSetOp) Equal(other Node) bool {
 	if s.Mixed != o.Mixed || s.MixedHistogramOnLeft != o.MixedHistogramOnLeft {
 		return false
 	}
-	if s.MixedDropCollisions != o.MixedDropCollisions || s.MixedAbortOnCollision != o.MixedAbortOnCollision {
+	if s.MixedDropCollisions != o.MixedDropCollisions {
 		return false
 	}
 	if s.MetricNameColumn != o.MetricNameColumn ||
