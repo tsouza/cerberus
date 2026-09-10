@@ -368,15 +368,15 @@ func TestNativePredictLinearHorizonEligible_ZeroHorizonIsEligible(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------
-// histogram_native_mixed_or_math_fn.go
+// instant_fns.go
 // ---------------------------------------------------------------------
 
 // TestLowerClampOverMixedExpHistogramSetOp_ClampMinMaxPickCorrectFn kills
 // the CONDITIONALS_NEGATION mutant at
-// histogram_native_mixed_or_math_fn.go:`if call.Func.Name == "clamp_min"`:
+// instant_fns.go:`if c.Func.Name == "clamp_min"`:
 //
 //	fnName := chplan.FnLeast
-//	if call.Func.Name == "clamp_min" {
+//	if c.Func.Name == "clamp_min" {
 //	    fnName = chplan.FnGreatest
 //	}
 //
@@ -390,20 +390,20 @@ func TestLowerClampOverMixedExpHistogramSetOp_ClampMinMaxPickCorrectFn(t *testin
 	fc, ok := minValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnGreatest {
 		t.Fatalf("clamp_min newValue = %#v, want FuncCall{Fn: FnGreatest} (mutant `==`→`!=` at "+
-			"histogram_native_mixed_or_math_fn.go:`if call.Func.Name == \"clamp_min\"` would pick FnLeast)", minValue)
+			"instant_fns.go:`if c.Func.Name == \"clamp_min\"` would pick FnLeast)", minValue)
 	}
 
 	maxValue := clampFamilyNewValue(t, `clamp_max(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5)`)
 	fc, ok = maxValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnLeast {
 		t.Fatalf("clamp_max newValue = %#v, want FuncCall{Fn: FnLeast} (mutant `==`→`!=` at "+
-			"histogram_native_mixed_or_math_fn.go:`if call.Func.Name == \"clamp_min\"` would pick FnGreatest)", maxValue)
+			"instant_fns.go:`if c.Func.Name == \"clamp_min\"` would pick FnGreatest)", maxValue)
 	}
 }
 
 // TestLowerClampOverMixedExpHistogramSetOp_MixedBoundsTakeRuntimePath
 // kills the INVERT_LOGICAL mutant at
-// histogram_native_mixed_or_math_fn.go:`if okMin && okMax`:
+// instant_fns.go:`if okMin && okMax`:
 //
 //	if okMin && okMax {
 //
@@ -420,12 +420,12 @@ func TestLowerClampOverMixedExpHistogramSetOp_MixedBoundsTakeRuntimePath(t *test
 	fc, ok := newValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnIf {
 		t.Fatalf("mixed literal/computed clamp newValue = %#v, want FuncCall{Fn: FnIf} (runtime-bounds path; mutant `&&`→`||` at "+
-			"histogram_native_mixed_or_math_fn.go:`if okMin && okMax` would take the literal degenerate-fold path instead)", newValue)
+			"instant_fns.go:`if okMin && okMax` would take the literal degenerate-fold path instead)", newValue)
 	}
 }
 
 // TestLowerClampOverMixedExpHistogramSetOp_EqualLiteralBoundsNonDegenerate
-// kills both mutants at histogram_native_mixed_or_math_fn.go:`if maxB < minB`.
+// kills both mutants at instant_fns.go:`if maxB < minB`.
 //
 // minB == maxB == 5: equality is NOT less-than, so the original takes
 // the non-degenerate literal path (FuncCall{Fn: FnGreatest}).
@@ -439,7 +439,7 @@ func TestLowerClampOverMixedExpHistogramSetOp_EqualLiteralBoundsNonDegenerate(t 
 	fc, ok := newValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnGreatest {
 		t.Fatalf("equal-bounds clamp newValue = %#v, want FuncCall{Fn: FnGreatest} (mutants `<`→`<=` and `<`→`>=` at "+
-			"histogram_native_mixed_or_math_fn.go:`if maxB < minB` would take the degenerate empty-clamp fold)", newValue)
+			"instant_fns.go:`if maxB < minB` would take the degenerate empty-clamp fold)", newValue)
 	}
 }
 

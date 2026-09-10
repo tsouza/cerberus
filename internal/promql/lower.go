@@ -643,47 +643,11 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 		})
 		return plan, true, err
 	}
-	// A single-arg instant math function (abs(), ceil(), sqrt(), ...)
-	// wrapping that same mixed shape (cerberus issue #2449 — the third
-	// wrapper family, and the first to genuinely read the payload rather
-	// than just forward it). Checked here for the identical reason: a
-	// mixed `or` argument never resolves as purely histogram-valued, so
-	// nothing above this line can have consumed the shape yet.
-	// histogram_native_mixed_or_math_fn.go has the composition's own doc
-	// comment for why reference's drop semantics (not a per-payload
-	// chplan.Case) is the correct answer here.
-	if call, b, chFn, ok := mathFnOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedMathFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerMathFnOverMixedExpHistogramSetOp(call, b, chFn, s, ctx)
-		})
-		return plan, true, err
-	}
-	// round()'s 2-arg to_nearest form wrapping that same mixed shape
-	// (cerberus issue #2578 — the shape the single-arg recognizer just
-	// above deliberately leaves unattempted because it takes a further
-	// bound argument of its own). Checked here for the identical reason:
-	// a mixed `or` argument never resolves as purely histogram-valued,
-	// so nothing above this line can have consumed the shape yet.
-	// histogram_native_mixed_or_math_fn.go has the composition's own doc
-	// comment for why it reuses that file's float-rows-only scaffolding.
-	if call, b, ok := roundToNearestOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedMathFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerRoundToNearestOverMixedExpHistogramSetOp(call, b, s, ctx)
-		})
-		return plan, true, err
-	}
-	// clamp()/clamp_min()/clamp_max() wrapping that same mixed shape
-	// (cerberus issue #2587 — the clamp family's own instance of the
-	// further-bound-argument shape the 2-arg round() recognizer just
-	// above composes). Checked here for the identical reason: a mixed
-	// `or` argument never resolves as purely histogram-valued, so
-	// nothing above this line can have consumed the shape yet.
-	// histogram_native_mixed_or_math_fn.go has the composition's own doc
-	// comment for why it reuses that file's float-rows-only scaffolding.
-	if call, b, ok := clampOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedMathFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerClampOverMixedExpHistogramSetOp(call, b, s, ctx)
-		})
+	// Direct mixed math uses the same kernels as ordinary inputs. The adapter
+	// validates root admission before eagerly preparing the union, preserving
+	// operand-before-bound errors and the direct canonical output boundary.
+	if call, b, ok := mathCallOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerMathCallOverMixedExpHistogramSetOp(call, b, s, ctx)
 		return plan, true, err
 	}
 	// Scalar `*` / histogram-left `/` wrapping that same mixed shape
