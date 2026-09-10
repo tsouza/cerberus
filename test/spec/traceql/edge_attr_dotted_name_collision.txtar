@@ -26,7 +26,6 @@ INSERT INTO otel_traces (Duration, SpanName, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "name"), SpanAttributes["name"], ResourceAttributes["name"]) = "checkout")
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ .name = "checkout" }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

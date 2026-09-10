@@ -22,7 +22,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=nestedArrayExists(Links.Attributes["severity"] <= "warn")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

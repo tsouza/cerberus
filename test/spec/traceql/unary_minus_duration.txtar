@@ -23,7 +23,6 @@ Filter predicate=((0 - Duration) < 0)
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE ((? - `Duration`) < ?)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

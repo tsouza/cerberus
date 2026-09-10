@@ -40,7 +40,6 @@ Filter predicate=((SpanKind != "Producer") AND FnNot(((SpanKind = "Server") OR (
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` PREWHERE (`SpanKind` != ?) WHERE not(((`SpanKind` = ?) OR (`SpanKind` = ?)))
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

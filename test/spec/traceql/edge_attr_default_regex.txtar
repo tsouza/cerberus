@@ -28,7 +28,6 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=((FnMapContainsKey(SpanAttributes, "path") OR FnMapContainsKey(ResourceAttributes, "path")) AND (FnIf(FnMapContainsKey(SpanAttributes, "path"), SpanAttributes["path"], ResourceAttributes["path"]) =~ "/api/.*"))
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

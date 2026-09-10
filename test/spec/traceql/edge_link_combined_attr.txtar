@@ -25,7 +25,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=((ResourceAttributes["service.name"] = "x") AND nestedArrayExists(Links.Attributes["environment"] = "staging"))
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

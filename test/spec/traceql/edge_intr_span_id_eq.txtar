@@ -20,7 +20,6 @@ INSERT INTO otel_traces (SpanId, TraceId) VALUES
 -- chplan --
 Filter predicate=(SpanId = "deadbeef")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

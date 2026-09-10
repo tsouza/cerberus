@@ -23,7 +23,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(ResourceAttributes["service.name"] = "frontend")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

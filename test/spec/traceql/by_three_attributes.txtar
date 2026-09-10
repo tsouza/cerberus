@@ -29,7 +29,6 @@ INSERT INTO otel_traces (ResourceAttributes, SpanAttributes, TraceId, SpanId) VA
 MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name, SpanAttributes["kind"] AS kind|span.kind, SpanAttributes["http.method"] AS http.method|span.http.method] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
-
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | rate() by (resource.service.name, span.kind, span.http.method)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

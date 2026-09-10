@@ -22,7 +22,6 @@ INSERT INTO otel_traces (SpanId, TraceId) VALUES
 -- chplan --
 Filter predicate=FnNot(FnMapContainsKey(SpanAttributes, "http.method"))
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: reference-fetch-layer
 detail: `{ span.http.method = nil }` is upstream's unary OpNotExists, which tests for the Static string "nil" that only the fetch layer's key-absence iterator writes, so the in-process engine matches nothing at all

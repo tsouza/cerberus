@@ -25,7 +25,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=((FnIf(FnMapContainsKey(SpanAttributes, "a"), FnToFloat64OrNull(SpanAttributes["a"]), FnToFloat64OrNull(ResourceAttributes["a"])) * 2) > 10)
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ .a * 2 > 10 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

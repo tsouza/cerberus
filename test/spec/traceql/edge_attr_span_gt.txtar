@@ -24,7 +24,6 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(FnToFloat64OrNull(SpanAttributes["size"]) > 1024)
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ span.size > 1024 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

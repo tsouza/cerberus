@@ -24,7 +24,6 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
 MetricsAggregate op=rate valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
-
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | rate()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

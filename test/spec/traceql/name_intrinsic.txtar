@@ -21,7 +21,6 @@ INSERT INTO otel_traces (SpanName, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(SpanName = "GET /api/users")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

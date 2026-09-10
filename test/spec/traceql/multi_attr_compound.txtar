@@ -28,7 +28,6 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(((ResourceAttributes["service.name"] = "frontend") AND (FnToFloat64OrNull(SpanAttributes["http.status_code"]) = 500)) AND (Duration > 100000000))
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ resource.service.name = "frontend" && span.http.status_code = 500 && duration > 100ms }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

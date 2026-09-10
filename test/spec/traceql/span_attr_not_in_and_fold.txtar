@@ -26,7 +26,6 @@ Filter predicate=(FnMapContainsKey(SpanAttributes, "http.method") AND FnNot((Spa
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE mapContains(`SpanAttributes`, ?) AND not((`SpanAttributes`[?] IN (?, ?)))
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

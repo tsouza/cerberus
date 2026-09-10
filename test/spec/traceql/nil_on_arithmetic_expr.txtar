@@ -20,7 +20,6 @@ Filter predicate=true
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE ?
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

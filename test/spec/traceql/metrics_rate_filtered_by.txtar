@@ -27,7 +27,6 @@ MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.
     Scan(otel_traces)
 -- sql --
 SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)) GROUP BY `service.name`
-
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{ status = error } | rate() by (resource.service.name)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

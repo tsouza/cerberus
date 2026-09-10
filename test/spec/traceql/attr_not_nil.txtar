@@ -22,7 +22,6 @@ INSERT INTO otel_traces (SpanId, TraceId) VALUES
 -- chplan --
 Filter predicate=FnMapContainsKey(ResourceAttributes, "service.name")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

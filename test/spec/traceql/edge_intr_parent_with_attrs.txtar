@@ -20,7 +20,6 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
 -- chplan --
 Filter predicate=((ParentSpanId != "") AND (ResourceAttributes["service.name"] = "api"))
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: reference-intrinsic-unsupported
 detail: `{ parent && resource.service.name = "api" }` reads the `parent` intrinsic, which upstream's own evaluator rejects with "intrinsic (parent) not yet supported"

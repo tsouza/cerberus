@@ -22,7 +22,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=nestedArrayExists(Events.Attributes["duration"] > 100000000)
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ 100ms < event.duration }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

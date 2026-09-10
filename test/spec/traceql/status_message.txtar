@@ -21,7 +21,6 @@ INSERT INTO otel_traces (StatusMessage, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(StatusMessage = "internal server error")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

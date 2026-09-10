@@ -24,7 +24,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=nestedArrayExists(Events.Attributes["name"] = "exception")
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: reference-fetch-layer
 detail: `{ event.name = "exception" }` runs over a span carrying two events, which vparquet4 decodes into one flat `event.` scope where the second event's value for a repeated key is unreachable

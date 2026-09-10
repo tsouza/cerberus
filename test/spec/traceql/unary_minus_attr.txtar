@@ -23,7 +23,6 @@ Filter predicate=((0 - FnToFloat64OrNull(SpanAttributes["x"])) > -3)
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE ((? - toFloat64OrNull(`SpanAttributes`[?])) > ?)
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ -span.x > -3 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

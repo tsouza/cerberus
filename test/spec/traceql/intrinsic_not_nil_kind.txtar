@@ -23,7 +23,6 @@ INSERT INTO otel_traces (SpanId, SpanKind, TraceId) VALUES
 -- chplan --
 Filter predicate=true
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

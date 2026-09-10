@@ -21,7 +21,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=nestedArrayExists(Events.Name = "exception")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

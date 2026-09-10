@@ -21,7 +21,6 @@ Filter predicate=(SpanKind = "Client")
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)
-
 -- parity_exempt --
 reason: reference-fetch-layer
 detail: `{ !(kind = server) || kind = client }` has a NOT operand of a logical OR, which reference /api/search silently drops in its fetch layer and internal/traceql/lower.go's lowerUnaryNot reproduces (#1712)

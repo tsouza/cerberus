@@ -23,7 +23,6 @@ MetricsAggregate op=avg_over_time attr=(Duration / 1e+09) valueAlias=Value
     Scan(otel_traces)
 -- sql --
 SELECT avg((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
-
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | avg_over_time(duration)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

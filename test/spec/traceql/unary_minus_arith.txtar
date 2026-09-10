@@ -24,7 +24,6 @@ Filter predicate=((0 - (FnToFloat64OrNull(SpanAttributes["a"]) + FnToFloat64OrNu
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE ((? - (toFloat64OrNull(`SpanAttributes`[?]) + toFloat64OrNull(`SpanAttributes`[?]))) < ?)
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ -(span.a + span.b) < -10 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

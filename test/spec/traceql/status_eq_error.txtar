@@ -21,7 +21,6 @@ INSERT INTO otel_traces (StatusCode, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(StatusCode = "Error")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

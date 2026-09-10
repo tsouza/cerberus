@@ -24,7 +24,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "ratio"), FnToFloat64OrNull(SpanAttributes["ratio"]), FnToFloat64OrNull(ResourceAttributes["ratio"])) = 0.95)
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ .ratio = 0.95 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

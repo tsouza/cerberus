@@ -23,7 +23,6 @@ MetricsAggregate op=avg_over_time attr=FnToFloat64OrNull(SpanAttributes["latency
     Scan(otel_traces)
 -- sql --
 SELECT avg(toFloat64OrNull(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
-
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | avg_over_time(span.latency_ms)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

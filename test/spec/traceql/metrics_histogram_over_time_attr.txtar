@@ -23,7 +23,6 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
 MetricsHistogramOverTime attr=Duration duration=true bucketAlias=__bucket valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
-
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | histogram_over_time(duration)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

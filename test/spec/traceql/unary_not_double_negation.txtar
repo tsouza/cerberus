@@ -21,7 +21,6 @@ Filter predicate=(SpanKind = "Server")
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

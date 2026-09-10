@@ -22,7 +22,6 @@ Filter predicate=(Duration > FnToFloat64OrNull(SpanAttributes["budget_ns"]))
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`Duration` > toFloat64OrNull(`SpanAttributes`[?]))
-
 -- parity_exempt --
 reason: oracle-untyped-attributes
 detail: `{ duration > span.budget_ns }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)

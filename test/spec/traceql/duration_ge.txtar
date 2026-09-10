@@ -22,7 +22,6 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(Duration >= 1000000000)
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

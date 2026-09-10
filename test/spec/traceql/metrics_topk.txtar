@@ -26,7 +26,6 @@ MetricsSecondStage op=topk k=5 valueAlias=Value
   MetricsAggregate op=rate valueAlias=Value
     Filter predicate=(ResourceAttributes["service.name"] = "checkout")
       Scan(otel_traces)
-
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{ resource.service.name = "checkout" } | rate() | topk(5)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

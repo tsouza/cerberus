@@ -22,7 +22,6 @@ INSERT INTO otel_traces (StatusMessage, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(StatusMessage =~ "timeout.*")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

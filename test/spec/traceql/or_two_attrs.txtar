@@ -25,7 +25,6 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=((ResourceAttributes["service.name"] = "frontend") OR (Duration > 100000000))
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

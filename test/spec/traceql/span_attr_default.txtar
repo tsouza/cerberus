@@ -24,7 +24,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=(FnIf(FnMapContainsKey(SpanAttributes, "http.method"), SpanAttributes["http.method"], ResourceAttributes["http.method"]) = "GET")
   Scan(otel_traces)
-
 -- parity --
 oracle: tempo
 endpoint: /api/search

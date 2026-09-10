@@ -22,7 +22,6 @@ INSERT INTO otel_traces (_idx, TraceId, SpanId) VALUES
 -- chplan --
 Filter predicate=nestedArrayExists(Events.Attributes lacksKey "exception.type")
   Scan(otel_traces)
-
 -- parity_exempt --
 reason: reference-fetch-layer
 detail: `{ event.exception.type = nil }` is upstream's unary OpNotExists, which tests for the Static string "nil" that only the fetch layer's key-absence iterator writes, so the in-process engine matches nothing at all
