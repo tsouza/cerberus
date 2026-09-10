@@ -208,14 +208,10 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 //	histogram_native_range_fn.go:subqueryHasEvalAnchor:`step < 0`
 //	histogram_native_range_fn.go:lowerExpHistogramRangeFnOverSubquery:`step < 0`
 //	histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery:`step < 0`
-//	scalar.go:`if lhs < 0 {`
 //
 // `<` -> `<=` differs only at zero, and zero cannot reach these guards. Each
 // `step` is assigned `defaultSubqueryStep` (a positive constant) by an
-// immediately preceding `if step == 0`. The `lhs` guard sits inside
-// `if rhs == 0 { if lhs == 0 { return NaN } ... }`, so `lhs` is non-zero — and
-// a negative zero is caught by that `lhs == 0` too, since IEEE equality holds
-// for it.
+// immediately preceding `if step == 0`.
 //
 // 3. A LOOP OVER A REGISTRY THAT HOLDS ONE ENTRY.
 //
