@@ -266,3 +266,50 @@ func TestExpHistogramWindowBound_AdmitsTheOrdinaryPanelAndRefusesTheDenseSeries(
 		})
 	}
 }
+
+// TestWrapExpHistogramWindowSampleGuard_NonPositiveCeilingOmitsTheGuard
+// pins the boundary of [wrapExpHistogramWindowSampleGuard]'s own gate,
+// and zero is the case that matters.
+//
+// A ceiling of zero means the caller resolved no bound. The guard must be
+// OMITTED there rather than rendered — rendering it would emit
+// `cost > 0`, which every non-empty group satisfies, turning "no bound
+// configured" into "refuse every exponential-histogram window query".
+//
+// Zero is also the only input that tells `<= 0` apart from `< 0`. Without
+// it that comparison is untested at its own boundary: every positive
+// ceiling takes the same branch under either spelling, and a negative one
+// does too.
+func TestWrapExpHistogramWindowSampleGuard_NonPositiveCeilingOmitsTheGuard(t *testing.T) {
+	t.Parallel()
+
+	reduced := chplan.Node(&chplan.Scan{Table: "otel_metrics_exponential_histogram"})
+	for _, tc := range []struct {
+		name     string
+		ceiling  int64
+		wantSame bool
+	}{
+		{"zero — no bound resolved", 0, true},
+		{"negative", -1, true},
+		{"one — the smallest real bound", 1, false},
+		{"the derived default", ExpHistogramWindowCostUnitsForMemory(1 << 30), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := wrapExpHistogramWindowSampleGuard(reduced, tc.ceiling)
+			if same := got == reduced; same != tc.wantSame {
+				t.Fatalf("ceiling %d: returned-input=%v, want %v", tc.ceiling, same, tc.wantSame)
+			}
+			if tc.wantSame {
+				return
+			}
+			filter, ok := got.(*chplan.Filter)
+			if !ok {
+				t.Fatalf("ceiling %d: got %T, want *chplan.Filter", tc.ceiling, got)
+			}
+			if filter.Input != reduced {
+				t.Errorf("ceiling %d: the guard must wrap the reduction it reads, not replace it", tc.ceiling)
+			}
+		})
+	}
+}
