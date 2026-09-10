@@ -251,7 +251,7 @@ func mixedOrShadowUnless(left, right chplan.Node, leftIsHistogram bool, match ch
 // [mixedOrShadowUnless]'s doc for why a caller must pass it explicitly
 // rather than this function deriving it from ctx.
 func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned bool) chplan.Node {
-	return mixedBranchUnion(histBranch, floatBranch, s, stepAligned, true)
+	return mixedBranchUnion(histBranch, floatBranch, s, stepAligned, mixedCollisionDrop)
 }
 
 // combineMixedFoldBranches recombines the two halves of a NON-grouped
@@ -265,8 +265,8 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 // MixedFloatsHistogramsAggWarning. There is no grouping aggregate on this
 // path — each folded row is one source series' own window — so there is
 // no such group and no such rule. What remains is `or`'s ordinary
-// left-biased union: the same resolution that produced this relation one
-// stage earlier.
+// union: the same resolution that produced this relation one stage
+// earlier.
 //
 // The distinction used to be invisible because the two branches were
 // believed disjoint by construction ("drawn from different metrics and so
@@ -276,28 +276,81 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 // so a histogram arm and a
 // float arm carrying byte-identical attributes both survive it, and a
 // name-dropping fold then publishes two rows on the SAME output key.
-// Under the symmetric difference BOTH were dropped and the query answered
-// nothing; under the left-biased union the histogram row survives, which
-// is what reference answers (cerberus issue #3227).
+//
+// Neither the symmetric difference NOR the left-biased union is what
+// reference does with that key. Cerberus issue #3227 chose the left-biased
+// union on the reading that "the histogram row survives, which is what
+// reference answers". That outcome is real, but only on an engine cerberus
+// is not graded against: it needs `--enable-feature=promql-delayed-name-removal`,
+// whose `mergeSeriesWithSameLabelset` checks duplicate timestamps
+// separately for Floats and Histograms and so lets a float point and a
+// histogram point at one timestamp through, after which materialising the
+// instant vector discards the float (`promql/engine.go`, the
+// `len(s.Histograms) > 0` preference — a hard TYPE preference, not operand
+// order: reversing the arms answers the histogram either way). The
+// Prometheus server defaults that feature OFF, and
+// compatibility/prometheus runs v3.11.3 with only
+// `promql-experimental-functions`. On THAT engine — measured, both instant
+// and range, for hist/hist, hist/float, float/hist and float/float alike —
+// the answer is `vector cannot contain metrics with the same labelset`.
+// Cerberus issue #3253 is that measurement; this function is the abort.
+//
+// (Even under delayed name removal the surviving-histogram outcome is an
+// instant-query artefact: the same engine's RANGE answer is one series
+// carrying both the float and the histogram at the identical timestamp, a
+// matrix no emitter can reproduce byte-for-byte.)
+//
+// Cerberus issue #3271 settled the surface question this raised: the spec
+// lane's own oracle (test/spec/parityoracle/promql/oracle.go) used to
+// hardcode delayed name removal ON, disagreeing with the compat lane's
+// real server above on this exact shape — which is exactly why cerberus
+// issue #3262 originally reverted this abort rather than shipping it
+// against a contradicting oracle. The oracle now builds its engine with
+// EnableDelayedNameRemoval matching the server's OFF default (see
+// docs/compatibility.md § "Two PromQL reference engines, one
+// configuration"), so this abort is re-landed here: it is correct against
+// BOTH reference surfaces rather than only the compat one.
 func combineMixedFoldBranches(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned bool) chplan.Node {
-	return mixedBranchUnion(histBranch, floatBranch, s, stepAligned, false)
+	return mixedBranchUnion(histBranch, floatBranch, s, stepAligned, mixedCollisionAbort)
 }
 
+// mixedCollisionPolicy names what a recombination does with a match key
+// that carries rows from BOTH branches. The three answers are not
+// interchangeable and each has its own reference rule — see
+// [combineMixedAggregateBranches] and [combineMixedFoldBranches].
+type mixedCollisionPolicy int
+
+// The zero value is deliberately neither of the two: it would leave both
+// chplan flags clear, which is `or`'s plain left-biased union, and no
+// recombination wants that (see [combineMixedFoldBranches] for why the
+// one that used to is now an abort).
+const (
+	// mixedCollisionDrop is reference's mixed-aggregation-group rule: a
+	// GROUP whose members disagreed on value type is dropped with a
+	// MixedFloatsHistogramsAggWarning.
+	mixedCollisionDrop mixedCollisionPolicy = iota + 1
+	// mixedCollisionAbort is reference's duplicate-labelset rule: two
+	// SERIES that landed on one label set are a vector reference refuses
+	// to build.
+	mixedCollisionAbort
+)
+
 // mixedBranchUnion is the one [chplan.VectorSetOp] both recombinations
-// above build, parameterised by the single flag they differ on.
-func mixedBranchUnion(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned, dropCollisions bool) chplan.Node {
+// above build, parameterised by the single decision they differ on.
+func mixedBranchUnion(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned bool, collisions mixedCollisionPolicy) chplan.Node {
 	return &chplan.VectorSetOp{
-		Left:                histBranch,
-		Right:               floatBranch,
-		Op:                  chplan.VectorSetOr,
-		Match:               chplan.VectorMatch{},
-		StepAligned:         stepAligned,
-		Mixed:               true,
-		MixedDropCollisions: dropCollisions,
-		MetricNameColumn:    s.MetricNameColumn,
-		AttributesColumn:    s.AttributesColumn,
-		TimestampColumn:     s.TimestampColumn,
-		ValueColumn:         s.ValueColumn,
+		Left:                  histBranch,
+		Right:                 floatBranch,
+		Op:                    chplan.VectorSetOr,
+		Match:                 chplan.VectorMatch{},
+		StepAligned:           stepAligned,
+		Mixed:                 true,
+		MixedDropCollisions:   collisions == mixedCollisionDrop,
+		MixedAbortOnCollision: collisions == mixedCollisionAbort,
+		MetricNameColumn:      s.MetricNameColumn,
+		AttributesColumn:      s.AttributesColumn,
+		TimestampColumn:       s.TimestampColumn,
+		ValueColumn:           s.ValueColumn,
 	}
 }
 
