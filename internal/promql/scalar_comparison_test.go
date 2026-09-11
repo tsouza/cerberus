@@ -61,49 +61,58 @@ func TestScalarComparisonPredicateResolvesValueRole(t *testing.T) {
 	for _, boundary := range []scalarComparisonBoundary{scalarComparisonGuarded, scalarComparisonCanonical} {
 		for _, scalarOnLeft := range []bool{false, true} {
 			for _, decoy := range []bool{false, true} {
-				t.Run(fmt.Sprintf("boundary=%d/left=%t/decoy=%t", boundary, scalarOnLeft, decoy), func(t *testing.T) {
-					columns := []chplan.Column{
-						{Name: "source_name", Role: chplan.RoleMetricName},
-						{Name: "source_attrs", Role: chplan.RoleAttributes},
-						{Name: "source_time", Role: chplan.RoleTimestamp},
-						{Name: sourceValue, Role: chplan.RoleValue},
-					}
-					if decoy {
-						// A configured-name column can exist without being the sample value.
-						columns = append(columns, chplan.Column{Name: s.ValueColumn, Role: chplan.RoleOpaque})
-					}
-					input := sampleForwardTestInput(columns...)
-					plan, err := finishScalarComparison(input, nil, s, lowerCtx{}, chplan.OpGt, comparisonThreshold, scalarOnLeft, false, boundary)
-					if err != nil {
-						t.Fatal(err)
-					}
-					filtered := plan
-					if boundary == scalarComparisonCanonical {
-						project, ok := plan.(*chplan.Project)
-						if !ok {
-							t.Fatalf("canonical boundary = %T, want Project", plan)
+				for _, projected := range []bool{false, true} {
+					t.Run(fmt.Sprintf("boundary=%d/left=%t/decoy=%t/projected=%t", boundary, scalarOnLeft, decoy, projected), func(t *testing.T) {
+						columns := []chplan.Column{
+							{Name: "source_name", Role: chplan.RoleMetricName},
+							{Name: "source_attrs", Role: chplan.RoleAttributes},
+							{Name: "source_time", Role: chplan.RoleTimestamp},
+							{Name: sourceValue, Role: chplan.RoleValue},
 						}
-						filtered = project.Input
-						if !project.Projections[0].Expr.Equal(&chplan.ColumnRef{Name: "source_name"}) ||
-							!project.Projections[len(project.Projections)-1].Expr.Equal(&chplan.ColumnRef{Name: sourceValue}) {
-							t.Fatal("non-bool comparison changed the original name or sample value")
+						if decoy {
+							// A configured-name column can exist without being the sample value.
+							columns = append(columns, chplan.Column{Name: s.ValueColumn, Role: chplan.RoleOpaque})
 						}
-					} else if !plan.RowType().Equal(input.RowType()) {
-						t.Fatal("guarded comparison changed the input schema")
-					}
-					filter, ok := filtered.(*chplan.Filter)
-					if !ok || filter.Input != input {
-						t.Fatalf("comparison boundary = %T, want Filter over original input", filtered)
-					}
-					var left, right chplan.Expr = &chplan.ColumnRef{Name: sourceValue}, &chplan.LitFloat{V: comparisonThreshold}
-					if scalarOnLeft {
-						left, right = right, left
-					}
-					want := &chplan.Binary{Op: chplan.OpGt, Left: left, Right: right}
-					if !filter.Predicate.Equal(want) {
-						t.Fatalf("predicate binds configured name %q instead of RoleValue %q: %#v", s.ValueColumn, sourceValue, filter.Predicate)
-					}
-				})
+						var input chplan.Node = sampleForwardTestInput(columns...)
+						if projected {
+							projections := make([]chplan.Projection, len(columns))
+							for i, column := range columns {
+								projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name}
+							}
+							input = &chplan.Project{Input: input, Projections: projections, Roles: columns}
+						}
+						plan, err := finishScalarComparison(input, nil, s, lowerCtx{}, chplan.OpGt, comparisonThreshold, scalarOnLeft, false, boundary)
+						if err != nil {
+							t.Fatal(err)
+						}
+						filtered := plan
+						if boundary == scalarComparisonCanonical {
+							project, ok := plan.(*chplan.Project)
+							if !ok {
+								t.Fatalf("canonical boundary = %T, want Project", plan)
+							}
+							filtered = project.Input
+							if !project.Projections[0].Expr.Equal(&chplan.ColumnRef{Name: "source_name"}) ||
+								!project.Projections[len(project.Projections)-1].Expr.Equal(&chplan.ColumnRef{Name: sourceValue}) {
+								t.Fatal("non-bool comparison changed the original name or sample value")
+							}
+						} else if !plan.RowType().Equal(input.RowType()) {
+							t.Fatal("guarded comparison changed the input schema")
+						}
+						filter, ok := filtered.(*chplan.Filter)
+						if !ok || filter.Input != input {
+							t.Fatalf("comparison boundary = %T, want Filter over original input", filtered)
+						}
+						var left, right chplan.Expr = &chplan.ColumnRef{Name: sourceValue}, &chplan.LitFloat{V: comparisonThreshold}
+						if scalarOnLeft {
+							left, right = right, left
+						}
+						want := &chplan.Binary{Op: chplan.OpGt, Left: left, Right: right}
+						if !filter.Predicate.Equal(want) {
+							t.Fatalf("predicate binds configured name %q instead of RoleValue %q: %#v", s.ValueColumn, sourceValue, filter.Predicate)
+						}
+					})
+				}
 			}
 		}
 	}

@@ -36,6 +36,38 @@ func lowerComparisonRoot(build func() (chplan.Node, error)) (chplan.Node, error)
 	return build()
 }
 
+// scalarComparisonValueRef keeps the common fully-declared Project path from
+// allocating a derived schema only to recover a role its projection already
+// declares. Any incomplete declaration falls back to the canonical RowType
+// resolver, preserving its inheritance and ambiguity checks.
+func scalarComparisonValueRef(inner chplan.Node) *chplan.ColumnRef {
+	project, ok := inner.(*chplan.Project)
+	if !ok || len(project.Projections) == 0 {
+		return requireSampleRole(inner.RowType(), chplan.RoleValue)
+	}
+
+	declared := chplan.Schema{Columns: project.Roles}
+	var valueName string
+	for _, projection := range project.Projections {
+		name := chplan.ProjectionOutputName(projection)
+		column, found := declared.ByName(name)
+		if !found {
+			return requireSampleRole(inner.RowType(), chplan.RoleValue)
+		}
+		if column.Role != chplan.RoleValue {
+			continue
+		}
+		if valueName != "" || name == "" {
+			return requireSampleRole(inner.RowType(), chplan.RoleValue)
+		}
+		valueName = name
+	}
+	if valueName == "" {
+		return requireSampleRole(inner.RowType(), chplan.RoleValue)
+	}
+	return &chplan.ColumnRef{Name: valueName}
+}
+
 func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx,
 	op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool, boundary scalarComparisonBoundary,
 ) (chplan.Node, error) {
@@ -55,7 +87,7 @@ func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	inner = mixedRowsFloatOnly(inner)
 	layout := sampleProjectionLayout{canonical: true, materializeAliases: true}
 	if !returnBool {
-		valueRef := requireSampleRole(inner.RowType(), chplan.RoleValue)
+		valueRef := scalarComparisonValueRef(inner)
 		inner = &chplan.Filter{Input: inner, Predicate: scalarBinaryValue(valueRef, op, scalar, scalarOnLeft)}
 		if boundary == scalarComparisonGuarded {
 			return inner, nil
