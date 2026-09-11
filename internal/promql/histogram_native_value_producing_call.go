@@ -15,7 +15,7 @@ import (
 // shared, 1:1-paired recursive dispatch — the MIRROR direction of the
 // mixed-`or` composability this campaign already gave each function's own
 // ARGUMENT (info(): histogram_native_mixed_or_info.go, cerberus issue
-// #2618; sort_by_label[_desc](): histogram_native_mixed_or_sort_by_label.go,
+// #2618; sort_by_label[_desc](): sort.go's preserve-policy operand path,
 // cerberus issue #2611).
 //
 // Without this, `(info(latency_exp_hist)) or up` and
