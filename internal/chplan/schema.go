@@ -195,8 +195,8 @@ func (s Schema) HasHistogramPayload() bool {
 // roles must be named and unambiguous, and histogram fields must be the
 // complete canonical payload. Names on opaque or other-role columns never
 // create a sample contract, but they may not shadow a public sample output.
-// Open schemas remain opaque because undeclared outputs can invalidate an
-// otherwise plausible contract.
+// Structurally valid open schemas remain opaque because undeclared outputs can
+// invalidate an otherwise plausible contract.
 func (s Schema) SampleKind() SampleKind {
 	const samplePublicRoleCount = int(RoleDiscriminator) + 1
 	const histogramPayloadColumnCount = 9
@@ -264,13 +264,17 @@ func (s Schema) SampleKind() SampleKind {
 		return SampleKindInvalid
 	}
 
+	if hasDiscriminator {
+		for _, role := range [...]ColumnRole{RoleMetricName, RoleAttributes, RoleTimestamp, RoleValue} {
+			if roleCount[role] != 1 {
+				return SampleKindInvalid
+			}
+		}
+	}
 	if s.Open {
 		return SampleKindOpaque
 	}
 	if hasDiscriminator {
-		if roleCount[RoleValue] != 1 {
-			return SampleKindInvalid
-		}
 		return SampleKindMixed
 	}
 	if hasHistogram {

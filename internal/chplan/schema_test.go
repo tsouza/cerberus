@@ -331,7 +331,6 @@ func TestSchemaSampleKindRejectsMalformedContracts(t *testing.T) {
 	}
 	cases := []sampleKindCase{
 		{name: "orphan_discriminator", columns: append(slices.Clone(floatRoles), kind)},
-		{name: "mixed_without_value", columns: append(slices.Clone(histogram), kind)},
 		{name: "duplicate_value_role", columns: append(slices.Clone(floatRoles), Column{"other_value", RoleValue})},
 		{name: "unnamed_value", columns: []Column{{Role: RoleValue}}},
 		{name: "shadowed_value", columns: append(slices.Clone(floatRoles), Column{Name: "value"})},
@@ -339,6 +338,12 @@ func TestSchemaSampleKindRejectsMalformedContracts(t *testing.T) {
 		{name: "unnamed_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), Column{Role: RoleDiscriminator})},
 		{name: "shadowed_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), kind, Column{Name: kind.Name})},
 		{name: "noncanonical_histogram_role", columns: append(slices.Clone(floatRoles), Column{"raw_count", RoleHistogramField})},
+	}
+	for i, role := range floatRoles {
+		missing := slices.Delete(slices.Clone(floatRoles), i, i+1)
+		columns := append(missing, histogram...)
+		columns = append(columns, kind)
+		cases = append(cases, sampleKindCase{name: "mixed_missing/" + role.Name, columns: columns})
 	}
 	for i, field := range histogram {
 		missing := slices.Delete(slices.Clone(histogram), i, i+1)
