@@ -61,7 +61,7 @@ func TestTimestampMixedPlanNormalizesRolesBeforeGuard(t *testing.T) {
 				if chplan.RowShapeOf(named) != chplan.SampleRowShape || len(named.Projections) != len(metricRoles(s)) {
 					t.Fatal("conversion did not replace mixed payload with canonical floats")
 				}
-				var ts chplan.Expr = anchorBaseExpr(evalAnchor{End: at})
+				ts := anchorBaseExpr(evalAnchor{End: at})
 				if step > 0 {
 					ts = &chplan.ColumnRef{Name: "input_time"}
 				}
