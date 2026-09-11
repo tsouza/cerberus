@@ -45,15 +45,9 @@ const (
 //   - Anything TryFoldScalar reduces → LitFloat (the common literal
 //     path; keeps existing fixtures byte-stable because the literal
 //     fast paths at each call site fire before this function).
-//   - `scalar(v)` → ScalarSubquery over scalarValuePlan(lower(v)) —
-//     PromQL semantics: the value of v's single sample, NaN when v has
-//     zero or multiple samples. The vector argument is lowered in
-//     instant context (step = 0): `scalar()` produces one value per
-//     evaluation, and the scalar-subquery shape binds a single value
-//     per statement. Range-mode queries therefore see the scalar
-//     evaluated once (at the eval anchor) rather than per step — the
-//     same documented posture as topk's computed-K lowering
-//     (lowerTopKComputed).
+//   - `scalar(v)` counts float samples: exactly one yields its value, otherwise
+//     NaN. Instant and explicitly pinned contexts use a scalar subquery; range
+//     contexts bind one result per evaluation step through scalarStepPlan.
 //   - `time()` → the eval anchor as Unix seconds (same value expr as
 //     lowerTime's instant path).
 //   - Unary / Binary / Paren compositions recurse; arithmetic maps
@@ -192,47 +186,50 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 // wrapping reduction counts zero rows and falls into its own NaN branch,
 // no separate NaN-literal special case needed here.
 func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	// funcScalar counts zero float samples for an already-empty argument
-	// (histogram-valued, or a nested drop-family shape — cerberus issue
-	// #2528, e.g. `scalar(demo_latency_exp_hist + 0)`) the same way it does
-	// for a bare all-histogram selector, answering NaN via the wrapping
-	// count()==1 ? value : NaN reduction.
+	// Histogram-only and already-empty drop-family operands count as zero floats.
 	if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(v, s, ctx); ok {
 		return node, err
 	}
-	// A mixed float/histogram `or` argument (cerberus issue #2330),
-	// reached from ANY nesting depth since [lowerScalarVectorArg] is
-	// `scalar`'s single generic dispatch point (cerberus issue #2611).
-	// See histogram_native_mixed_or_scalar.go's own doc comment for why
-	// the histogram side is discarded entirely rather than merely
-	// dropped-then-counted.
-	if b, ok := scalarArgOverMixedExpHistogramSetOp(v, s, ctx); ok {
-		return lowerWithMixedOperandPolicy(mixedScalarFamily, mixedOperandAdmission, func() (chplan.Node, error) {
-			return lowerScalarArgOverMixedExpHistogramSetOp(b, s, ctx)
+	// Direct unions already resolve shadowing into separate arms. Keep the
+	// surviving float arm's envelope: scalar's reducer only needs its values.
+	if b, ok := mixedExpHistogramSetOp(v, s, ctx); ok {
+		return lowerScalarMixedOperand(func() (chplan.Node, error) {
+			return shadowResolveFloatArmChecked(b, s, ctx)
 		})
 	}
 	node, err := lower(v, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	// A further wrapper nested BETWEEN scalar() and a mixed float/
-	// histogram `or` — e.g. `scalar(sort_by_label(<mixed-or>, label))` —
-	// is invisible to [scalarArgOverMixedExpHistogramSetOp]'s direct-
-	// BinaryExpr check above (the mixed `or` sits one level deeper than a
-	// single BinaryExpr check reaches), so it reaches here as an ordinary
-	// [chplan.MixedRowShape] node. Without narrowing it first,
-	// [scalarValuePlan]/[scalarStepPlan]'s count()/any(Value) reduction
-	// would run over BOTH the float rows and the histogram rows'
-	// meaningless placeholder Value — reading a histogram row into "the"
-	// single sample scalar() reduces to, or inflating the row count past
-	// 1 and answering NaN for a genuinely single-float-sample vector.
-	// [mixedRowsFloatOnly] applies the identical "skip every H-set
-	// sample" narrowing [lowerScalarArgOverMixedExpHistogramSetOp] above
-	// gives the direct shape (cerberus issue #2611's own rule).
-	if err := requireMixedPlanPolicy(node, mixedScalarFamily); err != nil {
+	return scalarFloatRows(node)
+}
+
+func requireFloatScalarPolicy(site mixedAdmissionSite) error {
+	key := mixedWrapperKey{family: mixedScalarFamily, site: site}
+	if mixedOperandPolicies[key] != mixedFloatOnly {
+		return fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
+	}
+	return nil
+}
+
+// lowerScalarMixedOperand authorizes the direct union before its loader runs.
+// Its shadow-resolved float arm needs no further projection or narrowing.
+func lowerScalarMixedOperand(build func() (chplan.Node, error)) (chplan.Node, error) {
+	if err := requireFloatScalarPolicy(mixedOperandAdmission); err != nil {
 		return nil, err
 	}
-	return mixedRowsFloatOnly(node), nil
+	return build()
+}
+
+// scalarFloatRows narrows a complete nested operand only after its own shadow
+// resolution. Histogram placeholder values must never enter count()/any(Value).
+func scalarFloatRows(inner chplan.Node) (chplan.Node, error) {
+	if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+		if err := requireFloatScalarPolicy(mixedPlanAdmission); err != nil {
+			return nil, err
+		}
+	}
+	return mixedRowsFloatOnly(inner), nil
 }
 
 // lowerScalarTopLevel lowers a bare top-level scalar-returning call —

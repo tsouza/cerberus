@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_args.go:requireFloatScalarPolicy#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "internal",
+      "rationale": "This is an internal registration invariant for scalar(), not a rejection of an admitted query shape. lowerScalarMixedOperand calls requireFloatScalarPolicy with the scalar operand-admission key before the original loader; scalarFloatRows checks the scalar existing-plan key only for a mixed operand. Both production rows in mixedOperandPolicies are executable float-only. The table has no query-controlled or external configuration. Ordinary float and histogram-only operands bypass this mixed check. Missing rows and reject, bespoke, or preserve modes are exercised only by synthetic calls or temporary table mutation in the authority tests.",
+      "evidence": {
+        "guard": [
+          "if mixedOperandPolicies[key] != mixedFloatOnly"
+        ],
+        "callers": [
+          "lowerScalarMixedOperand",
+          "scalarFloatRows"
+        ],
+        "cited": [
+          "lowerScalarMixedOperand",
+          "requireFloatScalarPolicy",
+          "scalarFloatRows"
+        ]
+      }
+    }
+  ]
+}
