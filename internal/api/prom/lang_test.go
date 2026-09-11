@@ -15,6 +15,33 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+func mustProjectSamples(t testing.TB, l *lang, plan chplan.Node, meta engine.Meta) chplan.Node {
+	t.Helper()
+	projected, err := l.ProjectSamples(plan, meta)
+	if err != nil {
+		t.Fatalf("ProjectSamples: %v", err)
+	}
+	return projected
+}
+
+func sampleRoleColumns(s schema.Metrics) []chplan.Column {
+	return []chplan.Column{
+		{Name: s.MetricNameColumn, Role: chplan.RoleMetricName},
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}
+}
+
+func closedSampleScan(s schema.Metrics, table string) *chplan.Scan {
+	roles := sampleRoleColumns(s)
+	columns := make([]string, len(roles))
+	for i, role := range roles {
+		columns[i] = role.Name
+	}
+	return &chplan.Scan{Table: table, Columns: columns, Roles: roles}
+}
+
 // langForTest is shared scaffolding: a Lang built with the same
 // experimental-functions parser options as the real Handler so the
 // test surfaces match prod, plus a fixed eval window so `@ start() /
@@ -154,8 +181,8 @@ func TestLang_ProjectSamples_WrapsCanonicalShape(t *testing.T) {
 	t.Parallel()
 
 	l := langForTest()
-	plan := &chplan.Scan{Table: l.Schema.GaugeTable}
-	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+	plan := closedSampleScan(l.Schema, l.Schema.GaugeTable)
+	wrapped := mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true})
 
 	proj, ok := wrapped.(*chplan.Project)
 	if !ok {

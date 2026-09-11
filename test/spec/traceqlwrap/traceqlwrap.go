@@ -131,5 +131,6 @@ func ReconstructSearchWrapPlan(c *spec.Case) (plan chplan.Node, ok bool, err err
 	if err != nil {
 		return nil, false, fmt.Errorf("traceql lower (wrap reconstruction): %w", err)
 	}
-	return lang.ProjectSamples(rawPlan, meta), true, nil
+	wrapped, err := lang.ProjectSamples(rawPlan, meta)
+	return wrapped, true, err
 }

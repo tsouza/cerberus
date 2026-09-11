@@ -40,6 +40,9 @@ package chplan
 // (MetricName / Attributes / TimeUnix / Value) so downstream
 // consumers (chDB roundtrip runner, handler projection) see a
 // fixed-arity column list rather than the opaque-arity `*`.
+// [TopK.RowType] derives the resulting schema from Input and this list, so a
+// wildcard preserves Input's whole physical schema while an explicit list
+// carries only the selected columns and their existing roles.
 //
 // `KExpr` is the computed-K variant: a chplan subtree whose evaluation
 // yields the K integer at execution time. When non-nil, the emitter
@@ -63,35 +66,6 @@ package chplan
 // numbered in whatever order CH encounters them — the same arbitrary
 // selection the literal-K `LIMIT K BY <By>` shape makes. The ranking
 // variants (topk/bottomk) keep `Unordered == false`.
-//
-// `Histogram` marks Input as histogram-valued (chplan.RowShapeOf(Input) ==
-// chplan.HistogramRowShape), mirroring [InfoJoin.Histogram] and
-// [VectorSetOp.Histogram]. Only `limitk` ever sets it: reference
-// Prometheus's LIMITK arm of aggregationK (promql/engine.go) pushes every
-// selected series' sample — float or histogram — onto the group heap
-// unchanged, with no `s.H != nil` branch anywhere in its control flow,
-// unlike TOPK/BOTTOMK's explicit ignore-and-annotate branch just above it
-// in the same function; topk/bottomk therefore never set this field (a
-// purely histogram-valued input is intercepted upstream and folded to an
-// empty result — see histogram_native_drop_aggregation.go). When Histogram
-// is true, `Columns` is always empty (`SELECT *`), so the outer SELECT
-// forwards Input's full thirteen-column contract instead of declaring only
-// the canonical Sample quartet — [RowShapeOf] must report
-// [HistogramRowShape] for such a TopK or a wire consumer re-projects down
-// to the quartet and silently drops the nine histogram columns (cerberus
-// issue #2518). Defaults to false everywhere else, so every pre-existing
-// TopK construction site (topk/bottomk, and limitk over a float-valued
-// input) is unaffected.
-//
-// Mixed is Histogram's sibling for `limitk`/`limit_ratio` over a MIXED
-// float/histogram-valued input (cerberus issue #2613) — a mixed float/
-// histogram `or`, same trigger shape as [VectorSetOp.Mixed]. Reference
-// Prometheus's LIMITK/LIMIT_RATIO push every selected sample onto the
-// heap/sampler regardless of type, exactly as for the pure-histogram case
-// above, so the same "preserve, never drop" treatment applies. Like
-// Histogram, Mixed is only ever set alongside an empty `Columns` — the
-// outer SELECT stays a bare passthrough of Input's fourteen-column Mixed
-// contract. Histogram and Mixed are mutually exclusive.
 type TopK struct {
 	Input     Node
 	K         int64
@@ -101,8 +75,6 @@ type TopK struct {
 	Desc      bool     // true = topk (DESC), false = bottomk (ASC)
 	Unordered bool     // true = limitk (no ORDER BY, arbitrary K-per-group)
 	Columns   []string // explicit outer SELECT column list; empty = `SELECT *`
-	Histogram bool     // true = limitk over a histogram-valued input (see doc above)
-	Mixed     bool     // true = limitk/limit_ratio over a mixed float/histogram input (see doc above)
 }
 
 func (*TopK) planNode() {}
@@ -117,7 +89,6 @@ func (t *TopK) Children() []Node {
 func (t *TopK) Equal(other Node) bool {
 	o, ok := other.(*TopK)
 	if !ok || t.K != o.K || t.Desc != o.Desc || t.Unordered != o.Unordered ||
-		t.Histogram != o.Histogram || t.Mixed != o.Mixed ||
 		len(t.By) != len(o.By) || len(t.Columns) != len(o.Columns) {
 		return false
 	}

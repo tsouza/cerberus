@@ -69,6 +69,83 @@ func TestSampleForwardRolesResolveBeforeRewrite(t *testing.T) {
 	}
 }
 
+func TestLegacySampleProjectionLayoutUsesTemporalRoles(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		columns []chplan.Column
+		want    sampleProjectionLayout
+	}{
+		{
+			name: "canonical renamed roles",
+			columns: []chplan.Column{
+				{Name: "source_name", Role: chplan.RoleMetricName},
+				{Name: "source_labels", Role: chplan.RoleAttributes},
+				{Name: "source_time", Role: chplan.RoleTimestamp},
+				{Name: "source_value", Role: chplan.RoleValue},
+			},
+			want: sampleProjectionLayout{canonical: true},
+		},
+		{
+			name: "grid renamed roles",
+			columns: []chplan.Column{
+				{Name: "source_labels", Role: chplan.RoleAttributes},
+				{Name: "source_anchor", Role: chplan.RoleAnchor},
+				{Name: "source_time", Role: chplan.RoleTimestamp},
+				{Name: "source_value", Role: chplan.RoleValue},
+			},
+			want: sampleProjectionLayout{anchored: true},
+		},
+		{
+			name: "reduced ignores misleading opaque names",
+			columns: []chplan.Column{
+				{Name: "source_labels", Role: chplan.RoleAttributes},
+				{Name: "TimeUnix", Role: chplan.RoleOpaque},
+				{Name: "anchor_ts", Role: chplan.RoleOpaque},
+				{Name: "source_value", Role: chplan.RoleValue},
+			},
+			want: sampleProjectionLayout{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := legacySampleProjectionLayout(sampleForwardTestInput(tc.columns...)); got != tc.want {
+				t.Fatalf("layout = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLegacySampleProjectionLayoutRejectsInvalidRoles(t *testing.T) {
+	t.Parallel()
+
+	base := []chplan.Column{
+		{Name: "source_labels", Role: chplan.RoleAttributes},
+		{Name: "source_time", Role: chplan.RoleTimestamp},
+		{Name: "source_value", Role: chplan.RoleValue},
+	}
+	for _, tc := range []struct {
+		name    string
+		columns []chplan.Column
+	}{
+		{name: "missing attributes", columns: base[1:]},
+		{name: "missing value", columns: base[:2]},
+		{name: "duplicate timestamp role", columns: append(append([]chplan.Column(nil), base...), chplan.Column{Name: "other_time", Role: chplan.RoleTimestamp})},
+		{name: "ambiguous timestamp name", columns: append(append([]chplan.Column(nil), base...), chplan.Column{Name: "source_time", Role: chplan.RoleOpaque})},
+		{name: "unnamed timestamp", columns: []chplan.Column{base[0], {Role: chplan.RoleTimestamp}, base[2]}},
+		{name: "anchor without timestamp", columns: []chplan.Column{base[0], {Name: "source_anchor", Role: chplan.RoleAnchor}, base[2]}},
+		{name: "metric name without timestamp", columns: []chplan.Column{{Name: "source_name", Role: chplan.RoleMetricName}, base[0], base[2]}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			capturePanic(t, func() {
+				legacySampleProjectionLayout(sampleForwardTestInput(tc.columns...))
+			})
+		})
+	}
+}
+
 func TestSampleForwardPreservesMixedPayload(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	columns := append(metricRoles(s), chplan.HistogramPayloadColumns()...)

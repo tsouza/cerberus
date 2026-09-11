@@ -11,79 +11,69 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-func TestMixedRowsNeedPreparationSeparatesPayloadProofAndLegacyShape(t *testing.T) {
+func TestMixedRowsNeedPreparationSeparatesPhysicalPayloadAndLiveProof(t *testing.T) {
+	t.Parallel()
 	s := schema.DefaultOTelMetrics()
 	mixedColumns := append(metricRoles(s), chplan.HistogramPayloadColumns()...)
-	mixedColumns = append(mixedColumns, chplan.Column{Name: "source_kind", Role: chplan.RoleDiscriminator})
+	mixedColumns = append(mixedColumns, chplan.Column{Name: mixedDiscriminatorColumn, Role: chplan.RoleDiscriminator})
 	mixed := sampleForwardTestInput(mixedColumns...)
 	floatRows := &chplan.Filter{Input: mixed, Predicate: &chplan.Binary{
 		Op:    chplan.OpEq,
-		Left:  &chplan.ColumnRef{Name: "source_kind"},
+		Left:  &chplan.ColumnRef{Name: mixedDiscriminatorColumn},
 		Right: &chplan.LitInt{V: mixedDiscriminatorFloat},
 	}}
-	legacyMixedFloat := &chplan.Filter{
-		Input:     sampleForwardTestInput(metricRoles(s)...),
-		Predicate: &chplan.LitBool{V: true},
-		Mixed:     true,
-	}
 	emptyRankedSelector := &chplan.Filter{Input: floatRows, Predicate: &chplan.LitBool{V: false}}
 	nonemptyRankedSelector := &chplan.TopK{Input: floatRows, Columns: topKOutputColumns(floatRows, s)}
-	preservingSelector := &chplan.TopK{Input: mixed, Mixed: true}
+	preservingSelector := &chplan.TopK{Input: mixed}
 
 	for _, tc := range []struct {
 		name                 string
 		input                chplan.Node
-		physicalMixed        bool
-		floatProven          bool
-		legacyShape          chplan.RowShape
+		physicalKind         chplan.SampleKind
+		liveKind             chplan.SampleKind
 		needsPreparation     bool
 		mayContainHistograms bool
 	}{
-		{"canonical_float", sampleForwardTestInput(metricRoles(s)...), false, false, chplan.SampleRowShape, false, false},
-		{"pure_histogram", &chplan.HistogramProjection{Input: &chplan.OneRow{}}, false, false, chplan.HistogramRowShape, false, true},
-		{"physical_mixed_legacy_sample", mixed, true, false, chplan.SampleRowShape, true, true},
-		{"float_proof_preserves_physical_mixed", floatRows, true, true, chplan.SampleRowShape, false, false},
-		{"ordered_float_proof", &chplan.OrderBy{Input: floatRows}, true, true, chplan.SampleRowShape, false, false},
-		{"filter_over_float_proof", &chplan.Filter{Input: floatRows, Predicate: &chplan.LitBool{V: true}}, true, true, chplan.SampleRowShape, false, false},
-		{"empty_ranked_selector_preserves_proof", emptyRankedSelector, true, true, chplan.SampleRowShape, false, false},
-		{"nonempty_ranked_selector_projects_float", nonemptyRankedSelector, false, false, chplan.SampleRowShape, false, false},
-		{"preserving_selector_keeps_live_mixed", preservingSelector, true, false, chplan.MixedRowShape, true, true},
-		{"unrelated_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: true}}, true, false, chplan.SampleRowShape, true, true},
-		{"false_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: false}}, true, false, chplan.SampleRowShape, true, true},
-		{"project_barrier", &chplan.Project{Input: floatRows}, true, false, chplan.SampleRowShape, true, true},
-		{"legacy_mixed_without_physical_payload", legacyMixedFloat, false, false, chplan.MixedRowShape, false, false},
+		{"canonical_float", sampleForwardTestInput(metricRoles(s)...), chplan.SampleKindFloat, chplan.SampleKindFloat, false, false},
+		{"pure_histogram", &chplan.HistogramProjection{Input: &chplan.OneRow{}}, chplan.SampleKindHistogram, chplan.SampleKindHistogram, false, true},
+		{"physical_mixed", mixed, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
+		{"float_proof_preserves_physical_mixed", floatRows, chplan.SampleKindMixed, chplan.SampleKindFloat, false, false},
+		{"ordered_float_proof", &chplan.OrderBy{Input: floatRows}, chplan.SampleKindMixed, chplan.SampleKindFloat, false, false},
+		{"filter_over_float_proof", &chplan.Filter{Input: floatRows, Predicate: &chplan.LitBool{V: true}}, chplan.SampleKindMixed, chplan.SampleKindFloat, false, false},
+		{"empty_ranked_selector_preserves_proof", emptyRankedSelector, chplan.SampleKindMixed, chplan.SampleKindFloat, false, false},
+		{"nonempty_ranked_selector_projects_float", nonemptyRankedSelector, chplan.SampleKindFloat, chplan.SampleKindFloat, false, false},
+		{"preserving_selector_keeps_live_mixed", preservingSelector, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
+		{"unrelated_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: true}}, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
+		{"false_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: false}}, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
+		{"project_barrier", &chplan.Project{Input: mixed}, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			row := tc.input.RowType()
-			physicalMixed := row.HasHistogramPayload() && row.Has(chplan.RoleDiscriminator)
-			if physicalMixed != tc.physicalMixed {
-				t.Fatalf("physical mixed=%v, want %v; schema=%#v", physicalMixed, tc.physicalMixed, row)
+			if got := row.SampleKind(); got != tc.physicalKind {
+				t.Errorf("physical sample kind = %s, want %s; schema=%#v", got, tc.physicalKind, row)
 			}
-			if got := mixedFloatRowsProven(tc.input); got != tc.floatProven {
-				t.Fatalf("float proof=%v, want %v", got, tc.floatProven)
-			}
-			if got := chplan.RowShapeOf(tc.input); got != tc.legacyShape {
-				t.Fatalf("legacy shape=%s, want %s", got, tc.legacyShape)
+			if got := liveSampleKind(tc.input); got != tc.liveKind {
+				t.Errorf("live sample kind = %s, want %s", got, tc.liveKind)
 			}
 			if got := mixedRowsNeedPreparation(tc.input); got != tc.needsPreparation {
-				t.Fatalf("needs preparation=%v, want %v", got, tc.needsPreparation)
+				t.Errorf("needs preparation = %v, want %v", got, tc.needsPreparation)
 			}
 			if got := rowsMayContainHistograms(tc.input); got != tc.mayContainHistograms {
-				t.Fatalf("may contain histograms=%v, want %v", got, tc.mayContainHistograms)
+				t.Errorf("may contain histograms = %v, want %v", got, tc.mayContainHistograms)
 			}
 
 			prepared := mixedRowsFloatOnly(tc.input)
 			if !tc.needsPreparation {
 				if prepared != tc.input {
-					t.Fatal("input without live mixed rows was narrowed")
+					t.Fatal("already-compatible input was wrapped")
 				}
 				return
 			}
 			if !prepared.RowType().Equal(row) {
-				t.Fatalf("preparation changed physical schema: got %#v, want %#v", prepared.RowType(), row)
+				t.Fatalf("narrowing changed physical schema: got %#v, want %#v", prepared.RowType(), row)
 			}
 			if !chplan.IsMixedFloatNarrowing(prepared) {
-				t.Fatalf("prepared plan is not a float discriminator proof: %#v", prepared)
+				t.Fatal("preparation did not create an explicit float-row proof")
 			}
 			if mixedRowsFloatOnly(prepared) != prepared {
 				t.Fatal("float preparation is not idempotent")
@@ -238,8 +228,8 @@ func TestRowsMayContainHistogramsUsesRolesAcrossSampleEnvelopes(t *testing.T) {
 			value,
 			{Role: role},
 		}}
-		if liveSampleRolesAreUnambiguous(unnamed) {
-			t.Fatalf("unnamed role %d was accepted: %#v", role, unnamed)
+		if got := unnamed.SampleKind(); got != chplan.SampleKindInvalid {
+			t.Fatalf("unnamed role %d classified as %s, want invalid: %#v", role, got, unnamed)
 		}
 		for _, input := range []chplan.Node{
 			sampleForwardTestInput(

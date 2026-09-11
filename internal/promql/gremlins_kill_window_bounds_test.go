@@ -241,21 +241,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // `append([]string(nil), src...) == nil` for both a nil and an empty-non-nil
 // src.
 //
-// 5. AN INTERNAL-INVARIANT ERROR PATH.
-//
-//	histogram_native_range_fn.go:`!matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
-//	histogram_native_subquery_select.go:`!matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
-//
-// `||` -> `&&` narrows a check that reports "internal invariant violated".
-// The two readings differ only when exactly one disjunct holds, and neither
-// half is constructible: `lowerExpHistogramValuedShape` returns a nil node
-// whenever `matched` is false, and `chplan.RowShapeOf(nil)` is the sample row
-// shape, so `!matched` always arrives together with a non-histogram shape and
-// both readings error. The complementary case — matched with a non-histogram
-// shape — is the invariant the line exists to report, and producing it would
-// require lowerExpHistogramValuedShape to break its own contract.
-//
-// 7. A `continue` WHOSE `break` BINDS TO A SWITCH, NOT TO THE LOOP.
+// 5. A `continue` WHOSE `break` BINDS TO A SWITCH, NOT TO THE LOOP.
 //
 //	duplicate_labelset_guard.go:`if mixed && mixedPayload[name] {`
 //	duplicate_labelset_guard.go:`if keyOnStep`

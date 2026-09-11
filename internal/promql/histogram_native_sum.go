@@ -293,8 +293,8 @@ func expHistogramGroupMergeFanout(perSeries chplan.Node, anchor *chplan.ColumnRe
 // ceiling (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue
 // #2667), passed straight through to [expHistogramMergeSortStage].
 func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics, maxCostUnits int64) (chplan.Node, error) {
-	if chplan.RowShapeOf(input) != chplan.HistogramRowShape {
-		return nil, fmt.Errorf("promql: internal invariant violated: nested native-histogram aggregation input is %T with %s row shape", input, chplan.RowShapeOf(input))
+	if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
+		return nil, fmt.Errorf("promql: internal invariant violated: nested native-histogram aggregation input is %T with %s sample kind", input, kind)
 	}
 
 	histSchema := histogramProjectionSchema(s)

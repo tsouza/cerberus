@@ -23,7 +23,11 @@ const (
 // Admission and quantile-domain guards belong to the respective callers.
 func lowerPlainAggregateOverInput(a *parser.AggregateExpr, input chplan.Node, s schema.Metrics, ctx lowerCtx, layout plainAggregateLayout) (chplan.Node, error) {
 	if layout == mixedPlainAggregateLayout {
-		input = canonicalizeMixedFloatArmForAgg(input, s)
+		var err error
+		input, err = canonicalizeMixedFloatArmForAgg(input, s)
+		if err != nil {
+			return nil, err
+		}
 	}
 	groupBy, err := aggregateGroupBy(a, s)
 	if err != nil {

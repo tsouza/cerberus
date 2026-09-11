@@ -24,7 +24,9 @@ func (routedCorpusLang) Parse(context.Context, string) (chplan.Node, Meta, error
 	return memoWiringEligiblePlan(), Meta{IsMetric: true}, nil
 }
 
-func (routedCorpusLang) ProjectSamples(plan chplan.Node, _ Meta) chplan.Node { return plan }
+func (routedCorpusLang) ProjectSamples(plan chplan.Node, _ Meta) (chplan.Node, error) {
+	return plan, nil
+}
 
 // routedCorpusObserver records both corpus seams separately so a test can tell
 // a route-A observation from a route-B one — and catch a dispatch recorded on

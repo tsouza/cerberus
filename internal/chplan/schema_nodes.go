@@ -135,7 +135,8 @@ func (v *InfoJoin) RowType() Schema {
 }
 
 func (h *HistogramProjection) RowType() Schema {
-	out := groupSchema(h.Input.RowType(), h.GroupBy, h.GroupByAliases, nil)
+	roles := sampleSchema(h.MetricNameColumn, h.AttributesColumn, h.TimestampColumn, h.ValueColumn)
+	out := groupSchema(h.Input.RowType(), h.GroupBy, h.GroupByAliases, roles.Columns)
 	out.Columns = append(out.Columns, histogramColumns()...)
 	return out
 }

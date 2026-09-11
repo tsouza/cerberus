@@ -266,15 +266,15 @@ func lowerHistogramValueFnHistogramValuedArg(
 	if err != nil {
 		return nil, true, err
 	}
-	// RowShapeOf, not a *chplan.HistogramProjection type assertion: a
+	// SampleKind, not a *chplan.HistogramProjection type assertion: a
 	// set-op operand (histogram_native_set_op.go) answers histogram-valued
 	// as a *chplan.VectorSetOp with Histogram=true, publishing the
 	// identical nine-column contract under a different node type, and
-	// RowShapeOf is this package's own shared test for "is this the
-	// thirteen-column histogram row shape" across every such producer
+	// the schema classifier is the shared validation of that histogram
+	// contract across every such producer
 	// (mirrors lowerExpHistogramCountOrGroupOverPlan's identical check).
-	if chplan.RowShapeOf(hist) != chplan.HistogramRowShape {
-		return nil, true, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering did not produce a histogram-shaped plan, got %T", hist)
+	if kind := hist.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
+		return nil, true, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering produced %s sample kind (%T), want histogram", kind, hist)
 	}
 	node, err = lowerHistogramValueFnOverProjection(c, hist, s, ctx)
 	return node, true, err

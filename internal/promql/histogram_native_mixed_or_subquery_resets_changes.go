@@ -283,8 +283,8 @@ func lowerMixedOrSubqueryResetsOrChanges(shape sumOrAvgMixedOrSubqueryShape, gri
 	if err != nil {
 		return nil, err
 	}
-	if chplan.RowShapeOf(mixedRel) != chplan.MixedRowShape {
-		return nil, fmt.Errorf("promql: internal invariant violated: sum/avg-mixed-or subquery input is %T with %s row shape", mixedRel, chplan.RowShapeOf(mixedRel))
+	if kind := mixedRel.RowType().SampleKind(); kind != chplan.SampleKindMixed {
+		return nil, fmt.Errorf("promql: internal invariant violated: sum/avg-mixed-or subquery input is %T with %s sample kind", mixedRel, kind)
 	}
 	return lowerMixedOrSubqueryResetsOrChangesInput(mixedRel, shape.sub, shape.windowFn, s, ctx)
 }

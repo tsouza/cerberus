@@ -34,6 +34,38 @@ type Schema struct {
 	Open    bool
 }
 
+// SampleKind classifies a closed output schema by the sample payload it
+// publishes. Opaque and invalid are deliberately separate: opaque means the
+// schema makes no complete sample claim, while invalid means it makes a
+// contradictory or ambiguous one that consumers must reject.
+type SampleKind uint8
+
+const (
+	SampleKindOpaque SampleKind = iota
+	SampleKindFloat
+	SampleKindHistogram
+	SampleKindMixed
+	SampleKindInvalid
+)
+
+// String renders the sample-kind vocabulary used by invariant diagnostics.
+func (k SampleKind) String() string {
+	switch k {
+	case SampleKindOpaque:
+		return "opaque"
+	case SampleKindFloat:
+		return "float"
+	case SampleKindHistogram:
+		return "histogram"
+	case SampleKindMixed:
+		return "mixed"
+	case SampleKindInvalid:
+		return "invalid"
+	default:
+		return "unknown"
+	}
+}
+
 // Find returns the first column carrying role, in declaration order.
 func (s Schema) Find(role ColumnRole) (Column, bool) {
 	for _, c := range s.Columns {
@@ -159,21 +191,155 @@ func (s Schema) HasHistogramPayload() bool {
 	return true
 }
 
-// RowShapeFromSchema folds physical columns into the legacy sample vocabulary.
-// Opaque relational outputs have no sample contract and retain its default.
-func RowShapeFromSchema(s Schema) RowShape {
-	switch {
-	case s.Has(RoleDiscriminator):
-		return MixedRowShape
-	case s.Has(RoleHistogramField):
-		return HistogramRowShape
-	case s.Has(RoleAnchor) && !s.Has(RoleMetricName):
-		return GridWindowRowShape
-	case s.Has(RoleValue) && !s.Has(RoleMetricName) && !s.Has(RoleTimestamp) && !s.Has(RoleAnchor):
-		return ReducedWindowRowShape
-	default:
-		return SampleRowShape
+// SampleKind validates and classifies the public sample contract. Public
+// roles must be named and unambiguous, and histogram fields must be the
+// complete canonical payload. Names on opaque or other-role columns never
+// create a sample contract, but they may not shadow a public sample output.
+// Structurally valid open schemas remain opaque because undeclared outputs can
+// invalidate an otherwise plausible contract.
+func (s Schema) SampleKind() SampleKind {
+	const samplePublicRoleCount = int(RoleDiscriminator) + 1
+	const histogramPayloadColumnCount = 9
+
+	var roleCount [samplePublicRoleCount]int
+	var histogramSeen [histogramPayloadColumnCount]bool
+	canonicalHistogram := histogramColumns()
+	for _, column := range s.Columns {
+		if !samplePublicRole(column.Role) {
+			continue
+		}
+		if column.Name == "" {
+			return SampleKindInvalid
+		}
+		nameCount := 0
+		for _, candidate := range s.Columns {
+			if candidate.Name == column.Name {
+				nameCount++
+			}
+		}
+		if nameCount != 1 {
+			return SampleKindInvalid
+		}
+		roleCount[column.Role]++
+		if column.Role == RoleHistogramField {
+			matched := false
+			for i, field := range canonicalHistogram {
+				if column.Name == field.Name {
+					histogramSeen[i] = true
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return SampleKindInvalid
+			}
+		}
 	}
+
+	for _, role := range [...]ColumnRole{
+		RoleMetricName,
+		RoleAttributes,
+		RoleTimestamp,
+		RoleAnchor,
+		RoleValue,
+		RoleDiscriminator,
+	} {
+		if roleCount[role] > 1 {
+			return SampleKindInvalid
+		}
+	}
+
+	hasHistogram := roleCount[RoleHistogramField] != 0
+	hasDiscriminator := roleCount[RoleDiscriminator] != 0
+	if hasHistogram {
+		if roleCount[RoleHistogramField] != len(canonicalHistogram) {
+			return SampleKindInvalid
+		}
+		for _, seen := range histogramSeen {
+			if !seen {
+				return SampleKindInvalid
+			}
+		}
+	} else if hasDiscriminator {
+		return SampleKindInvalid
+	}
+
+	if hasDiscriminator {
+		for _, role := range [...]ColumnRole{RoleMetricName, RoleAttributes, RoleTimestamp, RoleValue} {
+			if roleCount[role] != 1 {
+				return SampleKindInvalid
+			}
+		}
+	}
+	if s.Open {
+		return SampleKindOpaque
+	}
+	if hasDiscriminator {
+		return SampleKindMixed
+	}
+	if hasHistogram {
+		return SampleKindHistogram
+	}
+	if roleCount[RoleValue] == 1 {
+		return SampleKindFloat
+	}
+	return SampleKindOpaque
+}
+
+// LiveSampleKind refines a node's physical sample schema with the only
+// value-domain proof represented in the plan: a discriminator-zero filter over
+// a mixed payload contains float rows only while retaining the mixed columns.
+// Filter and OrderBy preserve that proof; every other node is a proof barrier.
+func LiveSampleKind(n Node) SampleKind {
+	if n == nil {
+		return SampleKindOpaque
+	}
+	kind := n.RowType().SampleKind()
+	if kind != SampleKindMixed {
+		return kind
+	}
+	for {
+		if IsMixedFloatNarrowing(n) {
+			return SampleKindFloat
+		}
+		switch node := n.(type) {
+		case *Filter:
+			n = node.Input
+		case *OrderBy:
+			n = node.Input
+		default:
+			return kind
+		}
+	}
+}
+
+func samplePublicRole(role ColumnRole) bool {
+	switch role {
+	case RoleMetricName, RoleAttributes, RoleTimestamp, RoleAnchor, RoleValue, RoleHistogramField, RoleDiscriminator:
+		return true
+	default:
+		return false
+	}
+}
+
+// RowShapeFromSchema folds a validated physical sample contract into the
+// diagnostic row-shape vocabulary. Opaque, open, incomplete, and invalid
+// schemas retain the sample default; that default is not proof of live floats.
+func RowShapeFromSchema(s Schema) RowShape {
+	switch s.SampleKind() {
+	case SampleKindMixed:
+		return MixedRowShape
+	case SampleKindHistogram:
+		return HistogramRowShape
+	case SampleKindFloat:
+		if s.Has(RoleAttributes) && s.Has(RoleAnchor) {
+			return GridWindowRowShape
+		}
+		if s.Has(RoleAttributes) && !s.Has(RoleTimestamp) && !s.Has(RoleAnchor) {
+			return ReducedWindowRowShape
+		}
+	}
+	return SampleRowShape
 }
 
 // IsMixedFloatNarrowing reports an explicit discriminator filter that retains

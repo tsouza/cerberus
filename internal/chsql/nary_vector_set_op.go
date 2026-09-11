@@ -79,7 +79,10 @@ func (e *emitter) emitNaryVectorSetOp(s *chplan.NaryVectorSetOp) error {
 		if err != nil {
 			return err
 		}
-		canonical := naryVectorSetOpCanonicalArmFrag(s, arm, armFrag)
+		canonical, err := naryVectorSetOpCanonicalArmFrag(s, arm, armFrag)
+		if err != nil {
+			return err
+		}
 		sideArms[i] = naryVectorSetOpSideArmFrag(s, canonical, i)
 	}
 
@@ -192,7 +195,7 @@ func naryVectorSetOpOutputCols(s *chplan.NaryVectorSetOp) []Frag {
 // missing MetricName / TimeUnix synthesised exactly as the binary path
 // does, so a flattened chain emits byte-identical arm projections to the
 // nested form it replaces.
-func naryVectorSetOpCanonicalArmFrag(s *chplan.NaryVectorSetOp, arm chplan.Node, armFrag Frag) Frag {
+func naryVectorSetOpCanonicalArmFrag(s *chplan.NaryVectorSetOp, arm chplan.Node, armFrag Frag) (Frag, error) {
 	view := &chplan.VectorSetOp{
 		Op:               s.Op,
 		Match:            s.Match,
@@ -225,6 +228,22 @@ func (e *emitter) validateNaryVectorSetOpShape(s *chplan.NaryVectorSetOp) error 
 		return fmt.Errorf("%w: NaryVectorSetOp.ValueColumn unset", ErrUnsupported)
 	case s.Op != chplan.VectorSetOr && s.Op != chplan.VectorSetAnd:
 		return fmt.Errorf("%w: NaryVectorSetOp op %q is not associative", ErrUnsupported, s.Op)
+	}
+	declared := chplan.SampleKindFloat
+	if s.Histogram {
+		declared = chplan.SampleKindHistogram
+	}
+	for i, arm := range s.Arms {
+		kind, err := vectorSetOpArmSampleKind(arm)
+		if err != nil {
+			return err
+		}
+		if kind != declared {
+			return fmt.Errorf(
+				"%w: NaryVectorSetOp declares %s output but arm %d has %s live schema",
+				ErrUnsupported, declared, i, kind,
+			)
+		}
 	}
 	return nil
 }

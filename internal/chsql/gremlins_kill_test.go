@@ -3349,8 +3349,8 @@ func TestValidateVectorJoinCols_EachEmptyErrors(t *testing.T) {
 	t.Parallel()
 	base := func() *chplan.VectorJoin {
 		return &chplan.VectorJoin{
-			Left:             &chplan.Scan{Table: "otel_metrics_sum"},
-			Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+			Left:             vectorSetOpTestScan("otel_metrics_sum"),
+			Right:            vectorSetOpTestScan("otel_metrics_sum"),
 			Op:               chplan.OpAdd,
 			Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
 			MetricNameColumn: "MetricName",
@@ -3399,8 +3399,8 @@ func TestValidateVectorSetOpCols_EachEmptyErrors(t *testing.T) {
 	t.Parallel()
 	base := func() *chplan.VectorSetOp {
 		return &chplan.VectorSetOp{
-			Left:             &chplan.Scan{Table: "otel_metrics_sum"},
-			Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+			Left:             vectorSetOpTestScan("otel_metrics_sum"),
+			Right:            vectorSetOpTestScan("otel_metrics_sum"),
 			Op:               chplan.VectorSetAnd,
 			Match:            chplan.VectorMatch{On: true},
 			MetricNameColumn: "MetricName",
