@@ -109,7 +109,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstKindDispatch(t *test
 // histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:` —
 // the label locates the arm, the guard inside it is the mutant. This is
 // the resets/changes sibling of the last_over_time/first_over_time
-// dispatch above. Both shapes ultimately produce the same four-column canonical
+// dispatch above. Both kinds ultimately produce the same four-column canonical
 // Project, so the two paths are told apart by whether the underlying
 // Aggregate collected the Mixed-only groupArrays
 // [mixedPairCountAggs] adds.

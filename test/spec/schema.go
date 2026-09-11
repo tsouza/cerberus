@@ -1,16 +1,8 @@
 package spec
 
 import (
-	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
-	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -89,144 +81,15 @@ func bindFixtureSchemas(plan chplan.Node, tables map[string][]string) chplan.Nod
 	return bound
 }
 
-var contractedRowShapeKinds = sync.OnceValues(func() (map[string]bool, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return nil, fmt.Errorf("cannot find repository from test working directory")
-		}
-		dir = parent
-	}
-	path := filepath.Join(dir, "internal", "chplan", "row_shape.go")
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-	if err != nil {
-		return nil, err
-	}
-	kinds := map[string]bool{}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "RowShapeOf" {
-			continue
-		}
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			clause, ok := n.(*ast.CaseClause)
-			if !ok {
-				return true
-			}
-			for _, expr := range clause.List {
-				pointer, ok := expr.(*ast.StarExpr)
-				if !ok {
-					continue
-				}
-				if name, ok := pointer.X.(*ast.Ident); ok {
-					kinds[name.Name] = true
-				}
-			}
-			return true
-		})
-	}
-	if len(kinds) == 0 {
-		return nil, fmt.Errorf("RowShapeOf has no contracted type-switch cases")
-	}
-	return kinds, nil
-})
-
-// AssertRowShapeAgreement derives the legacy classifier's contracted kinds
-// from its own switch. Other kinds deliberately retain a documentation default.
-func AssertRowShapeAgreement(t *testing.T, plan chplan.Node) {
+// AssertPlanScanRoles checks every storage leaf, including expression subqueries.
+// Physical schema/shape semantics have independent literal, sealed-kind-complete
+// contracts in chplan; executed fixture outputs are checked against driver metadata.
+func AssertPlanScanRoles(t *testing.T, plan chplan.Node) {
 	t.Helper()
-	kinds, err := contractedRowShapeKinds()
-	if err != nil {
-		t.Fatalf("read legacy shape contract: %v", err)
-	}
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
 		if scan, ok := n.(*chplan.Scan); ok && scan.Database != "system" && len(scan.Roles) == 0 {
 			t.Errorf("storage Scan %q/%q has no declared roles", scan.Table, scan.UnionTables)
 		}
-		kind := reflect.TypeOf(n).Elem().Name()
-		legacy := chplan.RowShapeOf(n)
-		if !kinds[kind] {
-			if legacy != chplan.SampleRowShape {
-				t.Errorf("uncontracted %s legacy shape = %s", kind, legacy)
-			}
-			return true
-		}
-		physical := chplan.RowShapeFromSchema(n.RowType())
-		reason := rowShapeDivergence(n)
-		if legacy != physical && reason == "" {
-			t.Errorf("%s legacy=%s physical=%s schema=%#v", kind, legacy, physical, n.RowType())
-		}
 		return true
 	})
-}
-
-// rowShapeDivergence describes legacy classifier branches whose contract is
-// deliberately weaker than their physical output. These predicates describe
-// actual SELECT structure; they are not fixture or node-name exemptions.
-func rowShapeDivergence(n chplan.Node) string {
-	s := n.RowType()
-	physical, legacy := chplan.RowShapeFromSchema(s), chplan.RowShapeOf(n)
-	if physical == legacy {
-		return ""
-	}
-	switch v := n.(type) {
-	case *chplan.Project:
-		if legacy != chplan.SampleRowShape || s.Has(chplan.RoleDiscriminator) {
-			return ""
-		}
-		if s.Has(chplan.RoleHistogramField) {
-			return "projection republishes histogram fields without discriminator"
-		}
-		if !s.Has(chplan.RoleMetricName) && s.Has(chplan.RoleAnchor) {
-			return "projection republishes grid outputs"
-		}
-		if !s.Has(chplan.RoleMetricName) && !s.Has(chplan.RoleTimestamp) && !s.Has(chplan.RoleAnchor) && s.Has(chplan.RoleValue) {
-			return "projection publishes scalar or reduced output"
-		}
-
-	case *chplan.HistogramFloatVectorJoin:
-		if legacy == chplan.SampleRowShape && physical == chplan.HistogramRowShape && s.Has(chplan.RoleValue) && s.Has(chplan.RoleMetricName) {
-			return "float-histogram join preserves payload and float value"
-		}
-	case *chplan.RangeWindow:
-		if s.Has(chplan.RoleMetricName) && s.Has(chplan.RoleValue) && !s.Has(chplan.RoleHistogramField) && !s.Has(chplan.RoleDiscriminator) {
-			for _, key := range v.GroupBy {
-				ref, ok := key.(*chplan.ColumnRef)
-				if !ok {
-					continue
-				}
-				column, found := v.Input.RowType().ByName(ref.Name)
-				if found && column.Role == chplan.RoleMetricName && ((v.OuterRange > 0 && legacy == chplan.GridWindowRowShape) || (v.OuterRange == 0 && legacy == chplan.ReducedWindowRowShape)) {
-					return "window group keys preserve metric name"
-				}
-			}
-		}
-	case *chplan.OrderBy:
-		if legacy == chplan.RowShapeOf(v.Input) && s.Equal(v.Input.RowType()) {
-			return delegatedShapeDivergence(v.Input)
-		}
-	case *chplan.UnionAll:
-		if len(v.Inputs) > 0 && legacy == chplan.RowShapeOf(v.Inputs[0]) && s.Equal(v.Inputs[0].RowType()) {
-			return delegatedShapeDivergence(v.Inputs[0])
-		}
-	}
-	return ""
-}
-
-func delegatedShapeDivergence(input chplan.Node) string {
-	if reason := rowShapeDivergence(input); reason != "" {
-		return reason
-	}
-	kinds, err := contractedRowShapeKinds()
-	if err == nil && !kinds[reflect.TypeOf(input).Elem().Name()] && chplan.RowShapeOf(input) == chplan.SampleRowShape {
-		return "delegated documentation default from non-sample input"
-	}
-	return ""
 }
