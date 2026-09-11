@@ -1,8 +1,6 @@
 package promql
 
 import (
-	"fmt"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -51,10 +49,10 @@ import (
 //     [shadowResolveMixedExpHistogramOperands] and recombining them by
 //     hand — is exactly what [lowerCountOrGroupOverMixedExpHistogramSetOp]
 //     below builds on: no new shadow-resolution logic at all.
-//  2. [lowerPlainAggOverMixedFloatArm] (histogram_native_mixed_or_aggregate.go)
-//     applies the ordinary COUNT/GROUP CH-native aggregate directly over
-//     that union. Its own doc comment covers why passing it a Mixed node
-//     is safe for exactly these two ops: COUNT reads `count(Value)`,
+//  2. [lowerPlainAggregateOverInput] applies the shared ordinary
+//     COUNT/GROUP CH-native aggregate kernel directly over that union, using
+//     the established mixed-arm timestamp layout. Passing a Mixed node is
+//     safe for exactly these two ops: COUNT reads `count(Value)`,
 //     and [chplan.VectorSetOp.Mixed] publishes a non-NULL Value on every
 //     row — the real magnitude on float-shaped rows, the
 //     [histogramSampleValuePlaceholder] `0.0` on histogram-shaped rows —
@@ -77,13 +75,11 @@ func countOrGroupOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, 
 // [countOrGroupOverMixedExpHistogramSetOp] recognised. See this file's
 // header for the two-stage reduction.
 func lowerCountOrGroupOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if b.ReturnBool {
-		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
-	}
-
-	unioned, err := lowerMixedExpHistogramSetOp(b, s, ctx)
-	if err != nil {
-		return nil, err
-	}
-	return lowerPlainAggOverMixedFloatArm(agg, unioned, s, ctx)
+	return lowerWithMixedPreservePolicy(mixedCountGroupFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		unioned, err := lowerMixedExpHistogramSetOp(b, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return lowerPlainAggregateOverInput(agg, unioned, s, ctx, mixedPlainAggregateLayout)
+	})
 }

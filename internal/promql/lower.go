@@ -583,9 +583,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// composition's own doc comment for why these two ops need no
 	// histogram-side branch at all, unlike sum/avg.
 	if agg, b, ok := countOrGroupOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedCountGroupFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerCountOrGroupOverMixedExpHistogramSetOp(agg, b, s, ctx)
-		})
+		plan, err := lowerCountOrGroupOverMixedExpHistogramSetOp(agg, b, s, ctx)
 		return plan, true, err
 	}
 	// `min`/`max`/`stddev`/`stdvar` [by/without] wrapping that same mixed
@@ -5331,7 +5329,13 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 		return nil, err
 	}
 
-	if err := requireMixedPlanPolicy(input, mixedAggregateFamily(a.Op)); err != nil {
+	family := mixedAggregateFamily(a.Op)
+	if family == mixedCountGroupFamily {
+		input, err = preserveMixedPlan(input, family)
+	} else {
+		err = requireMixedPlanPolicy(input, family)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if expHistogramAggOpIsMergeable(a.Op) && chplan.RowShapeOf(input) == chplan.MixedRowShape {
@@ -5343,61 +5347,10 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	if expHistogramAggDropsHistogramSamples(a.Op) {
 		input = mixedRowsFloatOnly(input)
 	}
-	groupBy, err := aggregateGroupBy(a, s)
+	wrapped, err := lowerPlainAggregateOverInput(a, input, s, ctx, ordinaryPlainAggregateLayout)
 	if err != nil {
 		return nil, err
 	}
-
-	aggFunc, err := buildAggFunc(a, s, ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	aliases := groupKeyAliases(len(groupBy))
-	// In range mode the input plan exposes a per-step TimeUnix
-	// (anchor_ts re-aliased by wrapRangeLatestPerSeries). Aggregations
-	// must group by the per-step bucket in addition to the user's
-	// `by/without` keys — otherwise CH would collapse N anchors into one
-	// row per series-set. Inject TimeUnix as an extra group key with a
-	// stable alias ([rangeBucketAlias]) the wrap can reference.
-	rangeBucketed := ctx.step > 0
-
-	// ts_grid_vector_agg (cerberus issue #2763): when input is ALREADY an
-	// eligible native per-series grid and this aggregation is one of the
-	// five PromQL vector aggregations proven element-wise-correct over an
-	// already-finished per-series grid, fold the GROUP BY directly into
-	// that grid's own pre-explode row via chplan.RangeWindowGridNativeVectorAgg
-	// instead of building the ordinary exploded-then-grouped Aggregate
-	// below. GroupBy/aliases here are the plain user by/without keys, NOT
-	// yet widened by the range-bucket injection above — exactly the shape
-	// the new node's own GROUP BY needs, since its per-series Input already
-	// carries the full per-anchor grid as an array (there is no per-row
-	// anchor to additionally group by).
-	if rangeBucketed && ctx.lowerers.VectorAgg {
-		if node, ok := tryNativeGridVectorAgg(input, groupBy, aliases, aggFunc, s); ok {
-			return wrapAggregateForSample(node, a, s, aliases, true, rangeBucketAlias), nil
-		}
-	}
-
-	if rangeBucketed {
-		groupBy = append(groupBy, &chplan.ColumnRef{Name: s.TimestampColumn})
-		aliases = append(aliases, rangeBucketAlias)
-	}
-	agg := &chplan.Aggregate{
-		Roles:              metricRoles(s),
-		Input:              input,
-		GroupBy:            groupBy,
-		GroupByAliases:     aliases,
-		AggFuncs:           []chplan.AggFunc{aggFunc},
-		DropEmptyOnNoGroup: true,
-	}
-	// The wrap re-projects the bucket alias onto TimeUnix so range-mode
-	// aggregations expose per-step rows on the canonical column shape.
-	userAliases := aliases
-	if rangeBucketed {
-		userAliases = aliases[:len(aliases)-1]
-	}
-	wrapped := wrapAggregateForSample(agg, a, s, userAliases, rangeBucketed, rangeBucketAlias)
 	// quantile(phi, V) with phi outside [0, 1] is well-defined in
 	// PromQL — see prometheus/promql/quantile.go: phi<0 → -Inf,
 	// phi>1 → +Inf. CH's `quantile` aggregate rejects out-of-range

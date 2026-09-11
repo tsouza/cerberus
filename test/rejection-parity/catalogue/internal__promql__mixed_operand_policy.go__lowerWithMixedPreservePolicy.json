@@ -5,17 +5,21 @@
       "site": "internal/promql/mixed_operand_policy.go:lowerWithMixedPreservePolicy#efa3d4e1",
       "message": "promql: mixed operand is not admitted for %s at %s",
       "class": "internal",
-      "rationale": "The only production paths are lowerSortByLabelArg and preserveMixedPlan. lowerSortByLabelArg supplies the fixed unexported mixedSortByLabelFamily with mixedOperandAdmission before loading a recognized mixed-or argument. Its already-lowered path passes that same family to preserveMixedPlan, which supplies the fixed mixedPlanAdmission site only after RowShapeOf reports MixedRowShape. Both corresponding mixedOperandPolicies entries are registered as mixedPreserve. Query syntax and configuration can choose the operand but cannot supply a family, site, or policy value; unsupported modes arise only from internal misuse or deliberate policy-map mutation in tests.",
+      "rationale": "The production paths are lowerCountOrGroupOverMixedExpHistogramSetOp, lowerSortByLabelArg, and preserveMixedPlan. The count/group root path supplies the fixed unexported mixedCountGroupFamily with mixedRootAdmission before loading a recognized mixed-or operand. lowerAggregate reaches the plan path only when mixedAggregateFamily returns that same fixed family, then preserveMixedPlan supplies mixedPlanAdmission only after RowShapeOf reports MixedRowShape. The sort-by-label paths analogously supply fixed mixedSortByLabelFamily operand and plan sites. All four corresponding mixedOperandPolicies registrations are mixedPreserve. Query syntax and configuration can choose the operand but cannot supply a family, site, or policy value; rejection requires internal misuse or deliberate policy-map mutation in tests.",
       "evidence": {
         "guard": [
           "if mixedOperandPolicies[key] != mixedPreserve"
         ],
         "callers": [
+          "lowerCountOrGroupOverMixedExpHistogramSetOp",
           "lowerSortByLabelArg",
           "preserveMixedPlan"
         ],
         "cited": [
+          "lowerAggregate",
+          "lowerCountOrGroupOverMixedExpHistogramSetOp",
           "lowerSortByLabelArg",
+          "mixedAggregateFamily",
           "preserveMixedPlan"
         ]
       }

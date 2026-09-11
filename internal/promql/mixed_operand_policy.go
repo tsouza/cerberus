@@ -82,9 +82,11 @@ type mixedWrapperKey struct {
 // vectorElemBinop and scalar/vector evaluation distinguish arithmetic, scaling
 // and comparisons; UnaryExpr evaluation preserves/scales histograms; aggregation
 // and aggregationK distinguish sum/avg, presence, float-only reductions, topk,
-// count_values and limit sampling. Set operators compare membership, not sample
-// payload. Our mixed scalar/vector, aggregate and set-op lowerers document these
-// rules alongside their shadow-resolution and grouping layouts.
+// count_values and limit sampling. Count/group are payload-neutral: their shared
+// presence kernel preserves the mixed relation and counts or marks every row.
+// Set operators compare membership, not sample payload. Our mixed scalar/vector,
+// aggregate and set-op lowerers document these rules alongside their
+// shadow-resolution and grouping layouts.
 //
 // Timestamp converts both sample kinds to evaluation-time floats; histogram-value
 // functions select histogram samples; evalInfo preserves/enriches both kinds;
@@ -92,16 +94,15 @@ type mixedWrapperKey struct {
 // function and its step grid; lowerHistogramOrMixedSubqueryOuterFnInput and its
 // call-subquery sibling are the established SELECT/FOLD continuation contracts.
 //
-// Bespoke entries record existing admission, NOT a proof that every accepted
-// composition implements those reference contracts correctly. In particular,
-// generic already-lowered aggregate inputs retain their existing behavior here;
-// the nested sum/avg mismatch is tracked separately in cerberus issue #3297.
-// Scalar arithmetic's root and existing-plan entries execute the float-only
-// policy through its shared value kernel, preserving each projection boundary.
+// Bespoke entries select a family-specific payload transformation. Sum/avg, for
+// example, partitions and recombines a mixed plan; count/group instead preserve
+// that plan for their payload-neutral reduction. Scalar arithmetic's root and
+// existing-plan entries execute the float-only policy through its shared value
+// kernel, preserving each projection boundary.
 var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedLeafFamily, mixedRootAdmission}:              mixedBespoke,
 	{mixedSumAvgFamily, mixedRootAdmission}:            mixedBespoke,
-	{mixedCountGroupFamily, mixedRootAdmission}:        mixedBespoke,
+	{mixedCountGroupFamily, mixedRootAdmission}:        mixedPreserve,
 	{mixedFloatAggregateFamily, mixedRootAdmission}:    mixedBespoke,
 	{mixedTopKFamily, mixedRootAdmission}:              mixedBespoke,
 	{mixedCountValuesFamily, mixedRootAdmission}:       mixedBespoke,
@@ -145,7 +146,7 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedVectorArithmeticFamily, mixedPlanAdmission}:  mixedBespoke,
 	{mixedVectorComparisonFamily, mixedPlanAdmission}:  mixedBespoke,
 	{mixedSumAvgFamily, mixedPlanAdmission}:            mixedBespoke,
-	{mixedCountGroupFamily, mixedPlanAdmission}:        mixedBespoke,
+	{mixedCountGroupFamily, mixedPlanAdmission}:        mixedPreserve,
 	{mixedFloatAggregateFamily, mixedPlanAdmission}:    mixedBespoke,
 	{mixedTopKFamily, mixedPlanAdmission}:              mixedBespoke,
 	{mixedCountValuesFamily, mixedPlanAdmission}:       mixedBespoke,
