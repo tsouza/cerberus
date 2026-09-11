@@ -1,11 +1,8 @@
 package promql
 
 import (
-	"fmt"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -59,25 +56,4 @@ func dateFnOverMixedExpHistogramSetOp(c *parser.Call, s schema.Metrics, ctx lowe
 		return nil, false
 	}
 	return mixedExpHistogramSetOp(c.Args[0], s, ctx)
-}
-
-// lowerDateFnOverMixedExpHistogramSetOp lowers the shape
-// [dateFnOverMixedExpHistogramSetOp] recognised. See this file's header
-// for why the shadow-resolved float arm alone, fed through the ordinary
-// date-component value projection, already answers reference's
-// semantics.
-func lowerDateFnOverMixedExpHistogramSetOp(c *parser.Call, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	floatForAgg, err := shadowResolveFloatArmChecked(b, s, ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// tsRef is nil: [dateFnExpr] only consults it for "timestamp", which
-	// [dateFnOverMixedExpHistogramSetOp] never recognises.
-	if dateFnExpr(c.Func.Name, nil, nil) == nil {
-		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
-	}
-	return guardedValueProjection(floatForAgg, c.Args[0], s, ctx, mixedDateFamily, func(refs sampleRoleRefs) chplan.Expr {
-		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(refs.sourceMetrics(s)), nil))
-	})
 }

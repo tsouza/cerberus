@@ -112,9 +112,15 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// same value projection this function's own non-mixed path builds
 	// below.
 	if b, ok := dateFnOverMixedExpHistogramSetOp(c, s, ctx); ok {
-		return lowerWithMixedOperandPolicy(mixedDateFamily, mixedOperandAdmission, func() (chplan.Node, error) {
-			return lowerDateFnOverMixedExpHistogramSetOp(c, b, s, ctx)
-		})
+		prepare, err := datePayloadPreparation(mixedOperandAdmission)
+		if err != nil {
+			return nil, err
+		}
+		inner, err := shadowResolveFloatArmChecked(b, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return projectDateFnOverInner(c, prepare(inner), s, ctx)
 	}
 
 	// The argument is lowered under an ARGUMENT ctx rather than the caller's
@@ -126,6 +132,14 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if err != nil {
 		return nil, err
 	}
+	return projectDateFnOverInner(c, inner, s, ctx)
+}
+
+// projectDateFnOverInner is the shared post-load date kernel. Operand loading
+// precedes function validation on both entry paths. Direct mixed operands have
+// already been shadow-resolved; nested mixed operands require their own plan
+// admission before narrowing. Timestamp retains its separate payload contract.
+func projectDateFnOverInner(c *parser.Call, inner chplan.Node, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if c.Func.Name != timestampFunctionName && dateFnExpr(c.Func.Name, nil, nil) == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
@@ -135,11 +149,28 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
 			return lowerTimestampOverMixedPlan(inner, c.Args[0], s, ctx)
 		}
+	} else if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+		prepare, err := datePayloadPreparation(mixedPlanAdmission)
+		if err != nil {
+			return nil, err
+		}
+		inner = prepare(inner)
 	}
 	return guardedValueProjection(inner, c.Args[0], s, ctx, family, func(refs sampleRoleRefs) chplan.Expr {
 		inputSchema := refs.sourceMetrics(s)
 		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(inputSchema), timestampResultExpr(c.Args[0], inputSchema, ctx)))
 	}, carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...)
+}
+
+// datePayloadPreparation authorizes the actual date admission site and returns
+// the executable float-only preparation. Direct shadow-resolved float operands
+// remain unchanged; existing Mixed plans are narrowed before value projection.
+func datePayloadPreparation(site mixedAdmissionSite) (func(chplan.Node) chplan.Node, error) {
+	key := mixedWrapperKey{family: mixedDateFamily, site: site}
+	if mixedOperandPolicies[key] != mixedFloatOnly {
+		return nil, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
+	}
+	return mixedRowsFloatOnly, nil
 }
 
 // dateFnArgCtx returns the ctx the date function's argument is lowered under.

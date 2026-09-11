@@ -119,7 +119,8 @@ func TestMixedOperandPolicyAlreadyLoweredShape(t *testing.T) {
 	}{
 		{"mixed unknown family", &chplan.VectorSetOp{Mixed: true}, "unlisted-wrapper", true},
 		{"mixed root-only family", &chplan.VectorSetOp{Mixed: true}, mixedLeafFamily, true},
-		{"mixed known bespoke consumer", &chplan.VectorSetOp{Mixed: true}, mixedDateFamily, false},
+		{"mixed known bespoke consumer", &chplan.VectorSetOp{Mixed: true}, mixedTimestampFamily, false},
+		{"date must use its payload preparation", &chplan.VectorSetOp{Mixed: true}, mixedDateFamily, true},
 		{"math must use its payload preparation", &chplan.VectorSetOp{Mixed: true}, mixedMathFamily, true},
 		{"ordinary float unchanged", &chplan.Scan{}, "unlisted-wrapper", false},
 		{"histogram-only unchanged", &chplan.HistogramProjection{}, "unlisted-wrapper", false},
@@ -198,7 +199,7 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			key := mixedWrapperKey{family: family, site: site}
 			wantPolicy := mixedBespoke
 			switch family {
-			case mixedMathFamily, mixedArithmeticFamily, mixedComparisonFamily, mixedScalarFamily, mixedSortFamily:
+			case mixedMathFamily, mixedArithmeticFamily, mixedComparisonFamily, mixedScalarFamily, mixedSortFamily, mixedDateFamily:
 				wantPolicy = mixedFloatOnly
 			case mixedLabelFamily, mixedSortByLabelFamily:
 				wantPolicy = mixedPreserve
