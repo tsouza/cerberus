@@ -2,30 +2,6 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/date_fns.go:lowerDateFn#2f3ea020",
-      "message": "promql: unknown date function %s",
-      "class": "internal",
-      "rationale": "Internal dispatch: lowerCall routes only the known date-function names to lowerDateFn. timestampFunctionName is the constant spelling of the timestamp function; that explicit branch bypasses dateFnExpr validation. Every remaining admitted name is covered by dateFnExpr, including its validation call with nil operands before the role-based builder runs. The unknown-name error is exercised by a forged direct adapter call, not a parseable query.",
-      "evidence": {
-        "guard": [
-          "past returning if len(c.Args) \u003e 1",
-          "past returning if len(c.Args) == 0",
-          "past returning if b, ok := dateFnOverMixedExpHistogramSetOp(c, s, ctx); ok",
-          "past returning if err != nil",
-          "if c.Func.Name != timestampFunctionName \u0026\u0026 dateFnExpr(c.Func.Name, nil, nil) == nil"
-        ],
-        "callers": [
-          "lowerCall"
-        ],
-        "cited": [
-          "dateFnExpr",
-          "lowerCall",
-          "lowerDateFn"
-        ]
-      }
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/date_fns.go:lowerDateFn#ab4896c1",
       "message": "promql: %s expects 0 or 1 argument, got %d",
       "class": "internal",
