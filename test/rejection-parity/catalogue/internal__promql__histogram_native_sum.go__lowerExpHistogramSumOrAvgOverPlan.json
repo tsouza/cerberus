@@ -2,13 +2,13 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_sum.go:lowerExpHistogramSumOrAvgOverPlan#7a3163a0",
-      "message": "promql: internal invariant violated: nested native-histogram aggregation input is %T with %s row shape",
+      "site": "internal/promql/histogram_native_sum.go:lowerExpHistogramSumOrAvgOverPlan#e356339f",
+      "message": "promql: internal invariant violated: nested native-histogram aggregation input is %T with %s sample kind",
       "class": "internal",
-      "rationale": "mergeableExpHistogramAggregate plus recursive histogram recognition admits lowerExpHistogramValuedShape's call only over the HistogramRowShape it itself returned. lowerSumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller: it passes either histNode directly — lowerExpHistogramSetOpOperand's own postcondition already guarantees HistogramRowShape — or mixedOrShadowUnless's chplan.VectorSetOp{Histogram: true} wrapping it, which chplan.RowShapeOf also reports as HistogramRowShape, so this guard stays unreachable via that path too. Cerberus issue #2581 added a third caller, lowerSumOrAvgMixedOrSubqueryFoldFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go): it calls shadowResolveMixedExpHistogramOperands directly — the SAME helper lowerSumOrAvgOverMixedExpHistogramSetOp calls internally — and passes its histForAgg return value straight through, so the identical HistogramRowShape postcondition holds for this caller too. Cerberus issue #2715 added a fourth caller, lowerSumOrAvgMixedOrSubqueryFoldFnRange (same file) — the true query_range fan-out sibling of lowerSumOrAvgMixedOrSubqueryFoldFn, calling shadowResolveMixedExpHistogramOperands the identical way and passing histForAgg straight through, so the same postcondition holds for it too. Cerberus issue #3265 added a fifth caller, lowerSumOrAvgOverMixedOrSubqueryFoldFn (histogram_native_mixed_or_subquery_outer_aggregate_fold.go): it also calls shadowResolveMixedExpHistogramOperands directly, but unlike the two callers above it does not pass histForAgg straight through — it first folds histForAgg over the outer window via lowerExpHistogramRangeFnOverSubqueryInput, and passes THAT return value on. lowerExpHistogramRangeFnOverSubqueryInput's own contract (\"keeps the subquery matrix on the public thirteen-column histogram contract\") guarantees a HistogramRowShape result — the same contract the ordinary bare-selector fold (lowerExpHistogramRangeFnOverSubquery) already relies on to feed this same guard — so the identical postcondition holds for this caller too. The sixth caller, lowerSumOrAvgOverMixedPlan, is dispatched by lowerAggregate only after mixed-policy authorization and chplan.RowShapeOf(input) == chplan.MixedRowShape for sum or avg. It partitions the already-resolved relation by the histogram discriminator with mixedDiscriminatorFilter, then nativeHistogramProjection reprojects that partition onto HistogramRowShape before calling this reducer. It passes the resolved ctx.resourceBounds.HistogramMergeMaxCostUnits as the merge cost. Thus neither query syntax nor configuration can supply a wrong-shape plan to this internal helper.",
+      "rationale": "every caller passes a histogram branch produced by lowerExpHistogramValuedShape, lowerExpHistogramSetOpOperand, shadowResolveMixedExpHistogramOperands, or a histogram range fold over one of those branches. Those constructors publish HistogramProjection or histogram-flagged VectorSetOp schemas, all SampleKindHistogram, so another kind is an internal producer-contract failure.",
       "evidence": {
         "guard": [
-          "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+          "if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram"
         ],
         "callers": [
           "lowerExpHistogramValuedShape",
@@ -17,23 +17,6 @@
           "lowerSumOrAvgOverMixedExpHistogramSetOp",
           "lowerSumOrAvgOverMixedOrSubqueryFoldFn",
           "lowerSumOrAvgOverMixedPlan"
-        ],
-        "cited": [
-          "lowerAggregate",
-          "lowerExpHistogramRangeFnOverSubquery",
-          "lowerExpHistogramRangeFnOverSubqueryInput",
-          "lowerExpHistogramSetOpOperand",
-          "lowerExpHistogramValuedShape",
-          "lowerSumOrAvgMixedOrSubqueryFoldFn",
-          "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
-          "lowerSumOrAvgOverMixedExpHistogramSetOp",
-          "lowerSumOrAvgOverMixedOrSubqueryFoldFn",
-          "lowerSumOrAvgOverMixedPlan",
-          "mergeableExpHistogramAggregate",
-          "mixedDiscriminatorFilter",
-          "mixedOrShadowUnless",
-          "nativeHistogramProjection",
-          "shadowResolveMixedExpHistogramOperands"
         ]
       }
     }

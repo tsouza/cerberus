@@ -2,21 +2,17 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_mixed_or_subquery_aggregate_range_fn.go:lowerSumOrAvgMixedOrSubquerySelectFn#2bdaf2b5",
-      "message": "promql: internal invariant violated: sum/avg-mixed-or subquery input is %T with %s row shape",
+      "site": "internal/promql/histogram_native_mixed_or_subquery_aggregate_range_fn.go:lowerSumOrAvgMixedOrSubquerySelectFn#3b689d3e",
+      "message": "promql: internal invariant violated: sum/avg-mixed-or subquery input is %T with %s sample kind",
       "class": "internal",
-      "rationale": "mixedRel is lowerSumOrAvgOverMixedExpHistogramSetOp's own return value, and that function's only successful return path is combineMixedAggregateBranches's chplan.VectorSetOp{Mixed: true, Op: VectorSetOr} — which chplan.RowShapeOf always reports as MixedRowShape — so a non-error return can never fail this check; the guard exists to fail loudly rather than silently if that postcondition is ever broken by a future change to either function.",
+      "rationale": "mixedRel is the successful result of lowerSumOrAvgOverMixedExpHistogramSetOp, whose only successful combination is combineMixedAggregateBranches returning a VectorSetOp with Mixed set. VectorSetOp.RowType therefore publishes SampleKindMixed; any other kind means that internal postcondition changed.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
-          "if chplan.RowShapeOf(mixedRel) != chplan.MixedRowShape"
+          "if kind := mixedRel.RowType().SampleKind(); kind != chplan.SampleKindMixed"
         ],
         "callers": [
           "lowerMixedOrSubqueryAggregateRangeFnOverGrid"
-        ],
-        "cited": [
-          "combineMixedAggregateBranches",
-          "lowerSumOrAvgOverMixedExpHistogramSetOp"
         ]
       }
     }

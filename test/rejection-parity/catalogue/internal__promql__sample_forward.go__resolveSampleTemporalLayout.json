@@ -1,0 +1,139 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/sample_forward.go:resolveSampleTemporalLayout#1c778072",
+      "message": "promql: temporal sample layout has an invalid sample schema",
+      "class": "internal",
+      "rationale": "canonicalizeMixedFloatArmForAgg, lowerMixedExpHistogramOperands, and widenPlainVectorToMixedShape all reject kinds outside Float or Float/Mixed before calling this helper, excluding SampleKindInvalid. legacySampleProjectionLayout consumes only successful PromQL lowerer outputs and treats failure as an assertion panic. A wire query cannot construct an invalid Schema directly.",
+      "evidence": {
+        "guard": [
+          "past returning if row.Open",
+          "if row.SampleKind() == chplan.SampleKindInvalid"
+        ],
+        "callers": [
+          "canonicalizeMixedFloatArmForAgg",
+          "legacySampleProjectionLayout",
+          "lowerMixedExpHistogramOperands",
+          "widenPlainVectorToMixedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/sample_forward.go:resolveSampleTemporalLayout#2a2549c8",
+      "message": "promql: temporal sample layout metric-name role requires a timestamp role",
+      "class": "internal",
+      "rationale": "canonical sample constructors publish MetricName and Timestamp together; reduced RangeWindow outputs omit MetricName as well as a per-row timestamp, while mixed VectorSetOp schemas require and publish both. The forwarding adapters preserve those roles. Therefore a metric-name role without a timestamp role can only be produced by malformed internal plan construction.",
+      "evidence": {
+        "guard": [
+          "past returning if row.Open",
+          "past returning if row.SampleKind() == chplan.SampleKindInvalid",
+          "past returning if err != nil",
+          "past returning if attributes == \"\"",
+          "past returning if err != nil",
+          "past returning if value == \"\"",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "case hasMetricName of switch"
+        ],
+        "callers": [
+          "canonicalizeMixedFloatArmForAgg",
+          "legacySampleProjectionLayout",
+          "lowerMixedExpHistogramOperands",
+          "widenPlainVectorToMixedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/sample_forward.go:resolveSampleTemporalLayout#43047035",
+      "message": "promql: temporal sample layout is missing the attributes role",
+      "class": "internal",
+      "rationale": "every production input to the four callers is a successful PromQL vector producer: sample, VectorSetOp, and RangeWindow constructors all publish a named Attributes role, and mixed schemas require it. Queries cannot author plan schemas, so a missing role denotes an internal producer-contract violation.",
+      "evidence": {
+        "guard": [
+          "past returning if row.Open",
+          "past returning if row.SampleKind() == chplan.SampleKindInvalid",
+          "past returning if err != nil",
+          "if attributes == \"\""
+        ],
+        "callers": [
+          "canonicalizeMixedFloatArmForAgg",
+          "legacySampleProjectionLayout",
+          "lowerMixedExpHistogramOperands",
+          "widenPlainVectorToMixedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/sample_forward.go:resolveSampleTemporalLayout#4fa23e01",
+      "message": "promql: temporal sample layout is missing the value role",
+      "class": "internal",
+      "rationale": "SampleKindFloat and SampleKindMixed require a unique named Value role, and the three error-returning callers admit only those kinds before invoking this helper. legacySampleProjectionLayout likewise receives successful sample-producing plans. A missing Value can therefore arise only from malformed internal construction.",
+      "evidence": {
+        "guard": [
+          "past returning if row.Open",
+          "past returning if row.SampleKind() == chplan.SampleKindInvalid",
+          "past returning if err != nil",
+          "past returning if attributes == \"\"",
+          "past returning if err != nil",
+          "if value == \"\""
+        ],
+        "callers": [
+          "canonicalizeMixedFloatArmForAgg",
+          "legacySampleProjectionLayout",
+          "lowerMixedExpHistogramOperands",
+          "widenPlainVectorToMixedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/sample_forward.go:resolveSampleTemporalLayout#8ef82b30",
+      "message": "promql: temporal sample layout requires a closed schema",
+      "class": "internal",
+      "rationale": "an open schema classifies as SampleKindOpaque, so the three error-returning callers' Float or Float/Mixed preconditions exclude it. legacySampleProjectionLayout is an assertion adapter used only after ordinary PromQL lowering has produced a closed sample/window schema. No wire query can supply an open Schema to these callers.",
+      "evidence": {
+        "guard": [
+          "if row.Open"
+        ],
+        "callers": [
+          "canonicalizeMixedFloatArmForAgg",
+          "legacySampleProjectionLayout",
+          "lowerMixedExpHistogramOperands",
+          "widenPlainVectorToMixedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/sample_forward.go:resolveSampleTemporalLayout#95ff0112",
+      "message": "promql: temporal sample layout anchor role requires a timestamp role",
+      "class": "internal",
+      "rationale": "matrix RangeWindow and grid constructors append Anchor and Timestamp roles together, while canonical and reduced sample producers publish neither an orphan anchor nor a partial envelope; forwarding wrappers preserve both roles. An anchor without timestamp therefore signals malformed internal plan construction.",
+      "evidence": {
+        "guard": [
+          "past returning if row.Open",
+          "past returning if row.SampleKind() == chplan.SampleKindInvalid",
+          "past returning if err != nil",
+          "past returning if attributes == \"\"",
+          "past returning if err != nil",
+          "past returning if value == \"\"",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "case hasAnchor of switch"
+        ],
+        "callers": [
+          "canonicalizeMixedFloatArmForAgg",
+          "legacySampleProjectionLayout",
+          "lowerMixedExpHistogramOperands",
+          "widenPlainVectorToMixedShape"
+        ]
+      }
+    }
+  ]
+}

@@ -33,15 +33,15 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#38446a20",
-      "message": "promql: internal invariant violated: exp-histogram binop operand lowering published %s row shape (%T), want %s",
+      "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#805fcb61",
+      "message": "promql: internal invariant violated: exp-histogram binop operand lowering published %s sample kind (%T), want histogram",
       "class": "internal",
-      "rationale": "lowerExpHistogramValuedShape's producer contract publishes chplan.HistogramRowShape (per chplan.RowShapeOf) for every shape it reports matched=true for — every dispatch arm either caps with nativeHistogramProjection (a *chplan.HistogramProjection, chplan.RowShapeOf's own HistogramProjection case) or, for its expHistogramSetOp arm, with lowerExpHistogramSetOp's *chplan.VectorSetOp{Histogram: true} (chplan.RowShapeOf's own VectorSetOp case) — the widened contract cerberus issue #2559 gave lowerExpHistogramValuedOperand (replacing a literal *chplan.HistogramProjection type assertion with this chplan.RowShapeOf check) so all six callers (lowerExpHistogramHistogramBinop for +/-, lowerExpHistogramHistogramCompareBinop for ==/!=, lowerExpHistogramHistogramCompareBoolBinop for == bool/!= bool, lowerExpHistogramDroppingHistogramBinop for the histogram/histogram incompatible-type drop family, lowerExpHistogramDroppingVectorBinop for the float-vector/histogram incompatible-type drop family (cerberus issue #2331), and lowerExpHistogramFloatVectorScalingBinop for the MUL / histogram-left-DIV float-vector scaling shape (cerberus issue #2339)) — the first four on both operands, the last two on the single histSide operand each recogniser already verified isExpHistogramValuedShape against — accept a *chplan.VectorSetOp operand (cerberus issue #2324's nested and/or/unless) exactly as they already accepted a *chplan.HistogramProjection one",
+      "rationale": "all callers first admit the operand through an exp-histogram-valued recognizer and lowerExpHistogramValuedShape; every matched producer returns either HistogramProjection or a histogram-flagged VectorSetOp, both of whose RowType schemas have SampleKindHistogram. A different live kind is therefore a broken internal producer postcondition.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
           "past returning if !matched",
-          "if chplan.RowShapeOf(node) != chplan.HistogramRowShape"
+          "if kind := node.RowType().SampleKind(); kind != chplan.SampleKindHistogram"
         ],
         "callers": [
           "lowerExpHistogramDroppingHistogramBinop",
@@ -50,20 +50,6 @@
           "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramHistogramCompareBinop",
           "lowerExpHistogramHistogramCompareBoolBinop"
-        ],
-        "cited": [
-          "expHistogramSetOp",
-          "isExpHistogramValuedShape",
-          "lowerExpHistogramDroppingHistogramBinop",
-          "lowerExpHistogramDroppingVectorBinop",
-          "lowerExpHistogramFloatVectorScalingBinop",
-          "lowerExpHistogramHistogramBinop",
-          "lowerExpHistogramHistogramCompareBinop",
-          "lowerExpHistogramHistogramCompareBoolBinop",
-          "lowerExpHistogramSetOp",
-          "lowerExpHistogramValuedOperand",
-          "lowerExpHistogramValuedShape",
-          "nativeHistogramProjection"
         ]
       }
     }

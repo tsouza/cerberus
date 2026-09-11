@@ -2,29 +2,19 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_count_values.go:lowerExpHistogramCountValuesOverPlan#30cc8718",
-      "message": "promql: internal invariant violated: count_values native-histogram input is %T with %s row shape",
+      "site": "internal/promql/histogram_native_count_values.go:lowerExpHistogramCountValuesOverPlan#362a3810",
+      "message": "promql: internal invariant violated: count_values native-histogram input is %T with %s sample kind",
       "class": "internal",
-      "rationale": "countValuesOverExpHistogramValue admits only an operand isExpHistogramValuedShape agrees is histogram-valued, and both callers lower that same operand through lowerExpHistogramValuedShape immediately before this call: lowerHistogramNativeRoot (reached from lowerRoot for a query's own root, and from lowerHistogramNativeSubqueryInner for a bare subquery's own inner expression, cerberus issue #2543) and lowerCountValues (reached from lowerAggregate's COUNT_VALUES dispatch for count_values(...) NESTED under a further wrapper, cerberus issue #2568). lowerExpHistogramValuedShape's own contract is to return the thirteen-column histogram row shape whenever it reports a match, so this guard can never actually fire.",
+      "rationale": "lowerCountValues and lowerHistogramNativeRoot call this helper only after countValuesOverExpHistogramValue admits the operand and lowerExpHistogramValuedShape successfully lowers that same operand. Every matched histogram lowerer publishes SampleKindHistogram, so this guard can fire only if an internal lowering postcondition is broken.",
       "evidence": {
         "guard": [
           "past returning if !ok",
           "past returning if label == \"\"",
-          "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+          "if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram"
         ],
         "callers": [
           "lowerCountValues",
           "lowerHistogramNativeRoot"
-        ],
-        "cited": [
-          "countValuesOverExpHistogramValue",
-          "isExpHistogramValuedShape",
-          "lowerAggregate",
-          "lowerCountValues",
-          "lowerExpHistogramValuedShape",
-          "lowerHistogramNativeRoot",
-          "lowerHistogramNativeSubqueryInner",
-          "lowerRoot"
         ]
       }
     },

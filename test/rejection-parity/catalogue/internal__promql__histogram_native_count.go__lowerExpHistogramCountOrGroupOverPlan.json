@@ -2,23 +2,16 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_count.go:lowerExpHistogramCountOrGroupOverPlan#6724a38c",
-      "message": "promql: internal invariant violated: nested native-histogram count/group input is %T with %s row shape",
+      "site": "internal/promql/histogram_native_count.go:lowerExpHistogramCountOrGroupOverPlan#3dc8f030",
+      "message": "promql: internal invariant violated: nested native-histogram count/group input is %T with %s sample kind",
       "class": "internal",
-      "rationale": "countOrGroupOverExpHistogramValue admits only histogram-valued operands; lowerExpHistogramCountFamily, its sole caller (cerberus issue #2549 factored this pairing out of lowerHistogramNativeRoot so lowerAggregate's own generic fallback could reuse it for a NESTED count()/group()), lowers that same operand through lowerExpHistogramValuedShape, whose matched contract is HistogramRowShape.",
+      "rationale": "lowerExpHistogramCountFamily is the sole caller and invokes this reducer only after countOrGroupOverExpHistogramValue admits the operand and lowerExpHistogramValuedShape lowers that same operand. A successful matched histogram lowerer publishes SampleKindHistogram, so another kind is an internal postcondition failure.",
       "evidence": {
         "guard": [
-          "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+          "if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram"
         ],
         "callers": [
           "lowerExpHistogramCountFamily"
-        ],
-        "cited": [
-          "countOrGroupOverExpHistogramValue",
-          "lowerAggregate",
-          "lowerExpHistogramCountFamily",
-          "lowerExpHistogramValuedShape",
-          "lowerHistogramNativeRoot"
         ]
       }
     },
@@ -27,20 +20,14 @@
       "site": "internal/promql/histogram_native_count.go:lowerExpHistogramCountOrGroupOverPlan#9c86789a",
       "message": "promql: internal invariant violated: %s is not count/group",
       "class": "internal",
-      "rationale": "the sole caller arrives only through countOrGroupOverExpHistogramValue, which admits only COUNT or GROUP; this holds identically whichever of lowerExpHistogramCountFamily's two callers (lowerHistogramNativeRoot's own root dispatch, or lowerAggregate's generic fallback retrying a NESTED count()/group() as of cerberus issue #2549) supplied the original expr, since both reach this lowerer through the same countOrGroupOverExpHistogramValue-gated call.",
+      "rationale": "lowerExpHistogramCountFamily reaches this reducer only through countOrGroupOverExpHistogramValue, which admits exactly parser.COUNT and parser.GROUP. The default branch therefore represents an internal caller-contract violation and cannot be selected by a parsed query.",
       "evidence": {
         "guard": [
-          "past returning if chplan.RowShapeOf(input) != chplan.HistogramRowShape",
+          "past returning if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram",
           "default of switch agg.Op over [case parser.COUNT; case parser.GROUP; default]"
         ],
         "callers": [
           "lowerExpHistogramCountFamily"
-        ],
-        "cited": [
-          "countOrGroupOverExpHistogramValue",
-          "lowerAggregate",
-          "lowerExpHistogramCountFamily",
-          "lowerHistogramNativeRoot"
         ]
       }
     }

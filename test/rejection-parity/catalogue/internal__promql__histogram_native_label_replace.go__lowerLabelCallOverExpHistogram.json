@@ -2,24 +2,20 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelCallOverExpHistogram#c58ba760",
-      "message": "promql: internal invariant violated: exp-histogram label_replace input publishes %s row shape (%T), want %s",
+      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelCallOverExpHistogram#235c8665",
+      "message": "promql: internal invariant violated: exp-histogram label_replace input publishes %s sample kind (%T), want histogram",
       "class": "internal",
-      "rationale": "every matched lowerExpHistogramValuedShape producer publishes chplan.HistogramRowShape, either literally as a HistogramProjection or as a Histogram-flagged VectorSetOp built by lowerExpHistogramSetOp, so this check can only ever hold",
+      "rationale": "labelCallOverExpHistogram admits the call only when its argument isExpHistogramValuedShape, and this function lowers that same argument through lowerExpHistogramValuedShape. Every successful matched branch publishes SampleKindHistogram, so any other kind is an internal recognizer/lowerer disagreement.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
           "past returning if err != nil",
           "past returning if !ok",
-          "if shape := chplan.RowShapeOf(inner); shape != chplan.HistogramRowShape"
+          "if kind := inner.RowType().SampleKind(); kind != chplan.SampleKindHistogram"
         ],
         "callers": [
           "lowerExpHistogramValuedShape",
           "lowerLabelReplaceOverExpHistogram"
-        ],
-        "cited": [
-          "lowerExpHistogramSetOp",
-          "lowerExpHistogramValuedShape"
         ]
       }
     },

@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_subquery_further_setop_range_fn.go:lowerHistogramOrMixedSubqueryOuterFnInput#5c397ee2",
+      "message": "promql: internal invariant violated: histogram subquery outer function input has %s sample kind",
+      "class": "internal",
+      "rationale": "lowerOuterRangeFnOverSubquery supplies kind from an already lowered inner plan and reaches this helper only on rowsMayContainHistograms' conservative path. Valid PromQL lowerers publish float, histogram, or mixed schemas; for this path float was excluded, leaving histogram or mixed. Any other kind denotes a malformed internal schema, which is kept off the float path and rejected here.",
+      "evidence": {
+        "guard": [
+          "past returning if !histogramSubqueryOuterFnName(windowFn)",
+          "if kind != chplan.SampleKindHistogram \u0026\u0026 kind != chplan.SampleKindMixed"
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery"
+        ]
+      }
+    }
+  ]
+}
