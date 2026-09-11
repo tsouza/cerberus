@@ -284,6 +284,110 @@ func TestRowTypeCanonicalHistogramPayload(t *testing.T) {
 	}
 }
 
+func TestSchemaSampleKind(t *testing.T) {
+	floatRoles := []Column{
+		{"source_name", RoleMetricName},
+		{"source_labels", RoleAttributes},
+		{"source_time", RoleTimestamp},
+		{"source_value", RoleValue},
+	}
+	histogram := HistogramPayloadColumns()
+	mixed := append(slices.Clone(floatRoles), histogram...)
+	mixed = append(mixed, Column{"source_kind", RoleDiscriminator})
+
+	for _, tc := range []struct {
+		name string
+		row  Schema
+		want SampleKind
+	}{
+		{name: "float_custom_names", row: Schema{Columns: floatRoles}, want: SampleKindFloat},
+		{name: "reduced_float", row: Schema{Columns: []Column{{"source_value", RoleValue}}}, want: SampleKindFloat},
+		{name: "pure_histogram", row: Schema{Columns: histogram}, want: SampleKindHistogram},
+		{name: "histogram_with_placeholder", row: Schema{Columns: append(slices.Clone(floatRoles), histogram...)}, want: SampleKindHistogram},
+		{name: "mixed", row: Schema{Columns: mixed}, want: SampleKindMixed},
+		{name: "opaque", row: Schema{Columns: []Column{{Name: "private"}}}, want: SampleKindOpaque},
+		{name: "open_float", row: Schema{Columns: floatRoles, Open: true}, want: SampleKindOpaque},
+		{name: "trace_roles", row: Schema{Columns: []Column{{"trace", RoleTraceID}, {"span", RoleSpanID}}}, want: SampleKindOpaque},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.row.SampleKind(); got != tc.want {
+				t.Fatalf("SampleKind = %s, want %s; schema=%#v", got, tc.want, tc.row)
+			}
+		})
+	}
+}
+
+func TestSchemaSampleKindRejectsMalformedContracts(t *testing.T) {
+	floatRoles := []Column{{"labels", RoleAttributes}, {"value", RoleValue}}
+	histogram := HistogramPayloadColumns()
+	kind := Column{"source_kind", RoleDiscriminator}
+
+	type sampleKindCase struct {
+		name    string
+		columns []Column
+	}
+	cases := []sampleKindCase{
+		{name: "orphan_discriminator", columns: append(slices.Clone(floatRoles), kind)},
+		{name: "mixed_without_value", columns: append(slices.Clone(histogram), kind)},
+		{name: "duplicate_value_role", columns: append(slices.Clone(floatRoles), Column{"other_value", RoleValue})},
+		{name: "unnamed_value", columns: []Column{{Role: RoleValue}}},
+		{name: "shadowed_value", columns: append(slices.Clone(floatRoles), Column{Name: "value"})},
+		{name: "duplicate_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), kind, Column{"other_kind", RoleDiscriminator})},
+		{name: "unnamed_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), Column{Role: RoleDiscriminator})},
+		{name: "shadowed_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), kind, Column{Name: kind.Name})},
+		{name: "noncanonical_histogram_role", columns: append(slices.Clone(floatRoles), Column{"raw_count", RoleHistogramField})},
+	}
+	for i, field := range histogram {
+		missing := slices.Delete(slices.Clone(histogram), i, i+1)
+		wrongRole := slices.Clone(histogram)
+		wrongRole[i].Role = RoleOpaque
+		duplicate := append(slices.Clone(histogram), field)
+		shadowed := append(slices.Clone(histogram), Column{Name: field.Name})
+		cases = append(
+			cases,
+			sampleKindCase{name: "missing/" + field.Name, columns: missing},
+			sampleKindCase{name: "wrong_role/" + field.Name, columns: wrongRole},
+			sampleKindCase{name: "duplicate/" + field.Name, columns: duplicate},
+			sampleKindCase{name: "shadowed/" + field.Name, columns: shadowed},
+		)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (Schema{Columns: tc.columns}).SampleKind(); got != SampleKindInvalid {
+				t.Fatalf("SampleKind = %s, want %s; schema=%#v", got, SampleKindInvalid, tc.columns)
+			}
+		})
+	}
+}
+
+func TestSchemaSampleKindUsesRolesNotSampleNames(t *testing.T) {
+	for _, field := range HistogramPayloadColumns() {
+		row := Schema{Columns: []Column{{Name: field.Name, Role: RoleValue}}}
+		if got := row.SampleKind(); got != SampleKindFloat {
+			t.Fatalf("value named %q classified as %s, want %s", field.Name, got, SampleKindFloat)
+		}
+	}
+}
+
+func TestSampleKindString(t *testing.T) {
+	for _, tc := range []struct {
+		kind SampleKind
+		want string
+	}{
+		{SampleKindOpaque, "opaque"},
+		{SampleKindFloat, "float"},
+		{SampleKindHistogram, "histogram"},
+		{SampleKindMixed, "mixed"},
+		{SampleKindInvalid, "invalid"},
+		{SampleKindInvalid + 1, "opaque"},
+	} {
+		if got := tc.kind.String(); got != tc.want {
+			t.Errorf("SampleKind(%d).String() = %q, want %q", tc.kind, got, tc.want)
+		}
+	}
+}
+
 func TestRowTypeOpenCrossJoin(t *testing.T) {
 	left := &Scan{Roles: []Column{{"known", RoleAttributes}}}
 	right := &Scan{Columns: []string{"known", "maybe"}, Roles: []Column{{"known", RoleAttributes}, {"maybe", RoleTimestamp}}}
