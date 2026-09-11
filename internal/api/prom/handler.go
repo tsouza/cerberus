@@ -1675,15 +1675,17 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) (chplan.Node, 
 	timestamp, hasTimestamp := row.Find(chplan.RoleTimestamp)
 	anchor, hasAnchor := row.Find(chplan.RoleAnchor)
 
-	projections := []chplan.Projection{
-		{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-		{Expr: &chplan.ColumnRef{Name: attributes.Name}, Alias: s.AttributesColumn},
-		{Expr: synthesizedAnchor(), Alias: s.TimestampColumn},
-		{Expr: &chplan.ColumnRef{Name: value.Name}, Alias: s.ValueColumn},
-	}
+	var metricNameProjection chplan.Projection
 	if hasMetricName {
-		projections[0].Expr = &chplan.ColumnRef{Name: metricName.Name}
+		metricNameProjection = sampleColumnProjection(metricName, s.MetricNameColumn)
+	} else {
+		metricNameProjection = chplan.Projection{
+			Expr:  &chplan.LitString{V: ""},
+			Alias: s.MetricNameColumn,
+		}
 	}
+
+	var timestampProjection chplan.Projection
 	cols := sampleColumns(s)
 	// TimeUnix source: a matrix-shape RangeWindow exposes a real per-row
 	// timestamp under the literal column `anchor_ts`, which the emitter
@@ -1703,14 +1705,28 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) (chplan.Node, 
 		if !hasAnchor || anchor.Name == "" {
 			return nil, fmt.Errorf("prom: sample projection: matrix schema is missing anchor role")
 		}
-		projections[2].Expr = &chplan.ColumnRef{Name: anchor.Name}
+		timestampProjection = sampleColumnProjection(anchor, s.TimestampColumn)
 		if off, relabel := matrixWindowOffset(plan, cols); relabel {
-			projections[2].Expr = chplan.OffsetReanchoredColumnExpr(anchor.Name, off)
+			timestampProjection = chplan.Projection{
+				Expr:  chplan.OffsetReanchoredColumnExpr(anchor.Name, off),
+				Alias: s.TimestampColumn,
+			}
 		}
 	} else if hasTimestamp {
-		projections[2].Expr = &chplan.ColumnRef{Name: timestamp.Name}
+		timestampProjection = sampleColumnProjection(timestamp, s.TimestampColumn)
 	} else if hasAnchor {
-		projections[2].Expr = &chplan.ColumnRef{Name: anchor.Name}
+		timestampProjection = sampleColumnProjection(anchor, s.TimestampColumn)
+	} else {
+		timestampProjection = chplan.Projection{
+			Expr:  synthesizedAnchor(),
+			Alias: s.TimestampColumn,
+		}
+	}
+	projections := []chplan.Projection{
+		metricNameProjection,
+		sampleColumnProjection(attributes, s.AttributesColumn),
+		timestampProjection,
+		sampleColumnProjection(value, s.ValueColumn),
 	}
 	roles := []chplan.Column{
 		{Name: s.MetricNameColumn, Role: chplan.RoleMetricName},
@@ -1719,6 +1735,14 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) (chplan.Node, 
 		{Name: s.ValueColumn, Role: chplan.RoleValue},
 	}
 	return &chplan.Project{Input: plan, Projections: projections, Roles: roles}, nil
+}
+
+func sampleColumnProjection(column chplan.Column, outputName string) chplan.Projection {
+	projection := chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}}
+	if column.Name != outputName {
+		projection.Alias = outputName
+	}
+	return projection
 }
 
 func requiredSampleRole(row chplan.Schema, role chplan.ColumnRole, label string) (chplan.Column, error) {
