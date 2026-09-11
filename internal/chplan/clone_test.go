@@ -127,7 +127,7 @@ func allNodeKinds() []chplan.Node {
 			ZeroCountColumn: "ZeroCount", ZeroThresholdColumn: "ZeroThreshold",
 			PositiveOffsetColumn: "PositiveOffset", PositiveBucketCountsColumn: "PositiveBucketCounts",
 			NegativeOffsetColumn: "NegativeOffset", NegativeBucketCountsColumn: "NegativeBucketCounts",
-			MetricNameColumn: "MetricName", AttributesColumn: "Attributes", TimestampColumn: "TimeUnix",
+			MetricNameColumn: "MetricName", AttributesColumn: "Attributes", TimestampColumn: "TimeUnix", ValueColumn: "Value",
 		},
 		&chplan.MetricsAggregate{Attr: expr, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, GroupByDisplayNames: []string{"g"}, Quantiles: []float64{0.5}, Inner: leaf},
 		&chplan.MetricsCompare{Selection: expr, Pairs: expr, RootLookup: leaf, Inner: leaf, TraceIDColumn: "TraceId"},
