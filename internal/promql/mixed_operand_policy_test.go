@@ -111,17 +111,27 @@ func TestMixedOperandPolicyComputedClampChecksOriginalOperand(t *testing.T) {
 }
 
 func TestMixedOperandPolicyAlreadyLoweredShape(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	mixed := func() chplan.Node {
+		return &chplan.VectorSetOp{
+			Mixed:            true,
+			MetricNameColumn: s.MetricNameColumn,
+			AttributesColumn: s.AttributesColumn,
+			TimestampColumn:  s.TimestampColumn,
+			ValueColumn:      s.ValueColumn,
+		}
+	}
 	for _, tc := range []struct {
 		name      string
 		inner     chplan.Node
 		family    mixedWrapperFamily
 		wantError bool
 	}{
-		{"mixed unknown family", &chplan.VectorSetOp{Mixed: true}, "unlisted-wrapper", true},
-		{"mixed root-only family", &chplan.VectorSetOp{Mixed: true}, mixedLeafFamily, true},
-		{"mixed known bespoke consumer", &chplan.VectorSetOp{Mixed: true}, mixedTimestampFamily, false},
-		{"date must use its payload preparation", &chplan.VectorSetOp{Mixed: true}, mixedDateFamily, true},
-		{"math must use its payload preparation", &chplan.VectorSetOp{Mixed: true}, mixedMathFamily, true},
+		{"mixed unknown family", mixed(), "unlisted-wrapper", true},
+		{"mixed root-only family", mixed(), mixedLeafFamily, true},
+		{"mixed known bespoke consumer", mixed(), mixedTimestampFamily, false},
+		{"date must use its payload preparation", mixed(), mixedDateFamily, true},
+		{"math must use its payload preparation", mixed(), mixedMathFamily, true},
 		{"ordinary float unchanged", &chplan.Scan{}, "unlisted-wrapper", false},
 		{"histogram-only unchanged", &chplan.HistogramProjection{Input: &chplan.OneRow{}}, "unlisted-wrapper", false},
 	} {
