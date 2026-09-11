@@ -5328,22 +5328,12 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	}
 
 	family := mixedAggregateFamily(a.Op)
-	if family == mixedCountGroupFamily {
-		input, err = preserveMixedPlan(input, family)
-	} else {
-		err = requireMixedPlanPolicy(input, family)
-	}
+	input, err = prepareMixedAggregatePlan(input, family)
 	if err != nil {
 		return nil, err
 	}
 	if expHistogramAggOpIsMergeable(a.Op) && mixedRowsNeedPreparation(input) {
 		return lowerSumOrAvgOverMixedPlan(a, input, s, ctx)
-	}
-	// Authorize the original Mixed relation before discarding histogram rows.
-	// Float-only reductions must not aggregate their placeholder Value column;
-	// narrowing this already-lowered relation preserves union shadow precedence.
-	if expHistogramAggDropsHistogramSamples(a.Op) {
-		input = mixedRowsFloatOnly(input)
 	}
 	wrapped, err := lowerPlainAggregateOverInput(a, input, s, ctx, ordinaryPlainAggregateLayout)
 	if err != nil {

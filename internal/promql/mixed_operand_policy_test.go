@@ -204,6 +204,9 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			case mixedLabelFamily, mixedSortByLabelFamily, mixedCountGroupFamily, mixedLimitFamily:
 				wantPolicy = mixedPreserve
 			}
+			if key == (mixedWrapperKey{family: mixedFloatAggregateFamily, site: mixedPlanAdmission}) {
+				wantPolicy = mixedFloatOnly
+			}
 			if got := mixedOperandPolicies[key]; got != wantPolicy {
 				t.Errorf("admission %v = %v, want %v", key, got, wantPolicy)
 			}

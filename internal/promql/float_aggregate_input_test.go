@@ -68,23 +68,52 @@ func TestFloatAggregateMixedInputNarrowing(t *testing.T) {
 	}
 }
 
-func TestFloatAggregateAuthorizationBeforeNarrowing(t *testing.T) {
+func TestFloatAggregatePlanPolicyDrivesNarrowing(t *testing.T) {
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	s := schema.DefaultOTelMetrics()
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, fn := range []string{"min", "max", "stddev", "stdvar", "quantile"} {
 		t.Run(fn, func(t *testing.T) {
 			key := mixedWrapperKey{family: mixedFloatAggregateFamily, site: mixedPlanAdmission}
-			policy := mixedOperandPolicies[key]
-			delete(mixedOperandPolicies, key)
-			t.Cleanup(func() { mixedOperandPolicies[key] = policy })
 			expr, err := p.ParseExpr(floatAggregateTestQuery(fn, `sort_by_label(latency_exp_hist or num_cpus,"job")`))
 			if err != nil {
 				t.Fatal(err)
 			}
+			policy := mixedOperandPolicies[key]
 			plan, err := LowerAt(context.Background(), expr, s, at, at)
-			if plan != nil || err == nil || !strings.Contains(err.Error(), "mixed operand is not admitted for float-aggregate at existing-plan") {
-				t.Fatalf("original Mixed authorization bypassed: %T %v", plan, err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var narrowed bool
+			chplan.Walk(plan, func(node chplan.Node) bool {
+				if filter, ok := node.(*chplan.Filter); ok && chplan.IsMixedFloatNarrowing(filter) {
+					narrowed = true
+				}
+				return true
+			})
+			if !narrowed {
+				t.Fatal("float-only plan policy did not narrow the mixed relation")
+			}
+			for _, denied := range []struct {
+				name    string
+				policy  mixedOperandPolicy
+				present bool
+			}{
+				{name: "missing"},
+				{name: "bespoke", policy: mixedBespoke, present: true},
+				{name: "preserve", policy: mixedPreserve, present: true},
+			} {
+				t.Run(denied.name, func(t *testing.T) {
+					delete(mixedOperandPolicies, key)
+					if denied.present {
+						mixedOperandPolicies[key] = denied.policy
+					}
+					t.Cleanup(func() { mixedOperandPolicies[key] = policy })
+					plan, err := LowerAt(context.Background(), expr, s, at, at)
+					if plan != nil || err == nil || !strings.Contains(err.Error(), "mixed operand is not admitted for float-aggregate at existing-plan") {
+						t.Fatalf("non-float-only policy reached aggregate: %T %v", plan, err)
+					}
+				})
 			}
 			for _, operand := range []string{"up", "latency_exp_hist"} {
 				expr, err := p.ParseExpr(floatAggregateTestQuery(fn, operand))
