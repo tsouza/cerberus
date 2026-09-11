@@ -1,6 +1,7 @@
 package regression
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,16 @@ const (
 // rewrite mode. A shard that runs a recipe no longer setting it would be running
 // a no-op: the same `go test` invocation without it asserts the ledgers instead.
 const parityLedgerEnv = "CERBERUS_UPDATE_INVENTORY"
+
+// The parity recipe is deliberately three processes rather than one package
+// run in update mode. Its top-level writer and validator tests use t.Parallel,
+// so generation must finish before readers inspect the files, and the
+// divergence ceiling must see the freshly written rejection catalogue.
+const (
+	parityPrimaryWritersCommand = "CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^(TestInventoryIsRegenerable|TestCatalogueIsRegenerable)$' ./test/surface-parity/ ./test/rejection-parity/"
+	parityCeilingWriterCommand  = "CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^TestDivergenceCeilingRatchet$' ./test/rejection-parity/"
+	parityReadOnlyCheckCommand  = "CERBERUS_UPDATE_INVENTORY= go test -count=1 ./test/surface-parity/ ./test/rejection-parity/"
+)
 
 // parityEnrolmentEnv switches the roster assertion into rewrite mode.
 const parityEnrolmentEnv = "UPDATE_PARITY_ENROLMENT_BASELINE"
@@ -57,7 +68,7 @@ const dockerBackedVerdicts = "promql-reference-verdicts.json"
 // Sharding #1898 kept the guarantee and made it conditional: the ledgers
 // regenerate whenever the caller's shard set includes `parity`, and the coverage
 // check demands that shard the moment the branch touches a package the ledgers
-// are derived from. Four things have to hold, and this test fails if any one is
+// are derived from. Five things have to hold, and this test fails if any one is
 // removed:
 //
 //  1. The `parity` shard reaches both existing generators.
@@ -66,6 +77,10 @@ const dockerBackedVerdicts = "promql-reference-verdicts.json"
 //     closing diff-stat rather than after it. The fixture body never rewrites
 //     either the parser source or `-- parity --` sections it records.
 //  4. The closing diff-stat actually covers all three artefact directories.
+//  5. The two primary ledgers finish writing before the derived divergence
+//     ceiling updates, and complete package validation runs last with update
+//     mode explicitly disabled. Otherwise parallel tests read files while the
+//     generators are rewriting or pruning them.
 func TestUpdateGoldenChainsParityArtifacts(t *testing.T) {
 	t.Parallel()
 
@@ -103,6 +118,7 @@ func TestUpdateGoldenChainsParityArtifacts(t *testing.T) {
 	}
 
 	d := justDump(t)
+	parityBody := d.recipe(t, parityLedgerRecipeName).bodyText(t)
 	parity := justRecipeBodyWithDeps(t, parityLedgerRecipeName)
 	reached := d.transitiveDependencyNames(t, parityLedgerRecipeName)
 	for _, recipe := range []string{parityLedgerRecipeName, parityEnrolmentRecipeName} {
@@ -121,6 +137,26 @@ func TestUpdateGoldenChainsParityArtifacts(t *testing.T) {
 		t.Errorf("%s: the %q recipe no longer sets %s, so it asserts the enrolment baselines "+
 			"instead of rewriting them. The %q shard would leave fixture-roster drift stale.",
 			justfilePath, parityLedgerRecipeName, parityEnrolmentEnv, parityShard)
+	}
+
+	var gotParityGoTests []string
+	for _, line := range strings.Split(parityBody, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "go test") {
+			gotParityGoTests = append(gotParityGoTests, line)
+		}
+	}
+	wantParityGoTests := []string{
+		parityPrimaryWritersCommand,
+		parityCeilingWriterCommand,
+		parityReadOnlyCheckCommand,
+	}
+	if !slices.Equal(gotParityGoTests, wantParityGoTests) {
+		t.Errorf("%s: the %q recipe's Go commands are\n  %s\nwant the ordered writer/writer/read-only-validator phases\n  %s. "+
+			"The primary writers must run alone, the divergence ceiling must read their finished catalogue, "+
+			"and the complete package check must explicitly disable %s so parallel validators never race a writer.",
+			justfilePath, parityLedgerRecipeName,
+			strings.Join(gotParityGoTests, "\n  "), strings.Join(wantParityGoTests, "\n  "), parityLedgerEnv)
 	}
 
 	// The recipe must stay pure-local. `promql-reference-verdicts.json` lives in
