@@ -857,9 +857,6 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	if isComparison(op) {
 		return finishScalarComparison(inner, vec, s, ctx, op, scalar, scalarOnLeft, returnBool, scalarComparisonGuarded)
 	}
-	if err := requireMixedPlanPolicy(inner, mixedScalarBinaryFamily(op, scalarOnLeft)); err != nil {
-		return nil, err
-	}
 	// Histogram-scaling operators retain their separate family authority.
 	return guardedValueProjection(inner, vec, s, ctx, mixedScalarBinaryFamily(op, scalarOnLeft), func(refs sampleRoleRefs) chplan.Expr {
 		var left, right chplan.Expr = refs.Value, &chplan.LitFloat{V: scalar}

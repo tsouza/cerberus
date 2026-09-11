@@ -173,7 +173,7 @@ func lowerMathOperand(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.N
 	if err != nil {
 		return nil, err
 	}
-	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+	if !mixedRowsNeedPreparation(inner) {
 		return inner, nil
 	}
 	if _, err := mathPayloadPreparation(mixedPlanAdmission); err != nil {
@@ -184,9 +184,9 @@ func lowerMathOperand(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.N
 
 // prepareMathValueInput is deliberately later than admission: a terminal
 // literal-inverted clamp returns its original Filter(false) input unchanged.
-// Value consumers narrow here, before any bounds Filter can hide Mixed shape.
+// Value consumers narrow here after the terminal empty-result case has returned.
 func prepareMathValueInput(inner chplan.Node) (chplan.Node, error) {
-	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+	if !mixedRowsNeedPreparation(inner) {
 		return inner, nil
 	}
 	return prepareMixedMathOperand(mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
