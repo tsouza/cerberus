@@ -93,7 +93,7 @@ func lowerSortFloatOperand(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		})
 	}
 	inner, err := lower(c.Args[0], s, ctx)
-	if err != nil || chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+	if err != nil || !mixedRowsNeedPreparation(inner) {
 		return inner, err
 	}
 	return prepareSortOperand(mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })

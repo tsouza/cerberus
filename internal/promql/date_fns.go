@@ -146,10 +146,10 @@ func projectDateFnOverInner(c *parser.Call, inner chplan.Node, s schema.Metrics,
 	family := mixedDateFamily
 	if c.Func.Name == timestampFunctionName {
 		family = mixedTimestampFamily
-		if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+		if mixedRowsNeedPreparation(inner) {
 			return lowerTimestampOverMixedPlan(inner, c.Args[0], s, ctx)
 		}
-	} else if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+	} else if mixedRowsNeedPreparation(inner) {
 		prepare, err := datePayloadPreparation(mixedPlanAdmission)
 		if err != nil {
 			return nil, err

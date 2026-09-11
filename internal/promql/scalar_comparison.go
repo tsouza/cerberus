@@ -78,7 +78,7 @@ func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics
 		if err := requireFloatComparisonPolicy(mixedRootAdmission); err != nil {
 			return nil, err
 		}
-	} else if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+	} else if mixedRowsNeedPreparation(inner) {
 		if err := requireFloatComparisonPolicy(mixedPlanAdmission); err != nil {
 			return nil, err
 		}
