@@ -1,10 +1,8 @@
 //go:build chdb
 
 // chDB-backed proof that `scalar()` directly wrapping a mixed
-// float/histogram `or` (cerberus issue #2611,
-// histogram_native_mixed_or_scalar.go's [scalarArgOverMixedExpHistogramSetOp] /
-// [lowerScalarArgOverMixedExpHistogramSetOp]) reproduces reference
-// Prometheus's funcScalar at real ClickHouse execution: a histogram-shaped
+// float/histogram `or` through scalar_args.go's float operand dispatch
+// reproduces reference Prometheus's funcScalar at real ClickHouse execution:
 // row is invisible to the "exactly one sample" count entirely, the `or`'s
 // own LHS-wins shadow rule composes correctly with that count, and zero
 // surviving float rows answers NaN exactly like the non-mixed

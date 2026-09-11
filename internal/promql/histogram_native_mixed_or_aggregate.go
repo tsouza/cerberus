@@ -170,7 +170,7 @@ func shadowResolveMixedExpHistogramOperands(b *parser.BinaryExpr, s schema.Metri
 // shadowResolveFloatArmChecked is [shadowResolveMixedExpHistogramOperands]
 // for the composer families that only ever need the shadow-resolved FLOAT
 // arm (never the histogram one) and read no other field off b themselves:
-// scalar() (histogram_native_mixed_or_scalar.go), sort()/sort_desc()
+// scalar() (scalar_args.go), sort()/sort_desc()
 // (histogram_native_mixed_or_sort.go), and the date-component functions
 // (histogram_native_mixed_or_datefn.go). Each of those composers calls
 // shadowResolveMixedExpHistogramOperands directly, which never checks

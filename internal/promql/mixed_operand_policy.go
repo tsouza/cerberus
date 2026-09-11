@@ -75,8 +75,8 @@ type mixedWrapperKey struct {
 // funcScalar and filterFloats-based sort; they preserve samples for label rewrites
 // and label sorting. Their existing lowering contracts distinguish discarding
 // histogram rows from shadow-resolving the float arm. See the mixed math,
-// scalar, sort and date lowerers in histogram_native_mixed_or_{math_fn,scalar,
-// sort,datefn}.go for the corresponding input-topology contracts.
+// scalar, sort and date lowerers in scalar_args.go and
+// histogram_native_mixed_or_{math_fn,sort,datefn}.go for their input topologies.
 //
 // Prometheus's evaluator (promql/engine.go) supplies the other operator contracts:
 // vectorElemBinop and scalar/vector evaluation distinguish arithmetic, scaling
@@ -113,7 +113,7 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedVectorArithmeticFamily, mixedRootAdmission}:  mixedBespoke,
 	{mixedVectorComparisonFamily, mixedRootAdmission}:  mixedBespoke,
 	{mixedSubqueryFamily, mixedRootAdmission}:          mixedBespoke,
-	{mixedScalarFamily, mixedOperandAdmission}:         mixedBespoke,
+	{mixedScalarFamily, mixedOperandAdmission}:         mixedFloatOnly,
 	{mixedSortFamily, mixedOperandAdmission}:           mixedFloatOnly,
 	{mixedSortByLabelFamily, mixedOperandAdmission}:    mixedBespoke,
 	{mixedDateFamily, mixedOperandAdmission}:           mixedBespoke,
@@ -133,7 +133,7 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedComparisonFamily, mixedPlanAdmission}:        mixedBespoke,
 	{mixedScaleFamily, mixedPlanAdmission}:             mixedBespoke,
 	{mixedLabelFamily, mixedPlanAdmission}:             mixedPreserve,
-	{mixedScalarFamily, mixedPlanAdmission}:            mixedBespoke,
+	{mixedScalarFamily, mixedPlanAdmission}:            mixedFloatOnly,
 	{mixedSubqueryFamily, mixedPlanAdmission}:          mixedBespoke,
 	{mixedSortFamily, mixedPlanAdmission}:              mixedFloatOnly,
 	{mixedSortByLabelFamily, mixedPlanAdmission}:       mixedBespoke,
