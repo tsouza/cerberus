@@ -55,7 +55,8 @@ func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	inner = mixedRowsFloatOnly(inner)
 	layout := sampleProjectionLayout{canonical: true, materializeAliases: true}
 	if !returnBool {
-		inner = &chplan.Filter{Input: inner, Predicate: scalarBinaryValue(&chplan.ColumnRef{Name: s.ValueColumn}, op, scalar, scalarOnLeft)}
+		valueRef := requireSampleRole(inner.RowType(), chplan.RoleValue)
+		inner = &chplan.Filter{Input: inner, Predicate: scalarBinaryValue(valueRef, op, scalar, scalarOnLeft)}
 		if boundary == scalarComparisonGuarded {
 			return inner, nil
 		}
