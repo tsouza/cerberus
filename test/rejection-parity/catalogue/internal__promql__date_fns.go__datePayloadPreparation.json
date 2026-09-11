@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:datePayloadPreparation#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "internal",
+      "rationale": "Both production callers supply fixed admission sites: lowerDateFn calls this helper only with mixedOperandAdmission, and projectDateFnOverInner calls it only with mixedPlanAdmission. mixedOperandPolicies registers mixedDateFamily at both sites as mixedFloatOnly. Neither the site nor the policy key is derived from request data, so a wire query cannot make the guard true; only an internal call with another site or a test mutation of the package table reaches it.",
+      "evidence": {
+        "guard": [
+          "if mixedOperandPolicies[key] != mixedFloatOnly"
+        ],
+        "callers": [
+          "lowerDateFn",
+          "projectDateFnOverInner"
+        ],
+        "cited": [
+          "lowerDateFn",
+          "projectDateFnOverInner"
+        ]
+      }
+    }
+  ]
+}

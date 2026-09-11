@@ -4,9 +4,8 @@
 // (`year`/`month`/`day_of_month`/`day_of_week`/`day_of_year`/
 // `days_in_month`/`hour`/`minute`), directly wrapping a mixed
 // float/histogram `or` (cerberus issue #2609,
-// histogram_native_mixed_or_datefn.go's
-// [dateFnOverMixedExpHistogramSetOp] /
-// [lowerDateFnOverMixedExpHistogramSetOp]) actually DROP every
+// histogram_native_mixed_or_datefn.go's [dateFnOverMixedExpHistogramSetOp]
+// and date_fns.go's [projectDateFnOverInner]) actually DROP every
 // histogram-shaped row and compute the date component from the
 // float-shaped rows alone at real ClickHouse execution — including the
 // `or`'s own LHS-wins shadow rule when a histogram row and a float row

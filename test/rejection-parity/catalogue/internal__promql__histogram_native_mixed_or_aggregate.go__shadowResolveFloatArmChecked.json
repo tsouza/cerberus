@@ -5,19 +5,19 @@
       "site": "internal/promql/histogram_native_mixed_or_aggregate.go:shadowResolveFloatArmChecked#6cdf660e",
       "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
       "class": "internal",
-      "rationale": "The parser cannot set ReturnBool on the set operator accepted here. lowerScalarVectorArg calls shadowResolveFloatArmChecked only after mixedExpHistogramSetOp recognizes an or expression. The other callers, lowerSortFloatOperand and lowerDateFnOverMixedExpHistogramSetOp, retain their sortOverMixedExpHistogramSetOp and dateFnOverMixedExpHistogramSetOp recognizers, which also delegate to mixedExpHistogramSetOp. That shared recognizer requires b.Op == parser.LOR, never a comparison. Neither the scalar nor sort operand policy replaces the recognized node before invoking the checked loader. The guard remains before shadowResolveMixedExpHistogramOperands lowers either arm, preserving the same synthetic invalid-AST rejection and histogram-first operand lowering.",
+      "rationale": "The parser cannot set ReturnBool on the set operator accepted here. lowerScalarVectorArg calls shadowResolveFloatArmChecked only after mixedExpHistogramSetOp recognizes an or expression. The other callers, lowerSortFloatOperand and lowerDateFn, retain their sortOverMixedExpHistogramSetOp and dateFnOverMixedExpHistogramSetOp recognizers, which also delegate to mixedExpHistogramSetOp. That shared recognizer requires b.Op == parser.LOR, never a comparison. None of the scalar, sort, or date payload policies replaces the recognized node before invoking the checked loader. The guard remains before shadowResolveMixedExpHistogramOperands lowers either arm, preserving the same synthetic invalid-AST rejection and histogram-first operand lowering.",
       "evidence": {
         "guard": [
           "if b.ReturnBool"
         ],
         "callers": [
-          "lowerDateFnOverMixedExpHistogramSetOp",
+          "lowerDateFn",
           "lowerScalarVectorArg",
           "lowerSortFloatOperand"
         ],
         "cited": [
           "dateFnOverMixedExpHistogramSetOp",
-          "lowerDateFnOverMixedExpHistogramSetOp",
+          "lowerDateFn",
           "lowerScalarVectorArg",
           "lowerSortFloatOperand",
           "mixedExpHistogramSetOp",
