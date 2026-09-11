@@ -256,3 +256,34 @@ func projectExpHistogramEvalInstant(hist chplan.Node, s schema.Metrics, ctx lowe
 		},
 	}
 }
+
+// lowerTimestampOverMixedPlan converts every admitted mixed sample to a float
+// timestamp without reading its payload. A non-selector argument reports the
+// evaluation instant, not either arm's raw sample time. Retain names until the
+// collision guard runs over that normalized time: distinct source sample times
+// must not separate duplicate output label sets into different guard groups.
+func lowerTimestampOverMixedPlan(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if err := requireMixedPlanPolicy(inner, mixedTimestampFamily); err != nil {
+		return nil, err
+	}
+	row := inner.RowType()
+	refs := sampleRoleRefs{
+		MetricName: requireSampleRole(row, chplan.RoleMetricName),
+		Attributes: requireSampleRole(row, chplan.RoleAttributes),
+		Timestamp:  requireSampleRole(row, chplan.RoleTimestamp),
+	}
+	ts := evalInstantExpr(refs.sourceMetrics(s), ctx)
+	named := &chplan.Project{
+		Roles: metricRoles(s),
+		Input: inner,
+		Projections: []chplan.Projection{
+			{Expr: refs.MetricName, Alias: s.MetricNameColumn},
+			{Expr: refs.Attributes, Alias: s.AttributesColumn},
+			{Expr: ts, Alias: s.TimestampColumn},
+			{Expr: asFloat64(dateFnExpr(timestampFunctionName, nil, ts)), Alias: s.ValueColumn},
+		},
+	}
+	return guardedValueProjection(named, arg, s, ctx, mixedTimestampFamily, func(refs sampleRoleRefs) chplan.Expr {
+		return refs.Value
+	})
+}

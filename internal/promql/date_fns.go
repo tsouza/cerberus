@@ -132,6 +132,9 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	family := mixedDateFamily
 	if c.Func.Name == timestampFunctionName {
 		family = mixedTimestampFamily
+		if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+			return lowerTimestampOverMixedPlan(inner, c.Args[0], s, ctx)
+		}
 	}
 	return guardedValueProjection(inner, c.Args[0], s, ctx, family, func(refs sampleRoleRefs) chplan.Expr {
 		inputSchema := refs.sourceMetrics(s)
