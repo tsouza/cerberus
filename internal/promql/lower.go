@@ -6445,7 +6445,7 @@ func topKOutputColumns(input chplan.Node, s schema.Metrics) []string {
 // `pi()`, so every shape the grammar admits in K position is covered by
 // construction — there is no residual shape for a guard to reject. The
 // resulting Expr is materialised as a one-row relation because KExpr is
-// a Node slot (the emitter reads its `Value` column).
+// a Node slot (the emitter resolves its configured [chplan.RoleValue] column).
 //
 // [topKDomainExpr] applies the runtime half of the K-domain rules the
 // literal path resolves in [topKDomain].

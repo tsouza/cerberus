@@ -32,6 +32,11 @@ CREATE TABLE otel_metrics_gauge (
  ResourceAttributes Map(String,String) DEFAULT map(), ServiceName String DEFAULT '',
  TimeUnix DateTime64(9), Value Float64
 ) ENGINE=MergeTree ORDER BY (MetricName,Attributes,TimeUnix);
+CREATE TABLE otel_metrics_sum (
+ MetricName String, Attributes Map(String,String),
+ ResourceAttributes Map(String,String) DEFAULT map(), ServiceName String DEFAULT '',
+ TimeUnix DateTime64(9), Value Float64
+) ENGINE=MergeTree ORDER BY (MetricName,Attributes,TimeUnix);
 INSERT INTO otel_metrics_exponential_histogram
  (MetricName,Attributes,TimeUnix,Count,Sum,Scale,ZeroCount,PositiveOffset,PositiveBucketCounts,NegativeOffset,NegativeBucketCounts) VALUES
  ('selector_wire_exp_hist', map('series','hist'), toDateTime64('2026-01-01 00:00:00',9), 2, 3., 0, 0, 0, [2], 0, []);

@@ -747,9 +747,9 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 // v)`), the literal-K LIMIT shape is replaced with a `row_number()
 // OVER (PARTITION BY <by> [ORDER BY <sortExpr> [DESC]]) <= K` predicate
 // because ClickHouse does not accept a subquery directly in a LIMIT
-// clause. The K subquery is wrapped as `(SELECT toFloat64(Value) FROM
-// (<k_subtree>) LIMIT 1)`, reading the `Value` column of the one-row
-// relation the lowering builds for K.
+// clause. The K subquery is wrapped as `(SELECT toFloat64(<RoleValue>) FROM
+// (<k_subtree>) LIMIT 1)`, resolving the one named value-role column from
+// the scalar materialisation's schema.
 //
 // When t.Unordered (PromQL `limitk(K, v)`), the ORDER BY is omitted
 // entirely: the result is K *arbitrary* rows per partition, no ranking.
@@ -827,7 +827,7 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 //	SELECT <Columns> FROM (
 //	  SELECT *, row_number() OVER (PARTITION BY <By> ORDER BY <SortExpr> [DESC]) AS _rn
 //	  FROM (<input>)
-//	) WHERE toFloat64(_rn) <= (SELECT toFloat64(`Value`) FROM (<KExpr>) LIMIT 1)
+//	) WHERE toFloat64(_rn) <= (SELECT toFloat64(`<RoleValue>`) FROM (<KExpr>) LIMIT 1)
 //
 // `By` empty omits PARTITION BY (the rank fires across the whole
 // result); `SortExpr` nil (the Unordered / limitk shape) omits the

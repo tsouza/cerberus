@@ -23,7 +23,7 @@ package chplan
 //	SELECT <Columns> FROM (
 //	  SELECT *, row_number() OVER (PARTITION BY <By> ORDER BY <SortExpr> [DESC]) AS _rn
 //	  FROM (<input>)
-//	) WHERE _rn <= (SELECT toUInt64(`Value`) FROM (<KExpr>) LIMIT 1)
+//	) WHERE toFloat64(_rn) <= (SELECT toFloat64(`<RoleValue>`) FROM (<KExpr>) LIMIT 1)
 //
 // `Desc=true` renders `ORDER BY ... DESC` (topk). `Desc=false` renders
 // `ORDER BY ... ASC` (bottomk).
@@ -47,10 +47,10 @@ package chplan
 // CH does not accept a subquery directly in a LIMIT clause, so the
 // "per-partition top-K with computed K" semantics flow through a
 // rank-based filter. The subtree is expected to produce a single-row
-// vector shape (PromQL `scalar(<vector>)`) whose `Value` column is the
-// K integer; the emitter wraps it as `(SELECT toUInt64(Value) FROM
-// <KExpr> LIMIT 1)`. `K` and `KExpr` are mutually exclusive — set one
-// or the other, never both.
+// vector shape (PromQL `scalar(<vector>)`) with exactly one named
+// [RoleValue] column; the emitter resolves that live name and wraps it as
+// `(SELECT toFloat64(<RoleValue>) FROM <KExpr> LIMIT 1)`. `K` and `KExpr`
+// are mutually exclusive — set one or the other, never both.
 //
 // `Unordered` models PromQL's experimental `limitk(K, v)` aggregator:
 // per group, return up to K *arbitrary* series — no ranking, no value
