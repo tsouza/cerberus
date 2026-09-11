@@ -1,246 +1,28 @@
 package chplan_test
 
 import (
-	"reflect"
 	"testing"
-	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// rowShapeVerdicts is the expected chplan.RowShapeOf answer for one
-// populated instance of every Node kind — the instances in allNodeKinds(),
-// whose RangeWindow carries `OuterRange: time.Hour` and is therefore the
-// MATRIX form.
-//
-// The verdict is a statement about the columns that kind's own SELECT
-// exposes to the projection directly above it, and both PromQL forwarders
-// (projectAttributesOverInner, projectValueOverInner) build their column
-// list from this one answer. A wrong verdict is not a stylistic
-// disagreement: it is either a ClickHouse code 47 for a column the scope
-// does not carry, or a column silently missing from the wire.
-//
-// TestRowShapeOf_CoversEveryNodeKind derives the key set from the package's
-// planNode() implementers, so a new Node kind cannot be added without
-// deciding its row shape here.
-var rowShapeVerdicts = map[string]chplan.RowShape{
-	// The two windows that publish a query_range grid: one row per
-	// (series, anchor), the anchor under both its own name and the
-	// timestamp column, and no MetricName.
-	"RangeWindow":           chplan.GridWindowRowShape,
-	"RangeWindowGridNative": chplan.GridWindowRowShape,
-
-	// The instant-mode native lowering: one row per series already reduced
-	// to a single point, mirroring the fan-out's own instant RangeWindow
-	// (OuterRange == 0) shape rather than its matrix sibling above.
-	"RangeWindowGridNativeInstant": chplan.ReducedWindowRowShape,
-
-	// Everything else republishes the canonical four names, whether by
-	// passing its input's through or by projecting them itself.
-	"AbsentOverTime": chplan.SampleRowShape,
-	"Aggregate":      chplan.SampleRowShape,
-	// Same reasoning as Aggregate above: never a direct forwarder target
-	// (its lowering always caps it with wrapAggregateForSample's Project),
-	// so this is a documentation default, not a claim about live columns.
-	"RangeWindowGridNativeVectorAgg": chplan.SampleRowShape,
-	"CrossJoin":                      chplan.SampleRowShape,
-	"Filter":                         chplan.SampleRowShape,
-	"HistogramQuantile":              chplan.SampleRowShape,
-	"HistogramQuantileNative":        chplan.SampleRowShape,
-	"HistogramProjection":            chplan.HistogramRowShape,
-	"HistogramVectorJoin":            chplan.SampleRowShape,
-	"HistogramFloatVectorJoin":       chplan.SampleRowShape,
-	"InfoJoin":                       chplan.SampleRowShape,
-	"Limit":                          chplan.SampleRowShape,
-	"MetricsAggregate":               chplan.SampleRowShape,
-	"MetricsCompare":                 chplan.SampleRowShape,
-	"MetricsHistogramOverTime":       chplan.SampleRowShape,
-	"MetricsSecondStage":             chplan.SampleRowShape,
-	"MixedVectorJoin":                chplan.SampleRowShape,
-	"NaryVectorSetOp":                chplan.SampleRowShape,
-	"NestedSetAnnotate":              chplan.SampleRowShape,
-	"OneRow":                         chplan.SampleRowShape,
-	"OrderBy":                        chplan.SampleRowShape,
-	"Project":                        chplan.SampleRowShape,
-	"RangeBucketFanout":              chplan.SampleRowShape,
-	"RangeBucketGridNative":          chplan.SampleRowShape,
-	"RangeLWR":                       chplan.SampleRowShape,
-	"RangeWindowStaleResample":       chplan.SampleRowShape,
-	"Scan":                           chplan.SampleRowShape,
-	"SearchTraceLimit":               chplan.SampleRowShape,
-	"SetOperation":                   chplan.SampleRowShape,
-	"StepGrid":                       chplan.SampleRowShape,
-	"StructuralJoin":                 chplan.SampleRowShape,
-	"TopK":                           chplan.SampleRowShape,
-	"UnionAll":                       chplan.SampleRowShape,
-	"VectorJoin":                     chplan.SampleRowShape,
-	"VectorSetOp":                    chplan.SampleRowShape,
-}
-
-// TestRowShapeOf_CoversEveryNodeKind is the ratchet: a Node kind added to
-// the IR without a recorded row shape fails here, because a forwarder
-// placed over it would silently take the canonical branch by default.
-func TestRowShapeOf_CoversEveryNodeKind(t *testing.T) {
-	t.Parallel()
-
-	covered := make(map[string]bool, len(rowShapeVerdicts))
-	for kind := range rowShapeVerdicts {
-		covered[kind] = true
+func TestRowShapeOfNil(t *testing.T) {
+	if got := chplan.RowShapeOf(nil); got != chplan.SampleRowShape {
+		t.Fatalf("nil shape = %s; want sample default", got)
 	}
-	assertCoversEveryNodeKind(t, covered, "rowShapeVerdicts",
-		"record the row shape its emitter publishes and, if it is not the canonical "+
-			"sample row, add an arm to chplan.RowShapeOf")
 }
 
-// TestRowShapeOf_ClassifiesEveryNodeKind runs the classifier over one
-// populated instance of every Node kind and compares against the recorded
-// verdict, naming the kind on a mismatch.
-func TestRowShapeOf_ClassifiesEveryNodeKind(t *testing.T) {
-	t.Parallel()
-
+// allNodeKinds is source-derived from the sealed Node implementations. The
+// fold therefore acquires no second node-kind inventory as the IR grows.
+func TestRowShapeOfFoldsEveryNodeSchema(t *testing.T) {
 	for _, node := range allNodeKinds() {
-		kind := reflect.TypeOf(node).Elem().Name()
-		want, recorded := rowShapeVerdicts[kind]
-		if !recorded {
-			// Reported by TestRowShapeOf_CoversEveryNodeKind; skipping the
-			// comparison keeps this failure from duplicating that one.
-			continue
-		}
+		want := chplan.RowShapeFromSchema(node.RowType())
 		if got := chplan.RowShapeOf(node); got != want {
-			t.Errorf("RowShapeOf(*%s) = %s, want %s — a projection forwarding over %s "+
-				"builds its column list from this answer, so the wrong one is a live "+
-				"code 47 or a column dropped from the wire",
-				kind, got, want, kind)
+			t.Errorf("RowShapeOf(%T) = %s, schema fold = %s", node, got, want)
 		}
 	}
 }
 
-// TestRowShapeOf_RangeWindowSplitsOnOuterRange pins the one discrimination
-// allNodeKinds() cannot express, because it holds a single RangeWindow
-// instance: the SAME node kind answers differently depending on whether it
-// materialises a query_range grid.
-//
-// A matrix window (OuterRange > 0) emits one row per (series, anchor) and
-// has both timestamp names to forward; an instant one has already collapsed
-// each series to a single row and has no timestamp at all. Collapsing the
-// two would make an instant `rate(m[5m])` under a label rewrite forward
-// columns its scope does not expose.
-func TestRowShapeOf_RangeWindowSplitsOnOuterRange(t *testing.T) {
-	t.Parallel()
-
-	base := chplan.RangeWindow{
-		Input: &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:  "rate", Range: 5 * time.Minute, Step: time.Minute,
-		Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
-	}
-
-	instant := base
-	if got := chplan.RowShapeOf(&instant); got != chplan.ReducedWindowRowShape {
-		t.Errorf("RowShapeOf(instant RangeWindow) = %s, want %s", got, chplan.ReducedWindowRowShape)
-	}
-
-	matrix := base
-	matrix.OuterRange = time.Hour
-	if got := chplan.RowShapeOf(&matrix); got != chplan.GridWindowRowShape {
-		t.Errorf("RowShapeOf(matrix RangeWindow) = %s, want %s", got, chplan.GridWindowRowShape)
-	}
-}
-
-// TestRowShapeOf_UnionAllReportsFirstArmShape pins cerberus issue #2843's
-// fix: a UnionAll answers its first arm's own RowShapeOf, not the
-// SampleRowShape default the generic (Scan, Scan) stub in allNodeKinds()
-// happens to also produce. NativeRateLowerer's instant temporality-union
-// split (cerberus issue #2843) returns a raw two-arm UnionAll of
-// ReducedWindowRowShape nodes with NO wrapping Project — unlike the matrix
-// arm's derivedRateArm — specifically so a forwarder placed directly over it
-// (e.g. `abs(rate(...))`) reads the correct answer here rather than
-// defaulting to SampleRowShape and referencing a Timestamp column neither
-// arm publishes (a live ClickHouse code 47).
-func TestRowShapeOf_UnionAllReportsFirstArmShape(t *testing.T) {
-	t.Parallel()
-
-	reducedArm := &chplan.RangeWindow{
-		Input: &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:  "rate", Range: 5 * time.Minute,
-		Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
-	}
-	union := &chplan.UnionAll{Inputs: []chplan.Node{
-		&chplan.RangeWindowGridNativeInstant{
-			Input: &chplan.Scan{Table: "otel_metrics_sum"}, Func: "rate",
-			Range: 5 * time.Minute, Anchor: time.Unix(4600, 0).UTC(),
-			TimestampColumn: "TimeUnix", ValueColumn: "Value",
-		},
-		reducedArm,
-	}}
-	if got := chplan.RowShapeOf(union); got != chplan.ReducedWindowRowShape {
-		t.Errorf("RowShapeOf(reduced-shape UnionAll) = %s, want %s", got, chplan.ReducedWindowRowShape)
-	}
-
-	if got := chplan.RowShapeOf(&chplan.UnionAll{}); got != chplan.SampleRowShape {
-		t.Errorf("RowShapeOf(empty UnionAll) = %s, want %s", got, chplan.SampleRowShape)
-	}
-}
-
-// TestRowShapeOf_VectorSetOpFlags pins the two boolean flags
-// chplan.RowShapeOf reads off a *VectorSetOp directly, since
-// allNodeKinds() only exercises the zero-value instance (both flags
-// false, SampleRowShape — already covered by
-// TestRowShapeOf_ClassifiesEveryNodeKind). Histogram is #2324's
-// both-arms-histogram flag; Mixed is #2330's exactly-one-arm-histogram
-// sibling — the two are mutually exclusive in practice (chsql's
-// validateVectorSetOpCols rejects both set), but RowShapeOf itself
-// checks Histogram first, so this also pins that ordering doesn't
-// accidentally mask Mixed.
-func TestRowShapeOf_VectorSetOpFlags(t *testing.T) {
-	t.Parallel()
-
-	base := chplan.VectorSetOp{
-		Left: &chplan.Scan{Table: "otel_metrics_sum"}, Right: &chplan.Scan{Table: "otel_metrics_sum"},
-		Op: chplan.VectorSetOr,
-	}
-
-	histogram := base
-	histogram.Histogram = true
-	if got := chplan.RowShapeOf(&histogram); got != chplan.HistogramRowShape {
-		t.Errorf("RowShapeOf(VectorSetOp{Histogram: true}) = %s, want %s", got, chplan.HistogramRowShape)
-	}
-
-	mixed := base
-	mixed.Mixed = true
-	if got := chplan.RowShapeOf(&mixed); got != chplan.MixedRowShape {
-		t.Errorf("RowShapeOf(VectorSetOp{Mixed: true}) = %s, want %s", got, chplan.MixedRowShape)
-	}
-}
-
-// TestRowShapeOf_FilterAndTopKMixedFlag pins the same Mixed flag on
-// *Filter and *TopK (cerberus issue #2613): limitk/limit_ratio (TopK) and
-// limit_ratio's own Filter wrapper both preserve a mixed float/histogram
-// input's row shape unchanged, since their own SELECT is always a bare
-// passthrough of whatever Input publishes — see each case's own doc
-// comment in row_shape.go. allNodeKinds() only exercises the zero-value
-// instance of each (both flags false), so this is these two nodes' only
-// coverage of the Mixed branch, mirroring
-// TestRowShapeOf_VectorSetOpFlags's identical role for *VectorSetOp.
-func TestRowShapeOf_FilterAndTopKMixedFlag(t *testing.T) {
-	t.Parallel()
-
-	stubInput := &chplan.Scan{Table: "otel_metrics_sum"}
-
-	filter := &chplan.Filter{Input: stubInput, Mixed: true}
-	if got := chplan.RowShapeOf(filter); got != chplan.MixedRowShape {
-		t.Errorf("RowShapeOf(Filter{Mixed: true}) = %s, want %s", got, chplan.MixedRowShape)
-	}
-
-	topK := &chplan.TopK{Input: stubInput, K: 1, Mixed: true}
-	if got := chplan.RowShapeOf(topK); got != chplan.MixedRowShape {
-		t.Errorf("RowShapeOf(TopK{Mixed: true}) = %s, want %s", got, chplan.MixedRowShape)
-	}
-}
-
-// TestRowShapeString pins the names the failure messages above are written
-// against, including the answer for a value outside the declared set — a
-// forwarder reading a corrupt shape should say so rather than print an
-// integer.
 func TestRowShapeString(t *testing.T) {
 	t.Parallel()
 

@@ -470,16 +470,12 @@ const (
 // whatever composes on top (an outer `*_over_time` reducer folds nothing
 // and emits nothing; `absent_over_time` reads the same emptiness and
 // correctly reports 1). It reuses the constant-false Filter idiom
-// [dropExpHistogramSamples] already establishes, and carries the
-// Histogram / Mixed passthrough flags so [chplan.RowShapeOf] still
-// classifies the capped relation by the shape its input publishes.
+// [dropExpHistogramSamples] already establishes. Filter's physical schema
+// is its Input's schema even when this predicate proves that no rows survive.
 func emptySubqueryGrid(inner chplan.Node) chplan.Node {
-	shape := chplan.RowShapeOf(inner)
 	return &chplan.Filter{
 		Input:     inner,
 		Predicate: &chplan.LitBool{V: false},
-		Histogram: shape == chplan.HistogramRowShape,
-		Mixed:     shape == chplan.MixedRowShape,
 	}
 }
 
