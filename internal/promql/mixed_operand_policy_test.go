@@ -199,9 +199,9 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			key := mixedWrapperKey{family: family, site: site}
 			wantPolicy := mixedBespoke
 			switch family {
-			case mixedMathFamily, mixedArithmeticFamily, mixedComparisonFamily, mixedScalarFamily, mixedSortFamily, mixedDateFamily:
+			case mixedMathFamily, mixedArithmeticFamily, mixedComparisonFamily, mixedScalarFamily, mixedSortFamily, mixedDateFamily, mixedTopKFamily:
 				wantPolicy = mixedFloatOnly
-			case mixedLabelFamily, mixedSortByLabelFamily, mixedCountGroupFamily:
+			case mixedLabelFamily, mixedSortByLabelFamily, mixedCountGroupFamily, mixedLimitFamily:
 				wantPolicy = mixedPreserve
 			}
 			if got := mixedOperandPolicies[key]; got != wantPolicy {
@@ -225,7 +225,7 @@ func TestMixedOperandPolicyRejectsUnknownBeforeLowering(t *testing.T) {
 	} {
 		t.Run(string(key.family)+"/"+string(key.site), func(t *testing.T) {
 			called := false
-			plan, err := lowerWithMixedOperandPolicy(key.family, key.site, func() (chplan.Node, error) {
+			plan, err := lowerWithBespokeMixedOperandPolicy(key.family, key.site, func() (chplan.Node, error) {
 				called = true
 				return &chplan.OneRow{}, nil
 			})
@@ -242,7 +242,7 @@ func TestMixedOperandPolicyPreservesBespokeResultAndError(t *testing.T) {
 			wantPlan := &chplan.OneRow{}
 			wantError := errors.New("operand lowering error")
 			calls := 0
-			plan, err := lowerWithMixedOperandPolicy(key.family, key.site, func() (chplan.Node, error) {
+			plan, err := lowerWithBespokeMixedOperandPolicy(key.family, key.site, func() (chplan.Node, error) {
 				calls++
 				return wantPlan, wantError
 			})
@@ -261,7 +261,7 @@ func TestMixedOperandPolicyPreservesBespokeResultAndError(t *testing.T) {
 
 func TestMixedOperandPolicyDoesNotTreatUnimplementedModesAsBespoke(t *testing.T) {
 	key := mixedWrapperKey{family: mixedMathFamily, site: mixedRootAdmission}
-	for _, policy := range []mixedOperandPolicy{mixedReject, mixedFloatOnly, mixedPreserve} {
+	for _, policy := range []mixedOperandPolicy{mixedReject, mixedFloatOnly, mixedPreserve, mixedPolicyClosed} {
 		if err := requireMixedBespokePolicy(key, policy); err == nil {
 			t.Fatalf("policy %v reached an unmigrated bespoke dispatcher", policy)
 		}

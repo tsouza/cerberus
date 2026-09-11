@@ -92,7 +92,7 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	// function's own enrichment pipeline independently is what that
 	// requires.
 	if b, ok := infoArgOverMixedExpHistogramSetOp(c.Args[0], s, ctx); ok {
-		return lowerWithMixedOperandPolicy(mixedInfoFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+		return lowerWithBespokeMixedOperandPolicy(mixedInfoFamily, mixedOperandAdmission, func() (chplan.Node, error) {
 			return lowerInfoOverMixedExpHistogramSetOp(c, b, s, ctx)
 		})
 	}

@@ -72,7 +72,7 @@ func lowerTimestampOverExpHistogram(arg parser.Expr, s schema.Metrics, ctx lower
 	// BinaryExpr, never a VectorSelector) and always reports the
 	// evaluation instant for every row.
 	if b, ok := timestampOverMixedExpHistogramSetOp(arg, s, ctx); ok {
-		node, err := lowerWithMixedOperandPolicy(mixedTimestampFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+		node, err := lowerWithBespokeMixedOperandPolicy(mixedTimestampFamily, mixedOperandAdmission, func() (chplan.Node, error) {
 			return lowerTimestampOverMixedExpHistogramSetOp(b, s, ctx)
 		})
 		return node, true, err
