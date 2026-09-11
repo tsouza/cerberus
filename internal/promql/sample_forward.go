@@ -204,6 +204,14 @@ func resolveSampleRoleRefs(row chplan.Schema, s schema.Metrics, policy samplePro
 }
 
 func requireSampleRole(row chplan.Schema, role chplan.ColumnRole) *chplan.ColumnRef {
+	ref, ok := optionalSampleRole(row, role)
+	if !ok {
+		panic(fmt.Sprintf("promql: sample forwarder is missing required role %d", role))
+	}
+	return ref
+}
+
+func optionalSampleRole(row chplan.Schema, role chplan.ColumnRole) (*chplan.ColumnRef, bool) {
 	var name string
 	for _, column := range row.Columns {
 		if column.Role != role {
@@ -215,14 +223,14 @@ func requireSampleRole(row chplan.Schema, role chplan.ColumnRole) *chplan.Column
 		name = column.Name
 	}
 	if name == "" {
-		panic(fmt.Sprintf("promql: sample forwarder is missing required role %d", role))
+		return nil, false
 	}
 	for _, column := range row.Columns {
 		if column.Name == name && column.Role != role {
 			panic(fmt.Sprintf("promql: sample forwarder role %d has ambiguous output name %q", role, name))
 		}
 	}
-	return &chplan.ColumnRef{Name: name}
+	return &chplan.ColumnRef{Name: name}, true
 }
 
 func requireUniqueNamedColumn(row chplan.Schema, want chplan.Column) {

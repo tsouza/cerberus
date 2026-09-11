@@ -438,13 +438,27 @@ func projectValueOverInner(inner chplan.Node, s schema.Metrics, layout samplePro
 		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{value: build(refs)} })
 }
 
-// legacySampleProjectionLayout preserves the existing temporal/materialization
-// boundary until the legacy shape contract is reconciled. It must not choose
-// a wrapper's name or payload policy, and it never supplies input column names.
+// legacySampleProjectionLayout derives the input's temporal envelope from its
+// physical roles. It must not choose a wrapper's name or payload policy, and it
+// never supplies input column names.
 func legacySampleProjectionLayout(inner chplan.Node) sampleProjectionLayout {
-	shape := chplan.RowShapeOf(inner)
-	return sampleProjectionLayout{
-		canonical: shape != chplan.GridWindowRowShape && shape != chplan.ReducedWindowRowShape,
-		anchored:  shape == chplan.GridWindowRowShape,
+	row := inner.RowType()
+	requireSampleRole(row, chplan.RoleAttributes)
+	requireSampleRole(row, chplan.RoleValue)
+	_, hasMetricName := optionalSampleRole(row, chplan.RoleMetricName)
+	_, hasTimestamp := optionalSampleRole(row, chplan.RoleTimestamp)
+	_, hasAnchor := optionalSampleRole(row, chplan.RoleAnchor)
+
+	switch {
+	case hasAnchor && hasTimestamp:
+		return sampleProjectionLayout{anchored: true}
+	case hasAnchor:
+		panic("promql: sample forwarder anchor role requires a timestamp role")
+	case hasTimestamp:
+		return sampleProjectionLayout{canonical: true}
+	case hasMetricName:
+		panic("promql: sample forwarder metric-name role requires a timestamp role")
+	default:
+		return sampleProjectionLayout{}
 	}
 }
