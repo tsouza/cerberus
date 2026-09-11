@@ -234,8 +234,14 @@ func TestRowsMayContainHistogramsUsesRolesAcrossSampleEnvelopes(t *testing.T) {
 		chplan.RoleTimestamp,
 		chplan.RoleAnchor,
 	} {
+		unnamed := chplan.Schema{Columns: []chplan.Column{
+			value,
+			{Role: role},
+		}}
+		if liveSampleRolesAreUnambiguous(unnamed) {
+			t.Fatalf("unnamed role %d was accepted: %#v", role, unnamed)
+		}
 		for _, input := range []chplan.Node{
-			sampleForwardTestInput(value, chplan.Column{Role: role}),
 			sampleForwardTestInput(
 				value,
 				chplan.Column{Name: "first", Role: role},
