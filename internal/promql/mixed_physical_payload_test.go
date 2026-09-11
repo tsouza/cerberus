@@ -75,6 +75,9 @@ func TestMixedRowsNeedPreparationSeparatesPhysicalPayloadAndLiveProof(t *testing
 			if !chplan.IsMixedFloatNarrowing(prepared) {
 				t.Fatal("preparation did not create an explicit float-row proof")
 			}
+			if mixedRowsFloatOnly(prepared) != prepared {
+				t.Fatal("float preparation is not idempotent")
+			}
 		})
 	}
 }

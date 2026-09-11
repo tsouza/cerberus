@@ -212,15 +212,10 @@ func TestRowShapeOf_VectorSetOpFlags(t *testing.T) {
 	}
 }
 
-// TestRowShapeOf_FilterAndTopKMixedFlag pins the same Mixed flag on
-// *Filter and *TopK (cerberus issue #2613): limitk/limit_ratio (TopK) and
-// limit_ratio's own Filter wrapper both preserve a mixed float/histogram
-// input's row shape unchanged, since their own SELECT is always a bare
-// passthrough of whatever Input publishes — see each case's own doc
-// comment in row_shape.go. allNodeKinds() only exercises the zero-value
-// instance of each (both flags false), so this is these two nodes' only
-// coverage of the Mixed branch, mirroring
-// TestRowShapeOf_VectorSetOpFlags's identical role for *VectorSetOp.
+// Filter and TopK derive their physical shape from RowType. A predicate may
+// prove that no rows survive without changing Filter's columns, while an
+// explicit TopK column list may deliberately narrow a mixed input to the
+// canonical float sample schema.
 func TestRowShapeOfFilterAndTopKComposePhysicalSchema(t *testing.T) {
 	t.Parallel()
 
@@ -264,6 +259,10 @@ func TestRowShapeOfFilterAndTopKComposePhysicalSchema(t *testing.T) {
 	}
 }
 
+// TestRowShapeString pins the names the failure messages above are written
+// against, including the answer for a value outside the declared set — a
+// forwarder reading a corrupt shape should say so rather than print an
+// integer.
 func TestRowShapeString(t *testing.T) {
 	t.Parallel()
 
