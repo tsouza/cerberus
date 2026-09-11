@@ -15,7 +15,7 @@ import (
 func matrixWindowUnder(s schema.Metrics, offset time.Duration) *chplan.Project {
 	return &chplan.Project{
 		Input: &chplan.RangeWindow{
-			Input:           closedSampleScan(s, "otel_metrics_gauge"),
+			Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
 			OuterRange:      time.Hour,
 			Range:           5 * time.Minute,
 			Step:            time.Minute,
