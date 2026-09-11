@@ -126,6 +126,68 @@ func TestRowTypeDeclarations(t *testing.T) {
 	}
 }
 
+func TestProjectRowTypeAlignedDeclarations(t *testing.T) {
+	roles := []Column{{Name: "value", Role: RoleValue}, {Name: "opaque", Role: RoleOpaque}}
+	aligned := &Project{
+		Input: &OneRow{},
+		Roles: roles,
+		Projections: []Projection{
+			{Expr: &LitInt{V: 1}, Alias: "value"},
+			{Expr: &LitInt{V: 2}, Alias: "opaque"},
+		},
+	}
+	got := aligned.RowType()
+	if !got.Equal(Schema{Columns: roles}) {
+		t.Fatalf("aligned declarations: %#v", got)
+	}
+	got.Columns[0].Role = RoleOpaque
+	if aligned.Roles[0].Role != RoleValue {
+		t.Fatal("RowType schema aliases the Project role declarations")
+	}
+
+	for _, tc := range []struct {
+		name        string
+		roles       []Column
+		projections []Projection
+		want        Schema
+	}{
+		{
+			name:        "partial_roles",
+			roles:       roles[:1],
+			projections: aligned.Projections,
+			want:        Schema{Columns: []Column{roles[0], {Name: "opaque"}}},
+		},
+		{
+			name:        "mismatched_order",
+			roles:       []Column{roles[1], roles[0]},
+			projections: aligned.Projections,
+			want:        Schema{Columns: roles},
+		},
+		{
+			name:  "duplicate_names",
+			roles: []Column{{Name: "duplicate", Role: RoleValue}, {Name: "duplicate", Role: RoleAttributes}},
+			projections: []Projection{
+				{Expr: &LitInt{V: 1}, Alias: "duplicate"},
+				{Expr: &LitInt{V: 2}, Alias: "duplicate"},
+			},
+			want: Schema{Columns: []Column{{Name: "duplicate", Role: RoleValue}, {Name: "duplicate", Role: RoleValue}}},
+		},
+		{
+			name:        "unnamed_role",
+			roles:       []Column{{Role: RoleDiscriminator}},
+			projections: []Projection{{Expr: &LitInt{V: 1}}},
+			want:        Schema{Columns: []Column{{}}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project := &Project{Input: &OneRow{}, Roles: tc.roles, Projections: tc.projections}
+			if got := project.RowType(); !got.Equal(tc.want) {
+				t.Fatalf("RowType = %#v; want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRowTypeWindowBranches(t *testing.T) {
 	input := &Scan{Columns: []string{"labels", "time", "extra"}, Roles: []Column{{"labels", RoleAttributes}, {"time", RoleTimestamp}}}
 	r := &RangeWindow{Input: input, GroupBy: []Expr{&ColumnRef{Name: "labels"}}, ValueColumn: "value", TimestampColumn: "anchor_ts", OuterRange: time.Minute, Identity: true}

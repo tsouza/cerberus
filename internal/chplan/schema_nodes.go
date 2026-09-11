@@ -26,7 +26,34 @@ func (l *Limit) RowType() Schema              { return l.Input.RowType() }
 func (o *OrderBy) RowType() Schema            { return o.Input.RowType() }
 func (s *SearchTraceLimit) RowType() Schema   { return s.Input.RowType() }
 func (m *MetricsSecondStage) RowType() Schema { return m.Input.RowType() }
-func (p *Project) RowType() Schema            { return projectSchema(p.Input.RowType(), p.Projections, p.Roles) }
+func (p *Project) RowType() Schema {
+	if projectRolesAlignWithOutputs(p.Projections, p.Roles) {
+		return Schema{Columns: slices.Clone(p.Roles)}
+	}
+	return projectSchema(p.Input.RowType(), p.Projections, p.Roles)
+}
+
+// projectRolesAlignWithOutputs recognizes the exact declaration form for a
+// closed Project schema. Names must be non-empty and unique because ByName,
+// used by projectSchema, deliberately ignores unnamed outputs and resolves a
+// duplicate declaration to its first occurrence.
+func projectRolesAlignWithOutputs(projections []Projection, roles []Column) bool {
+	if len(projections) == 0 || len(projections) != len(roles) {
+		return false
+	}
+	for i, projection := range projections {
+		name := ProjectionOutputName(projection)
+		if name == "" || roles[i].Name != name {
+			return false
+		}
+		for j := range i {
+			if roles[j].Name == name {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 func (t *TopK) RowType() Schema {
 	input := t.Input.RowType()
