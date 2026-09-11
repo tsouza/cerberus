@@ -56,26 +56,26 @@ func mixedDiscriminatorProjected(n chplan.Node) bool {
 	return found
 }
 
-// TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch
+// TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstKindDispatch
 // kills the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on the
-// `if shape == chplan.HistogramRowShape` guard that opens the arm
+// `if kind == chplan.SampleKindHistogram` guard that opens the arm
 // histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`,
 // inside lowerHistogramOrMixedSubqueryOuterFnInput. The citation names the
 // `case` label rather than the mutated guard because that guard is spelled
 // identically in all three arms of this switch, so no substring of it
 // singles one out, while the label above it does:
 //
-//	if shape == chplan.HistogramRowShape {
+//	if kind == chplan.SampleKindHistogram {
 //	    node, err = lowerSelectFnOverExpHistogramSubqueryInput(...)
 //	    ...
 //	}
 //	node, err = lowerMixedOrSubqueryLastFirstInput(...)
 //
-// A HistogramRowShape input must route to the plain histogram
+// A SampleKindHistogram input must route to the plain histogram
 // continuation (never publishes chplan.MixedDiscriminatorColumn); a
-// MixedRowShape input must route to the Mixed-aware continuation (always
+// SampleKindMixed input must route to the Mixed-aware continuation (always
 // does, via [mixedLastFirstProjection]). The negation swaps both.
-func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch(t *testing.T) {
+func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstKindDispatch(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -86,26 +86,26 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch(t *tes
 
 	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindHistogram, lastOverTimeWindowFn, sub, s, ctx)
 	if err != nil {
-		t.Fatalf("histogram-shape: %v", err)
+		t.Fatalf("histogram sample kind: %v", err)
 	}
 	if mixedDiscriminatorProjected(histPlan) {
-		t.Fatalf("histogram-shape last_over_time took the Mixed path (mutant `==`->`!=` at " +
+		t.Fatalf("histogram sample kind last_over_time took the Mixed path (mutant `==`->`!=` at " +
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`)")
 	}
 
 	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindMixed, lastOverTimeWindowFn, sub, s, ctx)
 	if err != nil {
-		t.Fatalf("mixed-shape: %v", err)
+		t.Fatalf("mixed sample kind: %v", err)
 	}
 	if !mixedDiscriminatorProjected(mixedPlan) {
-		t.Fatalf("mixed-shape last_over_time took the Histogram path (mutant `==`->`!=` at " +
+		t.Fatalf("mixed sample kind last_over_time took the Histogram path (mutant `==`->`!=` at " +
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`)")
 	}
 }
 
-// TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch
+// TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesKindDispatch
 // kills the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on the same
-// `if shape == chplan.HistogramRowShape` guard one arm further down,
+// `if kind == chplan.SampleKindHistogram` guard one arm further down,
 // histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:` —
 // the label locates the arm, the guard inside it is the mutant. This is
 // the resets/changes sibling of the last_over_time/first_over_time
@@ -113,7 +113,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch(t *tes
 // Project, so the two paths are told apart by whether the underlying
 // Aggregate collected the Mixed-only groupArrays
 // [mixedPairCountAggs] adds.
-func TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch(t *testing.T) {
+func TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesKindDispatch(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -124,35 +124,35 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch(t 
 
 	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindHistogram, resetsWindowFn, sub, s, ctx)
 	if err != nil {
-		t.Fatalf("histogram-shape: %v", err)
+		t.Fatalf("histogram sample kind: %v", err)
 	}
 	if mixedPairAggAlias(histPlan, mixedPairValueArrayAlias) {
-		t.Fatalf("histogram-shape resets took the Mixed path (mutant `==`->`!=` at " +
+		t.Fatalf("histogram sample kind resets took the Mixed path (mutant `==`->`!=` at " +
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:`)")
 	}
 
 	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindMixed, resetsWindowFn, sub, s, ctx)
 	if err != nil {
-		t.Fatalf("mixed-shape: %v", err)
+		t.Fatalf("mixed sample kind: %v", err)
 	}
 	if !mixedPairAggAlias(mixedPlan, mixedPairValueArrayAlias) {
-		t.Fatalf("mixed-shape resets took the Histogram path (mutant `==`->`!=` at " +
+		t.Fatalf("mixed sample kind resets took the Histogram path (mutant `==`->`!=` at " +
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:`)")
 	}
 }
 
-// TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch kills
+// TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldKindDispatch kills
 // the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on the same
-// `if shape == chplan.HistogramRowShape` guard in the third arm,
+// `if kind == chplan.SampleKindHistogram` guard in the third arm,
 // histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:` —
 // again the label locates the arm and the guard inside it is the mutant.
 // This is the FOLD-family (rate/increase/delta/...) sibling of the two
-// dispatches above. Over a MixedRowShape input this case routes to
+// dispatches above. Over a SampleKindMixed input this case routes to
 // [lowerFurtherWrapMixedOrSubqueryFoldFn], whose own
 // [combineMixedAggregateBranches] always returns a *chplan.VectorSetOp at
 // the root — a shape the plain-histogram continuation
 // ([lowerExpHistogramRangeFnOverSubqueryInput]) never returns.
-func TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch(t *testing.T) {
+func TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldKindDispatch(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -163,19 +163,19 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch(t *testing.
 
 	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindHistogram, rateWindowFn, sub, s, ctx)
 	if err != nil {
-		t.Fatalf("histogram-shape: %v", err)
+		t.Fatalf("histogram sample kind: %v", err)
 	}
 	if _, ok := histPlan.(*chplan.VectorSetOp); ok {
-		t.Fatalf("histogram-shape rate took the Mixed path (mutant `==`->`!=` at " +
+		t.Fatalf("histogram sample kind rate took the Mixed path (mutant `==`->`!=` at " +
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`)")
 	}
 
 	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindMixed, rateWindowFn, sub, s, ctx)
 	if err != nil {
-		t.Fatalf("mixed-shape: %v", err)
+		t.Fatalf("mixed sample kind: %v", err)
 	}
 	if _, ok := mixedPlan.(*chplan.VectorSetOp); !ok {
-		t.Fatalf("mixed-shape rate = %T, want *chplan.VectorSetOp (mutant `==`->`!=` at "+
+		t.Fatalf("mixed sample kind rate = %T, want *chplan.VectorSetOp (mutant `==`->`!=` at "+
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`)", mixedPlan)
 	}
 }

@@ -12,15 +12,11 @@ import (
 )
 
 // Mixed-wrapper consumers decide from mixedRowsNeedPreparation, which keeps
-// physical payload separate from the live-row proof. The three remaining
-// RowShapeOf comparisons are histogram-recognizer postconditions covered by
-// #3349; adding another site means a consumer regressed to legacy inference.
+// physical payload separate from the live-row proof. No production consumer
+// compares RowShapeOf with MixedRowShape; adding a site means a consumer
+// regressed to legacy inference.
 func TestMixedWrapperLegacyShapeInventory(t *testing.T) {
-	want := []string{
-		"histogram_native_mixed_or_subquery_aggregate_range_fn.go:lowerSumOrAvgMixedOrSubquerySelectFn",
-		"histogram_native_mixed_or_subquery_last_first.go:lowerMixedOrSubqueryLastFirstInput",
-		"histogram_native_mixed_or_subquery_resets_changes.go:lowerMixedOrSubqueryResetsOrChanges",
-	}
+	var want []string
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)

@@ -241,18 +241,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // `append([]string(nil), src...) == nil` for both a nil and an empty-non-nil
 // src.
 //
-// 5. RETIRED COMPOUND INVARIANT GUARDS.
-//
-//	histogram_native_range_fn.go:`if !matched`
-//	histogram_native_range_fn.go:`if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram`
-//	histogram_native_subquery_select.go:`if !matched`
-//	histogram_native_subquery_select.go:`if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram`
-//
-// The old `!matched || wrong shape` expressions were split into independent
-// checks for recognizer failure and a wrong published sample kind. There is no
-// longer a compound boolean whose `||` can mutate to `&&`.
-//
-// 7. A `continue` WHOSE `break` BINDS TO A SWITCH, NOT TO THE LOOP.
+// 5. A `continue` WHOSE `break` BINDS TO A SWITCH, NOT TO THE LOOP.
 //
 //	duplicate_labelset_guard.go:`if mixed && mixedPayload[name] {`
 //	duplicate_labelset_guard.go:`if keyOnStep`

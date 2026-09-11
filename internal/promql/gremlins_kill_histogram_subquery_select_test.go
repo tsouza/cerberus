@@ -13,7 +13,7 @@
 // down through isExpHistogramValuedShape and the copy therefore decided
 // nothing. The rule is now stated once, in
 // [expHistogramLoweringAvailable], where both its mutants are killable.
-// The remaining two adjudications stand:
+// The two remaining original cases now have different dispositions:
 //
 //   - histogram_native_subquery_select.go:`step < 0` (CONDITIONALS_BOUNDARY,
 //     `step < 0` -> `<= 0`). Two lines above, `if step == 0 { step =
@@ -31,7 +31,8 @@
 //     An unmatched input and a matched input with the wrong sample kind now
 //     report their distinct contract violations independently.
 //
-// The remaining boundary cases were confirmed by manually applying the mutation and running
+// The remaining boundary case was confirmed by manually applying the mutation and
+// running
 // `go test ./internal/promql/...`: green.
 package promql
 
