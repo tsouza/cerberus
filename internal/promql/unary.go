@@ -60,11 +60,11 @@ func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Nod
 	if b, ok := mixedExpHistogramSetOp(u.Expr, s, ctx); ok {
 		switch u.Op {
 		case parser.ADD:
-			return lowerWithMixedOperandPolicy(mixedUnaryFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerWithBespokeMixedOperandPolicy(mixedUnaryFamily, mixedOperandAdmission, func() (chplan.Node, error) {
 				return lowerMixedExpHistogramSetOp(b, s, ctx)
 			})
 		case parser.SUB:
-			return lowerWithMixedOperandPolicy(mixedUnaryFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerWithBespokeMixedOperandPolicy(mixedUnaryFamily, mixedOperandAdmission, func() (chplan.Node, error) {
 				return lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, chplan.OpMul, -1, true, s, ctx)
 			})
 		}

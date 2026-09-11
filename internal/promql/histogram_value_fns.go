@@ -259,7 +259,7 @@ func lowerHistogramValueFnHistogramValuedArg(
 		if !ok {
 			return nil, false, nil
 		}
-		hist, err = lowerWithMixedOperandPolicy(mixedHistogramValueFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+		hist, err = lowerWithBespokeMixedOperandPolicy(mixedHistogramValueFamily, mixedOperandAdmission, func() (chplan.Node, error) {
 			return lowerMixedOrHistogramValuedArg(b, s, ctx)
 		})
 	}

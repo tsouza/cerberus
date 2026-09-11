@@ -85,16 +85,22 @@ func topKOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowe
 // for why the shadow-resolved float arm alone, fed through the ordinary
 // topk/bottomk K-selection, already answers reference's semantics.
 func lowerTopKOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	floatForAgg, err := executeMixedSelectorPolicy(mixedTopKFamily, mixedRootAdmission, func() (chplan.Node, error) {
-		if b.ReturnBool {
-			return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
-		}
-		_, floatPlan, err := shadowResolveMixedExpHistogramOperands(b, s, ctx)
-		return floatPlan, err
-	})
+	transform, policyErr := executeMixedSelectorPolicy(mixedTopKFamily, mixedRootAdmission)
+	if b.ReturnBool {
+		return nil, mixedSelectorPolicyFirstError(
+			policyErr,
+			fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops"),
+		)
+	}
+	if policyErr != nil {
+		return nil, policyErr
+	}
+
+	_, floatForAgg, err := shadowResolveMixedExpHistogramOperands(b, s, ctx)
 	if err != nil {
 		return nil, err
 	}
+	floatForAgg = transform(floatForAgg)
 
 	kF, ok := tryScalarLiteral(agg.Param)
 	if !ok {

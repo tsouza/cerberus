@@ -388,7 +388,7 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 	// every matched pair regardless of type compatibility, contrary to
 	// what the arithmetic pass's own header had assumed.
 	if lhs, rhs, op, match, card, include, returnBool, ok := comparisonVectorVectorOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedVectorComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, returnBool, s, ctx)
 		})
 		return plan, true, err
@@ -401,7 +401,7 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 	// disjointness guarantee. histogram_native_mixed_or_vector_plain_comparison.go
 	// has the composition's own doc comment.
 	if mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, ok := comparisonVectorPlainOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedVectorComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerComparisonVectorPlainOverMixedExpHistogramSetOp(mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, s, ctx)
 		})
 		return plan, true, err
@@ -537,7 +537,7 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 // own rationale are unchanged from when they lived there.
 func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
 	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedLeafFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedLeafFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerMixedExpHistogramSetOp(b, s, ctx)
 		})
 		return plan, true, err
@@ -551,7 +551,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// mixed `or` aggregand as purely histogram-valued, so nothing before
 	// this function can have consumed the shape yet.
 	if agg, b, ok := sumOrAvgOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedSumAvgFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedSumAvgFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerSumOrAvgOverMixedExpHistogramSetOp(agg, b, s, ctx)
 		})
 		return plan, true, err
@@ -568,7 +568,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// composition's own doc comment for why this needs its own machinery
 	// distinct from this package's other subquery/aggregate composers.
 	if agg, sub, windowFn, b, ok := sumOrAvgOverMixedOrSubqueryFoldFn(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedSubqueryFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedSubqueryFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerSumOrAvgOverMixedOrSubqueryFoldFn(agg, sub, windowFn, b, s, ctx)
 		})
 		return plan, true, err
@@ -595,7 +595,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// ops reduce over the float arm alone, with no histogram branch or
 	// recombine.
 	if agg, b, ok := floatOnlyAggOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedFloatAggregateFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedFloatAggregateFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerFloatOnlyAggOverMixedExpHistogramSetOp(agg, b, s, ctx)
 		})
 		return plan, true, err
@@ -621,7 +621,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// the composition's own doc comment for why the two arms' stringified
 	// values can never collide, so a plain union suffices.
 	if agg, b, ok := countValuesOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedCountValuesFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedCountValuesFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerCountValuesOverMixedExpHistogramSetOp(agg, b, s, ctx)
 		})
 		return plan, true, err
@@ -657,7 +657,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// composition's own doc comment for why no discriminator-keyed
 	// chplan.Case is needed to scale both arms safely.
 	if b, op, scalar, scalarOnLeft, ok := mulOrDivScaleOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedScaleFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedScaleFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
 		})
 		return plan, true, err
@@ -710,7 +710,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// #2449's ninth wrapper family), and what remains out of scope
 	// (the histogram-histogram ADD/SUB merge).
 	if lhs, rhs, op, match, card, include, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedVectorArithmeticFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorArithmeticFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, s, ctx)
 		})
 		return plan, true, err
@@ -727,7 +727,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// simply the degenerate always-float-discriminator case of the
 	// existing four-combination fold, needing no new fold logic at all.
 	if mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, ok := vectorPlainArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedVectorArithmeticFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorArithmeticFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerVectorPlainArithmeticOverMixedExpHistogramSetOp(mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, s, ctx)
 		})
 		return plan, true, err
@@ -3039,7 +3039,7 @@ func lowerCallOverSubquery(c *parser.Call, sq *parser.SubqueryExpr, s schema.Met
 	// for the window-purity collision drop that shape needs and that a
 	// bare `or` does not.
 	if shape, ok := sumOrAvgMixedOrSubqueryOuterFnRecognized(c, s, ctx); ok {
-		return lowerWithMixedOperandPolicy(mixedSubqueryFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+		return lowerWithBespokeMixedOperandPolicy(mixedSubqueryFamily, mixedOperandAdmission, func() (chplan.Node, error) {
 			return lowerSumOrAvgMixedOrSubqueryOuterFn(shape, s, ctx)
 		})
 	}
@@ -5801,13 +5801,15 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	// falling through to the generic [lower], which would hit binary.go's
 	// mixed-or catch-all.
 	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
-		mixed, err := executeMixedSelectorPolicy(mixedLimitFamily, mixedOperandAdmission, func() (chplan.Node, error) {
-			return lowerMixedExpHistogramSetOp(b, s, ctx)
-		})
+		transform, err := executeMixedSelectorPolicy(mixedLimitFamily, mixedOperandAdmission)
 		if err != nil {
 			return nil, false, false, err
 		}
-		return mixed, false, true, nil
+		mixed, err := lowerMixedExpHistogramSetOp(b, s, ctx)
+		if err != nil {
+			return nil, false, false, err
+		}
+		return transform(mixed), false, true, nil
 	}
 	// A nested drop-family shape (cerberus issue #2528) — e.g.
 	// `limitk(3, demo_latency_exp_hist + 0)`. The result is already the
@@ -5826,12 +5828,11 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	}
 	mixed := chplan.RowShapeOf(input) == chplan.MixedRowShape
 	if mixed {
-		input, err = executeMixedSelectorPolicy(mixedLimitFamily, mixedPlanAdmission, func() (chplan.Node, error) {
-			return input, nil
-		})
-		if err != nil {
-			return nil, false, false, err
+		transform, policyErr := executeMixedSelectorPolicy(mixedLimitFamily, mixedPlanAdmission)
+		if policyErr != nil {
+			return nil, false, false, policyErr
 		}
+		input = transform(input)
 	}
 	return input, false, mixed, nil
 }
@@ -6232,12 +6233,15 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		return nil, err
 	}
 
-	input, err := executeMixedSelectorPolicy(mixedTopKFamily, mixedPlanAdmission, func() (chplan.Node, error) {
-		return lower(a.Expr, s, ctx)
-	})
+	transform, err := executeMixedSelectorPolicy(mixedTopKFamily, mixedPlanAdmission)
 	if err != nil {
 		return nil, err
 	}
+	input, err := lower(a.Expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	input = transform(input)
 	return buildTopKLiteral(a, s, ctx, input, k, empty), nil
 }
 
@@ -6477,16 +6481,21 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	// them and the plain [lower] dispatch is unchanged for that path.
 	var input chplan.Node
 	var histogram, mixed bool
+	var transform mixedPlanTransform
 	var err error
 	if a.Op == parser.LIMITK {
 		input, histogram, mixed, err = lowerLimitKInput(a.Expr, s, ctx)
 	} else {
-		input, err = executeMixedSelectorPolicy(mixedTopKFamily, mixedPlanAdmission, func() (chplan.Node, error) {
-			return lower(a.Expr, s, ctx)
-		})
+		transform, err = executeMixedSelectorPolicy(mixedTopKFamily, mixedPlanAdmission)
+		if err == nil {
+			input, err = lower(a.Expr, s, ctx)
+		}
 	}
 	if err != nil {
 		return nil, err
+	}
+	if a.Op != parser.LIMITK {
+		input = transform(input)
 	}
 	return buildTopKComputed(a, s, ctx, input, histogram, mixed)
 }

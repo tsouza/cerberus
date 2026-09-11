@@ -1,7 +1,6 @@
 package promql
 
 import (
-	"errors"
 	"go/ast"
 	goparser "go/parser"
 	"go/token"
@@ -11,7 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	promparser "github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 const unknownMixedSelectorPolicy mixedOperandPolicy = 255
@@ -52,7 +54,7 @@ func TestMixedSelectorPolicyProductionSiteInventory(t *testing.T) {
 				callee := selectorPolicyCallee(call.Fun)
 				family, site, selectorFamily := selectorPolicyExecutorKey(call)
 				if callee == "executeMixedSelectorPolicy" {
-					if len(call.Args) != 3 || !selectorFamily || site == "" {
+					if len(call.Args) != 2 || !selectorFamily || site == "" {
 						t.Errorf("%s:%s has an opaque selector executor call", name, function.Name.Name)
 						return true
 					}
@@ -166,17 +168,11 @@ func TestMixedSelectorPolicyExecutorModes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := &chplan.VectorSetOp{Mixed: true}
-			calls := 0
-			got, err := executeMixedSelectorPolicy(tc.family, tc.site, func() (chplan.Node, error) {
-				calls++
-				return input, nil
-			})
+			transform, err := executeMixedSelectorPolicy(tc.family, tc.site)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if calls != 1 {
-				t.Fatalf("loader calls = %d, want 1", calls)
-			}
+			got := transform(input)
 			if tc.floatOnly {
 				if !chplan.IsMixedFloatNarrowing(got) {
 					t.Fatalf("ranked result = %#v, want mixed float narrowing", got)
@@ -188,28 +184,45 @@ func TestMixedSelectorPolicyExecutorModes(t *testing.T) {
 	}
 }
 
-func TestMixedSelectorPolicyExecutorPassesLoaderErrorUnchanged(t *testing.T) {
-	wantErr := errors.New("loader failure")
-	for _, key := range []mixedWrapperKey{
-		{family: mixedTopKFamily, site: mixedRootAdmission},
-		{family: mixedTopKFamily, site: mixedPlanAdmission},
-		{family: mixedLimitFamily, site: mixedOperandAdmission},
-		{family: mixedLimitFamily, site: mixedPlanAdmission},
+func TestMixedSelectorRootPolicyPrecedesBoolValidation(t *testing.T) {
+	key := mixedWrapperKey{family: mixedTopKFamily, site: mixedRootAdmission}
+	wrong := mixedPreserve
+	for _, tc := range []struct {
+		name     string
+		injected *mixedOperandPolicy
+	}{
+		{name: "missing"},
+		{name: "wrong", injected: &wrong},
 	} {
-		t.Run(string(key.family)+"/"+string(key.site), func(t *testing.T) {
-			calls := 0
-			plan, err := executeMixedSelectorPolicy(key.family, key.site, func() (chplan.Node, error) {
-				calls++
-				return &chplan.OneRow{}, wantErr
+		t.Run(tc.name, func(t *testing.T) {
+			prior, existed := mixedOperandPolicies[key]
+			if tc.injected == nil {
+				delete(mixedOperandPolicies, key)
+			} else {
+				mixedOperandPolicies[key] = *tc.injected
+			}
+			t.Cleanup(func() {
+				if existed {
+					mixedOperandPolicies[key] = prior
+				} else {
+					delete(mixedOperandPolicies, key)
+				}
 			})
-			if calls != 1 || plan != nil || err != wantErr {
-				t.Fatalf("calls=%d plan=%v err=%v, want one call, nil plan, unchanged error", calls, plan, err)
+
+			_, err := lowerTopKOverMixedExpHistogramSetOp(
+				&promparser.AggregateExpr{Op: promparser.TOPK},
+				&promparser.BinaryExpr{ReturnBool: true},
+				schema.Metrics{},
+				lowerCtx{},
+			)
+			if err == nil || !strings.Contains(err.Error(), "mixed operand is not admitted for topk-bottomk at root") {
+				t.Fatalf("root policy did not reject before bool validation: %v", err)
 			}
 		})
 	}
 }
 
-func TestMixedSelectorPolicyExecutorRejectsEveryWrongModeBeforeLoading(t *testing.T) {
+func TestMixedSelectorPolicyExecutorRejectsEveryWrongMode(t *testing.T) {
 	for _, key := range []mixedWrapperKey{
 		{family: mixedTopKFamily, site: mixedRootAdmission},
 		{family: mixedTopKFamily, site: mixedPlanAdmission},
@@ -220,7 +233,7 @@ func TestMixedSelectorPolicyExecutorRejectsEveryWrongModeBeforeLoading(t *testin
 		if key.family == mixedLimitFamily {
 			expected = mixedPreserve
 		}
-		for _, mode := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedFloatOnly, mixedPreserve, unknownMixedSelectorPolicy} {
+		for _, mode := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedFloatOnly, mixedPreserve, mixedPolicyClosed, unknownMixedSelectorPolicy} {
 			if mode == expected {
 				continue
 			}
@@ -268,12 +281,8 @@ func assertMixedSelectorPolicyRejected(t *testing.T, key mixedWrapperKey, inject
 			delete(mixedOperandPolicies, key)
 		}
 	})
-	calls := 0
-	plan, err := executeMixedSelectorPolicy(key.family, key.site, func() (chplan.Node, error) {
-		calls++
-		return &chplan.OneRow{}, nil
-	})
-	if calls != 0 || plan != nil || err == nil {
-		t.Fatalf("rejected policy called=%d plan=%v err=%v", calls, plan, err)
+	transform, err := executeMixedSelectorPolicy(key.family, key.site)
+	if transform != nil || err == nil {
+		t.Fatalf("rejected policy transform=%v err=%v", transform, err)
 	}
 }

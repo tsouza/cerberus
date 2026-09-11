@@ -313,7 +313,7 @@ func lowerVectorSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx, f
 		return lowerExpHistogramSetOpOperand(expr, s, ctx)
 	}
 	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerWithMixedOperandPolicy(family, mixedOperandAdmission, func() (chplan.Node, error) {
+		return lowerWithBespokeMixedOperandPolicy(family, mixedOperandAdmission, func() (chplan.Node, error) {
 			return lowerMixedExpHistogramSetOp(b, s, ctx)
 		})
 	}

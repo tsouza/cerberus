@@ -18,6 +18,7 @@ const (
 	mixedBespoke
 	mixedFloatOnly
 	mixedPreserve
+	mixedPolicyClosed
 )
 
 type (
@@ -152,12 +153,41 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedCountValuesFamily, mixedPlanAdmission}:       mixedBespoke,
 }
 
-func lowerWithMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, build func() (chplan.Node, error)) (chplan.Node, error) {
+type mixedPlanTransform func(chplan.Node) chplan.Node
+
+func lowerWithMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, expected mixedOperandPolicy) (mixedPlanTransform, error) {
 	key := mixedWrapperKey{family: family, site: site}
-	if err := requireMixedBespokePolicy(key, mixedOperandPolicies[key]); err != nil {
+	policy, ok := mixedOperandPolicies[key]
+	if expected == mixedPolicyClosed || !ok || policy != expected {
+		return nil, requireMixedBespokePolicy(key, mixedReject)
+	}
+	if expected == mixedBespoke {
+		if err := requireMixedBespokePolicy(key, policy); err != nil {
+			return nil, err
+		}
+	}
+	return mixedPlanTransformForPolicy(expected), nil
+}
+
+func lowerWithBespokeMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, build func() (chplan.Node, error)) (chplan.Node, error) {
+	transform, err := lowerWithMixedOperandPolicy(family, site, mixedBespoke)
+	if err != nil {
 		return nil, err
 	}
-	return build()
+	inner, err := build()
+	if err != nil {
+		return inner, err
+	}
+	return transform(inner), nil
+}
+
+func preserveMixedPlanTransform(inner chplan.Node) chplan.Node { return inner }
+
+func mixedPlanTransformForPolicy(policy mixedOperandPolicy) mixedPlanTransform {
+	if policy == mixedFloatOnly {
+		return mixedRowsFloatOnly
+	}
+	return preserveMixedPlanTransform
 }
 
 func requireMixedBespokePolicy(key mixedWrapperKey, policy mixedOperandPolicy) error {
@@ -187,12 +217,26 @@ func preserveMixedPlan(inner chplan.Node, family mixedWrapperFamily) (chplan.Nod
 // requireMixedPlanPolicy authorizes a wrapper's consumption of an already
 // lowered mixed operand. Physical role resolution alone cannot authorize it.
 // Ordinary float and histogram-only operands retain their existing path.
-func requireMixedPlanPolicy(inner chplan.Node, family mixedWrapperFamily) error {
-	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
-		return nil
+func requireMixedPlanPolicy(inner chplan.Node, family mixedWrapperFamily, expectedPolicy ...mixedOperandPolicy) error {
+	expected := mixedBespoke
+	if len(expectedPolicy) == 0 {
+		if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+			return nil
+		}
+	} else if len(expectedPolicy) == 1 {
+		expected = expectedPolicy[0]
+	} else {
+		expected = mixedPolicyClosed
 	}
 	key := mixedWrapperKey{family: family, site: mixedPlanAdmission}
-	return requireMixedBespokePolicy(key, mixedOperandPolicies[key])
+	policy, ok := mixedOperandPolicies[key]
+	if expected == mixedPolicyClosed || !ok || policy != expected {
+		return requireMixedBespokePolicy(key, mixedReject)
+	}
+	if expected == mixedBespoke {
+		return requireMixedBespokePolicy(key, policy)
+	}
+	return nil
 }
 
 func mixedVectorBinaryFamily(op chplan.BinaryOp) mixedWrapperFamily {
