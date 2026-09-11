@@ -91,6 +91,25 @@ func TestCountValuesMixedAdmissionRemainsRequired(t *testing.T) {
 	}
 }
 
+func TestCountValuesMixedSerializationResolvesDiscriminatorRole(t *testing.T) {
+	const conditionalArity = 3
+	s := schema.DefaultOTelMetrics()
+	live, _ := mixedConsumerTestRows(s)
+	floatKey := promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn})
+	conditional, ok := mixedCountValuesValueKey(live, floatKey, s).(*chplan.FuncCall)
+	if !ok || len(conditional.Args) != conditionalArity {
+		t.Fatalf("mixed value key = %#v", conditional)
+	}
+	predicate, ok := conditional.Args[0].(*chplan.Binary)
+	if !ok {
+		t.Fatalf("mixed discriminator predicate = %T", conditional.Args[0])
+	}
+	discriminator, ok := predicate.Left.(*chplan.ColumnRef)
+	if !ok || discriminator.Name != "source_kind" {
+		t.Fatalf("mixed discriminator = %#v, want source_kind role", predicate.Left)
+	}
+}
+
 func lowerCountValuesMixedTest(t *testing.T, query string, s schema.Metrics) chplan.Node {
 	t.Helper()
 	expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(query)

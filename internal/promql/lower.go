@@ -5487,15 +5487,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		// Shadow resolution belongs to the completed operand. Serialize each
 		// surviving sample by its kind: histogram placeholder Values are not
 		// real floats and must never enter the float value-label group.
-		valueKey = &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
-			&chplan.Binary{
-				Op:    chplan.OpEq,
-				Left:  requireSampleRole(input.RowType(), chplan.RoleDiscriminator),
-				Right: &chplan.LitInt{V: mixedDiscriminatorFloat},
-			},
-			valueKey,
-			nativeHistogramStringExpr(s),
-		}}
+		valueKey = mixedCountValuesValueKey(input, valueKey, s)
 	}
 	return lowerCountValuesOverPlan(
 		a,
@@ -5505,6 +5497,18 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		s,
 		ctx,
 	), nil
+}
+
+func mixedCountValuesValueKey(input chplan.Node, floatKey chplan.Expr, s schema.Metrics) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+		&chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  requireSampleRole(input.RowType(), chplan.RoleDiscriminator),
+			Right: &chplan.LitInt{V: mixedDiscriminatorFloat},
+		},
+		floatKey,
+		nativeHistogramStringExpr(s),
+	}}
 }
 
 // lowerCountValuesOverPlan applies the shared count_values grouping and
