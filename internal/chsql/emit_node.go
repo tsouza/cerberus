@@ -747,9 +747,9 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 // v)`), the literal-K LIMIT shape is replaced with a `row_number()
 // OVER (PARTITION BY <by> [ORDER BY <sortExpr> [DESC]]) <= K` predicate
 // because ClickHouse does not accept a subquery directly in a LIMIT
-// clause. The K subquery is wrapped as `(SELECT toFloat64(Value) FROM
-// (<k_subtree>) LIMIT 1)`, reading the `Value` column of the one-row
-// relation the lowering builds for K.
+// clause. The K subquery is wrapped as `(SELECT toFloat64(<RoleValue>) FROM
+// (<k_subtree>) LIMIT 1)`, resolving the one named value-role column from
+// the scalar materialisation's schema.
 //
 // When t.Unordered (PromQL `limitk(K, v)`), the ORDER BY is omitted
 // entirely: the result is K *arbitrary* rows per partition, no ranking.
@@ -827,7 +827,7 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 //	SELECT <Columns> FROM (
 //	  SELECT *, row_number() OVER (PARTITION BY <By> ORDER BY <SortExpr> [DESC]) AS _rn
 //	  FROM (<input>)
-//	) WHERE toFloat64(_rn) <= (SELECT toFloat64(`Value`) FROM (<KExpr>) LIMIT 1)
+//	) WHERE toFloat64(_rn) <= (SELECT toFloat64(`<RoleValue>`) FROM (<KExpr>) LIMIT 1)
 //
 // `By` empty omits PARTITION BY (the rank fires across the whole
 // result); `SortExpr` nil (the Unordered / limitk shape) omits the
@@ -852,6 +852,25 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 	kSub, err := e.subqueryFrag(t.KExpr)
 	if err != nil {
 		return err
+	}
+	kSchema := t.KExpr.RowType()
+	var kValueColumn string
+	for _, column := range kSchema.Columns {
+		if column.Role != chplan.RoleValue {
+			continue
+		}
+		if column.Name == "" || kValueColumn != "" {
+			return fmt.Errorf("chsql: computed topk requires one named scalar value column")
+		}
+		kValueColumn = column.Name
+	}
+	if kValueColumn == "" {
+		return fmt.Errorf("chsql: computed topk scalar value role is missing")
+	}
+	for _, column := range kSchema.Columns {
+		if column.Name == kValueColumn && column.Role != chplan.RoleValue {
+			return fmt.Errorf("chsql: computed topk scalar value column is ambiguous")
+		}
 	}
 
 	partitionBy := make([]Frag, 0, len(t.By))
@@ -883,7 +902,7 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 		As(rankFrag, "_rn"),
 	)
 
-	// K subquery: `(SELECT toFloat64(Value) FROM (<k_subtree>) LIMIT 1)`.
+	// K's value name belongs to its own scalar schema, not the ranked input.
 	// The comparison stays in Float64 rather than casting K to an integer:
 	// a UInt64 cast wraps a negative K around to ~1.8e19 and lets EVERY
 	// row through, where PromQL's rule is that any K below 1 selects
@@ -893,7 +912,7 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 	// empty threshold by the lowering) keeps no row. LIMIT 1 enforces
 	// single-row scalar-subquery semantics.
 	kSelect := NewQuery().
-		Select(Call("toFloat64", Col("Value"))).
+		Select(Call("toFloat64", Col(kValueColumn))).
 		From(kSub).
 		Limit(1)
 	kSubquery := Subquery(kSelect)
@@ -905,6 +924,8 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 			cols = append(cols, Col(c))
 		}
 		outer.Select(cols...)
+	} else {
+		outer.Select(StarExcept(Star(), "_rn"))
 	}
 	return e.emitSelect(outer)
 }

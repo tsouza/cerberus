@@ -5829,7 +5829,7 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err := requireMixedPlanPolicy(input, mixedLimitFamily); err != nil {
 		return nil, false, false, err
 	}
-	return input, false, false, nil
+	return input, false, chplan.RowShapeOf(input) == chplan.MixedRowShape, nil
 }
 
 // limitKOrRatioOverExpHistogram recognises `limitk(K, <exp-hist shape>)` /
@@ -6235,6 +6235,7 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err := requireMixedPlanPolicy(input, mixedTopKFamily); err != nil {
 		return nil, err
 	}
+	input = mixedRowsFloatOnly(input)
 	return buildTopKLiteral(a, s, ctx, input, k, empty), nil
 }
 
@@ -6459,7 +6460,7 @@ func topKOutputColumns(input chplan.Node, s schema.Metrics) []string {
 // `pi()`, so every shape the grammar admits in K position is covered by
 // construction — there is no residual shape for a guard to reject. The
 // resulting Expr is materialised as a one-row relation because KExpr is
-// a Node slot (the emitter reads its `Value` column).
+// a Node slot (the emitter resolves its configured [chplan.RoleValue] column).
 //
 // [topKDomainExpr] applies the runtime half of the K-domain rules the
 // literal path resolves in [topKDomain].
@@ -6485,6 +6486,9 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	}
 	if err := requireMixedPlanPolicy(input, mixedAggregateFamily(a.Op)); err != nil {
 		return nil, err
+	}
+	if a.Op != parser.LIMITK {
+		input = mixedRowsFloatOnly(input)
 	}
 	return buildTopKComputed(a, s, ctx, input, histogram, mixed)
 }
