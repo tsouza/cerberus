@@ -85,8 +85,6 @@ func TestMixedSelectorIndependentPolicySites(t *testing.T) {
 						t.Cleanup(func() { mixedOperandPolicies[key] = policy })
 						_, err := lowerMixedSelectorTestQuery(t, query)
 						wantError := nested && site == mixedPlanAdmission || !nested && site == directSite
-						// Existing computed limitk rechecks the resulting Mixed plan.
-						wantError = wantError || op == "limitk" && computed && site == mixedPlanAdmission
 						if wantError {
 							if err == nil || !strings.Contains(err.Error(), "mixed operand is not admitted for "+string(family)+" at "+string(site)) {
 								t.Fatalf("required site did not reject: %v", err)

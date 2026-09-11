@@ -610,9 +610,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// answers reference's per-sample "drop every histogram row from
 	// K-selection" rule.
 	if agg, b, ok := topKOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedTopKFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerTopKOverMixedExpHistogramSetOp(agg, b, s, ctx)
-		})
+		plan, err := lowerTopKOverMixedExpHistogramSetOp(agg, b, s, ctx)
 		return plan, true, err
 	}
 	// `count_values` wrapping that same mixed shape (cerberus issue
@@ -5803,7 +5801,7 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	// falling through to the generic [lower], which would hit binary.go's
 	// mixed-or catch-all.
 	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
-		mixed, err := lowerWithMixedOperandPolicy(mixedLimitFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+		mixed, err := executeMixedSelectorPolicy(mixedLimitFamily, mixedOperandAdmission, func() (chplan.Node, error) {
 			return lowerMixedExpHistogramSetOp(b, s, ctx)
 		})
 		if err != nil {
@@ -5826,10 +5824,16 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err != nil {
 		return nil, false, false, err
 	}
-	if err := requireMixedPlanPolicy(input, mixedLimitFamily); err != nil {
-		return nil, false, false, err
+	mixed := chplan.RowShapeOf(input) == chplan.MixedRowShape
+	if mixed {
+		input, err = executeMixedSelectorPolicy(mixedLimitFamily, mixedPlanAdmission, func() (chplan.Node, error) {
+			return input, nil
+		})
+		if err != nil {
+			return nil, false, false, err
+		}
 	}
-	return input, false, chplan.RowShapeOf(input) == chplan.MixedRowShape, nil
+	return input, false, mixed, nil
 }
 
 // limitKOrRatioOverExpHistogram recognises `limitk(K, <exp-hist shape>)` /
@@ -6228,14 +6232,12 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		return nil, err
 	}
 
-	input, err := lower(a.Expr, s, ctx)
+	input, err := executeMixedSelectorPolicy(mixedTopKFamily, mixedPlanAdmission, func() (chplan.Node, error) {
+		return lower(a.Expr, s, ctx)
+	})
 	if err != nil {
 		return nil, err
 	}
-	if err := requireMixedPlanPolicy(input, mixedTopKFamily); err != nil {
-		return nil, err
-	}
-	input = mixedRowsFloatOnly(input)
 	return buildTopKLiteral(a, s, ctx, input, k, empty), nil
 }
 
@@ -6479,16 +6481,12 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	if a.Op == parser.LIMITK {
 		input, histogram, mixed, err = lowerLimitKInput(a.Expr, s, ctx)
 	} else {
-		input, err = lower(a.Expr, s, ctx)
+		input, err = executeMixedSelectorPolicy(mixedTopKFamily, mixedPlanAdmission, func() (chplan.Node, error) {
+			return lower(a.Expr, s, ctx)
+		})
 	}
 	if err != nil {
 		return nil, err
-	}
-	if err := requireMixedPlanPolicy(input, mixedAggregateFamily(a.Op)); err != nil {
-		return nil, err
-	}
-	if a.Op != parser.LIMITK {
-		input = mixedRowsFloatOnly(input)
 	}
 	return buildTopKComputed(a, s, ctx, input, histogram, mixed)
 }
