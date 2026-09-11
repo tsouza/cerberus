@@ -35,23 +35,25 @@ func TestMixedRowsNeedPreparationSeparatesPayloadProofAndLegacyShape(t *testing.
 		input                chplan.Node
 		physicalMixed        bool
 		floatProven          bool
+		physicalKind         chplan.SampleKind
+		liveKind             chplan.SampleKind
 		legacyShape          chplan.RowShape
 		needsPreparation     bool
 		mayContainHistograms bool
 	}{
-		{"canonical_float", sampleForwardTestInput(metricRoles(s)...), false, false, chplan.SampleRowShape, false, false},
-		{"pure_histogram", &chplan.HistogramProjection{Input: &chplan.OneRow{}}, false, false, chplan.HistogramRowShape, false, true},
-		{"physical_mixed_legacy_sample", mixed, true, false, chplan.SampleRowShape, true, true},
-		{"float_proof_preserves_physical_mixed", floatRows, true, true, chplan.SampleRowShape, false, false},
-		{"ordered_float_proof", &chplan.OrderBy{Input: floatRows}, true, true, chplan.SampleRowShape, false, false},
-		{"filter_over_float_proof", &chplan.Filter{Input: floatRows, Predicate: &chplan.LitBool{V: true}}, true, true, chplan.SampleRowShape, false, false},
-		{"empty_ranked_selector_preserves_proof", emptyRankedSelector, true, true, chplan.SampleRowShape, false, false},
-		{"nonempty_ranked_selector_projects_float", nonemptyRankedSelector, false, false, chplan.SampleRowShape, false, false},
-		{"preserving_selector_keeps_live_mixed", preservingSelector, true, false, chplan.MixedRowShape, true, true},
-		{"unrelated_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: true}}, true, false, chplan.SampleRowShape, true, true},
-		{"false_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: false}}, true, false, chplan.SampleRowShape, true, true},
-		{"project_barrier", &chplan.Project{Input: floatRows}, true, false, chplan.SampleRowShape, true, true},
-		{"legacy_mixed_without_physical_payload", legacyMixedFloat, false, false, chplan.MixedRowShape, false, false},
+		{"canonical_float", sampleForwardTestInput(metricRoles(s)...), false, false, chplan.SampleKindFloat, chplan.SampleKindFloat, chplan.SampleRowShape, false, false},
+		{"pure_histogram", &chplan.HistogramProjection{Input: &chplan.OneRow{}}, false, false, chplan.SampleKindHistogram, chplan.SampleKindHistogram, chplan.HistogramRowShape, false, true},
+		{"physical_mixed_legacy_sample", mixed, true, false, chplan.SampleKindMixed, chplan.SampleKindMixed, chplan.SampleRowShape, true, true},
+		{"float_proof_preserves_physical_mixed", floatRows, true, true, chplan.SampleKindMixed, chplan.SampleKindFloat, chplan.SampleRowShape, false, false},
+		{"ordered_float_proof", &chplan.OrderBy{Input: floatRows}, true, true, chplan.SampleKindMixed, chplan.SampleKindFloat, chplan.SampleRowShape, false, false},
+		{"filter_over_float_proof", &chplan.Filter{Input: floatRows, Predicate: &chplan.LitBool{V: true}}, true, true, chplan.SampleKindMixed, chplan.SampleKindFloat, chplan.SampleRowShape, false, false},
+		{"empty_ranked_selector_preserves_proof", emptyRankedSelector, true, true, chplan.SampleKindMixed, chplan.SampleKindFloat, chplan.SampleRowShape, false, false},
+		{"nonempty_ranked_selector_projects_float", nonemptyRankedSelector, false, false, chplan.SampleKindFloat, chplan.SampleKindFloat, chplan.SampleRowShape, false, false},
+		{"preserving_selector_keeps_live_mixed", preservingSelector, true, false, chplan.SampleKindMixed, chplan.SampleKindMixed, chplan.MixedRowShape, true, true},
+		{"unrelated_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: true}}, true, false, chplan.SampleKindMixed, chplan.SampleKindMixed, chplan.SampleRowShape, true, true},
+		{"false_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: false}}, true, false, chplan.SampleKindMixed, chplan.SampleKindMixed, chplan.SampleRowShape, true, true},
+		{"project_barrier", &chplan.Project{Input: floatRows}, true, false, chplan.SampleKindMixed, chplan.SampleKindMixed, chplan.SampleRowShape, true, true},
+		{"legacy_mixed_without_physical_payload", legacyMixedFloat, false, false, chplan.SampleKindFloat, chplan.SampleKindFloat, chplan.MixedRowShape, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			row := tc.input.RowType()
@@ -61,6 +63,12 @@ func TestMixedRowsNeedPreparationSeparatesPayloadProofAndLegacyShape(t *testing.
 			}
 			if got := mixedFloatRowsProven(tc.input); got != tc.floatProven {
 				t.Fatalf("float proof=%v, want %v", got, tc.floatProven)
+			}
+			if got := row.SampleKind(); got != tc.physicalKind {
+				t.Fatalf("physical sample kind=%s, want %s", got, tc.physicalKind)
+			}
+			if got := liveSampleKind(tc.input); got != tc.liveKind {
+				t.Fatalf("live sample kind=%s, want %s", got, tc.liveKind)
 			}
 			if got := chplan.RowShapeOf(tc.input); got != tc.legacyShape {
 				t.Fatalf("legacy shape=%s, want %s", got, tc.legacyShape)

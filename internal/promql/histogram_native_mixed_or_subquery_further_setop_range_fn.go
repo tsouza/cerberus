@@ -89,12 +89,8 @@ func lowerHistogramOrMixedSubqueryOuterFnInput(inner chplan.Node, kind chplan.Sa
 	}
 	if nestedCallSubqueryShape(sub.Expr) {
 		// Widening mutates inner in place, so it must not run for a name
-		// the switch below leaves unmatched (deriv, predict_linear, …) —
-		// those fall through to the caller's own float-only-drop /
-		// rejection handling over the UNwidened relation.
-		if !histogramSubqueryOuterFnName(windowFn) {
-			return nil, false, nil
-		}
+		// the switch below leaves unmatched (deriv, predict_linear, …).
+		// The function-name gate above therefore runs before this mutation.
 		if err := widenNestedCallSubqueryInner(inner, sub, ctx); err != nil {
 			return nil, false, err
 		}
