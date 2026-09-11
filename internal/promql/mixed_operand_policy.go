@@ -214,7 +214,7 @@ func lowerWithMixedPreservePolicy(family mixedWrapperFamily, site mixedAdmission
 }
 
 func preserveMixedPlan(inner chplan.Node, family mixedWrapperFamily) (chplan.Node, error) {
-	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+	if !mixedRowsNeedPreparation(inner) {
 		return inner, nil
 	}
 	return lowerWithMixedPreservePolicy(family, mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })

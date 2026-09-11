@@ -224,7 +224,7 @@ func lowerScalarMixedOperand(build func() (chplan.Node, error)) (chplan.Node, er
 // scalarFloatRows narrows a complete nested operand only after its own shadow
 // resolution. Histogram placeholder values must never enter count()/any(Value).
 func scalarFloatRows(inner chplan.Node) (chplan.Node, error) {
-	if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+	if mixedRowsNeedPreparation(inner) {
 		if err := requireFloatScalarPolicy(mixedPlanAdmission); err != nil {
 			return nil, err
 		}

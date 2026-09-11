@@ -57,7 +57,7 @@ func finishScalarArithmetic(inner chplan.Node, arg parser.Expr, s schema.Metrics
 			return nil, err
 		}
 	}
-	if boundary == scalarArithmeticGuarded && chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+	if boundary == scalarArithmeticGuarded && mixedRowsNeedPreparation(inner) {
 		if err := requireFloatArithmeticPolicy(mixedPlanAdmission); err != nil {
 			return nil, err
 		}

@@ -5336,7 +5336,7 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	if err != nil {
 		return nil, err
 	}
-	if expHistogramAggOpIsMergeable(a.Op) && chplan.RowShapeOf(input) == chplan.MixedRowShape {
+	if expHistogramAggOpIsMergeable(a.Op) && mixedRowsNeedPreparation(input) {
 		return lowerSumOrAvgOverMixedPlan(a, input, s, ctx)
 	}
 	// Authorize the original Mixed relation before discarding histogram rows.
@@ -5483,14 +5483,14 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		return nil, err
 	}
 	valueKey := promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn})
-	if chplan.RowShapeOf(input) == chplan.MixedRowShape {
+	if mixedRowsNeedPreparation(input) {
 		// Shadow resolution belongs to the completed operand. Serialize each
 		// surviving sample by its kind: histogram placeholder Values are not
 		// real floats and must never enter the float value-label group.
 		valueKey = &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 			&chplan.Binary{
 				Op:    chplan.OpEq,
-				Left:  &chplan.ColumnRef{Name: chplan.MixedDiscriminatorColumn},
+				Left:  requireSampleRole(input.RowType(), chplan.RoleDiscriminator),
 				Right: &chplan.LitInt{V: mixedDiscriminatorFloat},
 			},
 			valueKey,
@@ -5826,7 +5826,7 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err != nil {
 		return nil, false, false, err
 	}
-	mixed := chplan.RowShapeOf(input) == chplan.MixedRowShape
+	mixed := mixedRowsNeedPreparation(input)
 	if mixed {
 		transform, policyErr := executeMixedSelectorPolicy(mixedLimitFamily, mixedPlanAdmission)
 		if policyErr != nil {
