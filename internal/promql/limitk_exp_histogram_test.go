@@ -87,7 +87,7 @@ func TestLower_ExpHistogram_LimitKEmptyKStaysHistogramShaped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LowerAt: %v", err)
 	}
-	filter, ok := plan.(*chplan.Filter)
+	_, ok := plan.(*chplan.Filter)
 	if !ok {
 		t.Fatalf("plan is %T, want *chplan.Filter", plan)
 	}
