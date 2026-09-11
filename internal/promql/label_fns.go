@@ -178,7 +178,7 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 // remain on their existing histogram-aware lowering path.
 func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, family mixedWrapperFamily, build func(sampleRoleRefs) chplan.Expr) (*chplan.Project, error) {
 	payload := preserveMixedSamplePayload
-	if chplan.RowShapeOf(inner) == chplan.MixedRowShape && family == mixedLabelFamily {
+	if mixedRowsNeedPreparation(inner) && family == mixedLabelFamily {
 		var err error
 		payload, err = labelPayloadPolicy(mixedPlanAdmission)
 		if err != nil {

@@ -220,7 +220,7 @@ func preserveMixedPlan(inner chplan.Node, family mixedWrapperFamily) (chplan.Nod
 func requireMixedPlanPolicy(inner chplan.Node, family mixedWrapperFamily, expectedPolicy ...mixedOperandPolicy) error {
 	expected := mixedBespoke
 	if len(expectedPolicy) == 0 {
-		if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+		if !mixedRowsNeedPreparation(inner) {
 			return nil
 		}
 	} else if len(expectedPolicy) == 1 {

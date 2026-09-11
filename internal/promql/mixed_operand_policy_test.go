@@ -123,7 +123,7 @@ func TestMixedOperandPolicyAlreadyLoweredShape(t *testing.T) {
 		{"date must use its payload preparation", &chplan.VectorSetOp{Mixed: true}, mixedDateFamily, true},
 		{"math must use its payload preparation", &chplan.VectorSetOp{Mixed: true}, mixedMathFamily, true},
 		{"ordinary float unchanged", &chplan.Scan{}, "unlisted-wrapper", false},
-		{"histogram-only unchanged", &chplan.HistogramProjection{}, "unlisted-wrapper", false},
+		{"histogram-only unchanged", &chplan.HistogramProjection{Input: &chplan.OneRow{}}, "unlisted-wrapper", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := requireMixedPlanPolicy(tc.inner, tc.family)
