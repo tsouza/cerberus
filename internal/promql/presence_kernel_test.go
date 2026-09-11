@@ -15,12 +15,22 @@ import (
 )
 
 func TestPresenceKernelPayloadPolicy(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	mixed := func() *chplan.VectorSetOp {
+		return &chplan.VectorSetOp{
+			Mixed:            true,
+			MetricNameColumn: s.MetricNameColumn,
+			AttributesColumn: s.AttributesColumn,
+			TimestampColumn:  s.TimestampColumn,
+			ValueColumn:      s.ValueColumn,
+		}
+	}
 	rootKey := mixedWrapperKey{family: mixedCountGroupFamily, site: mixedRootAdmission}
 	rootOriginal := mixedOperandPolicies[rootKey]
 	t.Cleanup(func() { mixedOperandPolicies[rootKey] = rootOriginal })
 	for _, policy := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedFloatOnly, mixedPreserve} {
 		mixedOperandPolicies[rootKey] = policy
-		wantPlan := &chplan.VectorSetOp{Mixed: true}
+		wantPlan := mixed()
 		wantErr := errors.New("operand failure")
 		calls := 0
 		got, err := lowerWithMixedPreservePolicy(rootKey.family, rootKey.site, func() (chplan.Node, error) {
@@ -48,7 +58,7 @@ func TestPresenceKernelPayloadPolicy(t *testing.T) {
 	t.Cleanup(func() { mixedOperandPolicies[planKey] = planOriginal })
 	for _, policy := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedFloatOnly, mixedPreserve} {
 		mixedOperandPolicies[planKey] = policy
-		input := &chplan.VectorSetOp{Mixed: true}
+		input := mixed()
 		got, err := preserveMixedPlan(input, mixedCountGroupFamily)
 		if policy == mixedPreserve {
 			if got != input || err != nil {
@@ -59,7 +69,7 @@ func TestPresenceKernelPayloadPolicy(t *testing.T) {
 		}
 	}
 	delete(mixedOperandPolicies, planKey)
-	if plan, err := preserveMixedPlan(&chplan.VectorSetOp{Mixed: true}, mixedCountGroupFamily); plan != nil || err == nil {
+	if plan, err := preserveMixedPlan(mixed(), mixedCountGroupFamily); plan != nil || err == nil {
 		t.Fatal("missing plan policy admitted")
 	}
 	for _, input := range []chplan.Node{&chplan.Scan{}, &chplan.HistogramProjection{Input: &chplan.OneRow{}}} {
