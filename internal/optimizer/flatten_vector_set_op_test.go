@@ -21,7 +21,19 @@ func setOpCols(metric, attrs, ts, val string) func(op chplan.VectorSetOpKind, l,
 	}
 }
 
-func tableScan(name string) *chplan.Scan { return &chplan.Scan{Table: name} }
+func tableScan(name string) *chplan.Scan {
+	columns := []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	names := make([]string, len(columns))
+	for i, column := range columns {
+		names[i] = column.Name
+	}
+	return &chplan.Scan{Table: name, Columns: names, Roles: columns}
+}
 
 // TestFlattenVectorSetOp_OrChainOfFour linearises
 // `((a or b) or c) or d` into one NaryVectorSetOp with four arms in

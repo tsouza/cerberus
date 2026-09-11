@@ -173,7 +173,10 @@ func TestProjectSamples_UnpackReplacesTheLineWithTheUnpackedEntry(t *testing.T) 
 		t.Fatalf("Parse: %v", err)
 	}
 
-	projected := l.ProjectSamples(plan, meta)
+	projected, err := l.ProjectSamples(plan, meta)
+	if err != nil {
+		t.Fatalf("ProjectSamples: %v", err)
+	}
 	p, ok := projected.(*chplan.Project)
 	if !ok {
 		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", projected)

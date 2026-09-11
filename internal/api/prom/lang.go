@@ -201,7 +201,7 @@ func engineGuards(guards []promql.ScalarGuard) []engine.Guard {
 // matrixFromCursor's streaming pivot wants is deliberately NOT added at
 // this seam; see RangeSeriesOrder's doc comment for why it has to land
 // later, at emit time, route-A only.
-func (l *lang) ProjectSamples(plan chplan.Node, _ engine.Meta) chplan.Node {
+func (l *lang) ProjectSamples(plan chplan.Node, _ engine.Meta) (chplan.Node, error) {
 	return wrapWithSampleProjection(plan, l.Schema)
 }
 

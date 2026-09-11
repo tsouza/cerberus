@@ -167,9 +167,9 @@ func (r *explainRouter) Compare(_ context.Context, m *chplan.MetricsCompare) err
 // ProjectSamples keeps the matrix wrap parseMetrics already applied (a metrics
 // plan is Sample-shaped on emit) and defers to the embedded search projection
 // for plain search plans.
-func (l *explainLang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
+func (l *explainLang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, error) {
 	if meta.IsMetric {
-		return plan
+		return plan, nil
 	}
 	return l.traceqlLang.ProjectSamples(plan, meta)
 }

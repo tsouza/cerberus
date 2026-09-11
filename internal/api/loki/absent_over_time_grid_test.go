@@ -48,7 +48,10 @@ func TestAbsentOverTimeRangeQuery_GridIsRequestGrid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse+lower %q: %v", q, err)
 	}
-	plan = l.ProjectSamples(plan, meta)
+	plan, err = l.ProjectSamples(plan, meta)
+	if err != nil {
+		t.Fatalf("project samples: %v", err)
+	}
 	plan = optimizer.Default().Run(context.Background(), plan)
 
 	// Guard: confirm the optimized plan's only grid carrier is
@@ -98,7 +101,10 @@ func TestAbsentOverTimeInstantQuery_StillReportsNoGrid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse+lower %q: %v", q, err)
 	}
-	plan = l.ProjectSamples(plan, meta)
+	plan, err = l.ProjectSamples(plan, meta)
+	if err != nil {
+		t.Fatalf("project samples: %v", err)
+	}
 	plan = optimizer.Default().Run(context.Background(), plan)
 
 	if _, _, step := solver.GridOf(plan); step != 0 {

@@ -20,7 +20,7 @@ import (
 type fakeLang struct {
 	name         string
 	parseFn      func(ctx context.Context, q string) (chplan.Node, engine.Meta, error)
-	projectFn    func(plan chplan.Node, meta engine.Meta) chplan.Node
+	projectFn    func(plan chplan.Node, meta engine.Meta) (chplan.Node, error)
 	parseCalls   int
 	projectCalls int
 }
@@ -35,12 +35,12 @@ func (f *fakeLang) Parse(ctx context.Context, query string) (chplan.Node, engine
 	return &chplan.Scan{Table: "otel_metrics_gauge"}, engine.Meta{IsMetric: true, ResponseShape: "prom-vector"}, nil
 }
 
-func (f *fakeLang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
+func (f *fakeLang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, error) {
 	f.projectCalls++
 	if f.projectFn != nil {
 		return f.projectFn(plan, meta)
 	}
-	return plan
+	return plan, nil
 }
 
 // fakeQuerier captures the SQL the engine emitted and returns a fixed

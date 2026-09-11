@@ -128,7 +128,7 @@ func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, eng
 	}, nil
 }
 
-func (l *traceqlLang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
+func (l *traceqlLang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, error) {
 	// Tempo's wrap-projection inspects the inner plan shape
 	// (Scan / StructuralJoin / Aggregate / Project) and materialises
 	// the canonical (MetricName, Attributes, TimeUnix, Value) tuple.
@@ -137,5 +137,5 @@ func (l *traceqlLang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.
 	// trace-view UI consumes (TraceId / SpanId / ParentSpanId /
 	// SpanKind / StatusCode + SpanAttributes); the search-path
 	// branches use the leaner canonical projection unchanged.
-	return wrapWithSampleProjection(plan, l.schema, meta)
+	return wrapWithSampleProjection(plan, l.schema, meta), nil
 }

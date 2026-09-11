@@ -573,10 +573,16 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		return nil, err
 	}
 
-	leftShape := chplan.RowShapeOf(left)
-	rightShape := chplan.RowShapeOf(right)
-	leftHistogram := leftShape == chplan.HistogramRowShape
-	rightHistogram := rightShape == chplan.HistogramRowShape
+	leftKind := left.RowType().SampleKind()
+	rightKind := right.RowType().SampleKind()
+	if err := requireVectorSetOpSampleKind("left", leftKind); err != nil {
+		return nil, err
+	}
+	if err := requireVectorSetOpSampleKind("right", rightKind); err != nil {
+		return nil, err
+	}
+	leftHistogram := leftKind == chplan.SampleKindHistogram
+	rightHistogram := rightKind == chplan.SampleKindHistogram
 	// cerberus issue #2555: either operand may itself already be a Mixed
 	// VectorSetOp, resolved as a NESTED operand of THIS set op via
 	// [lowerVectorSetOpOperand] rather than only at the query root. A
@@ -585,8 +591,8 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 	// its own third shape, distinct from a pure HistogramRowShape operand
 	// — `leftHistogram`/`rightHistogram` are both false for a Mixed
 	// operand, exactly as they would be for a plain float one.
-	leftMixed := leftShape == chplan.MixedRowShape
-	rightMixed := rightShape == chplan.MixedRowShape
+	leftMixed := leftKind == chplan.SampleKindMixed
+	rightMixed := rightKind == chplan.SampleKindMixed
 
 	match := chplan.VectorMatch{}
 	if b.VectorMatching != nil {
@@ -681,6 +687,15 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		TimestampColumn:  s.TimestampColumn,
 		ValueColumn:      s.ValueColumn,
 	}, nil
+}
+
+func requireVectorSetOpSampleKind(side string, kind chplan.SampleKind) error {
+	switch kind {
+	case chplan.SampleKindFloat, chplan.SampleKindHistogram, chplan.SampleKindMixed:
+		return nil
+	default:
+		return fmt.Errorf("promql: vector set op %s operand has %s sample schema", side, kind)
+	}
 }
 
 // promVectorSetOpKind maps a PromQL parser set-op token to the chplan
