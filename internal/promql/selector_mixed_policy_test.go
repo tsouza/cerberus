@@ -14,6 +14,8 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+const unknownMixedSelectorPolicy mixedOperandPolicy = 255
+
 func TestMixedSelectorPolicyProductionSiteInventory(t *testing.T) {
 	want := []string{
 		"histogram_native_mixed_or_aggregate_topk.go:lowerTopKOverMixedExpHistogramSetOp:mixedTopKFamily/mixedRootAdmission",
@@ -91,12 +93,52 @@ func selectorPolicyExecutorKey(call *ast.CallExpr) (family, site string, selecto
 
 func selectorPolicyFamilyArgument(call *ast.CallExpr) string {
 	for _, argument := range call.Args {
-		ident, ok := argument.(*ast.Ident)
-		if ok && (ident.Name == "mixedTopKFamily" || ident.Name == "mixedLimitFamily") {
-			return ident.Name
+		var family string
+		ast.Inspect(argument, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.Ident:
+				if typed.Name == "mixedTopKFamily" || typed.Name == "mixedLimitFamily" {
+					family = typed.Name
+					return false
+				}
+			case *ast.CallExpr:
+				if selectorPolicyCallee(typed.Fun) == "mixedAggregateFamily" {
+					family = "mixedAggregateFamily"
+					return false
+				}
+			}
+			return family == ""
+		})
+		if family != "" {
+			return family
 		}
 	}
 	return ""
+}
+
+func TestSelectorPolicyFamilyArgumentRecognizesLegacyForms(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   string
+	}{
+		{"requireMixedPlanPolicy(input, mixedTopKFamily)", "mixedTopKFamily"},
+		{"requireMixedPlanPolicy(input, mixedAggregateFamily(a.Op))", "mixedAggregateFamily"},
+		{"requireMixedPlanPolicy(input, mixedMathFamily)", ""},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			expr, err := goparser.ParseExpr(tc.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			call, ok := expr.(*ast.CallExpr)
+			if !ok {
+				t.Fatalf("expression = %T, want call", expr)
+			}
+			if got := selectorPolicyFamilyArgument(call); got != tc.want {
+				t.Fatalf("selector family = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func selectorPolicyCallee(expr ast.Expr) string {
@@ -178,7 +220,7 @@ func TestMixedSelectorPolicyExecutorRejectsEveryWrongModeBeforeLoading(t *testin
 		if key.family == mixedLimitFamily {
 			expected = mixedPreserve
 		}
-		for _, mode := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedFloatOnly, mixedPreserve, mixedOperandPolicy(255)} {
+		for _, mode := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedFloatOnly, mixedPreserve, unknownMixedSelectorPolicy} {
 			if mode == expected {
 				continue
 			}
