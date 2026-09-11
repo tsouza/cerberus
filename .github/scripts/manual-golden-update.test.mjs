@@ -186,6 +186,29 @@ test('workflow keeps write authority out of matrix jobs and publishes once', () 
   assert.doesNotMatch(regenerate, /uses: actions\/cache@/);
 });
 
+test('failed regeneration retains a safe patch without masking the red job', () => {
+  const workflow = readFileSync(new URL('../workflows/update-golden.yml', import.meta.url), 'utf8');
+  const regenerate = workflow.slice(
+    workflow.indexOf('\n  regenerate:'),
+    workflow.indexOf('\n  publish:'),
+  );
+  const publish = workflow.slice(workflow.indexOf('\n  publish:'));
+
+  assert.doesNotMatch(regenerate, /continue-on-error/);
+  assert.match(
+    regenerate,
+    /- name: Package only this shard's generated paths\n\s+id: package\n(?:\s+#.*\n)*\s+if: always\(\)/,
+  );
+  assert.match(
+    regenerate,
+    /- name: Upload shard patch\n\s+if: always\(\) && steps\.package\.outcome == 'success'/,
+  );
+  assert.match(
+    publish,
+    /needs\.regenerate\.result == 'success' \|\| needs\.regenerate\.result == 'skipped'/,
+  );
+});
+
 test('two independently generated shard patches publish as one commit', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'manual-golden-update-'));
   try {

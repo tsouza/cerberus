@@ -192,6 +192,11 @@ jobs:
         run: just update-golden ${{ matrix.command_shards }}
 
       - name: Package only this shard's generated paths
+        id: package
+        # A generator can write valid output before a human-curation gate
+        # deliberately fails. Preserve that diagnostic patch without masking
+        # the regeneration failure; publish still requires this job to pass.
+        if: always()
         env:
           MODE: package
           TARGET_ROOT: target
@@ -201,6 +206,7 @@ jobs:
         run: node .github/scripts/manual-golden-update.mjs
 
       - name: Upload shard patch
+        if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: golden-patch-${{ matrix.shard }}
