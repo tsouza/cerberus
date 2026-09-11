@@ -20,9 +20,15 @@ const RangeWindowAnchorColumn = "anchor_ts"
 // back with this. Offset enters with its sign (a negative/forward offset
 // subtracts). Shared so the two call sites cannot drift.
 func OffsetReanchoredAnchorExpr(offset time.Duration) Expr {
+	return OffsetReanchoredColumnExpr(RangeWindowAnchorColumn, offset)
+}
+
+// OffsetReanchoredColumnExpr builds the offset-reanchoring expression for a
+// schema-declared anchor column, including a non-canonical alias.
+func OffsetReanchoredColumnExpr(column string, offset time.Duration) Expr {
 	return &Binary{
 		Op:   OpAdd,
-		Left: &ColumnRef{Name: RangeWindowAnchorColumn},
+		Left: &ColumnRef{Name: column},
 		Right: &FuncCall{
 			Fn:   FnToIntervalNanosecond,
 			Args: []Expr{&LitInt{V: offset.Nanoseconds()}},

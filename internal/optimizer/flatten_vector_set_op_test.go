@@ -88,6 +88,24 @@ func TestFlattenVectorSetOp_AndChain(t *testing.T) {
 	}
 }
 
+func TestFlattenVectorSetOp_HistogramChainUsesPhysicalSchemas(t *testing.T) {
+	t.Parallel()
+	mk := setOpCols("MetricName", "Attributes", "TimeUnix", "Value")
+	left := mk(chplan.VectorSetOr, histogramSetOpArm("a"), histogramSetOpArm("b"))
+	left.Histogram = true
+	input := mk(chplan.VectorSetOr, left, histogramSetOpArm("c"))
+	input.Histogram = true
+
+	out := optimizer.New(optimizer.FlattenVectorSetOp{}).Run(context.Background(), input)
+	nary, ok := out.(*chplan.NaryVectorSetOp)
+	if !ok {
+		t.Fatalf("histogram chain = %T, want *chplan.NaryVectorSetOp", out)
+	}
+	if !nary.Histogram || len(nary.Arms) != 3 {
+		t.Fatalf("histogram chain = Histogram:%v Arms:%d, want true/3", nary.Histogram, len(nary.Arms))
+	}
+}
+
 // TestFlattenVectorSetOp_UnlessNeverFlattens proves `unless` keeps its
 // binary shape — it is NOT associative, so flattening would change
 // results.
@@ -288,5 +306,63 @@ func TestFlattenVectorSetOp_MixedValueTypeSkipsFlattening(t *testing.T) {
 	if chplan.RowShapeOf(out) != chplan.MixedRowShape {
 		t.Errorf("RowShapeOf(out) = %s, want %s — flattening must not downgrade the shape",
 			chplan.RowShapeOf(out), chplan.MixedRowShape)
+	}
+}
+
+func TestFlattenVectorSetOp_UntrustedArmSchemaSkipsFlattening(t *testing.T) {
+	t.Parallel()
+	mk := setOpCols("MetricName", "Attributes", "TimeUnix", "Value")
+	valid := tableScan("valid")
+	invalidRoles := []chplan.Column{
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "Value", Role: chplan.RoleValue},
+		{Name: "other_value", Role: chplan.RoleValue},
+	}
+
+	for _, tc := range []struct {
+		name string
+		arm  chplan.Node
+	}{
+		{name: "opaque", arm: &chplan.Scan{Table: "opaque", Columns: []string{"private"}}},
+		{name: "open", arm: &chplan.Scan{Table: "open", Roles: setOpTestColumns()}},
+		{name: "invalid", arm: &chplan.Scan{
+			Table:   "invalid",
+			Columns: []string{"Attributes", "Value", "other_value"},
+			Roles:   invalidRoles,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := mk(chplan.VectorSetOr, tc.arm, valid)
+			out := optimizer.New(optimizer.FlattenVectorSetOp{}).Run(context.Background(), input)
+			if _, flattened := out.(*chplan.NaryVectorSetOp); flattened {
+				t.Fatalf("%s arm was flattened despite an untrusted physical schema", tc.name)
+			}
+		})
+	}
+}
+
+func setOpTestColumns() []chplan.Column {
+	return []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+}
+
+func histogramSetOpArm(name string) chplan.Node {
+	columns := append(setOpTestColumns(), chplan.HistogramPayloadColumns()...)
+	projections := make([]chplan.Projection, len(columns))
+	for i, column := range columns {
+		projections[i] = chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: column.Name},
+			Alias: column.Name,
+		}
+	}
+	return &chplan.Project{
+		Input:       &chplan.Scan{Table: name},
+		Projections: projections,
+		Roles:       columns,
 	}
 }

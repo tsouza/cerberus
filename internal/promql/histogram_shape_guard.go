@@ -37,14 +37,7 @@ func mixedRowsNeedPreparation(inner chplan.Node) bool {
 // value-domain proof represented in the plan: a discriminator-zero filter over
 // a mixed payload contains float rows only while retaining all mixed columns.
 func liveSampleKind(inner chplan.Node) chplan.SampleKind {
-	if inner == nil {
-		return chplan.SampleKindOpaque
-	}
-	kind := inner.RowType().SampleKind()
-	if kind == chplan.SampleKindMixed && mixedFloatRowsProven(inner) {
-		return chplan.SampleKindFloat
-	}
-	return kind
+	return chplan.LiveSampleKind(inner)
 }
 
 // rowsMayContainHistograms answers which payload path a subquery must take.

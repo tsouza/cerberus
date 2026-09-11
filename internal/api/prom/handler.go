@@ -1640,8 +1640,8 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) (chplan.Node, 
 	// result set's final column. Re-projecting the quartet on top would
 	// drop those nine, un-latch the probe, and hand every native-histogram
 	// answer back as the placeholder float — so the correct wrapper here
-	// is no wrapper at all. RowShapeOf is the one classifier for "what
-	// does this node publish"; see chplan.HistogramRowShape.
+	// is no wrapper at all. The node's physical schema is the classifier
+	// for what the node actually publishes.
 	//
 	// A Mixed plan (chplan.MixedRowShape, cerberus issue #2330 — `or`
 	// between a float-valued and a histogram-valued operand) needs the
@@ -1673,6 +1673,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) (chplan.Node, 
 	}
 	metricName, hasMetricName := row.Find(chplan.RoleMetricName)
 	timestamp, hasTimestamp := row.Find(chplan.RoleTimestamp)
+	anchor, hasAnchor := row.Find(chplan.RoleAnchor)
 
 	projections := []chplan.Projection{
 		{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
@@ -1683,36 +1684,33 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) (chplan.Node, 
 	if hasMetricName {
 		projections[0].Expr = &chplan.ColumnRef{Name: metricName.Name}
 	}
-	if hasTimestamp {
-		projections[2].Expr = &chplan.ColumnRef{Name: timestamp.Name}
-	}
 	cols := sampleColumns(s)
-	if !hasMetricName || !hasTimestamp {
-		// TimeUnix source: a matrix-shape RangeWindow exposes a real per-row
-		// timestamp under the literal column `anchor_ts`, which the emitter
-		// keeps offset-SHIFTED (the window/rate math keys off the shifted
-		// window edge). PromQL's `offset` shifts only WHICH samples a reducing
-		// window reads, not the timestamp the result is reported at, so for a
-		// reducing rate/increase/*_over_time window with a non-zero offset the
-		// reported timestamp is anchor_ts + Offset (the unshifted request
-		// grid); reading raw `anchor_ts` here re-shifted every offset matrix
-		// query's output past this handler's projection, invisible to the spec
-		// goldens (which never wrap in this projection). A raw range vector /
-		// subquery (Identity) reports each sample at its ACTUAL, offset-shifted
-		// time, so it is left un-relabeled. The instant case synthesises via
-		// now64().
-		var tsExpr chplan.Expr
-		if isMatrixRangeWindow(plan, cols) {
-			tsExpr = &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
-			if off, relabel := matrixWindowOffset(plan, cols); relabel {
-				tsExpr = chplan.OffsetReanchoredAnchorExpr(off)
-			}
-		} else {
-			tsExpr = synthesizedAnchor()
+	// TimeUnix source: a matrix-shape RangeWindow exposes a real per-row
+	// timestamp under the literal column `anchor_ts`, which the emitter
+	// keeps offset-SHIFTED (the window/rate math keys off the shifted
+	// window edge). PromQL's `offset` shifts only WHICH samples a reducing
+	// window reads, not the timestamp the result is reported at, so for a
+	// reducing rate/increase/*_over_time window with a non-zero offset the
+	// reported timestamp is anchor_ts + Offset (the unshifted request
+	// grid); reading raw `anchor_ts` here re-shifted every offset matrix
+	// query's output past this handler's projection, invisible to the spec
+	// goldens (which never wrap in this projection). A raw range vector /
+	// subquery (Identity) reports each sample at its ACTUAL, offset-shifted
+	// time, so it is left un-relabeled. Matrix schemas also publish a
+	// RoleTimestamp column, but RoleAnchor must win: it is the result grid,
+	// while RoleTimestamp is the source sample time.
+	if isMatrixRangeWindow(plan, cols) {
+		if !hasAnchor || anchor.Name == "" {
+			return nil, fmt.Errorf("prom: sample projection: matrix schema is missing anchor role")
 		}
-		if !hasTimestamp {
-			projections[2].Expr = tsExpr
+		projections[2].Expr = &chplan.ColumnRef{Name: anchor.Name}
+		if off, relabel := matrixWindowOffset(plan, cols); relabel {
+			projections[2].Expr = chplan.OffsetReanchoredColumnExpr(anchor.Name, off)
 		}
+	} else if hasTimestamp {
+		projections[2].Expr = &chplan.ColumnRef{Name: timestamp.Name}
+	} else if hasAnchor {
+		projections[2].Expr = &chplan.ColumnRef{Name: anchor.Name}
 	}
 	roles := []chplan.Column{
 		{Name: s.MetricNameColumn, Role: chplan.RoleMetricName},

@@ -79,6 +79,29 @@ func TestWrapWithSampleProjectionRealiasesMixedDiscriminator(t *testing.T) {
 	}
 }
 
+func TestWrapWithSampleProjectionUsesCustomAnchorRole(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	input := schemaProject([]chplan.Column{
+		{Name: "source_labels", Role: chplan.RoleAttributes},
+		{Name: "source_anchor", Role: chplan.RoleAnchor},
+		{Name: "source_value", Role: chplan.RoleValue},
+	})
+
+	wrapped, err := wrapWithSampleProjection(input, s)
+	if err != nil {
+		t.Fatalf("wrapWithSampleProjection: %v", err)
+	}
+	projected, ok := wrapped.(*chplan.Project)
+	if !ok {
+		t.Fatalf("wrapped anchor schema = %T, want *chplan.Project", wrapped)
+	}
+	ref, ok := projected.Projections[2].Expr.(*chplan.ColumnRef)
+	if !ok || ref.Name != "source_anchor" {
+		t.Fatalf("timestamp projection = %#v, want ColumnRef{source_anchor}", projected.Projections[2].Expr)
+	}
+}
+
 func TestWrapWithSampleProjectionRejectsUntrustedSchemas(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()

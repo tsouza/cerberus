@@ -524,8 +524,8 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 //
 // The resulting VectorSetOp.Histogram / Mixed flags — which shape the
 // emitter's per-arm canonicalisation and the OUTER SELECT's column list
-// both use — are decided from the ACTUAL lowered shape of each side
-// ([chplan.RowShapeOf]), not from a pre-lowering AST guess: `and` /
+// both use — are decided from the ACTUAL physical sample contract of each
+// side ([chplan.LiveSampleKind]), not from a pre-lowering AST guess: `and` /
 // `unless` forward exactly one side's rows verbatim (the other side's
 // own value type never reaches the wire, only its label signature does),
 // so the output is that FORWARDED (left) side's shape regardless of what
@@ -534,7 +534,7 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 // unchanged exactly like a Histogram-shaped one already did. `or` unions
 // both sides' rows, which cerberus cannot represent when the two sides
 // disagree between the two PURE shapes (Histogram vs Sample) — the
-// whole-query row-shape decision ([chplan.RowShapeOf] feeding
+// whole-query sample-contract decision (the physical schema feeding
 // internal/api/prom/handler.go's wrapWithSampleProjection) and the
 // emitter's positional UNION ALL both assume one shape for the entire
 // result — so that mismatch is rejected explicitly rather than emitted
@@ -544,7 +544,7 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 // Histogram-shaped, Sample-shaped, or another Mixed-shaped other arm the
 // same way [lowerMixedExpHistogramSetOp] already unions a pure Histogram
 // arm with a pure Sample one — internal/chsql's mixedVectorSetOpArmFrag
-// classifies each arm by its own [chplan.RowShapeOf] and forwards an
+// classifies each arm by its own [chplan.LiveSampleKind] and forwards an
 // already-Mixed arm's real per-row discriminator unchanged instead of
 // resynthesising one it doesn't need. cerberus issue #2571 widened
 // [mixedExpHistogramSetOp] itself (the recognizer this function's own
@@ -573,8 +573,8 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		return nil, err
 	}
 
-	leftKind := left.RowType().SampleKind()
-	rightKind := right.RowType().SampleKind()
+	leftKind := chplan.LiveSampleKind(left)
+	rightKind := chplan.LiveSampleKind(right)
 	if err := requireVectorSetOpSampleKind("left", leftKind); err != nil {
 		return nil, err
 	}
@@ -608,7 +608,7 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 			// a Mixed arm composes with any of the other two shapes (see
 			// this function's own doc comment above). Left/Right stay in
 			// source order; internal/chsql's emitter classifies each arm
-			// independently by its own chplan.RowShapeOf, so no
+			// independently by its own chplan.LiveSampleKind, so no
 			// "which side is which" flag is needed the way the
 			// construct-from-two-pure-shapes case
 			// ([lowerMixedExpHistogramSetOp]) needs MixedHistogramOnLeft.
@@ -630,7 +630,7 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 			// shapes — cerberus has no wire representation for a query
 			// result that is per-row float or histogram outside the
 			// Mixed contract, only one shape for the whole query (see
-			// chplan.RowShapeOf / VectorSetOp.Histogram).
+			// physical sample schema / VectorSetOp.Histogram).
 			//
 			// This is reached only when NEITHER side's operand was
 			// recognised, before lowering, as histogram-valued by
@@ -643,7 +643,7 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 			// histogram-valued shape arbitrarily many levels deep
 			// ([isExpHistogramForwardedThroughSetOp],
 			// histogram_native_set_op.go), closing the gap where this
-			// function's own [chplan.RowShapeOf]-based leftHistogram /
+			// function's own [chplan.LiveSampleKind]-based leftHistogram /
 			// rightHistogram computation could already see the
 			// mismatch — because the operand actually WAS lowered
 			// successfully to Histogram-shaped by
