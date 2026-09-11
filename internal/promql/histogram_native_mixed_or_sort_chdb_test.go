@@ -3,7 +3,7 @@
 // chDB-backed proof that `sort()`/`sort_desc()` directly wrapping a mixed
 // float/histogram `or` (cerberus issue #2605,
 // histogram_native_mixed_or_sort.go's [sortOverMixedExpHistogramSetOp] /
-// [lowerSortOverMixedExpHistogramSetOp]) actually DROP every
+// [lowerSortFloatOperand]) actually DROP every
 // histogram-shaped row and order the float-shaped rows alone at real
 // ClickHouse execution — including the `or`'s own LHS-wins shadow rule
 // when a histogram row and a float row share the identical label

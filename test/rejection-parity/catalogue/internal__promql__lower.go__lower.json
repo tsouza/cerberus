@@ -5,7 +5,7 @@
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
-      "rationale": "The HTTP query entry points handle scalar and string constants before vector lowering; the parser does not produce StepInvariantExpr. The remaining parsed expression types are the explicit cases in lower's type switch, including matrix selectors. Recursive callers forward already parsed, position-typechecked vector operands, not new AST variants. The math callers now enter through lowerMathOperand, which passes the same original vector argument to lower before checking the resulting plan's policy; this does not widen the input vocabulary. Root and operand policy wrappers authorize existing dispatch branches and preserve their arguments. Neither the policy wrappers nor the math adapter creates a wire path to this default.",
+      "rationale": "The HTTP query entry points handle scalar and string constants before vector lowering; the parser does not produce StepInvariantExpr. The remaining parsed expression types are the explicit cases in lower's type switch, including matrix selectors. Recursive callers forward already parsed, position-typechecked vector operands, not new AST variants. The math callers now enter through lowerMathOperand, which passes the same original vector argument to lower before checking the resulting plan's policy; this does not widen the input vocabulary. Root and operand policy wrappers authorize existing dispatch branches and preserve their arguments. Neither the policy wrappers nor the math adapter creates a wire path to this default. The sort caller lowerSortFloatOperand forwards the same original parsed vector argument before consulting an existing-plan payload policy; it creates no new AST variant.",
       "evidence": {
         "guard": [
           "default of switch e := expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.AggregateExpr; case *parser.ParenExpr; case *parser.BinaryExpr; case *parser.SubqueryExpr; case *parser.MatrixSelector; case *parser.UnaryExpr; default]"
@@ -33,8 +33,8 @@
           "lowerRoot",
           "lowerScalarBinopOperand",
           "lowerScalarVectorArg",
-          "lowerSort",
           "lowerSortByLabelArg",
+          "lowerSortFloatOperand",
           "lowerTopK",
           "lowerTopKComputed",
           "lowerUnary",
@@ -42,7 +42,8 @@
           "lowerVectorVectorOperand"
         ],
         "cited": [
-          "lowerMathOperand"
+          "lowerMathOperand",
+          "lowerSortFloatOperand"
         ]
       }
     }

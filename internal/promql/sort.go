@@ -70,38 +70,48 @@ func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		}
 		return dropped, nil
 	}
-	// `or` between a float-valued operand and a histogram-valued operand
-	// (cerberus issue #2330) directly wrapped by sort()/sort_desc(),
-	// reached from ANY nesting depth since [lowerCall] is the single
-	// generic dispatch point for this function regardless of whether it
-	// sits at the query root or nested under another wrapper (cerberus
-	// issue #2605). See histogram_native_mixed_or_sort.go's own doc
-	// comment for why reference's filterFloats rule composes with no
-	// reduction machinery at all — just the shadow-resolved float arm fed
-	// into the same OrderBy this function's own non-mixed path builds
-	// below.
-	if b, ok := sortOverMixedExpHistogramSetOp(c, s, ctx); ok {
-		return lowerWithMixedOperandPolicy(mixedSortFamily, mixedOperandAdmission, func() (chplan.Node, error) {
-			return lowerSortOverMixedExpHistogramSetOp(c, b, s, ctx)
-		})
-	}
-	inner, err := lower(c.Args[0], s, ctx)
+	// Admit the float operand once, then share the same ordering kernel.
+	inner, err := lowerSortFloatOperand(c, s, ctx)
 	if err != nil {
 		return nil, err
 	}
 	desc := c.Func.Name == "sort_desc"
-	if err := requireMixedPlanPolicy(inner, mixedSortFamily); err != nil {
-		return nil, err
-	}
-	// A preserving wrapper can hide a mixed union from the direct recognizer.
-	// Resolve the complete operand first, then drop histograms before sorting.
-	inner = mixedRowsFloatOnly(inner)
 	return &chplan.OrderBy{
 		Input: inner,
 		Keys: []chplan.OrderKey{
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Desc: desc},
 		},
 	}, nil
+}
+
+func lowerSortFloatOperand(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	// lowerCall reaches this recognizer at every nesting depth, unlike a
+	// root-only histogram dispatch entry; outer wrappers share this path.
+	if b, ok := sortOverMixedExpHistogramSetOp(c, s, ctx); ok {
+		return prepareSortOperand(mixedOperandAdmission, func() (chplan.Node, error) {
+			return shadowResolveFloatArmChecked(b, s, ctx)
+		})
+	}
+	inner, err := lower(c.Args[0], s, ctx)
+	if err != nil || chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+		return inner, err
+	}
+	return prepareSortOperand(mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
+}
+
+// prepareSortOperand executes the declared payload policy before the ordering
+// kernel. Direct unions retain their checked shadow-resolved float arm; hidden
+// mixed operands are narrowed only after the complete operand is resolved.
+func prepareSortOperand(site mixedAdmissionSite, load func() (chplan.Node, error)) (chplan.Node, error) {
+	key := mixedWrapperKey{family: mixedSortFamily, site: site}
+	if mixedOperandPolicies[key] != mixedFloatOnly {
+		return nil, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
+	}
+	inner, err := load()
+	if err != nil {
+		return nil, err
+	}
+	return mixedRowsFloatOnly(inner), nil
 }
 
 // lowerSortByLabel implements PromQL `sort_by_label(v, label, …)` /
