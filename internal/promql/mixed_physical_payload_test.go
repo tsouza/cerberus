@@ -243,7 +243,7 @@ func TestRowsMayContainHistogramsUsesRolesAcrossSampleEnvelopes(t *testing.T) {
 		chplan.RoleAnchor,
 	} {
 		for _, input := range []chplan.Node{
-			sampleForwardTestInput(value, chplan.Column{Role: role}),
+			&chplan.Scan{Roles: []chplan.Column{value, {Role: role}}},
 			sampleForwardTestInput(
 				value,
 				chplan.Column{Name: "first", Role: role},

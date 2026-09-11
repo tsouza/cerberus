@@ -62,7 +62,7 @@ func TestPresenceKernelPayloadPolicy(t *testing.T) {
 	if plan, err := preserveMixedPlan(&chplan.VectorSetOp{Mixed: true}, mixedCountGroupFamily); plan != nil || err == nil {
 		t.Fatal("missing plan policy admitted")
 	}
-	for _, input := range []chplan.Node{&chplan.Scan{}, &chplan.HistogramProjection{}} {
+	for _, input := range []chplan.Node{&chplan.Scan{}, &chplan.HistogramProjection{Input: &chplan.OneRow{}}} {
 		got, err := preserveMixedPlan(input, mixedCountGroupFamily)
 		if got != input || err != nil {
 			t.Fatalf("ordinary input %T consulted mixed policy: plan=%T err=%v", input, got, err)
