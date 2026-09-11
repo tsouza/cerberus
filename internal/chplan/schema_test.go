@@ -106,6 +106,34 @@ func TestRowTypeEveryNode(t *testing.T) {
 	assertCoversEverySealedKind(t, nodeMarkerMethod, covered, "RowType cases", "add an output-schema assertion")
 }
 
+func TestHistogramProjectionRowTypeDeclaresCanonicalRoles(t *testing.T) {
+	t.Parallel()
+
+	h := &HistogramProjection{
+		Input: &OneRow{},
+		GroupBy: []Expr{
+			&LitString{V: "metric"},
+			&LitString{V: "labels"},
+			&LitString{V: "time"},
+			&LitFloat{V: 0},
+		},
+		GroupByAliases:   []string{"source_name", "source_labels", "source_time", "source_value"},
+		MetricNameColumn: "source_name",
+		AttributesColumn: "source_labels",
+		TimestampColumn:  "source_time",
+		ValueColumn:      "source_value",
+	}
+
+	want := sampleSchema("source_name", "source_labels", "source_time", "source_value")
+	want.Columns = append(want.Columns, histogramColumns()...)
+	if got := h.RowType(); !got.Equal(want) {
+		t.Fatalf("HistogramProjection.RowType() = %#v, want %#v", got, want)
+	}
+	if got := h.RowType().SampleKind(); got != SampleKindHistogram {
+		t.Fatalf("HistogramProjection sample kind = %s, want %s", got, SampleKindHistogram)
+	}
+}
+
 func TestRowTypeDeclarations(t *testing.T) {
 	roles := []Column{{"renamed_value", RoleValue}, {"renamed_labels", RoleAttributes}}
 	p := &Project{Input: &OneRow{}, Roles: roles, Projections: []Projection{{Expr: &LitInt{V: 1}, Alias: "renamed_value"}}}
