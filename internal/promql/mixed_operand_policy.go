@@ -115,7 +115,7 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedSubqueryFamily, mixedRootAdmission}:          mixedBespoke,
 	{mixedScalarFamily, mixedOperandAdmission}:         mixedFloatOnly,
 	{mixedSortFamily, mixedOperandAdmission}:           mixedFloatOnly,
-	{mixedSortByLabelFamily, mixedOperandAdmission}:    mixedBespoke,
+	{mixedSortByLabelFamily, mixedOperandAdmission}:    mixedPreserve,
 	{mixedDateFamily, mixedOperandAdmission}:           mixedBespoke,
 	{mixedTimestampFamily, mixedOperandAdmission}:      mixedBespoke,
 	{mixedInfoFamily, mixedOperandAdmission}:           mixedBespoke,
@@ -136,7 +136,7 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedScalarFamily, mixedPlanAdmission}:            mixedFloatOnly,
 	{mixedSubqueryFamily, mixedPlanAdmission}:          mixedBespoke,
 	{mixedSortFamily, mixedPlanAdmission}:              mixedFloatOnly,
-	{mixedSortByLabelFamily, mixedPlanAdmission}:       mixedBespoke,
+	{mixedSortByLabelFamily, mixedPlanAdmission}:       mixedPreserve,
 	{mixedInfoFamily, mixedPlanAdmission}:              mixedBespoke,
 	{mixedLimitFamily, mixedPlanAdmission}:             mixedBespoke,
 	{mixedSetOperandFamily, mixedPlanAdmission}:        mixedBespoke,
@@ -164,6 +164,23 @@ func requireMixedBespokePolicy(key mixedWrapperKey, policy mixedOperandPolicy) e
 		return fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
 	}
 	return nil
+}
+
+// lowerWithMixedPreservePolicy authorizes a payload-neutral consumer before
+// loading its operand. Identity preserves payload roles and union shadowing.
+func lowerWithMixedPreservePolicy(family mixedWrapperFamily, site mixedAdmissionSite, load func() (chplan.Node, error)) (chplan.Node, error) {
+	key := mixedWrapperKey{family: family, site: site}
+	if mixedOperandPolicies[key] != mixedPreserve {
+		return nil, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
+	}
+	return load()
+}
+
+func preserveMixedPlan(inner chplan.Node, family mixedWrapperFamily) (chplan.Node, error) {
+	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+		return inner, nil
+	}
+	return lowerWithMixedPreservePolicy(family, mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
 }
 
 // requireMixedPlanPolicy authorizes a wrapper's consumption of an already

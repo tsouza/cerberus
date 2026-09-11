@@ -184,9 +184,9 @@ func lowerSortByLabelArg(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chpla
 	if hist, ok, err := lowerExpHistogramValuedShape(arg, s, ctx); ok {
 		return hist, err
 	}
-	if b, ok := sortByLabelArgOverMixedExpHistogramSetOp(arg, s, ctx); ok {
-		return lowerWithMixedOperandPolicy(mixedSortByLabelFamily, mixedOperandAdmission, func() (chplan.Node, error) {
-			return lowerSortByLabelArgOverMixedExpHistogramSetOp(b, s, ctx)
+	if b, ok := mixedExpHistogramSetOp(arg, s, ctx); ok {
+		return lowerWithMixedPreservePolicy(mixedSortByLabelFamily, mixedOperandAdmission, func() (chplan.Node, error) {
+			return lowerMixedExpHistogramSetOp(b, s, ctx)
 		})
 	}
 	if dropped, ok, err := lowerExpHistogramDroppingShape(arg, s, ctx); ok {
@@ -196,10 +196,7 @@ func lowerSortByLabelArg(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chpla
 	if err != nil {
 		return nil, err
 	}
-	if err := requireMixedPlanPolicy(inner, mixedSortByLabelFamily); err != nil {
-		return nil, err
-	}
-	return inner, nil
+	return preserveMixedPlan(inner, mixedSortByLabelFamily)
 }
 
 func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {

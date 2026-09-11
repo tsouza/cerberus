@@ -2,9 +2,7 @@
 
 // chDB-backed proof that `sort_by_label()`/`sort_by_label_desc()` directly
 // wrapping a mixed float/histogram `or` (cerberus issue #2611,
-// histogram_native_mixed_or_sort_by_label.go's
-// [sortByLabelArgOverMixedExpHistogramSetOp] /
-// [lowerSortByLabelArgOverMixedExpHistogramSetOp]) preserves BOTH
+// sort.go's preserve-policy operand admission) preserves BOTH
 // histogram-shaped and float-shaped rows — the opposite composition from
 // sort()/sort_desc() (which drop every histogram-shaped row) — at real
 // ClickHouse execution, and that the `or`'s own LHS-wins shadow rule
