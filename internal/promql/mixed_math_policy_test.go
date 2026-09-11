@@ -5,11 +5,13 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // No parallel cases: these tests temporarily replace the shared policy table.
 func TestMixedMathPolicyDrivesPreparation(t *testing.T) {
 	const unknownPolicy mixedOperandPolicy = 255
+	s := schema.DefaultOTelMetrics()
 	for _, site := range []mixedAdmissionSite{mixedRootAdmission, mixedPlanAdmission} {
 		t.Run(string(site), func(t *testing.T) {
 			key := mixedWrapperKey{family: mixedMathFamily, site: site}
@@ -36,7 +38,13 @@ func TestMixedMathPolicyDrivesPreparation(t *testing.T) {
 				t.Fatalf("missing policy reached loader: called=%v plan=%v err=%v", called, plan, err)
 			}
 			mixedOperandPolicies[key] = mixedFloatOnly
-			originalUnion := &chplan.VectorSetOp{Mixed: true}
+			originalUnion := &chplan.VectorSetOp{
+				Mixed:            true,
+				MetricNameColumn: s.MetricNameColumn,
+				AttributesColumn: s.AttributesColumn,
+				TimestampColumn:  s.TimestampColumn,
+				ValueColumn:      s.ValueColumn,
+			}
 			calls := 0
 			plan, err = prepareMixedMathOperand(site, func() (chplan.Node, error) {
 				calls++
