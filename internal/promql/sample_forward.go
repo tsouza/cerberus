@@ -299,14 +299,6 @@ func requireSampleRole(row chplan.Schema, role chplan.ColumnRole) *chplan.Column
 	return ref
 }
 
-func optionalSampleRole(row chplan.Schema, role chplan.ColumnRole) (*chplan.ColumnRef, bool) {
-	ref, ok, err := resolveOptionalSampleRole(row, role)
-	if err != nil {
-		panic(err.Error())
-	}
-	return ref, ok
-}
-
 func resolveOptionalSampleRole(row chplan.Schema, role chplan.ColumnRole) (*chplan.ColumnRef, bool, error) {
 	name, ok, err := resolveOptionalSampleRoleName(row, role)
 	if err != nil || !ok {
