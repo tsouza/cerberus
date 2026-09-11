@@ -48,7 +48,7 @@ func TestMixedSelectorPolicyProductionSiteInventory(t *testing.T) {
 					return true
 				}
 				callee := selectorPolicyCallee(call.Fun)
-				family, site, selectorFamily := selectorPolicyCallKey(call)
+				family, site, selectorFamily := selectorPolicyExecutorKey(call)
 				if callee == "executeMixedSelectorPolicy" {
 					if len(call.Args) != 3 || !selectorFamily || site == "" {
 						t.Errorf("%s:%s has an opaque selector executor call", name, function.Name.Name)
@@ -57,8 +57,8 @@ func TestMixedSelectorPolicyProductionSiteInventory(t *testing.T) {
 					got = append(got, name+":"+function.Name.Name+":"+family+"/"+site)
 					return true
 				}
-				if selectorFamily {
-					legacy = append(legacy, name+":"+function.Name.Name+":"+callee+"("+family+")")
+				if legacyFamily := selectorPolicyFamilyArgument(call); legacyFamily != "" {
+					legacy = append(legacy, name+":"+function.Name.Name+":"+callee+"("+legacyFamily+")")
 				}
 				return true
 			})
@@ -74,7 +74,7 @@ func TestMixedSelectorPolicyProductionSiteInventory(t *testing.T) {
 	}
 }
 
-func selectorPolicyCallKey(call *ast.CallExpr) (family, site string, selectorFamily bool) {
+func selectorPolicyExecutorKey(call *ast.CallExpr) (family, site string, selectorFamily bool) {
 	if len(call.Args) > 0 {
 		if ident, ok := call.Args[0].(*ast.Ident); ok {
 			family = ident.Name
@@ -87,6 +87,16 @@ func selectorPolicyCallKey(call *ast.CallExpr) (family, site string, selectorFam
 		}
 	}
 	return family, site, selectorFamily
+}
+
+func selectorPolicyFamilyArgument(call *ast.CallExpr) string {
+	for _, argument := range call.Args {
+		ident, ok := argument.(*ast.Ident)
+		if ok && (ident.Name == "mixedTopKFamily" || ident.Name == "mixedLimitFamily") {
+			return ident.Name
+		}
+	}
+	return ""
 }
 
 func selectorPolicyCallee(expr ast.Expr) string {
