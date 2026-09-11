@@ -115,8 +115,8 @@ func TestLower_ExpHistogram_TopKBottomKUnaffected(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LowerAt(%q): %v", query, err)
 			}
-			if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
-				t.Fatalf("LowerAt(%q) plan publishes %s, want sample (empty fold) — topk/bottomk must keep dropping histogram samples", query, shape)
+			if kind := chplan.LiveSampleKind(plan); kind != chplan.SampleKindFloat {
+				t.Fatalf("LowerAt(%q) live sample kind = %s, want float (empty fold)", query, kind)
 			}
 		})
 	}

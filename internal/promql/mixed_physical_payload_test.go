@@ -44,7 +44,7 @@ func TestMixedRowsNeedPreparationSeparatesPhysicalPayloadAndLiveProof(t *testing
 		{"nonempty_ranked_selector_projects_float", nonemptyRankedSelector, chplan.SampleKindFloat, chplan.SampleKindFloat, false, false},
 		{"preserving_selector_keeps_live_mixed", preservingSelector, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
 		{"unrelated_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: true}}, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
-		{"false_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: false}}, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
+		{"false_filter", &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: false}}, chplan.SampleKindMixed, chplan.SampleKindFloat, false, false},
 		{"project_barrier", &chplan.Project{Input: mixed}, chplan.SampleKindMixed, chplan.SampleKindMixed, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

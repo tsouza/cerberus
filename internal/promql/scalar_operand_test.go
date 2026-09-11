@@ -5,9 +5,20 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 func TestScalarOperandPolicyAndIdentity(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	mixedInput := func() *chplan.VectorSetOp {
+		return &chplan.VectorSetOp{
+			Mixed:            true,
+			MetricNameColumn: s.MetricNameColumn,
+			AttributesColumn: s.AttributesColumn,
+			TimestampColumn:  s.TimestampColumn,
+			ValueColumn:      s.ValueColumn,
+		}
+	}
 	for _, site := range []mixedAdmissionSite{mixedOperandAdmission, mixedPlanAdmission} {
 		key := mixedWrapperKey{family: mixedScalarFamily, site: site}
 		t.Run(string(site), func(t *testing.T) {
@@ -24,12 +35,18 @@ func TestScalarOperandPolicyAndIdentity(t *testing.T) {
 						return &chplan.OneRow{}, nil
 					})
 				} else {
-					node, err = scalarFloatRows(&chplan.VectorSetOp{Mixed: true})
+					node, err = scalarFloatRows(mixedInput())
 				}
 				if err == nil || node != nil || calls != 0 {
 					t.Errorf("site=%s mode=%v node=%T err=%v calls=%d", site, mode, node, err, calls)
 				}
-				for _, ordinary := range []chplan.Node{&chplan.OneRow{}, &chplan.VectorSetOp{Histogram: true}} {
+				for _, ordinary := range []chplan.Node{&chplan.OneRow{}, &chplan.VectorSetOp{
+					Histogram:        true,
+					MetricNameColumn: s.MetricNameColumn,
+					AttributesColumn: s.AttributesColumn,
+					TimestampColumn:  s.TimestampColumn,
+					ValueColumn:      s.ValueColumn,
+				}} {
 					if got, ordinaryErr := scalarFloatRows(ordinary); ordinaryErr != nil || got != ordinary {
 						t.Errorf("nonmixed operand changed: %T %v", got, ordinaryErr)
 					}
@@ -47,7 +64,7 @@ func TestScalarOperandPolicyAndIdentity(t *testing.T) {
 	if got != want || err != wantErr || calls != 1 {
 		t.Fatalf("direct identity: node=%T err=%v calls=%d", got, err, calls)
 	}
-	mixed := &chplan.VectorSetOp{Mixed: true}
+	mixed := mixedInput()
 	narrowed, err := scalarFloatRows(mixed)
 	if err != nil {
 		t.Fatal(err)

@@ -59,16 +59,16 @@ func TestLower_ExpHistogram_DropFamilyEmptyOverSubqueryInner(t *testing.T) {
 			if err != nil {
 				t.Fatalf("lower(%q) instant: %v", tc.query, err)
 			}
-			if got := chplan.RowShapeOf(plan); got != chplan.SampleRowShape {
-				t.Errorf("lower(%q) instant RowShape = %s, want %s", tc.query, got, chplan.SampleRowShape)
+			if got := chplan.LiveSampleKind(plan); got != chplan.SampleKindFloat {
+				t.Errorf("lower(%q) instant live sample kind = %s, want float", tc.query, got)
 			}
 
 			rplan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
 			if err != nil {
 				t.Fatalf("lower(%q) range: %v", tc.query, err)
 			}
-			if got := chplan.RowShapeOf(rplan); got != chplan.SampleRowShape {
-				t.Errorf("lower(%q) range RowShape = %s, want %s", tc.query, got, chplan.SampleRowShape)
+			if got := chplan.LiveSampleKind(rplan); got != chplan.SampleKindFloat {
+				t.Errorf("lower(%q) range live sample kind = %s, want float", tc.query, got)
 			}
 		})
 	}

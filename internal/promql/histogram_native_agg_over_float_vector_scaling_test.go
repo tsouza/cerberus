@@ -104,7 +104,11 @@ func TestLower_ExpHistogram_AggregationOverFloatVectorScalingBinop(t *testing.T)
 			if err != nil {
 				t.Fatalf("LowerAt(%q): %v", tc.query, err)
 			}
-			if got := chplan.RowShapeOf(instant); got != tc.wantShape {
+			if tc.wantShape == chplan.SampleRowShape {
+				if got := chplan.LiveSampleKind(instant); got != chplan.SampleKindFloat {
+					t.Errorf("LowerAt(%q): live sample kind = %v, want float", tc.query, got)
+				}
+			} else if got := chplan.RowShapeOf(instant); got != tc.wantShape {
 				t.Errorf("LowerAt(%q): row shape = %v, want %v", tc.query, got, tc.wantShape)
 			}
 
@@ -116,7 +120,11 @@ func TestLower_ExpHistogram_AggregationOverFloatVectorScalingBinop(t *testing.T)
 			if err != nil {
 				t.Fatalf("LowerAtRange(%q): %v", tc.query, err)
 			}
-			if got := chplan.RowShapeOf(ranged); got != tc.wantShape {
+			if tc.wantShape == chplan.SampleRowShape {
+				if got := chplan.LiveSampleKind(ranged); got != chplan.SampleKindFloat {
+					t.Errorf("LowerAtRange(%q): live sample kind = %v, want float", tc.query, got)
+				}
+			} else if got := chplan.RowShapeOf(ranged); got != tc.wantShape {
 				t.Errorf("LowerAtRange(%q): row shape = %v, want %v", tc.query, got, tc.wantShape)
 			}
 		})

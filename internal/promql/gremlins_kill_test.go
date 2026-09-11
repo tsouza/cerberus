@@ -952,10 +952,16 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 
 	s := schema.DefaultOTelMetrics()
 	const extraStepCol = "extra_step_col"
-	columns := append(chplan.HistogramPayloadColumns(),
+	columns := []chplan.Column{
+		{Name: s.MetricNameColumn, Role: chplan.RoleMetricName},
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}
+	columns = append(columns, chplan.HistogramPayloadColumns()...)
+	columns = append(columns,
 		chplan.Column{Name: chplan.MixedDiscriminatorColumn, Role: chplan.RoleDiscriminator},
-		chplan.Column{Name: extraStepCol},
-		chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp})
+		chplan.Column{Name: extraStepCol})
 	stepKeyedAgg := &chplan.Aggregate{Input: sampleForwardTestInput(columns...)}
 	for _, column := range columns {
 		stepKeyedAgg.GroupBy = append(stepKeyedAgg.GroupBy, &chplan.ColumnRef{Name: column.Name})
@@ -964,7 +970,7 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 	rewritten := &chplan.Project{
 		Input: stepKeyedAgg,
 	}
-	for _, column := range columns[:len(columns)-1] {
+	for _, column := range columns {
 		rewritten.Projections = append(rewritten.Projections,
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name})
 	}
@@ -973,6 +979,9 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 	}
 
 	plan := guardLabelRewriteCollision(rewritten, s)
+	if project, ok := plan.(*chplan.Project); ok {
+		plan = project.Input
+	}
 	agg, ok := plan.(*chplan.Aggregate)
 	if !ok {
 		t.Fatalf("plan = %T, want *chplan.Aggregate (rewritten publishes none of the four "+
@@ -1014,25 +1023,39 @@ func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 	const colA, colB = "col_a", "col_b"
 	stepKeyedAgg := &chplan.Aggregate{
 		Input: sampleForwardTestInput(
+			chplan.Column{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
 			chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+			chplan.Column{Name: s.ValueColumn, Role: chplan.RoleValue},
 			chplan.Column{Name: colA}, chplan.Column{Name: colB},
 		),
 		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.AttributesColumn},
 			&chplan.ColumnRef{Name: s.TimestampColumn},
 			&chplan.ColumnRef{Name: colA},
 			&chplan.ColumnRef{Name: colB},
 		},
-		GroupByAliases: []string{s.TimestampColumn, colA, colB},
+		GroupByAliases: []string{s.AttributesColumn, s.TimestampColumn, colA, colB},
+		AggFuncs: []chplan.AggFunc{{
+			Fn:    chplan.FnAny,
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+			Alias: s.ValueColumn,
+		}},
 	}
 	rewritten := &chplan.Project{
 		Input: stepKeyedAgg,
 		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 			{Expr: &chplan.ColumnRef{Name: colA}, Alias: colA},
 			{Expr: &chplan.ColumnRef{Name: colB}, Alias: colB},
 		},
 	}
 
 	plan := guardLabelRewriteCollision(rewritten, s)
+	if project, ok := plan.(*chplan.Project); ok {
+		plan = project.Input
+	}
 	agg, ok := plan.(*chplan.Aggregate)
 	if !ok {
 		t.Fatalf("plan = %T, want *chplan.Aggregate", plan)

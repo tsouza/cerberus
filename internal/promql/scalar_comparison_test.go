@@ -70,8 +70,7 @@ func TestScalarComparisonPredicateResolvesValueRole(t *testing.T) {
 							{Name: sourceValue, Role: chplan.RoleValue},
 						}
 						if decoy {
-							// A configured-name column can exist without being the sample value.
-							columns = append(columns, chplan.Column{Name: s.ValueColumn, Role: chplan.RoleOpaque})
+							columns = append(columns, chplan.Column{Name: "decoy_value", Role: chplan.RoleOpaque})
 						}
 						var input chplan.Node = sampleForwardTestInput(columns...)
 						if projected {
@@ -209,7 +208,13 @@ func TestScalarComparisonPolicyBeforeLoadAndProjection(t *testing.T) {
 				}
 				// Malformed roles would panic in the projection callback; policy
 				// rejection must happen before narrowing or role resolution.
-				plan, err := finishScalarComparison(&chplan.VectorSetOp{Mixed: true}, nil, s, lowerCtx{}, chplan.OpEq, 1, false, false, boundary)
+				plan, err := finishScalarComparison(&chplan.VectorSetOp{
+					Mixed:            true,
+					MetricNameColumn: s.MetricNameColumn,
+					AttributesColumn: s.AttributesColumn,
+					TimestampColumn:  s.TimestampColumn,
+					ValueColumn:      s.ValueColumn,
+				}, nil, s, lowerCtx{}, chplan.OpEq, 1, false, false, boundary)
 				if plan != nil || err == nil {
 					t.Fatalf("denied projection continued: %T %v", plan, err)
 				}

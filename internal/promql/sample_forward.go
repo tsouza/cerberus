@@ -374,17 +374,5 @@ func sampleForwardColumn(ref *chplan.ColumnRef, output string, materialize bool)
 // Neither can introduce histogram rows or change their payload. Other nodes
 // remain proof barriers; an OR predicate is never itself a narrowing proof.
 func mixedFloatRowsProven(inner chplan.Node) bool {
-	for {
-		if chplan.IsMixedFloatNarrowing(inner) {
-			return true
-		}
-		switch node := inner.(type) {
-		case *chplan.Filter:
-			inner = node.Input
-		case *chplan.OrderBy:
-			inner = node.Input
-		default:
-			return false
-		}
-	}
+	return chplan.LiveSampleKind(inner) == chplan.SampleKindFloat
 }

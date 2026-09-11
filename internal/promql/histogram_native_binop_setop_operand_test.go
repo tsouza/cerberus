@@ -134,7 +134,11 @@ func TestLower_ExpHistogram_BinopAcceptsSetOpOperand(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LowerAt(%q): unexpected error (this exact shape used to leak \"internal invariant violated\" — cerberus issue #2559): %v", tc.query, err)
 			}
-			if shape := chplan.RowShapeOf(plan); shape != tc.wantShape {
+			if tc.wantShape == chplan.SampleRowShape {
+				if kind := chplan.LiveSampleKind(plan); kind != chplan.SampleKindFloat {
+					t.Fatalf("lower(%q): live sample kind is %s, want float", tc.query, kind)
+				}
+			} else if shape := chplan.RowShapeOf(plan); shape != tc.wantShape {
 				t.Fatalf("lower(%q): plan root publishes %s, want %s", tc.query, shape, tc.wantShape)
 			}
 			if tc.wantPlan != nil {

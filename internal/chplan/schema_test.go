@@ -362,6 +362,12 @@ func TestLiveSampleKindCarriesOnlyRepresentedFloatProof(t *testing.T) {
 		names[i] = column.Name
 	}
 	mixed := &Scan{Table: "mixed", Columns: names, Roles: mixedColumns}
+	histogramColumns := append(slices.Clone(floatColumns), HistogramPayloadColumns()...)
+	histogramNames := make([]string, len(histogramColumns))
+	for i, column := range histogramColumns {
+		histogramNames[i] = column.Name
+	}
+	histogram := &Scan{Table: "histogram", Columns: histogramNames, Roles: histogramColumns}
 	narrowed := &Filter{
 		Input: mixed,
 		Predicate: &Binary{
@@ -381,6 +387,8 @@ func TestLiveSampleKindCarriesOnlyRepresentedFloatProof(t *testing.T) {
 		{name: "narrowed", node: narrowed, want: SampleKindFloat},
 		{name: "filtered_narrowing", node: &Filter{Input: narrowed, Predicate: &LitBool{V: true}}, want: SampleKindFloat},
 		{name: "ordered_narrowing", node: &OrderBy{Input: narrowed}, want: SampleKindFloat},
+		{name: "empty_histogram", node: &Filter{Input: histogram, Predicate: &LitBool{V: false}}, want: SampleKindFloat},
+		{name: "ordered_empty_histogram", node: &OrderBy{Input: &Filter{Input: histogram, Predicate: &LitBool{V: false}}}, want: SampleKindFloat},
 		{name: "project_barrier", node: &Project{Input: narrowed}, want: SampleKindMixed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

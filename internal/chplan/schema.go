@@ -295,11 +295,13 @@ func LiveSampleKind(n Node) SampleKind {
 		return SampleKindOpaque
 	}
 	kind := n.RowType().SampleKind()
-	if kind != SampleKindMixed {
-		return kind
-	}
 	for {
-		if IsMixedFloatNarrowing(n) {
+		if filter, ok := n.(*Filter); ok {
+			if predicate, ok := filter.Predicate.(*LitBool); ok && !predicate.V {
+				return SampleKindFloat
+			}
+		}
+		if kind == SampleKindMixed && IsMixedFloatNarrowing(n) {
 			return SampleKindFloat
 		}
 		switch node := n.(type) {

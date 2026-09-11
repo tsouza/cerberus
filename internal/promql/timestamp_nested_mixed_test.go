@@ -80,13 +80,20 @@ func TestTimestampMixedPlanNormalizesRolesBeforeGuard(t *testing.T) {
 }
 
 func TestTimestampMixedPlanAuthorizationPrecedesRoleResolution(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
 	key := mixedWrapperKey{family: mixedTimestampFamily, site: mixedPlanAdmission}
 	old := mixedOperandPolicies[key]
 	for _, mode := range []mixedOperandPolicy{mixedReject, mixedFloatOnly, mixedPreserve} {
 		t.Run(fmt.Sprint(mode), func(t *testing.T) {
 			mixedOperandPolicies[key] = mode
 			t.Cleanup(func() { mixedOperandPolicies[key] = old })
-			plan, err := lowerTimestampOverMixedPlan(&chplan.VectorSetOp{Mixed: true}, nil, schema.DefaultOTelMetrics(), lowerCtx{})
+			plan, err := lowerTimestampOverMixedPlan(&chplan.VectorSetOp{
+				Mixed:            true,
+				MetricNameColumn: s.MetricNameColumn,
+				AttributesColumn: s.AttributesColumn,
+				TimestampColumn:  s.TimestampColumn,
+				ValueColumn:      s.ValueColumn,
+			}, nil, s, lowerCtx{})
 			if plan != nil || err == nil {
 				t.Fatalf("denied malformed input reached conversion: %T %v", plan, err)
 			}

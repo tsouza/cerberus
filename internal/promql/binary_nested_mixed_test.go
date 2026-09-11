@@ -80,7 +80,7 @@ func TestNestedMixedComparisonNarrowsAfterOperand(t *testing.T) {
 							if !narrow.Input.Equal(original) {
 								t.Fatal("mixed operand changed before narrowing: union shadowing/order must be preserved")
 							}
-							if chplan.RowShapeOf(plan) != chplan.SampleRowShape {
+							if chplan.LiveSampleKind(plan) != chplan.SampleKindFloat {
 								t.Fatal("comparison result must contain only floats")
 							}
 						})
