@@ -13,6 +13,9 @@
         ],
         "callers": [
           "lowerPlainOperandForMixedJoin"
+        ],
+        "cited": [
+          "resolveSampleTemporalLayout"
         ]
       }
     },
@@ -28,6 +31,10 @@
         ],
         "callers": [
           "lowerPlainOperandForMixedJoin"
+        ],
+        "cited": [
+          "lowerPlainOperandForMixedJoin",
+          "vectorPlainArithmeticOverMixedExpHistogramSetOp"
         ]
       }
     }

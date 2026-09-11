@@ -19,6 +19,9 @@
           "lowerCallOverSubquery",
           "lowerExpHistogramValuedShape",
           "lowerHistogramNativeRoot"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
         ]
       }
     },
@@ -57,6 +60,11 @@
           "lowerCallOverSubquery",
           "lowerExpHistogramValuedShape",
           "lowerHistogramNativeRoot"
+        ],
+        "cited": [
+          "isExpHistogramValuedShape",
+          "lowerExpHistogramValuedShape",
+          "selectFnOverExpHistogramSubquery"
         ]
       }
     },

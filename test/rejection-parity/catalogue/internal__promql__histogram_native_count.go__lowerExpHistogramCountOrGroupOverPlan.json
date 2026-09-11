@@ -12,6 +12,11 @@
         ],
         "callers": [
           "lowerExpHistogramCountFamily"
+        ],
+        "cited": [
+          "countOrGroupOverExpHistogramValue",
+          "lowerExpHistogramCountFamily",
+          "lowerExpHistogramValuedShape"
         ]
       }
     },
@@ -27,6 +32,10 @@
           "default of switch agg.Op over [case parser.COUNT; case parser.GROUP; default]"
         ],
         "callers": [
+          "lowerExpHistogramCountFamily"
+        ],
+        "cited": [
+          "countOrGroupOverExpHistogramValue",
           "lowerExpHistogramCountFamily"
         ]
       }

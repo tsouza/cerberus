@@ -18,6 +18,9 @@
         "callers": [
           "lowerCallOverSubquery",
           "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
         ]
       }
     },
@@ -54,6 +57,11 @@
         "callers": [
           "lowerCallOverSubquery",
           "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "isExpHistogramValuedShape",
+          "lowerExpHistogramValuedShape",
+          "rangeFnOverExpHistogramSubquery"
         ]
       }
     },

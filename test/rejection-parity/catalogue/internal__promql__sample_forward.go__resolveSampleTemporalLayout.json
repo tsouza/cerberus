@@ -16,6 +16,12 @@
           "legacySampleProjectionLayout",
           "lowerMixedExpHistogramOperands",
           "widenPlainVectorToMixedShape"
+        ],
+        "cited": [
+          "canonicalizeMixedFloatArmForAgg",
+          "legacySampleProjectionLayout",
+          "lowerMixedExpHistogramOperands",
+          "widenPlainVectorToMixedShape"
         ]
       }
     },
@@ -87,6 +93,9 @@
           "legacySampleProjectionLayout",
           "lowerMixedExpHistogramOperands",
           "widenPlainVectorToMixedShape"
+        ],
+        "cited": [
+          "legacySampleProjectionLayout"
         ]
       }
     },
@@ -105,6 +114,9 @@
           "legacySampleProjectionLayout",
           "lowerMixedExpHistogramOperands",
           "widenPlainVectorToMixedShape"
+        ],
+        "cited": [
+          "legacySampleProjectionLayout"
         ]
       }
     },

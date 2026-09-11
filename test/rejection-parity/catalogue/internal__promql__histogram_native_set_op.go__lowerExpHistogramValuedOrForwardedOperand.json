@@ -39,6 +39,10 @@
         ],
         "callers": [
           "lowerMixedExpHistogramOperands"
+        ],
+        "cited": [
+          "isExpHistogramForwardedThroughSetOp",
+          "lowerExpHistogramSetOpOperand"
         ]
       }
     }

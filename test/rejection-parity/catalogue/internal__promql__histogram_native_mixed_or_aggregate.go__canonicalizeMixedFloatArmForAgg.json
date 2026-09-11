@@ -12,6 +12,9 @@
         ],
         "callers": [
           "lowerPlainAggregateOverInput"
+        ],
+        "cited": [
+          "lowerPlainAggregateOverInput"
         ]
       }
     },
@@ -28,6 +31,9 @@
         ],
         "callers": [
           "lowerPlainAggregateOverInput"
+        ],
+        "cited": [
+          "resolveSampleTemporalLayout"
         ]
       }
     }

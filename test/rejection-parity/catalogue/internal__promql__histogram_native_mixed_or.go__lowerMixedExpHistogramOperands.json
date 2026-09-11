@@ -15,6 +15,10 @@
         "callers": [
           "lowerMixedExpHistogramSetOp",
           "shadowResolveMixedExpHistogramOperands"
+        ],
+        "cited": [
+          "lowerMixedExpHistogramOperands",
+          "mixedExpHistogramSetOp"
         ]
       }
     },
@@ -34,6 +38,9 @@
         "callers": [
           "lowerMixedExpHistogramSetOp",
           "shadowResolveMixedExpHistogramOperands"
+        ],
+        "cited": [
+          "resolveSampleTemporalLayout"
         ]
       }
     }

@@ -13,6 +13,10 @@
         ],
         "callers": [
           "lowerMixedOrSubqueryAggregateRangeFnOverGrid"
+        ],
+        "cited": [
+          "combineMixedAggregateBranches",
+          "lowerSumOrAvgOverMixedExpHistogramSetOp"
         ]
       }
     }

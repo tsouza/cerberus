@@ -15,6 +15,12 @@
         "callers": [
           "lowerCountValues",
           "lowerHistogramNativeRoot"
+        ],
+        "cited": [
+          "countValuesOverExpHistogramValue",
+          "lowerCountValues",
+          "lowerExpHistogramValuedShape",
+          "lowerHistogramNativeRoot"
         ]
       }
     },

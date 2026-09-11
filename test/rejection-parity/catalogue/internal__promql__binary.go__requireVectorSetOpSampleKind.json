@@ -12,6 +12,10 @@
         ],
         "callers": [
           "lowerVectorSetOp"
+        ],
+        "cited": [
+          "lowerVectorSetOp",
+          "lowerVectorSetOpOperand"
         ]
       }
     }

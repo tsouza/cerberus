@@ -50,6 +50,9 @@
           "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramHistogramCompareBinop",
           "lowerExpHistogramHistogramCompareBoolBinop"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
         ]
       }
     }

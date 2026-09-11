@@ -17,6 +17,9 @@
           "lowerExpHistogramValuedShape",
           "lowerHistogramNativeRoot",
           "lowerUnaryOverExpHistogram"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
         ]
       }
     },

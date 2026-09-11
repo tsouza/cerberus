@@ -16,6 +16,11 @@
         "callers": [
           "lowerExpHistogramValuedShape",
           "lowerLabelReplaceOverExpHistogram"
+        ],
+        "cited": [
+          "isExpHistogramValuedShape",
+          "labelCallOverExpHistogram",
+          "lowerExpHistogramValuedShape"
         ]
       }
     },

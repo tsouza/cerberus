@@ -19,6 +19,12 @@
         ],
         "callers": [
           "lowerBinary"
+        ],
+        "cited": [
+          "lowerMixedExpHistogramSetOp",
+          "lowerVectorSetOp",
+          "lowerVectorSetOpOperand",
+          "mixedExpHistogramSetOp"
         ]
       }
     },

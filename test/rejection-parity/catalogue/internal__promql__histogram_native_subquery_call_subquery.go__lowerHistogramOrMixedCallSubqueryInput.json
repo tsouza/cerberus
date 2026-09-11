@@ -13,6 +13,9 @@
         ],
         "callers": [
           "lowerSubqueryOverCallSubquery"
+        ],
+        "cited": [
+          "lowerSubqueryOverCallSubquery"
         ]
       }
     }

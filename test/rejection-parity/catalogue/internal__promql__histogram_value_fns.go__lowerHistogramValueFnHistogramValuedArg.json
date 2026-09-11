@@ -13,6 +13,9 @@
         ],
         "callers": [
           "lowerHistogramValueFn"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
         ]
       }
     }

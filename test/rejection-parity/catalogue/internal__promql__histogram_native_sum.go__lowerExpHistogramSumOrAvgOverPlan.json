@@ -17,6 +17,11 @@
           "lowerSumOrAvgOverMixedExpHistogramSetOp",
           "lowerSumOrAvgOverMixedOrSubqueryFoldFn",
           "lowerSumOrAvgOverMixedPlan"
+        ],
+        "cited": [
+          "lowerExpHistogramSetOpOperand",
+          "lowerExpHistogramValuedShape",
+          "shadowResolveMixedExpHistogramOperands"
         ]
       }
     }
