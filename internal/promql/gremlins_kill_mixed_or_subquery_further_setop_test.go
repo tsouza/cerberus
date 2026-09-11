@@ -84,7 +84,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch(t *tes
 	sub := &parser.SubqueryExpr{Range: 5 * time.Minute, Step: time.Minute}
 	inner := &chplan.Scan{Table: "dummy"}
 
-	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.HistogramRowShape, lastOverTimeWindowFn, sub, s, ctx)
+	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindHistogram, lastOverTimeWindowFn, sub, s, ctx)
 	if err != nil {
 		t.Fatalf("histogram-shape: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch(t *tes
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`)")
 	}
 
-	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.MixedRowShape, lastOverTimeWindowFn, sub, s, ctx)
+	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindMixed, lastOverTimeWindowFn, sub, s, ctx)
 	if err != nil {
 		t.Fatalf("mixed-shape: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch(t 
 	sub := &parser.SubqueryExpr{Range: 5 * time.Minute, Step: time.Minute}
 	inner := &chplan.Scan{Table: "dummy"}
 
-	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.HistogramRowShape, resetsWindowFn, sub, s, ctx)
+	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindHistogram, resetsWindowFn, sub, s, ctx)
 	if err != nil {
 		t.Fatalf("histogram-shape: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch(t 
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:`)")
 	}
 
-	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.MixedRowShape, resetsWindowFn, sub, s, ctx)
+	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindMixed, resetsWindowFn, sub, s, ctx)
 	if err != nil {
 		t.Fatalf("mixed-shape: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch(t *testing.
 	sub := &parser.SubqueryExpr{Range: 5 * time.Minute, Step: time.Minute}
 	inner := &chplan.Scan{Table: "dummy"}
 
-	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.HistogramRowShape, rateWindowFn, sub, s, ctx)
+	histPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindHistogram, rateWindowFn, sub, s, ctx)
 	if err != nil {
 		t.Fatalf("histogram-shape: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch(t *testing.
 			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`)")
 	}
 
-	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.MixedRowShape, rateWindowFn, sub, s, ctx)
+	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.SampleKindMixed, rateWindowFn, sub, s, ctx)
 	if err != nil {
 		t.Fatalf("mixed-shape: %v", err)
 	}
