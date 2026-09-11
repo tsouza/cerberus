@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:projectDateFnOverInner#2f3ea020",
+      "message": "promql: unknown date function %s",
+      "class": "internal",
+      "rationale": "lowerCall routes only the eight known value-reading date functions plus timestampFunctionName to lowerDateFn, the sole caller of projectDateFnOverInner. The timestamp spelling is excluded by this guard and takes the timestamp branch; every other dispatched name is implemented by dateFnExpr. A parseable wire query therefore cannot supply an unknown name here; the error is reachable only through a forged internal parser.Call in tests.",
+      "evidence": {
+        "guard": [
+          "if c.Func.Name != timestampFunctionName \u0026\u0026 dateFnExpr(c.Func.Name, nil, nil) == nil"
+        ],
+        "callers": [
+          "lowerDateFn"
+        ],
+        "cited": [
+          "dateFnExpr",
+          "lowerCall",
+          "lowerDateFn",
+          "projectDateFnOverInner"
+        ]
+      }
+    }
+  ]
+}
