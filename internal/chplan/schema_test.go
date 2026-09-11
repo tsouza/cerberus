@@ -260,6 +260,49 @@ func TestRowTypeMixedFloatNarrowing(t *testing.T) {
 	}
 }
 
+func TestLiveSampleKindCarriesOnlyRepresentedFloatProof(t *testing.T) {
+	floatColumns := []Column{
+		{Name: "MetricName", Role: RoleMetricName},
+		{Name: "Attributes", Role: RoleAttributes},
+		{Name: "TimeUnix", Role: RoleTimestamp},
+		{Name: "Value", Role: RoleValue},
+	}
+	mixedColumns := append(slices.Clone(floatColumns), HistogramPayloadColumns()...)
+	mixedColumns = append(mixedColumns, Column{Name: MixedDiscriminatorColumn, Role: RoleDiscriminator})
+	names := make([]string, len(mixedColumns))
+	for i, column := range mixedColumns {
+		names[i] = column.Name
+	}
+	mixed := &Scan{Table: "mixed", Columns: names, Roles: mixedColumns}
+	narrowed := &Filter{
+		Input: mixed,
+		Predicate: &Binary{
+			Op:    OpEq,
+			Left:  &ColumnRef{Name: MixedDiscriminatorColumn},
+			Right: &LitInt{V: 0},
+		},
+	}
+
+	for _, tc := range []struct {
+		name string
+		node Node
+		want SampleKind
+	}{
+		{name: "nil", want: SampleKindOpaque},
+		{name: "mixed", node: mixed, want: SampleKindMixed},
+		{name: "narrowed", node: narrowed, want: SampleKindFloat},
+		{name: "filtered_narrowing", node: &Filter{Input: narrowed, Predicate: &LitBool{V: true}}, want: SampleKindFloat},
+		{name: "ordered_narrowing", node: &OrderBy{Input: narrowed}, want: SampleKindFloat},
+		{name: "project_barrier", node: &Project{Input: narrowed}, want: SampleKindMixed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LiveSampleKind(tc.node); got != tc.want {
+				t.Fatalf("LiveSampleKind = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRowTypeCanonicalHistogramPayload(t *testing.T) {
 	full := Schema{Columns: HistogramPayloadColumns()}
 	if !full.HasHistogramPayload() {

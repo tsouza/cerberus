@@ -286,6 +286,33 @@ func (s Schema) SampleKind() SampleKind {
 	return SampleKindOpaque
 }
 
+// LiveSampleKind refines a node's physical sample schema with the only
+// value-domain proof represented in the plan: a discriminator-zero filter over
+// a mixed payload contains float rows only while retaining the mixed columns.
+// Filter and OrderBy preserve that proof; every other node is a proof barrier.
+func LiveSampleKind(n Node) SampleKind {
+	if n == nil {
+		return SampleKindOpaque
+	}
+	kind := n.RowType().SampleKind()
+	if kind != SampleKindMixed {
+		return kind
+	}
+	for {
+		if IsMixedFloatNarrowing(n) {
+			return SampleKindFloat
+		}
+		switch node := n.(type) {
+		case *Filter:
+			n = node.Input
+		case *OrderBy:
+			n = node.Input
+		default:
+			return kind
+		}
+	}
+}
+
 func samplePublicRole(role ColumnRole) bool {
 	switch role {
 	case RoleMetricName, RoleAttributes, RoleTimestamp, RoleAnchor, RoleValue, RoleHistogramField, RoleDiscriminator:

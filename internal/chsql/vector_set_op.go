@@ -612,8 +612,11 @@ func vectorSetOpCanonicalQuartetFrags(s *chplan.VectorSetOp, arm chplan.Node) ([
 
 	var timeFrag Frag
 	timestamp, hasTimestamp := row.Find(chplan.RoleTimestamp)
+	anchor, hasAnchor := row.Find(chplan.RoleAnchor)
 	if hasTimestamp {
 		timeFrag = vectorSetOpAliasedColumn(timestamp.Name, s.TimestampColumn)
+	} else if hasAnchor {
+		timeFrag = vectorSetOpAliasedColumn(anchor.Name, s.TimestampColumn)
 	} else if armTsCol, matrix := vectorSetOpArmTimestampCol(arm, s); matrix {
 		timeFrag = vectorSetOpAliasedColumn(armTsCol, s.TimestampColumn)
 	} else {
@@ -632,7 +635,7 @@ func vectorSetOpArmSampleKind(arm chplan.Node) (chplan.SampleKind, error) {
 	if arm == nil {
 		return chplan.SampleKindInvalid, fmt.Errorf("%w: VectorSetOp arm is nil", ErrUnsupported)
 	}
-	kind := arm.RowType().SampleKind()
+	kind := chplan.LiveSampleKind(arm)
 	switch kind {
 	case chplan.SampleKindFloat, chplan.SampleKindHistogram, chplan.SampleKindMixed:
 		return kind, nil
@@ -874,6 +877,35 @@ func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {
 		// drop the colliding key, or refuse the query. Emitting one of
 		// them silently would make the plan's own intent unreadable.
 		return fmt.Errorf("%w: VectorSetOp.MixedDropCollisions and .MixedAbortOnCollision are mutually exclusive", ErrUnsupported)
+	}
+	return validateVectorSetOpSampleKinds(s)
+}
+
+func validateVectorSetOpSampleKinds(s *chplan.VectorSetOp) error {
+	left, err := vectorSetOpArmSampleKind(s.Left)
+	if err != nil {
+		return err
+	}
+	right, err := vectorSetOpArmSampleKind(s.Right)
+	if err != nil {
+		return err
+	}
+
+	actual := left
+	if s.Op == chplan.VectorSetOr && left != right {
+		actual = chplan.SampleKindMixed
+	}
+	declared := chplan.SampleKindFloat
+	if s.Histogram {
+		declared = chplan.SampleKindHistogram
+	} else if s.Mixed {
+		declared = chplan.SampleKindMixed
+	}
+	if actual != declared {
+		return fmt.Errorf(
+			"%w: VectorSetOp declares %s output but its live arm schemas produce %s",
+			ErrUnsupported, declared, actual,
+		)
 	}
 	return nil
 }

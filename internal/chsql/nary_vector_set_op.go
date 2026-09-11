@@ -229,5 +229,21 @@ func (e *emitter) validateNaryVectorSetOpShape(s *chplan.NaryVectorSetOp) error 
 	case s.Op != chplan.VectorSetOr && s.Op != chplan.VectorSetAnd:
 		return fmt.Errorf("%w: NaryVectorSetOp op %q is not associative", ErrUnsupported, s.Op)
 	}
+	declared := chplan.SampleKindFloat
+	if s.Histogram {
+		declared = chplan.SampleKindHistogram
+	}
+	for i, arm := range s.Arms {
+		kind, err := vectorSetOpArmSampleKind(arm)
+		if err != nil {
+			return err
+		}
+		if kind != declared {
+			return fmt.Errorf(
+				"%w: NaryVectorSetOp declares %s output but arm %d has %s live schema",
+				ErrUnsupported, declared, i, kind,
+			)
+		}
+	}
 	return nil
 }
