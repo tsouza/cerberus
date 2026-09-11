@@ -28,6 +28,7 @@
           "prepareSortOperand",
           "preserveMixedPlan",
           "requireFloatArithmeticPolicy",
+          "requireMixedBespokePolicy",
           "requireMixedPlanPolicy"
         ]
       }
