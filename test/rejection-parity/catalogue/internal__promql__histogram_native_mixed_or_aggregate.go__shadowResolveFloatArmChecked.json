@@ -5,24 +5,24 @@
       "site": "internal/promql/histogram_native_mixed_or_aggregate.go:shadowResolveFloatArmChecked#6cdf660e",
       "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
       "class": "internal",
-      "rationale": "The parser rejects bool on non-comparison operators. lowerDateFnOverMixedExpHistogramSetOp receives the identical binary node returned by dateFnOverMixedExpHistogramSetOp; lowerScalarArgOverMixedExpHistogramSetOp receives the node from scalarArgOverMixedExpHistogramSetOp; lowerSortFloatOperand receives the node from sortOverMixedExpHistogramSetOp. Each recognizer delegates to mixedExpHistogramSetOp, which requires parser.LOR. None replaces the node before shadowResolveFloatArmChecked. LOR is a set union, never a comparison, so the parsed AST cannot carry ReturnBool. The sort operand policy authorizes the same checked loader without changing its AST or shadow resolution. This guard is reachable only through internal malformed-AST construction.",
+      "rationale": "The parser cannot set ReturnBool on the set operator accepted here. lowerScalarVectorArg calls shadowResolveFloatArmChecked only after mixedExpHistogramSetOp recognizes an or expression. The other callers, lowerSortFloatOperand and lowerDateFnOverMixedExpHistogramSetOp, retain their sortOverMixedExpHistogramSetOp and dateFnOverMixedExpHistogramSetOp recognizers, which also delegate to mixedExpHistogramSetOp. That shared recognizer requires b.Op == parser.LOR, never a comparison. Neither the scalar nor sort operand policy replaces the recognized node before invoking the checked loader. The guard remains before shadowResolveMixedExpHistogramOperands lowers either arm, preserving the same synthetic invalid-AST rejection and histogram-first operand lowering.",
       "evidence": {
         "guard": [
           "if b.ReturnBool"
         ],
         "callers": [
           "lowerDateFnOverMixedExpHistogramSetOp",
-          "lowerScalarArgOverMixedExpHistogramSetOp",
+          "lowerScalarVectorArg",
           "lowerSortFloatOperand"
         ],
         "cited": [
           "dateFnOverMixedExpHistogramSetOp",
           "lowerDateFnOverMixedExpHistogramSetOp",
-          "lowerScalarArgOverMixedExpHistogramSetOp",
+          "lowerScalarVectorArg",
           "lowerSortFloatOperand",
           "mixedExpHistogramSetOp",
-          "scalarArgOverMixedExpHistogramSetOp",
           "shadowResolveFloatArmChecked",
+          "shadowResolveMixedExpHistogramOperands",
           "sortOverMixedExpHistogramSetOp"
         ]
       }
