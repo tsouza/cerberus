@@ -159,6 +159,7 @@ func rewriteHistogramProjectionAttributes(inner chplan.Node, attrs chplan.Expr, 
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
 	}
 }
 

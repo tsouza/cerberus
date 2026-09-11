@@ -334,8 +334,33 @@ func setOp(op chplan.VectorSetOpKind, l, r chplan.Node) *chplan.VectorSetOp {
 // the flatten's arm-freezing order is what is under test.
 func orChain(arm chplan.Node) chplan.Node {
 	return setOp(chplan.VectorSetOr,
-		setOp(chplan.VectorSetOr, arm, &chplan.Scan{Table: "b"}),
-		&chplan.Scan{Table: "c"})
+		setOp(chplan.VectorSetOr, arm, tableScan("b")),
+		tableScan("c"))
+}
+
+// aggregateSetOpArm is a closed canonical Sample arm that still exposes a
+// Filter(Aggregate) pair for FilterAggregateTranspose. The aggregate keeps all
+// three identity columns and writes its reducer into the declared Value role,
+// so FlattenVectorSetOp validates the same physical contract its emitter uses.
+func aggregateSetOpArm() chplan.Node {
+	return &chplan.Filter{
+		Input: &chplan.Aggregate{
+			Input: tableScan("a"),
+			GroupBy: []chplan.Expr{
+				&chplan.ColumnRef{Name: "MetricName"},
+				&chplan.ColumnRef{Name: "Attributes"},
+				&chplan.ColumnRef{Name: "TimeUnix"},
+			},
+			GroupByAliases: []string{"MetricName", "Attributes", "TimeUnix"},
+			AggFuncs: []chplan.AggFunc{{
+				Fn:    chplan.FnSum,
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
+				Alias: "Value",
+			}},
+			Roles: setOpTestColumns(),
+		},
+		Predicate: labelFilter("MetricName", "up"),
+	}
 }
 
 // pairPlans maps a pairKey to a builder for the plan shape that makes BOTH
@@ -444,7 +469,7 @@ var pairPlans = map[string]func() chplan.Node{
 	// ConstantFoldSemantic × FlattenVectorSetOp.
 	pairKey(ruleFoldSemantic, ruleFlattenSetOp): func() chplan.Node {
 		return orChain(&chplan.Filter{
-			Input: &chplan.Scan{Table: "a"},
+			Input: tableScan("a"),
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpAnd,
 				Left:  trueEq(1),
@@ -531,7 +556,7 @@ var pairPlans = map[string]func() chplan.Node{
 	// ConstantFoldHeuristic × FlattenVectorSetOp.
 	pairKey(ruleFoldHeuristic, ruleFlattenSetOp): func() chplan.Node {
 		return orChain(&chplan.Filter{
-			Input: &chplan.Scan{Table: "a"},
+			Input: tableScan("a"),
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpAnd,
 				Left:  &chplan.LitBool{V: true},
@@ -598,7 +623,7 @@ var pairPlans = map[string]func() chplan.Node{
 	pairKey(ruleFilterFusion, ruleFlattenSetOp): func() chplan.Node {
 		return orChain(&chplan.Filter{
 			Input: &chplan.Filter{
-				Input:     &chplan.Scan{Table: "a"},
+				Input:     tableScan("a"),
 				Predicate: labelFilter("MetricName", "up"),
 			},
 			Predicate: labelFilter("job", "api"),
@@ -639,10 +664,7 @@ var pairPlans = map[string]func() chplan.Node{
 
 	// FilterAggregateTranspose × FlattenVectorSetOp.
 	pairKey(ruleAggTranspose, ruleFlattenSetOp): func() chplan.Node {
-		return orChain(&chplan.Filter{
-			Input:     sumAgg(&chplan.Scan{Table: "a"}, "job"),
-			Predicate: labelFilter("job", "api"),
-		})
+		return orChain(aggregateSetOpArm())
 	},
 
 	// FilterRangeWindowTranspose × ProjectionPushdown.
@@ -676,7 +698,7 @@ var pairPlans = map[string]func() chplan.Node{
 	// FilterRangeWindowTranspose × FlattenVectorSetOp.
 	pairKey(ruleRWTranspose, ruleFlattenSetOp): func() chplan.Node {
 		return orChain(&chplan.Filter{
-			Input:     rateWindow(&chplan.Scan{Table: "a"}),
+			Input:     rateWindow(tableScan("a")),
 			Predicate: labelFilter("Attributes", "v1"),
 		})
 	},
@@ -692,7 +714,7 @@ var pairPlans = map[string]func() chplan.Node{
 	// ProjectionPushdown × FlattenVectorSetOp.
 	pairKey(ruleProjPushdown, ruleFlattenSetOp): func() chplan.Node {
 		return orChain(&chplan.Project{
-			Input: &chplan.Scan{Table: "a"},
+			Input: &chplan.Scan{Table: "a", Roles: setOpTestColumns()},
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: "MetricName"}},
 				{Expr: &chplan.ColumnRef{Name: "Value"}},
@@ -707,6 +729,6 @@ var pairPlans = map[string]func() chplan.Node{
 	// an arm frozen BEFORE it was stamped, and then never revisited, would
 	// diverge here.
 	pairKey(ruleNormalizeBound, ruleFlattenSetOp): func() chplan.Node {
-		return orChain(rateWindow(&chplan.Scan{Table: "a"}))
+		return orChain(rateWindow(tableScan("a")))
 	},
 }

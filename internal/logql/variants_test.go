@@ -278,7 +278,7 @@ func TestProjectSamplesForwardsVariantPlan(t *testing.T) {
 				t.Fatalf("lower: %v", err)
 			}
 
-			wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+			wrapped := mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true})
 			if wrapped != plan {
 				t.Fatalf("ProjectSamples wrapped the variant plan (%T); want it forwarded unchanged", wrapped)
 			}

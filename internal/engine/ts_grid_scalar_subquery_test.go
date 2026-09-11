@@ -174,4 +174,6 @@ func (*tsGridStubLang) Parse(context.Context, string) (chplan.Node, Meta, error)
 	return nil, Meta{}, nil
 }
 
-func (*tsGridStubLang) ProjectSamples(plan chplan.Node, _ Meta) chplan.Node { return plan }
+func (*tsGridStubLang) ProjectSamples(plan chplan.Node, _ Meta) (chplan.Node, error) {
+	return plan, nil
+}

@@ -68,7 +68,7 @@ func planForRangeQuery(t *testing.T, q string, lowerers promql.RangeLowerers) ch
 	// The engine wraps every PromQL plan with the Sample projection before it
 	// optimizes and classifies, so the classified plan is rooted on a Project.
 	l := &lang{Schema: s}
-	plan = l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+	plan = mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true})
 
 	return optimizer.Default().Run(context.Background(), plan)
 }
@@ -162,7 +162,7 @@ func TestRangeQueryGrid_InstantQueryStillReportsNoGrid(t *testing.T) {
 		t.Fatalf("lower: %v", err)
 	}
 	l := &lang{Schema: s}
-	optimized := optimizer.Default().Run(context.Background(), l.ProjectSamples(plan, engine.Meta{IsMetric: true}))
+	optimized := optimizer.Default().Run(context.Background(), mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true}))
 
 	if _, _, step := solver.GridOf(optimized); step != 0 {
 		t.Errorf("instant query reports step %s, want 0 — the Planner's instant guard would stop firing", step)

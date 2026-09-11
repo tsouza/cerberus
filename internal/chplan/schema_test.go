@@ -106,6 +106,34 @@ func TestRowTypeEveryNode(t *testing.T) {
 	assertCoversEverySealedKind(t, nodeMarkerMethod, covered, "RowType cases", "add an output-schema assertion")
 }
 
+func TestHistogramProjectionRowTypeDeclaresCanonicalRoles(t *testing.T) {
+	t.Parallel()
+
+	h := &HistogramProjection{
+		Input: &OneRow{},
+		GroupBy: []Expr{
+			&LitString{V: "metric"},
+			&LitString{V: "labels"},
+			&LitString{V: "time"},
+			&LitFloat{V: 0},
+		},
+		GroupByAliases:   []string{"source_name", "source_labels", "source_time", "source_value"},
+		MetricNameColumn: "source_name",
+		AttributesColumn: "source_labels",
+		TimestampColumn:  "source_time",
+		ValueColumn:      "source_value",
+	}
+
+	want := sampleSchema("source_name", "source_labels", "source_time", "source_value")
+	want.Columns = append(want.Columns, histogramColumns()...)
+	if got := h.RowType(); !got.Equal(want) {
+		t.Fatalf("HistogramProjection.RowType() = %#v, want %#v", got, want)
+	}
+	if got := h.RowType().SampleKind(); got != SampleKindHistogram {
+		t.Fatalf("HistogramProjection sample kind = %s, want %s", got, SampleKindHistogram)
+	}
+}
+
 func TestRowTypeDeclarations(t *testing.T) {
 	roles := []Column{{"renamed_value", RoleValue}, {"renamed_labels", RoleAttributes}}
 	p := &Project{Input: &OneRow{}, Roles: roles, Projections: []Projection{{Expr: &LitInt{V: 1}, Alias: "renamed_value"}}}
@@ -217,6 +245,66 @@ func TestRowTypeWindowBranches(t *testing.T) {
 	}
 }
 
+func TestRowTypeMatrixAnchorSurvivesSchemaPreservingWrappers(t *testing.T) {
+	input := &Scan{
+		Columns: []string{"labels", "time", "value"},
+		Roles: []Column{
+			{Name: "labels", Role: RoleAttributes},
+			{Name: "time", Role: RoleTimestamp},
+			{Name: "value", Role: RoleValue},
+		},
+	}
+	window := &RangeWindow{
+		Input:           input,
+		OuterRange:      time.Hour,
+		GroupBy:         []Expr{&ColumnRef{Name: "labels"}},
+		TimestampColumn: "time",
+		ValueColumn:     "value",
+	}
+	project := &Project{
+		Input: window,
+		Projections: []Projection{
+			{Expr: &ColumnRef{Name: "labels"}},
+			{Expr: &ColumnRef{Name: RangeWindowAnchorColumn}},
+			{Expr: &ColumnRef{Name: "time"}},
+			{Expr: &ColumnRef{Name: "value"}},
+		},
+		Roles: input.Roles,
+	}
+	aggregate := &Aggregate{
+		Input: project,
+		GroupBy: []Expr{
+			&ColumnRef{Name: "labels"},
+			&ColumnRef{Name: RangeWindowAnchorColumn},
+			&ColumnRef{Name: "time"},
+		},
+		GroupByAliases: []string{"labels", RangeWindowAnchorColumn, "time"},
+		AggFuncs:       []AggFunc{{Fn: FnAny, Args: []Expr{&ColumnRef{Name: "value"}}, Alias: "value"}},
+		Roles:          input.Roles,
+	}
+
+	want := Schema{Columns: []Column{
+		{Name: "labels", Role: RoleAttributes},
+		{Name: RangeWindowAnchorColumn, Role: RoleAnchor},
+		{Name: "time", Role: RoleTimestamp},
+		{Name: "value", Role: RoleValue},
+	}}
+	for _, tc := range []struct {
+		name string
+		node Node
+	}{
+		{name: "range_window", node: window},
+		{name: "project", node: project},
+		{name: "aggregate", node: aggregate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.node.RowType(); !got.Equal(want) {
+				t.Fatalf("RowType = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestRowTypeMixedFloatNarrowing(t *testing.T) {
 	mixed := &Scan{Columns: []string{MixedDiscriminatorColumn}, Roles: []Column{{MixedDiscriminatorColumn, RoleDiscriminator}}}
 	filter := &Filter{Input: mixed, Predicate: &Binary{Op: OpEq, Left: &ColumnRef{Name: MixedDiscriminatorColumn}, Right: &LitInt{V: 0}}}
@@ -257,6 +345,49 @@ func TestRowTypeMixedFloatNarrowing(t *testing.T) {
 	filter.Predicate.(*Binary).Left = &ColumnRef{Name: MixedDiscriminatorColumn}
 	if IsMixedFloatNarrowing(filter) {
 		t.Fatal("filtering one of two independent discriminators accepted")
+	}
+}
+
+func TestLiveSampleKindCarriesOnlyRepresentedFloatProof(t *testing.T) {
+	floatColumns := []Column{
+		{Name: "MetricName", Role: RoleMetricName},
+		{Name: "Attributes", Role: RoleAttributes},
+		{Name: "TimeUnix", Role: RoleTimestamp},
+		{Name: "Value", Role: RoleValue},
+	}
+	mixedColumns := append(slices.Clone(floatColumns), HistogramPayloadColumns()...)
+	mixedColumns = append(mixedColumns, Column{Name: MixedDiscriminatorColumn, Role: RoleDiscriminator})
+	names := make([]string, len(mixedColumns))
+	for i, column := range mixedColumns {
+		names[i] = column.Name
+	}
+	mixed := &Scan{Table: "mixed", Columns: names, Roles: mixedColumns}
+	narrowed := &Filter{
+		Input: mixed,
+		Predicate: &Binary{
+			Op:    OpEq,
+			Left:  &ColumnRef{Name: MixedDiscriminatorColumn},
+			Right: &LitInt{V: 0},
+		},
+	}
+
+	for _, tc := range []struct {
+		name string
+		node Node
+		want SampleKind
+	}{
+		{name: "nil", want: SampleKindOpaque},
+		{name: "mixed", node: mixed, want: SampleKindMixed},
+		{name: "narrowed", node: narrowed, want: SampleKindFloat},
+		{name: "filtered_narrowing", node: &Filter{Input: narrowed, Predicate: &LitBool{V: true}}, want: SampleKindFloat},
+		{name: "ordered_narrowing", node: &OrderBy{Input: narrowed}, want: SampleKindFloat},
+		{name: "project_barrier", node: &Project{Input: narrowed}, want: SampleKindMixed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LiveSampleKind(tc.node); got != tc.want {
+				t.Fatalf("LiveSampleKind = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 

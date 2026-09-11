@@ -15,7 +15,7 @@ import (
 // arm, a float-shaped arm, and the survival rule under test.
 func mixedDropCollisionsPlan(drop bool) *chplan.VectorSetOp {
 	histArm := &chplan.HistogramProjection{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      vectorSetOpTestScan("otel_metrics_exponential_histogram"),
 		CountColumn:                "Count",
 		SumColumn:                  "Sum",
 		ScaleColumn:                "Scale",
@@ -27,15 +27,23 @@ func mixedDropCollisionsPlan(drop bool) *chplan.VectorSetOp {
 		MetricNameColumn:           "MetricName",
 		AttributesColumn:           "Attributes",
 		TimestampColumn:            "TimeUnix",
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: "MetricName"},
+			&chplan.ColumnRef{Name: "Attributes"},
+			&chplan.ColumnRef{Name: "TimeUnix"},
+			&chplan.LitFloat{V: 0},
+		},
+		GroupByAliases: []string{"MetricName", "Attributes", "TimeUnix", "Value"},
 	}
 	floatArm := &chplan.Project{
-		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input: vectorSetOpTestScan("otel_metrics_gauge"),
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: "MetricName"}, Alias: "MetricName"},
 			{Expr: &chplan.ColumnRef{Name: "Attributes"}, Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: "TimeUnix"}, Alias: "TimeUnix"},
 			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
 		},
+		Roles: vectorSetOpTestRoles(),
 	}
 	return &chplan.VectorSetOp{
 		Left:                histArm,
@@ -49,6 +57,24 @@ func mixedDropCollisionsPlan(drop bool) *chplan.VectorSetOp {
 		TimestampColumn:     "TimeUnix",
 		ValueColumn:         "Value",
 	}
+}
+
+func vectorSetOpTestRoles() []chplan.Column {
+	return []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+}
+
+func vectorSetOpTestScan(table string) *chplan.Scan {
+	roles := vectorSetOpTestRoles()
+	columns := make([]string, len(roles))
+	for i, role := range roles {
+		columns[i] = role.Name
+	}
+	return &chplan.Scan{Table: table, Columns: columns, Roles: roles}
 }
 
 // TestEmitMixedVectorSetOp_DropCollisionsSurvivalRule pins the ONE thing

@@ -48,9 +48,9 @@ func TestAttributeRewriteUnnamedFloatPhysicalColumns(t *testing.T) {
 				{name: "opaque_attributes", columns: []chplan.Column{{Name: s.AttributesColumn}, timestamp, value}, wantPanic: true},
 				{name: "opaque_timestamp", columns: []chplan.Column{attributes, {Name: s.TimestampColumn}, value}, wantPanic: true},
 				{name: "opaque_value", columns: []chplan.Column{attributes, timestamp, {Name: s.ValueColumn}}, wantPanic: true},
-				{name: "histogram_payload_retains_legacy_boundary", columns: append([]chplan.Column{attributes, anchor, timestamp, value}, chplan.HistogramPayloadColumns()...), wantPanic: true},
-				{name: "histogram_helper_retains_legacy_boundary", columns: []chplan.Column{attributes, timestamp, value, {Name: chplan.HistogramCountColumn, Role: chplan.RoleHistogramField}}, wantPanic: true},
-				{name: "discriminator_retains_legacy_boundary", columns: []chplan.Column{attributes, timestamp, value, {Name: "sample_kind", Role: chplan.RoleDiscriminator}}, wantPanic: true},
+				{name: "histogram_payload_is_not_value_forwardable", columns: append([]chplan.Column{attributes, anchor, timestamp, value}, chplan.HistogramPayloadColumns()...), wantPanic: true},
+				{name: "partial_histogram_is_not_value_forwardable", columns: []chplan.Column{attributes, timestamp, value, {Name: chplan.HistogramCountColumn, Role: chplan.RoleHistogramField}}, wantPanic: true},
+				{name: "orphan_discriminator_is_not_value_forwardable", columns: []chplan.Column{attributes, timestamp, value, {Name: "sample_kind", Role: chplan.RoleDiscriminator}}, wantPanic: true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					scan := &chplan.Scan{Roles: slices.Clone(tc.columns)}
@@ -60,9 +60,6 @@ func TestAttributeRewriteUnnamedFloatPhysicalColumns(t *testing.T) {
 							scan.Columns = append(scan.Columns, column.Name)
 							inner.Projections = append(inner.Projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}})
 						}
-					}
-					if got := chplan.RowShapeOf(inner); got != chplan.SampleRowShape {
-						t.Fatalf("fixture legacy shape = %v, want Sample", got)
 					}
 					var newAttrs chplan.Expr
 					var project *chplan.Project

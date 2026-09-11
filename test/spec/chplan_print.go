@@ -110,14 +110,9 @@ func printFlags(b *strings.Builder, flags []flag) {
 	}
 }
 
-// printSampleShape renders the Histogram / Mixed pair that several node
-// kinds carry to tell the emitter which sample layout flows through
-// them: float columns, the nine native-histogram columns, or the mixed
-// 14-column shape whose trailing discriminator picks per row. Every one
-// of the three emits different SQL, so the IR has to say which it is.
-//
-// Both flags live on VectorSetOp, Filter and TopK; NaryVectorSetOp and
-// InfoJoin carry Histogram alone and pass false for mixed.
+// printSampleShape renders the Histogram / Mixed pair carried by the
+// vector-set nodes whose emitter branches genuinely depend on them.
+// NaryVectorSetOp and InfoJoin carry Histogram alone and pass false for mixed.
 func printSampleShape(b *strings.Builder, histogram, mixed bool) {
 	printFlags(b, []flag{
 		{"histogram", histogram},
@@ -165,7 +160,6 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		}
 	case *chplan.Filter:
 		fmt.Fprintf(b, "%sFilter predicate=%s", indent, printExpr(v.Predicate))
-		printSampleShape(b, v.Histogram, v.Mixed)
 		b.WriteString("\n")
 		printChild(b, visited, v.Input, depth+1)
 	case *chplan.Project:
@@ -245,7 +239,6 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if len(v.Columns) > 0 {
 			fmt.Fprintf(b, " columns=[%s]", strings.Join(v.Columns, ", "))
 		}
-		printSampleShape(b, v.Histogram, v.Mixed)
 		b.WriteString("\n")
 		printChild(b, visited, v.Input, depth+1)
 		if v.KExpr != nil {

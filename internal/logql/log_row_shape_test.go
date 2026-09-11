@@ -33,7 +33,7 @@ func logStreamProjection(t *testing.T, q string, s schema.Logs) *chplan.Project 
 		t.Fatalf("ParseExpr(%q): %v", q, err)
 	}
 	l := &logql.Lang{Schema: s}
-	wrapped := l.ProjectSamples(&chplan.Scan{Table: s.LogsTable}, engine.Meta{
+	wrapped := mustProjectSamples(t, l, &chplan.Scan{Table: s.LogsTable}, engine.Meta{
 		IsMetric: false,
 		Extra:    map[string]any{"expr": expr},
 	})

@@ -67,9 +67,9 @@ const (
 // lowering to whatever column names it needs downstream (typically
 // including the series' MetricName / Attributes / Timestamp).
 //
-// MetricNameColumn, AttributesColumn, TimestampColumn are bookkeeping
-// surfaced for the wrapping Sample-row projection the caller applies
-// downstream, mirroring the identically-named fields on
+// MetricNameColumn, AttributesColumn, TimestampColumn, and ValueColumn are
+// bookkeeping surfaced for the wrapping Sample-row projection the caller
+// applies downstream, mirroring the identically-named fields on
 // HistogramQuantileNative — the emitter itself does not read them.
 type HistogramProjection struct {
 	Input Node
@@ -90,6 +90,7 @@ type HistogramProjection struct {
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
+	ValueColumn      string
 }
 
 func (*HistogramProjection) planNode() {}
@@ -113,6 +114,7 @@ func (h *HistogramProjection) Equal(other Node) bool {
 		h.MetricNameColumn != o.MetricNameColumn ||
 		h.AttributesColumn != o.AttributesColumn ||
 		h.TimestampColumn != o.TimestampColumn ||
+		h.ValueColumn != o.ValueColumn ||
 		len(h.GroupBy) != len(o.GroupBy) ||
 		len(h.GroupByAliases) != len(o.GroupByAliases) {
 		return false

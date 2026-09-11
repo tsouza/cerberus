@@ -18,13 +18,8 @@ func (FilterFusion) Apply(n chplan.Node) (chplan.Node, bool) {
 	if !ok {
 		return n, false
 	}
-	// Copy-on-write from the OUTER filter: its Histogram / Mixed flags are
-	// the row shape the parent already sees, and a composite literal would
-	// drop them (chplan/filter.go makes them part of the node's contract —
-	// a consumer reading HistogramRowShape off the fused node would
-	// otherwise silently lose the nine histogram columns). Same rule as
-	// chplan/clone.go states, and as the two transposes follow for the
-	// nodes they rebuild.
+	// Copy-on-write from the outer filter so future fields are preserved while
+	// only the input and predicate change, matching chplan.CloneNode's rule.
 	fused := *outer
 	fused.Input = inner.Input
 	fused.Predicate = &chplan.Binary{Op: chplan.OpAnd, Left: inner.Predicate, Right: outer.Predicate}

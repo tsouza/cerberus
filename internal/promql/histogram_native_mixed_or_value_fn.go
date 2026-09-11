@@ -116,6 +116,7 @@ func wrapMixedHistogramPartition(mixed chplan.Node, s schema.Metrics) *chplan.Hi
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
 	}
 }
 

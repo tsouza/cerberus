@@ -286,6 +286,33 @@ func (s Schema) SampleKind() SampleKind {
 	return SampleKindOpaque
 }
 
+// LiveSampleKind refines a node's physical sample schema with the only
+// value-domain proof represented in the plan: a discriminator-zero filter over
+// a mixed payload contains float rows only while retaining the mixed columns.
+// Filter and OrderBy preserve that proof; every other node is a proof barrier.
+func LiveSampleKind(n Node) SampleKind {
+	if n == nil {
+		return SampleKindOpaque
+	}
+	kind := n.RowType().SampleKind()
+	if kind != SampleKindMixed {
+		return kind
+	}
+	for {
+		if IsMixedFloatNarrowing(n) {
+			return SampleKindFloat
+		}
+		switch node := n.(type) {
+		case *Filter:
+			n = node.Input
+		case *OrderBy:
+			n = node.Input
+		default:
+			return kind
+		}
+	}
+}
+
 func samplePublicRole(role ColumnRole) bool {
 	switch role {
 	case RoleMetricName, RoleAttributes, RoleTimestamp, RoleAnchor, RoleValue, RoleHistogramField, RoleDiscriminator:
@@ -295,21 +322,24 @@ func samplePublicRole(role ColumnRole) bool {
 	}
 }
 
-// RowShapeFromSchema folds physical columns into the legacy sample vocabulary.
-// Opaque relational outputs have no sample contract and retain its default.
+// RowShapeFromSchema folds a validated physical sample contract into the
+// diagnostic row-shape vocabulary. Opaque, open, incomplete, and invalid
+// schemas retain the sample default; that default is not proof of live floats.
 func RowShapeFromSchema(s Schema) RowShape {
-	switch {
-	case s.Has(RoleDiscriminator):
+	switch s.SampleKind() {
+	case SampleKindMixed:
 		return MixedRowShape
-	case s.Has(RoleHistogramField):
+	case SampleKindHistogram:
 		return HistogramRowShape
-	case s.Has(RoleAnchor) && !s.Has(RoleMetricName):
-		return GridWindowRowShape
-	case s.Has(RoleValue) && !s.Has(RoleMetricName) && !s.Has(RoleTimestamp) && !s.Has(RoleAnchor):
-		return ReducedWindowRowShape
-	default:
-		return SampleRowShape
+	case SampleKindFloat:
+		if s.Has(RoleAttributes) && s.Has(RoleAnchor) {
+			return GridWindowRowShape
+		}
+		if s.Has(RoleAttributes) && !s.Has(RoleTimestamp) && !s.Has(RoleAnchor) {
+			return ReducedWindowRowShape
+		}
 	}
+	return SampleRowShape
 }
 
 // IsMixedFloatNarrowing reports an explicit discriminator filter that retains

@@ -466,17 +466,48 @@ func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node
 //     [chplan.NowNanoMinusStaleness], that internal/api/prom/handler.go's
 //     synthesizedAnchor also calls), keeping the two mixed-or lowerings'
 //     instant-mode anchors identical.
-func canonicalizeMixedFloatArmForAgg(input chplan.Node, s schema.Metrics) chplan.Node {
-	if chplan.RowShapeOf(input) != chplan.ReducedWindowRowShape {
-		return input
+func canonicalizeMixedFloatArmForAgg(input chplan.Node, s schema.Metrics) (chplan.Node, error) {
+	row := input.RowType()
+	kind := row.SampleKind()
+	if kind != chplan.SampleKindFloat && kind != chplan.SampleKindMixed {
+		return nil, fmt.Errorf("promql: mixed aggregate float arm has %s sample schema", kind)
 	}
+	temporal, layout, err := resolveSampleTemporalLayout(row)
+	if err != nil {
+		return nil, fmt.Errorf("promql: mixed aggregate float arm: %w", err)
+	}
+	if temporal.timestamp != "" && temporal.attributes == s.AttributesColumn &&
+		temporal.timestamp == s.TimestampColumn && temporal.value == s.ValueColumn {
+		return input, nil
+	}
+	refs := temporal.refs()
+
+	// This adapter preserves any physical metric-name role. The aggregate
+	// above it remains the owner of PromQL's output-name policy.
+	projections := make([]chplan.Projection, 0, 5)
+	roles := make([]chplan.Column, 0, 5)
+	if refs.MetricName != nil {
+		projections = append(projections, sampleForwardColumn(refs.MetricName, s.MetricNameColumn, true))
+		roles = append(roles, chplan.Column{Name: s.MetricNameColumn, Role: chplan.RoleMetricName})
+	}
+	projections = append(projections, sampleForwardColumn(refs.Attributes, s.AttributesColumn, true))
+	roles = append(roles, chplan.Column{Name: s.AttributesColumn, Role: chplan.RoleAttributes})
+	if layout.anchored {
+		projections = append(projections, sampleForwardColumn(refs.Anchor, chplan.RangeWindowAnchorColumn, true))
+		roles = append(roles, chplan.Column{Name: chplan.RangeWindowAnchorColumn, Role: chplan.RoleAnchor})
+	}
+	if refs.Timestamp == nil {
+		projections = append(projections, chplan.Projection{Expr: chplan.NowNanoMinusStaleness(), Alias: s.TimestampColumn})
+	} else {
+		projections = append(projections, sampleForwardColumn(refs.Timestamp, s.TimestampColumn, true))
+	}
+	roles = append(roles, chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp})
+	projections = append(projections, sampleForwardColumn(refs.Value, s.ValueColumn, true))
+	roles = append(roles, chplan.Column{Name: s.ValueColumn, Role: chplan.RoleValue})
+
 	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: input,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: chplan.NowNanoMinusStaleness(), Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-		},
-	}
+		Roles:       roles,
+		Input:       input,
+		Projections: projections,
+	}, nil
 }

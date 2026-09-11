@@ -15,18 +15,26 @@ import (
 func matrixWindowUnder(s schema.Metrics, offset time.Duration) *chplan.Project {
 	return &chplan.Project{
 		Input: &chplan.RangeWindow{
-			Input:      &chplan.Scan{Table: "otel_metrics_gauge"},
-			OuterRange: time.Hour,
-			Range:      5 * time.Minute,
-			Step:       time.Minute,
-			Offset:     offset,
-			GroupBy:    []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+			Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+			OuterRange:      time.Hour,
+			Range:           5 * time.Minute,
+			Step:            time.Minute,
+			Offset:          offset,
+			TimestampColumn: s.TimestampColumn,
+			ValueColumn:     s.ValueColumn,
+			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
+		},
+		Roles: []chplan.Column{
+			{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+			{Name: chplan.RangeWindowAnchorColumn, Role: chplan.RoleAnchor},
+			{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+			{Name: s.ValueColumn, Role: chplan.RoleValue},
 		},
 	}
 }
@@ -113,7 +121,11 @@ func TestMatrixWalks_CrossShapePreservingAggregate(t *testing.T) {
 
 	// The wrapper is what consumes both answers, so pin the column it
 	// actually projects into the timestamp slot.
-	wrapped, ok := wrapWithSampleProjection(guarded, s).(*chplan.Project)
+	wrappedNode, err := wrapWithSampleProjection(guarded, s)
+	if err != nil {
+		t.Fatalf("wrapWithSampleProjection: %v", err)
+	}
+	wrapped, ok := wrappedNode.(*chplan.Project)
 	if !ok {
 		t.Fatalf("wrapWithSampleProjection returned %T, want *chplan.Project", wrapped)
 	}
