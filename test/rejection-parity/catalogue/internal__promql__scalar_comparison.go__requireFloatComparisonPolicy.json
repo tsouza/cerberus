@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_comparison.go:requireFloatComparisonPolicy#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "internal",
+      "rationale": "The scalar-comparison family has explicit root and existing-plan mixedFloatOnly registrations. lowerComparisonRoot checks root authority before loading the original mixed union; finishScalarComparison checks root authority for its canonical boundary and existing-plan authority only for a live Mixed input at its guarded boundary. Both production sites are registered, while ordinary histogram-only inputs do not acquire a mixed-plan dependency. Missing registrations and unsupported modes arise only from internal misuse or deliberate authority-test mutation, not query-controlled policy values. Computed scalar comparisons remain under foldSyntheticVectorBinary's separate vector-comparison authority.",
+      "evidence": {
+        "guard": [
+          "if mixedOperandPolicies[key] != mixedFloatOnly"
+        ],
+        "callers": [
+          "finishScalarComparison",
+          "lowerComparisonRoot"
+        ],
+        "cited": [
+          "finishScalarComparison",
+          "foldSyntheticVectorBinary",
+          "lowerComparisonRoot"
+        ]
+      }
+    }
+  ]
+}

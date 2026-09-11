@@ -123,40 +123,5 @@ func lowerComparisonOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chpl
 		return nil, err
 	}
 
-	floatRowsOnly := mixedDiscriminatorFilter(inner, mixedDiscriminatorFloat)
-
-	valueRef := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
-	scalarLit := chplan.Expr(&chplan.LitFloat{V: scalar})
-	var predicate chplan.Expr
-	if scalarOnLeft {
-		predicate = &chplan.Binary{Op: op, Left: scalarLit, Right: valueRef}
-	} else {
-		predicate = &chplan.Binary{Op: op, Left: valueRef, Right: scalarLit}
-	}
-
-	if !returnBool {
-		filtered := &chplan.Filter{Input: floatRowsOnly, Predicate: predicate}
-		return &chplan.Project{
-			Roles: metricRoles(s),
-			Input: filtered,
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-				{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-			},
-		}, nil
-	}
-
-	newValue := &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{predicate}}
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: floatRowsOnly,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: newValue, Alias: s.ValueColumn},
-		},
-	}, nil
+	return finishScalarComparison(inner, setOp, s, ctx, op, scalar, scalarOnLeft, returnBool, scalarComparisonCanonical)
 }

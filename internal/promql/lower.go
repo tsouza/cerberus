@@ -691,7 +691,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// doc comment for why every comparison op drops the histogram side
 	// unconditionally, regardless of `bool`.
 	if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithMixedOperandPolicy(mixedComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
+		plan, err := lowerComparisonRoot(func() (chplan.Node, error) {
 			return lowerComparisonOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
 		})
 		return plan, true, err

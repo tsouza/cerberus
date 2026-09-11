@@ -173,15 +173,10 @@ func TestFoldSyntheticVectorBinary_ReturnBoolOnlyWrapsComparisons(t *testing.T) 
 	}
 }
 
-// TestLowerVectorScalar_ReturnBoolOnlyWrapsComparisons is the
-// vector-scalar sibling of the synthetic-vector-binary test above,
-// killing the INVERT_LOGICAL mutant at
-// binary.go:lowerVectorScalar:`if isComparison(op) && returnBool`. The same
-// reachability argument applies: that function's own early return plus PromQL's
-// grammar invariant means `isComparison(op) && returnBool` only ever
-// observes (true,true) or (false,false) via real parsing, so the kill
-// calls lowerVectorScalar directly with the otherwise-unreachable
-// (arithmetic op, returnBool=true) combination.
+// TestLowerVectorScalar_ReturnBoolOnlyWrapsComparisons retains the scalar
+// arithmetic control after comparison dispatch moved to its dedicated finalizer.
+// binary.go:lowerVectorScalar:`if isComparison(op)` must not send an arithmetic
+// operator with an otherwise-unreachable bool flag through comparison lowering.
 func TestLowerVectorScalar_ReturnBoolOnlyWrapsComparisons(t *testing.T) {
 	t.Parallel()
 
@@ -199,8 +194,8 @@ func TestLowerVectorScalar_ReturnBoolOnlyWrapsComparisons(t *testing.T) {
 	}
 	valueExpr := proj.Projections[len(proj.Projections)-1].Expr
 	if _, wrapped := valueExpr.(*chplan.FuncCall); wrapped {
-		t.Fatalf("Value = %#v, want *chplan.Binary (mutant `&&`→`||` at "+
-			"binary.go:lowerVectorScalar:`if isComparison(op) && returnBool` "+
+		t.Fatalf("Value = %#v, want *chplan.Binary (incorrect dispatch at "+
+			"binary.go:lowerVectorScalar:`if isComparison(op)` "+
 			"wraps arithmetic ops in toFloat64 too when returnBool=true)", valueExpr)
 	}
 	if _, ok := valueExpr.(*chplan.Binary); !ok {

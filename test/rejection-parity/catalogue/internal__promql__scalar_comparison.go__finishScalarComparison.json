@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_comparison.go:finishScalarComparison#e081d56a",
+      "message": "promql: unknown scalar comparison projection boundary %d",
+      "class": "internal",
+      "rationale": "This boundary is an internal projection-layout invariant, not a query-language rejection. lowerComparisonOverMixedExpHistogramSetOp always supplies scalarComparisonCanonical and lowerVectorScalar always supplies scalarComparisonGuarded to finishScalarComparison. No parser expression, request, or user configuration supplies the boundary value. The unknown-boundary test uses a nil input to verify rejection precedes role resolution.",
+      "evidence": {
+        "guard": [
+          "if boundary != scalarComparisonGuarded \u0026\u0026 boundary != scalarComparisonCanonical"
+        ],
+        "callers": [
+          "lowerComparisonOverMixedExpHistogramSetOp",
+          "lowerVectorScalar"
+        ],
+        "cited": [
+          "finishScalarComparison",
+          "lowerComparisonOverMixedExpHistogramSetOp",
+          "lowerVectorScalar"
+        ]
+      }
+    }
+  ]
+}
