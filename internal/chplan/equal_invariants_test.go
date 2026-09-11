@@ -2468,6 +2468,7 @@ func TestHistogramProjection_Equal_Positive(t *testing.T) {
 			MetricNameColumn:           "MetricName",
 			AttributesColumn:           "Attributes",
 			TimestampColumn:            "TimeUnix",
+			ValueColumn:                "Value",
 		}
 	}
 	if !build().Equal(build()) {
@@ -2481,6 +2482,15 @@ func TestHistogramProjection_Equal_Negative_CountColumn(t *testing.T) {
 	b := &chplan.HistogramProjection{Input: &chplan.Scan{Table: "t"}, CountColumn: "Other"}
 	if a.Equal(b) {
 		t.Errorf("different CountColumn should not be Equal")
+	}
+}
+
+func TestHistogramProjection_Equal_Negative_ValueColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.HistogramProjection{Input: &chplan.Scan{Table: "t"}, ValueColumn: "Value"}
+	b := &chplan.HistogramProjection{Input: &chplan.Scan{Table: "t"}, ValueColumn: "Other"}
+	if a.Equal(b) {
+		t.Errorf("different ValueColumn should not be Equal")
 	}
 }
 

@@ -58,7 +58,7 @@ func TestProjectSamples_MetricBranchRefsValueColumn(t *testing.T) {
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
 	}
 
-	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+	wrapped := mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true})
 
 	proj, ok := wrapped.(*chplan.Project)
 	if !ok {
@@ -152,7 +152,7 @@ func TestProjectSamples_VectorAggregateRefsAttributes(t *testing.T) {
 		},
 	}
 
-	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+	wrapped := mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true})
 
 	proj, ok := wrapped.(*chplan.Project)
 	if !ok {
@@ -218,7 +218,7 @@ func TestProjectSamples_MatrixRangeWindowRefsAnchorTs(t *testing.T) {
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
 	}
 
-	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+	wrapped := mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true})
 
 	proj, ok := wrapped.(*chplan.Project)
 	if !ok {
@@ -281,7 +281,7 @@ func TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix(t *testing.T) 
 		},
 	}
 
-	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+	wrapped := mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true})
 
 	proj, ok := wrapped.(*chplan.Project)
 	if !ok {
@@ -346,7 +346,7 @@ func TestProjectSamples_VectorVectorBinopRefsAttributes(t *testing.T) {
 		ValueColumn:      "Value",
 	}
 
-	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+	wrapped := mustProjectSamples(t, l, plan, engine.Meta{IsMetric: true})
 
 	proj, ok := wrapped.(*chplan.Project)
 	if !ok {
@@ -406,7 +406,7 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 	// Log-stream queries lower to a Scan (or Filter(Scan)) — no inner
 	// Project layer. ProjectSamples wraps with the wire-shape projection.
 	plan := &chplan.Scan{Table: s.LogsTable}
-	wrapped := l.ProjectSamples(plan, engine.Meta{
+	wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 		IsMetric: false,
 		Extra:    map[string]any{"expr": expr},
 	})
@@ -514,7 +514,7 @@ func TestProjectSamples_BareLogQueryAlsoSurfacesDetectedLevel(t *testing.T) {
 	}
 
 	plan := &chplan.Scan{Table: s.LogsTable}
-	wrapped := l.ProjectSamples(plan, engine.Meta{
+	wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 		IsMetric: false,
 		Extra:    map[string]any{"expr": expr},
 	})
@@ -592,7 +592,7 @@ func TestProjectSamples_ParserStageQuerySurfacesDetectedLevel(t *testing.T) {
 				t.Fatalf("ParseExpr: %v", err)
 			}
 			plan := &chplan.Scan{Table: s.LogsTable}
-			wrapped := l.ProjectSamples(plan, engine.Meta{
+			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
 			})
@@ -652,7 +652,7 @@ func TestProjectSamples_LineFilterQuerySurfacesDetectedLevel(t *testing.T) {
 				t.Fatalf("ParseExpr: %v", err)
 			}
 			plan := &chplan.Scan{Table: s.LogsTable}
-			wrapped := l.ProjectSamples(plan, engine.Meta{
+			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
 			})
@@ -719,7 +719,7 @@ func TestProjectSamples_ParserStageSurfacesExtractedLabels(t *testing.T) {
 				t.Fatalf("ParseExpr: %v", err)
 			}
 			plan := &chplan.Scan{Table: s.LogsTable}
-			wrapped := l.ProjectSamples(plan, engine.Meta{
+			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
 			})
@@ -783,7 +783,7 @@ func TestProjectSamples_NoParserStage_KeepsBareResourceAttributes(t *testing.T) 
 				t.Fatalf("ParseExpr: %v", err)
 			}
 			plan := &chplan.Scan{Table: s.LogsTable}
-			wrapped := l.ProjectSamples(plan, engine.Meta{
+			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
 			})
@@ -844,7 +844,7 @@ func TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap(t *testing.T
 				t.Fatalf("ParseExpr: %v", err)
 			}
 			plan := &chplan.Scan{Table: s.LogsTable}
-			wrapped := l.ProjectSamples(plan, engine.Meta{
+			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
 			})
@@ -901,7 +901,7 @@ func TestProjectSamples_DropDetectedLevelSkipsWrap(t *testing.T) {
 				t.Fatalf("ParseExpr: %v", err)
 			}
 			plan := &chplan.Scan{Table: s.LogsTable}
-			wrapped := l.ProjectSamples(plan, engine.Meta{
+			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
 			})
@@ -958,7 +958,7 @@ func TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional(t *te
 				t.Fatalf("ParseExpr: %v", err)
 			}
 			plan := &chplan.Scan{Table: s.LogsTable}
-			wrapped := l.ProjectSamples(plan, engine.Meta{
+			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
 			})

@@ -61,7 +61,8 @@ func ReconstructLogStreamWrapPlan(c *spec.Case) (plan chplan.Node, ok bool, err 
 	if meta.IsMetric {
 		return nil, false, nil
 	}
-	return lang.ProjectSamples(rawPlan, meta), true, nil
+	wrapped, err := lang.ProjectSamples(rawPlan, meta)
+	return wrapped, true, err
 }
 
 func readWindowSections(c *spec.Case) (start, end time.Time, step time.Duration, err error) {

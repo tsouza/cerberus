@@ -26,37 +26,23 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramValuedOrForwardedOperand#87a59c1f",
-      "message": "promql: internal invariant violated: exp-histogram-forwarding set-op operand lowering published %s row shape (%T), want %s",
+      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramValuedOrForwardedOperand#3d2079ed",
+      "message": "promql: internal invariant violated: exp-histogram-forwarding set-op operand lowering published %s sample kind (%T), want histogram",
       "class": "internal",
-      "rationale": "internal invariant (cerberus issue #2571): this guard is reached only when isExpHistogramForwardedThroughSetOp(expr) already confirmed expr unwraps to an and/unless BinaryExpr whose LHS is, recursively, either isExpHistogramValuedShape or itself isExpHistogramForwardedThroughSetOp. lower(expr) on that shape always dispatches through lowerBinary to lowerVectorSetOp (TryFoldScalar never folds a set-operator BinaryExpr, and b.Op.IsSetOperator() is true), which for a non-Or kind unconditionally returns Histogram: leftHistogram computed from chplan.RowShapeOf(lowerVectorSetOpOperand(b.LHS)). By induction on the recursion isExpHistogramForwardedThroughSetOp itself walks: the base case (b.LHS directly isExpHistogramValuedShape) routes lowerVectorSetOpOperand through lowerExpHistogramSetOpOperand, whose own paired invariant (histogram_native_set_op.go:lowerExpHistogramSetOpOperand) already guarantees HistogramRowShape; the inductive case (b.LHS itself isExpHistogramForwardedThroughSetOp) falls through lowerVectorSetOpOperand's own isExpHistogramValuedShape check (false) and mixedExpHistogramSetOp check (b.LHS's own Op is AND/UNLESS, never LOR, so mixedExpHistogramSetOp's b.Op != parser.LOR guard always declines) to lower(b.LHS, ...), recursing into this exact reasoning one level down. lowerExpHistogramDroppingShape, checked before that fallthrough inside lowerVectorSetOpOperand, cannot intercept an and/unless BinaryExpr either: droppingAggregationOverExpHistogram / aggregationOverExpHistogramDroppingShape / labelCallOverExpHistogramDroppingShape each require an AggregateExpr or Call shape, and expHistogramDroppingScalarBinop / expHistogramDroppingHistogramBinop / expHistogramDroppingVectorBinop each require b.Op to be one of ADD/SUB/POW/MOD/DIV/EQLC/NEQ/GTR/LSS/GTE/LTE/ATAN2/MUL -- never LAND/LOR/LUNLESS -- so it always falls through unchanged. So the lowered node's RowShapeOf is always HistogramRowShape, and this guard can never fire.",
+      "rationale": "the direct histogram-valued branch delegates to lowerExpHistogramSetOpOperand, whose successful result is SampleKindHistogram. The only other admitted branch is isExpHistogramForwardedThroughSetOp; lowering its and/unless chain forwards the histogram-valued left side and marks the resulting VectorSetOp histogram-shaped. Thus a non-histogram result is an internal recognizer/lowerer contract violation.",
       "evidence": {
         "guard": [
           "past returning if isExpHistogramValuedShape(expr, s, ctx)",
           "past returning if !isExpHistogramForwardedThroughSetOp(expr, s, ctx)",
           "past returning if err != nil",
-          "if chplan.RowShapeOf(node) != chplan.HistogramRowShape"
+          "if kind := node.RowType().SampleKind(); kind != chplan.SampleKindHistogram"
         ],
         "callers": [
           "lowerMixedExpHistogramOperands"
         ],
         "cited": [
-          "TryFoldScalar",
-          "aggregationOverExpHistogramDroppingShape",
-          "droppingAggregationOverExpHistogram",
-          "expHistogramDroppingHistogramBinop",
-          "expHistogramDroppingScalarBinop",
-          "expHistogramDroppingVectorBinop",
           "isExpHistogramForwardedThroughSetOp",
-          "isExpHistogramValuedShape",
-          "labelCallOverExpHistogramDroppingShape",
-          "lower",
-          "lowerBinary",
-          "lowerExpHistogramDroppingShape",
-          "lowerExpHistogramSetOpOperand",
-          "lowerVectorSetOp",
-          "lowerVectorSetOpOperand",
-          "mixedExpHistogramSetOp"
+          "lowerExpHistogramSetOpOperand"
         ]
       }
     }

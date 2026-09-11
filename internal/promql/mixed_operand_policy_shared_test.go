@@ -9,7 +9,13 @@ import (
 
 func TestMixedOperandPolicySharedBuildersRejectBeforeCallback(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
-	inner := &chplan.VectorSetOp{Mixed: true}
+	inner := &chplan.VectorSetOp{
+		Mixed:            true,
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
+	}
 	const unknown mixedWrapperFamily = "unlisted-wrapper"
 	valueCalled := false
 	value, err := guardedValueProjection(inner, nil, s, lowerCtx{}, unknown, func(sampleRoleRefs) chplan.Expr {

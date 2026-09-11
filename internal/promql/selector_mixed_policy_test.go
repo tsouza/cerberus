@@ -155,6 +155,7 @@ func selectorPolicyCallee(expr ast.Expr) string {
 }
 
 func TestMixedSelectorPolicyExecutorModes(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
 	for _, tc := range []struct {
 		name      string
 		family    mixedWrapperFamily
@@ -167,7 +168,13 @@ func TestMixedSelectorPolicyExecutorModes(t *testing.T) {
 		{"limit plan", mixedLimitFamily, mixedPlanAdmission, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := &chplan.VectorSetOp{Mixed: true}
+			input := &chplan.VectorSetOp{
+				Mixed:            true,
+				MetricNameColumn: s.MetricNameColumn,
+				AttributesColumn: s.AttributesColumn,
+				TimestampColumn:  s.TimestampColumn,
+				ValueColumn:      s.ValueColumn,
+			}
 			transform, err := executeMixedSelectorPolicy(tc.family, tc.site)
 			if err != nil {
 				t.Fatal(err)

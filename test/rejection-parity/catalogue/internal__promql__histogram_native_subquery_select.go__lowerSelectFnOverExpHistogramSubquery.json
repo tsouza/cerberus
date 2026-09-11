@@ -2,6 +2,31 @@
   "entries": [
     {
       "head": "promql",
+      "site": "internal/promql/histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery#830b1a80",
+      "message": "promql: internal invariant violated: histogram subquery input is %T with %s sample kind",
+      "class": "internal",
+      "rationale": "the preceding lowerExpHistogramValuedShape call returned matched=true for the same inner expression selected by the histogram subquery recognizer. Every successful matched producer publishes SampleKindHistogram, so this split sample-kind half of the former row-shape assertion remains an internal invariant.",
+      "evidence": {
+        "guard": [
+          "past returning if step \u003c 0",
+          "past returning if err != nil",
+          "past returning if state == subqueryGridUnavailable",
+          "past returning if err != nil",
+          "past returning if !matched",
+          "if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram"
+        ],
+        "callers": [
+          "lowerCallOverSubquery",
+          "lowerExpHistogramValuedShape",
+          "lowerHistogramNativeRoot"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery#91084197",
       "message": "promql: subquery step must be positive, got %s",
       "class": "internal",
@@ -19,17 +44,17 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery#ca3ce26e",
-      "message": "promql: internal invariant violated: histogram subquery input is %T with %s row shape",
+      "site": "internal/promql/histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery#cc4b9447",
+      "message": "promql: internal invariant violated: histogram subquery input matched no histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "selectFnOverExpHistogramSubquery requires a histogram-valued inner (via isExpHistogramValuedShape) and lowerExpHistogramValuedShape must return HistogramRowShape for that same inner",
+      "rationale": "selectFnOverExpHistogramSubquery admits this path only after isExpHistogramValuedShape recognizes the subquery inner. Re-dispatching that identical expression through the paired lowerExpHistogramValuedShape producer cannot return matched=false unless the internal recognizer and lowerer have drifted.",
       "evidence": {
         "guard": [
           "past returning if step \u003c 0",
           "past returning if err != nil",
           "past returning if state == subqueryGridUnavailable",
           "past returning if err != nil",
-          "if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+          "if !matched"
         ],
         "callers": [
           "lowerCallOverSubquery",

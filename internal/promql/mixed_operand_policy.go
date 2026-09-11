@@ -97,9 +97,11 @@ type mixedWrapperKey struct {
 //
 // Bespoke entries select a family-specific payload transformation. Sum/avg, for
 // example, partitions and recombines a mixed plan; count/group instead preserve
-// that plan for their payload-neutral reduction. Scalar arithmetic's root and
-// existing-plan entries execute the float-only policy through its shared value
-// kernel, preserving each projection boundary.
+// that plan for their payload-neutral reduction. Float aggregates remain bespoke
+// at the root, where their mixed union needs shadow resolution, while their
+// existing-plan entries execute the shared float-only transform after that
+// resolution. Scalar arithmetic follows the same policy-driven narrowing while
+// preserving each projection boundary.
 var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedLeafFamily, mixedRootAdmission}:              mixedBespoke,
 	{mixedSumAvgFamily, mixedRootAdmission}:            mixedBespoke,
@@ -148,7 +150,7 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedVectorComparisonFamily, mixedPlanAdmission}:  mixedBespoke,
 	{mixedSumAvgFamily, mixedPlanAdmission}:            mixedBespoke,
 	{mixedCountGroupFamily, mixedPlanAdmission}:        mixedPreserve,
-	{mixedFloatAggregateFamily, mixedPlanAdmission}:    mixedBespoke,
+	{mixedFloatAggregateFamily, mixedPlanAdmission}:    mixedFloatOnly,
 	{mixedTopKFamily, mixedPlanAdmission}:              mixedFloatOnly,
 	{mixedCountValuesFamily, mixedPlanAdmission}:       mixedBespoke,
 }
@@ -196,6 +198,30 @@ func mixedPlanTransformForPolicy(policy mixedOperandPolicy) mixedPlanTransform {
 	return preserveMixedPlanTransform
 }
 
+// prepareMixedAggregatePlan applies the registered existing-plan policy for
+// the aggregate families which reach lowerAggregate's generic input path.
+// Keeping this switch closed prevents a new aggregate family from inheriting a
+// plausible payload transform merely because somebody added a table entry.
+func prepareMixedAggregatePlan(inner chplan.Node, family mixedWrapperFamily) (chplan.Node, error) {
+	if !mixedRowsNeedPreparation(inner) {
+		return inner, nil
+	}
+
+	expected := mixedPolicyClosed
+	switch family {
+	case mixedSumAvgFamily:
+		expected = mixedBespoke
+	case mixedCountGroupFamily:
+		expected = mixedPreserve
+	case mixedFloatAggregateFamily:
+		expected = mixedFloatOnly
+	}
+	if err := requireMixedPlanPolicy(inner, family, expected); err != nil {
+		return nil, err
+	}
+	return mixedPlanTransformForPolicy(expected)(inner), nil
+}
+
 func requireMixedBespokePolicy(key mixedWrapperKey, policy mixedOperandPolicy) error {
 	if policy != mixedBespoke {
 		return fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
@@ -214,7 +240,7 @@ func lowerWithMixedPreservePolicy(family mixedWrapperFamily, site mixedAdmission
 }
 
 func preserveMixedPlan(inner chplan.Node, family mixedWrapperFamily) (chplan.Node, error) {
-	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+	if !mixedRowsNeedPreparation(inner) {
 		return inner, nil
 	}
 	return lowerWithMixedPreservePolicy(family, mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })

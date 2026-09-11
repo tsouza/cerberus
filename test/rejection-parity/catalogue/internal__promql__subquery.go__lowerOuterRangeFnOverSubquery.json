@@ -5,15 +5,15 @@
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#087c3810",
       "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
       "class": "internal",
-      "rationale": "The preceding IsPromQLRangeWindowFunc check admits only the canonical 26-name range vocabulary. lowerHistogramOrMixedSubqueryOuterFnInput handles every one of its fifteen SELECT/FOLD names for histogram or mixed input; histogramSubqueryFloatOnlyDropFunc handles the other eleven. Therefore this rejection cannot follow both dispatches for an admitted name. The added requireMixedPlanPolicy guard checks the existing-plan subquery family before either dispatch and leaves this exhaustive partition unchanged: histogram-only input bypasses policy and the current mixed subquery row is bespoke. A policy denial would return earlier, never make an additional function name reach this site.",
+      "rationale": "the canonical range-function gate admits exactly the names recognized by chplan.IsPromQLRangeWindowFunc. For histogram-bearing rows, lowerHistogramOrMixedSubqueryOuterFnInput handles all SELECT/FOLD names and histogramSubqueryFloatOnlyDropFunc handles the remainder by returning an empty float result. That partition is exhaustive, so this trailing rejection is not wire-reachable.",
       "evidence": {
         "guard": [
           "past returning if outer.Func.Name == \"absent_over_time\"",
           "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))",
           "past returning if err != nil",
-          "if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape",
+          "if rowsMayContainHistograms(inner)",
           "past returning if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil",
-          "past returning if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, shape, outer.Func.Name, sub, s, ctx); matched",
+          "past returning if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, kind, outer.Func.Name, sub, s, ctx); matched",
           "if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name)"
         ],
         "callers": [
@@ -22,8 +22,7 @@
         ],
         "cited": [
           "histogramSubqueryFloatOnlyDropFunc",
-          "lowerHistogramOrMixedSubqueryOuterFnInput",
-          "requireMixedPlanPolicy"
+          "lowerHistogramOrMixedSubqueryOuterFnInput"
         ]
       }
     },

@@ -319,5 +319,6 @@ func nativeHistogramProjection(input chplan.Node, nameExpr, tsExpr chplan.Expr, 
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
 	}
 }

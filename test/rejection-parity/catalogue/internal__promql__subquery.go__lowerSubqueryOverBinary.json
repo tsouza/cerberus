@@ -5,12 +5,13 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverBinary#1c929908",
       "message": "promql: histogram-valued subquery set operator requires query eval-time context (use LowerAt)",
       "class": "internal",
-      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it, matching lowerExpHistogramRangeFnOverSubquery's identical eval-time guard",
+      "rationale": "HTTP query handlers lower through LowerAt or LowerAtRange, so subqueryGridCtx returns before the subqueryGridUnavailable fallback; only the raw test and tooling Lower entry can omit an evaluation anchor. The rowsMayContainHistograms guard therefore protects that internal fallback from a lossy projection and is not wire-reachable.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
+          "past returning if state != subqueryGridUnavailable",
           "past returning if err != nil",
-          "if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape"
+          "if rowsMayContainHistograms(inner)"
         ],
         "callers": [
           "lowerSubquery",
@@ -20,7 +21,8 @@
           "Lower",
           "LowerAt",
           "LowerAtRange",
-          "lowerExpHistogramRangeFnOverSubquery"
+          "rowsMayContainHistograms",
+          "subqueryGridCtx"
         ]
       }
     }

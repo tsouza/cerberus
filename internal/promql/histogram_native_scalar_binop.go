@@ -284,8 +284,8 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 // keep=false incompatible-types result; otherwise the capping
 // histogram-shaped node is rewritten to scale it.
 //
-// The histogram side is asserted by ROW SHAPE
-// ([chplan.RowShapeOf] == [chplan.HistogramRowShape]), not by literal Go
+// The histogram side is asserted by validated schema kind
+// ([chplan.Schema.SampleKind] == [chplan.SampleKindHistogram]), not by literal Go
 // type: [isExpHistogramValuedShape] — the very predicate
 // [expHistogramScalarBinop] / [expHistogramDroppingScalarBinop] gate on to
 // decide the histogram side is even eligible — reports true for a
@@ -314,10 +314,10 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 	if err != nil {
 		return nil, err
 	}
-	if chplan.RowShapeOf(node) != chplan.HistogramRowShape {
+	if kind := node.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
 		return nil, fmt.Errorf(
-			"promql: internal invariant violated: exp-histogram scalar-binop operand lowering published %s row shape (%T), want %s",
-			chplan.RowShapeOf(node), node, chplan.HistogramRowShape,
+			"promql: internal invariant violated: exp-histogram scalar-binop operand lowering published %s sample kind (%T), want histogram",
+			kind, node,
 		)
 	}
 	if drop {

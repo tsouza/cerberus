@@ -1539,7 +1539,10 @@ func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, e
 	if err != nil {
 		return "", nil, 0, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	plan = wrapWithSampleProjection(plan, h.Schema)
+	plan, err = wrapWithSampleProjection(plan, h.Schema)
+	if err != nil {
+		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	}
 	plan = h.Optimizer.Run(ctx, plan)
 	sql, args, physicalScans, err = chsql.EmitCounted(ctx, plan)
 	if err != nil {

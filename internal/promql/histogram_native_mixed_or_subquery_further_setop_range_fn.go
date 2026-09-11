@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"fmt"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -78,15 +80,17 @@ import (
 // function for the three grid modes, and for why the classic ambient-grid
 // fan-outs buried inside its own wideInner stay untouched (cerberus issue
 // #2728).
-func lowerHistogramOrMixedSubqueryOuterFnInput(inner chplan.Node, shape chplan.RowShape, windowFn string, sub *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (node chplan.Node, matched bool, err error) {
+func lowerHistogramOrMixedSubqueryOuterFnInput(inner chplan.Node, kind chplan.SampleKind, windowFn string, sub *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (node chplan.Node, matched bool, err error) {
+	if !histogramSubqueryOuterFnName(windowFn) {
+		return nil, false, nil
+	}
+	if kind != chplan.SampleKindHistogram && kind != chplan.SampleKindMixed {
+		return nil, true, fmt.Errorf("promql: internal invariant violated: histogram subquery outer function input has %s sample kind", kind)
+	}
 	if nestedCallSubqueryShape(sub.Expr) {
 		// Widening mutates inner in place, so it must not run for a name
-		// the switch below leaves unmatched (deriv, predict_linear, …) —
-		// those fall through to the caller's own float-only-drop /
-		// rejection handling over the UNwidened relation.
-		if !histogramSubqueryOuterFnName(windowFn) {
-			return nil, false, nil
-		}
+		// the switch below leaves unmatched (deriv, predict_linear, …).
+		// The function-name gate above therefore runs before this mutation.
 		if err := widenNestedCallSubqueryInner(inner, sub, ctx); err != nil {
 			return nil, false, err
 		}
@@ -96,21 +100,21 @@ func lowerHistogramOrMixedSubqueryOuterFnInput(inner chplan.Node, shape chplan.R
 		node, err = lowerSelectFnOverExpHistogramSubqueryInput(inner, sub, windowFn, s, ctx)
 		return node, true, err
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
-		if shape == chplan.HistogramRowShape {
+		if kind == chplan.SampleKindHistogram {
 			node, err = lowerSelectFnOverExpHistogramSubqueryInput(inner, sub, windowFn, s, ctx)
 			return node, true, err
 		}
 		node, err = lowerMixedOrSubqueryLastFirstInput(inner, sub, windowFn, s, ctx)
 		return node, true, err
 	case resetsWindowFn, changesWindowFn:
-		if shape == chplan.HistogramRowShape {
+		if kind == chplan.SampleKindHistogram {
 			node, err = lowerSelectFnOverExpHistogramSubqueryInput(inner, sub, windowFn, s, ctx)
 			return node, true, err
 		}
 		node, err = lowerMixedOrSubqueryResetsOrChangesInput(inner, sub, windowFn, s, ctx)
 		return node, true, err
 	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:
-		if shape == chplan.HistogramRowShape {
+		if kind == chplan.SampleKindHistogram {
 			node, err = lowerExpHistogramRangeFnOverSubqueryInput(inner, sub, windowFn, s, ctx)
 			return node, true, err
 		}

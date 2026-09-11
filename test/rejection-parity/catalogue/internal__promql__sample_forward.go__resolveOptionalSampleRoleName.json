@@ -1,0 +1,47 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/sample_forward.go:resolveOptionalSampleRoleName#343c28b5",
+      "message": "promql: temporal sample layout role %d has ambiguous output name %q",
+      "class": "internal",
+      "rationale": "resolveSampleTemporalLayout rejects SampleKindInvalid before resolving roles, and Schema.SampleKind marks a public-role name that collides with another column invalid. The other caller is requireSampleRole's assertion path inside projectSampleRoles. Thus an ambiguous name can only come from a malformed internally constructed schema, not query syntax.",
+      "evidence": {
+        "guard": [
+          "past returning if name == \"\"",
+          "if column.Name == name \u0026\u0026 column.Role != role"
+        ],
+        "callers": [
+          "resolveOptionalSampleRole",
+          "resolveSampleTemporalLayout"
+        ],
+        "cited": [
+          "projectSampleRoles",
+          "requireSampleRole",
+          "resolveSampleTemporalLayout"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/sample_forward.go:resolveOptionalSampleRoleName#db83a8e0",
+      "message": "promql: temporal sample layout requires one named column for role %d",
+      "class": "internal",
+      "rationale": "Schema.SampleKind classifies duplicate or unnamed public roles as invalid, and resolveSampleTemporalLayout returns on that invalid kind before calling this resolver. Its remaining route is requireSampleRole's assertion path in projectSampleRoles, so this diagnostic only exposes an internally malformed schema.",
+      "evidence": {
+        "guard": [
+          "if name != \"\" || column.Name == \"\""
+        ],
+        "callers": [
+          "resolveOptionalSampleRole",
+          "resolveSampleTemporalLayout"
+        ],
+        "cited": [
+          "projectSampleRoles",
+          "requireSampleRole",
+          "resolveSampleTemporalLayout"
+        ]
+      }
+    }
+  ]
+}

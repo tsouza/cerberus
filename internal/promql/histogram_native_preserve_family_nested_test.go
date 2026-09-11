@@ -66,8 +66,8 @@ func TestLower_ExpHistogram_PreserveFamilyNestedUnderFloatOnlyWrapper(t *testing
 			if err != nil {
 				t.Fatalf("Lower(%q): %v (expected this nested preserve-family shape to compose)", tc.query, err)
 			}
-			if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
-				t.Errorf("Lower(%q) RowShape = %s, want %s", tc.query, shape, chplan.SampleRowShape)
+			if kind := chplan.LiveSampleKind(plan); kind != chplan.SampleKindFloat {
+				t.Errorf("Lower(%q) live sample kind = %s, want float", tc.query, kind)
 			}
 			if _, _, err := chsql.Emit(context.Background(), plan); err != nil {
 				t.Errorf("Emit(%q): %v", tc.query, err)

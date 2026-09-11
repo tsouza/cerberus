@@ -83,6 +83,7 @@ func TestQueryRange_LabelRewritePhysicalColumns_ChDB(t *testing.T) {
 				{name: "replace_offset", query: replace("abs(rate(http_requests_total[5m] offset 1m))"), dst: "api"},
 				{name: "replace_last", query: replace("last_over_time(http_requests_total[5m])"), dst: "api", metricName: "http_requests_total", lastSample: true},
 				{name: "join_last", query: join("last_over_time(http_requests_total[5m])"), dst: "api-api", metricName: "http_requests_total", lastSample: true},
+				{name: "replace_abs_last", query: replace("abs(last_over_time(http_requests_total[5m]))"), dst: "api", lastSample: true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					matrix := runRangeModeQueryRange(t, srv.URL, tc.query, start, end, step)

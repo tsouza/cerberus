@@ -1,0 +1,41 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_aggregate.go:canonicalizeMixedFloatArmForAgg#4e2057a5",
+      "message": "promql: mixed aggregate float arm has %s sample schema",
+      "class": "internal",
+      "rationale": "lowerPlainAggregateOverInput calls this adapter only for mixedPlainAggregateLayout. Its production callers pass either the shadow-resolved ordinary float arm of a mixed `or` or the mixed VectorSetOp used by count/group; those producers publish SampleKindFloat and SampleKindMixed respectively. Any other kind means the internal mixed-layout caller contract was broken.",
+      "evidence": {
+        "guard": [
+          "if kind != chplan.SampleKindFloat \u0026\u0026 kind != chplan.SampleKindMixed"
+        ],
+        "callers": [
+          "lowerPlainAggregateOverInput"
+        ],
+        "cited": [
+          "lowerPlainAggregateOverInput"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_aggregate.go:canonicalizeMixedFloatArmForAgg#9d252250",
+      "message": "promql: mixed aggregate float arm: %w",
+      "class": "internal",
+      "rationale": "the preceding guard restricts input to the float arm or mixed union supplied by the two mixedPlainAggregateLayout callers. Those internal producers publish closed schemas with named Attributes and Value roles and valid canonical, anchored, or reduced temporal roles, so resolveSampleTemporalLayout cannot reject a wire-reachable plan.",
+      "evidence": {
+        "guard": [
+          "past returning if kind != chplan.SampleKindFloat \u0026\u0026 kind != chplan.SampleKindMixed",
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerPlainAggregateOverInput"
+        ],
+        "cited": [
+          "resolveSampleTemporalLayout"
+        ]
+      }
+    }
+  ]
+}

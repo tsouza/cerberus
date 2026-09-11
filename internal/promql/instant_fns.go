@@ -438,13 +438,92 @@ func projectValueOverInner(inner chplan.Node, s schema.Metrics, layout samplePro
 		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{value: build(refs)} })
 }
 
-// legacySampleProjectionLayout preserves the existing temporal/materialization
-// boundary until the legacy shape contract is reconciled. It must not choose
-// a wrapper's name or payload policy, and it never supplies input column names.
+// legacySampleProjectionLayout derives the input's temporal envelope from its
+// physical roles. Metric-name presence and anchor presence are orthogonal: a
+// name-preserving range wrapper legitimately publishes both the canonical
+// sample columns and the matrix anchor. The adapter must not choose a wrapper's
+// name or payload policy, and it never supplies input column names.
 func legacySampleProjectionLayout(inner chplan.Node) sampleProjectionLayout {
-	shape := chplan.RowShapeOf(inner)
-	return sampleProjectionLayout{
-		canonical: shape != chplan.GridWindowRowShape && shape != chplan.ReducedWindowRowShape,
-		anchored:  shape == chplan.GridWindowRowShape,
+	_, layout, err := resolveSampleTemporalLayout(inner.RowType())
+	if err != nil {
+		panic(err.Error())
+	}
+	if layout.anchored && !layout.canonical && !anchoredSampleLayoutSpine(inner) {
+		return sampleProjectionLayout{canonical: true}
+	}
+	if !layout.canonical && !layout.anchored {
+		if !reducedSampleLayoutSpine(inner) {
+			panic("promql: temporal sample layout is missing a timestamp role")
+		}
+	}
+	return layout
+}
+
+// anchoredSampleLayoutSpine distinguishes an actual grid-derived output from
+// a generic Project that happens to publish anchor/timestamp roles. The roles
+// identify the columns; grid provenance decides whether the HTTP adapter must
+// retain the extra anchor column rather than normalize to the canonical tuple.
+func anchoredSampleLayoutSpine(inner chplan.Node) bool {
+	if _, ok := inner.(*chplan.Scan); ok {
+		return true
+	}
+	return anchoredGridLayoutSpine(inner)
+}
+
+func anchoredGridLayoutSpine(inner chplan.Node) bool {
+	if _, ok := inner.(chplan.GridCarrier); ok {
+		return true
+	}
+	switch node := inner.(type) {
+	case *chplan.Project:
+		return anchoredGridLayoutSpine(node.Input)
+	case *chplan.Filter:
+		return anchoredGridLayoutSpine(node.Input)
+	case *chplan.OrderBy:
+		return anchoredGridLayoutSpine(node.Input)
+	case *chplan.Limit:
+		return anchoredGridLayoutSpine(node.Input)
+	case *chplan.TopK:
+		return anchoredGridLayoutSpine(node.Input)
+	case *chplan.Aggregate:
+		return anchoredGridLayoutSpine(node.Input)
+	case *chplan.CrossJoin:
+		return anchoredGridLayoutSpine(node.Left) || anchoredGridLayoutSpine(node.Right)
+	case *chplan.UnionAll:
+		return len(node.Inputs) != 0 && anchoredGridLayoutSpine(node.Inputs[0])
+	default:
+		return false
+	}
+}
+
+// reducedSampleLayoutSpine accepts a closed leaf that directly declares the
+// reduced contract, or proves that a wrapper spine descends from a real reduced
+// window. A Project cannot manufacture that proof merely by narrowing an
+// arbitrary input to two coincidentally named columns.
+func reducedSampleLayoutSpine(inner chplan.Node) bool {
+	if _, ok := inner.(*chplan.Scan); ok {
+		return true
+	}
+	return reducedWindowLayoutSpine(inner)
+}
+
+func reducedWindowLayoutSpine(inner chplan.Node) bool {
+	switch node := inner.(type) {
+	case *chplan.RangeWindow:
+		return node.OuterRange == 0
+	case *chplan.RangeWindowGridNativeInstant:
+		return true
+	case *chplan.Project:
+		return reducedWindowLayoutSpine(node.Input)
+	case *chplan.Filter:
+		return reducedWindowLayoutSpine(node.Input)
+	case *chplan.OrderBy:
+		return reducedWindowLayoutSpine(node.Input)
+	case *chplan.Limit:
+		return reducedWindowLayoutSpine(node.Input)
+	case *chplan.TopK:
+		return reducedWindowLayoutSpine(node.Input)
+	default:
+		return false
 	}
 }

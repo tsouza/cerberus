@@ -1,0 +1,42 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_vector_plain_arithmetic.go:widenPlainVectorToMixedShape#2bd62c4b",
+      "message": "promql: mixed join plain operand: %w",
+      "class": "internal",
+      "rationale": "the preceding guard has proved the ordinary join operand publishes SampleKindFloat. Its lowerer-created schema carries the named Attributes and Value roles and one of the canonical, anchored, or reduced temporal envelopes, so resolveSampleTemporalLayout can fail only if an internal vector producer emitted a malformed schema.",
+      "evidence": {
+        "guard": [
+          "past returning if kind != chplan.SampleKindFloat",
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerPlainOperandForMixedJoin"
+        ],
+        "cited": [
+          "resolveSampleTemporalLayout"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_vector_plain_arithmetic.go:widenPlainVectorToMixedShape#d9727481",
+      "message": "promql: mixed join plain operand has %s sample schema",
+      "class": "internal",
+      "rationale": "lowerPlainOperandForMixedJoin is called only after vectorPlainArithmeticOverMixedExpHistogramSetOp has selected one mixed side and excluded histogram-valued and mixed shapes from plainExpr. The parser requires a vector operand and ordinary lowering therefore publishes SampleKindFloat; another kind is an internal recognizer/lowerer disagreement.",
+      "evidence": {
+        "guard": [
+          "if kind != chplan.SampleKindFloat"
+        ],
+        "callers": [
+          "lowerPlainOperandForMixedJoin"
+        ],
+        "cited": [
+          "lowerPlainOperandForMixedJoin",
+          "vectorPlainArithmeticOverMixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}

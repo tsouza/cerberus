@@ -31,7 +31,11 @@ const canonicalTimestampColumn = "TimeUnix"
 // `Timestamp`.
 func setOpArmMatrixRangeWindow(table string) chplan.Node {
 	rw := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: table},
+		Input: &chplan.Scan{Table: table, Roles: []chplan.Column{
+			{Name: "ResourceAttributes", Role: chplan.RoleAttributes},
+			{Name: logsTimestampColumn, Role: chplan.RoleTimestamp},
+			{Name: "Value", Role: chplan.RoleValue},
+		}},
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		Step:            time.Minute,
@@ -48,6 +52,7 @@ func setOpArmMatrixRangeWindow(table string) chplan.Node {
 			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: canonicalTimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
 		},
+		Roles: setOpTestRoles(),
 	}
 }
 

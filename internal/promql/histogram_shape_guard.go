@@ -32,3 +32,19 @@ func mixedRowsNeedPreparation(inner chplan.Node) bool {
 	completeHistogram, discriminated := validateSamplePayload(inner.RowType())
 	return completeHistogram && discriminated && !mixedFloatRowsProven(inner)
 }
+
+// liveSampleKind refines the physical schema contract with the only
+// value-domain proof represented in the plan: a discriminator-zero filter over
+// a mixed payload contains float rows only while retaining all mixed columns.
+func liveSampleKind(inner chplan.Node) chplan.SampleKind {
+	return chplan.LiveSampleKind(inner)
+}
+
+// rowsMayContainHistograms answers which payload path a subquery must take.
+// A discriminator-zero proof makes a physically mixed relation safe for the
+// float path without changing its columns. Unknown or malformed schemas stay
+// on the conservative path: callers must never erase a possible histogram by
+// projecting the ordinary float envelope over a relation they cannot prove.
+func rowsMayContainHistograms(inner chplan.Node) bool {
+	return liveSampleKind(inner) != chplan.SampleKindFloat
+}

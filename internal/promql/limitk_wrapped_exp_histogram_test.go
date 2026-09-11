@@ -81,8 +81,8 @@ func TestLower_ExpHistogram_LimitKAndLimitRatioComposeUnderFloatOnlyWrappers(t *
 			if err != nil {
 				t.Fatalf("LowerAt(%q): unexpected error (this exact shape hard-rejected or panicking before cerberus issue #2575's fix): %v", query, err)
 			}
-			if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
-				t.Fatalf("LowerAt(%q) row shape = %s, want sample (canonical float, dropped) — a float-only wrapper must drop the histogram, not forward it", query, shape)
+			if kind := chplan.LiveSampleKind(plan); kind != chplan.SampleKindFloat {
+				t.Fatalf("LowerAt(%q) live sample kind = %s, want float (canonical float, dropped)", query, kind)
 			}
 			// The plan must actually be empty (a constant-false Filter
 			// reachable somewhere in the tree), matching reference's

@@ -38,8 +38,8 @@ func lowerExpHistogramCountValuesOverPlan(agg *parser.AggregateExpr, input chpla
 	if label == "" {
 		return nil, fmt.Errorf("promql: count_values requires a non-empty label name")
 	}
-	if chplan.RowShapeOf(input) != chplan.HistogramRowShape {
-		return nil, fmt.Errorf("promql: internal invariant violated: count_values native-histogram input is %T with %s row shape", input, chplan.RowShapeOf(input))
+	if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
+		return nil, fmt.Errorf("promql: internal invariant violated: count_values native-histogram input is %T with %s sample kind", input, kind)
 	}
 	return lowerCountValuesOverPlan(agg, label, input, nativeHistogramStringExpr(s), s, ctx), nil
 }

@@ -111,9 +111,8 @@ func transposeFilterRangeWindow(b Bindings) chplan.Node {
 		return nil
 	}
 
-	// Copy-on-write from f so Histogram / Mixed ride down with the
-	// predicate, matching the newAgg := *a / newRW := *r discipline just
-	// below and chplan/clone.go's rule.
+	// Copy-on-write from f so future fields ride down with the predicate,
+	// matching the newRW := *r discipline below and chplan.CloneNode's rule.
 	newFilter := *f
 	newFilter.Input = r.Input
 	newRW := *r

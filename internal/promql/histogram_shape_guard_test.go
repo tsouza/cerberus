@@ -22,18 +22,13 @@ import (
 
 // histogramShapedInput returns a minimal plan node that publishes
 // chplan.HistogramRowShape.
-func histogramShapedInput() chplan.Node {
-	return &chplan.HistogramProjection{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
-		CountColumn:                "Count",
-		SumColumn:                  "Sum",
-		ScaleColumn:                "Scale",
-		ZeroCountColumn:            "ZeroCount",
-		PositiveOffsetColumn:       "PositiveOffset",
-		PositiveBucketCountsColumn: "PositiveBucketCounts",
-		NegativeOffsetColumn:       "NegativeOffset",
-		NegativeBucketCountsColumn: "NegativeBucketCounts",
-	}
+func histogramShapedInput(s schema.Metrics) chplan.Node {
+	return nativeHistogramProjection(
+		sampleForwardTestInput(metricRoles(s)...),
+		&chplan.ColumnRef{Name: s.MetricNameColumn},
+		&chplan.ColumnRef{Name: s.TimestampColumn},
+		s,
+	)
 }
 
 func TestProjectForwarders_PanicOnHistogramShapedInput(t *testing.T) {
@@ -45,13 +40,13 @@ func TestProjectForwarders_PanicOnHistogramShapedInput(t *testing.T) {
 		{
 			name: "projectValueOverInner",
 			call: func() {
-				projectValueOverInner(histogramShapedInput(), s, sampleProjectionLayout{canonical: true}, func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: 1} })
+				projectValueOverInner(histogramShapedInput(s), s, sampleProjectionLayout{canonical: true}, func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: 1} })
 			},
 		},
 		{
 			name: "projectAttributesOverInner",
 			call: func() {
-				mustProjectAttributesOverInner(t, histogramShapedInput(), s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes })
+				mustProjectAttributesOverInner(t, histogramShapedInput(s), s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes })
 			},
 		},
 	}
@@ -80,7 +75,7 @@ func TestProjectForwarders_PanicOnHistogramShapedInput(t *testing.T) {
 // someone widened the condition by accident.
 func TestProjectForwarders_AcceptEveryNonHistogramShape(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
-	scan := &chplan.Scan{Table: "otel_metrics_gauge", Roles: metricRoles(s)}
+	scan := sampleForwardTestInput(metricRoles(s)...)
 	inputs := []struct {
 		name  string
 		node  chplan.Node

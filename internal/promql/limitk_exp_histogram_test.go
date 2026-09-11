@@ -71,12 +71,11 @@ func TestLower_ExpHistogram_LimitKAndLimitRatioPreserveSamples(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_LimitKEmptyKStaysHistogramShaped pins the K < 1
+// TestLower_ExpHistogram_LimitKEmptyKStaysHistogramShaped pins K < 1
 // degenerate fold (topKDomain's "empty" case, shared with topk/bottomk):
-// limitk still recognises a histogram-valued input first, so the
-// resulting constant-false chplan.Filter still reports HistogramRowShape
-// — the SQL stays column-set-compatible with its histogram-valued
-// Input even though the predicate keeps zero rows.
+// limitk still recognises the histogram-valued input first, so the resulting
+// constant-false Filter retains its histogram physical schema even though
+// its predicate keeps zero rows.
 func TestLower_ExpHistogram_LimitKEmptyKStaysHistogramShaped(t *testing.T) {
 	t.Parallel()
 
@@ -88,24 +87,18 @@ func TestLower_ExpHistogram_LimitKEmptyKStaysHistogramShaped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LowerAt: %v", err)
 	}
-	filter, ok := plan.(*chplan.Filter)
+	_, ok := plan.(*chplan.Filter)
 	if !ok {
 		t.Fatalf("plan is %T, want *chplan.Filter", plan)
-	}
-	if !filter.Histogram {
-		t.Fatalf("Filter.Histogram = false, want true")
 	}
 	if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
 		t.Fatalf("RowShapeOf(plan) = %s, want histogram", shape)
 	}
 }
 
-// TestLower_ExpHistogram_TopKBottomKUnaffected pins that topk/bottomk's
-// existing histogram-DROPPING treatment (histogram_native_drop_
-// aggregation.go) is unchanged by #2518's fix: a purely histogram-valued
-// input still folds to an empty float-shaped result, never a
-// chplan.TopK.Histogram-marked plan — only limitk/limit_ratio preserve
-// the histogram shape.
+// TestLower_ExpHistogram_TopKBottomKUnaffected pins topk/bottomk's
+// histogram-dropping treatment. Only limitk/limit_ratio preserve histogram
+// samples.
 func TestLower_ExpHistogram_TopKBottomKUnaffected(t *testing.T) {
 	t.Parallel()
 
@@ -122,8 +115,8 @@ func TestLower_ExpHistogram_TopKBottomKUnaffected(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LowerAt(%q): %v", query, err)
 			}
-			if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
-				t.Fatalf("LowerAt(%q) plan publishes %s, want sample (empty fold) — topk/bottomk must keep dropping histogram samples", query, shape)
+			if kind := chplan.LiveSampleKind(plan); kind != chplan.SampleKindFloat {
+				t.Fatalf("LowerAt(%q) live sample kind = %s, want float (empty fold)", query, kind)
 			}
 		})
 	}

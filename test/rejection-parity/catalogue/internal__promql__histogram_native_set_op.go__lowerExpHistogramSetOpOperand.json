@@ -2,36 +2,6 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOpOperand#8deac7ac",
-      "message": "promql: internal invariant violated: exp-histogram set-op operand lowering published %s row shape (%T), want %s",
-      "class": "internal",
-      "rationale": "internal invariant: all callers of lowerExpHistogramSetOpOperand only ever pass an operand isExpHistogramValuedShape already confirmed histogram-valued -- lowerExpHistogramSetOp's own both-arms-histogram expHistogramSetOp recognizer, lowerVectorSetOpOperand's own isExpHistogramValuedShape guard (the mixed and/unless entry point, cerberus issue #2325), and lowerExpHistogramValuedOrForwardedOperand's own isExpHistogramValuedShape check (cerberus issue #2571 -- this function replaces lowerMixedExpHistogramOperands's former direct call to lowerExpHistogramSetOpOperand so the mixed or's histogram side can ALSO be an and/unless chain forwarding a histogram-valued shape, isExpHistogramForwardedThroughSetOp, without weakening this narrower guard: lowerExpHistogramValuedOrForwardedOperand only forwards to lowerExpHistogramSetOpOperand when its own isExpHistogramValuedShape(expr) check already returned true, taking a separate lower()-based path for the isExpHistogramForwardedThroughSetOp case instead) -- so lowerExpHistogramSetOpOperand's histogram-valued lowering can never publish a non-HistogramRowShape node here",
-      "evidence": {
-        "guard": [
-          "past returning if err != nil",
-          "past returning if !matched",
-          "if chplan.RowShapeOf(node) != chplan.HistogramRowShape"
-        ],
-        "callers": [
-          "lowerExpHistogramSetOp",
-          "lowerExpHistogramValuedOrForwardedOperand",
-          "lowerVectorSetOpOperand"
-        ],
-        "cited": [
-          "expHistogramSetOp",
-          "isExpHistogramForwardedThroughSetOp",
-          "isExpHistogramValuedShape",
-          "lower",
-          "lowerExpHistogramSetOp",
-          "lowerExpHistogramSetOpOperand",
-          "lowerExpHistogramValuedOrForwardedOperand",
-          "lowerMixedExpHistogramOperands",
-          "lowerVectorSetOpOperand"
-        ]
-      }
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOpOperand#9d51e668",
       "message": "promql: internal invariant violated: exp-histogram set-op operand matched no known histogram-valued shape for %v",
       "class": "internal",
@@ -57,6 +27,28 @@
           "lowerExpHistogramValuedShape",
           "lowerMixedExpHistogramOperands",
           "lowerVectorSetOpOperand"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOpOperand#c8a2e9af",
+      "message": "promql: internal invariant violated: exp-histogram set-op operand lowering published %s sample kind (%T), want histogram",
+      "class": "internal",
+      "rationale": "this helper has just received matched=true from lowerExpHistogramValuedShape for the same operand. Its matched producers are HistogramProjection or histogram-flagged VectorSetOp plans, whose RowType schemas are SampleKindHistogram; a different kind can only result from an internal lowerer violating that postcondition.",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if !matched",
+          "if kind := node.RowType().SampleKind(); kind != chplan.SampleKindHistogram"
+        ],
+        "callers": [
+          "lowerExpHistogramSetOp",
+          "lowerExpHistogramValuedOrForwardedOperand",
+          "lowerVectorSetOpOperand"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
         ]
       }
     }

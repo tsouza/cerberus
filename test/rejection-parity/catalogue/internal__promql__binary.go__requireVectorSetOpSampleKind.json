@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:requireVectorSetOpSampleKind#72065480",
+      "message": "promql: vector set op %s operand has %s sample schema",
+      "class": "internal",
+      "rationale": "lowerVectorSetOp receives parser-typed vector operands and lowers each through lowerVectorSetOpOperand, whose histogram, mixed, dropping, and ordinary branches all publish a closed float, histogram, or mixed sample schema. An opaque or invalid kind therefore means an internal lowerer broke its output contract; no PromQL operand can select this diagnostic as a language rejection.",
+      "evidence": {
+        "guard": [
+          "default of switch kind over [case chplan.SampleKindFloat, chplan.SampleKindHistogram, chplan.SampleKindMixed; default]"
+        ],
+        "callers": [
+          "lowerVectorSetOp"
+        ],
+        "cited": [
+          "lowerVectorSetOp",
+          "lowerVectorSetOpOperand"
+        ]
+      }
+    }
+  ]
+}

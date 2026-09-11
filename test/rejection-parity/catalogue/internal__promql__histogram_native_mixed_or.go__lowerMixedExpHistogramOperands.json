@@ -2,29 +2,45 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramOperands#52f51634",
-      "message": "promql: 'or' between a float-valued and a histogram-valued operand does not support a %s-shaped float operand, which cerberus issue #2333 does not cover",
+      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramOperands#dd687f11",
+      "message": "promql: 'or' between a float-valued and a histogram-valued operand has a %s float schema",
       "class": "internal",
-      "rationale": "both callers reach this default switch arm only when RowShapeOf(floatNode) is neither SampleRowShape, GridWindowRowShape, nor ReducedWindowRowShape, i.e. HistogramRowShape or MixedRowShape — believed unreachable through any parseable query today, since the float side already failed isExpHistogramValuedShape before lower() is called on it. A defensive guard against a future histogram-aware float lowering silently mis-projecting through this path, not a live divergence. lowerMixedExpHistogramSetOp is the leaf case's own direct caller. shadowResolveMixedExpHistogramOperands (cerberus issue #2595) is a refactor of what used to be lowerSumOrAvgOverMixedExpHistogramSetOp's own inline call (cerberus issue #2453) into a shared helper histogram_native_mixed_or_aggregate.go's three aggregate families now all route through — sumOrAvgOverMixedExpHistogramSetOp (#2346), floatOnlyAggOverMixedExpHistogramSetOp, and countValuesOverMixedExpHistogramSetOp (both #2595) — none of which change how the float operand itself is lowered, so the same unreachability claim carries through unchanged for all three.",
+      "rationale": "mixedExpHistogramSetOp admits this BinaryExpr only when exactly one side is histogram-valued or histogram-forwarding; lowerMixedExpHistogramOperands chooses that side with the identical predicate and names the opposite side floatExpr. The ordinary lowering of that parser-typed vector must therefore publish SampleKindFloat; histogram or mixed was excluded by the recognizer, and opaque or invalid would violate the lowering schema contract.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
           "past returning if err != nil",
-          "default of switch shape over [case chplan.SampleRowShape, chplan.GridWindowRowShape, chplan.ReducedWindowRowShape; default]"
+          "if kind != chplan.SampleKindFloat"
         ],
         "callers": [
           "lowerMixedExpHistogramSetOp",
           "shadowResolveMixedExpHistogramOperands"
         ],
         "cited": [
-          "countValuesOverMixedExpHistogramSetOp",
-          "floatOnlyAggOverMixedExpHistogramSetOp",
-          "isExpHistogramValuedShape",
-          "lower",
+          "lowerMixedExpHistogramOperands",
+          "mixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramOperands#f7b6d710",
+      "message": "promql: mixed 'or' float operand: %w",
+      "class": "internal",
+      "rationale": "the immediately preceding guard has proved the lowered float arm is SampleKindFloat. Every PromQL vector producer admitted as that arm publishes a closed schema with named Attributes and Value roles and a valid canonical, anchored, or reduced temporal envelope, so resolveSampleTemporalLayout can fail here only for a malformed internal plan.",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if kind != chplan.SampleKindFloat",
+          "if _, _, err := resolveSampleTemporalLayout(row); err != nil"
+        ],
+        "callers": [
           "lowerMixedExpHistogramSetOp",
-          "lowerSumOrAvgOverMixedExpHistogramSetOp",
-          "shadowResolveMixedExpHistogramOperands",
-          "sumOrAvgOverMixedExpHistogramSetOp"
+          "shadowResolveMixedExpHistogramOperands"
+        ],
+        "cited": [
+          "resolveSampleTemporalLayout"
         ]
       }
     }

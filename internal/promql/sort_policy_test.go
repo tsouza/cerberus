@@ -13,6 +13,16 @@ import (
 // No parallel cases: these tests temporarily replace the shared policy table.
 func TestSortPolicyDrivesPreparation(t *testing.T) {
 	const unknownPolicy mixedOperandPolicy = 255
+	s := schema.DefaultOTelMetrics()
+	mixed := func() *chplan.VectorSetOp {
+		return &chplan.VectorSetOp{
+			Mixed:            true,
+			MetricNameColumn: s.MetricNameColumn,
+			AttributesColumn: s.AttributesColumn,
+			TimestampColumn:  s.TimestampColumn,
+			ValueColumn:      s.ValueColumn,
+		}
+	}
 	for _, site := range []mixedAdmissionSite{mixedOperandAdmission, mixedPlanAdmission} {
 		t.Run(string(site), func(t *testing.T) {
 			key := mixedWrapperKey{family: mixedSortFamily, site: site}
@@ -23,7 +33,7 @@ func TestSortPolicyDrivesPreparation(t *testing.T) {
 				called := false
 				plan, err := prepareSortOperand(site, func() (chplan.Node, error) {
 					called = true
-					return &chplan.VectorSetOp{Mixed: true}, nil
+					return mixed(), nil
 				})
 				if called || plan != nil || err == nil {
 					t.Fatalf("unsupported policy %v reached loader: called=%v plan=%v err=%v", policy, called, plan, err)
@@ -44,7 +54,7 @@ func TestSortPolicyDrivesPreparation(t *testing.T) {
 			if floatErr != nil || floatPlan != floatInput {
 				t.Fatalf("already-float input changed: plan=%v err=%v", floatPlan, floatErr)
 			}
-			originalUnion := &chplan.VectorSetOp{Mixed: true}
+			originalUnion := mixed()
 			calls := 0
 			plan, err = prepareSortOperand(site, func() (chplan.Node, error) {
 				calls++

@@ -299,15 +299,11 @@ func TestSubqueryInstantSafe_PiExceptionNotRejected(t *testing.T) {
 }
 
 // TestLowerSubqueryOverBinary_PlainShapeSucceedsWithNoEvalAnchor kills the
-// CONDITIONALS_NEGATION mutant at subquery.go:lowerSubqueryOverBinary:`if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape` — the second `==` in
-// `if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape`.
-// A plain (non-histogram, non-mixed) `or` composition must lower
-// successfully even with no query eval-time context threaded through
-// (the same !ok fallback TestSubqueryOverBinary_HistogramSetOp_NoEvalAnchorRejects,
-// subquery_and_unless_mixed_histogram_outer_test.go, pins the REJECT half
-// of). Flipping `==` to `!=` on the Mixed comparison turns the guard into
-// `shape == Histogram || shape != Mixed`, which is true for every ordinary
-// shape and wrongly rejects this query.
+// CONDITIONALS_NEGATION mutant at histogram_shape_guard.go:rowsMayContainHistograms:`return liveSampleKind(inner) != chplan.SampleKindFloat`.
+// A plain `or` composition has a float sample kind, so the live guard must
+// return false and allow lowering without query
+// evaluation context. Negating that result wrongly sends this query through
+// the conservative histogram rejection path.
 func TestLowerSubqueryOverBinary_PlainShapeSucceedsWithNoEvalAnchor(t *testing.T) {
 	t.Parallel()
 

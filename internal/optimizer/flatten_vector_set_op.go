@@ -58,8 +58,8 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 	// fields chplan.NaryVectorSetOp has no room for (it only threads
 	// Histogram, the symmetric both-arms case, through). Rebuilding one
 	// as an N-ary node would silently drop MixedHistogramOnLeft, which
-	// downgrades chplan.RowShapeOf's answer from MixedRowShape to the
-	// default SampleRowShape — exactly the silent-placeholder-Value
+	// downgrades the published mixed payload to the float-only contract —
+	// exactly the silent-placeholder-Value
 	// hazard [assertValueShapedInput] exists to catch, except
 	// [wrapWithSampleProjection] has no guard of its own and would
 	// happily wrap the flattened node's Value column, discarding every
@@ -92,8 +92,12 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 	// 47 "Unknown expression identifier". Bail and leave the (already
 	// correct) nested binary VectorSetOp shape in place whenever any arm
 	// disagrees with the flag chosen for the whole chain.
+	expectedKind := chplan.SampleKindFloat
+	if binary.Histogram {
+		expectedKind = chplan.SampleKindHistogram
+	}
 	for _, arm := range arms {
-		if (chplan.RowShapeOf(arm) == chplan.HistogramRowShape) != binary.Histogram {
+		if chplan.LiveSampleKind(arm) != expectedKind {
 			return n, false
 		}
 	}

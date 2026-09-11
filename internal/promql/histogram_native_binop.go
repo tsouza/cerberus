@@ -186,10 +186,10 @@ func lowerExpHistogramValuedOperand(expr parser.Expr, s schema.Metrics, ctx lowe
 	if !matched {
 		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram binop operand matched no known histogram-valued shape for %v", expr)
 	}
-	if chplan.RowShapeOf(node) != chplan.HistogramRowShape {
+	if kind := node.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
 		return nil, fmt.Errorf(
-			"promql: internal invariant violated: exp-histogram binop operand lowering published %s row shape (%T), want %s",
-			chplan.RowShapeOf(node), node, chplan.HistogramRowShape,
+			"promql: internal invariant violated: exp-histogram binop operand lowering published %s sample kind (%T), want histogram",
+			kind, node,
 		)
 	}
 	return node, nil

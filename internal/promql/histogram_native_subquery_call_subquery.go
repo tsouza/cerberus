@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -200,37 +201,43 @@ func guardedCallSubqueryFanout(
 // `<fn>(<inner-sub>)[<outer-range>:<step>]`, mirroring
 // [lowerHistogramOrMixedSubqueryOuterFnInput]'s own switch vocabulary rung
 // for rung. wideInner is already lowered (the widened inner subquery's own
-// relation) and shape is its already-computed row shape.
+// relation) and kind is its already-validated sample schema contract.
 func lowerHistogramOrMixedCallSubqueryInput(
 	wideInner chplan.Node,
-	shape chplan.RowShape,
+	kind chplan.SampleKind,
 	windowFn string,
 	outerSub, innerSub *parser.SubqueryExpr,
 	step time.Duration,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (node chplan.Node, matched bool, err error) {
+	if !histogramSubqueryOuterFnName(windowFn) {
+		return nil, false, nil
+	}
+	if kind != chplan.SampleKindHistogram && kind != chplan.SampleKindMixed {
+		return nil, true, fmt.Errorf("promql: internal invariant violated: histogram call-subquery input has %s sample kind", kind)
+	}
 	grid := histogramCallSubqueryGrid{outerSub: outerSub, innerRange: innerSub.Range, step: step}
 	switch windowFn {
 	case countOverTimeWindowFn, presentOverTimeWindowFn, tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn:
 		node, err = lowerSelectFnOverCallSubqueryInput(wideInner, grid, windowFn, s, ctx)
 		return node, true, err
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
-		if shape == chplan.HistogramRowShape {
+		if kind == chplan.SampleKindHistogram {
 			node, err = lowerSelectFnOverCallSubqueryInput(wideInner, grid, windowFn, s, ctx)
 			return node, true, err
 		}
 		node, err = lowerMixedLastFirstOverCallSubqueryInput(wideInner, grid, windowFn, s, ctx)
 		return node, true, err
 	case resetsWindowFn, changesWindowFn:
-		if shape == chplan.HistogramRowShape {
+		if kind == chplan.SampleKindHistogram {
 			node, err = lowerSelectFnOverCallSubqueryInput(wideInner, grid, windowFn, s, ctx)
 			return node, true, err
 		}
 		node, err = lowerMixedResetsOrChangesOverCallSubqueryInput(wideInner, grid, windowFn, s, ctx)
 		return node, true, err
 	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:
-		if shape == chplan.HistogramRowShape {
+		if kind == chplan.SampleKindHistogram {
 			node, err = lowerExpHistogramFoldOverCallSubqueryInput(wideInner, grid, windowFn, s, ctx)
 			return node, true, err
 		}

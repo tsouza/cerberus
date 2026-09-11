@@ -152,7 +152,13 @@ func TestScalarArithmeticPolicyBeforeLoadAndProjection(t *testing.T) {
 				}
 				// Malformed roles would panic in the projection callback; policy
 				// rejection must happen before narrowing or role resolution.
-				plan, err := finishScalarArithmetic(&chplan.VectorSetOp{Mixed: true}, nil, s, lowerCtx{}, chplan.OpAdd, 1, false, boundary)
+				plan, err := finishScalarArithmetic(&chplan.VectorSetOp{
+					Mixed:            true,
+					MetricNameColumn: s.MetricNameColumn,
+					AttributesColumn: s.AttributesColumn,
+					TimestampColumn:  s.TimestampColumn,
+					ValueColumn:      s.ValueColumn,
+				}, nil, s, lowerCtx{}, chplan.OpAdd, 1, false, boundary)
 				if plan != nil || err == nil {
 					t.Fatalf("denied projection continued: %T %v", plan, err)
 				}

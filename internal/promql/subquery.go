@@ -108,20 +108,19 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 // that error message is spelled.
 //
 // When matched, plan is returned exactly as the histogram-native
-// recognizer built it EXCEPT for its own row shape:
+// recognizer built it EXCEPT for its live sample kind:
 //
-//   - [chplan.HistogramRowShape] / [chplan.MixedRowShape] (a
-//     histogram-valued or mixed-`or` result) is returned AS-IS.
+//   - A histogram-valued or live mixed-`or` result is returned AS-IS.
 //     Re-projecting it through [subqueryAnchorShape]'s four-column
 //     Sample quartet would silently drop the nine Histogram*Column
 //     outputs (or the mixed shape's discriminator column) — the exact
 //     hazard [chplan.HistogramRowShape]'s own doc comment warns every
 //     generic forwarder about.
-//   - Anything else (the "drop" family's always-empty float quartet, a
-//     [chplan.SampleRowShape] result) gets the SAME [subqueryAnchorShape]
-//     wrap the non-histogram arithmetic siblings already apply, so a
-//     wrapping outer range-vector function can still read the
-//     `anchor_ts` alias.
+//   - Anything else (including a discriminator-zero physical mixed payload,
+//     the "drop" family's always-empty float quartet, or an ordinary sample)
+//     gets the SAME [subqueryAnchorShape] wrap the non-histogram arithmetic
+//     siblings already apply, so a wrapping outer range-vector function can
+//     still read the `anchor_ts` alias.
 //
 // A histogram-native shape reached from an OUTER range-vector function
 // wrapping this subquery (`max_over_time((m_exp_hist)[5m:1m])`) is a
@@ -165,12 +164,10 @@ func lowerHistogramNativeSubqueryInner(sub *parser.SubqueryExpr, step time.Durat
 		if err := requireMixedPlanPolicy(plan, mixedSubqueryFamily); err != nil {
 			return nil, true, err
 		}
-		switch chplan.RowShapeOf(plan) {
-		case chplan.HistogramRowShape, chplan.MixedRowShape:
+		if rowsMayContainHistograms(plan) {
 			return capEmpty(plan), true, nil
-		default:
-			return subqueryAnchorShape(capEmpty(plan), s), true, nil
 		}
+		return subqueryAnchorShape(capEmpty(plan), s), true, nil
 	}
 	// The eleven-function drop-family range-vector reducer vocabulary
 	// (max_over_time, min_over_time, deriv, predict_linear,
@@ -473,16 +470,12 @@ const (
 // whatever composes on top (an outer `*_over_time` reducer folds nothing
 // and emits nothing; `absent_over_time` reads the same emptiness and
 // correctly reports 1). It reuses the constant-false Filter idiom
-// [dropExpHistogramSamples] already establishes, and carries the
-// Histogram / Mixed passthrough flags so [chplan.RowShapeOf] still
-// classifies the capped relation by the shape its input publishes.
+// [dropExpHistogramSamples] already establishes. Filter's physical schema
+// is its Input's schema even when this predicate proves that no rows survive.
 func emptySubqueryGrid(inner chplan.Node) chplan.Node {
-	shape := chplan.RowShapeOf(inner)
 	return &chplan.Filter{
 		Input:     inner,
 		Predicate: &chplan.LitBool{V: false},
-		Histogram: shape == chplan.HistogramRowShape,
-		Mixed:     shape == chplan.MixedRowShape,
 	}
 }
 
@@ -838,10 +831,11 @@ func lowerSubqueryOverInstantCall(
 // discriminator) and leave every consumer reading the meaningless
 // placeholder Value column instead — the exact silent-wrong-answer
 // class cerberus issue #2543 fixed for the bare-subquery-inner case.
-// The guard below is the same RowShapeOf dispatch
-// [lowerHistogramNativeSubqueryInner] already applies to its own
-// result, so a histogram/mixed-shaped set-op composes exactly like a
-// pure histogram-native subquery inner does.
+// The guard below asks the same live-sample-kind question
+// [lowerHistogramNativeSubqueryInner] applies to its own result, so a
+// histogram/mixed-valued set-op composes exactly like a pure
+// histogram-native subquery inner does without mistaking retained physical
+// payload columns for live histograms.
 func lowerSubqueryOverBinary(
 	sub *parser.SubqueryExpr,
 	b *parser.BinaryExpr,
@@ -864,12 +858,10 @@ func lowerSubqueryOverBinary(
 		if state == subqueryGridEmpty {
 			inner = emptySubqueryGrid(inner)
 		}
-		switch chplan.RowShapeOf(inner) {
-		case chplan.HistogramRowShape, chplan.MixedRowShape:
+		if rowsMayContainHistograms(inner) {
 			return inner, nil
-		default:
-			return subqueryAnchorShape(inner, s), nil
 		}
+		return subqueryAnchorShape(inner, s), nil
 	}
 
 	// Synthetic operands such as time() materialize their own StepGrid.
@@ -890,7 +882,7 @@ func lowerSubqueryOverBinary(
 	// collapsed. This branch has no grid to evaluate a per-anchor
 	// composition against even in principle, so there is no sound
 	// alternative to offer here.
-	if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
+	if rowsMayContainHistograms(inner) {
 		return nil, fmt.Errorf("promql: histogram-valued subquery set operator requires query eval-time context (use LowerAt)")
 	}
 	return wrapSubqueryIdentity(sub, inner, step, s, ctx)
@@ -1051,13 +1043,14 @@ func lowerOuterRangeFnOverSubquery(
 	// avg_over_time are intercepted the same way, one level earlier
 	// still, by [rangeFnOverExpHistogramSubquery] /
 	// [lowerExpHistogramRangeFnOverSubquery] (histogram_native_range_fn.go).
-	if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
+	if rowsMayContainHistograms(inner) {
+		kind := liveSampleKind(inner)
 		// Cerberus issue #2724: inner may have reached this Histogram/Mixed
 		// shape via a further and/unless/or wrapping a mixed `or`, a bare
 		// and/unless-forwarded histogram selector, or (since cerberus issue
 		// #3227) a bare mixed `or` — any shape [lowerSubquery]'s ordinary
-		// dispatch resolves this way, and the row shape alone says which
-		// continuation applies, so no AST recognizer is needed.
+		// dispatch resolves this way, and the validated physical row shape
+		// says which continuation applies, so no AST recognizer is needed.
 		// [lowerHistogramOrMixedSubqueryOuterFnInput] answers every one of
 		// the fifteen SELECT/FOLD-family names for it; anything else
 		// (deriv, predict_linear, ...) falls through unmatched to this
@@ -1066,7 +1059,7 @@ func lowerOuterRangeFnOverSubquery(
 		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
 			return nil, err
 		}
-		if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, shape, outer.Func.Name, sub, s, ctx); matched {
+		if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, kind, outer.Func.Name, sub, s, ctx); matched {
 			return node, err
 		}
 		if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name) {
@@ -3095,7 +3088,8 @@ func lowerSubqueryOverCallSubquery(
 	// composition (lowerOuterRangeFnOverSubquery, whose identical guard
 	// this mirrors) already gets for
 	// `<outer-fn>(<bare-histogram-selector>[range:step])`.
-	if shape := chplan.RowShapeOf(wideInner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
+	if rowsMayContainHistograms(wideInner) {
+		kind := liveSampleKind(wideInner)
 		// Cerberus issue #2726: wideInner may be histogram/mixed-shaped
 		// because innerSub's OWN inner expression resolved histogram-native
 		// (or a further and/unless/or wrapping one, cerberus issue #2724).
@@ -3107,7 +3101,7 @@ func lowerSubqueryOverCallSubquery(
 		if err := requireMixedPlanPolicy(wideInner, mixedSubqueryFamily); err != nil {
 			return nil, err
 		}
-		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, shape, call.Func.Name, sub, innerSub, step, s, ctx); matched {
+		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, kind, call.Func.Name, sub, innerSub, step, s, ctx); matched {
 			return node, err
 		}
 		if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name) {

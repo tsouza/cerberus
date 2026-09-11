@@ -19,7 +19,7 @@ import (
 // faithful stand-in for a real lowering's output.
 func mixedSetOpHistogramArm() *chplan.HistogramProjection {
 	return &chplan.HistogramProjection{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      setOpTestScan("otel_metrics_exponential_histogram"),
 		CountColumn:                "Count",
 		SumColumn:                  "Sum",
 		ScaleColumn:                "Scale",
@@ -43,7 +43,7 @@ func mixedSetOpHistogramArm() *chplan.HistogramProjection {
 // Value) quartet as real physical columns, standing in for
 // histogram_quantile()'s own float-valued output.
 func mixedSetOpFloatArm() *chplan.Scan {
-	return &chplan.Scan{Table: "otel_metrics_gauge"}
+	return setOpTestScan("otel_metrics_gauge")
 }
 
 func mixedSetOp(op chplan.VectorSetOpKind, left, right chplan.Node, histogram bool) *chplan.VectorSetOp {

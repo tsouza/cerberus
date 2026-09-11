@@ -236,6 +236,7 @@ func setOpArm(rng *rand.Rand) chplan.Node {
 			{Expr: &chplan.ColumnRef{Name: "TimeUnix"}, Alias: "TimeUnix"},
 			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
 		},
+		Roles: setOpTestColumns(),
 	}
 }
 
