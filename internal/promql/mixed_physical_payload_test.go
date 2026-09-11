@@ -228,8 +228,8 @@ func TestRowsMayContainHistogramsUsesRolesAcrossSampleEnvelopes(t *testing.T) {
 			value,
 			{Role: role},
 		}}
-		if liveSampleRolesAreUnambiguous(unnamed) {
-			t.Fatalf("unnamed role %d was accepted: %#v", role, unnamed)
+		if got := unnamed.SampleKind(); got != chplan.SampleKindInvalid {
+			t.Fatalf("unnamed role %d classified as %s, want invalid: %#v", role, got, unnamed)
 		}
 		for _, input := range []chplan.Node{
 			sampleForwardTestInput(
