@@ -198,7 +198,7 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			key := mixedWrapperKey{family: family, site: site}
 			wantPolicy := mixedBespoke
 			switch family {
-			case mixedMathFamily:
+			case mixedMathFamily, mixedArithmeticFamily:
 				wantPolicy = mixedFloatOnly
 			case mixedLabelFamily:
 				wantPolicy = mixedPreserve
@@ -238,20 +238,6 @@ func TestMixedOperandPolicyRejectsUnknownBeforeLowering(t *testing.T) {
 func TestMixedOperandPolicyPreservesBespokeResultAndError(t *testing.T) {
 	for key, policy := range mixedOperandPolicies {
 		t.Run(string(key.family)+"/"+string(key.site), func(t *testing.T) {
-			if key.family == mixedMathFamily || key.family == mixedLabelFamily {
-				called := false
-				plan, err := lowerWithMixedOperandPolicy(key.family, key.site, func() (chplan.Node, error) {
-					called = true
-					return &chplan.OneRow{}, nil
-				})
-				if called || plan != nil || err == nil {
-					t.Fatalf("migrated mode reached bespoke continuation: called=%v plan=%v err=%v", called, plan, err)
-				}
-				return
-			}
-			if policy != mixedBespoke {
-				t.Fatalf("unmigrated admission has policy %v, want bespoke", policy)
-			}
 			wantPlan := &chplan.OneRow{}
 			wantError := errors.New("operand lowering error")
 			calls := 0
@@ -259,6 +245,12 @@ func TestMixedOperandPolicyPreservesBespokeResultAndError(t *testing.T) {
 				calls++
 				return wantPlan, wantError
 			})
+			if policy != mixedBespoke {
+				if calls != 0 || plan != nil || err == nil {
+					t.Fatalf("migrated policy reached bespoke callback: calls=%d plan=%v err=%v", calls, plan, err)
+				}
+				return
+			}
 			if calls != 1 || plan != wantPlan || err != wantError {
 				t.Fatalf("bespoke result calls=%d plan=%v err=%v", calls, plan, err)
 			}

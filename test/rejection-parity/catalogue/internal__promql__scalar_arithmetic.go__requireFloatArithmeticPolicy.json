@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_arithmetic.go:requireFloatArithmeticPolicy#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "internal",
+      "rationale": "This is the private scalar-arithmetic registration invariant, not rejection of an admitted query shape. lowerArithmeticRoot supplies the root site before loading the union. finishScalarArithmetic supplies root for the canonical boundary or existing-plan for a guarded mixed operand. Both scalar-arithmetic family/site pairs are registered as mixedFloatOnly in the private production table; neither the site nor the policy is query-controlled. Ordinary float operands bypass the mixed existing-plan check. Missing registrations and other payload modes are reached only through synthetic calls or temporary table mutation in authority tests; a future admission change must reassess this classification.",
+      "evidence": {
+        "guard": [
+          "if mixedOperandPolicies[key] != mixedFloatOnly"
+        ],
+        "callers": [
+          "finishScalarArithmetic",
+          "lowerArithmeticRoot"
+        ],
+        "cited": [
+          "finishScalarArithmetic",
+          "lowerArithmeticRoot"
+        ]
+      }
+    }
+  ]
+}

@@ -110,30 +110,12 @@ func arithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ct
 // sample — mirrors [mathFnValueExpr]'s callers and
 // [lowerVectorScalar]'s own projection.
 func lowerArithmeticOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	inner, err := lowerMixedExpHistogramSetOp(setOp, s, ctx)
+	inner, err := lowerArithmeticRoot(func() (chplan.Node, error) {
+		return lowerMixedExpHistogramSetOp(setOp, s, ctx)
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	floatRowsOnly := mixedDiscriminatorFilter(inner, mixedDiscriminatorFloat)
-
-	valueRef := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
-	scalarLit := chplan.Expr(&chplan.LitFloat{V: scalar})
-	var opExpr chplan.Expr
-	if scalarOnLeft {
-		opExpr = &chplan.Binary{Op: op, Left: scalarLit, Right: valueRef}
-	} else {
-		opExpr = &chplan.Binary{Op: op, Left: valueRef, Right: scalarLit}
-	}
-
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: floatRowsOnly,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: opExpr, Alias: s.ValueColumn},
-		},
-	}, nil
+	return finishScalarArithmetic(inner, setOp, s, ctx, op, scalar, scalarOnLeft, scalarArithmeticCanonical)
 }

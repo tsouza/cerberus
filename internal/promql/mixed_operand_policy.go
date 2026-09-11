@@ -96,6 +96,8 @@ type mixedWrapperKey struct {
 // composition implements those reference contracts correctly. In particular,
 // generic already-lowered aggregate inputs retain their existing behavior here;
 // the nested sum/avg mismatch is tracked separately in cerberus issue #3297.
+// Scalar arithmetic's root and existing-plan entries execute the float-only
+// policy through its shared value kernel, preserving each projection boundary.
 var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedLeafFamily, mixedRootAdmission}:              mixedBespoke,
 	{mixedSumAvgFamily, mixedRootAdmission}:            mixedBespoke,
@@ -106,7 +108,7 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedLabelFamily, mixedRootAdmission}:             mixedPreserve,
 	{mixedMathFamily, mixedRootAdmission}:              mixedFloatOnly,
 	{mixedScaleFamily, mixedRootAdmission}:             mixedBespoke,
-	{mixedArithmeticFamily, mixedRootAdmission}:        mixedBespoke,
+	{mixedArithmeticFamily, mixedRootAdmission}:        mixedFloatOnly,
 	{mixedComparisonFamily, mixedRootAdmission}:        mixedBespoke,
 	{mixedVectorArithmeticFamily, mixedRootAdmission}:  mixedBespoke,
 	{mixedVectorComparisonFamily, mixedRootAdmission}:  mixedBespoke,
@@ -127,7 +129,7 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedDateFamily, mixedPlanAdmission}:              mixedBespoke,
 	{mixedTimestampFamily, mixedPlanAdmission}:         mixedBespoke,
 	{mixedUnaryFamily, mixedPlanAdmission}:             mixedBespoke,
-	{mixedArithmeticFamily, mixedPlanAdmission}:        mixedBespoke,
+	{mixedArithmeticFamily, mixedPlanAdmission}:        mixedFloatOnly,
 	{mixedComparisonFamily, mixedPlanAdmission}:        mixedBespoke,
 	{mixedScaleFamily, mixedPlanAdmission}:             mixedBespoke,
 	{mixedLabelFamily, mixedPlanAdmission}:             mixedPreserve,
