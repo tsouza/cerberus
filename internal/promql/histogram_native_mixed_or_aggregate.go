@@ -472,15 +472,15 @@ func canonicalizeMixedFloatArmForAgg(input chplan.Node, s schema.Metrics) (chpla
 	if kind != chplan.SampleKindFloat && kind != chplan.SampleKindMixed {
 		return nil, fmt.Errorf("promql: mixed aggregate float arm has %s sample schema", kind)
 	}
-	roles, layout, err := resolveSampleTemporalLayout(row)
+	temporal, layout, err := resolveSampleTemporalLayout(row)
 	if err != nil {
 		return nil, fmt.Errorf("promql: mixed aggregate float arm: %w", err)
 	}
-	if roles.timestamp != "" && roles.attributes == s.AttributesColumn &&
-		roles.timestamp == s.TimestampColumn && roles.value == s.ValueColumn {
+	if temporal.timestamp != "" && temporal.attributes == s.AttributesColumn &&
+		temporal.timestamp == s.TimestampColumn && temporal.value == s.ValueColumn {
 		return input, nil
 	}
-	refs := roles.refs()
+	refs := temporal.refs()
 
 	// This adapter preserves any physical metric-name role. The aggregate
 	// above it remains the owner of PromQL's output-name policy.

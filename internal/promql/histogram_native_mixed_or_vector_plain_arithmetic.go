@@ -76,11 +76,11 @@ func widenPlainVectorToMixedShape(node chplan.Node, s schema.Metrics) (chplan.No
 	if kind != chplan.SampleKindFloat {
 		return nil, fmt.Errorf("promql: mixed join plain operand has %s sample schema", kind)
 	}
-	roles, _, err := resolveSampleTemporalLayout(row)
+	temporal, _, err := resolveSampleTemporalLayout(row)
 	if err != nil {
 		return nil, fmt.Errorf("promql: mixed join plain operand: %w", err)
 	}
-	refs := roles.refs()
+	refs := temporal.refs()
 
 	zeroFloat := func() chplan.Expr { return &chplan.LitFloat{V: 0} }
 	zeroInt := func() chplan.Expr { return &chplan.LitInt{V: 0} }
