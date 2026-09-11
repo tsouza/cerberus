@@ -79,7 +79,10 @@ func (e *emitter) emitNaryVectorSetOp(s *chplan.NaryVectorSetOp) error {
 		if err != nil {
 			return err
 		}
-		canonical := naryVectorSetOpCanonicalArmFrag(s, arm, armFrag)
+		canonical, err := naryVectorSetOpCanonicalArmFrag(s, arm, armFrag)
+		if err != nil {
+			return err
+		}
 		sideArms[i] = naryVectorSetOpSideArmFrag(s, canonical, i)
 	}
 
@@ -192,7 +195,7 @@ func naryVectorSetOpOutputCols(s *chplan.NaryVectorSetOp) []Frag {
 // missing MetricName / TimeUnix synthesised exactly as the binary path
 // does, so a flattened chain emits byte-identical arm projections to the
 // nested form it replaces.
-func naryVectorSetOpCanonicalArmFrag(s *chplan.NaryVectorSetOp, arm chplan.Node, armFrag Frag) Frag {
+func naryVectorSetOpCanonicalArmFrag(s *chplan.NaryVectorSetOp, arm chplan.Node, armFrag Frag) (Frag, error) {
 	view := &chplan.VectorSetOp{
 		Op:               s.Op,
 		Match:            s.Match,

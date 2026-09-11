@@ -40,7 +40,7 @@ func TestProjectSamples_LabelsWalkRejectionFallsBackToTheBareAttributes(t *testi
 		if err != nil {
 			t.Fatalf("Parse(%q): %v", q, err)
 		}
-		sqlStr, _, err := chsql.Emit(context.Background(), l.ProjectSamples(plan, meta))
+		sqlStr, _, err := chsql.Emit(context.Background(), mustProjectSamples(t, l, plan, meta))
 		if err != nil {
 			t.Fatalf("chsql.Emit(%q): %v", q, err)
 		}

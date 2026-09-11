@@ -92,8 +92,12 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 	// 47 "Unknown expression identifier". Bail and leave the (already
 	// correct) nested binary VectorSetOp shape in place whenever any arm
 	// disagrees with the flag chosen for the whole chain.
+	expectedKind := chplan.SampleKindFloat
+	if binary.Histogram {
+		expectedKind = chplan.SampleKindHistogram
+	}
 	for _, arm := range arms {
-		if (chplan.RowShapeOf(arm) == chplan.HistogramRowShape) != binary.Histogram {
+		if arm == nil || arm.RowType().SampleKind() != expectedKind {
 			return n, false
 		}
 	}

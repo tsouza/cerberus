@@ -219,8 +219,8 @@ func (metricsLang) Parse(_ context.Context, _ string) (chplan.Node, engine.Meta,
 	return nil, engine.Meta{}, errors.New("metricsLang: Parse not supported; use Engine.QueryPlan with a pre-wrapped plan")
 }
 
-func (metricsLang) ProjectSamples(plan chplan.Node, _ engine.Meta) chplan.Node {
-	return plan
+func (metricsLang) ProjectSamples(plan chplan.Node, _ engine.Meta) (chplan.Node, error) {
+	return plan, nil
 }
 
 // alignMetricsWindow snaps a metrics-range window to the step grid the

@@ -142,8 +142,14 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 	// the per-arm canonical projection covers both that case and the
 	// matrix-shape mismatch surfaced by the dashboard sweep
 	// (otelcol dashboard's "refused / send-failed / dropped" panels).
-	leftArm := vectorSetOpCanonicalArmFrag(s, s.Left, leftFrag)
-	rightArm := vectorSetOpCanonicalArmFrag(s, s.Right, rightFrag)
+	leftArm, err := vectorSetOpCanonicalArmFrag(s, s.Left, leftFrag)
+	if err != nil {
+		return err
+	}
+	rightArm, err := vectorSetOpCanonicalArmFrag(s, s.Right, rightFrag)
+	if err != nil {
+		return err
+	}
 
 	switch s.Op {
 	case chplan.VectorSetAnd:
@@ -295,8 +301,14 @@ func (e *emitter) emitMixedVectorSetOp(s *chplan.VectorSetOp) error {
 		return err
 	}
 
-	leftArm := mixedVectorSetOpArmFrag(s, s.Left, leftFrag)
-	rightArm := mixedVectorSetOpArmFrag(s, s.Right, rightFrag)
+	leftArm, err := mixedVectorSetOpArmFrag(s, s.Left, leftFrag)
+	if err != nil {
+		return err
+	}
+	rightArm, err := mixedVectorSetOpArmFrag(s, s.Right, rightFrag)
+	if err != nil {
+		return err
+	}
 
 	sideArmL := mixedVectorSetOpSideArmFrag(s, leftArm, 0)
 	sideArmR := mixedVectorSetOpSideArmFrag(s, rightArm, 1)
@@ -377,28 +389,41 @@ func mixedVectorSetOpOutputCols(s *chplan.VectorSetOp) []Frag {
 //   - Anything else (float-shaped): the arm publishes Value for real and
 //     nine typed placeholders standing in for the histogram columns it
 //     doesn't have; discriminator is synthesised as 0.
-func mixedVectorSetOpArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) Frag {
-	switch chplan.RowShapeOf(arm) {
-	case chplan.MixedRowShape:
+func mixedVectorSetOpArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) (Frag, error) {
+	kind, err := vectorSetOpArmSampleKind(arm)
+	if err != nil {
+		return nil, err
+	}
+	quartet, err := vectorSetOpCanonicalQuartetFrags(s, arm)
+	if err != nil {
+		return nil, err
+	}
+	switch kind {
+	case chplan.SampleKindMixed:
+		payload, err := vectorSetOpPayloadFrags(arm.RowType(), true)
+		if err != nil {
+			return nil, err
+		}
 		inner := NewQuery().
-			Select(mixedVectorSetOpOutputCols(s)...).
+			Select(append(quartet, payload...)...).
 			From(armFrag)
-		return inner.Frag()
-	case chplan.HistogramRowShape:
-		cols := append(vectorSetOpCanonicalQuartetFrags(s, arm), vectorSetOpHistogramCols()...)
+		return inner.Frag(), nil
+	case chplan.SampleKindHistogram:
+		cols := append(quartet, vectorSetOpHistogramCols()...)
 		cols = append(cols, As(InlineLit(setOpMixedIsHistogramTrue), setOpMixedIsHistogramCol))
 		inner := NewQuery().
 			Select(cols...).
 			From(armFrag)
-		return inner.Frag()
-	default:
-		cols := append(vectorSetOpCanonicalQuartetFrags(s, arm), mixedVectorSetOpHistogramPlaceholderCols()...)
+		return inner.Frag(), nil
+	case chplan.SampleKindFloat:
+		cols := append(quartet, mixedVectorSetOpHistogramPlaceholderCols()...)
 		cols = append(cols, As(InlineLit(setOpMixedIsHistogramFalse), setOpMixedIsHistogramCol))
 		inner := NewQuery().
 			Select(cols...).
 			From(armFrag)
-		return inner.Frag()
+		return inner.Frag(), nil
 	}
+	return nil, fmt.Errorf("%w: mixed VectorSetOp arm has %s sample kind", ErrUnsupported, kind)
 }
 
 // mixedVectorSetOpHistogramPlaceholderCols returns the nine
@@ -511,8 +536,15 @@ func mixedVectorSetOpSideArmFrag(s *chplan.VectorSetOp, armFrag Frag, side int) 
 // The Attributes / Value columns are always referenced by name (every
 // derived emitter still passes Attributes + the schema-named
 // ValueColumn through).
-func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) Frag {
-	cols := vectorSetOpCanonicalQuartetFrags(s, arm)
+func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) (Frag, error) {
+	kind, err := vectorSetOpArmSampleKind(arm)
+	if err != nil {
+		return nil, err
+	}
+	cols, err := vectorSetOpCanonicalQuartetFrags(s, arm)
+	if err != nil {
+		return nil, err
+	}
 	// Widen by THIS ARM's own row shape, not s.Histogram: for a
 	// homogeneous set op (both arms histogram, or both float) the two
 	// answers agree, but a MIXED `and`/`unless` (cerberus issue #2325 —
@@ -527,10 +559,10 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 	// one it does (histogram side, harmlessly unused downstream) would
 	// desync from reality. In the homogeneous cases this is
 	// byte-identical to the old s.Histogram check.
-	switch chplan.RowShapeOf(arm) {
-	case chplan.HistogramRowShape:
+	switch kind {
+	case chplan.SampleKindHistogram:
 		cols = append(cols, vectorSetOpHistogramCols()...)
-	case chplan.MixedRowShape:
+	case chplan.SampleKindMixed:
 		// cerberus issue #2555: this arm is itself an already-Mixed
 		// VectorSetOp (a nested mixedExpHistogramSetOp resolved as its
 		// own operand). When this arm is the FORWARDED side of an
@@ -539,13 +571,16 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 		// makes them resolvable there. When this arm is the non-forwarded
 		// side, the extra columns are harmlessly unused, exactly like the
 		// Histogram case above.
-		cols = append(cols, vectorSetOpHistogramCols()...)
-		cols = append(cols, Col(setOpMixedIsHistogramCol))
+		payload, err := vectorSetOpPayloadFrags(arm.RowType(), true)
+		if err != nil {
+			return nil, err
+		}
+		cols = append(cols, payload...)
 	}
 	inner := NewQuery().
 		Select(cols...).
 		From(armFrag)
-	return inner.Frag()
+	return inner.Frag(), nil
 }
 
 // vectorSetOpCanonicalQuartetFrags returns the four canonical-shape Frags
@@ -556,33 +591,81 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 // [mixedVectorSetOpArmFrag] (cerberus issue #2330) can reuse the exact
 // same derived/matrix-shape resolution the symmetric Histogram /
 // float-only paths already use, instead of re-deriving it.
-func vectorSetOpCanonicalQuartetFrags(s *chplan.VectorSetOp, arm chplan.Node) []Frag {
-	derived := chplan.IsDerivedShape(arm, vectorSetOpSampleColumns(s))
-	armTsCol, matrix := vectorSetOpArmTimestampCol(arm, s)
+func vectorSetOpCanonicalQuartetFrags(s *chplan.VectorSetOp, arm chplan.Node) ([]Frag, error) {
+	row := arm.RowType()
+	attributes, err := vectorSetOpRequiredRole(row, chplan.RoleAttributes, "attributes")
+	if err != nil {
+		return nil, err
+	}
+	value, err := vectorSetOpRequiredRole(row, chplan.RoleValue, "value")
+	if err != nil {
+		return nil, err
+	}
 
 	var metricNameFrag Frag
-	if derived {
+	metricName, hasMetricName := row.Find(chplan.RoleMetricName)
+	if !hasMetricName {
 		metricNameFrag = As(Lit(""), s.MetricNameColumn)
 	} else {
-		metricNameFrag = Col(s.MetricNameColumn)
+		metricNameFrag = vectorSetOpAliasedColumn(metricName.Name, s.MetricNameColumn)
 	}
 
 	var timeFrag Frag
-	switch {
-	case derived && !matrix:
+	timestamp, hasTimestamp := row.Find(chplan.RoleTimestamp)
+	if hasTimestamp {
+		timeFrag = vectorSetOpAliasedColumn(timestamp.Name, s.TimestampColumn)
+	} else if armTsCol, matrix := vectorSetOpArmTimestampCol(arm, s); matrix {
+		timeFrag = vectorSetOpAliasedColumn(armTsCol, s.TimestampColumn)
+	} else {
 		timeFrag = As(vectorSetOpSynthesizedAnchorFrag(), s.TimestampColumn)
-	case matrix && armTsCol != s.TimestampColumn:
-		timeFrag = As(Col(armTsCol), s.TimestampColumn)
-	default:
-		timeFrag = Col(s.TimestampColumn)
 	}
 
 	return []Frag{
 		metricNameFrag,
-		Col(s.AttributesColumn),
+		vectorSetOpAliasedColumn(attributes.Name, s.AttributesColumn),
 		timeFrag,
-		Col(s.ValueColumn),
+		vectorSetOpAliasedColumn(value.Name, s.ValueColumn),
+	}, nil
+}
+
+func vectorSetOpArmSampleKind(arm chplan.Node) (chplan.SampleKind, error) {
+	if arm == nil {
+		return chplan.SampleKindInvalid, fmt.Errorf("%w: VectorSetOp arm is nil", ErrUnsupported)
 	}
+	kind := arm.RowType().SampleKind()
+	switch kind {
+	case chplan.SampleKindFloat, chplan.SampleKindHistogram, chplan.SampleKindMixed:
+		return kind, nil
+	default:
+		return kind, fmt.Errorf("%w: VectorSetOp arm has %s sample schema", ErrUnsupported, kind)
+	}
+}
+
+func vectorSetOpRequiredRole(row chplan.Schema, role chplan.ColumnRole, label string) (chplan.Column, error) {
+	column, ok := row.Find(role)
+	if !ok || column.Name == "" {
+		return chplan.Column{}, fmt.Errorf("%w: VectorSetOp arm is missing %s role", ErrUnsupported, label)
+	}
+	return column, nil
+}
+
+func vectorSetOpAliasedColumn(source, target string) Frag {
+	if source == target {
+		return Col(source)
+	}
+	return As(Col(source), target)
+}
+
+func vectorSetOpPayloadFrags(row chplan.Schema, discriminator bool) ([]Frag, error) {
+	cols := vectorSetOpHistogramCols()
+	if !discriminator {
+		return cols, nil
+	}
+	column, err := vectorSetOpRequiredRole(row, chplan.RoleDiscriminator, "discriminator")
+	if err != nil {
+		return nil, err
+	}
+	return append(cols, vectorSetOpAliasedColumn(column.Name, setOpMixedIsHistogramCol)), nil
 }
 
 // vectorSetOpHistogramCols returns the nine chplan.Histogram*Column

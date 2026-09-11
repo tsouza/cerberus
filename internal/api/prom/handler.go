@@ -1624,7 +1624,16 @@ func errContainsStage(msg, stage string) bool {
 // chplan.ProjectExposesCanonical check distinguishes these "value-rewrite"
 // Projects from the canonical-shape Projects upstream lowerings (LWR,
 // instant fns over `temperature`, etc.) emit.
-func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
+func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) (chplan.Node, error) {
+	if plan == nil {
+		return nil, fmt.Errorf("prom: sample projection: nil plan")
+	}
+	row := plan.RowType()
+	kind := row.SampleKind()
+	if kind == chplan.SampleKindOpaque || kind == chplan.SampleKindInvalid {
+		return nil, fmt.Errorf("prom: sample projection: cannot publish %s schema", kind)
+	}
+
 	// A histogram-VALUED plan already publishes the full wire contract:
 	// the canonical quartet FIRST, then the nine chplan.Histogram*Column
 	// outputs that internal/chclient's cursor binds when it probes the
@@ -1643,18 +1652,42 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 	// histogram columns AND the discriminator — the cursor would then
 	// fall back to the plain four-column shape and silently answer every
 	// row as its (possibly placeholder) Value.
-	switch chplan.RowShapeOf(plan) {
-	case chplan.HistogramRowShape, chplan.MixedRowShape:
-		return plan
+	if kind == chplan.SampleKindHistogram || kind == chplan.SampleKindMixed {
+		projected, want, err := projectSamplePayload(plan, row, s, kind)
+		if err != nil {
+			return nil, err
+		}
+		if row.Equal(want) {
+			return plan, nil
+		}
+		return projected, nil
 	}
+
+	attributes, err := requiredSampleRole(row, chplan.RoleAttributes, "attributes")
+	if err != nil {
+		return nil, err
+	}
+	value, err := requiredSampleRole(row, chplan.RoleValue, "value")
+	if err != nil {
+		return nil, err
+	}
+	metricName, hasMetricName := row.Find(chplan.RoleMetricName)
+	timestamp, hasTimestamp := row.Find(chplan.RoleTimestamp)
+
 	projections := []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
-		{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
+		{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+		{Expr: &chplan.ColumnRef{Name: attributes.Name}, Alias: s.AttributesColumn},
+		{Expr: synthesizedAnchor(), Alias: s.TimestampColumn},
+		{Expr: &chplan.ColumnRef{Name: value.Name}, Alias: s.ValueColumn},
+	}
+	if hasMetricName {
+		projections[0].Expr = &chplan.ColumnRef{Name: metricName.Name}
+	}
+	if hasTimestamp {
+		projections[2].Expr = &chplan.ColumnRef{Name: timestamp.Name}
 	}
 	cols := sampleColumns(s)
-	if chplan.IsDerivedShape(plan, cols) {
+	if !hasMetricName || !hasTimestamp {
 		// TimeUnix source: a matrix-shape RangeWindow exposes a real per-row
 		// timestamp under the literal column `anchor_ts`, which the emitter
 		// keeps offset-SHIFTED (the window/rate math keys off the shifted
@@ -1677,14 +1710,76 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		} else {
 			tsExpr = synthesizedAnchor()
 		}
-		projections = []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: tsExpr, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		if !hasTimestamp {
+			projections[2].Expr = tsExpr
 		}
 	}
-	return &chplan.Project{Input: plan, Projections: projections}
+	roles := []chplan.Column{
+		{Name: s.MetricNameColumn, Role: chplan.RoleMetricName},
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}
+	return &chplan.Project{Input: plan, Projections: projections, Roles: roles}, nil
+}
+
+func requiredSampleRole(row chplan.Schema, role chplan.ColumnRole, label string) (chplan.Column, error) {
+	column, ok := row.Find(role)
+	if !ok || column.Name == "" {
+		return chplan.Column{}, fmt.Errorf("prom: sample projection: %s schema is missing %s role", row.SampleKind(), label)
+	}
+	return column, nil
+}
+
+func projectSamplePayload(
+	plan chplan.Node,
+	row chplan.Schema,
+	s schema.Metrics,
+	kind chplan.SampleKind,
+) (chplan.Node, chplan.Schema, error) {
+	roles := []struct {
+		role  chplan.ColumnRole
+		label string
+		name  string
+	}{
+		{chplan.RoleMetricName, "metric-name", s.MetricNameColumn},
+		{chplan.RoleAttributes, "attributes", s.AttributesColumn},
+		{chplan.RoleTimestamp, "timestamp", s.TimestampColumn},
+		{chplan.RoleValue, "value", s.ValueColumn},
+	}
+	want := chplan.Schema{Columns: make([]chplan.Column, 0, len(roles)+len(chplan.HistogramPayloadColumns())+1)}
+	projections := make([]chplan.Projection, 0, cap(want.Columns))
+	for _, required := range roles {
+		column, err := requiredSampleRole(row, required.role, required.label)
+		if err != nil {
+			return nil, chplan.Schema{}, err
+		}
+		projections = append(projections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: column.Name},
+			Alias: required.name,
+		})
+		want.Columns = append(want.Columns, chplan.Column{Name: required.name, Role: required.role})
+	}
+	for _, field := range chplan.HistogramPayloadColumns() {
+		column, ok := row.ByName(field.Name)
+		if !ok || column.Role != chplan.RoleHistogramField {
+			return nil, chplan.Schema{}, fmt.Errorf("prom: sample projection: %s schema is missing histogram field %q", kind, field.Name)
+		}
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: field.Name})
+		want.Columns = append(want.Columns, field)
+	}
+	if kind == chplan.SampleKindMixed {
+		discriminator, err := requiredSampleRole(row, chplan.RoleDiscriminator, "discriminator")
+		if err != nil {
+			return nil, chplan.Schema{}, err
+		}
+		projections = append(projections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: discriminator.Name},
+			Alias: chplan.MixedDiscriminatorColumn,
+		})
+		want.Columns = append(want.Columns, chplan.Column{Name: chplan.MixedDiscriminatorColumn, Role: chplan.RoleDiscriminator})
+	}
+	return &chplan.Project{Input: plan, Projections: projections, Roles: want.Columns}, want, nil
 }
 
 // isMatrixRangeWindow reports whether the plan root is a matrix-shape

@@ -192,7 +192,7 @@ const (
 // Body under [LogLineColumn], since a log line is a String and the
 // sample shape's fourth column is a float64 — a log stream has no
 // numeric value, so its projection carries no fourth column at all.
-func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
+func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, error) {
 	s := l.Schema
 	if meta.IsMetric {
 		// A multi-variant union (`variants(...) of (...)`) already shaped
@@ -204,7 +204,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		// `ResourceAttributes` column the per-arm Project has already
 		// consumed into `Attributes`, so forward the union untouched.
 		if isVariantPlan(plan) {
-			return plan
+			return plan, nil
 		}
 		// Metric queries lower to RangeWindow / Aggregate / Filter(Aggregate),
 		// whose output is (group-keys…, <metric-value>). MetricName + TimeUnix
@@ -279,7 +279,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 				{Expr: tsExpr, Alias: sampleTimeUnixCol},
 				{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: sampleValueCol},
 			},
-		}
+		}, nil
 	}
 	// Log-stream query: the positional row the chclient cursor scans is
 	// (<String>, Attributes, TimeUnix[, Metadata]). A log line is a String,
@@ -378,7 +378,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		Roles:       logSampleRoles(),
 		Input:       plan,
 		Projections: projections,
-	}
+	}, nil
 }
 
 // IsMetricQuery reports whether the parsed LogQL expression produces a

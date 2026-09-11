@@ -30,7 +30,7 @@ func TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 
 	native := &chplan.RangeWindowGridNative{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           closedSampleScan(s, "otel_metrics_gauge"),
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		Step:            time.Minute,
@@ -48,7 +48,11 @@ func TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix(t *testing.T) {
 		t.Fatal("RangeWindowGridNative must be matrix-shape (exposes per-row anchor_ts)")
 	}
 
-	wrapped, ok := wrapWithSampleProjection(native, s).(*chplan.Project)
+	wrappedNode, err := wrapWithSampleProjection(native, s)
+	if err != nil {
+		t.Fatalf("wrapWithSampleProjection: %v", err)
+	}
+	wrapped, ok := wrappedNode.(*chplan.Project)
 	if !ok {
 		t.Fatalf("wrapWithSampleProjection returned %T, want *chplan.Project", wrapped)
 	}
@@ -96,7 +100,7 @@ func TestWrapSampleProjection_NativeRangeWindowOffsetNotReshifted(t *testing.T) 
 	s := schema.DefaultOTelMetrics()
 
 	native := &chplan.RangeWindowGridNative{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           closedSampleScan(s, "otel_metrics_gauge"),
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		Step:            time.Minute,
@@ -108,7 +112,11 @@ func TestWrapSampleProjection_NativeRangeWindowOffsetNotReshifted(t *testing.T) 
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 
-	wrapped, ok := wrapWithSampleProjection(native, s).(*chplan.Project)
+	wrappedNode, err := wrapWithSampleProjection(native, s)
+	if err != nil {
+		t.Fatalf("wrapWithSampleProjection: %v", err)
+	}
+	wrapped, ok := wrappedNode.(*chplan.Project)
 	if !ok {
 		t.Fatalf("wrapWithSampleProjection returned %T, want *chplan.Project", wrapped)
 	}
@@ -141,7 +149,7 @@ func TestWrapSampleProjection_HistogramProjectionPassesThrough(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 
 	hp := &chplan.HistogramProjection{
-		Input:                      &chplan.Scan{Table: s.ExpHistogramTable},
+		Input:                      closedSampleScan(s, s.ExpHistogramTable),
 		CountColumn:                s.CountColumn,
 		SumColumn:                  s.SumColumn,
 		ScaleColumn:                s.ScaleColumn,
@@ -164,7 +172,11 @@ func TestWrapSampleProjection_HistogramProjectionPassesThrough(t *testing.T) {
 	if got := chplan.RowShapeOf(hp); got != chplan.HistogramRowShape {
 		t.Fatalf("RowShapeOf(HistogramProjection) = %s, want histogram", got)
 	}
-	if wrapped := wrapWithSampleProjection(hp, s); wrapped != chplan.Node(hp) {
+	wrapped, err := wrapWithSampleProjection(hp, s)
+	if err != nil {
+		t.Fatalf("wrapWithSampleProjection: %v", err)
+	}
+	if wrapped != chplan.Node(hp) {
 		t.Fatalf("wrapWithSampleProjection wrapped a histogram-shaped root in %T; it must pass through unchanged", wrapped)
 	}
 }

@@ -1332,7 +1332,7 @@ type Lang interface {
 	// chclient.Sample shape — (MetricName, Attributes, TimeUnix,
 	// Value). Each existing handler hand-rolls this; the adapter
 	// owns it after the port.
-	ProjectSamples(plan chplan.Node, meta Meta) chplan.Node
+	ProjectSamples(plan chplan.Node, meta Meta) (chplan.Node, error)
 }
 
 // Meta carries per-query semantic flags the engine needs but cannot
@@ -1566,7 +1566,10 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 	}
 	dr := DryRun{Meta: meta}
 
-	plan = lang.ProjectSamples(plan, meta)
+	plan, err = lang.ProjectSamples(plan, meta)
+	if err != nil {
+		return dr, fmt.Errorf("engine: project samples: %w", err)
+	}
 	if !meta.IsTraceByID {
 		plan = e.Optimizer.Run(ctx, plan)
 	}
@@ -1621,7 +1624,10 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// Wrap-projection. The adapter owns the per-language switch
 	// (canonical vs. derived vs. structural-join shape); the engine
 	// applies it unconditionally.
-	plan = lang.ProjectSamples(plan, meta)
+	plan, err := lang.ProjectSamples(plan, meta)
+	if err != nil {
+		return Result{}, fmt.Errorf("engine: project samples: %w", err)
+	}
 
 	// Optimize — unless the adapter signalled a fetch-by-id where
 	// rewriting buys nothing. Each branch keeps the rest of the
@@ -2264,7 +2270,10 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		return CursorResult{}, err
 	}
 
-	plan = lang.ProjectSamples(plan, meta)
+	plan, err := lang.ProjectSamples(plan, meta)
+	if err != nil {
+		return CursorResult{}, fmt.Errorf("engine: project samples: %w", err)
+	}
 	if !meta.IsTraceByID {
 		optT := telemetry.ObserveStage(telemetry.StageOptimize, lang.Name())
 		plan = e.Optimizer.Run(ctx, plan)
