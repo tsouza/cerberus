@@ -13,6 +13,7 @@ import (
 )
 
 func TestDateKernelPayloadPreparation(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
 	for _, site := range []mixedAdmissionSite{mixedOperandAdmission, mixedPlanAdmission} {
 		t.Run(string(site), func(t *testing.T) {
 			key := mixedWrapperKey{family: mixedDateFamily, site: site}
@@ -30,7 +31,13 @@ func TestDateKernelPayloadPreparation(t *testing.T) {
 				if err != nil || prepare == nil {
 					t.Fatalf("float policy: prepare nil=%v error=%v", prepare == nil, err)
 				}
-				mixed := &chplan.VectorSetOp{Mixed: true}
+				mixed := &chplan.VectorSetOp{
+					Mixed:            true,
+					MetricNameColumn: s.MetricNameColumn,
+					AttributesColumn: s.AttributesColumn,
+					TimestampColumn:  s.TimestampColumn,
+					ValueColumn:      s.ValueColumn,
+				}
 				filter, ok := prepare(mixed).(*chplan.Filter)
 				if !ok || filter.Input != mixed || !chplan.IsMixedFloatNarrowing(filter) {
 					t.Fatal("float preparation must narrow the original Mixed input")
