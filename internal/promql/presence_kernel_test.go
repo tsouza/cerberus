@@ -84,7 +84,11 @@ func TestPresenceKernelLayouts(t *testing.T) {
 			for _, op := range []parser.ItemType{parser.COUNT, parser.GROUP} {
 				for _, layout := range []plainAggregateLayout{ordinaryPlainAggregateLayout, mixedPlainAggregateLayout} {
 					t.Run(fmt.Sprintf("%v/%v/%s/%v", custom, step, op, layout), func(t *testing.T) {
-						input := &chplan.VectorSetOp{Mixed: true}
+						input := &chplan.VectorSetOp{
+							Mixed: true, MetricNameColumn: s.MetricNameColumn,
+							AttributesColumn: s.AttributesColumn, TimestampColumn: s.TimestampColumn,
+							ValueColumn: s.ValueColumn,
+						}
 						expr := &parser.AggregateExpr{Op: op, Grouping: []string{"job", "instance"}}
 						plan, err := lowerPlainAggregateOverInput(expr, input, s, lowerCtx{step: step}, layout)
 						if err != nil {
@@ -132,9 +136,22 @@ func TestPresenceKernelLayouts(t *testing.T) {
 func TestPresenceKernelCanonicalizationAndNativeGrid(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	a := &parser.AggregateExpr{Op: parser.COUNT}
+	source := sampleForwardTestInput(metricRoles(s)...)
+	newReduced := func() *chplan.RangeWindow {
+		return &chplan.RangeWindow{
+			Input: source, ValueColumn: s.ValueColumn,
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		}
+	}
+	newGrid := func() *chplan.RangeWindowGridNative {
+		return &chplan.RangeWindowGridNative{
+			Input: source, TimestampColumn: s.TimestampColumn, ValueColumn: s.ValueColumn,
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		}
+	}
 	t.Run("quantile-cannot-bypass-domain-guard", func(t *testing.T) {
 		quantile := &parser.AggregateExpr{Op: parser.QUANTILE, Param: &parser.NumberLiteral{Val: -1}}
-		plan, err := lowerPlainAggregateOverInput(quantile, &chplan.RangeWindowGridNative{}, s, lowerCtx{step: time.Minute, lowerers: RangeLowerers{VectorAgg: true}}, ordinaryPlainAggregateLayout)
+		plan, err := lowerPlainAggregateOverInput(quantile, newGrid(), s, lowerCtx{step: time.Minute, lowerers: RangeLowerers{VectorAgg: true}}, ordinaryPlainAggregateLayout)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -144,7 +161,7 @@ func TestPresenceKernelCanonicalizationAndNativeGrid(t *testing.T) {
 	})
 	for _, layout := range []plainAggregateLayout{ordinaryPlainAggregateLayout, mixedPlainAggregateLayout} {
 		t.Run(fmt.Sprint(layout), func(t *testing.T) {
-			reduced := &chplan.RangeWindow{}
+			reduced := newReduced()
 			plan, err := lowerPlainAggregateOverInput(a, reduced, s, lowerCtx{}, layout)
 			if err != nil {
 				t.Fatal(err)
@@ -161,7 +178,7 @@ func TestPresenceKernelCanonicalizationAndNativeGrid(t *testing.T) {
 				}
 			}
 			for _, enabled := range []bool{false, true} {
-				grid := &chplan.RangeWindowGridNative{}
+				grid := newGrid()
 				plan, err := lowerPlainAggregateOverInput(a, grid, s, lowerCtx{step: time.Minute, lowerers: RangeLowerers{VectorAgg: enabled}}, layout)
 				if err != nil {
 					t.Fatal(err)

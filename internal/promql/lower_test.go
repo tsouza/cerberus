@@ -219,7 +219,8 @@ func TestLower(t *testing.T) {
 		})
 		roundTripResult := spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 		spec.AssertRowTypeMatchesDriver(t, optimized, roundTripResult)
-		spec.AssertRowShapeAgreement(t, plan)
+		spec.AssertPlanScanRoles(t, plan)
+		spec.AssertPlanScanRoles(t, optimized)
 
 		// A fixture carrying a `parity:` section is additionally answered
 		// by the REAL upstream Prometheus engine over the same seeded

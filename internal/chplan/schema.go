@@ -322,21 +322,24 @@ func samplePublicRole(role ColumnRole) bool {
 	}
 }
 
-// RowShapeFromSchema folds physical columns into the legacy sample vocabulary.
-// Opaque relational outputs have no sample contract and retain its default.
+// RowShapeFromSchema folds a validated physical sample contract into the
+// diagnostic row-shape vocabulary. Opaque, open, incomplete, and invalid
+// schemas retain the sample default; that default is not proof of live floats.
 func RowShapeFromSchema(s Schema) RowShape {
-	switch {
-	case s.Has(RoleDiscriminator):
+	switch s.SampleKind() {
+	case SampleKindMixed:
 		return MixedRowShape
-	case s.Has(RoleHistogramField):
+	case SampleKindHistogram:
 		return HistogramRowShape
-	case s.Has(RoleAnchor) && !s.Has(RoleMetricName):
-		return GridWindowRowShape
-	case s.Has(RoleValue) && !s.Has(RoleMetricName) && !s.Has(RoleTimestamp) && !s.Has(RoleAnchor):
-		return ReducedWindowRowShape
-	default:
-		return SampleRowShape
+	case SampleKindFloat:
+		if s.Has(RoleAttributes) && s.Has(RoleAnchor) {
+			return GridWindowRowShape
+		}
+		if s.Has(RoleAttributes) && !s.Has(RoleTimestamp) && !s.Has(RoleAnchor) {
+			return ReducedWindowRowShape
+		}
 	}
+	return SampleRowShape
 }
 
 // IsMixedFloatNarrowing reports an explicit discriminator filter that retains

@@ -42,14 +42,10 @@ var reanchorGridFields = map[string]bool{
 // arm, so a sharded (route B) classic-histogram plan lost its `le` and
 // finite-bounds restrictions and evaluated the quantile over the unrestricted
 // bucket ladder — a different answer from route A, with nothing failing.
-// `Filter.Histogram` / `Filter.Mixed` were dropped the same way, so RowShapeOf
-// read a re-anchored histogram-valued Filter as plain float rows. clone.go's
-// doc states the rule both arms broke: start from `c := *v`, never from a
-// literal enumerating the fields the author happened to know about.
-//
-// Filling by reflection is what makes this a class guard rather than a
-// fixture: a newly added field is covered the moment it is declared, with no
-// test edit, and a new arm written as a literal fails here immediately.
+// Filter metadata was dropped by the same pattern in the past. This class
+// guard makes every new field covered at the moment it is declared, with no
+// test edit, and makes a new arm written as a literal fail immediately.
+
 func TestReanchorRangeCarriesEveryNonGridField(t *testing.T) {
 	t.Parallel()
 

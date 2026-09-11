@@ -259,8 +259,8 @@ func lowerInfoNonStaticBase(
 // lowerInfoJoin builds the enrichment join over an already-lowered base
 // arm. Split out of lowerInfo so the ignore-set carve-out can feed it
 // either the whole base vector or just its enrichable arm. histogramBase
-// marks input as histogram-valued (chplan.RowShapeOf(input) ==
-// chplan.HistogramRowShape) — see chplan.InfoJoin.Histogram's doc comment.
+// records the source-derived histogram-valued proof computed before lowering;
+// see chplan.InfoJoin.Histogram's doc comment.
 func lowerInfoJoin(input chplan.Node, histogramBase bool, nameMatchers, dataMatchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	infoNode, err := lowerInfoMetric(nameMatchers, dataMatchers, s, ctx)
 	if err != nil {

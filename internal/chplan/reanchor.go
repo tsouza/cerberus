@@ -171,10 +171,8 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Predicate is off-grid immutable: share. Copy-on-write from *v
-		// rather than a composite literal, per clone.go's rule — a literal
-		// here dropped Histogram / Mixed, so RowShapeOf read a re-anchored
-		// shard's histogram-valued Filter as plain float rows.
+		// Predicate is off-grid immutable: share it. Copy-on-write from *v
+		// rather than a composite literal, per clone.go's whole-struct rule.
 		c := *v
 		c.Input = input
 		return &c, nil
