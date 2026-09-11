@@ -92,9 +92,6 @@ func TestLower_ExpHistogram_LimitKEmptyKStaysHistogramShaped(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *chplan.Filter", plan)
 	}
-	if !filter.Histogram {
-		t.Fatalf("Filter.Histogram = false, want true")
-	}
 	if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
 		t.Fatalf("RowShapeOf(plan) = %s, want histogram", shape)
 	}

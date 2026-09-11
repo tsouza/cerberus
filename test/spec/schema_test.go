@@ -79,12 +79,9 @@ func TestRowShapeDivergencePredicates(t *testing.T) {
 		divergent bool
 	}{
 		{"scalar projection", float, true},
-		{"unflagged mixed filter", &chplan.Filter{Input: mixed}, true},
-		{"mixed filter declared", &chplan.Filter{Input: mixed, Mixed: true}, false},
-		{"incorrect histogram filter flag", &chplan.Filter{Input: mixed, Histogram: true}, false},
+		{"unflagged mixed filter", &chplan.Filter{Input: mixed}, false},
 		{"mixed projection agrees", &chplan.Project{Input: mixed, Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: chplan.MixedDiscriminatorColumn}}}}, false},
-		{"topk selects scalar", &chplan.TopK{Input: float, Columns: []string{"value"}}, true},
-		{"incorrect mixed topk flag", &chplan.TopK{Input: float, Mixed: true}, false},
+		{"topk selects scalar", &chplan.TopK{Input: float, Columns: []string{"value"}}, false},
 		{"orderby delegates scalar projection", &chplan.OrderBy{Input: float}, true},
 		{"union delegates scalar projection", &chplan.UnionAll{Inputs: []chplan.Node{float, float}}, true},
 	}

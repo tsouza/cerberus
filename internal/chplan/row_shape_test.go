@@ -221,26 +221,49 @@ func TestRowShapeOf_VectorSetOpFlags(t *testing.T) {
 // instance of each (both flags false), so this is these two nodes' only
 // coverage of the Mixed branch, mirroring
 // TestRowShapeOf_VectorSetOpFlags's identical role for *VectorSetOp.
-func TestRowShapeOf_FilterAndTopKMixedFlag(t *testing.T) {
+func TestRowShapeOfFilterAndTopKComposePhysicalSchema(t *testing.T) {
 	t.Parallel()
 
-	stubInput := &chplan.Scan{Table: "otel_metrics_sum"}
+	roles := []chplan.Column{
+		{Name: "name", Role: chplan.RoleMetricName},
+		{Name: "labels", Role: chplan.RoleAttributes},
+		{Name: "time", Role: chplan.RoleTimestamp},
+		{Name: "value", Role: chplan.RoleValue},
+	}
+	roles = append(roles, chplan.HistogramPayloadColumns()...)
+	roles = append(roles, chplan.Column{Name: chplan.MixedDiscriminatorColumn, Role: chplan.RoleDiscriminator})
+	names := make([]string, len(roles))
+	for i, role := range roles {
+		names[i] = role.Name
+	}
+	mixed := &chplan.Scan{Table: "mixed", Columns: names, Roles: roles}
 
-	filter := &chplan.Filter{Input: stubInput, Mixed: true}
+	filter := &chplan.Filter{Input: mixed, Predicate: &chplan.LitBool{V: false}}
+	if !filter.RowType().Equal(mixed.RowType()) {
+		t.Fatalf("constant-false Filter schema = %#v, want Input schema %#v", filter.RowType(), mixed.RowType())
+	}
 	if got := chplan.RowShapeOf(filter); got != chplan.MixedRowShape {
-		t.Errorf("RowShapeOf(Filter{Mixed: true}) = %s, want %s", got, chplan.MixedRowShape)
+		t.Fatalf("RowShapeOf(Filter) = %s, want %s", got, chplan.MixedRowShape)
 	}
 
-	topK := &chplan.TopK{Input: stubInput, K: 1, Mixed: true}
-	if got := chplan.RowShapeOf(topK); got != chplan.MixedRowShape {
-		t.Errorf("RowShapeOf(TopK{Mixed: true}) = %s, want %s", got, chplan.MixedRowShape)
+	passthrough := &chplan.TopK{Input: mixed, K: 1}
+	if !passthrough.RowType().Equal(mixed.RowType()) {
+		t.Fatalf("passthrough TopK schema = %#v, want Input schema %#v", passthrough.RowType(), mixed.RowType())
+	}
+	if got := chplan.RowShapeOf(passthrough); got != chplan.MixedRowShape {
+		t.Fatalf("RowShapeOf(passthrough TopK) = %s, want %s", got, chplan.MixedRowShape)
+	}
+
+	canonicalNames := names[:4]
+	ranked := &chplan.TopK{Input: mixed, K: 1, Columns: canonicalNames}
+	if kind := ranked.RowType().SampleKind(); kind != chplan.SampleKindFloat {
+		t.Fatalf("explicit-column TopK sample kind = %s, want %s", kind, chplan.SampleKindFloat)
+	}
+	if got := chplan.RowShapeOf(ranked); got != chplan.SampleRowShape {
+		t.Fatalf("RowShapeOf(explicit-column TopK) = %s, want %s", got, chplan.SampleRowShape)
 	}
 }
 
-// TestRowShapeString pins the names the failure messages above are written
-// against, including the answer for a value outside the declared set — a
-// forwarder reading a corrupt shape should say so rather than print an
-// integer.
 func TestRowShapeString(t *testing.T) {
 	t.Parallel()
 

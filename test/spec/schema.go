@@ -190,24 +190,7 @@ func rowShapeDivergence(n chplan.Node) string {
 		if !s.Has(chplan.RoleMetricName) && !s.Has(chplan.RoleTimestamp) && !s.Has(chplan.RoleAnchor) && s.Has(chplan.RoleValue) {
 			return "projection publishes scalar or reduced output"
 		}
-	case *chplan.Filter:
-		if legacy == chplan.SampleRowShape && !v.Histogram && !v.Mixed && s.Equal(v.Input.RowType()) {
-			return "unflagged filter preserves noncanonical physical columns"
-		}
-	case *chplan.TopK:
-		if legacy == chplan.SampleRowShape && !v.Histogram && !v.Mixed {
-			if len(v.Columns) == 0 && s.Equal(v.Input.RowType()) {
-				return "unflagged topk preserves noncanonical physical columns"
-			}
-			if len(v.Columns) == len(s.Columns) {
-				for i, c := range s.Columns {
-					if c.Name != v.Columns[i] {
-						return ""
-					}
-				}
-				return "topk selects a noncanonical column subset"
-			}
-		}
+
 	case *chplan.HistogramFloatVectorJoin:
 		if legacy == chplan.SampleRowShape && physical == chplan.HistogramRowShape && s.Has(chplan.RoleValue) && s.Has(chplan.RoleMetricName) {
 			return "float-histogram join preserves payload and float value"

@@ -5755,7 +5755,7 @@ func topKDomain(kF float64) (k int64, empty bool, err error) {
 // stable across evaluation steps, so the same series survive at every
 // anchor — matching Prom's per-step-but-deterministic behaviour.
 func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	input, histogram, mixed, err := lowerLimitKInput(a.Expr, s, ctx)
+	input, err := lowerLimitKInput(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -5771,12 +5771,12 @@ func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (c
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.Filter{Input: input, Predicate: pred, Histogram: histogram, Mixed: mixed}, nil
+	return &chplan.Filter{Input: input, Predicate: pred}, nil
 }
 
 // lowerLimitKInput lowers the input vector shared by limitk (both the
-// literal-K and computed-K paths) and limit_ratio, reporting whether the
-// input is histogram-valued.
+// literal-K and computed-K paths) and limit_ratio while preserving its
+// physical sample payload.
 //
 // Reference Prometheus's LIMITK and LIMIT_RATIO arms of aggregationK
 // (promql/engine.go) build every Sample — float or histogram — from
@@ -5788,12 +5788,12 @@ func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (c
 // limitk/limit_ratio therefore needs the recognise-and-PRESERVE treatment
 // [lowerSortByLabel]'s fix (cerberus issue #2462) established, not the
 // recognise-and-drop treatment topk/bottomk use — cerberus issue #2518.
-func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, bool, error) {
+func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if hist, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok {
 		if err != nil {
-			return nil, false, false, err
+			return nil, err
 		}
-		return hist, true, false, nil
+		return hist, nil
 	}
 	// A mixed float/histogram `or` operand (cerberus issue #2613) —
 	// `limitk(K, <hist> or <float>)` / `limit_ratio(R, <hist> or <float>)`.
@@ -5807,13 +5807,13 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
 		transform, err := executeMixedSelectorPolicy(mixedLimitFamily, mixedOperandAdmission)
 		if err != nil {
-			return nil, false, false, err
+			return nil, err
 		}
 		mixed, err := lowerMixedExpHistogramSetOp(b, s, ctx)
 		if err != nil {
-			return nil, false, false, err
+			return nil, err
 		}
-		return transform(mixed), false, true, nil
+		return transform(mixed), nil
 	}
 	// A nested drop-family shape (cerberus issue #2528) — e.g.
 	// `limitk(3, demo_latency_exp_hist + 0)`. The result is already the
@@ -5822,23 +5822,22 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	// "was the input histogram-shaped" contract.
 	if dropped, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
 		if err != nil {
-			return nil, false, false, err
+			return nil, err
 		}
-		return dropped, false, false, nil
+		return dropped, nil
 	}
 	input, err := lower(expr, s, ctx)
 	if err != nil {
-		return nil, false, false, err
+		return nil, err
 	}
-	mixed := mixedRowsNeedPreparation(input)
-	if mixed {
+	if mixedRowsNeedPreparation(input) {
 		transform, policyErr := executeMixedSelectorPolicy(mixedLimitFamily, mixedPlanAdmission)
 		if policyErr != nil {
-			return nil, false, false, policyErr
+			return nil, policyErr
 		}
 		input = transform(input)
 	}
-	return input, false, mixed, nil
+	return input, nil
 }
 
 // limitKOrRatioOverExpHistogram recognises `limitk(K, <exp-hist shape>)` /
@@ -6320,7 +6319,7 @@ func lowerLimitK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpla
 		return nil, err
 	}
 
-	input, histogram, mixed, err := lowerLimitKInput(a.Expr, s, ctx)
+	input, err := lowerLimitKInput(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -6332,33 +6331,17 @@ func lowerLimitK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpla
 		return &chplan.Filter{
 			Input:     input,
 			Predicate: &chplan.LitBool{V: false},
-			Histogram: histogram,
-			Mixed:     mixed,
 		}, nil
 	}
 
 	by := topKPartition(a, s, ctx)
-
-	// A histogram-valued OR mixed-valued input always forces `SELECT *`:
-	// the explicit canonical-quartet column list topKOutputColumns would
-	// otherwise declare drops the columns the input actually publishes
-	// (nine Histogram*Column outputs, or the fourteen-column Mixed
-	// contract — see [chplan.TopK]'s doc comment). topKOutputColumns has
-	// no way to tell either apart from a canonical input on its own, so
-	// `histogram`/`mixed` are the explicit signals that override it.
-	columns := topKOutputColumns(input, s)
-	if histogram || mixed {
-		columns = nil
-	}
 
 	return &chplan.TopK{
 		Input:     input,
 		K:         k,
 		By:        by,
 		Unordered: true,
-		Columns:   columns,
-		Histogram: histogram,
-		Mixed:     mixed,
+		Columns:   limitKOutputColumns(input, s),
 	}, nil
 }
 
@@ -6456,6 +6439,19 @@ func topKOutputColumns(input chplan.Node, s schema.Metrics) []string {
 	}
 }
 
+// limitKOutputColumns preserves every public payload column selected by
+// limitk. Ordinary float inputs retain the established explicit quartet;
+// histogram and mixed schemas use SELECT * so their payload and discriminator
+// pass through unchanged. The decision comes from the input's declared
+// physical roles rather than a duplicate flag on TopK.
+func limitKOutputColumns(input chplan.Node, s schema.Metrics) []string {
+	row := input.RowType()
+	if row.Has(chplan.RoleHistogramField) || row.Has(chplan.RoleDiscriminator) {
+		return nil
+	}
+	return topKOutputColumns(input, s)
+}
+
 // lowerTopKComputed lowers `topk`/`bottomk`/`limitk` with a K that is
 // any scalar-valued PromQL expression rather than a foldable literal —
 // `topk(scalar(<vector>), v)`, `topk(scalar(x) * 2, v)`,
@@ -6484,11 +6480,10 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	// aggregation.go), so `input` here is never histogram-valued for
 	// them and the plain [lower] dispatch is unchanged for that path.
 	var input chplan.Node
-	var histogram, mixed bool
 	var transform mixedPlanTransform
 	var err error
 	if a.Op == parser.LIMITK {
-		input, histogram, mixed, err = lowerLimitKInput(a.Expr, s, ctx)
+		input, err = lowerLimitKInput(a.Expr, s, ctx)
 	} else {
 		transform, err = executeMixedSelectorPolicy(mixedTopKFamily, mixedPlanAdmission)
 		if err == nil {
@@ -6501,7 +6496,7 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	if a.Op != parser.LIMITK {
 		input = transform(input)
 	}
-	return buildTopKComputed(a, s, ctx, input, histogram, mixed)
+	return buildTopKComputed(a, s, ctx, input)
 }
 
 // buildTopKComputed builds the computed-K topk/bottomk/limitk node over
@@ -6511,10 +6506,8 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 // K-domain / partition / column-shape rules over the mixed `or`'s
 // shadow-resolved float arm instead of a freshly lowered `a.Expr` — the
 // only difference between the two callers is which chplan.Node `input`
-// names. `histogram` is always false for the mixed-or caller (topk/
-// bottomk never preserve a histogram-valued input — see
-// [lowerTopKComputed]'s own comment).
-func buildTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx, input chplan.Node, histogram, mixed bool) (chplan.Node, error) {
+// names.
+func buildTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx, input chplan.Node) (chplan.Node, error) {
 	// The K domain is reference Prometheus's, and reference applies it to
 	// the parameter's whole per-step value series before it aggregates
 	// anything. A computed K has no value until the query runs, and the
@@ -6548,21 +6541,16 @@ func buildTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx, 
 		},
 	}
 
-	// See lowerLimitK's matching comment: a histogram-valued OR
-	// mixed-valued input always forces `SELECT *` rather than the
-	// explicit canonical-quartet column list.
 	columns := topKOutputColumns(input, s)
-	if histogram || mixed {
-		columns = nil
+	if a.Op == parser.LIMITK {
+		columns = limitKOutputColumns(input, s)
 	}
 
 	t := &chplan.TopK{
-		Input:     input,
-		KExpr:     kExpr,
-		By:        topKPartition(a, s, ctx),
-		Columns:   columns,
-		Histogram: histogram,
-		Mixed:     mixed,
+		Input:   input,
+		KExpr:   kExpr,
+		By:      topKPartition(a, s, ctx),
+		Columns: columns,
 	}
 	if a.Op == parser.LIMITK {
 		// limitk keeps K arbitrary series per group — no ranking, so the
