@@ -113,6 +113,15 @@ func TestFloatAggregateNarrowingLeavesOtherFamilies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if fn == "sum" || fn == "avg" {
+				// Sum/avg now partition sample kinds rather than discarding the
+				// histogram side. Only their float reduction narrows to floats.
+				union, ok := plan.(*chplan.VectorSetOp)
+				if !ok || !union.MixedDropCollisions || chplan.RowShapeOf(union.Left) != chplan.HistogramRowShape || chplan.RowShapeOf(plan) != chplan.MixedRowShape {
+					t.Fatalf("%s lost histogram group semantics: %T", fn, plan)
+				}
+				return
+			}
 			chplan.Walk(plan, func(node chplan.Node) bool {
 				if filter, ok := node.(*chplan.Filter); ok && chplan.IsMixedFloatNarrowing(filter) {
 					t.Fatalf("%s acquired float-only semantics", fn)
