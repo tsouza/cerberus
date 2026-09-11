@@ -34,6 +34,38 @@ type Schema struct {
 	Open    bool
 }
 
+// SampleKind classifies a closed output schema by the sample payload it
+// publishes. Opaque and invalid are deliberately separate: opaque means the
+// schema makes no complete sample claim, while invalid means it makes a
+// contradictory or ambiguous one that consumers must reject.
+type SampleKind uint8
+
+const (
+	SampleKindOpaque SampleKind = iota
+	SampleKindFloat
+	SampleKindHistogram
+	SampleKindMixed
+	SampleKindInvalid
+)
+
+// String renders the sample-kind vocabulary used by invariant diagnostics.
+func (k SampleKind) String() string {
+	switch k {
+	case SampleKindOpaque:
+		return "opaque"
+	case SampleKindFloat:
+		return "float"
+	case SampleKindHistogram:
+		return "histogram"
+	case SampleKindMixed:
+		return "mixed"
+	case SampleKindInvalid:
+		return "invalid"
+	default:
+		return "unknown"
+	}
+}
+
 // Find returns the first column carrying role, in declaration order.
 func (s Schema) Find(role ColumnRole) (Column, bool) {
 	for _, c := range s.Columns {
@@ -157,6 +189,110 @@ func (s Schema) HasHistogramPayload() bool {
 		}
 	}
 	return true
+}
+
+// SampleKind validates and classifies the public sample contract. Public
+// roles must be named and unambiguous, and histogram fields must be the
+// complete canonical payload. Names on opaque or other-role columns never
+// create a sample contract, but they may not shadow a public sample output.
+// Structurally valid open schemas remain opaque because undeclared outputs can
+// invalidate an otherwise plausible contract.
+func (s Schema) SampleKind() SampleKind {
+	const samplePublicRoleCount = int(RoleDiscriminator) + 1
+	const histogramPayloadColumnCount = 9
+
+	var roleCount [samplePublicRoleCount]int
+	var histogramSeen [histogramPayloadColumnCount]bool
+	canonicalHistogram := histogramColumns()
+	for _, column := range s.Columns {
+		if !samplePublicRole(column.Role) {
+			continue
+		}
+		if column.Name == "" {
+			return SampleKindInvalid
+		}
+		nameCount := 0
+		for _, candidate := range s.Columns {
+			if candidate.Name == column.Name {
+				nameCount++
+			}
+		}
+		if nameCount != 1 {
+			return SampleKindInvalid
+		}
+		roleCount[column.Role]++
+		if column.Role == RoleHistogramField {
+			matched := false
+			for i, field := range canonicalHistogram {
+				if column.Name == field.Name {
+					histogramSeen[i] = true
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return SampleKindInvalid
+			}
+		}
+	}
+
+	for _, role := range [...]ColumnRole{
+		RoleMetricName,
+		RoleAttributes,
+		RoleTimestamp,
+		RoleAnchor,
+		RoleValue,
+		RoleDiscriminator,
+	} {
+		if roleCount[role] > 1 {
+			return SampleKindInvalid
+		}
+	}
+
+	hasHistogram := roleCount[RoleHistogramField] != 0
+	hasDiscriminator := roleCount[RoleDiscriminator] != 0
+	if hasHistogram {
+		if roleCount[RoleHistogramField] != len(canonicalHistogram) {
+			return SampleKindInvalid
+		}
+		for _, seen := range histogramSeen {
+			if !seen {
+				return SampleKindInvalid
+			}
+		}
+	} else if hasDiscriminator {
+		return SampleKindInvalid
+	}
+
+	if hasDiscriminator {
+		for _, role := range [...]ColumnRole{RoleMetricName, RoleAttributes, RoleTimestamp, RoleValue} {
+			if roleCount[role] != 1 {
+				return SampleKindInvalid
+			}
+		}
+	}
+	if s.Open {
+		return SampleKindOpaque
+	}
+	if hasDiscriminator {
+		return SampleKindMixed
+	}
+	if hasHistogram {
+		return SampleKindHistogram
+	}
+	if roleCount[RoleValue] == 1 {
+		return SampleKindFloat
+	}
+	return SampleKindOpaque
+}
+
+func samplePublicRole(role ColumnRole) bool {
+	switch role {
+	case RoleMetricName, RoleAttributes, RoleTimestamp, RoleAnchor, RoleValue, RoleHistogramField, RoleDiscriminator:
+		return true
+	default:
+		return false
+	}
 }
 
 // RowShapeFromSchema folds physical columns into the legacy sample vocabulary.

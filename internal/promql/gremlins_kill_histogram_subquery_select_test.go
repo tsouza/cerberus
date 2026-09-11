@@ -13,7 +13,7 @@
 // down through isExpHistogramValuedShape and the copy therefore decided
 // nothing. The rule is now stated once, in
 // [expHistogramLoweringAvailable], where both its mutants are killable.
-// The remaining two adjudications stand:
+// The two remaining original cases now have different dispositions:
 //
 //   - histogram_native_subquery_select.go:`step < 0` (CONDITIONALS_BOUNDARY,
 //     `step < 0` -> `<= 0`). Two lines above, `if step == 0 { step =
@@ -24,22 +24,15 @@
 //     over every value except exactly 0, so no reachable input can make
 //     the two operators disagree (the same reasoning
 //     gremlins_kill_subquery_test.go's header gives for subquery.go:`step < 0`).
-//   - histogram_native_subquery_select.go:`if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
-//     (INVERT_LOGICAL, `||` -> `&&`).
-//     lowerExpHistogramValuedShape's own contract (histogram_native_float_
-//     fn.go) guarantees `matched == false` if and only if its very last
-//     fallback ran, which always returns `input == nil` — and
-//     chplan.RowShapeOf(nil) (no `case nil` in its type switch) always
-//     falls through to its non-Histogram default. So `!matched` and
-//     `RowShapeOf(input) != Histogram` are always EQUAL on every reachable
-//     input: both true together (an unmatched sub-expression) or both false
-//     together (every histogram-preserving recognizer this dispatch reaches
-//     is documented to publish HistogramRowShape whenever it returns a nil
-//     error, and a non-nil error already returns two lines above this
-//     guard). OR and AND compute the same boolean whenever their two
-//     operands are always equal.
+//   - The former compound guard was split into two explicit invariant checks:
+//     histogram_native_subquery_select.go:`if !matched` and
+//     histogram_native_subquery_select.go:`if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram`.
+//     That split retired the equivalent INVERT_LOGICAL (`||` -> `&&`) mutant.
+//     An unmatched input and a matched input with the wrong sample kind now
+//     report their distinct contract violations independently.
 //
-// All three are confirmed by manually applying the mutation and running
+// The remaining boundary case was confirmed by manually applying the mutation and
+// running
 // `go test ./internal/promql/...`: green.
 package promql
 

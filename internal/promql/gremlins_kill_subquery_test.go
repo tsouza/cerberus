@@ -299,9 +299,9 @@ func TestSubqueryInstantSafe_PiExceptionNotRejected(t *testing.T) {
 }
 
 // TestLowerSubqueryOverBinary_PlainShapeSucceedsWithNoEvalAnchor kills the
-// CONDITIONALS_NEGATION mutant at histogram_shape_guard.go:rowsMayContainHistograms:`return !hasUnambiguousNamedRole(row, chplan.RoleValue)`.
-// A plain `or` composition has one unambiguous float value role, so the live
-// sample-kind guard must return false and allow lowering without query
+// CONDITIONALS_NEGATION mutant at histogram_shape_guard.go:rowsMayContainHistograms:`return liveSampleKind(inner) != chplan.SampleKindFloat`.
+// A plain `or` composition has a float sample kind, so the live guard must
+// return false and allow lowering without query
 // evaluation context. Negating that result wrongly sends this query through
 // the conservative histogram rejection path.
 func TestLowerSubqueryOverBinary_PlainShapeSucceedsWithNoEvalAnchor(t *testing.T) {

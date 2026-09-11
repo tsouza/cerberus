@@ -151,10 +151,10 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 	if !matched {
 		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram set-op operand matched no known histogram-valued shape for %v", expr)
 	}
-	if chplan.RowShapeOf(node) != chplan.HistogramRowShape {
+	if kind := node.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
 		return nil, fmt.Errorf(
-			"promql: internal invariant violated: exp-histogram set-op operand lowering published %s row shape (%T), want %s",
-			chplan.RowShapeOf(node), node, chplan.HistogramRowShape,
+			"promql: internal invariant violated: exp-histogram set-op operand lowering published %s sample kind (%T), want histogram",
+			kind, node,
 		)
 	}
 	return node, nil
@@ -249,10 +249,10 @@ func lowerExpHistogramValuedOrForwardedOperand(expr parser.Expr, s schema.Metric
 	if err != nil {
 		return nil, err
 	}
-	if chplan.RowShapeOf(node) != chplan.HistogramRowShape {
+	if kind := node.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
 		return nil, fmt.Errorf(
-			"promql: internal invariant violated: exp-histogram-forwarding set-op operand lowering published %s row shape (%T), want %s",
-			chplan.RowShapeOf(node), node, chplan.HistogramRowShape,
+			"promql: internal invariant violated: exp-histogram-forwarding set-op operand lowering published %s sample kind (%T), want histogram",
+			kind, node,
 		)
 	}
 	return node, nil

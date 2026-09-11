@@ -117,8 +117,8 @@ func countOrGroupOverExpHistogramValue(expr parser.Expr, s schema.Metrics, ctx l
 // or a histogram. Grouping by the published evaluation timestamp keeps range
 // query anchors independent while using the same plan for instant queries.
 func lowerExpHistogramCountOrGroupOverPlan(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics) (chplan.Node, error) {
-	if chplan.RowShapeOf(input) != chplan.HistogramRowShape {
-		return nil, fmt.Errorf("promql: internal invariant violated: nested native-histogram count/group input is %T with %s row shape", input, chplan.RowShapeOf(input))
+	if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
+		return nil, fmt.Errorf("promql: internal invariant violated: nested native-histogram count/group input is %T with %s sample kind", input, kind)
 	}
 
 	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
