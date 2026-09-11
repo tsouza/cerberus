@@ -935,9 +935,17 @@ update-golden *shards:
 #   CERBERUS_UPDATE_LOGQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestLogQLReferenceVerdictsAreCurrent ./test/surface-parity/
 #   CERBERUS_UPDATE_TRACEQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestTraceQLReferenceVerdictsAreCurrent ./test/surface-parity/
 
+# The primary writers run alone before the divergence ceiling, which derives
+# from the freshly written rejection catalogue. Only then may the complete
+# packages validate the stable files: the writer and reader tests use
+# t.Parallel, so a single update-mode package run would let validation race
+# regeneration.
+
 # Regenerate the parser-surface and rejection parity ledgers.
 update-parity-ledgers: update-parity-enrolment-baseline
-    CERBERUS_UPDATE_INVENTORY=1 go test -count=1 ./test/surface-parity/ ./test/rejection-parity/
+    CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^(TestInventoryIsRegenerable|TestCatalogueIsRegenerable)$' ./test/surface-parity/ ./test/rejection-parity/
+    CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^TestDivergenceCeilingRatchet$' ./test/rejection-parity/
+    CERBERUS_UPDATE_INVENTORY= go test -count=1 ./test/surface-parity/ ./test/rejection-parity/
     @node .github/scripts/lib/regen-diff.mjs --label "parity ledgers" test/surface-parity/ test/rejection-parity/
 
 CARDINALITY_BASELINE_TIMEOUT := "60m"
