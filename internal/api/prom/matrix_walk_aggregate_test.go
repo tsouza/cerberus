@@ -15,18 +15,26 @@ import (
 func matrixWindowUnder(s schema.Metrics, offset time.Duration) *chplan.Project {
 	return &chplan.Project{
 		Input: &chplan.RangeWindow{
-			Input:      closedSampleScan(s, "otel_metrics_gauge"),
-			OuterRange: time.Hour,
-			Range:      5 * time.Minute,
-			Step:       time.Minute,
-			Offset:     offset,
-			GroupBy:    []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+			Input:           closedSampleScan(s, "otel_metrics_gauge"),
+			OuterRange:      time.Hour,
+			Range:           5 * time.Minute,
+			Step:            time.Minute,
+			Offset:          offset,
+			TimestampColumn: s.TimestampColumn,
+			ValueColumn:     s.ValueColumn,
+			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
+		},
+		Roles: []chplan.Column{
+			{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+			{Name: chplan.RangeWindowAnchorColumn, Role: chplan.RoleAnchor},
+			{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+			{Name: s.ValueColumn, Role: chplan.RoleValue},
 		},
 	}
 }

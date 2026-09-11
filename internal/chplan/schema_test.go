@@ -245,6 +245,66 @@ func TestRowTypeWindowBranches(t *testing.T) {
 	}
 }
 
+func TestRowTypeMatrixAnchorSurvivesSchemaPreservingWrappers(t *testing.T) {
+	input := &Scan{
+		Columns: []string{"labels", "time", "value"},
+		Roles: []Column{
+			{Name: "labels", Role: RoleAttributes},
+			{Name: "time", Role: RoleTimestamp},
+			{Name: "value", Role: RoleValue},
+		},
+	}
+	window := &RangeWindow{
+		Input:           input,
+		OuterRange:      time.Hour,
+		GroupBy:         []Expr{&ColumnRef{Name: "labels"}},
+		TimestampColumn: "time",
+		ValueColumn:     "value",
+	}
+	project := &Project{
+		Input: window,
+		Projections: []Projection{
+			{Expr: &ColumnRef{Name: "labels"}},
+			{Expr: &ColumnRef{Name: RangeWindowAnchorColumn}},
+			{Expr: &ColumnRef{Name: "time"}},
+			{Expr: &ColumnRef{Name: "value"}},
+		},
+		Roles: input.Roles,
+	}
+	aggregate := &Aggregate{
+		Input: project,
+		GroupBy: []Expr{
+			&ColumnRef{Name: "labels"},
+			&ColumnRef{Name: RangeWindowAnchorColumn},
+			&ColumnRef{Name: "time"},
+		},
+		GroupByAliases: []string{"labels", RangeWindowAnchorColumn, "time"},
+		AggFuncs:       []AggFunc{{Fn: FnAny, Args: []Expr{&ColumnRef{Name: "value"}}, Alias: "value"}},
+		Roles:          input.Roles,
+	}
+
+	want := Schema{Columns: []Column{
+		{Name: "labels", Role: RoleAttributes},
+		{Name: RangeWindowAnchorColumn, Role: RoleAnchor},
+		{Name: "time", Role: RoleTimestamp},
+		{Name: "value", Role: RoleValue},
+	}}
+	for _, tc := range []struct {
+		name string
+		node Node
+	}{
+		{name: "range_window", node: window},
+		{name: "project", node: project},
+		{name: "aggregate", node: aggregate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.node.RowType(); !got.Equal(want) {
+				t.Fatalf("RowType = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestRowTypeMixedFloatNarrowing(t *testing.T) {
 	mixed := &Scan{Columns: []string{MixedDiscriminatorColumn}, Roles: []Column{{MixedDiscriminatorColumn, RoleDiscriminator}}}
 	filter := &Filter{Input: mixed, Predicate: &Binary{Op: OpEq, Left: &ColumnRef{Name: MixedDiscriminatorColumn}, Right: &LitInt{V: 0}}}

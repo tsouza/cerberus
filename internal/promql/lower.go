@@ -4349,12 +4349,14 @@ func appendNameGroupKey(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Column
 // in the `anchor_ts` column; the instant shape doesn't expose a real
 // TimeUnix at all (the SQL emits only Attributes + Value), so the
 // projection synthesises one via the same `now64() - 5s` expression
-// the handler uses for derived-shape Projects. The outer
-// `wrapWithSampleProjection` canonical branch reads back the
-// `s.TimestampColumn` alias verbatim either way.
+// the handler uses for derived-shape Projects. A matrix projection also
+// forwards the raw anchor after the canonical quartet. The HTTP adapter walks
+// through this wrapper to recover the underlying matrix window, so its schema
+// must keep the anchor role the adapter then selects as the result grid.
 func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name chplan.Expr) chplan.Node {
 	var tsExpr chplan.Expr
-	if rw.OuterRange > 0 || rw.DownsampleTier {
+	matrix := rw.OuterRange > 0 || rw.DownsampleTier
+	if matrix {
 		// The matrix RangeWindow keeps anchor_ts offset-SHIFTED for the
 		// window/reduce math; PromQL reports a reducing window's result on the
 		// UNSHIFTED grid, so add Offset back (matching the emitter's
@@ -4397,16 +4399,24 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 		// anchor, so we stamp `now64(9) - toIntervalNanosecond(5e9)`.
 		tsExpr = chplan.NowNanoMinusStaleness()
 	}
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: rw,
-		Projections: []chplan.Projection{
-			{Expr: name, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: tsExpr, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-		},
+	projections := []chplan.Projection{
+		{Expr: name, Alias: s.MetricNameColumn},
+		{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+		{Expr: tsExpr, Alias: s.TimestampColumn},
+		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 	}
+	roles := metricRoles(s)
+	if matrix {
+		projections = append(projections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
+			Alias: chplan.RangeWindowAnchorColumn,
+		})
+		roles = append(roles, chplan.Column{
+			Name: chplan.RangeWindowAnchorColumn,
+			Role: chplan.RoleAnchor,
+		})
+	}
+	return &chplan.Project{Roles: roles, Input: rw, Projections: projections}
 }
 
 // rangeFnCollidesOnNameDrop reports whether a range-function call can
