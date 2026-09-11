@@ -5,7 +5,7 @@
       "site": "internal/promql/mixed_operand_policy.go:requireMixedBespokePolicy#efa3d4e1",
       "message": "promql: mixed operand is not admitted for %s at %s",
       "class": "internal",
-      "rationale": "This is a fail-closed registration invariant for callers still routed through the bespoke guard, not a semantic rejection of an admitted query shape. lowerWithMixedOperandPolicy uses explicit matched root/operand family-site pairs, and requireMixedPlanPolicy authorizes existing mixed consumers by their real family. Every production pair that reaches this guard with a Mixed input is registered as bespoke. Math is no longer such a pair: mathPayloadPreparation resolves its separate root and existing-plan mixedFloatOnly rows, and prepareMathValueInput narrows before an ordinary guarded projection reaches requireMixedPlanPolicy, which bypasses the resulting non-Mixed input. The binary and aggregate family classifiers cover parser-checked operators; unknown internal operators, missing registrations, and unsupported modes are exercised only by synthetic calls or authority-test table mutation. The table is not query-controlled. Any new caller or payload-mode migration must re-verify those separate routing claims. Label calls likewise use the independent labelPayloadPolicy at root or existing-plan admission; both label rows are mixedPreserve and retain mixed payload columns without entering the bespoke guard. Scalar arithmetic is also migrated: requireFloatArithmeticPolicy authorizes its root and existing-plan mixedFloatOnly entries, and finishScalarArithmetic narrows mixed rows before selecting its established projection boundary; neither route invokes the bespoke dispatcher on a live Mixed input. The migrated sort operand existing-plan paths likewise bypass the bespoke authority function: lowerSortFloatOperand invokes prepareSortOperand to enforce mixedFloatOnly directly before the shared ordering kernel. Histogram/drop early returns do not invoke the mixed sort continuation.",
+      "rationale": "This is a fail-closed registration invariant for callers still routed through the bespoke guard, not a semantic rejection of an admitted query shape. lowerWithMixedOperandPolicy uses explicit matched root/operand family-site pairs, and requireMixedPlanPolicy authorizes existing mixed consumers by their real family. Every production pair that reaches this guard with a Mixed input is registered as bespoke. Math is no longer such a pair: mathPayloadPreparation resolves its separate root and existing-plan mixedFloatOnly rows, and prepareMathValueInput narrows before an ordinary guarded projection reaches requireMixedPlanPolicy, which bypasses the resulting non-Mixed input. The binary and aggregate family classifiers cover parser-checked operators; unknown internal operators, missing registrations, and unsupported modes are exercised only by synthetic calls or authority-test table mutation. The table is not query-controlled. Any new caller or payload-mode migration must re-verify those separate routing claims. Label calls likewise use the independent labelPayloadPolicy at root or existing-plan admission; both label rows are mixedPreserve and retain mixed payload columns without entering the bespoke guard. Scalar arithmetic is also migrated: requireFloatArithmeticPolicy authorizes its root and existing-plan mixedFloatOnly entries, and finishScalarArithmetic narrows mixed rows before selecting its established projection boundary; neither route invokes the bespoke dispatcher on a live Mixed input. The migrated sort operand existing-plan paths likewise bypass the bespoke authority function: lowerSortFloatOperand invokes prepareSortOperand to enforce mixedFloatOnly directly before the shared ordering kernel. Histogram/drop early returns do not invoke the mixed sort continuation. Count/group has likewise migrated away from this guard. lowerCountOrGroupOverMixedExpHistogramSetOp authorizes the direct mixed root through lowerWithMixedPreservePolicy using the fixed mixedCountGroupFamily/mixedRootAdmission pair. For an already-lowered mixed plan, lowerAggregate maps the op through mixedAggregateFamily and calls preserveMixedPlan, which uses fixed mixedPlanAdmission. Both count/group rows are mixedPreserve, so neither production route invokes requireMixedBespokePolicy on a live Mixed input. mixedCountValuesFamily remains bespoke at root and plan.",
       "evidence": {
         "guard": [
           "if policy != mixedBespoke"
@@ -17,11 +17,16 @@
         "cited": [
           "finishScalarArithmetic",
           "labelPayloadPolicy",
+          "lowerAggregate",
+          "lowerCountOrGroupOverMixedExpHistogramSetOp",
           "lowerSortFloatOperand",
           "lowerWithMixedOperandPolicy",
+          "lowerWithMixedPreservePolicy",
           "mathPayloadPreparation",
+          "mixedAggregateFamily",
           "prepareMathValueInput",
           "prepareSortOperand",
+          "preserveMixedPlan",
           "requireFloatArithmeticPolicy",
           "requireMixedPlanPolicy"
         ]
