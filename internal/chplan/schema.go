@@ -51,6 +51,8 @@ const (
 // String renders the sample-kind vocabulary used by invariant diagnostics.
 func (k SampleKind) String() string {
 	switch k {
+	case SampleKindOpaque:
+		return "opaque"
 	case SampleKindFloat:
 		return "float"
 	case SampleKindHistogram:
@@ -60,7 +62,7 @@ func (k SampleKind) String() string {
 	case SampleKindInvalid:
 		return "invalid"
 	default:
-		return "opaque"
+		return "unknown"
 	}
 }
 
@@ -196,25 +198,41 @@ func (s Schema) HasHistogramPayload() bool {
 // Open schemas remain opaque because undeclared outputs can invalidate an
 // otherwise plausible contract.
 func (s Schema) SampleKind() SampleKind {
-	nameCount := make(map[string]int, len(s.Columns))
-	for _, column := range s.Columns {
-		if column.Name != "" {
-			nameCount[column.Name]++
-		}
-	}
+	const samplePublicRoleCount = int(RoleDiscriminator) + 1
+	const histogramPayloadColumnCount = 9
 
-	roleCount := make(map[ColumnRole]int)
-	histogramNames := make(map[string]bool)
+	var roleCount [samplePublicRoleCount]int
+	var histogramSeen [histogramPayloadColumnCount]bool
+	canonicalHistogram := histogramColumns()
 	for _, column := range s.Columns {
 		if !samplePublicRole(column.Role) {
 			continue
 		}
-		if column.Name == "" || nameCount[column.Name] != 1 {
+		if column.Name == "" {
+			return SampleKindInvalid
+		}
+		nameCount := 0
+		for _, candidate := range s.Columns {
+			if candidate.Name == column.Name {
+				nameCount++
+			}
+		}
+		if nameCount != 1 {
 			return SampleKindInvalid
 		}
 		roleCount[column.Role]++
 		if column.Role == RoleHistogramField {
-			histogramNames[column.Name] = true
+			matched := false
+			for i, field := range canonicalHistogram {
+				if column.Name == field.Name {
+					histogramSeen[i] = true
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return SampleKindInvalid
+			}
 		}
 	}
 
@@ -234,12 +252,11 @@ func (s Schema) SampleKind() SampleKind {
 	hasHistogram := roleCount[RoleHistogramField] != 0
 	hasDiscriminator := roleCount[RoleDiscriminator] != 0
 	if hasHistogram {
-		canonical := histogramColumns()
-		if roleCount[RoleHistogramField] != len(canonical) {
+		if roleCount[RoleHistogramField] != len(canonicalHistogram) {
 			return SampleKindInvalid
 		}
-		for _, field := range canonical {
-			if !histogramNames[field.Name] {
+		for _, seen := range histogramSeen {
+			if !seen {
 				return SampleKindInvalid
 			}
 		}

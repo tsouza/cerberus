@@ -294,6 +294,8 @@ func TestSchemaSampleKind(t *testing.T) {
 	histogram := HistogramPayloadColumns()
 	mixed := append(slices.Clone(floatRoles), histogram...)
 	mixed = append(mixed, Column{"source_kind", RoleDiscriminator})
+	reorderedMixed := slices.Clone(mixed)
+	slices.Reverse(reorderedMixed)
 
 	for _, tc := range []struct {
 		name string
@@ -305,6 +307,7 @@ func TestSchemaSampleKind(t *testing.T) {
 		{name: "pure_histogram", row: Schema{Columns: histogram}, want: SampleKindHistogram},
 		{name: "histogram_with_placeholder", row: Schema{Columns: append(slices.Clone(floatRoles), histogram...)}, want: SampleKindHistogram},
 		{name: "mixed", row: Schema{Columns: mixed}, want: SampleKindMixed},
+		{name: "mixed_reordered", row: Schema{Columns: reorderedMixed}, want: SampleKindMixed},
 		{name: "opaque", row: Schema{Columns: []Column{{Name: "private"}}}, want: SampleKindOpaque},
 		{name: "open_float", row: Schema{Columns: floatRoles, Open: true}, want: SampleKindOpaque},
 		{name: "trace_roles", row: Schema{Columns: []Column{{"trace", RoleTraceID}, {"span", RoleSpanID}}}, want: SampleKindOpaque},
@@ -380,7 +383,7 @@ func TestSampleKindString(t *testing.T) {
 		{SampleKindHistogram, "histogram"},
 		{SampleKindMixed, "mixed"},
 		{SampleKindInvalid, "invalid"},
-		{SampleKindInvalid + 1, "opaque"},
+		{SampleKindInvalid + 1, "unknown"},
 	} {
 		if got := tc.kind.String(); got != tc.want {
 			t.Errorf("SampleKind(%d).String() = %q, want %q", tc.kind, got, tc.want)
