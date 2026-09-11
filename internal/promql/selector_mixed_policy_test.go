@@ -2,10 +2,103 @@ package promql
 
 import (
 	"errors"
+	"go/ast"
+	goparser "go/parser"
+	"go/token"
+	"os"
+	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
+
+func TestMixedSelectorPolicyProductionSiteInventory(t *testing.T) {
+	want := []string{
+		"histogram_native_mixed_or_aggregate_topk.go:lowerTopKOverMixedExpHistogramSetOp:mixedTopKFamily/mixedRootAdmission",
+		"lower.go:lowerLimitKInput:mixedLimitFamily/mixedOperandAdmission",
+		"lower.go:lowerLimitKInput:mixedLimitFamily/mixedPlanAdmission",
+		"lower.go:lowerTopK:mixedTopKFamily/mixedPlanAdmission",
+		"lower.go:lowerTopKComputed:mixedTopKFamily/mixedPlanAdmission",
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	var got, legacy []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := goparser.ParseFile(fset, name, nil, goparser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				callee := selectorPolicyCallee(call.Fun)
+				family, site, selectorFamily := selectorPolicyCallKey(call)
+				if callee == "executeMixedSelectorPolicy" {
+					if len(call.Args) != 3 || !selectorFamily || site == "" {
+						t.Errorf("%s:%s has an opaque selector executor call", name, function.Name.Name)
+						return true
+					}
+					got = append(got, name+":"+function.Name.Name+":"+family+"/"+site)
+					return true
+				}
+				if selectorFamily {
+					legacy = append(legacy, name+":"+function.Name.Name+":"+callee+"("+family+")")
+				}
+				return true
+			})
+		}
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("selector executor sites =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+	}
+	if len(legacy) != 0 {
+		t.Fatalf("selector families reached non-executor policy calls:\n  %s", strings.Join(legacy, "\n  "))
+	}
+}
+
+func selectorPolicyCallKey(call *ast.CallExpr) (family, site string, selectorFamily bool) {
+	if len(call.Args) > 0 {
+		if ident, ok := call.Args[0].(*ast.Ident); ok {
+			family = ident.Name
+			selectorFamily = family == "mixedTopKFamily" || family == "mixedLimitFamily"
+		}
+	}
+	if len(call.Args) > 1 {
+		if ident, ok := call.Args[1].(*ast.Ident); ok {
+			site = ident.Name
+		}
+	}
+	return family, site, selectorFamily
+}
+
+func selectorPolicyCallee(expr ast.Expr) string {
+	switch callee := expr.(type) {
+	case *ast.Ident:
+		return callee.Name
+	case *ast.SelectorExpr:
+		return callee.Sel.Name
+	default:
+		return "<opaque>"
+	}
+}
 
 func TestMixedSelectorPolicyExecutorModes(t *testing.T) {
 	for _, tc := range []struct {
