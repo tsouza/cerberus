@@ -356,25 +356,28 @@ func mixedBranchUnion(histBranch, floatBranch chplan.Node, s schema.Metrics, ste
 
 // lowerPlainAggOverMixedFloatArm reduces input with the SAME CH-native
 // aggregate an ordinary (non-histogram) PromQL aggregation uses
-// ([aggregateGroupBy], [buildAggFunc], [promAggregateAttributesExpr]),
-// grouped by the evaluation Timestamp in addition to the user's
-// `by`/`without` labels. [canonicalizeMixedFloatArmForAgg] runs first so
-// this GroupBy's `ColumnRef{Name: s.TimestampColumn}` resolves against
-// input's own SELECT regardless of which of the three RowShapes
+// ([aggregateGroupBy], [buildAggFunc], [promAggregateAttributesExpr]) by
+// delegating to [lowerPlainAggregateOverInput]'s mixed layout, grouped by
+// the evaluation Timestamp in addition to the user's `by`/`without`
+// labels. [canonicalizeMixedFloatArmForAgg] runs first so that GroupBy's
+// `ColumnRef{Name: s.TimestampColumn}` resolves against input's own SELECT
+// regardless of which of the three RowShapes
 // [lowerMixedExpHistogramOperands] accepted for it.
 //
-// Despite the name (kept for [combineMixedAggregateBranches]'s SUM/AVG
+// The name is kept for [combineMixedAggregateBranches]'s SUM/AVG
 // callers, where input genuinely is the shadow-resolved float-valued arm
-// alone), this function is agnostic to what input actually is:
-// [buildAggFunc] dispatches on agg.Op alone, so cerberus issue #2595's
-// sibling aggregate families reuse it unchanged for two OTHER shapes —
-// count()/group() (histogram_native_mixed_or_aggregate_presence.go) pass
-// the FULL shadow-resolved Mixed union ([lowerMixedExpHistogramSetOp]'s
-// own leaf output) because those two ops read no per-row value at all
-// (COUNT counts [chplan.VectorSetOp.Mixed]'s placeholder-safe Value
-// column; GROUP ignores Value entirely — see [histogramSampleValuePlaceholder]'s
-// own doc for why a placeholder Value is safe to count but not to
-// transform), while min()/max()/stddev()/stdvar()
+// alone. The shared [lowerPlainAggregateOverInput] kernel is agnostic to
+// what input actually is: [buildAggFunc] dispatches on agg.Op alone, so
+// cerberus issue #2595's sibling aggregate families reuse it unchanged
+// for two OTHER shapes — count()/group()
+// (histogram_native_mixed_or_aggregate_presence.go) call it directly
+// with the FULL shadow-resolved Mixed union
+// ([lowerMixedExpHistogramSetOp]'s own leaf output) because those two ops
+// read no per-row value at all (COUNT counts
+// [chplan.VectorSetOp.Mixed]'s placeholder-safe Value column; GROUP
+// ignores Value entirely — see [histogramSampleValuePlaceholder]'s own
+// doc for why a placeholder Value is safe to count but not to transform),
+// while min()/max()/stddev()/stdvar()
 // (histogram_native_mixed_or_aggregate_float_only.go) pass the
 // shadow-resolved float arm alone, exactly like the SUM/AVG callers, but
 // with no histogram branch or [combineMixedAggregateBranches] recombine
@@ -392,68 +395,21 @@ func mixedBranchUnion(histBranch, floatBranch chplan.Node, s schema.Metrics, ste
 // uniform value there — true for [chplan.ReducedWindowRowShape] (which
 // [canonicalizeMixedFloatArmForAgg] widens onto that exact convention)
 // but FALSE for a bare [chplan.SampleRowShape] selector arm or the full
-// Mixed union count()/group() (histogram_native_mixed_or_aggregate_
-// presence.go, cerberus issue #2595) pass here: a bare selector's
-// instant-mode Timestamp is the REAL per-series collapsed-to-latest
-// sample time (verified directly against chDB — two series scraped a
-// second apart keep two different Timestamp values there), and the
-// histogram branch's own Timestamp is always a synthesised "now" —
-// mixing either of those into the group key silently splits what
-// reference treats as ONE group into several, or drops the group
-// entirely when [combineMixedAggregateBranches]'s two sub-branches no
-// longer agree row-for-row. Not grouping by Timestamp at instant mode —
-// exactly the ordinary aggregate path's own rule — removes the hazard
-// instead of relying on every caller's input happening to be uniform.
+// Mixed union count()/group()
+// (histogram_native_mixed_or_aggregate_presence.go, cerberus issue #2595)
+// pass to the shared kernel: a bare selector's instant-mode Timestamp is
+// the REAL per-series collapsed-to-latest sample time (verified directly
+// against chDB — two series scraped a second apart keep two different
+// Timestamp values there), and the histogram branch's own Timestamp is
+// always a synthesised "now" — mixing either of those into the group key
+// silently splits what reference treats as ONE group into several, or
+// drops the group entirely when [combineMixedAggregateBranches]'s two
+// sub-branches no longer agree row-for-row. Not grouping by Timestamp at
+// instant mode — exactly the ordinary aggregate path's own rule — removes
+// the hazard instead of relying on every caller's input happening to be
+// uniform.
 func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	input = canonicalizeMixedFloatArmForAgg(input, s)
-
-	labelGroupBy, err := aggregateGroupBy(agg, s)
-	if err != nil {
-		return nil, err
-	}
-	labelAliases := groupKeyAliases(len(labelGroupBy))
-
-	aggFunc, err := buildAggFunc(agg, s, ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	const bucketAlias = "mixed_agg_bucket_ts"
-	rangeBucketed := ctx.step > 0
-	groupBy := labelGroupBy
-	groupByAliases := labelAliases
-	if rangeBucketed {
-		groupBy = append([]chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, groupBy...)
-		groupByAliases = append([]string{bucketAlias}, groupByAliases...)
-	}
-	merged := &chplan.Aggregate{
-		Roles:              metricRoles(s),
-		Input:              input,
-		GroupBy:            groupBy,
-		GroupByAliases:     groupByAliases,
-		AggFuncs:           []chplan.AggFunc{aggFunc},
-		DropEmptyOnNoGroup: true,
-	}
-
-	// Instant mode stamps the query's own uniform evaluation instant
-	// (chplan.NowNano(), matching [wrapAggregateForSample]'s identical
-	// choice for the ordinary aggregate path); range mode forwards the
-	// per-step anchor the GroupBy above just captured.
-	tsExpr := chplan.NowNano()
-	if rangeBucketed {
-		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
-	}
-
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: merged,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: promAggregateAttributesExpr(agg, labelAliases), Alias: s.AttributesColumn},
-			{Expr: tsExpr, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-		},
-	}, nil
+	return lowerPlainAggregateOverInput(agg, input, s, ctx, mixedPlainAggregateLayout)
 }
 
 // canonicalizeMixedFloatArmForAgg widens input — the (possibly still raw,
