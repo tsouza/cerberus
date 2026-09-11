@@ -5484,11 +5484,26 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 	if err := requireMixedPlanPolicy(input, mixedCountValuesFamily); err != nil {
 		return nil, err
 	}
+	valueKey := promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn})
+	if chplan.RowShapeOf(input) == chplan.MixedRowShape {
+		// Shadow resolution belongs to the completed operand. Serialize each
+		// surviving sample by its kind: histogram placeholder Values are not
+		// real floats and must never enter the float value-label group.
+		valueKey = &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+			&chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: chplan.MixedDiscriminatorColumn},
+				Right: &chplan.LitInt{V: mixedDiscriminatorFloat},
+			},
+			valueKey,
+			nativeHistogramStringExpr(s),
+		}}
+	}
 	return lowerCountValuesOverPlan(
 		a,
 		label,
 		input,
-		promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn}),
+		valueKey,
 		s,
 		ctx,
 	), nil
