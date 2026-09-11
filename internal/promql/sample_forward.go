@@ -51,6 +51,66 @@ type sampleRoleRewrite struct {
 	value      chplan.Expr
 }
 
+// resolveSampleTemporalLayout validates the physical roles that describe one
+// sample's identity and temporal envelope. It deliberately says nothing about
+// whether a caller preserves MetricName or rewrites Value: those are wrapper
+// policies, while this helper answers only which live columns carry the roles.
+func resolveSampleTemporalLayout(row chplan.Schema) (sampleRoleRefs, sampleProjectionLayout, error) {
+	if row.Open {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, fmt.Errorf("promql: temporal sample layout requires a closed schema")
+	}
+	if row.SampleKind() == chplan.SampleKindInvalid {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, fmt.Errorf("promql: temporal sample layout has an invalid sample schema")
+	}
+
+	attributes, _, err := resolveOptionalSampleRole(row, chplan.RoleAttributes)
+	if err != nil {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, err
+	}
+	if attributes == nil {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, fmt.Errorf("promql: temporal sample layout is missing the attributes role")
+	}
+	value, _, err := resolveOptionalSampleRole(row, chplan.RoleValue)
+	if err != nil {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, err
+	}
+	if value == nil {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, fmt.Errorf("promql: temporal sample layout is missing the value role")
+	}
+	metricName, hasMetricName, err := resolveOptionalSampleRole(row, chplan.RoleMetricName)
+	if err != nil {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, err
+	}
+	timestamp, hasTimestamp, err := resolveOptionalSampleRole(row, chplan.RoleTimestamp)
+	if err != nil {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, err
+	}
+	anchor, hasAnchor, err := resolveOptionalSampleRole(row, chplan.RoleAnchor)
+	if err != nil {
+		return sampleRoleRefs{}, sampleProjectionLayout{}, err
+	}
+
+	refs := sampleRoleRefs{
+		MetricName: metricName,
+		Attributes: attributes,
+		Timestamp:  timestamp,
+		Anchor:     anchor,
+		Value:      value,
+	}
+	switch {
+	case hasAnchor && hasTimestamp:
+		return refs, sampleProjectionLayout{anchored: true}, nil
+	case hasAnchor:
+		return sampleRoleRefs{}, sampleProjectionLayout{}, fmt.Errorf("promql: temporal sample layout anchor role requires a timestamp role")
+	case hasTimestamp:
+		return refs, sampleProjectionLayout{canonical: true}, nil
+	case hasMetricName:
+		return sampleRoleRefs{}, sampleProjectionLayout{}, fmt.Errorf("promql: temporal sample layout metric-name role requires a timestamp role")
+	default:
+		return refs, sampleProjectionLayout{}, nil
+	}
+}
+
 // sourceMetrics adapts existing expression builders that take configured names.
 // The copy is input-only: public output aliases still use the caller's schema.
 func (r sampleRoleRefs) sourceMetrics(s schema.Metrics) schema.Metrics {
@@ -204,7 +264,10 @@ func resolveSampleRoleRefs(row chplan.Schema, s schema.Metrics, policy samplePro
 }
 
 func requireSampleRole(row chplan.Schema, role chplan.ColumnRole) *chplan.ColumnRef {
-	ref, ok := optionalSampleRole(row, role)
+	ref, ok, err := resolveOptionalSampleRole(row, role)
+	if err != nil {
+		panic(err.Error())
+	}
 	if !ok {
 		panic(fmt.Sprintf("promql: sample forwarder is missing required role %d", role))
 	}
@@ -212,25 +275,33 @@ func requireSampleRole(row chplan.Schema, role chplan.ColumnRole) *chplan.Column
 }
 
 func optionalSampleRole(row chplan.Schema, role chplan.ColumnRole) (*chplan.ColumnRef, bool) {
+	ref, ok, err := resolveOptionalSampleRole(row, role)
+	if err != nil {
+		panic(err.Error())
+	}
+	return ref, ok
+}
+
+func resolveOptionalSampleRole(row chplan.Schema, role chplan.ColumnRole) (*chplan.ColumnRef, bool, error) {
 	var name string
 	for _, column := range row.Columns {
 		if column.Role != role {
 			continue
 		}
 		if name != "" || column.Name == "" {
-			panic(fmt.Sprintf("promql: sample forwarder requires one named column for role %d", role))
+			return nil, false, fmt.Errorf("promql: temporal sample layout requires one named column for role %d", role)
 		}
 		name = column.Name
 	}
 	if name == "" {
-		return nil, false
+		return nil, false, nil
 	}
 	for _, column := range row.Columns {
 		if column.Name == name && column.Role != role {
-			panic(fmt.Sprintf("promql: sample forwarder role %d has ambiguous output name %q", role, name))
+			return nil, false, fmt.Errorf("promql: temporal sample layout role %d has ambiguous output name %q", role, name)
 		}
 	}
-	return &chplan.ColumnRef{Name: name}, true
+	return &chplan.ColumnRef{Name: name}, true, nil
 }
 
 func requireUniqueNamedColumn(row chplan.Schema, want chplan.Column) {

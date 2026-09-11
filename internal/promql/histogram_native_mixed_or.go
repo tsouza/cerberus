@@ -234,17 +234,18 @@ func lowerMixedExpHistogramOperands(
 	if err != nil {
 		return nil, nil, false, err
 	}
-	switch shape := chplan.RowShapeOf(floatNode); shape {
-	case chplan.SampleRowShape, chplan.GridWindowRowShape, chplan.ReducedWindowRowShape:
-		return histNode, floatNode, histOnLeft, nil
-	default:
+	row := floatNode.RowType()
+	kind := row.SampleKind()
+	if kind != chplan.SampleKindFloat {
 		return nil, nil, false, fmt.Errorf(
-			"promql: 'or' between a float-valued and a histogram-valued operand does not "+
-				"support a %s-shaped float operand, which cerberus issue #2333 does not "+
-				"cover",
-			shape,
+			"promql: 'or' between a float-valued and a histogram-valued operand has a %s float schema",
+			kind,
 		)
 	}
+	if _, _, err := resolveSampleTemporalLayout(row); err != nil {
+		return nil, nil, false, fmt.Errorf("promql: mixed 'or' float operand: %w", err)
+	}
+	return histNode, floatNode, histOnLeft, nil
 }
 
 // mixedExpHistogramMatch translates b's `on`/`ignoring` vector-matching

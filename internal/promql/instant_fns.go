@@ -442,23 +442,9 @@ func projectValueOverInner(inner chplan.Node, s schema.Metrics, layout samplePro
 // physical roles. It must not choose a wrapper's name or payload policy, and it
 // never supplies input column names.
 func legacySampleProjectionLayout(inner chplan.Node) sampleProjectionLayout {
-	row := inner.RowType()
-	requireSampleRole(row, chplan.RoleAttributes)
-	requireSampleRole(row, chplan.RoleValue)
-	_, hasMetricName := optionalSampleRole(row, chplan.RoleMetricName)
-	_, hasTimestamp := optionalSampleRole(row, chplan.RoleTimestamp)
-	_, hasAnchor := optionalSampleRole(row, chplan.RoleAnchor)
-
-	switch {
-	case hasAnchor && hasTimestamp:
-		return sampleProjectionLayout{anchored: true}
-	case hasAnchor:
-		panic("promql: sample forwarder anchor role requires a timestamp role")
-	case hasTimestamp:
-		return sampleProjectionLayout{canonical: true}
-	case hasMetricName:
-		panic("promql: sample forwarder metric-name role requires a timestamp role")
-	default:
-		return sampleProjectionLayout{}
+	_, layout, err := resolveSampleTemporalLayout(inner.RowType())
+	if err != nil {
+		panic(err.Error())
 	}
+	return layout
 }

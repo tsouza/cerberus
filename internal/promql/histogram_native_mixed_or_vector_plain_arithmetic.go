@@ -70,19 +70,42 @@ import (
 // commutative, and for group_left()/group_right() cardinality (PromQL
 // defines "many" relative to the operator's own LHS/RHS, not to which side
 // happens to be mixed).
-func widenPlainVectorToMixedShape(node chplan.Node, s schema.Metrics) chplan.Node {
+func widenPlainVectorToMixedShape(node chplan.Node, s schema.Metrics) (chplan.Node, error) {
+	row := node.RowType()
+	kind := row.SampleKind()
+	if kind != chplan.SampleKindFloat {
+		return nil, fmt.Errorf("promql: mixed join plain operand has %s sample schema", kind)
+	}
+	refs, _, err := resolveSampleTemporalLayout(row)
+	if err != nil {
+		return nil, fmt.Errorf("promql: mixed join plain operand: %w", err)
+	}
+
 	zeroFloat := func() chplan.Expr { return &chplan.LitFloat{V: 0} }
 	zeroInt := func() chplan.Expr { return &chplan.LitInt{V: 0} }
 	emptyBuckets := func() chplan.Expr { return &chplan.FuncCall{Fn: chplan.FnEmptyArrayFloat64} }
+	metricName := chplan.Projection{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn}
+	if refs.MetricName != nil {
+		// The widening adapter preserves a physical name when one exists;
+		// the arithmetic/comparison result owns any later drop-name policy.
+		metricName = sampleForwardColumn(refs.MetricName, s.MetricNameColumn, true)
+	}
+	timestamp := chplan.Projection{Expr: chplan.NowNanoMinusStaleness(), Alias: s.TimestampColumn}
+	if refs.Timestamp != nil {
+		timestamp = sampleForwardColumn(refs.Timestamp, s.TimestampColumn, true)
+	}
+	roles := append([]chplan.Column(nil), metricRoles(s)...)
+	roles = append(roles, chplan.HistogramPayloadColumns()...)
+	roles = append(roles, chplan.Column{Name: mixedDiscriminatorColumn, Role: chplan.RoleDiscriminator})
 
 	return &chplan.Project{
-		Roles: metricRoles(s),
+		Roles: roles,
 		Input: node,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+			metricName,
+			sampleForwardColumn(refs.Attributes, s.AttributesColumn, true),
+			timestamp,
+			sampleForwardColumn(refs.Value, s.ValueColumn, true),
 			{Expr: zeroFloat(), Alias: chplan.HistogramCountColumn},
 			{Expr: zeroFloat(), Alias: chplan.HistogramSumColumn},
 			{Expr: zeroInt(), Alias: chplan.HistogramScaleColumn},
@@ -94,7 +117,7 @@ func widenPlainVectorToMixedShape(node chplan.Node, s schema.Metrics) chplan.Nod
 			{Expr: emptyBuckets(), Alias: chplan.HistogramNegativeBucketCountsColumn},
 			{Expr: &chplan.LitInt{V: mixedDiscriminatorFloat}, Alias: mixedDiscriminatorColumn},
 		},
-	}
+	}, nil
 }
 
 // lowerPlainOperandForMixedJoin lowers plainExpr through the ordinary
@@ -118,15 +141,11 @@ func lowerPlainOperandForMixedJoin(plainExpr parser.Expr, s schema.Metrics, ctx 
 	if err != nil {
 		return nil, err
 	}
-	switch shape := chplan.RowShapeOf(plainNode); shape {
-	case chplan.SampleRowShape, chplan.GridWindowRowShape, chplan.ReducedWindowRowShape:
-		return widenPlainVectorToMixedShape(plainNode, s), nil
-	default:
-		return nil, fmt.Errorf(
-			"promql: a mixed float/histogram 'or' operand paired with a %s-shaped operand "+
-				"is not supported", shape,
-		)
+	widened, err := widenPlainVectorToMixedShape(plainNode, s)
+	if err != nil {
+		return nil, err
 	}
+	return widened, nil
 }
 
 // vectorPlainArithmeticOverMixedExpHistogramSetOp recognises `<mixed or>
