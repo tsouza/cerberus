@@ -1048,7 +1048,7 @@ func lowerOuterRangeFnOverSubquery(
 	// still, by [rangeFnOverExpHistogramSubquery] /
 	// [lowerExpHistogramRangeFnOverSubquery] (histogram_native_range_fn.go).
 	if rowsMayContainHistograms(inner) {
-		shape := chplan.RowShapeFromSchema(inner.RowType())
+		kind := liveSampleKind(inner)
 		// Cerberus issue #2724: inner may have reached this Histogram/Mixed
 		// shape via a further and/unless/or wrapping a mixed `or`, a bare
 		// and/unless-forwarded histogram selector, or (since cerberus issue
@@ -1063,7 +1063,7 @@ func lowerOuterRangeFnOverSubquery(
 		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
 			return nil, err
 		}
-		if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, shape, outer.Func.Name, sub, s, ctx); matched {
+		if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, kind, outer.Func.Name, sub, s, ctx); matched {
 			return node, err
 		}
 		if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name) {
@@ -3093,7 +3093,7 @@ func lowerSubqueryOverCallSubquery(
 	// this mirrors) already gets for
 	// `<outer-fn>(<bare-histogram-selector>[range:step])`.
 	if rowsMayContainHistograms(wideInner) {
-		shape := chplan.RowShapeFromSchema(wideInner.RowType())
+		kind := liveSampleKind(wideInner)
 		// Cerberus issue #2726: wideInner may be histogram/mixed-shaped
 		// because innerSub's OWN inner expression resolved histogram-native
 		// (or a further and/unless/or wrapping one, cerberus issue #2724).
@@ -3105,7 +3105,7 @@ func lowerSubqueryOverCallSubquery(
 		if err := requireMixedPlanPolicy(wideInner, mixedSubqueryFamily); err != nil {
 			return nil, err
 		}
-		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, shape, call.Func.Name, sub, innerSub, step, s, ctx); matched {
+		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, kind, call.Func.Name, sub, innerSub, step, s, ctx); matched {
 			return node, err
 		}
 		if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name) {

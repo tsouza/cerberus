@@ -77,12 +77,12 @@ func lowerLabelCallOverExpHistogram(call *parser.Call, s schema.Metrics, ctx low
 	// `and`/`or`/`unless` (cerberus issue #2324), and [isExpHistogramValuedShape]
 	// recognises it too, so [labelCallOverExpHistogram] matches an outer
 	// label_replace/label_join around one. Both shapes publish the exact same
-	// thirteen-column contract under the fixed Histogram*Column aliases (see
-	// [chplan.RowShapeOf]), so any node answering [chplan.HistogramRowShape]
+	// thirteen-column contract under the fixed Histogram*Column aliases, so any
+	// node whose schema classifies [chplan.SampleKindHistogram]
 	// here is a valid input to [rewriteHistogramProjectionAttributes] — a
 	// stricter Go-type assertion is what issue #2468 reports as the bug.
-	if shape := chplan.RowShapeOf(inner); shape != chplan.HistogramRowShape {
-		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram label_replace input publishes %s row shape (%T), want %s", shape, inner, chplan.HistogramRowShape)
+	if kind := inner.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
+		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram label_replace input publishes %s sample kind (%T), want histogram", kind, inner)
 	}
 	return rewriteHistogramProjectionAttributes(inner, attrs, s), nil
 }

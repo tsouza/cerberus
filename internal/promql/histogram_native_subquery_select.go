@@ -179,8 +179,11 @@ func lowerSelectFnOverExpHistogramSubquery(shape histogramSubquerySelectShape, s
 	if err != nil {
 		return nil, err
 	}
-	if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape {
-		return nil, fmt.Errorf("promql: internal invariant violated: histogram subquery input is %T with %s row shape", input, chplan.RowShapeOf(input))
+	if !matched {
+		return nil, fmt.Errorf("promql: internal invariant violated: histogram subquery input matched no histogram-valued shape for %v", sub.Expr)
+	}
+	if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram {
+		return nil, fmt.Errorf("promql: internal invariant violated: histogram subquery input is %T with %s sample kind", input, kind)
 	}
 	node, err := lowerSelectFnOverExpHistogramSubqueryInput(input, sub, shape.windowFn, s, ctx)
 	if err != nil {
