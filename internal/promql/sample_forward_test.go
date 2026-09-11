@@ -117,6 +117,104 @@ func TestLegacySampleProjectionLayoutUsesTemporalRoles(t *testing.T) {
 	}
 }
 
+func TestLegacySampleProjectionLayoutDistinguishesCanonicalAndDerivedProjects(t *testing.T) {
+	t.Parallel()
+
+	for _, custom := range []bool{false, true} {
+		s := schema.DefaultOTelMetrics()
+		name := "default"
+		if custom {
+			name = "custom"
+			s.MetricNameColumn = "physical_name"
+			s.AttributesColumn = "physical_labels"
+			s.TimestampColumn = "physical_time"
+			s.ValueColumn = "physical_value"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			grid := &chplan.RangeWindow{
+				Input:           sampleForwardTestInput(metricRoles(s)...),
+				OuterRange:      1,
+				TimestampColumn: s.TimestampColumn,
+				ValueColumn:     s.ValueColumn,
+				GroupBy: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.MetricNameColumn},
+					&chplan.ColumnRef{Name: s.AttributesColumn},
+				},
+			}
+			canonicalRoles := append(metricRoles(s), chplan.Column{Name: chplan.RangeWindowAnchorColumn, Role: chplan.RoleAnchor})
+			canonical := &chplan.Project{
+				Input: grid,
+				Projections: []chplan.Projection{
+					{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
+					{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
+					{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+					{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
+					{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}},
+				},
+				Roles: canonicalRoles,
+			}
+			if got := legacySampleProjectionLayout(canonical); got != (sampleProjectionLayout{canonical: true, anchored: true}) {
+				t.Fatalf("canonical project layout = %#v, want canonical plus anchor", got)
+			}
+
+			derivedRoles := []chplan.Column{
+				{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+				{Name: chplan.RangeWindowAnchorColumn, Role: chplan.RoleAnchor},
+				{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+				{Name: s.ValueColumn, Role: chplan.RoleValue},
+			}
+			projectGrid := func(input chplan.Node) *chplan.Project {
+				return &chplan.Project{
+					Input: input,
+					Projections: []chplan.Projection{
+						{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
+						{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}},
+						{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+						{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
+					},
+					Roles: derivedRoles,
+				}
+			}
+			transparent := projectGrid(grid)
+			nested := projectGrid(transparent)
+			for label, project := range map[string]*chplan.Project{"transparent": transparent, "nested": nested} {
+				t.Run(label, func(t *testing.T) {
+					if got := legacySampleProjectionLayout(project); got != (sampleProjectionLayout{anchored: true}) {
+						t.Fatalf("derived project layout = %#v, want anchored", got)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestLegacySampleProjectionLayoutAcceptsReducedWindowSpine(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	window := &chplan.RangeWindow{
+		Input:           sampleForwardTestInput(metricRoles(s)...),
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+	project := &chplan.Project{
+		Input: window,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
+		},
+		Roles: []chplan.Column{
+			{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+			{Name: s.ValueColumn, Role: chplan.RoleValue},
+		},
+	}
+	if got := legacySampleProjectionLayout(project); got != (sampleProjectionLayout{}) {
+		t.Fatalf("reduced window projection layout = %#v, want reduced", got)
+	}
+}
+
 func TestLegacySampleProjectionLayoutRejectsInvalidRoles(t *testing.T) {
 	t.Parallel()
 
@@ -133,7 +231,6 @@ func TestLegacySampleProjectionLayoutRejectsInvalidRoles(t *testing.T) {
 		{name: "missing value", columns: base[:2]},
 		{name: "duplicate timestamp role", columns: append(append([]chplan.Column(nil), base...), chplan.Column{Name: "other_time", Role: chplan.RoleTimestamp})},
 		{name: "ambiguous timestamp name", columns: append(append([]chplan.Column(nil), base...), chplan.Column{Name: "source_time", Role: chplan.RoleOpaque})},
-		{name: "unnamed timestamp", columns: []chplan.Column{base[0], {Role: chplan.RoleTimestamp}, base[2]}},
 		{name: "anchor without timestamp", columns: []chplan.Column{base[0], {Name: "source_anchor", Role: chplan.RoleAnchor}, base[2]}},
 		{name: "metric name without timestamp", columns: []chplan.Column{{Name: "source_name", Role: chplan.RoleMetricName}, base[0], base[2]}},
 	} {
@@ -144,6 +241,12 @@ func TestLegacySampleProjectionLayoutRejectsInvalidRoles(t *testing.T) {
 			})
 		})
 	}
+	t.Run("unnamed timestamp", func(t *testing.T) {
+		t.Parallel()
+		if _, _, err := resolveSampleTemporalLayout(chplan.Schema{Columns: []chplan.Column{base[0], {Role: chplan.RoleTimestamp}, base[2]}}); err == nil {
+			t.Fatal("temporal resolver accepted an unnamed role")
+		}
+	})
 }
 
 func TestSampleForwardPreservesMixedPayload(t *testing.T) {
@@ -370,7 +473,7 @@ func TestSampleForwardPayloadAdmission(t *testing.T) {
 		extra []chplan.Column
 		okay  bool
 	}{
-		{name: "partial_float_helper", extra: []chplan.Column{{Name: "histogram_working_sum", Role: chplan.RoleHistogramField}}, okay: true},
+		{name: "private_float_helper", extra: []chplan.Column{{Name: "histogram_working_sum", Role: chplan.RoleOpaque}}, okay: true},
 		{name: "pure_histogram", extra: chplan.HistogramPayloadColumns()},
 		{name: "incomplete_mixed", extra: []chplan.Column{{Name: mixedDiscriminatorColumn, Role: chplan.RoleDiscriminator}}},
 	} {

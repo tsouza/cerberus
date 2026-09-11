@@ -475,8 +475,7 @@ func pinnedMetricName(e parser.Expr) string {
 // one input row. The shared forwarder restores the same canonical order and
 // aliases after that Aggregate rather than dropping the histogram payload.
 func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chplan.Node {
-	cols := canonicalSampleColumns(s)
-	canonical := chplan.ProjectExposesCanonical(rewritten, cols)
+	layout := legacySampleProjectionLayout(rewritten)
 	keyOnStep := guardKeysOnTimestamp(rewritten, s)
 	output := rewritten.RowType()
 	mixed := output.HasHistogramPayload() && output.Has(chplan.RoleDiscriminator)
@@ -547,7 +546,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 		AggFuncs:       aggs,
 		Having:         duplicateLabelsetRowCountGuardExpr(),
 	})
-	if !canonical {
+	if !layout.canonical {
 		// A derived-shape rewrite exposes no MetricName; the Aggregate
 		// exposes the same columns it was given, and an Aggregate is
 		// already classified derived, so the shape a consumer sees is
@@ -559,7 +558,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 	// plain sample rewrites leave it bare. Both retain identical output order.
 	return projectSampleRoles(guarded, s,
 		sampleProjectionPolicy{name: preserveSampleName, payload: preserveMixedSamplePayload},
-		sampleProjectionLayout{canonical: true},
+		layout,
 		func(refs sampleRoleRefs) sampleRoleRewrite {
 			if mixed {
 				return sampleRoleRewrite{attributes: refs.Attributes}

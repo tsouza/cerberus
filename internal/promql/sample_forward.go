@@ -124,7 +124,7 @@ func resolveSampleTemporalLayout(row chplan.Schema) (sampleTemporalRoles, sample
 	}
 	switch {
 	case hasAnchor && hasTimestamp:
-		return roles, sampleProjectionLayout{anchored: true}, nil
+		return roles, sampleProjectionLayout{canonical: hasMetricName, anchored: true}, nil
 	case hasAnchor:
 		return sampleTemporalRoles{}, sampleProjectionLayout{}, fmt.Errorf("promql: temporal sample layout anchor role requires a timestamp role")
 	case hasTimestamp:
@@ -170,9 +170,6 @@ func projectSampleRoles(
 	if policy.payload != floatSamplePayload && policy.payload != preserveMixedSamplePayload {
 		panic("promql: sample forwarder requires an explicit payload policy")
 	}
-	if layout.canonical && layout.anchored {
-		panic("promql: sample forwarder cannot combine canonical and direct-grid envelopes")
-	}
 	row := inner.RowType()
 	completeHistogram, discriminated := validateSamplePayload(row)
 	floatOnly := !completeHistogram && !discriminated || mixedFloatRowsProven(inner)
@@ -198,7 +195,7 @@ func projectSampleRoles(
 		panic("promql: mixed payload preservation cannot rewrite the float placeholder; use an explicit payload-transform lowering")
 	}
 	var projections []chplan.Projection
-	if layout.canonical {
+	if layout.canonical || refs.MetricName != nil {
 		if policy.name == dropSampleName || refs.MetricName == nil {
 			projections = append(projections, chplan.Projection{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn})
 		} else {
@@ -232,6 +229,9 @@ func projectSampleRoles(
 // discard its columns. Private histogram working columns may accompany a real
 // float Value; public histogram-role fields or a discriminator claim the payload.
 func validateSamplePayload(row chplan.Schema) (bool, bool) {
+	if row.SampleKind() == chplan.SampleKindInvalid {
+		panic("promql: sample forwarder received an invalid public sample schema")
+	}
 	completeHistogram := row.HasHistogramPayload()
 	discriminated := row.Has(chplan.RoleDiscriminator)
 	publicHistogram := false
@@ -261,13 +261,19 @@ func resolveSampleRoleRefs(row chplan.Schema, s schema.Metrics, policy samplePro
 		Attributes: requireSampleRole(row, chplan.RoleAttributes),
 		Value:      requireSampleRole(row, chplan.RoleValue),
 	}
+	validateConfiguredSampleRole(row, s.AttributesColumn, chplan.RoleAttributes, false)
+	validateConfiguredSampleRole(row, s.TimestampColumn, chplan.RoleTimestamp, false)
+	validateConfiguredSampleRole(row, s.ValueColumn, chplan.RoleValue, false)
+	if policy.name == preserveSampleName {
+		validateConfiguredSampleRole(row, s.MetricNameColumn, chplan.RoleMetricName, true)
+	}
 	if layout.canonical || layout.anchored {
 		refs.Timestamp = requireSampleRole(row, chplan.RoleTimestamp)
 	}
 	if layout.anchored {
 		refs.Anchor = requireSampleRole(row, chplan.RoleAnchor)
 	}
-	if layout.canonical && policy.name == preserveSampleName {
+	if policy.name == preserveSampleName {
 		if row.Has(chplan.RoleMetricName) {
 			refs.MetricName = requireSampleRole(row, chplan.RoleMetricName)
 		} else if column, exists := row.ByName(s.MetricNameColumn); exists {
@@ -279,13 +285,25 @@ func resolveSampleRoleRefs(row chplan.Schema, s schema.Metrics, policy samplePro
 			// producer has not attached a role. Never synthesize over it.
 			requireUniqueNamedColumn(row, column)
 			refs.MetricName = &chplan.ColumnRef{Name: column.Name}
-		} else if row.Open || row.Has(chplan.RoleHistogramField) || row.Has(chplan.RoleDiscriminator) {
+		} else if layout.canonical && (row.Open || row.Has(chplan.RoleHistogramField) || row.Has(chplan.RoleDiscriminator)) {
 			// The missing-name float repair permits canonical synthesis only
 			// for a closed float output, never an unknown or payload envelope.
 			panic("promql: sample forwarder cannot synthesize a missing metric name for an unknown or histogram output")
 		}
 	}
 	return refs
+}
+
+func validateConfiguredSampleRole(row chplan.Schema, name string, role chplan.ColumnRole, allowOpaqueFallback bool) {
+	column, exists := row.ByName(name)
+	if !exists {
+		return
+	}
+	requireUniqueNamedColumn(row, column)
+	if column.Role == role || allowOpaqueFallback && column.Role == chplan.RoleOpaque {
+		return
+	}
+	panic(fmt.Sprintf("promql: configured sample column %q carries role %d, want role %d", name, column.Role, role))
 }
 
 func requireSampleRole(row chplan.Schema, role chplan.ColumnRole) *chplan.ColumnRef {
