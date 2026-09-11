@@ -158,7 +158,13 @@ type mixedPlanTransform func(chplan.Node) chplan.Node
 func lowerWithMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, expected mixedOperandPolicy) (mixedPlanTransform, error) {
 	key := mixedWrapperKey{family: family, site: site}
 	policy, ok := mixedOperandPolicies[key]
-	if expected == mixedPolicyClosed || !ok || policy != expected {
+	if !ok {
+		return nil, requireMixedBespokePolicy(key, mixedReject)
+	}
+	if expected == mixedPolicyClosed {
+		return nil, requireMixedBespokePolicy(key, mixedReject)
+	}
+	if policy != expected {
 		return nil, requireMixedBespokePolicy(key, mixedReject)
 	}
 	if expected == mixedBespoke {
@@ -230,7 +236,13 @@ func requireMixedPlanPolicy(inner chplan.Node, family mixedWrapperFamily, expect
 	}
 	key := mixedWrapperKey{family: family, site: mixedPlanAdmission}
 	policy, ok := mixedOperandPolicies[key]
-	if expected == mixedPolicyClosed || !ok || policy != expected {
+	if !ok {
+		return requireMixedBespokePolicy(key, mixedReject)
+	}
+	if expected == mixedPolicyClosed {
+		return requireMixedBespokePolicy(key, mixedReject)
+	}
+	if policy != expected {
 		return requireMixedBespokePolicy(key, mixedReject)
 	}
 	if expected == mixedBespoke {

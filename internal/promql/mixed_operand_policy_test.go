@@ -236,6 +236,34 @@ func TestMixedOperandPolicyRejectsUnknownBeforeLowering(t *testing.T) {
 	}
 }
 
+// Deliberately non-parallel: each case installs the closed sentinel into the
+// package policy table. A successful lookup must not turn that fail-closed
+// value into an authorization merely because it equals the requested policy.
+func TestMixedOperandPolicyClosedSentinelCannotBeAuthorizedByTable(t *testing.T) {
+	t.Run("operand admission", func(t *testing.T) {
+		key := mixedWrapperKey{family: mixedMathFamily, site: mixedRootAdmission}
+		original := mixedOperandPolicies[key]
+		mixedOperandPolicies[key] = mixedPolicyClosed
+		t.Cleanup(func() { mixedOperandPolicies[key] = original })
+
+		transform, err := lowerWithMixedOperandPolicy(key.family, key.site, mixedPolicyClosed)
+		if transform != nil || err == nil {
+			t.Fatalf("closed policy admitted: transform=%v err=%v", transform != nil, err)
+		}
+	})
+
+	t.Run("plan admission", func(t *testing.T) {
+		key := mixedWrapperKey{family: mixedMathFamily, site: mixedPlanAdmission}
+		original := mixedOperandPolicies[key]
+		mixedOperandPolicies[key] = mixedPolicyClosed
+		t.Cleanup(func() { mixedOperandPolicies[key] = original })
+
+		if err := requireMixedPlanPolicy(nil, key.family, mixedPolicyClosed); err == nil {
+			t.Fatal("closed policy admitted")
+		}
+	})
+}
+
 func TestMixedOperandPolicyPreservesBespokeResultAndError(t *testing.T) {
 	for key, policy := range mixedOperandPolicies {
 		t.Run(string(key.family)+"/"+string(key.site), func(t *testing.T) {
