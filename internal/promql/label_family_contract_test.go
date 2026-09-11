@@ -167,7 +167,14 @@ func TestLabelFamilyPolicyDrivesPayload(t *testing.T) {
 				}
 				if site == mixedPlanAdmission {
 					called := false
-					plan, err := projectAttributesOverInner(&chplan.VectorSetOp{Mixed: true}, s, mixedLabelFamily, func(refs sampleRoleRefs) chplan.Expr { called = true; return refs.Attributes })
+					mixed := &chplan.VectorSetOp{
+						Mixed:            true,
+						MetricNameColumn: s.MetricNameColumn,
+						AttributesColumn: s.AttributesColumn,
+						TimestampColumn:  s.TimestampColumn,
+						ValueColumn:      s.ValueColumn,
+					}
+					plan, err := projectAttributesOverInner(mixed, s, mixedLabelFamily, func(refs sampleRoleRefs) chplan.Expr { called = true; return refs.Attributes })
 					if plan != nil || err == nil || called {
 						t.Fatalf("policy reached payload callback: plan=%v err=%v called=%v", plan, err, called)
 					}
