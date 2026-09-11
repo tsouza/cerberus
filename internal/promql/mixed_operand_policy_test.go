@@ -198,7 +198,7 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			key := mixedWrapperKey{family: family, site: site}
 			wantPolicy := mixedBespoke
 			switch family {
-			case mixedMathFamily, mixedArithmeticFamily, mixedScalarFamily, mixedSortFamily:
+			case mixedMathFamily, mixedArithmeticFamily, mixedComparisonFamily, mixedScalarFamily, mixedSortFamily:
 				wantPolicy = mixedFloatOnly
 			case mixedLabelFamily:
 				wantPolicy = mixedPreserve

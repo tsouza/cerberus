@@ -222,7 +222,7 @@ func TestScalarArithmeticLiteralBitsAndPolarity(t *testing.T) {
 	value := &chplan.ColumnRef{Name: "opaque_value"}
 	for _, scalar := range []float64{0, math.Copysign(0, -1), math.NaN(), math.Inf(1), math.Inf(-1)} {
 		for _, left := range []bool{false, true} {
-			got := scalarArithmeticValue(value, chplan.OpSub, scalar, left).(*chplan.Binary)
+			got := scalarBinaryValue(value, chplan.OpSub, scalar, left).(*chplan.Binary)
 			vector, literal := got.Left, got.Right
 			if left {
 				vector, literal = got.Right, got.Left

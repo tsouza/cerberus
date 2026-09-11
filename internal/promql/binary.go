@@ -854,52 +854,18 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	if mixedScalarBinaryFamily(op, scalarOnLeft) == mixedArithmeticFamily {
 		return finishScalarArithmetic(inner, vec, s, ctx, op, scalar, scalarOnLeft, scalarArithmeticGuarded)
 	}
+	if isComparison(op) {
+		return finishScalarComparison(inner, vec, s, ctx, op, scalar, scalarOnLeft, returnBool, scalarComparisonGuarded)
+	}
 	if err := requireMixedPlanPolicy(inner, mixedScalarBinaryFamily(op, scalarOnLeft)); err != nil {
 		return nil, err
 	}
-	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
-	scalarLit := &chplan.LitFloat{V: scalar}
-	var opExpr chplan.Expr
-	if scalarOnLeft {
-		opExpr = &chplan.Binary{Op: op, Left: scalarLit, Right: valueRef}
-	} else {
-		opExpr = &chplan.Binary{Op: op, Left: valueRef, Right: scalarLit}
-	}
-
-	if isComparison(op) && !returnBool {
-		// `up > 0.5` — keep all columns, filter on the comparison.
-		inner = mixedRowsFloatOnly(inner)
-		return &chplan.Filter{Input: inner, Predicate: opExpr}, nil
-	}
-
-	// Either arithmetic or `bool`-modified comparison — map Value
-	// through and drop `__name__` per PromQL's derived-sample rule. The
-	// bare-comparison path above (`Filter`) preserves all columns and
-	// is correct: PromQL keeps LHS labels (including `__name__`) when
-	// the comparison filters rather than transforms. See Pool-AU's
-	// audit (#355) — this projection site accounts for ~36 of the 107
-	// `__name__`-retention diffs (scalar-on-{left,right} arithmetic +
-	// scalar `bool` compare + folded-scalar-in-bool cases).
-	// projectValueOverInner is RangeWindow-aware: for a selector input it
-	// emits the canonical (MetricName="", Attributes, TimeUnix, Value)
-	// shape (byte-identical to the hand-rolled Project this replaced); for
-	// an INSTANT RangeWindow input it omits the TimeUnix passthrough — the
-	// instant range emit exposes only (Attributes, Value), so referencing
-	// s.TimestampColumn there raised CH `UNKNOWN_IDENTIFIER` and silently
-	// emptied `sum_over_time(m[5m]) / 300`-class queries (the HTTP-layer
-	// wrapWithSampleProjection synthesises the eval-anchor timestamp). The
-	// matrix shape keeps its per-anchor `anchor_ts`. Mirrors the
-	// instant-fn / unary-minus path which already routes through this
-	// helper.
+	// Histogram-scaling operators retain their separate family authority.
 	return guardedValueProjection(inner, vec, s, ctx, mixedScalarBinaryFamily(op, scalarOnLeft), func(refs sampleRoleRefs) chplan.Expr {
-		var left, right chplan.Expr = refs.Value, scalarLit
+		var left, right chplan.Expr = refs.Value, &chplan.LitFloat{V: scalar}
 		if scalarOnLeft {
-			left, right = scalarLit, refs.Value
+			left, right = right, left
 		}
-		value := &chplan.Binary{Op: op, Left: left, Right: right}
-		if isComparison(op) && returnBool {
-			return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{value}}
-		}
-		return value
+		return &chplan.Binary{Op: op, Left: left, Right: right}
 	})
 }

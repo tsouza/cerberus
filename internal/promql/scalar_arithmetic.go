@@ -38,7 +38,7 @@ func lowerArithmeticRoot(build func() (chplan.Node, error)) (chplan.Node, error)
 	return build()
 }
 
-func scalarArithmeticValue(value chplan.Expr, op chplan.BinaryOp, scalar float64, scalarOnLeft bool) chplan.Expr {
+func scalarBinaryValue(value chplan.Expr, op chplan.BinaryOp, scalar float64, scalarOnLeft bool) chplan.Expr {
 	var left, right chplan.Expr = value, &chplan.LitFloat{V: scalar}
 	if scalarOnLeft {
 		left, right = right, left
@@ -69,6 +69,6 @@ func finishScalarArithmetic(inner chplan.Node, arg parser.Expr, s schema.Metrics
 		layout = legacySampleProjectionLayout(inner)
 	}
 	return projectValueOverInner(inner, s, layout, func(refs sampleRoleRefs) chplan.Expr {
-		return scalarArithmeticValue(refs.Value, op, scalar, scalarOnLeft)
+		return scalarBinaryValue(refs.Value, op, scalar, scalarOnLeft)
 	}), nil
 }
