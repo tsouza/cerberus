@@ -200,7 +200,7 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			switch family {
 			case mixedMathFamily, mixedArithmeticFamily, mixedScalarFamily, mixedSortFamily:
 				wantPolicy = mixedFloatOnly
-			case mixedLabelFamily:
+			case mixedLabelFamily, mixedSortByLabelFamily:
 				wantPolicy = mixedPreserve
 			}
 			if got := mixedOperandPolicies[key]; got != wantPolicy {

@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/mixed_operand_policy.go:lowerWithMixedPreservePolicy#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "internal",
+      "rationale": "The only production paths are lowerSortByLabelArg and preserveMixedPlan. lowerSortByLabelArg supplies the fixed unexported mixedSortByLabelFamily with mixedOperandAdmission before loading a recognized mixed-or argument. Its already-lowered path passes that same family to preserveMixedPlan, which supplies the fixed mixedPlanAdmission site only after RowShapeOf reports MixedRowShape. Both corresponding mixedOperandPolicies entries are registered as mixedPreserve. Query syntax and configuration can choose the operand but cannot supply a family, site, or policy value; unsupported modes arise only from internal misuse or deliberate policy-map mutation in tests.",
+      "evidence": {
+        "guard": [
+          "if mixedOperandPolicies[key] != mixedPreserve"
+        ],
+        "callers": [
+          "lowerSortByLabelArg",
+          "preserveMixedPlan"
+        ],
+        "cited": [
+          "lowerSortByLabelArg",
+          "preserveMixedPlan"
+        ]
+      }
+    }
+  ]
+}
