@@ -853,6 +853,25 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 	if err != nil {
 		return err
 	}
+	kSchema := t.KExpr.RowType()
+	var kValueColumn string
+	for _, column := range kSchema.Columns {
+		if column.Role != chplan.RoleValue {
+			continue
+		}
+		if column.Name == "" || kValueColumn != "" {
+			return fmt.Errorf("chsql: computed topk requires one named scalar value column")
+		}
+		kValueColumn = column.Name
+	}
+	if kValueColumn == "" {
+		return fmt.Errorf("chsql: computed topk scalar value role is missing")
+	}
+	for _, column := range kSchema.Columns {
+		if column.Name == kValueColumn && column.Role != chplan.RoleValue {
+			return fmt.Errorf("chsql: computed topk scalar value column is ambiguous")
+		}
+	}
 
 	partitionBy := make([]Frag, 0, len(t.By))
 	for _, by := range t.By {
@@ -883,7 +902,7 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 		As(rankFrag, "_rn"),
 	)
 
-	// K subquery: `(SELECT toFloat64(Value) FROM (<k_subtree>) LIMIT 1)`.
+	// K's value name belongs to its own scalar schema, not the ranked input.
 	// The comparison stays in Float64 rather than casting K to an integer:
 	// a UInt64 cast wraps a negative K around to ~1.8e19 and lets EVERY
 	// row through, where PromQL's rule is that any K below 1 selects
@@ -893,7 +912,7 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 	// empty threshold by the lowering) keeps no row. LIMIT 1 enforces
 	// single-row scalar-subquery semantics.
 	kSelect := NewQuery().
-		Select(Call("toFloat64", Col("Value"))).
+		Select(Call("toFloat64", Col(kValueColumn))).
 		From(kSub).
 		Limit(1)
 	kSubquery := Subquery(kSelect)
@@ -905,6 +924,8 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 			cols = append(cols, Col(c))
 		}
 		outer.Select(cols...)
+	} else {
+		outer.Select(StarExcept(Star(), "_rn"))
 	}
 	return e.emitSelect(outer)
 }

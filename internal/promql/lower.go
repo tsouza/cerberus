@@ -5814,7 +5814,7 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err := requireMixedPlanPolicy(input, mixedLimitFamily); err != nil {
 		return nil, false, false, err
 	}
-	return input, false, false, nil
+	return input, false, chplan.RowShapeOf(input) == chplan.MixedRowShape, nil
 }
 
 // limitKOrRatioOverExpHistogram recognises `limitk(K, <exp-hist shape>)` /
@@ -6220,6 +6220,7 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err := requireMixedPlanPolicy(input, mixedTopKFamily); err != nil {
 		return nil, err
 	}
+	input = mixedRowsFloatOnly(input)
 	return buildTopKLiteral(a, s, ctx, input, k, empty), nil
 }
 
@@ -6470,6 +6471,9 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	}
 	if err := requireMixedPlanPolicy(input, mixedAggregateFamily(a.Op)); err != nil {
 		return nil, err
+	}
+	if a.Op != parser.LIMITK {
+		input = mixedRowsFloatOnly(input)
 	}
 	return buildTopKComputed(a, s, ctx, input, histogram, mixed)
 }
