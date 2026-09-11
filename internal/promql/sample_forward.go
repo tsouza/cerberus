@@ -89,8 +89,7 @@ func projectSampleRoles(
 		panic("promql: sample forwarder cannot combine canonical and direct-grid envelopes")
 	}
 	row := inner.RowType()
-	completeHistogram := row.HasHistogramPayload()
-	discriminated := row.Has(chplan.RoleDiscriminator)
+	completeHistogram, discriminated := validateSamplePayload(row)
 	floatOnly := !completeHistogram && !discriminated || mixedFloatRowsProven(inner)
 	liveMixed := completeHistogram && discriminated && !floatOnly
 	if !floatOnly && (policy.payload != preserveMixedSamplePayload || !liveMixed) {
@@ -142,6 +141,34 @@ func projectSampleRoles(
 		projections = append(projections, sampleForwardColumn(discriminator, mixedDiscriminatorColumn, false))
 	}
 	return &chplan.Project{Input: inner, Roles: metricRoles(s), Projections: projections}
+}
+
+// validateSamplePayload checks the wire contract before a float-row proof may
+// discard its columns. Private histogram working columns may accompany a real
+// float Value; public histogram-role fields or a discriminator claim the payload.
+func validateSamplePayload(row chplan.Schema) (bool, bool) {
+	completeHistogram := row.HasHistogramPayload()
+	discriminated := row.Has(chplan.RoleDiscriminator)
+	publicHistogram := false
+	for _, field := range chplan.HistogramPayloadColumns() {
+		for _, column := range row.Columns {
+			if column.Name == field.Name && column.Role == chplan.RoleHistogramField {
+				publicHistogram = true
+			}
+		}
+	}
+	if publicHistogram || discriminated {
+		if !completeHistogram {
+			panic("promql: sample forwarder received incomplete public histogram payload")
+		}
+		for _, field := range chplan.HistogramPayloadColumns() {
+			requireUniqueNamedColumn(row, field)
+		}
+		if discriminated {
+			requireSampleRole(row, chplan.RoleDiscriminator)
+		}
+	}
+	return completeHistogram, discriminated
 }
 
 func resolveSampleRoleRefs(row chplan.Schema, s schema.Metrics, policy sampleProjectionPolicy, layout sampleProjectionLayout) sampleRoleRefs {
