@@ -92,6 +92,7 @@ services:
     # data-side instead — the tier-1 contract test waits for the exporter's
     # tables to appear in ClickHouse.
     image: otel/opentelemetry-collector-contrib:0.152.1
+    restart: "on-failure:5"
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
