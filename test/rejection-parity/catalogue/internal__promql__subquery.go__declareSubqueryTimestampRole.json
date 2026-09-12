@@ -1,0 +1,57 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:declareSubqueryTimestampRole#4630f83e",
+      "message": "promql: subquery identity input has an unnamed column",
+      "class": "internal",
+      "rationale": "both callers pass a lowering-owned sample relation into the subquery RangeWindow boundary. Such relations either already declare the requested timestamp role (the early return) or expose a closed, fully named projection that this helper re-roles. An unnamed output is malformed internal plan IR, not a PromQL input rejection.",
+      "evidence": {
+        "guard": [
+          "past returning if column, ok := row.Find(chplan.RoleTimestamp); ok \u0026\u0026 column.Name == timestamp",
+          "past returning if row.Open",
+          "if column.Name == \"\""
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery",
+          "wrapSubqueryIdentity"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:declareSubqueryTimestampRole#5876fd2e",
+      "message": "promql: subquery identity input requires a closed schema",
+      "class": "internal",
+      "rationale": "both callers pass a lowering-owned sample relation into the subquery RangeWindow boundary. Selector, call, arithmetic, and aggregate lowerers close that public sample shape before this helper runs; an open schema here is malformed internal plan IR rather than a query-dependent PromQL rejection.",
+      "evidence": {
+        "guard": [
+          "past returning if column, ok := row.Find(chplan.RoleTimestamp); ok \u0026\u0026 column.Name == timestamp",
+          "if row.Open"
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery",
+          "wrapSubqueryIdentity"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:declareSubqueryTimestampRole#5ba35dea",
+      "message": "promql: subquery identity input is missing timestamp column %q",
+      "class": "internal",
+      "rationale": "both callers request a timestamp name fixed by the lowering contract: the configured metrics timestamp for an identity wrapper or anchor_ts for an outer reducer. Their lowering-owned inputs either already carry that role or project the named column; its absence is malformed internal plan IR, not a supported user query that Prometheus accepts and Cerberus rejects.",
+      "evidence": {
+        "guard": [
+          "past returning if column, ok := row.Find(chplan.RoleTimestamp); ok \u0026\u0026 column.Name == timestamp",
+          "past returning if row.Open",
+          "if !found"
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery",
+          "wrapSubqueryIdentity"
+        ]
+      }
+    }
+  ]
+}

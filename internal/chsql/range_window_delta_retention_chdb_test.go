@@ -33,7 +33,7 @@ func TestDeltaMatrixFirstLevelIncludesHistoryBeforeQueryEnvelope(t *testing.T) {
 
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	r := &chplan.RangeWindow{
-		Input:             &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:             rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix", "AggregationTemporality"),
 		Func:              "rate",
 		Range:             time.Minute,
 		Start:             start,

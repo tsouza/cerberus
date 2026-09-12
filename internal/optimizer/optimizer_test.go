@@ -62,6 +62,19 @@ func deferredShapingTower() chplan.Expr {
 // inputs maps fixture name → unoptimized plan tree. The fixture records
 // both the unoptimized SQL (sanity check that the input was lowered as
 // expected) and the optimized SQL (the actual rule output).
+func rangeWindowOptimizerScan(table, timestamp, value string, columns ...string) *chplan.Scan {
+	allColumns := append([]string{}, columns...)
+	allColumns = append(allColumns, timestamp, value)
+	return &chplan.Scan{
+		Table:   table,
+		Columns: allColumns,
+		Roles: []chplan.Column{
+			{Name: timestamp, Role: chplan.RoleTimestamp},
+			{Name: value, Role: chplan.RoleValue},
+		},
+	}
+}
+
 var inputs = map[string]chplan.Node{
 	// filter_fusion: Filter(Filter(scan, p1), p2) should fold to a single
 	// Filter with `p1 AND p2`.
@@ -234,7 +247,7 @@ var inputs = map[string]chplan.Node{
 	// arraySort/groupArray subquery, before the windowed aggregation.
 	"filter_range_window_transpose_passes": &chplan.Filter{
 		Input: &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input:           rangeWindowOptimizerScan("otel_metrics_sum", "TimeUnix", "Value", "Attributes"),
 			Func:            "rate",
 			Range:           5 * time.Minute,
 			TimestampColumn: "TimeUnix",
@@ -258,7 +271,7 @@ var inputs = map[string]chplan.Node{
 	// to unoptimized.
 	"filter_range_window_transpose_blocked": &chplan.Filter{
 		Input: &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input:           rangeWindowOptimizerScan("otel_metrics_sum", "TimeUnix", "Value", "Attributes"),
 			Func:            "rate",
 			Range:           5 * time.Minute,
 			TimestampColumn: "TimeUnix",
@@ -278,7 +291,7 @@ var inputs = map[string]chplan.Node{
 	// when the predicate sticks to that column.
 	"filter_range_window_transpose_logql": &chplan.Filter{
 		Input: &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_logs"},
+			Input:           rangeWindowOptimizerScan("otel_logs", "Timestamp", "BodyBytes", "ServiceName"),
 			Func:            "rate",
 			Range:           5 * time.Minute,
 			TimestampColumn: "Timestamp",
@@ -302,7 +315,7 @@ var inputs = map[string]chplan.Node{
 	"subquery_matrix_opaque": &chplan.RangeWindow{
 		Input: &chplan.Filter{
 			Input: &chplan.Filter{
-				Input: &chplan.Scan{Table: "otel_metrics_sum"},
+				Input: rangeWindowOptimizerScan("otel_metrics_sum", "TimeUnix", "Value", "MetricName", "Attributes"),
 				Predicate: &chplan.Binary{
 					Op:    chplan.OpEq,
 					Left:  &chplan.ColumnRef{Name: "MetricName"},
@@ -392,7 +405,7 @@ var inputs = map[string]chplan.Node{
 	// scan without touching the per-sample pair the window consumes.
 	"pushdown_through_range_window": &chplan.RangeWindow{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input: rangeWindowOptimizerScan("otel_metrics_gauge", "TimeUnix", "Value", "MetricName", "Attributes"),
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},

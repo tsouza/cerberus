@@ -1,11 +1,50 @@
 package promql
 
 import (
+	"context"
 	"testing"
+	"time"
+
+	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+func TestLower_SubqueryTimestampDeclarationKeepsNameGrouping(t *testing.T) {
+	p := parser.NewParser(parser.Options{})
+	expr, err := p.ParseExpr(`last_over_time({__name__=~"cpu_temp|gpu_temp"}[10m:1m])`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := schema.DefaultOTelMetrics()
+	end := time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)
+	plan, err := LowerAtRange(context.Background(), expr, s, end.Add(-5*time.Minute), end, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := collectRangeWindows(plan)
+	if len(windows) != 2 {
+		t.Fatalf("range windows = %d, want outer reducer plus identity subquery", len(windows))
+	}
+	for i, window := range windows {
+		if len(window.GroupBy) != 2 {
+			t.Fatalf("window %d func=%q input=%T input schema=%+v grouping keys=%#v", i, window.Func, window.Input, window.Input.RowType(), window.GroupBy)
+		}
+		assertNameGroupKey(t, window, s)
+	}
+}
+
+func collectRangeWindows(node chplan.Node) []*chplan.RangeWindow {
+	var windows []*chplan.RangeWindow
+	chplan.Walk(node, func(node chplan.Node) bool {
+		if window, ok := node.(*chplan.RangeWindow); ok {
+			windows = append(windows, window)
+		}
+		return true
+	})
+	return windows
+}
 
 // nameBearingProject is the leaf shape every subquery spine bottoms out
 // in: the selector Project that exposes a real per-series MetricName

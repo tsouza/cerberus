@@ -384,6 +384,9 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	if c, ok := r.Input.(*chplan.MetricsCompare); ok {
 		return e.emitRangeWindowCompare(r, c)
 	}
+	if err := validateRangeWindowInputTimestamp(r); err != nil {
+		return err
+	}
 	// The fused multi-arm shape reduces ONE grouped pass once per arm, so it
 	// owns the whole emission rather than dispatching on a single r.Func —
 	// which describes no arm in that mode. See range_window_variants.go.
@@ -704,7 +707,7 @@ func (e *emitter) emitWindowedArrayPairsAnchoredWithExtra(
 	hasTemporality := windowTemporalityProjected(r)
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
-	innermost.Select(RawAs(windowSamplePairsFrag(r, r.TimestampColumn, r.ValueColumn), "series_array"))
+	innermost.Select(RawAs(windowSamplePairsFrag(r, rangeWindowInputTimestampColumn(r), r.ValueColumn), "series_array"))
 	if hasTemporality {
 		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
 	}
@@ -798,7 +801,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 
 	hasTemporality := windowTemporalityProjected(r)
 
@@ -2210,7 +2213,7 @@ func pushInstantScanBound(innermost *QueryBuilder, r *chplan.RangeWindow, end Fr
 	if err := requireInstantScanBound(r); err != nil {
 		return err
 	}
-	scanLo, scanHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
+	scanLo, scanHi := instantWindowScanBoundsFrags(rangeWindowInputTimestampColumn(r), end, rangeNS)
 	innermost.Where(scanLo, scanHi)
 	return nil
 }
@@ -3337,9 +3340,9 @@ func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, ag
 
 	sb := NewQuery().From(inner)
 	sb.Select(groupFrags...)
-	// No fan-out layer in the instant shape, so the sample timestamp is
-	// r.TimestampColumn under its own name (see overTimeDirectAggFrag).
-	sb.Select(As(agg.Build(r.TimestampColumn), r.ValueColumn))
+	// No fan-out layer in the instant shape, so the sample timestamp is the
+	// child schema's RoleTimestamp (see overTimeDirectAggFrag).
+	sb.Select(As(agg.Build(rangeWindowInputTimestampColumn(r)), r.ValueColumn))
 	// The (end - range, end] window predicate the array path applied via
 	// arrayFilter over the (ts, value) tuples becomes a row-level WHERE:
 	// left-open / right-closed, identical bounds. This direct path is an
@@ -3351,8 +3354,8 @@ func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, ag
 	}
 	winStart := Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
 	sb.Where(
-		Gt(Col(r.TimestampColumn), winStart),
-		Lte(Col(r.TimestampColumn), end),
+		Gt(Col(rangeWindowInputTimestampColumn(r)), winStart),
+		Lte(Col(rangeWindowInputTimestampColumn(r)), end),
 	)
 	sb.GroupBy(groupFrags...)
 
@@ -3394,7 +3397,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 	innerSub, srcTs = regroupSampleTsSource(innerSub, srcTs, r, agg)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
@@ -3972,14 +3975,14 @@ func (e *emitter) instantDeltaPrefixSource(
 		prefix.Select(As(groupFrag, prefixKeys[i]))
 	}
 	prefix.Select(As(Call("sum", Col(r.ValueColumn)), deltaPrefixBeforeWindowAlias))
-	prefix.Where(Lte(Col(r.TimestampColumn), rangeStart))
-	if lower := deltaPrefixLowerBoundFrag(Col(r.TimestampColumn), rangeStart, e.deltaPrefixLookbackNS); lower != nil {
+	prefix.Where(Lte(Col(rangeWindowInputTimestampColumn(r)), rangeStart))
+	if lower := deltaPrefixLowerBoundFrag(Col(rangeWindowInputTimestampColumn(r)), rangeStart, e.deltaPrefixLookbackNS); lower != nil {
 		prefix.Where(lower)
 	}
 	// Prune the whole prefix scan on a CUMULATIVE-only metric — see
 	// deltaPresenceGuardFrag. The guard reads the same eval window the
 	// windowed-array scan above already bounds itself to.
-	windowLo, windowHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
+	windowLo, windowHi := instantWindowScanBoundsFrags(rangeWindowInputTimestampColumn(r), end, rangeNS)
 	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
 	if err != nil {
 		return nil, err
@@ -4104,7 +4107,7 @@ func (e *emitter) deltaPrefixAggregateSource(
 	// unguarded shape the 181x measurement on deltaPresenceGuardFrag's
 	// doc was taken against. The guard is EXACT (see that doc), so
 	// applying it here changes no query's result, only what is read.
-	windowLo, windowHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
+	windowLo, windowHi := instantWindowScanBoundsFrags(rangeWindowInputTimestampColumn(r), end, rangeNS)
 	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
 	if err != nil {
 		return nil, err
@@ -4138,8 +4141,8 @@ func (e *emitter) deltaPrefixAggregateSource(
 		raw.Select(As(groupFrag, rawKeys[i]))
 	}
 	raw.Select(As(Call("sum", Col(r.ValueColumn)), deltaPrefixRawRemainderAlias))
-	raw.Where(Gte(Col(r.TimestampColumn), bucketStart))
-	raw.Where(Lte(Col(r.TimestampColumn), rangeStart))
+	raw.Where(Gte(Col(rangeWindowInputTimestampColumn(r)), bucketStart))
+	raw.Where(Lte(Col(rangeWindowInputTimestampColumn(r)), rangeStart))
 	if guard != nil {
 		raw.Where(guard)
 	}
@@ -4253,7 +4256,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// so any() over the window's rows is exact, not a lossy pick.
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
-	innermost.Select(As(seriesArrayPairFrag(r, r.TimestampColumn, r.ValueColumn), "series_array"))
+	innermost.Select(As(seriesArrayPairFrag(r, rangeWindowInputTimestampColumn(r), r.ValueColumn), "series_array"))
 	if hasTemporality {
 		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
 	}
@@ -4480,7 +4483,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregateDailyFanout(
 	end Frag,
 	stepNS, rangeNS, numAnchors int64,
 ) (*QueryBuilder, []string, error) {
-	windowLo, windowHi := matrixWindowScanBoundsFrags(r.TimestampColumn, end, stepNS, rangeNS, numAnchors)
+	windowLo, windowHi := matrixWindowScanBoundsFrags(rangeWindowInputTimestampColumn(r), end, stepNS, rangeNS, numAnchors)
 	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
 	if err != nil {
 		return nil, nil, err
@@ -4778,7 +4781,7 @@ func (e *emitter) applyMatrixFanoutScanBoundAggregate(
 		Lte(Col(srcTs), end),
 		Gte(Col(srcTs), earliestDay),
 	)
-	windowLo, windowHi := matrixWindowScanBoundsFrags(r.TimestampColumn, end, stepNS, rangeNS, numAnchors)
+	windowLo, windowHi := matrixWindowScanBoundsFrags(rangeWindowInputTimestampColumn(r), end, stepNS, rangeNS, numAnchors)
 	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
 	if err != nil {
 		return err
@@ -4838,7 +4841,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 	hasTemporality := windowTemporalityProjected(r)
 	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
 	// useAggregateDeltaPrefix selects the exact, retention-independent
@@ -5366,7 +5369,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 	// Innermost SELECT — groupArray of (ts, value), sorted.
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
-	innermost.Select(As(windowSamplePairsFrag(r, r.TimestampColumn, r.ValueColumn), "series_array"))
+	innermost.Select(As(windowSamplePairsFrag(r, rangeWindowInputTimestampColumn(r), r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
@@ -5463,7 +5466,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)

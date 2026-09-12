@@ -28,7 +28,7 @@ import (
 func resourceBoundFanoutPlan() *chplan.RangeBucketFanout {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeBucketFanout{
-		Input:        &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:        closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Start:        start,
 		End:          start.Add(5 * time.Minute),
 		Step:         30 * time.Second,
@@ -54,7 +54,7 @@ func resourceBoundFanoutPlan() *chplan.RangeBucketFanout {
 func resourceBoundLWRPlan() *chplan.RangeLWR {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          30 * time.Second,
@@ -72,7 +72,7 @@ func resourceBoundLWRPlan() *chplan.RangeLWR {
 func resourceBoundRateWindowPlan() *chplan.RangeWindow {
 	end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		Start:           end.Add(-10 * time.Minute),

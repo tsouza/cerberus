@@ -82,7 +82,13 @@ func shapedDeltaPrefixInput(scan *chplan.Scan, extra ...chplan.Projection) *chpl
 	projections := append([]chplan.Projection{
 		{Expr: chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}), Alias: "Attributes"},
 	}, extra...)
-	return &chplan.Project{Input: scan, Projections: projections}
+	roles := make([]chplan.Column, 0, 1)
+	for _, projection := range projections {
+		if projection.Alias == "TimeUnix" {
+			roles = append(roles, chplan.Column{Name: "TimeUnix", Role: chplan.RoleTimestamp})
+		}
+	}
+	return &chplan.Project{Input: scan, Projections: projections, Roles: roles}
 }
 
 // deltaPrefixAggregateSeedDDL creates the two tables every scenario below

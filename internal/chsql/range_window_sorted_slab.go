@@ -187,7 +187,7 @@ func (e *emitter) emitRangeWindowSortedSlabOverTime(r *chplan.RangeWindow) error
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 
 	// Layer 1 — per-series sorted (ts, value) samples slab, ONE GROUP BY
 	// series (vs. emitWindowedArrayMatrix's GROUP BY (series, anchor)),

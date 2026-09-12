@@ -17,7 +17,7 @@ import (
 func instantOverTimeArrayLeaf() *chplan.RangeWindow {
 	return &chplan.RangeWindow{
 		Func:            "sum_over_time",
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix", "AggregationTemporality"),
 		Range:           5 * time.Minute,
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
@@ -31,7 +31,7 @@ func instantOverTimeArrayLeaf() *chplan.RangeWindow {
 func instantDirectLeaf() *chplan.RangeWindow {
 	return &chplan.RangeWindow{
 		Func:            "min_over_time",
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Range:           5 * time.Minute,
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",

@@ -1474,7 +1474,7 @@ func TestWithRecursive_AnchorOrRecursiveNil(t *testing.T) {
 func TestEmitWindowedExtrapolated_StepBoundary(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 		Func:            "rate",
 		Range:           time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -1498,7 +1498,7 @@ func TestEmitWindowedExtrapolated_StepBoundary(t *testing.T) {
 func TestEmitWindowedArray_StepBoundary(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Func:            "sum_over_time",
 		Range:           time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -1535,7 +1535,7 @@ func TestEmitWindowedExtrapolated_GroupByBoundary(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
-				Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+				Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 				Func:            "rate",
 				Range:           time.Minute,
 				TimestampColumn: "TimeUnix",
@@ -1587,7 +1587,7 @@ func TestEmitWindowedArrayMatrix_GroupByBoundary(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
-				Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+				Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 				Func:            "rate",
 				Range:           time.Minute,
 				OuterRange:      5 * time.Minute,
@@ -1619,7 +1619,7 @@ func TestEmitWindowedArrayMatrix_MinWindowBoundary(t *testing.T) {
 	t.Run("matrix stddev → window_vals >= 1 emitted", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.RangeWindow{
-			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input: rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 			// stddev_over_time stays on the array (windowed) path — the
 			// incremental funcs (sum/avg/min/max/count/present) now emit a
 			// direct CH group aggregate with no window_vals array, so they
@@ -1665,7 +1665,7 @@ func TestEmitWindowedArrayPairsMatrix_GroupByBoundary(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
-				Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+				Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 				Func:            "deriv",
 				Range:           time.Minute,
 				TimestampColumn: "TimeUnix",
@@ -1693,7 +1693,7 @@ func TestEmitWindowedArray_MinWindowBoundary(t *testing.T) {
 	t.Run("deriv → window_pairs >= 2 emitted", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 			Func:            "deriv",
 			Range:           time.Minute,
 			TimestampColumn: "TimeUnix",
@@ -1710,7 +1710,7 @@ func TestEmitWindowedArray_MinWindowBoundary(t *testing.T) {
 	t.Run("changes → no length filter", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 			Func:            "changes",
 			Range:           time.Minute,
 			TimestampColumn: "TimeUnix",
@@ -2127,7 +2127,7 @@ func TestPartitionPrewhere_LastWhereRetainsExactConjunct(t *testing.T) {
 func TestEmitWindowedArrayMatrix_LogRateMinWindowOne(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_logs"},
+		Input:           rangeWindowTimestampTestScan("otel_logs", "Timestamp"),
 		Func:            "log_rate",
 		Range:           time.Minute,
 		Step:            time.Minute,
@@ -2164,7 +2164,7 @@ func TestEmitWindowedArrayPairsAnchored_MinWindowZero(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
 	r := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Range:           time.Minute,
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
@@ -2200,7 +2200,7 @@ func TestEmitWindowedArrayPairsAnchored_OuterRangeStepGuard(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
 	r := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Range:           time.Minute,
 		OuterRange:      5 * time.Minute,
 		Step:            0, // boundary: original rejects, mutant accepts.
@@ -2243,7 +2243,7 @@ func TestEmitWindowedArrayPairsMatrix_AnchorArithmetic(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
 	r := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Range:           time.Minute,
 		OuterRange:      4 * time.Minute,
 		Step:            time.Minute,
@@ -2292,7 +2292,7 @@ func TestEmitWindowedArrayPairsMatrix_GroupByNegation(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
 	r := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Range:           time.Minute,
 		OuterRange:      2 * time.Minute,
 		Step:            time.Minute,
@@ -2330,7 +2330,7 @@ func TestEmitWindowedArrayPairsMatrix_MinWindowNegation(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
 	r := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Range:           time.Minute,
 		OuterRange:      2 * time.Minute,
 		Step:            time.Minute,
@@ -2466,7 +2466,7 @@ func TestEmitWindowedArray_MinWindowZeroBoundary(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
 	r := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Range:           time.Minute,
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
@@ -2498,7 +2498,7 @@ func TestEmitWindowedArrayMatrix_MinWindowZeroBoundary(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
 	r := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Range:           time.Minute,
 		OuterRange:      2 * time.Minute,
 		Step:            time.Minute,
@@ -3909,7 +3909,7 @@ func TestEmitRangeWindowOverTimeMatrix_AnchorArithmetic(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Func:            "max_over_time",
 		Range:           time.Minute,
 		Step:            30 * time.Second,
@@ -3943,7 +3943,7 @@ func TestEmitRangeWindowOverTime_OuterRangeBoundary(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Func:            "max_over_time",
 		Range:           time.Minute,
 		Step:            30 * time.Second,
@@ -4003,7 +4003,7 @@ func TestPredictLinear_SlopeColumnDispatch(t *testing.T) {
 
 	base := func() *chplan.RangeWindow {
 		return &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 			Func:            "predict_linear",
 			Scalars:         []float64{3600},
 			Range:           5 * time.Minute,
@@ -4148,7 +4148,7 @@ func TestInstantDeltaPrefixSource_GuardNilBranch(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
 	r := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
 		// Intentionally empty: forces deltaPresenceGuardFrag to return nil.
@@ -4185,7 +4185,7 @@ func TestInstantDeltaPrefixSource_JoinDispatch(t *testing.T) {
 	build := func(groupBy []chplan.Expr) string {
 		e := &emitter{}
 		r := &chplan.RangeWindow{
-			Input:             &chplan.Scan{Table: "otel_metrics_sum"},
+			Input:             rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 			TimestampColumn:   "TimeUnix",
 			ValueColumn:       "Value",
 			TemporalityColumn: "AggregationTemporality",

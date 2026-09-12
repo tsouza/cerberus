@@ -267,6 +267,15 @@ func generateStagePlan(rng *rand.Rand) chplan.Node {
 // directly over — the two adjacencies applyStageScan recognises.
 func generateStageInput(rng *rand.Rand, table string) chplan.Node {
 	scan := &chplan.Scan{Table: table}
+	if table == propertyTable {
+		scan.Columns = []string{"MetricName", "Attributes", "TimeUnix", "Value"}
+		scan.Roles = []chplan.Column{
+			{Name: "MetricName", Role: chplan.RoleMetricName},
+			{Name: "Attributes", Role: chplan.RoleAttributes},
+			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+			{Name: "Value", Role: chplan.RoleValue},
+		}
+	}
 	if rng.Intn(2) == 0 {
 		return scan
 	}

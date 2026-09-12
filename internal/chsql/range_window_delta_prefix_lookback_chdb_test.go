@@ -20,7 +20,7 @@ import (
 // surface as separate output rows.
 func instantDeltaPrefixWindow(end time.Time, rng time.Duration) *chplan.RangeWindow {
 	return &chplan.RangeWindow{
-		Input:             &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:             rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix", "AggregationTemporality"),
 		Func:              "rate",
 		Range:             rng,
 		End:               end,

@@ -255,7 +255,7 @@ func TestWithRateWindowFanoutMaxRows_ChangesQueryOutcome(t *testing.T) {
 	start, end, step, lookback := resourceBoundOverrideGrid()
 	_ = lookback // rate()'s window is chplan.RangeWindow.Range, not Lookback.
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: table},
+		Input:           closedRangeWindowTestScan(table, "TimeUnix", "Attributes", "Value"),
 		Func:            "rate",
 		Range:           time.Duration(resourceBoundOverrideAnchors) * step,
 		Start:           start,
