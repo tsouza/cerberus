@@ -13,14 +13,17 @@
 // the wrong tag set must fail rather than report a hollow green.
 package spec
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // runTempoParity fails when the `chdb_agpl_oracle` tag is not set. The real
 // implementation lives in parity_tempo_chdb_agpl_oracle.go.
-func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) {
+func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) error {
 	t.Helper()
 	_, _ = p, rt
-	t.Fatalf(
+	return fmt.Errorf(
 		"fixture %s is enrolled against the %q oracle, but this lane was built without "+
 			"the `chdb_agpl_oracle` build tag, so the Tempo oracle is compiled out. "+
 			"Run this package with `-tags chdb,agpl_oracle,chdb_agpl_oracle`.",

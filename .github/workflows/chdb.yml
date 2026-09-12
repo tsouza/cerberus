@@ -539,7 +539,9 @@ jobs:
       - name: Run TXTAR round-trip (promql) — runner shard ${{ matrix.shard }}/${{ strategy.job-total }}
         env:
           QL: promql
-          TAGS: chdb
+          # Match the registered oracle-enabled roundtrip tag set. RunParity
+          # also proves each PromQL parity_exempt declaration still fails.
+          TAGS: chdb,agpl_oracle,chdb_agpl_oracle
           ROUNDTRIP_SHARD_INDEX: ${{ matrix.shard }}
           ROUNDTRIP_SHARD_COUNT: ${{ strategy.job-total }}
         run: node .github/scripts/chdb-roundtrip.mjs

@@ -5,8 +5,11 @@ package spec
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,6 +99,14 @@ var lokiParityEvaluator func(
 	t *testing.T, db *sql.DB, c *Case, q parityQuery,
 ) ([]referenceSample, error)
 
+var (
+	errParityDisagreement = errors.New("parity disagreement")
+	errParityRefusal      = errors.New("parity comparison refused")
+)
+
+func parityDisagreement(err error) error { return fmt.Errorf("%w: %v", errParityDisagreement, err) }
+func parityRefusal(err error) error      { return fmt.Errorf("%w: %v", errParityRefusal, err) }
+
 // RunParity checks a fixture's answer against a REAL reference engine.
 //
 // It is the half of the parity layer that must live in package spec,
@@ -114,8 +125,11 @@ var lokiParityEvaluator func(
 // semantic regression impossible to absorb rather than merely likely to be
 // noticed.
 //
-// A fixture with no `parity:` section is a no-op, exactly as RunRoundTrip
-// is for a fixture with no `seed:`.
+// A fixture with `parity_exempt:` instead is run against the synthesized
+// full contract its query language would normally carry. Agreement is a
+// failure because it proves the exemption has gone stale. A fixture carrying
+// neither declaration is a no-op here; the corpus-wide coverage gate rejects
+// that state separately.
 //
 // # Dispatch
 //
@@ -131,23 +145,107 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 	if err != nil {
 		t.Fatalf("LoadParity: %v", err)
 	}
-	if !enrolled {
+	exemption, exempted, err := LoadParityExempt(c)
+	if err != nil {
+		t.Fatalf("LoadParityExempt: %v", err)
+	}
+	if enrolled && exempted {
+		t.Fatalf("fixture %s carries both `parity:` and `parity_exempt:`", c.Name)
+	}
+	if !enrolled && !exempted {
 		return
 	}
+	if exempted {
+		p, err = synthesizedParity(c, eval)
+		if err != nil {
+			t.Fatalf("fixture %s: synthesize parity contract: %v", c.Name, err)
+		}
+	}
+
+	err = runParity(t, c, p, eval, roundTrip)
+	if enrolled {
+		if err != nil {
+			t.Fatalf("fixture %s: %v", c.Name, err)
+		}
+		return
+	}
+	if err := exemptionVerdict(c, exemption, p, err); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// exemptionVerdict accepts only an actual comparison disagreement or an
+// explicit comparator refusal as evidence that an exemption remains live.
+// Harness, fixture-handoff, and build-configuration failures are returned:
+// treating those as liveness would let a broken checker preserve every stale
+// exemption indefinitely.
+func exemptionVerdict(c *Case, exemption *ParityExempt, p *Parity, comparisonErr error) error {
+	if comparisonErr == nil {
+		return fmt.Errorf(
+			"fixture %s has a stale `parity_exempt:` declaration (%s: %s): its synthesized "+
+				"%s %s comparison now agrees with the reference engine; replace the exemption "+
+				"with `parity:` enrollment",
+			c.Name, exemption.Reason, exemption.Detail, p.Oracle, p.Endpoint,
+		)
+	}
+	if errors.Is(comparisonErr, errParityDisagreement) || errors.Is(comparisonErr, errParityRefusal) {
+		return nil
+	}
+	return fmt.Errorf("fixture %s: exemption liveness check could not run: %w", c.Name, comparisonErr)
+}
+
+// synthesizedParity derives the full comparison contract an exempt fixture
+// would carry if its claimed obstacle disappeared. The query section, rather
+// than the exemption reason, is authoritative so no reason-specific predicate
+// can turn this liveness check into an allow-list.
+func synthesizedParity(c *Case, eval ParityEval) (*Parity, error) {
+	type candidate struct {
+		section string
+		oracle  string
+	}
+	candidates := []candidate{
+		{section: "query.promql", oracle: OraclePrometheus},
+		{section: "query.logql", oracle: OracleLoki},
+		{section: "query.traceql", oracle: OracleTempo},
+	}
+	var found []candidate
+	for _, candidate := range candidates {
+		if _, ok := c.Section(candidate.section); ok {
+			found = append(found, candidate)
+		}
+	}
+	if len(found) != 1 {
+		return nil, fmt.Errorf("found %d query-language sections, want exactly one", len(found))
+	}
+
+	endpoint := EndpointInstant
+	if found[0].oracle == OracleTempo {
+		endpoint = EndpointSearch
+	} else if eval.IsRange() {
+		endpoint = EndpointRange
+	}
+	return &Parity{Oracle: found[0].oracle, Endpoint: endpoint, Scope: ScopeFull}, nil
+}
+
+// runParity performs one declared comparison and returns every refusal or
+// disagreement as data. RunParity is the reporting wrapper: enrolled fixtures
+// require nil, while exempt fixtures require a non-nil result.
+func runParity(t *testing.T, c *Case, p *Parity, eval ParityEval, roundTrip RoundTripResult) error {
+	t.Helper()
 
 	rt, err := LoadRoundTrip(c)
 	if err != nil {
-		t.Fatalf("LoadRoundTrip: %v", err)
+		return fmt.Errorf("LoadRoundTrip: %w", err)
 	}
 	if !rt.IsRoundTrip() {
-		t.Fatalf(
+		return parityRefusal(fmt.Errorf(
 			"fixture %s carries a `parity:` section but no executable round-trip. "+
 				"The parity check reads the seeded rows back out of chDB, so it needs the same "+
 				"`seed:` + `expected_rows:` opt-in RunRoundTrip needs.", c.Name,
-		)
+		))
 	}
 	if !roundTrip.seeded || roundTrip.fixtureName != c.Name {
-		t.Fatalf(
+		return fmt.Errorf(
 			"fixture %s: parity requires the successful RunRoundTripSQL result for the same fixture; "+
 				"got fixture %q (seeded=%t)",
 			c.Name, roundTrip.fixtureName, roundTrip.seeded,
@@ -159,17 +257,16 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 	// sample-shaped dispatch below. runTempoParity owns its own chDB
 	// session, query section (`query.traceql`), and comparison entirely.
 	if p.Oracle == OracleTempo {
-		runTempoParity(t, c, p, rt)
-		return
+		return runTempoParity(t, c, p, rt)
 	}
 
 	querySection := parityQuerySections[p.Oracle]
 	if querySection == "" {
-		t.Fatalf("fixture %s: oracle %q has no runner in this lane", c.Name, p.Oracle)
+		return fmt.Errorf("oracle %q has no runner in this lane", p.Oracle)
 	}
 	query, ok := c.Section(querySection)
 	if !ok {
-		t.Fatalf("fixture %s: oracle %q requires a %s section", c.Name, p.Oracle, querySection)
+		return fmt.Errorf("oracle %q requires a %s section", p.Oracle, querySection)
 	}
 
 	// Serialize the whole engine span, same contract RunRoundTrip honours.
@@ -191,7 +288,7 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 		got, err = evaluatePrometheusParity(t, db, c, rt, q)
 	case OracleLoki:
 		if lokiParityEvaluator == nil {
-			t.Fatalf(
+			return fmt.Errorf(
 				"fixture %s is enrolled against the %q oracle, but this lane was built without "+
 					"the `chdb_agpl_oracle` build tag, so the Loki oracle is compiled out and the "+
 					"fixture would be checked against nothing. Run this package with "+
@@ -200,19 +297,19 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 		}
 		got, err = lokiParityEvaluator(t, db, c, q)
 	default:
-		t.Fatalf("fixture %s: oracle %q has no runner in this lane", c.Name, p.Oracle)
+		return fmt.Errorf("oracle %q has no runner in this lane", p.Oracle)
 	}
 	if err != nil {
-		t.Fatalf("fixture %s: %v", c.Name, err)
+		return err
 	}
 
 	cols := roundTrip.projectionColumns
 	if len(cols) == 0 {
-		t.Fatalf("fixture %s: RunRoundTripSQL returned no driver projection columns", c.Name)
+		return errors.New("RunRoundTripSQL returned no driver projection columns")
 	}
 	sc, err := locateSampleColumns(cols)
 	if err != nil {
-		t.Fatalf("fixture %s: %v", c.Name, err)
+		return err
 	}
 
 	// A projection with no TimeUnix column cannot answer a comparison that
@@ -240,7 +337,7 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 		if p.Oracle == OracleLoki && eval.Step == 0 {
 			compareTimestamps = false
 		} else {
-			t.Fatalf(
+			return fmt.Errorf(
 				"fixture %s: its answer's timestamps participate in the comparison, but the "+
 					"projection (%s) carries no %s column to compare them against",
 				c.Name, strings.Join(cols, ", "), colTimeUnix,
@@ -248,7 +345,7 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 		}
 	}
 
-	compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps, q.Expr)
+	return compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps, q.Expr)
 }
 
 // atStartModifier / atEndModifier are the two `@` modifiers whose
@@ -369,6 +466,11 @@ func evaluatePrometheusParity(
 	if err != nil {
 		return nil, fmt.Errorf("read seeded series back: %w", err)
 	}
+	if hasConflictingDuplicateTimestamp(seeded.series) {
+		return nil, parityRefusal(errors.New(
+			"seed contains different samples for one series timestamp, so neither engine has a stable survivor to compare",
+		))
+	}
 	if len(seeded.series) == 0 {
 		// A genuinely empty series set is only a vacuous check — and
 		// therefore an error — when the query reads one. `pi()`, `time()`,
@@ -399,6 +501,27 @@ func evaluatePrometheusParity(
 	if err != nil {
 		return nil, err
 	}
+	orderSensitive, err := hasOrderSensitiveSelection(q.Expr)
+	if err != nil {
+		return nil, fmt.Errorf("inspect reference query ordering sensitivity: %w", err)
+	}
+	if orderSensitive && len(seeded.series) > 1 {
+		permuted, err := reverseSeriesSchedule(seeded.series)
+		if err != nil {
+			return nil, err
+		}
+		alternate, err := oracle.Evaluate(t, permuted, oracle.Query{
+			Expr: q.Expr, Start: q.Start, End: q.End, Step: q.Step,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("evaluate permuted reference input: %w", err)
+		}
+		if !reflect.DeepEqual(got, alternate) {
+			return nil, parityRefusal(errors.New(
+				"reference answer changes when the same input series arrive in reverse order, so there is no stable answer to compare",
+			))
+		}
+	}
 	seeded.nameRestorer.restore(got)
 
 	out := make([]referenceSample, 0, len(got))
@@ -411,6 +534,44 @@ func evaluatePrometheusParity(
 		})
 	}
 	return out, nil
+}
+
+func hasOrderSensitiveSelection(expr string) (bool, error) {
+	p := promparse.New()
+	e, err := p.ParseExpr(expr)
+	if err != nil {
+		return false, err
+	}
+	found := false
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		if aggregate, ok := node.(*parser.AggregateExpr); ok && aggregate.Op == parser.LIMITK {
+			found = true
+		}
+		return nil
+	})
+	return found, nil
+}
+
+func reverseSeriesSchedule(series []oracle.Series) ([]oracle.Series, error) {
+	permuted := slices.Clone(series)
+	slices.Reverse(permuted)
+	if len(series) > 1 && labelKey(series[0].Labels) == labelKey(permuted[0].Labels) {
+		return nil, errors.New("failed to perturb reference series append schedule")
+	}
+	return permuted, nil
+}
+
+func hasConflictingDuplicateTimestamp(series []oracle.Series) bool {
+	for _, s := range series {
+		for i := 1; i < len(s.Points); i++ {
+			previous, current := s.Points[i-1], s.Points[i]
+			if previous.TMillis == current.TMillis &&
+				(previous.Value != current.Value || !reflect.DeepEqual(previous.Histogram, current.Histogram)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // seededMetricsTables are the metric tables a PromQL fixture's seed may
@@ -756,12 +917,12 @@ func (r metricNameRestorer) record(labels map[string]string, name string) error 
 func compareAgainstReference(
 	t *testing.T, c *Case, p *Parity, rt *RoundTripSections, sc sampleColumns,
 	got []referenceSample, compareTimestamps bool, query string,
-) {
+) error {
 	t.Helper()
 
 	want, err := referenceShapeOfExpectedRows(rt, sc)
 	if err != nil {
-		t.Fatalf("fixture %s: %v", c.Name, err)
+		return err
 	}
 
 	// got arrives sorted by the reference oracle's OWN canonicalisation
@@ -783,36 +944,43 @@ func compareAgainstReference(
 	})
 
 	if len(got) != len(want) {
-		t.Fatalf(
-			"fixture %s: reference engine returned %d sample(s), cerberus %d.\n"+
+		return parityDisagreement(fmt.Errorf(
+			"reference engine returned %d sample(s), cerberus %d.\n"+
 				"  reference: %v\n  cerberus:  %v\n"+
 				"This is a real disagreement about the answer, not a golden to regenerate — "+
 				"there is no update path for this check.",
-			c.Name, len(got), len(want), got, want,
-		)
+			len(got), len(want), got, want,
+		))
 	}
 
+	var disagreements []error
 	for i := range got {
 		g, w := got[i], want[i]
 		if labelKey(g.Labels) != labelKey(w.Labels) {
-			t.Errorf("fixture %s sample %d: labels differ\n  reference: %v\n  cerberus:  %v",
-				c.Name, i, g.Labels, w.Labels)
+			disagreements = append(disagreements, parityDisagreement(fmt.Errorf(
+				"sample %d: labels differ\n  reference: %v\n  cerberus:  %v", i, g.Labels, w.Labels,
+			)))
 			continue
 		}
 		if err := compareSampleValue(g, w); err != nil {
-			t.Errorf("fixture %s sample %d (%v): %v", c.Name, i, g.Labels, err)
+			disagreements = append(disagreements, parityDisagreement(fmt.Errorf("sample %d (%v): %w", i, g.Labels, err)))
 		}
 		if compareTimestamps && g.TMillis != w.TMillis {
-			t.Errorf("fixture %s sample %d (%v): timestamp differs\n  reference: %d\n  cerberus:  %d",
-				c.Name, i, g.Labels, g.TMillis, w.TMillis)
+			disagreements = append(disagreements, parityDisagreement(fmt.Errorf(
+				"sample %d (%v): timestamp differs\n  reference: %d\n  cerberus:  %d",
+				i, g.Labels, g.TMillis, w.TMillis,
+			)))
 		}
 	}
 
-	checkZeroBucketScope(t, c, p, rt, query, got)
+	if err := checkZeroBucketScope(c, p, rt, query, got); err != nil {
+		return err
+	}
 
 	if !p.ComparesInFull() {
 		t.Logf("fixture %s compared with scope %q", c.Name, p.Scope)
 	}
+	return errors.Join(disagreements...)
 }
 
 // histogramRowValuePlaceholder is what cerberus's histogram-shaped

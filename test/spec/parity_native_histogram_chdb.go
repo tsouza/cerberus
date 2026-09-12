@@ -9,7 +9,6 @@ import (
 	"math"
 	"regexp"
 	"strings"
-	"testing"
 
 	"github.com/prometheus/prometheus/model/labels"
 
@@ -310,10 +309,8 @@ var histogramQuantilePattern = regexp.MustCompile(`\bhistogram_quantiles?\b`)
 // this by being left out of the parity layer — it is only reached for
 // fixtures already enrolled.
 func checkZeroBucketScope(
-	t *testing.T, c *Case, p *Parity, rt *RoundTripSections, query string, got []referenceSample,
-) {
-	t.Helper()
-
+	c *Case, p *Parity, rt *RoundTripSections, query string, got []referenceSample,
+) error {
 	earned := false
 	if len(testsql.SeedTableColumns(rt.Seed)[nativeHistogramTable]) > 0 &&
 		histogramQuantilePattern.MatchString(query) {
@@ -327,7 +324,7 @@ func checkZeroBucketScope(
 
 	switch declared := p.Scope == ScopeExceptZeroBucket; {
 	case earned && !declared:
-		t.Errorf(
+		return fmt.Errorf(
 			"fixture %s: its quantile answers exactly 0, which for a native histogram can only "+
 				"come from the zero band, so the answer IS the zero threshold — a value neither "+
 				"side can read and both must invent as 0. Declare `scope: %s` so this agreement "+
@@ -335,7 +332,7 @@ func checkZeroBucketScope(
 			c.Name, ScopeExceptZeroBucket,
 		)
 	case !earned && declared:
-		t.Errorf(
+		return fmt.Errorf(
 			"fixture %s declares `scope: %s`, but its answer does not depend on the invented zero "+
 				"threshold: no sample of it is a zero-band quantile over an exponential-histogram "+
 				"seed. Compare it in full — this scope records one specific un-oracleable axis and "+
@@ -343,6 +340,7 @@ func checkZeroBucketScope(
 			c.Name, ScopeExceptZeroBucket,
 		)
 	}
+	return nil
 }
 
 // int32Columns narrows the scale and bucket offsets, which ClickHouse

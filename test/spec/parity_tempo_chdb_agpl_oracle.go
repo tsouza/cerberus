@@ -13,6 +13,7 @@ package spec
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -32,6 +33,15 @@ const (
 	spanIdentitySpanIDKey  = "__cerberus_spanID"
 )
 
+// errTempoSpanIdentityUnavailable marks a successfully decoded answer shape
+// that cannot identify a set of spans for the Tempo comparator. Malformed
+// expected-row data deliberately does not wrap this sentinel.
+var errTempoSpanIdentityUnavailable = errors.New("tempo span identity unavailable")
+
+func tempoSpanIdentityUnavailable(err error) error {
+	return fmt.Errorf("%w: %v", errTempoSpanIdentityUnavailable, err)
+}
+
 // tracesTable is the one table a TraceQL fixture's seed creates.
 const tracesTable = "otel_traces"
 
@@ -41,14 +51,16 @@ const tracesTable = "otel_traces"
 // There is no update path here, for the reason [RunParity] documents: the
 // reference answer is computed on every run, so GOLDEN_UPDATE=1 has
 // nothing to overwrite.
-func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) {
+func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) error {
 	t.Helper()
 
 	query, ok := c.Section("query.traceql")
 	if !ok {
-		t.Fatalf("fixture %s: `parity:` with oracle tempo requires a query.traceql section", c.Name)
+		return fmt.Errorf("fixture %s: `parity:` with oracle tempo requires a query.traceql section", c.Name)
 	}
-	rejectNarrowingSections(t, c)
+	if err := rejectNarrowingSections(c); err != nil {
+		return parityRefusal(err)
+	}
 
 	// Serialize the whole engine span, same contract RunRoundTrip honours.
 	chdbEngineMu.Lock()
@@ -58,26 +70,50 @@ func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) {
 
 	spans, err := readSeededSpans(db)
 	if err != nil {
-		t.Fatalf("fixture %s: read seeded spans back: %v", c.Name, err)
+		return fmt.Errorf("fixture %s: read seeded spans back: %w", c.Name, err)
 	}
 	if len(spans) == 0 {
-		t.Fatalf(
+		return parityRefusal(fmt.Errorf(
 			"fixture %s: seed produced no readable spans, so the reference engine would "+
 				"trivially agree with any answer", c.Name,
-		)
+		))
+	}
+	if hasDuplicateSpanIdentity(spans) {
+		return parityRefusal(errors.New(
+			"seed contains more than one span with the same trace and span identity, so neither engine has a stable row to compare",
+		))
 	}
 
 	got, err := oracle.Evaluate(t, spans, strings.TrimSpace(query))
 	if err != nil {
-		t.Fatalf("fixture %s: %v", c.Name, err)
+		return parityRefusal(fmt.Errorf("fixture %s: %w", c.Name, err))
 	}
 
 	want, err := spanIdentitiesOfExpectedRows(rt)
 	if err != nil {
-		t.Fatalf("fixture %s: %v", c.Name, err)
+		// These are comparator-shape refusals, not corrupt fixture data: the
+		// expected row decoded successfully, but it cannot identify a set of
+		// spans for the Tempo oracle to compare. Keep JSON/type decode errors
+		// unclassified so a broken harness cannot validate an exemption.
+		if errors.Is(err, errTempoSpanIdentityUnavailable) {
+			return parityRefusal(fmt.Errorf("fixture %s: %w", c.Name, err))
+		}
+		return fmt.Errorf("fixture %s: %w", c.Name, err)
 	}
 
-	compareSpanSets(t, c, p, got, want)
+	return compareSpanSets(t, c, p, got, want)
+}
+
+func hasDuplicateSpanIdentity(spans []oracle.Span) bool {
+	seen := make(map[string]struct{}, len(spans))
+	for _, span := range spans {
+		key := span.TraceID + "\x00" + span.SpanID
+		if _, ok := seen[key]; ok {
+			return true
+		}
+		seen[key] = struct{}{}
+	}
+	return false
 }
 
 // rejectNarrowingSections refuses to run a fixture whose scan cerberus
@@ -90,11 +126,10 @@ func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) {
 // query where there is only a difference in what each side was asked to
 // read. Failing loudly is the point: silently ignoring the section would
 // enrol a fixture that then proves nothing.
-func rejectNarrowingSections(t *testing.T, c *Case) {
-	t.Helper()
+func rejectNarrowingSections(c *Case) error {
 	for _, section := range []string{"search_window", "search_limit"} {
 		if _, ok := c.Section(section); ok {
-			t.Fatalf(
+			return fmt.Errorf(
 				"fixture %s carries both `parity:` and `%s:`. The reference oracle evaluates the "+
 					"spanset pipeline over every seeded span; %s narrows cerberus's scan in the "+
 					"storage layer, which upstream applies before the pipeline the oracle runs. "+
@@ -104,6 +139,7 @@ func rejectNarrowingSections(t *testing.T, c *Case) {
 			)
 		}
 	}
+	return nil
 }
 
 // --- reading the seeded spans back ------------------------------------
@@ -497,11 +533,11 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 
 	for i, row := range rt.ExpectedRows {
 		if len(row) != spanRowArity {
-			return nil, fmt.Errorf(
+			return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
 				"expected_rows[%d] has %d column(s), not the canonical span shape "+
 					"(SpanName, Attributes, Timestamp, Duration); this fixture's projection "+
 					"carries no span identity and cannot be parity-checked", i, len(row),
-			)
+			))
 		}
 		attrs, err := rowAttrs(row[spanRowAttrsIdx], i)
 		if err != nil {
@@ -510,21 +546,21 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 		traceID, hasTrace := attrs[spanIdentityTraceIDKey]
 		spanID, hasSpan := attrs[spanIdentitySpanIDKey]
 		if !hasTrace || !hasSpan || traceID == "" || spanID == "" {
-			return nil, fmt.Errorf(
+			return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
 				"expected_rows[%d] carries no %s/%s identity. The comparison is over WHICH SPANS "+
 					"matched, so a fixture whose seed declares no TraceId/SpanId columns cannot be "+
 					"enrolled — every row would be the same anonymous span",
 				i, spanIdentityTraceIDKey, spanIdentitySpanIDKey,
-			)
+			))
 		}
 
 		r := oracle.Result{TraceID: traceID, SpanID: spanID}
 		if seen[r] {
-			return nil, fmt.Errorf(
+			return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
 				"expected_rows[%d] repeats span %s/%s. Span identity is the comparison key, so a "+
 					"projection that emits one span twice cannot be matched against a set of "+
 					"matched spans", i, traceID, spanID,
-			)
+			))
 		}
 		seen[r] = true
 		out = append(out, r)
@@ -541,31 +577,36 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 
 // compareSpanSets is the assertion itself: the reference engine and
 // cerberus must have matched exactly the same spans.
-func compareSpanSets(t *testing.T, c *Case, p *Parity, got, want []oracle.Result) {
+func compareSpanSets(t *testing.T, c *Case, p *Parity, got, want []oracle.Result) error {
 	t.Helper()
 
 	if len(got) != len(want) {
-		t.Fatalf(
+		return parityDisagreement(fmt.Errorf(
 			"fixture %s: reference engine matched %d span(s), cerberus %d.\n"+
 				"  reference: %v\n  cerberus:  %v\n"+
 				"This is a real disagreement about the answer, not a golden to regenerate — "+
 				"there is no update path for this check.",
 			c.Name, len(got), len(want), got, want,
-		)
+		))
 	}
 
+	var mismatches []string
 	for i := range got {
 		if got[i] != want[i] {
-			t.Errorf(
+			mismatches = append(mismatches, fmt.Sprintf(
 				"fixture %s span %d: the two engines matched different spans\n"+
 					"  reference: %v\n  cerberus:  %v\n"+
 					"  full reference set: %v\n  full cerberus set:  %v",
 				c.Name, i, got[i], want[i], got, want,
-			)
+			))
 		}
 	}
 
 	if !p.ComparesInFull() {
 		t.Logf("fixture %s compared with scope %q", c.Name, p.Scope)
 	}
+	if len(mismatches) > 0 {
+		return parityDisagreement(fmt.Errorf("%s", strings.Join(mismatches, "\n")))
+	}
+	return nil
 }
