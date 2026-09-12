@@ -22,7 +22,7 @@ INSERT INTO otel_traces (ResourceAttributes, TraceId, SpanId) VALUES
   [3]
 ]
 -- chplan --
-MetricsSecondStage op=topk k=5 valueAlias=Value
+MetricsSecondStage op=topk k=5
   MetricsAggregate op=rate valueAlias=Value
     Filter predicate=(ResourceAttributes["service.name"] = "checkout")
       Scan(otel_traces)
