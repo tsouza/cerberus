@@ -29,7 +29,7 @@ func TestRangeWindowMetricsExplicitTimeGrid(t *testing.T) {
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Range:           time.Minute,
@@ -114,7 +114,7 @@ func TestRangeWindowMetricsLeftOpenWindow(t *testing.T) {
 					Attr:       c.attr,
 					Quantiles:  c.q,
 					ValueAlias: "Value",
-					Inner:      &chplan.Scan{Table: "otel_traces"},
+					Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 				},
 				Step:            time.Minute,
 				OuterRange:      5 * time.Minute,
@@ -154,7 +154,7 @@ func TestRangeWindowMetricsRejectsZeroStep(t *testing.T) {
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		TimestampColumn: "Timestamp",
 		// Step zero — should error.
@@ -178,7 +178,7 @@ func TestRangeWindowMetricsRejectsBadStartEnd(t *testing.T) {
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Start:           time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC),
@@ -210,7 +210,7 @@ func TestMetricsAggregateRequiresAttr(t *testing.T) {
 			plan := &chplan.MetricsAggregate{
 				Op:         op,
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 			}
 			if op == chplan.MetricsOpQuantileOverTime {
 				plan.Quantiles = []float64{0.95}
@@ -240,7 +240,7 @@ func TestMetricsAggregateMultiQuantileBare(t *testing.T) {
 		Attr:       &chplan.ColumnRef{Name: "Duration"},
 		Quantiles:  []float64{0.5, 0.9, 0.99},
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 	}
 	sql, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
@@ -288,7 +288,7 @@ func TestRangeWindowMetricsQuantileBuckets(t *testing.T) {
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			Quantiles:  []float64{0.5, 0.9, 0.99},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -353,7 +353,7 @@ func TestRangeWindowMetricsQuantileBucketsDuration(t *testing.T) {
 			Quantiles:  []float64{0.95},
 			IsDuration: true,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -416,7 +416,7 @@ func TestRangeWindowMetricsReducerIsFloat64(t *testing.T) {
 					Attr:       c.attr,
 					Quantiles:  c.q,
 					ValueAlias: "Value",
-					Inner:      &chplan.Scan{Table: "otel_traces"},
+					Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 				},
 				Step:            time.Minute,
 				OuterRange:      5 * time.Minute,

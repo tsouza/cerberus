@@ -296,7 +296,7 @@ func TestEmitMetricsExemplars_StepBoundary(t *testing.T) {
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            0,
 		Range:           time.Minute,
@@ -358,7 +358,7 @@ func TestEmitMetricsExemplars_EmptyTimestampColumn(t *testing.T) {
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 		},
 		Step:  time.Minute,
 		Range: time.Minute,
@@ -382,7 +382,7 @@ func TestEmitMetricsExemplars_RangeDurationFallback(t *testing.T) {
 	m := &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 
 	cases := []struct {
@@ -446,7 +446,7 @@ func TestEmitMetricsExemplars_NumAnchorsBoundary(t *testing.T) {
 	m := &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 
 	cases := []struct {
@@ -536,7 +536,7 @@ func TestEmitMetricsExemplars_GroupByDisplayNamesFallback(t *testing.T) {
 				GroupByAliases:      []string{"service"},
 				GroupByDisplayNames: c.displayName,
 				ValueAlias:          "Value",
-				Inner:               &chplan.Scan{Table: "otel_traces"},
+				Inner:               metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 			}
 			rw := &chplan.RangeWindow{
 				Input: m, Step: time.Minute, Range: time.Minute,
@@ -593,7 +593,7 @@ func TestEmitMetricsExemplars_MetricArgEmission_Op154(t *testing.T) {
 				Op:         c.op,
 				Attr:       c.attr,
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 			}
 			rw := &chplan.RangeWindow{
 				Input: m, Step: time.Minute, Range: time.Minute,
@@ -648,7 +648,7 @@ func TestEmitMetricsExemplars_ValueExprOpEquality(t *testing.T) {
 				Op:         c.op,
 				Attr:       c.attr,
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 			}
 			rw := &chplan.RangeWindow{
 				Input: m, Step: time.Minute, Range: time.Minute,
@@ -698,7 +698,7 @@ func TestEmitMetricsAggregate_GroupByBoundary(t *testing.T) {
 				Quantiles:  []float64{0.5, 0.9}, // multi-quantile → exercises the GroupBy branch
 				GroupBy:    c.groupBy,
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 			}
 			sql, _, err := Emit(context.Background(), plan)
 			if err != nil {
@@ -789,7 +789,7 @@ func TestEmitMetricsExemplars_GroupAliasFallback_Iter1039(t *testing.T) {
 		// Two empty aliases → both must fall back to g0 / g1.
 		GroupByAliases: []string{"", ""},
 		ValueAlias:     "Value",
-		Inner:          &chplan.Scan{Table: "otel_traces"},
+		Inner:          metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 	rw := &chplan.RangeWindow{
 		Input: m, Step: time.Minute, Range: time.Minute,
@@ -836,7 +836,7 @@ func TestEmitMetricsAggregate_LogicalAndOnMetricArg(t *testing.T) {
 				Op:         c.op,
 				Attr:       c.attr,
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 			}
 			rw := &chplan.RangeWindow{
 				Input: m, Step: time.Minute, Range: time.Minute,
@@ -867,7 +867,7 @@ func TestEmitMetricsAggregate_BadStartEndPin(t *testing.T) {
 	m := &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 
 	t.Run("Start > End errors", func(t *testing.T) {
@@ -995,7 +995,7 @@ func TestEmitMetricsHistogramOverTimeBucketAliasFallback(t *testing.T) {
 				IsDuration:  true,
 				BucketAlias: c.bucketAlias,
 				ValueAlias:  c.valueAlias,
-				Inner:       &chplan.Scan{Table: "otel_traces"},
+				Inner:       metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 			}
 			sql, _, err := Emit(context.Background(), plan)
 			if err != nil {
@@ -1029,7 +1029,7 @@ func TestEmitMetricsHistogramOverTime_GroupAliasFallback(t *testing.T) {
 		GroupByAliases: []string{"service.name"},
 		BucketAlias:    "__bucket",
 		ValueAlias:     "Value",
-		Inner:          &chplan.Scan{Table: "otel_traces"},
+		Inner:          metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 	sql, _, err := Emit(context.Background(), plan)
 	if err != nil {
@@ -1057,7 +1057,7 @@ func TestEmitMetricsHistogramOverTime_RangeFallback(t *testing.T) {
 		IsDuration:  true,
 		BucketAlias: "__bucket",
 		ValueAlias:  "Value",
-		Inner:       &chplan.Scan{Table: "otel_traces"},
+		Inner:       metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 	cases := []struct {
 		name        string
@@ -1104,7 +1104,7 @@ func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 		IsDuration:  true,
 		BucketAlias: "__bucket",
 		ValueAlias:  "Value",
-		Inner:       &chplan.Scan{Table: "otel_traces"},
+		Inner:       metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 	cases := []struct {
 		name string
@@ -1148,7 +1148,7 @@ func TestEmitMetricsHistogramOverTime_BadStartEndErrors(t *testing.T) {
 		IsDuration:  true,
 		BucketAlias: "__bucket",
 		ValueAlias:  "Value",
-		Inner:       &chplan.Scan{Table: "otel_traces"},
+		Inner:       metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 	plan := &chplan.RangeWindow{
 		Input:           inner,
@@ -1827,7 +1827,7 @@ func TestEmitMetricsExemplars_ArithmeticBoundary118(t *testing.T) {
 	m := &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 	// 5-min span / 1-min step = 5; +1 = 6. With `/` → `*`,
 	// the count would be (5 min)*(1 min) in nanoseconds → huge.
@@ -1953,7 +1953,7 @@ func TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct(t *testing.T) 
 					IsDuration:  true,
 					BucketAlias: c.bucketAlias,
 					ValueAlias:  c.valueAlias,
-					Inner:       &chplan.Scan{Table: "otel_traces"},
+					Inner:       metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 				},
 				Step:            time.Minute,
 				Range:           time.Minute,
@@ -2365,7 +2365,7 @@ func TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary(t *testing.T) {
 				Attr:       &chplan.ColumnRef{Name: "Duration"},
 				Quantiles:  []float64{0.95},
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 			},
 			Step:            time.Minute,
 			Range:           time.Minute,
@@ -2429,7 +2429,7 @@ func TestEmitRangeWindowMetricsQuantileBuckets_SpanAnchorArithmetic(t *testing.T
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			Quantiles:  []float64{0.95},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Range:           time.Minute,
@@ -3016,7 +3016,7 @@ func TestEmitMetricsExemplars_OuterRangeNumAnchors(t *testing.T) {
 	m := &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 	}
 	rw := &chplan.RangeWindow{
 		Input:           m,
@@ -3051,7 +3051,7 @@ func TestEmitMetricsExemplars_QuantileKeyBranch(t *testing.T) {
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			Quantiles:  []float64{0.95},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 		}
 		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
 		_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
@@ -3076,7 +3076,7 @@ func TestEmitMetricsExemplars_QuantileKeyBranch(t *testing.T) {
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			Quantiles:  []float64{0.5, 0.9},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 		}
 		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
 		_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
@@ -3105,7 +3105,7 @@ func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
 		m := &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 		}
 		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
 		_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
@@ -3127,7 +3127,7 @@ func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
 			GroupByAliases: []string{"service"},
 			ValueAlias:     "Value",
-			Inner:          &chplan.Scan{Table: "otel_traces"},
+			Inner:          metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
 		}
 		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
 		_, args, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
