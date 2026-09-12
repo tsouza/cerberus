@@ -193,7 +193,7 @@ type SettingsRules struct {
 	// (chclient.ProbeQueryWorkloadCapability) found the connected server
 	// accepts the `workload` setting; a Forbidden/Unreachable verdict leaves
 	// this empty (permissive/auto fallback — see docs/operations.md
-	// #workload-scheduling), so the byte-identical-by-default guarantee
+	// #workload-scheduling-server-side-isolation-between-query-and-ingest), so the byte-identical-by-default guarantee
 	// holds whether the knob is simply unset or the probe found it
 	// unusable. cerberus never creates the named WORKLOAD itself — see
 	// SettingWorkload's own doc.

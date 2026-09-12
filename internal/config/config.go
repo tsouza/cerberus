@@ -363,7 +363,7 @@ type Config struct {
 	// non-empty (default empty — no setting stamped, byte-identical to
 	// before this knob existed). It names a workload the OPERATOR has
 	// already created server-side (`CREATE RESOURCE` / `CREATE WORKLOAD`,
-	// see docs/operations.md#workload-scheduling); cerberus never creates or
+	// see docs/operations.md#workload-scheduling-server-side-isolation-between-query-and-ingest); cerberus never creates or
 	// alters WORKLOAD/RESOURCE objects itself — that DDL runs against a
 	// cluster cerberus does not own in the common (bring-your-own-ClickHouse)
 	// deployment. cmd/cerberus probes at boot (ProbeQueryWorkloadCapability)
