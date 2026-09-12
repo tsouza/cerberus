@@ -1,18 +1,13 @@
 name: mutation
 
-# Mutation testing runs on push-to-main + nightly + manual dispatch, and on
-# pull_request for author-time visibility.
+# Mutation testing runs a required diff-scoped core gate on pull requests and
+# merge groups. Push-to-main, nightly, and manual dispatch sweep the full matrix.
 #
-# `mutation` is INFORMATIONAL on an ordinary PR (#2230, the merge/release
-# two-tier split): mutation quality is a release-gate concern — it is not in
-# release.yml's RELEASE_REQUIRED_CHECKS either (see the `mutation` row in
-# docs/operations.md's de-gated-lanes table), only its RELEASE_INFORMATIONAL_
-# CHECKS — so a genuinely full verdict is only ever load-bearing on push-to-
-# main + nightly, never on a PR or a publish. The diff-scoped selection below
-# is kept anyway, deliberately NOT collapsed to a blanket no-op like the other
-# lanes #2230 demoted: it is cheap by construction (most PRs queue one leg or
-# none) and it is what closes the v1.13.2-cycle hollow-green class described
-# below, so it still buys early, real, PR-time signal for the cost.
+# `mutation` is a required context on ordinary PRs. Its verdict is deliberately
+# scoped to the mutation phases whose production surface the PR changes, while
+# the identical SHA receives the complete matrix after it lands on main. This
+# keeps the change-owning core gate load-bearing without charging every PR for
+# the full repository sweep.
 #
 # On an ordinary PR the `mutate` matrix runs the legs whose SCOPE the PR
 # changed, and production-only edits use gremlins' merge-base changed-line
@@ -36,8 +31,7 @@ name: mutation
 # green, and surface the regression on the release PR, where it blocked the
 # release instead of the change that caused it. Scoping keeps the wall-clock
 # win that motivated the skip (most PRs still queue one leg or none) without
-# the blind spot, and that property holds regardless of whether `mutation` is
-# a required context.
+# the blind spot while keeping the required PR context bounded.
 #
 # The single `mutation` aggregator job passes through green ONLY when the
 # selector proved no phase scope changed, and fails if the selector itself
@@ -45,9 +39,8 @@ name: mutation
 
 on:
   pull_request:
-  # `mutation` is informational (see the header above), but the aggregator
-  # still posts inside the merge queue for the same early-signal reason it
-  # runs on an ordinary PR. The merge group selects legs from its OWN diff
+  # The required aggregator posts inside the merge queue as well as on the PR.
+  # The merge group selects legs from its OWN diff
   # (`base_sha..head_sha`, the union of the batched PRs' diffs) exactly as a
   # PR does — see the merge_group clause in .github/scripts/lib/scope-gate.mjs.
   merge_group:
@@ -388,9 +381,8 @@ jobs:
           retention-days: 14
 
   # Single rolled-up check context (mirrors compose-smoke), named `mutation`
-  # rather than any per-phase `gremlins …` name — not a branch-protection
-  # required context (#2230), but still the one name a reader or a future
-  # re-promotion resolves. The matrix above exposes ONE .result to dependents:
+  # rather than any per-phase `gremlins …` name. This is the branch-ruleset
+  # required context. The matrix above exposes ONE .result to dependents:
   # `success` only if EVERY selected phase succeeded, `failure`/`cancelled` if
   # any did, `skipped` when nothing in any phase scope changed. `if: always()`
   # guarantees the context always REPORTS (never resolves to "Expected" /
