@@ -467,6 +467,9 @@ its own head's corpus. For the AGPL-backed heads, the three-tag set keeps each
 in-house parser and its independent reference evaluator in the same binary; the
 parity seam fails loudly if that evaluator compiles out, so a self-comparison
 cannot report green.
+The LogQL matrix leg also runs the narrowly selected `test/spec` parity-exemption
+helper tests once, under the same three tags; this executes the shared and Tempo
+classification seams without repeating them in every corpus shard.
 
 PromQL's leg outgrew a single `roundtrip` matrix entry (700+ TXTAR fixtures) and
 runs as its own `roundtrip-promql-shard` matrix instead — one dedicated runner

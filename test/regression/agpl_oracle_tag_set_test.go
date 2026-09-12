@@ -122,6 +122,13 @@ var agplOracleLanes = []agplOracleLane{
 		packages: []string{"./test/integration/logql/..."},
 	},
 	{
+		name:      "chdb.yml → parity exemption liveness helpers",
+		source:    ".github/workflows/chdb.yml",
+		tags:      []string{"chdb", "agpl_oracle", "chdb_agpl_oracle"},
+		packages:  []string{"./test/spec"},
+		runFilter: `^Test(ExemptionVerdict|CompareAgainstReferenceClassifiesOnlyAnswerMismatch|ConflictingDuplicateTimestampRefusal|OrderSensitiveSelectionPermutation|LimitKReferenceAnswerChangesWithSeriesSchedule|SynthesizedParity|SynthesizedParityRequiresExactlyOneQuerySection|TempoSpanIdentityErrorClassification)$`,
+	},
+	{
 		// The TXTAR round-trip matrix. Its `go test` is built in
 		// chdb-roundtrip.mjs (it needs an explicit per-process -timeout a
 		// `run:` line cannot carry), so the package patterns are asserted
