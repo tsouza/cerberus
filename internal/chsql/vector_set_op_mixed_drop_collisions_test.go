@@ -15,7 +15,7 @@ import (
 // arm, a float-shaped arm, and the survival rule under test.
 func mixedDropCollisionsPlan(drop bool) *chplan.VectorSetOp {
 	histArm := &chplan.HistogramProjection{
-		Input:                      vectorSetOpTestScan("otel_metrics_exponential_histogram"),
+		Input:                      vectorSetOpHistogramTestScan("otel_metrics_exponential_histogram"),
 		CountColumn:                "Count",
 		SumColumn:                  "Sum",
 		ScaleColumn:                "Scale",
@@ -70,6 +70,15 @@ func vectorSetOpTestRoles() []chplan.Column {
 
 func vectorSetOpTestScan(table string) *chplan.Scan {
 	roles := vectorSetOpTestRoles()
+	columns := make([]string, len(roles))
+	for i, role := range roles {
+		columns[i] = role.Name
+	}
+	return &chplan.Scan{Table: table, Columns: columns, Roles: roles}
+}
+
+func vectorSetOpHistogramTestScan(table string) *chplan.Scan {
+	roles := append(vectorSetOpTestRoles(), chplan.HistogramPayloadColumns()...)
 	columns := make([]string, len(roles))
 	for i, role := range roles {
 		columns[i] = role.Name

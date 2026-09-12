@@ -812,6 +812,8 @@ func buildHistogramBucketFanout(
 	// histogram row. No-op (returns rawSide unchanged) when leMatchers is
 	// empty — every non-classic-histogram caller passes nil.
 	rawSide = classicBucketLeRestriction(rawSide, leMatchers, s)
+	fanoutGroupBy := canonicalGroupKeyExprs(userGroupBy, s)
+	rawSide = closeRangeBucketFanoutInput(rawSide, s.TimestampColumn, fanoutGroupBy, aggFuncs)
 
 	return &chplan.RangeBucketFanout{
 		Input:    rawSide,
@@ -825,11 +827,67 @@ func buildHistogramBucketFanout(
 		// Canonicalising here rather than at each caller keeps the one
 		// path that reaches this node from splitting into a canonical
 		// and a non-canonical variant.
-		GroupBy:        canonicalGroupKeyExprs(userGroupBy, s),
+		GroupBy:        fanoutGroupBy,
 		GroupByAliases: userAliases,
 		AggFuncs:       aggFuncs,
 		MinSamples:     win.minSamples,
 		AnchorAlias:    stepGridAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
 	}
+}
+
+// closeRangeBucketFanoutInput makes the fan-out's physical input contract
+// explicit. Its emitter reads input-only columns by semantic role, so an open
+// Scan schema is not sufficient even when the storage names happen to match.
+// The matcher Filter remains below this projection and can still read every
+// storage column it needs.
+func closeRangeBucketFanoutInput(input chplan.Node, timestamp string, groupBy []chplan.Expr, aggFuncs []chplan.AggFunc) chplan.Node {
+	names := make([]string, 0, 1+len(groupBy)+len(aggFuncs))
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	collect := func(expr chplan.Expr) {
+		chplan.InspectExpr(expr, func(part chplan.Expr) bool {
+			if column, ok := part.(*chplan.ColumnRef); ok {
+				add(column.Name)
+			}
+			return true
+		})
+	}
+	add(timestamp)
+	for _, expr := range groupBy {
+		collect(expr)
+	}
+	for _, agg := range aggFuncs {
+		for _, expr := range agg.Params {
+			collect(expr)
+		}
+		for _, expr := range agg.Args {
+			collect(expr)
+		}
+	}
+
+	inputSchema := input.RowType()
+	roles := make([]chplan.Column, len(names))
+	projections := make([]chplan.Projection, len(names))
+	for i, name := range names {
+		roles[i] = chplan.Column{Name: name}
+		if column, ok := inputSchema.ByName(name); ok {
+			roles[i] = column
+		}
+		expr := chplan.Expr(&chplan.ColumnRef{Name: name})
+		if roles[i].Role == chplan.RoleAttributes {
+			expr = chplan.CanonicalAttributesExpr(expr)
+		}
+		projections[i] = chplan.Projection{Expr: expr, Alias: name}
+	}
+	return &chplan.Project{Input: input, Projections: projections, Roles: roles}
 }

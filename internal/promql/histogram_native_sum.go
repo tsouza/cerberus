@@ -279,7 +279,7 @@ func expHistogramGroupMergeFanout(perSeries chplan.Node, anchor *chplan.ColumnRe
 	}
 	projs = append(projs, fields...)
 	// Routed through expHistogramMergeSortStage first — see its doc.
-	return &chplan.Project{Roles: metricRoles(s), Input: expHistogramMergeSortStage(merged, maxCostUnits), Projections: projs}
+	return &chplan.Project{Roles: expHistogramRoles(s), Input: expHistogramMergeSortStage(merged, maxCostUnits), Projections: projs}
 }
 
 // lowerExpHistogramSumOrAvgOverPlan applies a cross-series SUM/AVG to an
@@ -317,7 +317,7 @@ func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.N
 		fields = expHistogramAvgScaleProjections(fields, histSchema)
 	}
 	reshaped := &chplan.Project{
-		Roles: metricRoles(s),
+		Roles: expHistogramRoles(s),
 		// Routed through expHistogramMergeSortStage first — see its doc.
 		Input: expHistogramMergeSortStage(merged, maxCostUnits),
 		Projections: append([]chplan.Projection{

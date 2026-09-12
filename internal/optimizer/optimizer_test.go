@@ -542,7 +542,17 @@ var inputs = map[string]chplan.Node{
 	// only these columns ever reach the collapse SELECT that consumes it.
 	"pushdown_through_range_bucket_fanout": &chplan.RangeBucketFanout{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_histogram"},
+			Input: &chplan.Scan{
+				Table:   "otel_metrics_histogram",
+				Columns: []string{"MetricName", "Attributes", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+				Roles: []chplan.Column{
+					{Name: "MetricName", Role: chplan.RoleMetricName},
+					{Name: "Attributes", Role: chplan.RoleAttributes},
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "BucketCounts"},
+					{Name: "ExplicitBounds"},
+				},
+			},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},

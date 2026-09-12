@@ -450,7 +450,7 @@ func TestRangeBucketFanoutInnerScanTimeBound_BothSet(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeBucketFanout{
-		Input:        &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:        closedTimestampTestScan("otel_metrics_exponential_histogram", "TimeUnix", "Attributes", "BucketCounts"),
 		Start:        start,
 		End:          end,
 		Step:         30 * time.Second,
@@ -744,7 +744,7 @@ func TestRangeBucketFanoutInnerScanTimeBound_OnlyOneSet(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeBucketFanout{
-				Input:        &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+				Input:        closedTimestampTestScan("otel_metrics_exponential_histogram", "TimeUnix", "Attributes", "BucketCounts"),
 				Start:        c.start,
 				End:          c.end,
 				Step:         30 * time.Second,
@@ -787,7 +787,7 @@ func TestRangeBucketFanoutInnerScanTimeBound_OffsetAndSpanEdges(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeBucketFanout{
-		Input:        &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:        closedTimestampTestScan("otel_metrics_exponential_histogram", "TimeUnix", "Attributes", "BucketCounts"),
 		Start:        start,
 		End:          end,
 		Step:         30 * time.Second,
@@ -845,7 +845,7 @@ func TestRangeBucketFanoutZeroSpanGridAccepted(t *testing.T) {
 	at := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 
 	plan := &chplan.RangeBucketFanout{
-		Input:        &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:        closedTimestampTestScan("otel_metrics_exponential_histogram", "TimeUnix", "Attributes", "BucketCounts"),
 		Start:        at,
 		End:          at, // span == 0
 		Step:         30 * time.Second,
@@ -1173,7 +1173,7 @@ func TestRangeBucketFanoutRejectsBadInput(t *testing.T) {
 	}
 	mkBase := func() chplan.RangeBucketFanout {
 		return chplan.RangeBucketFanout{
-			Input:        &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+			Input:        closedTimestampTestScan("otel_metrics_exponential_histogram", "TimeUnix", "Attributes", "BucketCounts"),
 			Start:        start,
 			End:          end,
 			Step:         30 * time.Second,

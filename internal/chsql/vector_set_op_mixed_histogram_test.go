@@ -18,8 +18,17 @@ import (
 // [nativeHistogramProjection] in internal/promql does, so this is a
 // faithful stand-in for a real lowering's output.
 func mixedSetOpHistogramArm() *chplan.HistogramProjection {
+	input := closedHistogramTestScan("otel_metrics_exponential_histogram", false)
+	identity := []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	input.Roles = append(identity, input.Roles...)
+	input.Columns = append([]string{"MetricName", "Attributes", "TimeUnix", "Value"}, input.Columns...)
 	return &chplan.HistogramProjection{
-		Input:                      setOpTestScan("otel_metrics_exponential_histogram"),
+		Input:                      input,
 		CountColumn:                "Count",
 		SumColumn:                  "Sum",
 		ScaleColumn:                "Scale",

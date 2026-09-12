@@ -272,7 +272,8 @@ func lowerExpHistogramBareMatrix(ms *parser.MatrixSelector, vs *parser.VectorSel
 	pred := andExpr(buildPredicate(vs.LabelMatchers, s), timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
 
-	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
+	roles := expHistogramRoles(s)
+	scan := &chplan.Scan{Roles: roles, Columns: roleNames(roles), Table: s.ExpHistogramTable}
 	var input chplan.Node = scan
 	if pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}

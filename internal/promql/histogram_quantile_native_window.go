@@ -471,7 +471,11 @@ func expHistogramWindowReshape(
 		})
 	}
 	return &chplan.Project{
-		Roles: metricRoles(s),
+		// This projection publishes configured physical histogram fields for
+		// HistogramProjection to consume. Keep their semantic identities on
+		// the closed child schema; the public sample quartet alone does not
+		// describe these input-only columns.
+		Roles: expHistogramRoles(s),
 		Input: input,
 		Projections: append(
 			projs,

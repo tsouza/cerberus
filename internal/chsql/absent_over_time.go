@@ -65,6 +65,10 @@ import (
 // visible to the planner and parameterising them would force CH to
 // re-plan per request.
 func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
+	inputTimestamp, err := timestampChildColumn("AbsentOverTime", a.Input)
+	if err != nil {
+		return err
+	}
 	inner, err := e.subqueryFrag(a.Input)
 	if err != nil {
 		return err
@@ -88,9 +92,9 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 	// Global prefilter `(<prefilterStart> - Range, <end>]` — bounds the
 	// matcher scan to timestamps relevant to any anchor's lookback.
 	prefilterWhere := And(
-		Gt(Col(a.TimestampColumn),
+		Gt(Col(inputTimestamp),
 			Sub(prefilterStartFrag, Call("toIntervalNanosecond", InlineLit(rangeNS)))),
-		Lte(Col(a.TimestampColumn), endFrag),
+		Lte(Col(inputTimestamp), endFrag),
 	)
 
 	var emptyWindow *QueryBuilder
@@ -117,7 +121,7 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 			From(inner).
 			Select(As(
 				absentOverTimeCoveredAnchorFrag(
-					prefilterStartFrag, Col(a.TimestampColumn), stepNS, rangeNS, numAnchors,
+					prefilterStartFrag, Col(inputTimestamp), stepNS, rangeNS, numAnchors,
 				),
 				"anchor_ts",
 			)).
@@ -138,7 +142,7 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		// empty input (groupArray over no rows = `[]`).
 		innermost := NewQuery().
 			From(inner).
-			Select(As(Call("groupArray", Col(a.TimestampColumn)), "sample_ts_arr")).
+			Select(As(Call("groupArray", Col(inputTimestamp)), "sample_ts_arr")).
 			Where(prefilterWhere)
 
 		// Single-anchor projection alongside the 1-row `sample_ts_arr`.

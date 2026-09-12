@@ -11,7 +11,16 @@ import (
 // required column name, so a test can vary GroupBy / GroupByAliases alone.
 func histogramProjectionPlan(groupBy []chplan.Expr, aliases []string) *chplan.HistogramProjection {
 	return &chplan.HistogramProjection{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input: closedRoleProject(
+			chplan.Column{Name: "Count", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldCount},
+			chplan.Column{Name: "Sum", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldSum},
+			chplan.Column{Name: "Scale", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldScale},
+			chplan.Column{Name: "ZeroCount", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldZeroCount},
+			chplan.Column{Name: "PositiveOffset", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldPositiveOffset},
+			chplan.Column{Name: "PositiveBucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldPositiveBucketCounts},
+			chplan.Column{Name: "NegativeOffset", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldNegativeOffset},
+			chplan.Column{Name: "NegativeBucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldNegativeBucketCounts},
+		),
 		GroupBy:                    groupBy,
 		GroupByAliases:             aliases,
 		ScaleColumn:                "Scale",

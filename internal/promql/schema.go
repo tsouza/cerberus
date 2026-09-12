@@ -85,3 +85,21 @@ func metricScanRoles(s schema.Metrics, table string) []chplan.Column {
 	}
 	return roles
 }
+
+// expHistogramRoles declares both the public sample columns and the physical
+// exponential-histogram payload consumed by downstream plan nodes. Unlike a
+// Scan declaration, it is also suitable for reshaping Project and Aggregate
+// nodes whose output retains those physical fields.
+func expHistogramRoles(s schema.Metrics) []chplan.Column {
+	return metricScanRoles(s, s.ExpHistogramTable)
+}
+
+func roleNames(columns []chplan.Column) []string {
+	names := make([]string, 0, len(columns))
+	for _, column := range columns {
+		if column.Name != "" {
+			names = append(names, column.Name)
+		}
+	}
+	return names
+}
