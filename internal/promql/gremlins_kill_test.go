@@ -933,20 +933,13 @@ func TestAbsentAttrsMap_NameSkipContinuesPastLaterMatchers(t *testing.T) {
 
 // TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop pins that a
 // mixed-payload column does not swallow the projection after it: the
-// payload column is skipped by the `continue` under
+// payload column is handled by the first branch under
 // duplicate_labelset_guard.go:`if mixed && mixedPayload[name]` and the
 // trailing projection still reaches the group key. The fixture needs a
 // mixed-payload column FOLLOWED by another projection, and forces
 // `keyOnStep = true` (via an Aggregate input whose GroupByAliases already
 // names the timestamp column, see guardKeysOnTimestamp) so that trailing
 // projection lands in the group key, then asserts its alias survived.
-//
-// It does NOT kill the INVERT_LOOPCTRL mutant on that `continue`, and no
-// test can: the rewrite is equivalent, adjudicated in this package's NOT
-// KILLABLE footer (gremlins_kill_window_bounds_test.go, class 7). The
-// `continue` sits inside a `switch` that is the whole body of the `for`,
-// so `break` binds to the switch rather than to the loop and control
-// reaches the next iteration either way.
 func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) {
 	t.Parallel()
 
@@ -1011,11 +1004,6 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 // non-canonical projections in a row and an Aggregate input that already
 // names the timestamp column, so `keyOnStep` is true and both take the
 // duplicate_labelset_guard.go:`if keyOnStep` branch.
-//
-// Like its mixed-payload sibling above, it does NOT kill the
-// INVERT_LOOPCTRL mutant on that branch's `continue` — the rewrite is
-// equivalent for the same reason, and is adjudicated in this package's
-// NOT KILLABLE footer (gremlins_kill_window_bounds_test.go, class 7).
 func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 	t.Parallel()
 

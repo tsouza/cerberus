@@ -168,9 +168,7 @@ func vectorVectorArithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema
 			// one-to-one.
 			return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 		}
-		if len(b.VectorMatching.Include) > 0 {
-			include = append([]string(nil), b.VectorMatching.Include...)
-		}
+		include = append([]string(nil), b.VectorMatching.Include...)
 	}
 
 	lhsSetOp, lhsOk := mixedExpHistogramSetOp(b.LHS, s, ctx)

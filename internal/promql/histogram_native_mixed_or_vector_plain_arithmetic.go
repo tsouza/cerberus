@@ -222,9 +222,7 @@ func vectorPlainArithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema.
 			// one-to-one.
 			return nil, nil, false, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 		}
-		if len(b.VectorMatching.Include) > 0 {
-			include = append([]string(nil), b.VectorMatching.Include...)
-		}
+		include = append([]string(nil), b.VectorMatching.Include...)
 	}
 	return mixedSetOp, plainExpr, mixedOnLeft, chOp, mixedExpHistogramMatch(b), card, include, true
 }
