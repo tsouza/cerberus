@@ -56,10 +56,8 @@ const REGISTRY_SURFACE = registryMutableFiles({ registry: REGISTRY });
 const select = (changed, over = {}) =>
   selectPhases({
     phases: PHASES,
-    harnessPaths: HARNESS_PATHS,
     registryGlobs: REGISTRY_SURFACE.globs,
     eventName: 'pull_request',
-    headRef: 'feat/some-branch',
     changed: changed === null ? null : new Set(changed),
     ...over,
   });
@@ -180,7 +178,10 @@ test('registry semantic projection comparison fails closed and distinguishes rel
 
   sources.set(`${head}:${MUTATION_REGISTRY_PATH}`, '{');
   assert.equal(status().failed, true);
-  assert.equal(select([MUTATION_REGISTRY_PATH], { semanticHarness: status() }).phases.length, PHASES.length);
+  assert.throws(
+    () => select([MUTATION_REGISTRY_PATH], { semanticHarness: status() }),
+    /semantic harness projection could not be computed/,
+  );
 });
 
 test('phase claims outside the registry surface fail bidirectionally', () => {
@@ -252,12 +253,12 @@ test('the committed mutation efficacy floor rejects weakening', () => {
   assert.deepEqual(problems, ['phase "phase1" has efficacy 94, below the committed minimum 95']);
 });
 
-test('push, schedule, dispatch and release PRs all run the full matrix', () => {
+test('push, schedule, and dispatch run the full matrix while release PRs stay scoped', () => {
   for (const eventName of ['push', 'schedule', 'workflow_dispatch']) {
     assert.equal(select(['docs/engine.md'], { eventName }).phases.length, PHASES.length, eventName);
   }
-  const release = select(['CHANGELOG.md'], { headRef: 'release/v1.13.2-chart-0.13.2' });
-  assert.equal(release.phases.length, PHASES.length);
+  const release = select(['CHANGELOG.md']);
+  assert.deepEqual(release.phases, []);
 });
 
 test('a merge-queue batch selects legs from its own diff, like a pull request', () => {
@@ -266,19 +267,15 @@ test('a merge-queue batch selects legs from its own diff, like a pull request', 
   // selected. Sweeping the full matrix here instead would bill every batch 18
   // gremlins legs on top of the push-to-main sweep that lands the same SHA — the
   // wall-clock cost scoping exists to remove, paid twice.
-  const inQueue = { eventName: 'merge_group', headRef: '' };
+  const inQueue = { eventName: 'merge_group' };
   assert.deepEqual(names(select(['internal/chplan/plan.go'], inQueue)), ['phase1']);
   assert.deepEqual(select(['docs/engine.md'], inQueue).phases, []);
 
-  // The safety net is unchanged: a batch whose diff cannot be computed sweeps
-  // everything rather than selecting nothing.
-  assert.equal(select(null, inQueue).phases.length, PHASES.length);
+  assert.throws(() => select(null, inQueue), /changed-path set could not be computed/);
 });
 
-test('an uncomputable diff runs the full matrix rather than nothing', () => {
-  const result = select(null);
-  assert.equal(result.phases.length, PHASES.length);
-  assert.match(result.reason, /could not be computed/);
+test('an uncomputable pull-request diff fails selection rather than running full or nothing', () => {
+  assert.throws(() => select(null), /changed-path set could not be computed/);
 });
 
 test('changed-line projection is bound to the exact merge base and added-line roster', () => {
@@ -367,11 +364,22 @@ test('only production additions receive changed-line mutation refs', () => {
   );
 });
 
-test('a change to the lane harness runs the full matrix', () => {
+test('a change to the lane harness does not promote a PR to the full matrix', () => {
   assert.equal(HARNESS_PATHS.includes('.github/scripts/mutation-run.mjs'), true);
   for (const path of HARNESS_PATHS) {
-    assert.equal(select([path]).phases.length, PHASES.length, path);
+    assert.deepEqual(select([path]).phases, [], path);
   }
+});
+
+test('a registry glob that contains the lane harness does not report harness files as phase gaps', () => {
+  const result = selectPhases({
+    phases: PHASES,
+    registryGlobs: ['.github/**'],
+    eventName: 'pull_request',
+    changed: new Set(['.github/workflows/mutation.yml', '.github/scripts/mutation-matrix.mjs']),
+  });
+  assert.deepEqual(result.phases, []);
+  assert.deepEqual(result.gaps, []);
 });
 
 // The derivation is only worth having if it reaches every kind of edge the lane
@@ -413,14 +421,13 @@ test('HARNESS_PATHS is derived from what the lane executes, one entry per edge k
   assert.deepEqual(HARNESS_PATHS, [...derived, ...MUTATION_DATA_PATHS]);
 });
 
-// Before #2948 this exact diff selected 0 of 30 legs: the guard changed every
-// leg's adjudication and the matrix was skipped, so `mutation` reported green
-// over work that never ran. Asserted against the shipped constant rather than
-// against the closure, because it is the constant the selector reads.
-test('a diff touching only the per-mutant memory guard selects the FULL matrix', () => {
+// Harness correctness is pinned by focused tests. A harness-only pull request
+// must not promote itself to the repository-wide sweep; that sweep runs after
+// the change lands on main.
+test('a diff touching only the per-mutant memory guard selects no mutation phase', () => {
   const result = select(['.github/scripts/mutant-memory-guard.mjs']);
-  assert.equal(result.phases.length, PHASES.length);
-  assert.equal(result.reason, "the lane's own harness changed (.github/scripts/mutant-memory-guard.mjs)");
+  assert.deepEqual(result.phases, []);
+  assert.equal(result.reason, 'no changed path falls in any phase scope');
 });
 
 // The other half of the bar: deriving must not degenerate into "every script in
@@ -542,7 +549,7 @@ test('only the registry uses a semantic harness projection', () => {
   const result = select([MUTATION_REGISTRY_PATH], {
     semanticHarness: { changed: true, failed: false, paths: [MUTATION_REGISTRY_PATH] },
   });
-  assert.equal(result.phases.length, PHASES.length);
+  assert.deepEqual(result.phases, []);
 });
 
 test('a docs-only PR runs no phase at all', () => {
@@ -804,10 +811,8 @@ test('a file every leg excludes is reported as a coverage gap, not dropped', () 
   const phases = [{ phase: 'solo', scope: './internal/chplan', efficacy: 95, workers: 0, exclude_files: '^plan\\.go$' }];
   const result = selectPhases({
     phases,
-    harnessPaths: HARNESS_PATHS,
     registryGlobs: REGISTRY_SURFACE.globs,
     eventName: 'pull_request',
-    headRef: 'feat/x',
     changed: new Set(['internal/chplan/plan.go']),
   });
   assert.deepEqual(result.phases, []);
