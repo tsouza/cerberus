@@ -135,7 +135,7 @@ func lowerVectorScalar(vec syntax.Expr, s schema.Logs, op chplan.BinaryOp, scala
 		return &chplan.Filter{Input: inner, Predicate: opExpr}, nil
 	}
 
-	return projectValueOverLogInner(inner, s, newValue), nil
+	return projectValueOverLogInner(inner, s, newValue)
 }
 
 // lowerVectorVector handles vector-vector binops. Both legs lower to a
@@ -182,8 +182,14 @@ func lowerVectorVector(b *syntax.BinOpExpr, s schema.Logs, op chplan.BinaryOp, r
 		return nil, err
 	}
 
-	leftShaped := sampleShapeOverLogInner(left, s)
-	rightShaped := sampleShapeOverLogInner(right, s)
+	leftShaped, err := sampleShapeOverLogInner(left, s)
+	if err != nil {
+		return nil, err
+	}
+	rightShaped, err := sampleShapeOverLogInner(right, s)
+	if err != nil {
+		return nil, err
+	}
 
 	return &chplan.VectorJoin{
 		Left:       leftShaped,
@@ -257,9 +263,17 @@ func lowerVectorSetOp(b *syntax.BinOpExpr, s schema.Logs, lc lowerCtx) (chplan.N
 	// evaluation timestamp — so the match key is (signature, anchor).
 	// Instant mode carries one row per series with an arm-local
 	// timestamp, so it keys on the signature alone.
+	leftShaped, err := sampleShapeOverLogInner(left, s)
+	if err != nil {
+		return nil, err
+	}
+	rightShaped, err := sampleShapeOverLogInner(right, s)
+	if err != nil {
+		return nil, err
+	}
 	return &chplan.VectorSetOp{
-		Left:             sampleShapeOverLogInner(left, s),
-		Right:            sampleShapeOverLogInner(right, s),
+		Left:             leftShaped,
+		Right:            rightShaped,
 		Op:               kind,
 		Match:            match,
 		StepAligned:      lc.Step > 0,
@@ -419,6 +433,7 @@ func isComparison(op chplan.BinaryOp) bool {
 type logSampleShape struct {
 	metricName chplan.Expr
 	attrsCol   string
+	valueCol   string
 	timeExpr   chplan.Expr
 	// hasNativeTime reports whether timeExpr forwards a real per-row
 	// timestamp column the inner plan exposes (a vector-aggregate
@@ -429,28 +444,69 @@ type logSampleShape struct {
 	hasNativeTime bool
 }
 
-func logSampleColumns(inner chplan.Node, s schema.Logs) logSampleShape {
-	if isVectorAggregateSampleShape(inner) {
-		return logSampleShape{
-			metricName:    &chplan.ColumnRef{Name: "MetricName"},
-			attrsCol:      "Attributes",
-			timeExpr:      &chplan.ColumnRef{Name: "TimeUnix"},
-			hasNativeTime: true,
-		}
+func logSampleColumns(inner chplan.Node, s schema.Logs) (logSampleShape, error) {
+	if shape, matched, err := resolveLogSampleShape(inner.RowType()); err != nil {
+		return logSampleShape{}, err
+	} else if matched {
+		return shape, nil
 	}
 	if bottomsOutAtMatrixRangeWindow(inner) {
 		return logSampleShape{
 			metricName:    &chplan.LitString{V: ""},
 			attrsCol:      s.ResourceAttributesColumn,
+			valueCol:      rangeAggSynthValueColumn,
 			timeExpr:      &chplan.ColumnRef{Name: matrixBucketColumn(inner)},
 			hasNativeTime: true,
-		}
+		}, nil
 	}
 	return logSampleShape{
 		metricName: &chplan.LitString{V: ""},
 		attrsCol:   s.ResourceAttributesColumn,
+		valueCol:   rangeAggSynthValueColumn,
 		timeExpr:   chplan.NowNano(),
+	}, nil
+}
+
+// resolveLogSampleShape resolves the public Sample contract by semantic role.
+// MetricName is the claim marker: raw LogQL metric intermediates may expose
+// Attributes, Timestamp, and Value roles without yet being Sample-shaped.
+// Once MetricName is declared, the schema must be closed and publish exactly
+// one uniquely named column for every required role.
+func resolveLogSampleShape(row chplan.Schema) (logSampleShape, bool, error) {
+	claimsSample := row.Has(chplan.RoleMetricName)
+	if !claimsSample {
+		return logSampleShape{}, false, nil
 	}
+	if row.Open {
+		return logSampleShape{}, false, fmt.Errorf("logql: sample layout requires closed schema")
+	}
+	names := make(map[chplan.ColumnRole]string, 4)
+	physicalRoles := make(map[string]chplan.ColumnRole, 4)
+	for _, role := range []chplan.ColumnRole{chplan.RoleMetricName, chplan.RoleAttributes, chplan.RoleTimestamp, chplan.RoleValue} {
+		for _, column := range row.Columns {
+			if column.Role != role {
+				continue
+			}
+			if column.Name == "" || names[role] != "" {
+				return logSampleShape{}, false, fmt.Errorf("logql: sample layout requires one named column for role %d", role)
+			}
+			names[role] = column.Name
+		}
+		if names[role] == "" {
+			return logSampleShape{}, false, fmt.Errorf("logql: sample layout missing role %d", role)
+		}
+		if previous, exists := physicalRoles[names[role]]; exists && previous != role {
+			return logSampleShape{}, false, fmt.Errorf("logql: sample layout roles %d and %d share output %q", previous, role, names[role])
+		}
+		physicalRoles[names[role]] = role
+	}
+	return logSampleShape{
+		metricName:    &chplan.ColumnRef{Name: names[chplan.RoleMetricName]},
+		attrsCol:      names[chplan.RoleAttributes],
+		valueCol:      names[chplan.RoleValue],
+		timeExpr:      &chplan.ColumnRef{Name: names[chplan.RoleTimestamp]},
+		hasNativeTime: true,
+	}, true, nil
 }
 
 // projectValueOverLogInner wraps inner with a Project that re-shapes
@@ -464,8 +520,11 @@ func logSampleColumns(inner chplan.Node, s schema.Logs) logSampleShape {
 // `(ResourceAttributes, Value)` form) means [Lang.ProjectSamples] and
 // any enclosing binop see a Sample-shaped scope regardless of how
 // deeply wraps nest.
-func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.Expr) chplan.Node {
-	cols := logSampleColumns(inner, s)
+func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.Expr) (chplan.Node, error) {
+	cols, err := logSampleColumns(inner, s)
+	if err != nil {
+		return nil, err
+	}
 	return &chplan.Project{
 		Roles: logRoles(s),
 		Input: inner,
@@ -475,7 +534,7 @@ func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.
 			{Expr: cols.timeExpr, Alias: "TimeUnix"},
 			{Expr: newValue, Alias: rangeAggSynthValueColumn},
 		},
-	}
+	}, nil
 }
 
 // sampleShapeOverLogInner re-shapes a LogQL inner plan into the canonical
@@ -497,8 +556,11 @@ func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.
 // single timestamp — the per-side argMax dedup then collapsed the
 // matrix to one row per series and every range-mode LogQL join
 // returned an empty matrix.
-func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) chplan.Node {
-	cols := logSampleColumns(inner, s)
+func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) (chplan.Node, error) {
+	cols, err := logSampleColumns(inner, s)
+	if err != nil {
+		return nil, err
+	}
 	return &chplan.Project{
 		Roles: logRoles(s),
 		Input: inner,
@@ -506,62 +568,7 @@ func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) chplan.Node {
 			{Expr: cols.metricName, Alias: "MetricName"},
 			{Expr: &chplan.ColumnRef{Name: cols.attrsCol}, Alias: "Attributes"},
 			{Expr: cols.timeExpr, Alias: "TimeUnix"},
-			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
+			{Expr: &chplan.ColumnRef{Name: cols.valueCol}, Alias: rangeAggSynthValueColumn},
 		},
-	}
-}
-
-// isVectorAggregateSampleShape reports whether inner already carries the
-// canonical Sample contract (MetricName, Attributes, TimeUnix, Value)
-// — i.e. came out of [wrapVectorAggregateForSample] or
-// [lowerVectorVector]. The signal is one of:
-//
-//   - a top-level `*chplan.Project` whose alias list includes
-//     `Attributes` (RangeWindow / lowerLiteral / lowerVector /
-//     label_replace all alias `ResourceAttributes`, so the
-//     `Attributes` alias is specific to the vector-aggregate
-//     re-shape).
-//   - a top-level `*chplan.VectorJoin` — its emitter projects
-//     `L.Attributes` / `L.TimeUnix` / `L.Value` (with the value-fold
-//     `L.Value <op> R.Value`) so the post-join scope already exposes
-//     `Attributes`, not `ResourceAttributes`. Without this branch a
-//     query like `vector(1) + vector(1)` (Grafana's Loki health probe)
-//     surfaces as ClickHouse `code: 47 Unknown expression identifier
-//     'ResourceAttributes'` when [Lang.ProjectSamples] wraps the join
-//     output.
-//   - a top-level `*chplan.VectorSetOp` — its emitter's outer SELECT
-//     projects the canonical (MetricName, Attributes, TimeUnix, Value)
-//     column list verbatim (see internal/chsql/vector_set_op.go).
-//   - a top-level `*chplan.AbsentOverTime` — its emitter synthesises
-//     the canonical 4-column Sample shape directly (see
-//     internal/chsql/absent_over_time.go).
-//   - a top-level `*chplan.TopK` / `*chplan.OrderBy` — both are
-//     row-preserving wraps (`LIMIT K BY` / `ORDER BY`); the LogQL
-//     lowering only ever builds them over a [sampleShapeOverLogInner]
-//     canonical projection, so recurse into the input.
-func isVectorAggregateSampleShape(n chplan.Node) bool {
-	switch v := n.(type) {
-	case *chplan.VectorJoin:
-		return true
-	case *chplan.VectorSetOp:
-		return true
-	case *chplan.AbsentOverTime:
-		return true
-	case *chplan.TopK:
-		return isVectorAggregateSampleShape(v.Input)
-	case *chplan.OrderBy:
-		return isVectorAggregateSampleShape(v.Input)
-	case *chplan.Filter:
-		// A bare comparison (`sum by (svc) (...) > 0`) wraps the inner
-		// plan in a Filter without re-projecting — the Sample columns
-		// (or their absence) pass through untouched, so recurse.
-		return isVectorAggregateSampleShape(v.Input)
-	case *chplan.Project:
-		for _, proj := range v.Projections {
-			if proj.Alias == "Attributes" {
-				return true
-			}
-		}
-	}
-	return false
+	}, nil
 }

@@ -203,7 +203,11 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, 
 		// the generic metric reshape below would re-reference the
 		// `ResourceAttributes` column the per-arm Project has already
 		// consumed into `Attributes`, so forward the union untouched.
-		if isVariantPlan(plan) {
+		variant, err := checkedVariantPlan(plan)
+		if err != nil {
+			return nil, err
+		}
+		if variant {
 			return plan, nil
 		}
 		// Metric queries lower to RangeWindow / Aggregate / Filter(Aggregate),
@@ -228,12 +232,19 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, 
 		// identity rides under the `Attributes` alias instead. Reading
 		// `ResourceAttributes` in that scope surfaces as 502 'Unknown
 		// expression identifier ResourceAttributes' from ClickHouse. Pick
-		// the right column name based on the inner shape — mirrors the
-		// same `isVectorAggregateSampleShape` switch the binop lowering
-		// applies in [sampleShapeOverLogInner].
+		// the right column name from the inner plan's declared schema roles,
+		// shared with the binop lowering in [sampleShapeOverLogInner].
 		attrsCol := s.ResourceAttributesColumn
-		if isVectorAggregateSampleShape(plan) {
-			attrsCol = sampleAttributesCol
+		valueCol := rangeAggSynthValueColumn
+		metricNameExpr := chplan.Expr(&chplan.LitString{V: ""})
+		sampleShape, sampleShaped, err := resolveLogSampleShape(plan.RowType())
+		if err != nil {
+			return nil, err
+		}
+		if sampleShaped {
+			attrsCol = sampleShape.attrsCol
+			valueCol = sampleShape.valueCol
+			metricNameExpr = sampleShape.metricName
 		}
 		// TimeUnix source:
 		//   - Matrix-shape RangeWindow (OuterRange > 0): the inner SELECT
@@ -261,8 +272,8 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, 
 		//     keep the `now64(9) - 5s` synthesis.
 		var tsExpr chplan.Expr
 		switch {
-		case isVectorAggregateSampleShape(plan):
-			tsExpr = &chplan.ColumnRef{Name: sampleTimeUnixCol}
+		case sampleShaped:
+			tsExpr = sampleShape.timeExpr
 		case bottomsOutAtMatrixRangeWindow(plan):
 			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
 		case !l.End.IsZero():
@@ -274,10 +285,10 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, 
 			Roles: logSampleRoles(),
 			Input: plan,
 			Projections: []chplan.Projection{
-				{Expr: &chplan.LitString{V: ""}, Alias: sampleMetricNameCol},
+				{Expr: metricNameExpr, Alias: sampleMetricNameCol},
 				{Expr: &chplan.ColumnRef{Name: attrsCol}, Alias: sampleAttributesCol},
 				{Expr: tsExpr, Alias: sampleTimeUnixCol},
-				{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: sampleValueCol},
+				{Expr: &chplan.ColumnRef{Name: valueCol}, Alias: sampleValueCol},
 			},
 		}, nil
 	}

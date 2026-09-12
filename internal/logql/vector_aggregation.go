@@ -407,7 +407,7 @@ func sortableShapedInner(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowe
 	if err != nil {
 		return nil, err
 	}
-	return sampleShapeOverLogInner(inner, s), nil
+	return sampleShapeOverLogInner(inner, s)
 }
 
 // buildVectorAggFunc produces the AggFunc for the LogQL operator.
