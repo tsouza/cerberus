@@ -16,6 +16,12 @@
           "ProjectSamples",
           "checkedVariantPlan",
           "logSampleColumns"
+        ],
+        "cited": [
+          "checkedVariantPlan",
+          "logRoles",
+          "logSampleColumns",
+          "resolveLogSampleShape"
         ]
       }
     },
@@ -35,6 +41,12 @@
           "ProjectSamples",
           "checkedVariantPlan",
           "logSampleColumns"
+        ],
+        "cited": [
+          "checkedVariantPlan",
+          "logRoles",
+          "logSampleColumns",
+          "resolveLogSampleShape"
         ]
       }
     },
@@ -53,6 +65,12 @@
           "ProjectSamples",
           "checkedVariantPlan",
           "logSampleColumns"
+        ],
+        "cited": [
+          "checkedVariantPlan",
+          "logRoles",
+          "logSampleColumns",
+          "resolveLogSampleShape"
         ]
       }
     },
@@ -73,6 +91,12 @@
           "ProjectSamples",
           "checkedVariantPlan",
           "logSampleColumns"
+        ],
+        "cited": [
+          "checkedVariantPlan",
+          "logRoles",
+          "logSampleColumns",
+          "resolveLogSampleShape"
         ]
       }
     }
