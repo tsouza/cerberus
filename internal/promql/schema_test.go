@@ -40,20 +40,47 @@ func TestRowTypeSyntheticSampleRoles(t *testing.T) {
 func TestRowTypeHistogramStorageRoles(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	s.CountColumn = "custom_count"
-	s.PositiveBucketCountsColumn = "custom_positive"
+	s.SumColumn = "custom_sum"
+	s.ScaleColumn = "custom_scale"
+	s.ZeroThresholdColumn = "custom_zero_threshold"
+	s.ZeroCountColumn = "custom_zero_count"
+	s.PositiveOffsetColumn = "custom_positive_offset"
+	s.PositiveBucketCountsColumn = "custom_positive_buckets"
+	s.NegativeOffsetColumn = "custom_negative_offset"
+	s.NegativeBucketCountsColumn = "custom_negative_buckets"
+	s.BucketCountsColumn = "custom_classic_buckets"
+	s.ExplicitBoundsColumn = "custom_explicit_bounds"
+
+	exponential := map[chplan.HistogramField]string{
+		chplan.HistogramFieldCount:                s.CountColumn,
+		chplan.HistogramFieldSum:                  s.SumColumn,
+		chplan.HistogramFieldScale:                s.ScaleColumn,
+		chplan.HistogramFieldZeroThreshold:        s.ZeroThresholdColumn,
+		chplan.HistogramFieldZeroCount:            s.ZeroCountColumn,
+		chplan.HistogramFieldPositiveOffset:       s.PositiveOffsetColumn,
+		chplan.HistogramFieldPositiveBucketCounts: s.PositiveBucketCountsColumn,
+		chplan.HistogramFieldNegativeOffset:       s.NegativeOffsetColumn,
+		chplan.HistogramFieldNegativeBucketCounts: s.NegativeBucketCountsColumn,
+	}
+	classic := map[chplan.HistogramField]string{
+		chplan.HistogramFieldCount:          s.CountColumn,
+		chplan.HistogramFieldSum:            s.SumColumn,
+		chplan.HistogramFieldBucketCounts:   s.BucketCountsColumn,
+		chplan.HistogramFieldExplicitBounds: s.ExplicitBoundsColumn,
+	}
 	for _, table := range []string{s.HistogramTable, s.ExpHistogramTable} {
 		roles := chplan.Schema{Columns: metricScanRoles(s, table)}
 		if roles.Has(chplan.RoleValue) {
 			t.Errorf("histogram %s falsely declares float Value", table)
 		}
-		count, ok := roles.ByName(s.CountColumn)
-		if !ok || count.Role != chplan.RoleHistogramField {
-			t.Errorf("histogram count role: %#v", count)
-		}
+		want := classic
 		if table == s.ExpHistogramTable {
-			positive, ok := roles.ByName(s.PositiveBucketCountsColumn)
-			if !ok || positive.Role != chplan.RoleHistogramField {
-				t.Errorf("native bucket role: %#v", positive)
+			want = exponential
+		}
+		for identity, name := range want {
+			column, ok := roles.FindHistogramField(identity)
+			if !ok || column.Name != name {
+				t.Errorf("histogram %s identity %d = %#v/%v, want %q", table, identity, column, ok, name)
 			}
 		}
 	}

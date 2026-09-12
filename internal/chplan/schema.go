@@ -19,11 +19,36 @@ const (
 	RoleParentSpanID
 )
 
+// HistogramField identifies one physical histogram component independently
+// of its configured storage name and public histogram-payload role.
+type HistogramField uint8
+
+const (
+	// HistogramFieldNone marks a column with no histogram identity.
+	HistogramFieldNone HistogramField = iota
+	HistogramFieldCount
+	HistogramFieldSum
+	HistogramFieldScale
+	HistogramFieldZeroThreshold
+	HistogramFieldZeroCount
+	HistogramFieldPositiveOffset
+	HistogramFieldPositiveBucketCounts
+	HistogramFieldNegativeOffset
+	HistogramFieldNegativeBucketCounts
+	HistogramFieldBucketCounts
+	HistogramFieldExplicitBounds
+)
+
+func (field HistogramField) valid() bool {
+	return field >= HistogramFieldCount && field <= HistogramFieldExplicitBounds
+}
+
 // Column is one output. An empty Name denotes an unaliased expression whose
 // driver-assigned name cannot be derived without rendering SQL.
 type Column struct {
-	Name string
-	Role ColumnRole
+	Name           string
+	Role           ColumnRole
+	HistogramField HistogramField
 }
 
 // Schema describes a node's own output. Closed schemas preserve SELECT order.
@@ -79,6 +104,32 @@ func (s Schema) Find(role ColumnRole) (Column, bool) {
 // Has reports whether any output carries role.
 func (s Schema) Has(role ColumnRole) bool { _, ok := s.Find(role); return ok }
 
+// FindHistogramField returns the uniquely identified histogram column.
+// Invalid, missing, duplicate, unnamed, wrongly-role-tagged, and physically
+// name-aliased identities fail closed.
+func (s Schema) FindHistogramField(field HistogramField) (Column, bool) {
+	if !field.valid() {
+		return Column{}, false
+	}
+	var found Column
+	seen := false
+	for _, column := range s.Columns {
+		if column.HistogramField != field {
+			continue
+		}
+		if seen || column.Name == "" || column.Role != RoleHistogramField {
+			return Column{}, false
+		}
+		for _, candidate := range s.Columns {
+			if candidate.Name == column.Name && candidate.HistogramField != column.HistogramField {
+				return Column{}, false
+			}
+		}
+		found, seen = column, true
+	}
+	return found, seen
+}
+
 // ByName looks up a named output; unnamed expressions never match.
 func (s Schema) ByName(name string) (Column, bool) {
 	if name != "" {
@@ -114,8 +165,34 @@ func roleColumn(name string, input Schema, declared []Column) Column {
 		HistogramPositiveOffsetColumn, HistogramPositiveBucketCountsColumn,
 		HistogramNegativeOffsetColumn, HistogramNegativeBucketCountsColumn:
 		c.Role = RoleHistogramField
+		c.HistogramField = canonicalHistogramField(name)
 	}
 	return c
+}
+
+func canonicalHistogramField(name string) HistogramField {
+	switch name {
+	case HistogramCountColumn:
+		return HistogramFieldCount
+	case HistogramSumColumn:
+		return HistogramFieldSum
+	case HistogramScaleColumn:
+		return HistogramFieldScale
+	case HistogramZeroThresholdColumn:
+		return HistogramFieldZeroThreshold
+	case HistogramZeroCountColumn:
+		return HistogramFieldZeroCount
+	case HistogramPositiveOffsetColumn:
+		return HistogramFieldPositiveOffset
+	case HistogramPositiveBucketCountsColumn:
+		return HistogramFieldPositiveBucketCounts
+	case HistogramNegativeOffsetColumn:
+		return HistogramFieldNegativeOffset
+	case HistogramNegativeBucketCountsColumn:
+		return HistogramFieldNegativeBucketCounts
+	default:
+		return HistogramFieldNone
+	}
 }
 
 func selectNames(input Schema, names []string, roles []Column) Schema {
@@ -157,20 +234,20 @@ func appendReducers(out, input Schema, funcs []AggFunc, roles []Column) Schema {
 }
 
 func sampleSchema(metric, attributes, timestamp, value string) Schema {
-	return Schema{Columns: []Column{{metric, RoleMetricName}, {attributes, RoleAttributes}, {timestamp, RoleTimestamp}, {value, RoleValue}}}
+	return Schema{Columns: []Column{{Name: metric, Role: RoleMetricName}, {Name: attributes, Role: RoleAttributes}, {Name: timestamp, Role: RoleTimestamp}, {Name: value, Role: RoleValue}}}
 }
 
 func histogramColumns() []Column {
 	return []Column{
-		{HistogramCountColumn, RoleHistogramField},
-		{HistogramSumColumn, RoleHistogramField},
-		{HistogramScaleColumn, RoleHistogramField},
-		{HistogramZeroThresholdColumn, RoleHistogramField},
-		{HistogramZeroCountColumn, RoleHistogramField},
-		{HistogramPositiveOffsetColumn, RoleHistogramField},
-		{HistogramPositiveBucketCountsColumn, RoleHistogramField},
-		{HistogramNegativeOffsetColumn, RoleHistogramField},
-		{HistogramNegativeBucketCountsColumn, RoleHistogramField},
+		{Name: HistogramCountColumn, Role: RoleHistogramField, HistogramField: HistogramFieldCount},
+		{Name: HistogramSumColumn, Role: RoleHistogramField, HistogramField: HistogramFieldSum},
+		{Name: HistogramScaleColumn, Role: RoleHistogramField, HistogramField: HistogramFieldScale},
+		{Name: HistogramZeroThresholdColumn, Role: RoleHistogramField, HistogramField: HistogramFieldZeroThreshold},
+		{Name: HistogramZeroCountColumn, Role: RoleHistogramField, HistogramField: HistogramFieldZeroCount},
+		{Name: HistogramPositiveOffsetColumn, Role: RoleHistogramField, HistogramField: HistogramFieldPositiveOffset},
+		{Name: HistogramPositiveBucketCountsColumn, Role: RoleHistogramField, HistogramField: HistogramFieldPositiveBucketCounts},
+		{Name: HistogramNegativeOffsetColumn, Role: RoleHistogramField, HistogramField: HistogramFieldNegativeOffset},
+		{Name: HistogramNegativeBucketCountsColumn, Role: RoleHistogramField, HistogramField: HistogramFieldNegativeBucketCounts},
 	}
 }
 
@@ -205,6 +282,9 @@ func (s Schema) SampleKind() SampleKind {
 	var histogramSeen [histogramPayloadColumnCount]bool
 	canonicalHistogram := histogramColumns()
 	for _, column := range s.Columns {
+		if (column.Role == RoleHistogramField) != column.HistogramField.valid() {
+			return SampleKindInvalid
+		}
 		if !samplePublicRole(column.Role) {
 			continue
 		}
@@ -224,7 +304,7 @@ func (s Schema) SampleKind() SampleKind {
 		if column.Role == RoleHistogramField {
 			matched := false
 			for i, field := range canonicalHistogram {
-				if column.Name == field.Name {
+				if column.Name == field.Name && column.HistogramField == field.HistogramField {
 					histogramSeen[i] = true
 					matched = true
 					break

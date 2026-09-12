@@ -8,23 +8,23 @@ import (
 )
 
 func TestRowTypeEveryNode(t *testing.T) {
-	roles := []Column{{"name", RoleMetricName}, {"labels", RoleAttributes}, {"time", RoleTimestamp}, {"value", RoleValue}}
+	roles := []Column{{Name: "name", Role: RoleMetricName}, {Name: "labels", Role: RoleAttributes}, {Name: "time", Role: RoleTimestamp}, {Name: "value", Role: RoleValue}}
 	scan := &Scan{Table: "samples", Columns: []string{"name", "labels", "time", "value"}, Roles: roles}
 	key := &ColumnRef{Name: "labels"}
 	groups := []Expr{key}
 	grid := &RangeWindowGridNative{Input: scan, GroupBy: groups, TimestampColumn: "time", ValueColumn: "value"}
-	traceRoles := []Column{{"trace", RoleTraceID}, {"span", RoleSpanID}, {"parent", RoleParentSpanID}}
+	traceRoles := []Column{{Name: "trace", Role: RoleTraceID}, {Name: "span", Role: RoleSpanID}, {Name: "parent", Role: RoleParentSpanID}}
 	traces := &Scan{Table: "spans", Columns: []string{"trace", "span", "parent"}, Roles: traceRoles}
 	canonical := Schema{Columns: roles}
-	groupValue := Schema{Columns: []Column{{"labels", RoleAttributes}, {"value", RoleValue}}}
-	hist := []Column{{"HistogramCount", RoleHistogramField}, {"HistogramSum", RoleHistogramField}, {"HistogramScale", RoleHistogramField}, {"HistogramZeroThreshold", RoleHistogramField}, {"HistogramZeroCount", RoleHistogramField}, {"HistogramPositiveOffset", RoleHistogramField}, {"HistogramPositiveBucketCounts", RoleHistogramField}, {"HistogramNegativeOffset", RoleHistogramField}, {"HistogramNegativeBucketCounts", RoleHistogramField}}
+	groupValue := Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "value", Role: RoleValue}}}
+	hist := histogramColumns()
 	cases := []struct {
 		node Node
 		want Schema
 	}{
 		{scan, canonical},
 		{&OneRow{}, Schema{Columns: []Column{{Name: "1"}}}},
-		{&StepGrid{}, Schema{Columns: []Column{{"anchor_ts", RoleAnchor}}}},
+		{&StepGrid{}, Schema{Columns: []Column{{Name: "anchor_ts", Role: RoleAnchor}}}},
 		{&Filter{Input: scan}, canonical},
 		{&Limit{Input: scan}, canonical},
 		{&OrderBy{Input: scan}, canonical},
@@ -33,7 +33,7 @@ func TestRowTypeEveryNode(t *testing.T) {
 		{&TopK{Input: scan, Columns: []string{"labels", "value"}}, groupValue},
 		{&Project{Input: scan, Projections: []Projection{{Expr: key}, {Expr: &LitInt{V: 1}, Alias: "value"}}}, groupValue},
 		{&Aggregate{Input: scan, GroupBy: groups, AggFuncs: []AggFunc{{Fn: FnSum, Alias: "value"}}}, groupValue},
-		{&CrossJoin{Left: scan, Right: &StepGrid{}}, Schema{Columns: append(slices.Clone(roles), Column{"anchor_ts", RoleAnchor})}},
+		{&CrossJoin{Left: scan, Right: &StepGrid{}}, Schema{Columns: append(slices.Clone(roles), Column{Name: "anchor_ts", Role: RoleAnchor})}},
 		{&UnionAll{Inputs: []Node{scan, scan}}, canonical},
 		{&SetOperation{Left: traces, Right: traces}, Schema{Columns: traceRoles}},
 		{&NestedSetAnnotate{Input: traces}, Schema{Columns: append(slices.Clone(traceRoles), Column{Name: NestedSetLeftColumn}, Column{Name: NestedSetRightColumn}, Column{Name: NestedSetParentColumn})}},
@@ -43,19 +43,19 @@ func TestRowTypeEveryNode(t *testing.T) {
 		{&VectorSetOp{Left: scan, Right: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
 		{&NaryVectorSetOp{Arms: []Node{scan, scan}, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
 		{&InfoJoin{Input: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
-		{&HistogramProjection{Input: scan, GroupBy: groups}, Schema{Columns: append([]Column{{"labels", RoleAttributes}}, hist...)}},
-		{&HistogramQuantile{Input: scan, GroupBy: groups}, Schema{Columns: []Column{{"labels", RoleAttributes}, {"Value", RoleValue}}}},
-		{&HistogramQuantileNative{Input: scan, GroupBy: groups}, Schema{Columns: []Column{{"labels", RoleAttributes}, {"Value", RoleValue}}}},
+		{&HistogramProjection{Input: scan, GroupBy: groups}, Schema{Columns: append([]Column{{Name: "labels", Role: RoleAttributes}}, hist...)}},
+		{&HistogramQuantile{Input: scan, GroupBy: groups}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "Value", Role: RoleValue}}}},
+		{&HistogramQuantileNative{Input: scan, GroupBy: groups}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "Value", Role: RoleValue}}}},
 		{&AbsentOverTime{Input: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
-		{grid, Schema{Columns: []Column{{"labels", RoleAttributes}, {"anchor_ts", RoleAnchor}, {"time", RoleTimestamp}, {"value", RoleValue}}}},
+		{grid, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "anchor_ts", Role: RoleAnchor}, {Name: "time", Role: RoleTimestamp}, {Name: "value", Role: RoleValue}}}},
 		{&RangeWindowGridNativeInstant{Input: scan, GroupBy: groups, ValueColumn: "value"}, groupValue},
 		{&RangeWindow{Input: scan, GroupBy: groups, ValueColumn: "value"}, groupValue},
-		{&RangeBucketFanout{Input: scan, GroupBy: groups, AnchorAlias: "anchor", AggFuncs: []AggFunc{{Alias: "value"}}}, Schema{Columns: []Column{{"anchor", RoleAnchor}, {"labels", RoleAttributes}, {"value", RoleValue}}}},
-		{&RangeBucketGridNative{Input: scan, GroupBy: groups, AnchorAlias: "anchor", BucketCountsCol: "counts", ExplicitBoundsCol: "bounds"}, Schema{Columns: []Column{{"anchor", RoleAnchor}, {"labels", RoleAttributes}, {Name: "counts"}, {Name: "bounds"}}}},
-		{&RangeWindowGridNativeVectorAgg{Input: grid, GroupBy: groups, GroupByAliases: []string{"labels"}, AnchorAlias: "time"}, Schema{Columns: []Column{{"labels", RoleAttributes}, {"anchor_ts", RoleAnchor}, {"time", RoleTimestamp}, {"value", RoleValue}}}},
+		{&RangeBucketFanout{Input: scan, GroupBy: groups, AnchorAlias: "anchor", AggFuncs: []AggFunc{{Alias: "value"}}}, Schema{Columns: []Column{{Name: "anchor", Role: RoleAnchor}, {Name: "labels", Role: RoleAttributes}, {Name: "value", Role: RoleValue}}}},
+		{&RangeBucketGridNative{Input: scan, GroupBy: groups, AnchorAlias: "anchor", BucketCountsCol: "counts", ExplicitBoundsCol: "bounds"}, Schema{Columns: []Column{{Name: "anchor", Role: RoleAnchor}, {Name: "labels", Role: RoleAttributes}, {Name: "counts"}, {Name: "bounds"}}}},
+		{&RangeWindowGridNativeVectorAgg{Input: grid, GroupBy: groups, GroupByAliases: []string{"labels"}, AnchorAlias: "time"}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "anchor_ts", Role: RoleAnchor}, {Name: "time", Role: RoleTimestamp}, {Name: "value", Role: RoleValue}}}},
 		{&MetricsAggregate{Inner: scan, GroupBy: groups, ValueAlias: "value"}, groupValue},
-		{&MetricsHistogramOverTime{Inner: scan, GroupBy: groups, ValueAlias: "value"}, Schema{Columns: []Column{{"labels", RoleAttributes}, {Name: "__bucket"}, {"value", RoleValue}}}},
-		{&MetricsCompare{Inner: traces}, Schema{Columns: []Column{{Name: "is_selection"}, {Name: "attr"}, {Name: "val"}, {"Value", RoleValue}}}},
+		{&MetricsHistogramOverTime{Inner: scan, GroupBy: groups, ValueAlias: "value"}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "__bucket"}, {Name: "value", Role: RoleValue}}}},
+		{&MetricsCompare{Inner: traces}, Schema{Columns: []Column{{Name: "is_selection"}, {Name: "attr"}, {Name: "val"}, {Name: "Value", Role: RoleValue}}}},
 		{&StructuralJoin{Left: traces, Right: traces, TraceIDColumn: "trace", SpanIDColumn: "span", ParentSpanIDColumn: "parent"}, Schema{Columns: traceRoles}},
 	}
 	// Payload joins use deliberately opaque names: their public outputs are
@@ -86,9 +86,9 @@ func TestRowTypeEveryNode(t *testing.T) {
 	}{&MixedVectorJoin{Left: scan, Right: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, wantJoin("_mvj", mixedNames)})
 	hf := Schema{Columns: append([]Column(nil), roles[:len(roles)-1]...)}
 	for _, name := range hjNames[len(roles)-1:] {
-		hf.Columns = append(hf.Columns, Column{name, RoleHistogramField})
+		hf.Columns = append(hf.Columns, roleColumn(name, Schema{}, nil))
 	}
-	hf.Columns = append(hf.Columns, Column{"value", RoleValue})
+	hf.Columns = append(hf.Columns, Column{Name: "value", Role: RoleValue})
 	cases = append(cases, struct {
 		node Node
 		want Schema
@@ -135,7 +135,7 @@ func TestHistogramProjectionRowTypeDeclaresCanonicalRoles(t *testing.T) {
 }
 
 func TestRowTypeDeclarations(t *testing.T) {
-	roles := []Column{{"renamed_value", RoleValue}, {"renamed_labels", RoleAttributes}}
+	roles := []Column{{Name: "renamed_value", Role: RoleValue}, {Name: "renamed_labels", Role: RoleAttributes}}
 	p := &Project{Input: &OneRow{}, Roles: roles, Projections: []Projection{{Expr: &LitInt{V: 1}, Alias: "renamed_value"}}}
 	if got := p.RowType(); !got.Equal(Schema{Columns: roles[:1]}) {
 		t.Fatalf("synthesized output: %#v", got)
@@ -217,15 +217,15 @@ func TestProjectRowTypeAlignedDeclarations(t *testing.T) {
 }
 
 func TestRowTypeWindowBranches(t *testing.T) {
-	input := &Scan{Columns: []string{"labels", "time", "extra"}, Roles: []Column{{"labels", RoleAttributes}, {"time", RoleTimestamp}}}
+	input := &Scan{Columns: []string{"labels", "time", "extra"}, Roles: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "time", Role: RoleTimestamp}}}
 	r := &RangeWindow{Input: input, GroupBy: []Expr{&ColumnRef{Name: "labels"}}, ValueColumn: "value", TimestampColumn: "anchor_ts", OuterRange: time.Minute, Identity: true}
-	want := Schema{Columns: []Column{{"labels", RoleAttributes}, {"anchor_ts", RoleAnchor}, {"TimeUnix", RoleTimestamp}, {"value", RoleValue}}}
+	want := Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "anchor_ts", Role: RoleAnchor}, {Name: "TimeUnix", Role: RoleTimestamp}, {Name: "value", Role: RoleValue}}}
 	if got := r.RowType(); !got.Equal(want) {
 		t.Fatalf("identity: %#v", got)
 	}
 	r.Variants = []RangeWindowVariant{{ValueColumn: "value"}}
 	r.VariantColumn = "variant"
-	want.Columns = []Column{{"labels", RoleAttributes}, {"anchor_ts", RoleAnchor}, {"value", RoleValue}, {Name: "variant"}}
+	want.Columns = []Column{{Name: "labels", Role: RoleAttributes}, {Name: "anchor_ts", Role: RoleAnchor}, {Name: "value", Role: RoleValue}, {Name: "variant"}}
 	if got := r.RowType(); !got.Equal(want) {
 		t.Fatalf("variants: %#v", got)
 	}
@@ -234,7 +234,7 @@ func TestRowTypeWindowBranches(t *testing.T) {
 	r.OuterRange = 0
 	r.Func = "predict_linear"
 	r.PredictLinearSlopeColumn = "slope"
-	want.Columns = []Column{{"labels", RoleAttributes}, {"value", RoleValue}, {Name: "slope"}}
+	want.Columns = []Column{{Name: "labels", Role: RoleAttributes}, {Name: "value", Role: RoleValue}, {Name: "slope"}}
 	if got := r.RowType(); !got.Equal(want) {
 		t.Fatalf("slope: %#v", got)
 	}
@@ -306,7 +306,7 @@ func TestRowTypeMatrixAnchorSurvivesSchemaPreservingWrappers(t *testing.T) {
 }
 
 func TestRowTypeMixedFloatNarrowing(t *testing.T) {
-	mixed := &Scan{Columns: []string{MixedDiscriminatorColumn}, Roles: []Column{{MixedDiscriminatorColumn, RoleDiscriminator}}}
+	mixed := &Scan{Columns: []string{MixedDiscriminatorColumn}, Roles: []Column{{Name: MixedDiscriminatorColumn, Role: RoleDiscriminator}}}
 	filter := &Filter{Input: mixed, Predicate: &Binary{Op: OpEq, Left: &ColumnRef{Name: MixedDiscriminatorColumn}, Right: &LitInt{V: 0}}}
 	if !IsMixedFloatNarrowing(filter) {
 		t.Fatal("explicit float partition not recognized")
@@ -333,7 +333,7 @@ func TestRowTypeMixedFloatNarrowing(t *testing.T) {
 		t.Fatal("qualified foreign column accepted as this input's discriminator")
 	}
 	filter.Predicate.(*Binary).Left = &ColumnRef{Name: MixedDiscriminatorColumn}
-	filter.Input = &Scan{Columns: []string{MixedDiscriminatorColumn, "actual_kind"}, Roles: []Column{{MixedDiscriminatorColumn, RoleOpaque}, {"actual_kind", RoleDiscriminator}}}
+	filter.Input = &Scan{Columns: []string{MixedDiscriminatorColumn, "actual_kind"}, Roles: []Column{{Name: MixedDiscriminatorColumn, Role: RoleOpaque}, {Name: "actual_kind", Role: RoleDiscriminator}}}
 	if IsMixedFloatNarrowing(filter) {
 		t.Fatal("same-spelled opaque column accepted as discriminator")
 	}
@@ -410,7 +410,7 @@ func TestRowTypeCanonicalHistogramPayload(t *testing.T) {
 			t.Fatalf("payload missing %s accepted", full.Columns[i].Name)
 		}
 	}
-	raw := Schema{Columns: []Column{{"raw_count", RoleHistogramField}, {"raw_sum", RoleHistogramField}}}
+	raw := Schema{Columns: []Column{{Name: "raw_count", Role: RoleHistogramField}, {Name: "raw_sum", Role: RoleHistogramField}}}
 	if raw.HasHistogramPayload() {
 		t.Fatal("raw storage fields accepted as native payload")
 	}
@@ -425,14 +425,14 @@ func TestRowTypeCanonicalHistogramPayload(t *testing.T) {
 
 func TestSchemaSampleKind(t *testing.T) {
 	floatRoles := []Column{
-		{"source_name", RoleMetricName},
-		{"source_labels", RoleAttributes},
-		{"source_time", RoleTimestamp},
-		{"source_value", RoleValue},
+		{Name: "source_name", Role: RoleMetricName},
+		{Name: "source_labels", Role: RoleAttributes},
+		{Name: "source_time", Role: RoleTimestamp},
+		{Name: "source_value", Role: RoleValue},
 	}
 	histogram := HistogramPayloadColumns()
 	mixed := append(slices.Clone(floatRoles), histogram...)
-	mixed = append(mixed, Column{"source_kind", RoleDiscriminator})
+	mixed = append(mixed, Column{Name: "source_kind", Role: RoleDiscriminator})
 	reorderedMixed := slices.Clone(mixed)
 	slices.Reverse(reorderedMixed)
 
@@ -442,14 +442,14 @@ func TestSchemaSampleKind(t *testing.T) {
 		want SampleKind
 	}{
 		{name: "float_custom_names", row: Schema{Columns: floatRoles}, want: SampleKindFloat},
-		{name: "reduced_float", row: Schema{Columns: []Column{{"source_value", RoleValue}}}, want: SampleKindFloat},
+		{name: "reduced_float", row: Schema{Columns: []Column{{Name: "source_value", Role: RoleValue}}}, want: SampleKindFloat},
 		{name: "pure_histogram", row: Schema{Columns: histogram}, want: SampleKindHistogram},
 		{name: "histogram_with_placeholder", row: Schema{Columns: append(slices.Clone(floatRoles), histogram...)}, want: SampleKindHistogram},
 		{name: "mixed", row: Schema{Columns: mixed}, want: SampleKindMixed},
 		{name: "mixed_reordered", row: Schema{Columns: reorderedMixed}, want: SampleKindMixed},
 		{name: "opaque", row: Schema{Columns: []Column{{Name: "private"}}}, want: SampleKindOpaque},
 		{name: "open_float", row: Schema{Columns: floatRoles, Open: true}, want: SampleKindOpaque},
-		{name: "trace_roles", row: Schema{Columns: []Column{{"trace", RoleTraceID}, {"span", RoleSpanID}}}, want: SampleKindOpaque},
+		{name: "trace_roles", row: Schema{Columns: []Column{{Name: "trace", Role: RoleTraceID}, {Name: "span", Role: RoleSpanID}}}, want: SampleKindOpaque},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.row.SampleKind(); got != tc.want {
@@ -460,9 +460,9 @@ func TestSchemaSampleKind(t *testing.T) {
 }
 
 func TestSchemaSampleKindRejectsMalformedContracts(t *testing.T) {
-	floatRoles := []Column{{"labels", RoleAttributes}, {"value", RoleValue}}
+	floatRoles := []Column{{Name: "labels", Role: RoleAttributes}, {Name: "value", Role: RoleValue}}
 	histogram := HistogramPayloadColumns()
-	kind := Column{"source_kind", RoleDiscriminator}
+	kind := Column{Name: "source_kind", Role: RoleDiscriminator}
 
 	type sampleKindCase struct {
 		name    string
@@ -470,13 +470,13 @@ func TestSchemaSampleKindRejectsMalformedContracts(t *testing.T) {
 	}
 	cases := []sampleKindCase{
 		{name: "orphan_discriminator", columns: append(slices.Clone(floatRoles), kind)},
-		{name: "duplicate_value_role", columns: append(slices.Clone(floatRoles), Column{"other_value", RoleValue})},
+		{name: "duplicate_value_role", columns: append(slices.Clone(floatRoles), Column{Name: "other_value", Role: RoleValue})},
 		{name: "unnamed_value", columns: []Column{{Role: RoleValue}}},
 		{name: "shadowed_value", columns: append(slices.Clone(floatRoles), Column{Name: "value"})},
-		{name: "duplicate_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), kind, Column{"other_kind", RoleDiscriminator})},
+		{name: "duplicate_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), kind, Column{Name: "other_kind", Role: RoleDiscriminator})},
 		{name: "unnamed_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), Column{Role: RoleDiscriminator})},
 		{name: "shadowed_discriminator", columns: append(append(slices.Clone(floatRoles), histogram...), kind, Column{Name: kind.Name})},
-		{name: "noncanonical_histogram_role", columns: append(slices.Clone(floatRoles), Column{"raw_count", RoleHistogramField})},
+		{name: "noncanonical_histogram_role", columns: append(slices.Clone(floatRoles), Column{Name: "raw_count", Role: RoleHistogramField})},
 	}
 	for i, role := range floatRoles {
 		missing := slices.Delete(slices.Clone(floatRoles), i, i+1)
@@ -536,18 +536,18 @@ func TestSampleKindString(t *testing.T) {
 }
 
 func TestRowTypeOpenCrossJoin(t *testing.T) {
-	left := &Scan{Roles: []Column{{"known", RoleAttributes}}}
-	right := &Scan{Columns: []string{"known", "maybe"}, Roles: []Column{{"known", RoleAttributes}, {"maybe", RoleTimestamp}}}
+	left := &Scan{Roles: []Column{{Name: "known", Role: RoleAttributes}}}
+	right := &Scan{Columns: []string{"known", "maybe"}, Roles: []Column{{Name: "known", Role: RoleAttributes}, {Name: "maybe", Role: RoleTimestamp}}}
 	got := (&CrossJoin{Left: left, Right: right}).RowType()
-	want := Schema{Open: true, Columns: []Column{{"known", RoleAttributes}, {"R.known", RoleAttributes}}}
+	want := Schema{Open: true, Columns: []Column{{Name: "known", Role: RoleAttributes}, {Name: "R.known", Role: RoleAttributes}}}
 	if !got.Equal(want) {
 		t.Fatalf("uncertain right names advertised: got %#v want %#v", got, want)
 	}
 }
 
 func TestRowTypeUnionUsesFirstArmNames(t *testing.T) {
-	left := &Scan{Columns: []string{"left_value"}, Roles: []Column{{"left_value", RoleValue}}}
-	right := &Scan{Columns: []string{"right_value"}, Roles: []Column{{"right_value", RoleValue}}}
+	left := &Scan{Columns: []string{"left_value"}, Roles: []Column{{Name: "left_value", Role: RoleValue}}}
+	right := &Scan{Columns: []string{"right_value"}, Roles: []Column{{Name: "right_value", Role: RoleValue}}}
 	union := &UnionAll{Inputs: []Node{left, right}}
 	if got := union.RowType(); !got.Equal(left.RowType()) {
 		t.Fatalf("positional union names: %#v", got)

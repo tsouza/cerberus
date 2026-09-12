@@ -4,13 +4,13 @@ import "strconv"
 
 func (h *HistogramQuantile) RowType() Schema {
 	out := groupSchema(h.Input.RowType(), h.GroupBy, h.GroupByAliases, nil)
-	out.Columns = append(out.Columns, Column{"Value", RoleValue})
+	out.Columns = append(out.Columns, Column{Name: "Value", Role: RoleValue})
 	return out
 }
 
 func (h *HistogramQuantileNative) RowType() Schema {
 	out := groupSchema(h.Input.RowType(), h.GroupBy, h.GroupByAliases, nil)
-	out.Columns = append(out.Columns, Column{"Value", RoleValue})
+	out.Columns = append(out.Columns, Column{Name: "Value", Role: RoleValue})
 	return out
 }
 
@@ -20,14 +20,14 @@ func (a *AbsentOverTime) RowType() Schema {
 
 func (r *RangeBucketFanout) RowType() Schema {
 	input := r.Input.RowType()
-	out := Schema{Columns: []Column{{r.AnchorAlias, RoleAnchor}}}
+	out := Schema{Columns: []Column{{Name: r.AnchorAlias, Role: RoleAnchor}}}
 	out.Columns = append(out.Columns, groupSchema(input, r.GroupBy, r.GroupByAliases, nil).Columns...)
 	return appendReducers(out, input, r.AggFuncs, nil)
 }
 
 func (r *RangeBucketGridNative) RowType() Schema {
 	input := r.Input.RowType()
-	out := Schema{Columns: []Column{{r.AnchorAlias, RoleAnchor}}}
+	out := Schema{Columns: []Column{{Name: r.AnchorAlias, Role: RoleAnchor}}}
 	out.Columns = append(out.Columns, groupSchema(input, r.GroupBy, r.GroupByAliases, nil).Columns...)
 	out.Columns = append(out.Columns, roleColumn(r.BucketCountsCol, input, nil), roleColumn(r.ExplicitBoundsCol, input, nil))
 	return out
@@ -36,9 +36,9 @@ func (r *RangeBucketGridNative) RowType() Schema {
 func (r *RangeWindowGridNativeVectorAgg) RowType() Schema {
 	input := r.Input.RowType()
 	out := groupSchema(input, r.GroupBy, r.GroupByAliases, nil)
-	out.Columns = append(out.Columns, Column{RangeWindowAnchorColumn, RoleAnchor})
+	out.Columns = append(out.Columns, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor})
 	if r.AnchorAlias != RangeWindowAnchorColumn {
-		out.Columns = append(out.Columns, Column{r.AnchorAlias, RoleTimestamp})
+		out.Columns = append(out.Columns, Column{Name: r.AnchorAlias, Role: RoleTimestamp})
 	}
 	if value, ok := input.Find(RoleValue); ok {
 		out.Columns = append(out.Columns, value)
@@ -67,13 +67,13 @@ func (m *MetricsAggregate) RowType() Schema {
 	if multi {
 		out.Columns = append(out.Columns, Column{Name: "__phi__"})
 	}
-	out.Columns = append(out.Columns, Column{m.ValueAlias, RoleValue})
+	out.Columns = append(out.Columns, Column{Name: m.ValueAlias, Role: RoleValue})
 	return out
 }
 
 func (m *MetricsHistogramOverTime) RowType() Schema {
 	out := groupSchema(m.Inner.RowType(), m.GroupBy, m.GroupByAliases, nil)
-	out.Columns = append(out.Columns, Column{Name: outputDefault(m.BucketAlias, "__bucket")}, Column{outputDefault(m.ValueAlias, "Value"), RoleValue})
+	out.Columns = append(out.Columns, Column{Name: outputDefault(m.BucketAlias, "__bucket")}, Column{Name: outputDefault(m.ValueAlias, "Value"), Role: RoleValue})
 	return out
 }
 
@@ -82,7 +82,7 @@ func (m *MetricsCompare) RowType() Schema {
 		{Name: outputDefault(m.SelAlias, "is_selection")},
 		{Name: outputDefault(m.AttrAlias, "attr")},
 		{Name: outputDefault(m.ValAlias, "val")},
-		{outputDefault(m.ValueAlias, "Value"), RoleValue},
+		{Name: outputDefault(m.ValueAlias, "Value"), Role: RoleValue},
 	}}
 }
 
@@ -108,17 +108,17 @@ func outerGroupNames(keys []Expr, aliases []string) []string {
 
 func metricsWindowSchema(m *MetricsAggregate) Schema {
 	out := groupSchema(m.Inner.RowType(), m.GroupBy, outerGroupNames(m.GroupBy, m.GroupByAliases), nil)
-	out.Columns = append(out.Columns, Column{RangeWindowAnchorColumn, RoleAnchor})
+	out.Columns = append(out.Columns, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor})
 	if m.Op == MetricsOpQuantileOverTime {
 		out.Columns = append(out.Columns, Column{Name: "__bucket"})
 	}
-	out.Columns = append(out.Columns, Column{m.ValueAlias, RoleValue})
+	out.Columns = append(out.Columns, Column{Name: m.ValueAlias, Role: RoleValue})
 	return out
 }
 
 func histogramWindowSchema(m *MetricsHistogramOverTime) Schema {
 	out := groupSchema(m.Inner.RowType(), m.GroupBy, outerGroupNames(m.GroupBy, m.GroupByAliases), nil)
-	out.Columns = append(out.Columns, Column{Name: outputDefault(m.BucketAlias, "__bucket")}, Column{RangeWindowAnchorColumn, RoleAnchor}, Column{outputDefault(m.ValueAlias, "Value"), RoleValue})
+	out.Columns = append(out.Columns, Column{Name: outputDefault(m.BucketAlias, "__bucket")}, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor}, Column{Name: outputDefault(m.ValueAlias, "Value"), Role: RoleValue})
 	return out
 }
 
@@ -159,13 +159,13 @@ func (m *MixedVectorJoin) RowType() Schema {
 func (h *HistogramFloatVectorJoin) RowType() Schema {
 	roles := sampleSchema(h.MetricNameColumn, h.AttributesColumn, h.TimestampColumn, h.ValueColumn)
 	out := selectNames(roles, histogramJoinColumns(h.MetricNameColumn, h.AttributesColumn, h.TimestampColumn), nil)
-	out.Columns = append(out.Columns, Column{h.ValueColumn, RoleValue})
+	out.Columns = append(out.Columns, Column{Name: h.ValueColumn, Role: RoleValue})
 	return out
 }
 
 func (j *StructuralJoin) RowType() Schema {
 	input := j.Right.RowType()
-	keys := []Column{{j.TraceIDColumn, RoleTraceID}, {j.SpanIDColumn, RoleSpanID}, {j.ParentSpanIDColumn, RoleParentSpanID}}
+	keys := []Column{{Name: j.TraceIDColumn, Role: RoleTraceID}, {Name: j.SpanIDColumn, Role: RoleSpanID}, {Name: j.ParentSpanIDColumn, Role: RoleParentSpanID}}
 	out := Schema{Columns: keys}
 	if len(j.ExtraProjectionColumns) != 0 {
 		out.Columns = append(out.Columns, selectNames(input, j.ExtraProjectionColumns, nil).Columns...)
