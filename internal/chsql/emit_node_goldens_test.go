@@ -320,7 +320,7 @@ func TestEmitNode_Aggregate_PropagatesChildError(t *testing.T) {
 func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 	t.Parallel()
 
-	scan := func() *chplan.Scan { return &chplan.Scan{Table: "otel_traces"} }
+	scan := func() *chplan.Scan { return setOpSchemaScan("otel_traces", "TraceId", "SpanId") }
 	filtered := func(col, val string) chplan.Node {
 		return &chplan.Filter{
 			Input:     scan(),
@@ -451,8 +451,8 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 			// the arm shapes look.
 			name: "arms over different tables keep the union-tagged fallback",
 			plan: intersect(
-				&chplan.Filter{Input: &chplan.Scan{Table: "otel_traces"}, Predicate: &chplan.ColumnRef{Name: "A"}},
-				&chplan.Filter{Input: &chplan.Scan{Table: "otel_traces_other"}, Predicate: &chplan.ColumnRef{Name: "B"}},
+				&chplan.Filter{Input: setOpSchemaScan("otel_traces", "TraceId", "SpanId"), Predicate: &chplan.ColumnRef{Name: "A"}},
+				&chplan.Filter{Input: setOpSchemaScan("otel_traces_other", "TraceId", "SpanId"), Predicate: &chplan.ColumnRef{Name: "B"}},
 			),
 			want:    fallbackWant,
 			notWant: fallbackNotWant,
@@ -510,8 +510,8 @@ func TestEmitNode_SetOperation_Union(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.SetOperation{
-		Left:          &chplan.Scan{Table: "otel_traces"},
-		Right:         &chplan.Scan{Table: "otel_traces"},
+		Left:          setOpSchemaScan("otel_traces", "TraceId", "SpanId"),
+		Right:         setOpSchemaScan("otel_traces", "TraceId", "SpanId"),
 		Op:            chplan.SetUnion,
 		TraceIDColumn: "TraceId",
 		SpanIDColumn:  "SpanId",
