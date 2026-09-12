@@ -71,8 +71,7 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 		}
 		return &chplan.RangeWindowGridNative{
 			Input: &chplan.Scan{
-				Table:   "otel_metrics_sum",
-				Columns: []string{"MetricName", "Attributes", "ResourceAttributes", "ServiceName", "sample_time", "sample_value"},
+				Table: "otel_metrics_sum",
 				Roles: []chplan.Column{
 					{Name: "sample_time", Role: chplan.RoleTimestamp},
 					{Name: "sample_value", Role: chplan.RoleValue},

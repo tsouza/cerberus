@@ -97,7 +97,7 @@ func gaugeStageBuilders() []stageBuilder {
 			// Scan. A pushdown that drops any of them fails here with
 			// UNKNOWN_IDENTIFIER instead of silently shipping.
 			return &chplan.RangeWindowGridNative{
-				Input:           in,
+				Input:           declareNativeMatrixPropertyRoles(in),
 				Func:            "rate",
 				Range:           propertyRange,
 				Step:            propertyStep,
@@ -164,6 +164,57 @@ func gaugeStageBuilders() []stageBuilder {
 				ValueAlias:     "Value",
 			}
 		},
+	}
+}
+
+func declareNativeMatrixPropertyRoles(input chplan.Node) chplan.Node {
+	roles := []chplan.Column{
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	switch node := input.(type) {
+	case *chplan.Scan:
+		resolved := *node
+		resolved.Roles = roles
+		return &resolved
+	case *chplan.Filter:
+		resolved := *node
+		resolved.Input = declareNativeMatrixPropertyRoles(node.Input)
+		return &resolved
+	default:
+		return input
+	}
+}
+
+// executablePropertyBaseline closes only the native-grid scan in the
+// pre-optimizer comparison plan. The generated plan itself remains open so
+// ProjectionPushdown must perform the real narrowing under test.
+func executablePropertyBaseline(node chplan.Node) chplan.Node {
+	rewritten, _ := chplan.RewriteChildren(node, func(child chplan.Node) (chplan.Node, bool) {
+		next := executablePropertyBaseline(child)
+		return next, next != child
+	})
+	grid, ok := rewritten.(*chplan.RangeWindowGridNative)
+	if !ok {
+		return rewritten
+	}
+	closed := *grid
+	closed.Input = closeNativeMatrixPropertyInput(grid.Input)
+	return &closed
+}
+
+func closeNativeMatrixPropertyInput(input chplan.Node) chplan.Node {
+	switch node := input.(type) {
+	case *chplan.Scan:
+		closed := *node
+		closed.Columns = []string{"MetricName", "TimeUnix", "Value"}
+		return &closed
+	case *chplan.Filter:
+		closed := *node
+		closed.Input = closeNativeMatrixPropertyInput(node.Input)
+		return &closed
+	default:
+		return input
 	}
 }
 

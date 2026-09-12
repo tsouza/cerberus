@@ -464,24 +464,35 @@ func nativeRangeWindowInputRoleColumns(input chplan.Node) []string {
 		return nil
 	}
 	row := input.RowType()
-	if row.Open {
+	var timestamp, value string
+	seenNames := make(map[string]chplan.ColumnRole, len(row.Columns))
+	for _, column := range row.Columns {
+		if column.Name == "" {
+			continue
+		}
+		if role, ok := seenNames[column.Name]; ok && role != column.Role {
+			return nil
+		}
+		seenNames[column.Name] = column.Role
+		var slot *string
+		switch column.Role {
+		case chplan.RoleTimestamp:
+			slot = &timestamp
+		case chplan.RoleValue:
+			slot = &value
+		}
+		if slot == nil {
+			continue
+		}
+		if *slot != "" {
+			return nil
+		}
+		*slot = column.Name
+	}
+	if timestamp == "" || value == "" {
 		return nil
 	}
-	columns := make([]string, 0, 2)
-	for _, role := range [...]chplan.ColumnRole{chplan.RoleTimestamp, chplan.RoleValue} {
-		name := ""
-		count := 0
-		for _, column := range row.Columns {
-			if column.Role == role {
-				name = column.Name
-				count++
-			}
-		}
-		if count == 1 && name != "" {
-			columns = append(columns, name)
-		}
-	}
-	return columns
+	return []string{timestamp, value}
 }
 
 // resampleRangeWindowColumns returns the sorted, deduped set of base columns a
