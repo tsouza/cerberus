@@ -1,8 +1,8 @@
 {
   "fixture": "traceql/set_intersect_simple",
   "fan_factor": 1,
-  "scan_rows": 4,
-  "peak_intermediate": 4,
+  "scan_rows": 6,
+  "peak_intermediate": 6,
   "has_cross_join": false,
   "has_array_join": false,
   "has_recursive_cte": false,
