@@ -996,7 +996,7 @@ type Engine struct {
 	// DeltaPrefixLookback mirrors config.Config.DeltaPrefixLookback (wired
 	// from the same CERBERUS_DELTA_PREFIX_LOOKBACK in cmd/cerberus, PromQL
 	// head only — TraceQL / LogQL plans never carry a
-	// chplan.RangeWindow.TemporalityColumn, so this is inert dead
+	// chplan.RoleTemporality range-window input, so this is inert dead
 	// configuration for them). emitForHead threads it onto the emit context
 	// via chsql.WithDeltaPrefixLookback so internal/chsql's DELTA-temporality
 	// prefix-reconstruction emitters (instantDeltaPrefixSource /

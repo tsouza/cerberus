@@ -4135,7 +4135,7 @@ func instantDeltaPrefixSourceStubWindow() *QueryBuilder {
 // (emitWindowedArrayExtrapolated's needsDeltaFirstLevel gate requires
 // hasTemporality), so this calls it directly to force
 // deltaPresenceGuardFrag's nil branch
-// (range_window.go:deltaPresenceGuardFrag:`r.TemporalityColumn == ""`) and
+// (range_window.go:deltaPresenceGuardFrag: no RoleTemporality input) and
 // exercise the guard==nil path the mutant inverts. A `== nil` mutant would
 // instead call prefix.Where(nil) here, and that nil Frag panics the moment
 // it is invoked during Build() — a difference this test would catch as a

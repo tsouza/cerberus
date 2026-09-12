@@ -187,7 +187,7 @@ const RangeWindowAnchorAlias = chplan.RangeWindowAnchorColumn
 // windowTemporalityAlias is the SELECT-list alias every windowed-array
 // emitter gives the per-series-window `any(<TemporalityColumn>)` read —
 // the single AggregationTemporality value a series carries for its
-// lifetime (see chplan.RangeWindow.TemporalityColumn), which the
+// lifetime (identified by chplan.RoleTemporality), which the
 // DELTA-vs-CUMULATIVE runtime branch (CounterOrDeltaSum,
 // CounterOrDeltaPairDelta) then reads back by name.
 const windowTemporalityAlias = "temporality"
@@ -737,7 +737,7 @@ func (e *emitter) emitWindowedArrayPairsAnchoredWithExtra(
 	// Innermost SELECT — groupArray of (ts, value), sorted. When the Input
 	// carries a TemporalityColumn, also read the series' single
 	// AggregationTemporality via any() — a series has ONE temporality for
-	// its lifetime (see chplan.RangeWindow.TemporalityColumn), so any()
+	// its lifetime (identified by chplan.RoleTemporality), so any()
 	// over the window's rows is exact, not a lossy pick. Only irate's value
 	// expression consults it on this path; every other pairs-shape caller
 	// (deriv / predict_linear / timestamp / LogQL log_rate) leaves
@@ -4290,7 +4290,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// Innermost SELECT — groupArray of (ts, value), sorted. When the
 	// Input carries a TemporalityColumn, also read the series' single
 	// AggregationTemporality reading via any() — a series has ONE
-	// temporality for its lifetime (see chplan.RangeWindow.TemporalityColumn),
+	// temporality for its lifetime (identified by chplan.RoleTemporality),
 	// so any() over the window's rows is exact, not a lossy pick.
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
@@ -4359,7 +4359,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// routes through CounterOrDeltaSum so a DELTA-temporality counter (or
 	// classic histogram, via its bucket-domain transcription) sums the
 	// window's raw samples instead of applying the counter-reset rule —
-	// see chplan.RangeWindow.TemporalityColumn and issue #1628.
+	// see chplan.RoleTemporality and issue #1628.
 	temporalityRef := windowTemporalityRef(r)
 	extraColumns := make([]string, 0, 1)
 	if needsDeltaFirstLevel {
@@ -4933,7 +4933,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// Regroup SELECT — rebuild the per-(series, anchor) window array. When
 	// the Input carries a TemporalityColumn, also read the series' single
 	// AggregationTemporality reading via any() — a series has ONE
-	// temporality for its lifetime (see chplan.RangeWindow.TemporalityColumn),
+	// temporality for its lifetime (identified by chplan.RoleTemporality),
 	// so any() over the (series, anchor) group's rows is exact.
 	regroup := NewQuery().From(fanoutSource)
 	regroup.Select(groupFrags...)

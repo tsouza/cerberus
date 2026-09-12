@@ -182,7 +182,7 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		"scalar argument present": func(r *chplan.RangeWindow) {
 			r.Scalars = []float64{1}
 		},
-		// range_window_variants.go:`r.TemporalityColumn != ""`
+		// range_window_variants.go: resolved RoleTemporality input
 		// (checkFusedVariants) — the fused emitter consults no
 		// temporality column (each arm's own reducer never reads
 		// windowTemporalityRef). Same coverage gap as the scalar case.

@@ -913,7 +913,7 @@ func (l FixedAccumulatorDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, s schem
 //   - rw.Variants must be empty: the fused multi-arm shape has its own
 //     emitter and does not participate in this decomposition.
 //
-// rw.TemporalityColumn is deliberately NOT excluded: a temporality-bearing
+// A RoleTemporality input is deliberately NOT excluded: a temporality-bearing
 // rate()/increase() window IS eligible (see this file's earlier doc comment
 // and chsql/range_window_fixed_accumulator.go's own "Temporality-bearing
 // counters" section) — the DELTA/CUMULATIVE runtime branch and the

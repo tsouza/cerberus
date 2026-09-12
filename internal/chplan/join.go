@@ -108,7 +108,8 @@ func HasJoin(node Node) bool {
 			}
 		case *RangeWindow:
 			if v.DeltaPrefixAggregateInput != nil ||
-				(v.OuterRange == 0 && v.Input.RowType().Has(RoleTemporality) && IsCounterRangeWindowFunc(v.Func)) {
+				(v.OuterRange == 0 && !v.IgnoreInputTemporality &&
+					v.Input.RowType().Has(RoleTemporality) && IsCounterRangeWindowFunc(v.Func)) {
 				found = true
 			}
 		}

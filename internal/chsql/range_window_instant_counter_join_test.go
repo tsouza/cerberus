@@ -58,6 +58,9 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 		return r
 	}
 
+	ignoredTemporality := newInstantRangeWindow("rate", true, true, 0)
+	ignoredTemporality.IgnoreInputTemporality = true
+
 	cases := []struct {
 		name string
 		r    *chplan.RangeWindow
@@ -94,6 +97,12 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 		{
 			name:          "instant rate() with no TemporalityColumn: no JOIN",
 			r:             newInstantRangeWindow("rate", false, true, 0),
+			wantJoinToken: "",
+			wantHasJoin:   false,
+		},
+		{
+			name:          "instant rate() with ignored input temporality: no JOIN",
+			r:             ignoredTemporality,
 			wantJoinToken: "",
 			wantHasJoin:   false,
 		},

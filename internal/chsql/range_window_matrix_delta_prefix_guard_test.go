@@ -89,7 +89,7 @@ func matrixDeltaGuardEmit(t *testing.T, r *chplan.RangeWindow) string {
 // TestDeltaMatrixAggregateDailyFanout_GuardAppliedToAggregateTableScan kills
 // range_window.go:deltaMatrixLevelSourceAggregateDailyFanout:`guard != nil`
 // (CONDITIONALS_NEGATION): for this window,
-// r.TemporalityColumn is always set, so deltaPresenceGuardFrag always
+// the RoleTemporality input is always present, so deltaPresenceGuardFrag always
 // returns a non-nil guard — flipping the check to `guard == nil` means
 // aggDaily.Where(guard) is never called, silently dropping the guard from
 // the aggregate-table (otel_metrics_sum_delta_prefix) day-bucket scan. That
