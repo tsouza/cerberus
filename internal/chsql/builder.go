@@ -466,11 +466,7 @@ func (b *Builder) Expr(x chplan.Expr) (err error) {
 	}()
 	switch v := x.(type) {
 	case *chplan.ColumnRef:
-		if v.Qualifier != "" {
-			b.QualIdent(v.Qualifier, v.Name)
-			return nil
-		}
-		b.Ident(v.Name)
+		b.exprColumnRef(v)
 		return nil
 	case *chplan.LitString:
 		b.Arg(v.V)
@@ -487,6 +483,14 @@ func (b *Builder) Expr(x chplan.Expr) (err error) {
 		b.Arg(v.V)
 		return nil
 	case *chplan.LitFloat:
+		// A bound -0 crosses both clickhouse-go and chdb-go as an ordinary
+		// numeric zero on some paths, losing the IEEE-754 sign that atan2 and
+		// division observe. Keep this one semantically distinct value in SQL
+		// syntax; the positive zero inside negate is still typed as Float64.
+		if v.V == 0 && math.Signbit(v.V) {
+			Neg(Call("toFloat64", InlineLit(0)))(b)
+			return nil
+		}
 		// LitFloat values ride the positional `?` slot via b.Arg, and
 		// the placeholder is wrapped in `toFloat64(?)` here, centrally,
 		// so every LitFloat emission is wire-safe by construction. That
@@ -570,6 +574,14 @@ func (b *Builder) Expr(x chplan.Expr) (err error) {
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
+}
+
+func (b *Builder) exprColumnRef(v *chplan.ColumnRef) {
+	if v.Qualifier != "" {
+		b.QualIdent(v.Qualifier, v.Name)
+		return
+	}
+	b.Ident(v.Name)
 }
 
 // exprBoundedTraceScope renders `<TraceId> IN (<top-N newest root traces>)` by
