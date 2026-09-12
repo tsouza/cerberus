@@ -2,6 +2,7 @@ package optimizer_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -585,8 +586,7 @@ var inputs = map[string]chplan.Node{
 	"pushdown_through_range_lwr": &chplan.RangeLWR{
 		Input: &chplan.Filter{
 			Input: &chplan.Scan{
-				Table:   "otel_metrics_gauge",
-				Columns: []string{"MetricName", "Attributes", "TimeUnix", "Value"},
+				Table: "otel_metrics_gauge",
 				Roles: []chplan.Column{
 					{Name: "MetricName", Role: chplan.RoleMetricName},
 					{Name: "Attributes", Role: chplan.RoleAttributes},
@@ -675,6 +675,14 @@ var inputs = map[string]chplan.Node{
 	},
 }
 
+// These fixtures deliberately begin with a plan that cannot be emitted until
+// its optimizer rule establishes the required closed schema. Keeping the
+// exception explicit prevents an unrelated emitter regression from being
+// recorded as ordinary golden output.
+var unoptimizedUnsupported = map[string]bool{
+	"pushdown_through_range_lwr": true,
+}
+
 func TestOptimizer(t *testing.T) {
 	t.Parallel()
 
@@ -685,7 +693,12 @@ func TestOptimizer(t *testing.T) {
 		}
 
 		unoptSQL, _, err := chsql.Emit(context.Background(), input)
-		if err != nil {
+		if unoptimizedUnsupported[c.Name] {
+			if !errors.Is(err, chsql.ErrUnsupported) {
+				t.Fatalf("Emit unoptimized error = %v, want ErrUnsupported", err)
+			}
+			unoptSQL = "<emit error: " + err.Error() + ">"
+		} else if err != nil {
 			t.Fatalf("Emit unoptimized: %v", err)
 		}
 
