@@ -19,7 +19,18 @@ import (
 
 func nsAnnotateOver(input chplan.Node) *chplan.NestedSetAnnotate {
 	return &chplan.NestedSetAnnotate{
-		Input:              input,
+		Input: &chplan.Project{
+			Input: input,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "TraceId"}},
+				{Expr: &chplan.ColumnRef{Name: "SpanId"}},
+				{Expr: &chplan.ColumnRef{Name: "ParentSpanId"}},
+			},
+			Roles: []chplan.Column{
+				{Name: "TraceId", Role: chplan.RoleTraceID},
+				{Name: "SpanId", Role: chplan.RoleSpanID},
+			},
+		},
 		SpansTable:         "otel_traces",
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -47,6 +58,95 @@ func nsStructuralJoin(op chplan.StructuralOp) *chplan.StructuralJoin {
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
 		ParentSpanIDColumn: "ParentSpanId",
+	}
+}
+
+func TestNestedSetAnnotateResolvesChildIdentitiesAndPreservesLookupColumns(t *testing.T) {
+	t.Parallel()
+	input := &chplan.Project{
+		Input: &chplan.Scan{Table: "source"},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "physical_trace"}, Alias: "child_trace"},
+			{Expr: &chplan.ColumnRef{Name: "physical_span"}, Alias: "child_span"},
+		},
+		Roles: []chplan.Column{
+			{Name: "child_trace", Role: chplan.RoleTraceID},
+			{Name: "child_span", Role: chplan.RoleSpanID},
+		},
+	}
+	plan := &chplan.NestedSetAnnotate{
+		Input:              input,
+		SpansTable:         "lookup_spans",
+		TraceIDColumn:      "lookup_trace",
+		SpanIDColumn:       "lookup_span",
+		ParentSpanIDColumn: "lookup_parent",
+		TimestampColumn:    "lookup_time",
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	for _, want := range []string{
+		"m.`child_trace` = ns.`lookup_trace`",
+		"m.`child_span` = ns.`lookup_span`",
+		"FROM `lookup_spans`",
+		"`lookup_parent`",
+		"`lookup_time`",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("SQL missing %q:\n%s", want, sql)
+		}
+	}
+}
+
+func TestNestedSetAnnotateRejectsMalformedChildIdentitySchemas(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		input  chplan.Node
+		needle string
+	}{
+		{name: "nil", input: nil, needle: "input is nil"},
+		{name: "open", input: &chplan.Scan{Table: "source", Roles: []chplan.Column{
+			{Name: "trace", Role: chplan.RoleTraceID}, {Name: "span", Role: chplan.RoleSpanID},
+		}}, needle: "schema is open"},
+		{name: "missing trace", input: identityProject(
+			chplan.Column{Name: "span", Role: chplan.RoleSpanID},
+		), needle: "requires distinct"},
+		{name: "missing span", input: identityProject(
+			chplan.Column{Name: "trace", Role: chplan.RoleTraceID},
+		), needle: "requires distinct"},
+		{name: "ambiguous trace", input: identityProject(
+			chplan.Column{Name: "trace_a", Role: chplan.RoleTraceID},
+			chplan.Column{Name: "trace_b", Role: chplan.RoleTraceID},
+			chplan.Column{Name: "span", Role: chplan.RoleSpanID},
+		), needle: "requires distinct"},
+		{name: "shared name", input: identityProject(
+			chplan.Column{Name: "identity", Role: chplan.RoleTraceID},
+			chplan.Column{Name: "identity", Role: chplan.RoleSpanID},
+		), needle: "requires distinct"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := nsAnnotateOver(tc.input)
+			plan.Input = tc.input
+			_, _, err := chsql.Emit(context.Background(), plan)
+			if err == nil || !strings.Contains(err.Error(), tc.needle) {
+				t.Fatalf("Emit error = %v, want substring %q", err, tc.needle)
+			}
+		})
+	}
+}
+
+func identityProject(columns ...chplan.Column) chplan.Node {
+	projections := make([]chplan.Projection, len(columns))
+	for i, column := range columns {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}}
+	}
+	return &chplan.Project{
+		Input:       &chplan.Scan{Table: "source"},
+		Projections: projections,
+		Roles:       columns,
 	}
 }
 
@@ -292,7 +392,7 @@ func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testin
 	// lowering never produces, and the universal emit guard (spansscan) rejects
 	// the windowless recursive otel_traces scan it would otherwise emit. The
 	// asserted windowed top-N (driven by NestedSetAnnotate.Window*) is unchanged.
-	sj := n.Input.(*chplan.SetOperation).Left.(*chplan.StructuralJoin)
+	sj := n.Input.(*chplan.Project).Input.(*chplan.SetOperation).Left.(*chplan.StructuralJoin)
 	sj.TimestampColumn = "Timestamp"
 	sj.WindowStartNano = startNano
 	sj.WindowEndNano = endNano

@@ -40,10 +40,11 @@ const (
 // spans = 0/0/0, counter continues across multiple roots).
 //
 // Output schema: every Input column, plus NestedSetLeftColumn /
-// NestedSetRightColumn / NestedSetParentColumn (Int64). Input must
-// expose TraceIDColumn and SpanIDColumn (the join keys back to the
-// numbering); all four schema column names refer to SpansTable's
-// canonical columns used by the numbering walk.
+// NestedSetRightColumn / NestedSetParentColumn (Int64). Input must expose a
+// closed schema with unique, distinct RoleTraceID and RoleSpanID columns (the
+// join keys back to the numbering). The four named columns below belong
+// exclusively to SpansTable's physical schema used by the numbering walk;
+// they need not match the child identities' names.
 type NestedSetAnnotate struct {
 	Input Node
 

@@ -115,6 +115,10 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 		n.ParentSpanIDColumn == "" || n.TimestampColumn == "" {
 		return fmt.Errorf("%w: NestedSetAnnotate column names unset", ErrUnsupported)
 	}
+	inputTraceID, inputSpanID, err := nestedSetInputIdentities(n.Input)
+	if err != nil {
+		return err
+	}
 	// The numbering walk reads the spans table directly (anchor + recursive
 	// step). Put that table under the resource-bound invariant so the synthetic
 	// recursive scans are gated by fromSpansScan even when the caller did not
@@ -156,7 +160,7 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 		}
 		scope = boundedRootScopeFrag(n.SpansTable, n.TraceIDColumn, n.ParentSpanIDColumn, n.TimestampColumn, n.TraceLimit, n.WindowStartNano, n.WindowEndNano)
 	} else {
-		scope, err = e.traceScopeFrag(n.Input, n.TraceIDColumn)
+		scope, err = e.traceScopeFrag(n.Input, inputTraceID)
 		if err != nil {
 			return err
 		}
@@ -174,8 +178,8 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 		return As(Call("ifNull", Qual("ns", nsCol), InlineLit(0)), outCol)
 	}
 	onClause := And(
-		spanIDPairFrag("m", n.TraceIDColumn, "ns", n.TraceIDColumn),
-		spanIDPairFrag("m", n.SpanIDColumn, "ns", n.SpanIDColumn),
+		spanIDPairFrag("m", inputTraceID, "ns", n.TraceIDColumn),
+		spanIDPairFrag("m", inputSpanID, "ns", n.SpanIDColumn),
 	)
 
 	sb := NewQuery().
@@ -188,6 +192,38 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 		From(aliasedFrag(inputSub, "m")).
 		Join(LeftJoin, aliasedFrag(numbering.Frag(), "ns"), onClause)
 	return e.emitSelect(sb)
+}
+
+// nestedSetInputIdentities resolves only the rowset side of the final join.
+// NestedSetAnnotate's named columns belong to its independent SpansTable walk;
+// configured lookup names must not leak into a child with renamed identities.
+func nestedSetInputIdentities(input chplan.Node) (string, string, error) {
+	if input == nil {
+		return "", "", fmt.Errorf("%w: NestedSetAnnotate input is nil", ErrUnsupported)
+	}
+	schema := input.RowType()
+	if schema.Open {
+		return "", "", fmt.Errorf("%w: NestedSetAnnotate input schema is open", ErrUnsupported)
+	}
+	findUnique := func(role chplan.ColumnRole) (string, bool) {
+		name := ""
+		for _, column := range schema.Columns {
+			if column.Role != role {
+				continue
+			}
+			if name != "" || column.Name == "" {
+				return "", false
+			}
+			name = column.Name
+		}
+		return name, name != ""
+	}
+	traceID, traceOK := findUnique(chplan.RoleTraceID)
+	spanID, spanOK := findUnique(chplan.RoleSpanID)
+	if !traceOK || !spanOK || traceID == spanID {
+		return "", "", fmt.Errorf("%w: NestedSetAnnotate input requires distinct trace-id and span-id roles", ErrUnsupported)
+	}
+	return traceID, spanID, nil
 }
 
 // buildNestedSetNumbering assembles the numbering subquery: the
