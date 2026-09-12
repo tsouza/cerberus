@@ -94,11 +94,26 @@ func TestEmitHistogramQuantileNative_RankTieMatchesReferenceWalk(t *testing.T) {
 	}
 
 	db := chsqltest.OpenIsolatedChDB(t)
+	nativeRoles := []chplan.Column{
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "Scale", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldScale},
+		{Name: "ZeroCount", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldZeroCount},
+		{Name: "PositiveOffset", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldPositiveOffset},
+		{Name: "PositiveBucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldPositiveBucketCounts},
+		{Name: "NegativeOffset", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldNegativeOffset},
+		{Name: "NegativeBucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldNegativeBucketCounts},
+		{Name: "Count", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldCount},
+		{Name: "Sum", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldSum},
+	}
 
 	for _, tc := range cases {
 		t.Run("phi="+strconv.FormatFloat(tc.phi, 'g', -1, 64), func(t *testing.T) {
 			plan := &chplan.HistogramQuantileNative{
-				Input:                      &chplan.Scan{Table: "hq"},
+				Input: &chplan.Scan{
+					Table:   "hq",
+					Columns: []string{"Attributes", "Scale", "ZeroCount", "PositiveOffset", "PositiveBucketCounts", "NegativeOffset", "NegativeBucketCounts", "Count", "Sum"},
+					Roles:   nativeRoles,
+				},
 				Phi:                        tc.phi,
 				ScaleColumn:                "Scale",
 				ZeroCountColumn:            "ZeroCount",
