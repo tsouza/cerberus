@@ -389,6 +389,10 @@ jobs:
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         run: just chdb-install
 
+      - name: Verify parity exemption liveness helpers
+        if: matrix.ql == 'logql' && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
+        run: go test -tags chdb,agpl_oracle,chdb_agpl_oracle -count=1 -run '^Test(ExemptionVerdict|CompareAgainstReferenceClassifiesOnlyAnswerMismatch|ConflictingDuplicateTimestampRefusal|OrderSensitiveSelectionPermutation|LimitKReferenceAnswerChangesWithSeriesSchedule|SynthesizedParity|SynthesizedParityRequiresExactlyOneQuerySection|TempoSpanIdentityErrorClassification)$' ./test/spec
+
       # Two packages, not one, because they run DIFFERENT checks over the
       # same fixtures.
       #
@@ -539,7 +543,9 @@ jobs:
       - name: Run TXTAR round-trip (promql) — runner shard ${{ matrix.shard }}/${{ strategy.job-total }}
         env:
           QL: promql
-          TAGS: chdb
+          # Match the registered oracle-enabled roundtrip tag set. RunParity
+          # also proves each PromQL parity_exempt declaration still fails.
+          TAGS: chdb,agpl_oracle,chdb_agpl_oracle
           ROUNDTRIP_SHARD_INDEX: ${{ matrix.shard }}
           ROUNDTRIP_SHARD_COUNT: ${{ strategy.job-total }}
         run: node .github/scripts/chdb-roundtrip.mjs

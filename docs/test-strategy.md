@@ -461,12 +461,15 @@ Fixtures with both `-- seed --` and `-- expected_rows --` sections run
 twice against chDB. `test/spec/<head>` executes the pre-optimizer SQL,
 while `internal/<head>` executes the post-optimizer SQL. Both compare the
 result set to `expected_rows`; the post-optimizer walk then runs live reference
-parity. The required roundtrip lane uses `chdb` for PromQL, whose reference
-evaluator is available under that tag, and `chdb,agpl_oracle,chdb_agpl_oracle`
-for LogQL and TraceQL. For those AGPL-backed heads, the three-tag set keeps each
+parity. The required roundtrip lanes use `chdb,agpl_oracle,chdb_agpl_oracle`
+for all three heads, matching the CI-lane registry. Each lane still walks only
+its own head's corpus. For the AGPL-backed heads, the three-tag set keeps each
 in-house parser and its independent reference evaluator in the same binary; the
 parity seam fails loudly if that evaluator compiles out, so a self-comparison
 cannot report green.
+The LogQL matrix leg also runs the narrowly selected `test/spec` parity-exemption
+helper tests once, under the same three tags; this executes the shared and Tempo
+classification seams without repeating them in every corpus shard.
 
 PromQL's leg outgrew a single `roundtrip` matrix entry (700+ TXTAR fixtures) and
 runs as its own `roundtrip-promql-shard` matrix instead — one dedicated runner
