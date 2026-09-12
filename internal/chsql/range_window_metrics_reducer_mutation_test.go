@@ -59,7 +59,13 @@ func metricsReducerRoutePlan(op chplan.MetricsOp) *chplan.RangeWindow {
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "resource.service.name"}},
 		GroupByAliases: []string{"resource.service.name"},
 		ValueAlias:     "Value",
-		Inner:          &chplan.Scan{Table: "otel_traces"},
+		Inner: &chplan.Scan{
+			Table:   "otel_traces",
+			Columns: []string{"resource.service.name", "Duration", "Timestamp"},
+			Roles: []chplan.Column{
+				{Name: "Timestamp", Role: chplan.RoleTimestamp},
+			},
+		},
 	}
 	if op != chplan.MetricsOpRate && op != chplan.MetricsOpCountOverTime {
 		m.Attr = &chplan.ColumnRef{Name: "Duration"}
