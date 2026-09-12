@@ -120,9 +120,11 @@ type RangeWindow struct {
 	StepAlign bool
 
 	// TimestampColumn names the public timestamp output alias. Ordinary
-	// range-window emitters resolve their physical input from RoleTimestamp
-	// on Input. The special Metrics* dispatches also use it as their nested
-	// source name; downsample emission is output-only.
+	// range-window emitters resolve physical samples from RoleTimestamp on
+	// Input; an outer RangeWindow over a nested matrix RangeWindow resolves
+	// window membership from the inner RoleAnchor instead. The special
+	// Metrics* dispatches also use it as their nested source name; downsample
+	// emission is output-only.
 	TimestampColumn string
 
 	// ValueColumn names the column carrying the per-sample float value
