@@ -18,7 +18,7 @@ import (
 func TestEmitCounted_PhysicalScans(t *testing.T) {
 	t.Parallel()
 	scan := func() *chplan.Scan {
-		return &chplan.Scan{Table: "otel_traces", Columns: []string{"TraceId", "Timestamp"}}
+		return &chplan.Scan{Table: "otel_traces", Columns: []string{"TraceId", "Timestamp"}, Roles: []chplan.Column{{Name: "TraceId", Role: chplan.RoleTraceID}, {Name: "Timestamp", Role: chplan.RoleTimestamp}}}
 	}
 	cases := []struct {
 		name  string
@@ -35,10 +35,8 @@ func TestEmitCounted_PhysicalScans(t *testing.T) {
 		{
 			name: "SearchTraceLimit renders its input on both arms",
 			plan: &chplan.SearchTraceLimit{
-				Input:           scan(),
-				TraceIDColumn:   "TraceId",
-				TimestampColumn: "Timestamp",
-				TraceLimit:      20,
+				Input:      scan(),
+				TraceLimit: 20,
 			},
 			want:  2,
 			count: func(sql string) int { return strings.Count(sql, "FROM `otel_traces`") },

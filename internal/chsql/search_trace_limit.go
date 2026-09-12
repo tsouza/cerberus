@@ -13,11 +13,16 @@ import (
 // Rendered shape:
 //
 //	SELECT s.* FROM (<input>) AS s
-//	WHERE `TraceId` GLOBAL IN (
-//	  SELECT `TraceId` FROM (<input>)
-//	  GROUP BY `TraceId`
-//	  ORDER BY min(`Timestamp`) DESC, `TraceId` ASC
+//	WHERE `<trace-id role>` GLOBAL IN (
+//	  SELECT `<trace-id role>` FROM (<input>)
+//	  GROUP BY `<trace-id role>`
+//	  ORDER BY min(`<timestamp role>`) DESC, `<trace-id role>` ASC
 //	  LIMIT <TraceLimit>)
+//
+// The physical driver names come from the input's closed row schema. Each role
+// must identify exactly one named column, and a physical name cannot also
+// identify an output with another role. The outer SELECT s.* deliberately
+// preserves the child's complete row shape; the drivers are inputs only.
 //
 // The top-N subquery ranks each trace by its start time (min span Timestamp),
 // newest first, with a TraceId-ascending tie-break — the same order
@@ -55,8 +60,14 @@ import (
 // (...)` CTE would not remove the second scan: ClickHouse inlines a CTE at
 // every reference rather than materialising it, so there is nothing to lift.
 func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
-	if n.TraceIDColumn == "" || n.TimestampColumn == "" {
-		return fmt.Errorf("%w: SearchTraceLimit column names unset", ErrUnsupported)
+	if n.Input == nil {
+		return fmt.Errorf("%w: SearchTraceLimit input unset", ErrUnsupported)
+	}
+	inputSchema := n.Input.RowType()
+	traceID, hasTraceID := uniqueSearchTraceLimitInputColumn(inputSchema, chplan.RoleTraceID)
+	timestamp, hasTimestamp := uniqueSearchTraceLimitInputColumn(inputSchema, chplan.RoleTimestamp)
+	if inputSchema.Open || !hasTraceID || !hasTimestamp {
+		return fmt.Errorf("%w: SearchTraceLimit input schema is open, ambiguous, or lacks named identity/timestamp roles", ErrUnsupported)
 	}
 	if n.TraceLimit <= 0 {
 		// The lowering gates node construction on `limit > 0`
@@ -77,17 +88,40 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 	}
 
 	topN := NewQuery().
-		Select(Col(n.TraceIDColumn)).
+		Select(Col(traceID.Name)).
 		From(innerSub).
-		GroupBy(Col(n.TraceIDColumn)).
-		OrderBy(Call("min", Col(n.TimestampColumn)), true).
-		OrderBy(Col(n.TraceIDColumn), false).
+		GroupBy(Col(traceID.Name)).
+		OrderBy(Call("min", Col(timestamp.Name)), true).
+		OrderBy(Col(traceID.Name), false).
 		Limit(n.TraceLimit).
 		Frag()
 
 	sb := NewQuery().
 		Select(verbatim("s.*")).
 		From(aliasedFrag(outerSub, "s")).
-		Where(InSubquery(Col(n.TraceIDColumn), topN))
+		Where(InSubquery(Col(traceID.Name), topN))
 	return e.emitSelect(sb)
+}
+
+func uniqueSearchTraceLimitInputColumn(schema chplan.Schema, role chplan.ColumnRole) (chplan.Column, bool) {
+	var found chplan.Column
+	seen := false
+	for _, column := range schema.Columns {
+		if column.Role != role {
+			continue
+		}
+		if seen || column.Name == "" {
+			return chplan.Column{}, false
+		}
+		found, seen = column, true
+	}
+	if !seen {
+		return chplan.Column{}, false
+	}
+	for _, column := range schema.Columns {
+		if column.Name == found.Name && column.Role != role {
+			return chplan.Column{}, false
+		}
+	}
+	return found, true
 }

@@ -144,7 +144,7 @@ func allNodeKinds() []chplan.Node {
 			Input: leaf, Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			Step: time.Minute, Lookback: 5 * time.Minute, Offset: time.Minute,
 		},
-		&chplan.SearchTraceLimit{Input: leaf, TraceIDColumn: "TraceId", TimestampColumn: "TimeUnix", TraceLimit: 20},
+		&chplan.SearchTraceLimit{Input: leaf, TraceLimit: 20},
 	}
 }
 

@@ -5,6 +5,7 @@ package traceql
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -556,17 +557,54 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 	// Fold the request window into the predicate so both the inner ranking
 	// subquery and the outer drain scan only [start, end].
 	pred = andWindow(pred, start, end, s.TimestampColumn)
+	closedScan := *scan
+	closedScan.Columns = searchTraceLimitInputColumns(scan.Columns, pred, s)
+	scan = &closedScan
 
 	var input chplan.Node = scan
 	if pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	return &chplan.SearchTraceLimit{
-		Input:           input,
-		TraceIDColumn:   s.TraceIDColumn,
-		TimestampColumn: s.TimestampColumn,
-		TraceLimit:      limit,
+		Input:      input,
+		TraceLimit: limit,
 	}
+}
+
+// searchTraceLimitInputColumns closes the plain-search Scan over the columns
+// consumed by the search response projection, the trace-ranking drain, and
+// the query predicate. SearchTraceLimit is only constructed for the bounded
+// search path, whose caller always applies the canonical sample projection.
+func searchTraceLimitInputColumns(existing []string, predicate chplan.Expr, s schema.Traces) []string {
+	columns := make(map[string]struct{}, len(existing)+7)
+	add := func(name string) {
+		if name != "" {
+			columns[name] = struct{}{}
+		}
+	}
+	for _, name := range existing {
+		add(name)
+	}
+	add(s.TraceIDColumn)
+	add(s.SpanIDColumn)
+	add(s.ParentSpanIDColumn)
+	add(s.SpanNameColumn)
+	add(s.ResourceAttributesColumn)
+	add(s.TimestampColumn)
+	add(s.DurationColumn)
+	chplan.InspectExpr(predicate, func(expr chplan.Expr) bool {
+		if ref, ok := expr.(*chplan.ColumnRef); ok {
+			add(ref.Name)
+		}
+		return true
+	})
+
+	result := make([]string, 0, len(columns))
+	for name := range columns {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // plainSearchSource matches the plain-search row source the trace-limit
