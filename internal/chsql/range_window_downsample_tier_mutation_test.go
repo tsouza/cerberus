@@ -42,7 +42,6 @@ func downsampleTierMutationPlan(fn string) *chplan.RangeWindow {
 		End:                 start.Add(windowRange),
 		TimestampColumn:     "TimeUnix",
 		ValueColumn:         "Value",
-		TemporalityColumn:   "Temporality",
 		GroupBy:             []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 }

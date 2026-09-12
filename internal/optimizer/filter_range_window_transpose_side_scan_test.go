@@ -51,7 +51,6 @@ func downsampleTierRangeWindow(downsampleTier bool) *chplan.Filter {
 			End:                 start.Add(tierTestRange),
 			TimestampColumn:     "TimeUnix",
 			ValueColumn:         "Value",
-			TemporalityColumn:   "Temporality",
 			GroupBy:             []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		},
 	}

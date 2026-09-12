@@ -103,17 +103,16 @@ func TestExtrapolatedMatrixDeltaPrefixUsesOneScanAndWindowedLevels(t *testing.T)
 
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	r := &chplan.RangeWindow{
-		Input:             &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:              "rate",
-		Range:             5 * time.Minute,
-		Start:             start,
-		End:               start.Add(10 * time.Minute),
-		Step:              time.Minute,
-		OuterRange:        10 * time.Minute,
-		TimestampColumn:   "TimeUnix",
-		ValueColumn:       "Value",
-		TemporalityColumn: "AggregationTemporality",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Input:           temporalityTestScan("otel_metrics_sum"),
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Start:           start,
+		End:             start.Add(10 * time.Minute),
+		Step:            time.Minute,
+		OuterRange:      10 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 
 	sql, _, err := Emit(context.Background(), r)

@@ -139,11 +139,6 @@ type RangeWindow struct {
 	// it carries no physical column name and cannot select an input by spelling.
 	IgnoreInputTemporality bool
 
-	// TemporalityColumn is retained for source compatibility with direct IR
-	// constructors. Production lowering leaves it empty and publishes
-	// RoleTemporality on Input instead.
-	TemporalityColumn string
-
 	// DeltaPrefixAggregateInput is the optional second scan side-feeding
 	// exact, retention-independent DELTA-temporality prefix reconstruction
 	// (cerberus issue #2389). When non-nil it names a Node reading the
@@ -591,7 +586,7 @@ func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
 		return false
 	}
 	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
-		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn || r.TemporalityColumn != o.TemporalityColumn {
+		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn {
 		return false
 	}
 	if r.InstantScanBounded != o.InstantScanBounded || r.LagAdjacency != o.LagAdjacency ||

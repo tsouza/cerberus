@@ -41,7 +41,11 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 			ValueColumn:     "Value",
 		}
 		if temporality {
-			r.TemporalityColumn = "AggregationTemporality"
+			r.Input = &chplan.Scan{
+				Table:   "otel_metrics_sum",
+				Columns: []string{"AggregationTemporality"},
+				Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+			}
 		}
 		if groupBy {
 			r.GroupBy = []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}

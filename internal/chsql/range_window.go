@@ -315,7 +315,7 @@ func rangeWindowTemporalityColumn(r *chplan.RangeWindow) string {
 	}
 	column, ok := r.Input.RowType().Find(chplan.RoleTemporality)
 	if !ok {
-		return r.TemporalityColumn
+		return ""
 	}
 	return column.Name
 }

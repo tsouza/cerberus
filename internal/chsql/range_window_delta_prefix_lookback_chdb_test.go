@@ -20,14 +20,13 @@ import (
 // surface as separate output rows.
 func instantDeltaPrefixWindow(end time.Time, rng time.Duration) *chplan.RangeWindow {
 	return &chplan.RangeWindow{
-		Input:             &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:              "rate",
-		Range:             rng,
-		End:               end,
-		TimestampColumn:   "TimeUnix",
-		ValueColumn:       "Value",
-		TemporalityColumn: "AggregationTemporality",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Input:           temporalityTestScan("otel_metrics_sum"),
+		Func:            "rate",
+		Range:           rng,
+		End:             end,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 }
 

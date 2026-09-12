@@ -6,6 +6,14 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+func temporalityTestScan(table string) *chplan.Scan {
+	return &chplan.Scan{
+		Table:   table,
+		Columns: []string{"MetricName", "Attributes", "TimeUnix", "Value", "AggregationTemporality"},
+		Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+	}
+}
+
 func TestRangeWindowTemporalityResolvesChildSchema(t *testing.T) {
 	input := &chplan.Scan{
 		Table:   "samples",

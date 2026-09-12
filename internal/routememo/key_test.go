@@ -232,7 +232,11 @@ func TestKeyForHasJoin_CoversEveryJoinCarrier(t *testing.T) {
 			// internal/chplan/join_test.go's identical row for the emission
 			// evidence.
 			"RangeWindow instant rate() over temporality-projected counter (#3014)",
-			&chplan.RangeWindow{Input: scan, Func: "rate", TemporalityColumn: "AggregationTemporality"},
+			&chplan.RangeWindow{Input: &chplan.Scan{
+				Table:   "samples",
+				Columns: []string{"AggregationTemporality"},
+				Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+			}, Func: "rate"},
 		},
 	}
 	if len(cases) != wantRouteMemoJoinCarrierCount {

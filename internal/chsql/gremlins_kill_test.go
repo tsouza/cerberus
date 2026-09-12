@@ -4149,8 +4149,7 @@ func TestInstantDeltaPrefixSource_GuardNilBranch(t *testing.T) {
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
 		// Intentionally empty: forces deltaPresenceGuardFrag to return nil.
-		TemporalityColumn: "",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -4182,11 +4181,10 @@ func TestInstantDeltaPrefixSource_JoinDispatch(t *testing.T) {
 	build := func(groupBy []chplan.Expr) string {
 		e := &emitter{}
 		r := &chplan.RangeWindow{
-			Input:             &chplan.Scan{Table: "otel_metrics_sum"},
-			TimestampColumn:   "TimeUnix",
-			ValueColumn:       "Value",
-			TemporalityColumn: "AggregationTemporality",
-			GroupBy:           groupBy,
+			Input:           temporalityTestScan("otel_metrics_sum"),
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+			GroupBy:         groupBy,
 		}
 		groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 		if err != nil {

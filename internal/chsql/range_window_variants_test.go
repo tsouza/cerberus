@@ -187,7 +187,11 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		// temporality column (each arm's own reducer never reads
 		// windowTemporalityRef). Same coverage gap as the scalar case.
 		"temporality column present": func(r *chplan.RangeWindow) {
-			r.TemporalityColumn = "AggregationTemporality"
+			r.Input = &chplan.Scan{
+				Table:   "samples",
+				Columns: []string{"AggregationTemporality"},
+				Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+			}
 		},
 	}
 	for name, mutate := range cases {

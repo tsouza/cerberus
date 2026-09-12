@@ -334,8 +334,6 @@ func rangeWindowColumns(r *chplan.RangeWindow) []string {
 	if !r.IgnoreInputTemporality {
 		if temporality, ok := r.Input.RowType().Find(chplan.RoleTemporality); ok {
 			bare = append(bare, temporality.Name)
-		} else if r.TemporalityColumn != "" {
-			bare = append(bare, r.TemporalityColumn)
 		}
 	}
 	for _, v := range r.Variants {
