@@ -80,7 +80,7 @@ var plans = map[string]chplan.Node{
 	},
 
 	"range_window_rate": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		Step:            time.Minute,
@@ -89,7 +89,7 @@ var plans = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 	"range_window_increase": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Func:            "increase",
 		Range:           10 * time.Minute,
 		TimestampColumn: "TimeUnix",
@@ -97,7 +97,7 @@ var plans = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 	"range_window_sum_over_time": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Func:            "sum_over_time",
 		Range:           5 * time.Minute,
 		TimestampColumn: "TimeUnix",
@@ -105,7 +105,7 @@ var plans = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 	"range_window_avg_over_time": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Func:            "avg_over_time",
 		Range:           5 * time.Minute,
 		TimestampColumn: "TimeUnix",
@@ -113,7 +113,7 @@ var plans = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 	"range_window_max_over_time": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Func:            "max_over_time",
 		Range:           5 * time.Minute,
 		TimestampColumn: "TimeUnix",
@@ -121,7 +121,7 @@ var plans = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 	"range_window_count_over_time": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Func:            "count_over_time",
 		Range:           5 * time.Minute,
 		TimestampColumn: "TimeUnix",
@@ -424,7 +424,7 @@ var plans = map[string]chplan.Node{
 
 	// RangeWindow with offset modifier (PromQL `rate(...)[5m] offset 1h`).
 	"range_window_rate_offset": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		Offset:          time.Hour,
@@ -447,7 +447,7 @@ var plans = map[string]chplan.Node{
 	// [End-OuterRange, End] spaced by Step. Used by PromQL subqueries
 	// `rate(m[5m])[1h:5m]` (P0 #4).
 	"range_window_matrix_rate": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		Step:            5 * time.Minute,
@@ -460,7 +460,7 @@ var plans = map[string]chplan.Node{
 	// Matrix-shape RangeWindow + sum_over_time (the inner reducer in
 	// the canonical `max_over_time(rate(...)[1h:5m])` shape).
 	"range_window_matrix_sum_over_time": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Func:            "sum_over_time",
 		Range:           5 * time.Minute,
 		Step:            time.Minute,
@@ -473,7 +473,7 @@ var plans = map[string]chplan.Node{
 	// Identity-flagged RangeWindow — the "last value in window" shape
 	// used by bare-vector subqueries (`up[5m:1m]`).
 	"range_window_identity": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Identity:        true,
 		Range:           time.Minute,
 		Step:            time.Minute,

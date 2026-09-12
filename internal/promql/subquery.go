@@ -313,6 +313,10 @@ func wrapSubqueryIdentity(
 	if err != nil {
 		return nil, err
 	}
+	inner, err = declareSubqueryTimestampRole(inner, s.TimestampColumn)
+	if err != nil {
+		return nil, err
+	}
 	return &chplan.RangeWindow{
 		Input:           inner,
 		Identity:        true,
@@ -326,6 +330,42 @@ func wrapSubqueryIdentity(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}, nil
+}
+
+// declareSubqueryTimestampRole closes the lowering-owned boundary between an
+// arbitrary instant expression and the identity RangeWindow that re-evaluates
+// it on the subquery grid. Some aggregate/arithmetic compositions retain the
+// canonical timestamp column by name while losing its semantic role. Re-state
+// that role without changing any expression or output name.
+func declareSubqueryTimestampRole(inner chplan.Node, timestamp string) (chplan.Node, error) {
+	row := inner.RowType()
+	if column, ok := row.Find(chplan.RoleTimestamp); ok && column.Name == timestamp {
+		return inner, nil
+	}
+	if row.Open {
+		return nil, fmt.Errorf("promql: subquery identity input requires a closed schema")
+	}
+	projections := make([]chplan.Projection, len(row.Columns))
+	roles := make([]chplan.Column, len(row.Columns))
+	found := false
+	for i, column := range row.Columns {
+		if column.Name == "" {
+			return nil, fmt.Errorf("promql: subquery identity input has an unnamed column")
+		}
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name}
+		roles[i] = column
+		if roles[i].Role == chplan.RoleTimestamp {
+			roles[i].Role = chplan.RoleOpaque
+		}
+		if column.Name == timestamp {
+			roles[i].Role = chplan.RoleTimestamp
+			found = true
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("promql: subquery identity input is missing timestamp column %q", timestamp)
+	}
+	return &chplan.Project{Input: inner, Projections: projections, Roles: roles}, nil
 }
 
 // subqueryGridCtx builds the lowering context a subquery's inner
@@ -1072,6 +1112,10 @@ func lowerOuterRangeFnOverSubquery(
 	}
 
 	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+	inner, err = declareSubqueryTimestampRole(inner, "anchor_ts")
 	if err != nil {
 		return nil, err
 	}

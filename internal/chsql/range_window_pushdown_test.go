@@ -154,7 +154,7 @@ func TestPromQLMatrixInnerScanPushdown_OffsetAware(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
-				Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+				Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 				Func:            "rate",
 				Step:            30 * time.Second,
 				Range:           5 * time.Minute,
@@ -386,7 +386,7 @@ func TestRangeLWRInnerScanTimeBound_BothSet(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Start:         start,
 		End:           end,
 		Step:          30 * time.Second,
@@ -417,7 +417,7 @@ func TestRangeLWRInnerScanTimeBound_ZeroGridSuppressed(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Step:          30 * time.Second,
 		Lookback:      5 * time.Minute,
 		MetricNameCol: "MetricName",
@@ -541,7 +541,7 @@ func TestRangeLWRInnerScanTimeBound_OnlyOneSet(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeLWR{
-				Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+				Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 				Start:         c.start,
 				End:           c.end,
 				Step:          30 * time.Second,
@@ -583,7 +583,7 @@ func TestRangeLWRInnerScanTimeBound_OffsetAndSpanEdges(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Start:         start,
 		End:           end,
 		Step:          30 * time.Second,
@@ -624,7 +624,7 @@ func TestRangeLWRRejectsBadInput(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 	mkBase := func() chplan.RangeLWR {
 		return chplan.RangeLWR{
-			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 			Start:         start,
 			End:           end,
 			Step:          30 * time.Second,
@@ -889,7 +889,7 @@ func TestRangeWindowGridNativeInnerScanTimeBound(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeWindowGridNative{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Func:            "rate",
 		Start:           start,
 		End:             end,
@@ -944,7 +944,7 @@ func TestRangeWindowGridNativeRejectsBadInput(t *testing.T) {
 	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 	base := chplan.RangeWindowGridNative{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Func:            "rate",
 		Start:           start,
 		End:             end,
@@ -990,7 +990,7 @@ func TestRangeWindowStaleResampleInnerScanTimeBound(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeWindowStaleResample{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Start:         start,
 		End:           end,
 		Step:          30 * time.Second,
@@ -1065,7 +1065,7 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 	t.Run("RangeWindowGridNative_rate", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.RangeWindowGridNative{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 			Func:            "rate",
 			Start:           start,
 			End:             end,
@@ -1091,7 +1091,7 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 	t.Run("RangeWindowStaleResample", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.RangeWindowStaleResample{
-			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 			Start:         start,
 			End:           end,
 			Step:          120 * time.Second,
@@ -1128,7 +1128,7 @@ func TestRangeWindowStaleResampleRejectsBadInput(t *testing.T) {
 	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 	base := chplan.RangeWindowStaleResample{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 		Start:         start,
 		End:           end,
 		Step:          30 * time.Second,

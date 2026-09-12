@@ -159,7 +159,7 @@ func TestOverTimeValueColumnIsFloat64(t *testing.T) {
 		t.Run(rd.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
-				Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+				Input:           closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
 				Func:            rd.name,
 				Scalars:         rd.scalars,
 				TimestampColumn: "TimeUnix",
