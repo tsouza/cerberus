@@ -36,6 +36,9 @@ name: mutation
 # The single `mutation` aggregator job passes through green ONLY when the
 # selector proved no phase scope changed, and fails if the selector itself
 # failed — an unknown selection is never a pass.
+# Changes to this workflow and its harness do not promote a pull request to a
+# full sweep: their focused Node regression tests run in `check`, while the
+# complete mutation matrix runs after the change lands on `main`.
 
 on:
   pull_request:

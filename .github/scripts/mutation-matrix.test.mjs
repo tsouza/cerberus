@@ -367,10 +367,10 @@ test('only production additions receive changed-line mutation refs', () => {
   );
 });
 
-test('a change to the lane harness runs the full matrix', () => {
+test('a change to the lane harness does not promote a PR to the full matrix', () => {
   assert.equal(HARNESS_PATHS.includes('.github/scripts/mutation-run.mjs'), true);
   for (const path of HARNESS_PATHS) {
-    assert.equal(select([path]).phases.length, PHASES.length, path);
+    assert.deepEqual(select([path]).phases, [], path);
   }
 });
 
@@ -413,14 +413,13 @@ test('HARNESS_PATHS is derived from what the lane executes, one entry per edge k
   assert.deepEqual(HARNESS_PATHS, [...derived, ...MUTATION_DATA_PATHS]);
 });
 
-// Before #2948 this exact diff selected 0 of 30 legs: the guard changed every
-// leg's adjudication and the matrix was skipped, so `mutation` reported green
-// over work that never ran. Asserted against the shipped constant rather than
-// against the closure, because it is the constant the selector reads.
-test('a diff touching only the per-mutant memory guard selects the FULL matrix', () => {
+// Harness correctness is pinned by focused tests. A harness-only pull request
+// must not promote itself to the repository-wide sweep; that sweep runs after
+// the change lands on main.
+test('a diff touching only the per-mutant memory guard selects no mutation phase', () => {
   const result = select(['.github/scripts/mutant-memory-guard.mjs']);
-  assert.equal(result.phases.length, PHASES.length);
-  assert.equal(result.reason, "the lane's own harness changed (.github/scripts/mutant-memory-guard.mjs)");
+  assert.deepEqual(result.phases, []);
+  assert.equal(result.reason, 'no changed path falls in any phase scope');
 });
 
 // The other half of the bar: deriving must not degenerate into "every script in

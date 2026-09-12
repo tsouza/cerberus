@@ -58,7 +58,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { error, git, log, notice, setOutput } from './lib/gh.mjs';
-import { changedPaths, matchesAny, normalise, runsFullLane, underPrefix } from './lib/scope-gate.mjs';
+import { changedPaths, normalise, runsFullLane, underPrefix } from './lib/scope-gate.mjs';
 import { HARNESS_PATHS, MUTATION_PRODUCTION_GLOBS, PHASES } from './mutation-phases.mjs';
 
 export const MUTATION_LANE_ID = 'quality.mutation';
@@ -532,15 +532,6 @@ export function selectPhases({
   }
 
   const paths = [...changed];
-  const harnessHit = paths.filter((p) => matchesAny(p, harnessPaths));
-  if (harnessHit.length > 0) {
-    return {
-      phases,
-      reason: `the lane's own harness changed (${harnessHit.join(', ')})`,
-      gaps: [],
-    };
-  }
-
   const selected = phases.filter((phase) => paths.some((p) => phaseClaims(phase, p)));
   const gaps = paths.filter(
     (p) =>
