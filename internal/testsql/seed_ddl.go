@@ -112,6 +112,12 @@ var tracesBackfilledColumns = []backfilledColumn{
 	{name: "Duration", ddl: "Duration Int64 DEFAULT 0"},
 	{name: "Timestamp", ddl: "Timestamp DateTime64(9) DEFAULT toDateTime64(0, 9)"},
 	{name: "ResourceAttributes", ddl: "ResourceAttributes Map(String, String) DEFAULT map()"},
+	{name: "SpanAttributes", ddl: "SpanAttributes Map(String, String) DEFAULT map()"},
+	{name: "StatusCode", ddl: "StatusCode String DEFAULT ''"},
+	{name: "StatusMessage", ddl: "StatusMessage String DEFAULT ''"},
+	{name: "SpanKind", ddl: "SpanKind String DEFAULT ''"},
+	{name: "ScopeName", ddl: "ScopeName String DEFAULT ''"},
+	{name: "ScopeVersion", ddl: "ScopeVersion String DEFAULT ''"},
 }
 
 func BackfillTracesColumns(stmts []string) []string {

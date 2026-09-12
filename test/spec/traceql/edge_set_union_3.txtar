@@ -8,7 +8,7 @@
 [4] string = "service.name"
 [5] string = "c"
 -- sql --
-SELECT * FROM ((SELECT * FROM ((SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) UNION ALL (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) LIMIT 1 BY `TraceId`, `SpanId`) UNION ALL (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) LIMIT 1 BY `TraceId`, `SpanId`
+SELECT * FROM ((SELECT * FROM ((SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) UNION ALL (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)))) LIMIT 1 BY `TraceId`, `SpanId`) UNION ALL (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)))) LIMIT 1 BY `TraceId`, `SpanId`
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
@@ -30,12 +30,15 @@ INSERT INTO otel_traces (TraceId, SpanId, _svc) VALUES
 -- chplan --
 SetOperation op=||
   SetOperation op=||
-    Filter predicate=(ResourceAttributes["service.name"] = "a")
+    Project [TraceId, SpanId, ParentSpanId, SpanName, Duration, Timestamp, ResourceAttributes, SpanAttributes, StatusCode, StatusMessage, SpanKind, ScopeName, ScopeVersion]
+      Filter predicate=(ResourceAttributes["service.name"] = "a")
+        Scan(otel_traces)
+    Project [TraceId, SpanId, ParentSpanId, SpanName, Duration, Timestamp, ResourceAttributes, SpanAttributes, StatusCode, StatusMessage, SpanKind, ScopeName, ScopeVersion]
+      Filter predicate=(ResourceAttributes["service.name"] = "b")
+        Scan(otel_traces)
+  Project [TraceId, SpanId, ParentSpanId, SpanName, Duration, Timestamp, ResourceAttributes, SpanAttributes, StatusCode, StatusMessage, SpanKind, ScopeName, ScopeVersion]
+    Filter predicate=(ResourceAttributes["service.name"] = "c")
       Scan(otel_traces)
-    Filter predicate=(ResourceAttributes["service.name"] = "b")
-      Scan(otel_traces)
-  Filter predicate=(ResourceAttributes["service.name"] = "c")
-    Scan(otel_traces)
 -- parity --
 oracle: tempo
 endpoint: /api/search
@@ -58,4 +61,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT * FROM ((SELECT * FROM ((SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) UNION ALL (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) LIMIT 1 BY `TraceId`, `SpanId`) UNION ALL (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) LIMIT 1 BY `TraceId`, `SpanId`)
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT * FROM ((SELECT * FROM ((SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) UNION ALL (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)))) LIMIT 1 BY `TraceId`, `SpanId`) UNION ALL (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)))) LIMIT 1 BY `TraceId`, `SpanId`)

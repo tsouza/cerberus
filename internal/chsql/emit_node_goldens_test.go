@@ -320,7 +320,7 @@ func TestEmitNode_Aggregate_PropagatesChildError(t *testing.T) {
 func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 	t.Parallel()
 
-	scan := func() *chplan.Scan { return &chplan.Scan{Table: "otel_traces"} }
+	scan := func() *chplan.Scan { return setOpSchemaScan("otel_traces", "TraceId", "SpanId") }
 	filtered := func(col, val string) chplan.Node {
 		return &chplan.Filter{
 			Input:     scan(),
@@ -387,7 +387,7 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 			name: "bare selector arms fuse to a single pass",
 			plan: intersect(filtered("SpanName", "left"), filtered("Duration", "5")),
 			want: []string{
-				"SELECT * FROM `otel_traces`",
+				"SELECT `TraceId`, `SpanId` FROM `otel_traces`",
 				"WHERE ((`SpanName` = ?) OR (`Duration` = ?))",
 				fusedGateLeft,
 				fusedGateRight,
@@ -400,7 +400,7 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 			// is a tautology and every trace already satisfies both gates.
 			name: "unfiltered arms need neither restriction nor gate",
 			plan: intersect(scan(), scan()),
-			want: []string{"SELECT * FROM `otel_traces`", identityDedup},
+			want: []string{"SELECT `TraceId`, `SpanId` FROM `otel_traces`", identityDedup},
 			notWant: []string{
 				"_setand_", "UNION ALL", "QUALIFY", "WHERE",
 			},
@@ -451,8 +451,8 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 			// the arm shapes look.
 			name: "arms over different tables keep the union-tagged fallback",
 			plan: intersect(
-				&chplan.Filter{Input: &chplan.Scan{Table: "otel_traces"}, Predicate: &chplan.ColumnRef{Name: "A"}},
-				&chplan.Filter{Input: &chplan.Scan{Table: "otel_traces_other"}, Predicate: &chplan.ColumnRef{Name: "B"}},
+				&chplan.Filter{Input: setOpSchemaScan("otel_traces", "TraceId", "SpanId"), Predicate: &chplan.ColumnRef{Name: "A"}},
+				&chplan.Filter{Input: setOpSchemaScan("otel_traces_other", "TraceId", "SpanId"), Predicate: &chplan.ColumnRef{Name: "B"}},
 			),
 			want:    fallbackWant,
 			notWant: fallbackNotWant,
@@ -510,8 +510,8 @@ func TestEmitNode_SetOperation_Union(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.SetOperation{
-		Left:          &chplan.Scan{Table: "otel_traces"},
-		Right:         &chplan.Scan{Table: "otel_traces"},
+		Left:          setOpSchemaScan("otel_traces", "TraceId", "SpanId"),
+		Right:         setOpSchemaScan("otel_traces", "TraceId", "SpanId"),
 		Op:            chplan.SetUnion,
 		TraceIDColumn: "TraceId",
 		SpanIDColumn:  "SpanId",
@@ -532,7 +532,7 @@ func TestEmitNode_SetOperation_Union(t *testing.T) {
 	}
 	// Both arms should still be wrapped in parens — each is a complete
 	// SELECT joined by the SELECT-level UNION ALL binary.
-	if !strings.Contains(sql, "(SELECT * FROM `otel_traces`)") {
+	if !strings.Contains(sql, "(SELECT `TraceId`, `SpanId` FROM `otel_traces`)") {
 		t.Errorf("SetUnion arms not parenthesised: %q", sql)
 	}
 	if args != nil {
