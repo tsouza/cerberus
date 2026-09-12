@@ -166,7 +166,7 @@ func lowerHistogramQuantileClassicFloat(
 
 	// Layer 2: the histogram-row contract HistogramQuantile consumes.
 	reshaped := &chplan.Project{
-		Roles: metricRoles(s),
+		Roles: metricScanRoles(s, s.HistogramTable),
 		Input: sorted,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: hqFloatGroupKeyAlias}, Alias: s.AttributesColumn},
