@@ -42,9 +42,9 @@ INSERT INTO otel_traces VALUES
 -- chplan --
 SearchTraceLimit traceLimit=1
   Filter predicate=(ResourceAttributes["service.name"] = "frontend")
-    Scan(otel_traces)
+    Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])
 -- sql --
-SELECT s.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 1)
+SELECT s.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 1)
 -- parity_exempt --
 reason: reference-fetch-layer
 detail: `{ resource.service.name = "frontend" }` carries `search_limit:`, which narrows cerberus's scan where upstream narrows in its FETCH layer before the pipeline the oracle runs
@@ -64,4 +64,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT s.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 1))
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT s.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 1))
