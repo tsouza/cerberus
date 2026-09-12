@@ -117,6 +117,45 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 	}
 }
 
+func TestNativeRangeWindowColumns_MalformedRolesFailClosedBeforeExpressionWalk(t *testing.T) {
+	t.Parallel()
+
+	validRoles := []chplan.Column{
+		{Name: "sample_time", Role: chplan.RoleTimestamp},
+		{Name: "sample_value", Role: chplan.RoleValue},
+	}
+	for _, tc := range []struct {
+		name  string
+		roles []chplan.Column
+	}{
+		{name: "missing value", roles: validRoles[:1]},
+		{name: "duplicate timestamp", roles: []chplan.Column{
+			{Name: "sample_time", Role: chplan.RoleTimestamp},
+			{Name: "other_time", Role: chplan.RoleTimestamp},
+			{Name: "sample_value", Role: chplan.RoleValue},
+		}},
+		{name: "conflicting same name", roles: []chplan.Column{
+			{Name: "sample", Role: chplan.RoleTimestamp},
+			{Name: "sample", Role: chplan.RoleValue},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			node := &chplan.RangeWindowGridNative{
+				Input:   &chplan.Scan{Table: "otel_metrics_sum", Roles: tc.roles},
+				GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}},
+				Recollapse: []chplan.Projection{{
+					Expr:  &chplan.ColumnRef{Name: "ResourceAttributes"},
+					Alias: "Attributes",
+				}},
+			}
+			if got := nativeRangeWindowColumns(node); got != nil {
+				t.Fatalf("nativeRangeWindowColumns() = %v, want nil for malformed roles", got)
+			}
+		})
+	}
+}
+
 // TestRangeWindowColumns_Temporality pins the #2127 fix: rangeWindowColumns
 // must include TemporalityColumn whenever it is set, because
 // emitWindowedArrayExtrapolated (chsql/range_window.go) reads

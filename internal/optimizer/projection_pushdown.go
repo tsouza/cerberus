@@ -453,6 +453,9 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // class. Both ship.
 func nativeRangeWindowColumns(r *chplan.RangeWindowGridNative) []string {
 	bare := nativeRangeWindowInputRoleColumns(r.Input)
+	if len(bare) != 2 {
+		return nil
+	}
 	var roots []chplan.Expr
 	roots = append(roots, r.GroupBy...)
 	roots = append(roots, projectionExprs(r.Recollapse)...)
