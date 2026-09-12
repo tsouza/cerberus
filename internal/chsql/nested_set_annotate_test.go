@@ -30,7 +30,15 @@ func nsAnnotateOver(input chplan.Node) *chplan.NestedSetAnnotate {
 
 func nsFilterScan(col, val string) chplan.Node {
 	return &chplan.Filter{
-		Input: &chplan.Scan{Table: "otel_traces"},
+		Input: &chplan.Scan{
+			Table:   "otel_traces",
+			Columns: []string{"TraceId", "SpanId", "ParentSpanId"},
+			Roles: []chplan.Column{
+				{Name: "TraceId", Role: chplan.RoleTraceID},
+				{Name: "SpanId", Role: chplan.RoleSpanID},
+				{Name: "ParentSpanId", Role: chplan.RoleParentSpanID},
+			},
+		},
 		Predicate: &chplan.Binary{
 			Op:    chplan.OpEq,
 			Left:  &chplan.ColumnRef{Name: col},
@@ -109,7 +117,7 @@ func TestNestedSetAnnotate_UnionOfStructural_RenderedOnce(t *testing.T) {
 	}
 	// The Project passes TraceId through bare, so the `||` arm's scope
 	// recurses past it down to the Filter(Scan) leaf.
-	wantPlainScope := "UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))))"
+	wantPlainScope := "UNION ALL (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?))))"
 	if !strings.Contains(sql, wantPlainScope) {
 		t.Errorf("plain `||` arm scope must recurse through the bare-TraceId Project;\nwant substring: %s\ngot:\n%s", wantPlainScope, sql)
 	}
@@ -343,7 +351,7 @@ func TestNestedSetAnnotate_TraceLimit_ZeroUnbounded(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	// The anchor scope is the bare UNION-ALL superset, no newest-N wrap.
-	wantUnbounded := "WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) UNION ALL"
+	wantUnbounded := "WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (((SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) UNION ALL"
 	if !strings.Contains(sql, wantUnbounded) {
 		t.Errorf("unbounded anchor scope changed;\nwant substring: %s\ngot:\n%s", wantUnbounded, sql)
 	}

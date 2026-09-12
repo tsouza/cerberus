@@ -516,6 +516,18 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 		// down to the same ordered column list. Both ops emit a UNION,
 		// so both need the alignment.
 		left, right = alignUnionArms(left, right, s)
+		// A bare selector is intentionally an open SELECT * scan everywhere
+		// else, but SetOperation needs a closed positional UNION contract so
+		// each arm's identity roles can be proved independently. Project only
+		// an arm that is still open after structural/plain alignment; explicit
+		// select() arms and structural envelopes already carry their truthful
+		// closed shape.
+		if left.RowType().Open {
+			left = narrowSpanProjection(left, s)
+		}
+		if right.RowType().Open {
+			right = narrowSpanProjection(right, s)
+		}
 		return &chplan.SetOperation{
 			Left:          left,
 			Right:         right,
