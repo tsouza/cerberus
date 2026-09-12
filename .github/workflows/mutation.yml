@@ -16,7 +16,7 @@ name: mutation
 # phase. A PR editing only docs runs no leg at all. Selection is computed by
 # .github/scripts/mutation-matrix.mjs from the PR's own diff against its merge
 # base; the phase table it selects from lives in mutation-phases.mjs. Push /
-# schedule / dispatch and `release/*` PRs sweep the FULL matrix, so no leg's
+# schedule / dispatch sweep the FULL matrix, so no leg's
 # efficacy floor depends on some PR happening to touch its package.
 #
 # A merge-queue entry is scoped the same way, off the merge group's own

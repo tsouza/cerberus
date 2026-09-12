@@ -252,12 +252,12 @@ test('the committed mutation efficacy floor rejects weakening', () => {
   assert.deepEqual(problems, ['phase "phase1" has efficacy 94, below the committed minimum 95']);
 });
 
-test('push, schedule, dispatch and release PRs all run the full matrix', () => {
+test('push, schedule, and dispatch run the full matrix while release PRs stay scoped', () => {
   for (const eventName of ['push', 'schedule', 'workflow_dispatch']) {
     assert.equal(select(['docs/engine.md'], { eventName }).phases.length, PHASES.length, eventName);
   }
   const release = select(['CHANGELOG.md'], { headRef: 'release/v1.13.2-chart-0.13.2' });
-  assert.equal(release.phases.length, PHASES.length);
+  assert.deepEqual(release.phases, []);
 });
 
 test('a merge-queue batch selects legs from its own diff, like a pull request', () => {

@@ -5,7 +5,7 @@
 // ---------------
 // The `mutation` lane used to be all-or-nothing on a pull request: a job-level
 // `if:` skipped the entire matrix unless the event was a push, a schedule, a
-// dispatch, or a `release/*` PR, and the required `mutation` aggregator read the
+// dispatch, and the required `mutation` aggregator read the
 // skipped matrix as a green pass-through. A PR could therefore drop
 // internal/chplan's efficacy below its 95% floor, merge with `mutation` green,
 // and only surface on push-to-main — or, as happened in the v1.13.2 cycle, on
@@ -17,7 +17,8 @@
 // actually changed. A PR editing internal/chplan runs phase1. A PR editing only
 // docs runs nothing and the aggregator passes through honestly, because there
 // was nothing in this lane's scope to check. Push / schedule / dispatch and
-// release PRs still sweep the FULL matrix, so no leg's floor is ever load-bearing
+// main pushes, schedules, and dispatches still sweep the FULL matrix, so no
+// leg's floor is ever load-bearing
 // on some PR happening to touch it.
 //
 // Three modes (env MODE, or argv[2]; default `verify`):
@@ -58,13 +59,17 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { error, git, log, notice, setOutput } from './lib/gh.mjs';
-import { changedPaths, normalise, runsFullLane, underPrefix } from './lib/scope-gate.mjs';
+import { changedPaths, normalise, underPrefix } from './lib/scope-gate.mjs';
 import { HARNESS_PATHS, MUTATION_PRODUCTION_GLOBS, PHASES } from './mutation-phases.mjs';
 
 export const MUTATION_LANE_ID = 'quality.mutation';
 export const MUTATION_REGISTRY_PATH = '.github/ci-lanes.json';
 export const MUTATION_MIN_EFFICACY = 95;
 const MUTATION_SEMANTIC_HARNESS_PATHS = new Set([MUTATION_REGISTRY_PATH]);
+
+function runsFullMutationLane(eventName) {
+  return ['push', 'schedule', 'workflow_dispatch'].includes(String(eventName ?? ''));
+}
 
 // Constructs Go's regexp (RE2) rejects outright. gremlins passes exclude_files
 // straight to Go, so a JS-valid pattern using any of these compiles fine here
@@ -510,7 +515,7 @@ export function selectPhases({
   changed,
   semanticHarness = { changed: false, failed: false, paths: [] },
 }) {
-  if (runsFullLane({ eventName, headRef })) {
+  if (runsFullMutationLane(eventName)) {
     return { phases, reason: `event "${eventName}" always runs the full matrix`, gaps: [] };
   }
   if (changed === null) {
@@ -657,7 +662,7 @@ function main() {
 
   const eventName = (process.env.EVENT_NAME || '').trim();
   const headRef = (process.env.HEAD_REF || '').trim();
-  const changed = runsFullLane({ eventName, headRef })
+  const changed = runsFullMutationLane(eventName)
     ? null
     : changedPaths({ baseSha: process.env.BASE_SHA, headSha: process.env.HEAD_SHA });
   const semanticHarness =
