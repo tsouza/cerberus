@@ -1617,8 +1617,12 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 			Alias: s.AggregationTemporalityColumn,
 		})
 	}
+	roles := metricRoles(s)
+	if ctx.wantsTemporalityColumn && s.AggregationTemporalityColumn != "" {
+		roles = append(roles, chplan.Column{Name: s.AggregationTemporalityColumn, Role: chplan.RoleTemporality})
+	}
 	return &chplan.Project{
-		Roles:       metricRoles(s),
+		Roles:       roles,
 		Input:       input,
 		Projections: projections,
 	}
@@ -3228,15 +3232,14 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return nil, err
 	}
 	rw := &chplan.RangeWindow{
-		Input:             inner,
-		Func:              c.Func.Name,
-		Range:             ms.Range,
-		End:               anchor.End,
-		Offset:            anchor.Offset,
-		TimestampColumn:   s.TimestampColumn,
-		ValueColumn:       s.ValueColumn,
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-		TemporalityColumn: temporalityCol,
+		Input:           inner,
+		Func:            c.Func.Name,
+		Range:           ms.Range,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 	attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
 	attachDownsampleTierArm(rw, c.Func.Name, vs, s, rangeCtx)
@@ -3718,7 +3721,7 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 	// classifier: it fires even for a CUMULATIVE-temporality window,
 	// trading the native path's performance for the runtime branch that
 	// proves the answer right regardless of what the data turns out to be.
-	if rw.TemporalityColumn != "" {
+	if rangeWindowTemporalityColumn(rw) != "" {
 		return nil
 	}
 	input, groupBy := rw.Input, rw.GroupBy
@@ -3821,7 +3824,7 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 	if !isNativeRateInput(rw.Input, s) {
 		return nil
 	}
-	if rw.TemporalityColumn != "" {
+	if rangeWindowTemporalityColumn(rw) != "" {
 		return nil
 	}
 	return &chplan.RangeWindowGridNativeInstant{
@@ -3916,7 +3919,7 @@ func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Ra
 	if !isNativeRateInput(rw.Input, s) {
 		return nil
 	}
-	if rw.TemporalityColumn != "" {
+	if rangeWindowTemporalityColumn(rw) != "" {
 		return nil
 	}
 	if len(rw.GroupBy) != 1 || !isIdentityColumnRef(rw.GroupBy[0], s.AttributesColumn) {

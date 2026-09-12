@@ -47,8 +47,8 @@ func TestNativeRateLowererSplitsTemporalityInstant(t *testing.T) {
 	if fanout.OuterRange > 0 || fanout.Step > 0 {
 		t.Errorf("delta union arm is matrix-shaped (OuterRange=%s, Step=%s), want the instant shape", fanout.OuterRange, fanout.Step)
 	}
-	if fanout.TemporalityColumn != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
-		t.Errorf("fan-out TemporalityColumn = %q, want schema temporality column", fanout.TemporalityColumn)
+	if got := rangeWindowTemporalityColumn(fanout); got != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
+		t.Errorf("fan-out temporality role = %q, want schema temporality column", got)
 	}
 	assertTemporalityFilter(t, native.Input, chplan.OpNe)
 	assertTemporalityFilter(t, fanout.Input, chplan.OpEq)

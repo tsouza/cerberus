@@ -121,7 +121,7 @@ func lagAdjacencyDistinctRowsLayer(
 	cols = append(cols, groupFrags...)
 	cols = append(cols, Col(srcTs), Col(r.ValueColumn))
 	if windowTemporalityProjected(r) {
-		cols = append(cols, Col(r.TemporalityColumn))
+		cols = append(cols, Col(rangeWindowTemporalityColumn(r)))
 	}
 	cols[0] = Distinct(cols[0])
 	return NewQuery().From(innerSub).Select(cols...)
@@ -205,7 +205,7 @@ func lagAdjacencyAnnotateLayer(
 	annotate.Select(Col(srcTs))
 	annotate.Select(Col(r.ValueColumn))
 	if hasTemporality {
-		annotate.Select(Col(r.TemporalityColumn))
+		annotate.Select(Col(rangeWindowTemporalityColumn(r)))
 	}
 	annotate.Select(As(
 		WindowFrame(Call("lagInFrame", Col(srcTs)), groupFrags, orderBy, lagFrame),
@@ -416,7 +416,7 @@ func (e *emitter) emitLagAdjacencyPairs(r *chplan.RangeWindow, isIrate bool) err
 	fanout.Select(Col(lagAdjPrevValAlias))
 	fanout.Select(Col(lagAdjIsLastOfRunAlias))
 	if hasTemporality {
-		fanout.Select(Col(r.TemporalityColumn))
+		fanout.Select(Col(rangeWindowTemporalityColumn(r)))
 	}
 	fanout.Select(RawAs(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
@@ -425,7 +425,7 @@ func (e *emitter) emitLagAdjacencyPairs(r *chplan.RangeWindow, isIrate bool) err
 
 	currFields := []Frag{Col(r.ValueColumn), Col(lagAdjPrevValAlias), Col(srcTs), Col(lagAdjPrevTsAlias)}
 	if hasTemporality {
-		currFields = append(currFields, Col(r.TemporalityColumn))
+		currFields = append(currFields, Col(rangeWindowTemporalityColumn(r)))
 	}
 
 	regroup := NewQuery().From(fanout.Frag())

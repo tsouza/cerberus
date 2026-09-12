@@ -92,7 +92,7 @@ func checkFusedVariants(r *chplan.RangeWindow) error {
 	if len(r.Scalars) > 0 || len(r.ScalarExprs) > 0 {
 		return fmt.Errorf("%w: fused RangeWindow with scalar arguments", ErrUnsupported)
 	}
-	if r.TemporalityColumn != "" {
+	if rangeWindowTemporalityColumn(r) != "" {
 		return fmt.Errorf("%w: fused RangeWindow with a temporality column", ErrUnsupported)
 	}
 	for i, v := range r.Variants {
