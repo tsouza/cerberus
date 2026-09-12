@@ -1,0 +1,80 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:resolveLogSampleShape#772f17fa",
+      "message": "logql: sample layout missing role %d",
+      "class": "internal",
+      "rationale": "resolveLogSampleShape reaches this guard only after an internally produced plan claims the Sample contract with RoleMetricName. ProjectSamples, checkedVariantPlan, and logSampleColumns receive plans from LogQL lowering, whose sample-producing projections use logRoles to publish all four required roles with fixed non-empty names. A missing role therefore means an internal plan producer violated that closed Sample-schema contract; no query syntax can selectively remove a declared output role.",
+      "evidence": {
+        "guard": [
+          "past returning if !claimsSample",
+          "past returning if row.Open",
+          "if names[role] == \"\""
+        ],
+        "callers": [
+          "ProjectSamples",
+          "checkedVariantPlan",
+          "logSampleColumns"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:resolveLogSampleShape#d893f575",
+      "message": "logql: sample layout requires one named column for role %d",
+      "class": "internal",
+      "rationale": "resolveLogSampleShape reaches this guard only after an internally produced plan claims the Sample contract with RoleMetricName. ProjectSamples, checkedVariantPlan, and logSampleColumns receive plans from LogQL lowering, whose sample-producing projections use logRoles to publish each required role exactly once under a fixed non-empty name. An unnamed or duplicate role therefore means an internal plan producer violated that schema contract; query syntax cannot alter role declarations.",
+      "evidence": {
+        "guard": [
+          "past returning if !claimsSample",
+          "past returning if row.Open",
+          "if column.Name == \"\" || names[role] != \"\""
+        ],
+        "callers": [
+          "ProjectSamples",
+          "checkedVariantPlan",
+          "logSampleColumns"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:resolveLogSampleShape#eea648a7",
+      "message": "logql: sample layout requires closed schema",
+      "class": "internal",
+      "rationale": "resolveLogSampleShape reaches this guard only when an internally produced plan declares RoleMetricName and thereby claims the public Sample contract. ProjectSamples, checkedVariantPlan, and logSampleColumns receive plans from LogQL lowering, whose sample-producing projections use logRoles and publish a closed schema. An open schema carrying that claim therefore indicates an internal RowType producer-contract violation, not a query-controlled rejection.",
+      "evidence": {
+        "guard": [
+          "past returning if !claimsSample",
+          "if row.Open"
+        ],
+        "callers": [
+          "ProjectSamples",
+          "checkedVariantPlan",
+          "logSampleColumns"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:resolveLogSampleShape#f5a6904f",
+      "message": "logql: sample layout roles %d and %d share output %q",
+      "class": "internal",
+      "rationale": "resolveLogSampleShape reaches this guard only after an internally produced plan claims the Sample contract and supplies every required role. ProjectSamples, checkedVariantPlan, and logSampleColumns receive plans from LogQL lowering, whose sample-producing projections use logRoles to assign distinct fixed output names. Two semantic roles sharing one physical output therefore means an internal plan producer violated that schema contract; query syntax cannot choose these aliases.",
+      "evidence": {
+        "guard": [
+          "past returning if !claimsSample",
+          "past returning if row.Open",
+          "past returning if names[role] == \"\"",
+          "if previous, exists := physicalRoles[names[role]]; exists \u0026\u0026 previous != role"
+        ],
+        "callers": [
+          "ProjectSamples",
+          "checkedVariantPlan",
+          "logSampleColumns"
+        ]
+      }
+    }
+  ]
+}
