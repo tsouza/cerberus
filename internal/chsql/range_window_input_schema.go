@@ -7,6 +7,9 @@ import (
 )
 
 func rangeWindowInputTimestampColumn(r *chplan.RangeWindow) string {
+	if r == nil || r.Input == nil {
+		return ""
+	}
 	if _, nested := r.Input.(*chplan.RangeWindow); nested {
 		return r.TimestampColumn
 	}
