@@ -475,7 +475,7 @@ func expHistogramWindowReshape(
 		// HistogramProjection to consume. Keep their semantic identities on
 		// the closed child schema; the public sample quartet alone does not
 		// describe these input-only columns.
-		Roles: metricScanRoles(s, s.ExpHistogramTable),
+		Roles: expHistogramRoles(s),
 		Input: input,
 		Projections: append(
 			projs,

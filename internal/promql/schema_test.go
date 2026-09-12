@@ -136,3 +136,37 @@ func TestRowTypeExpHistogramRateCarriesPhysicalPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestLowerExpHistogramRangeClosesFanoutInputSchema(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(
+		"rate(dense_exp_hist[5m])",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	plan, err := LowerAtRange(context.Background(), expr, s, start, start.Add(time.Minute), 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	chplan.Walk(plan, func(node chplan.Node) bool {
+		fanout, ok := node.(*chplan.RangeBucketFanout)
+		if !ok {
+			return true
+		}
+		found = true
+		childSchema := fanout.Input.RowType()
+		if childSchema.Open {
+			t.Error("RangeBucketFanout child schema is open")
+		}
+		if _, ok := childSchema.Find(chplan.RoleTimestamp); !ok {
+			t.Errorf("RangeBucketFanout child schema has no timestamp role: %#v", childSchema)
+		}
+		return true
+	})
+	if !found {
+		t.Fatal("lowered range plan has no RangeBucketFanout")
+	}
+}

@@ -362,7 +362,7 @@ func expHistogramMergeScaleWindowProject(perSeries chplan.Node, anchor *chplan.C
 			Alias: hqWinTotalGroupCountAlias,
 		},
 	)
-	return &chplan.Project{Roles: metricRoles(s), Input: perSeries, Projections: projs}, expHistogramMergeScaleWindowCols{
+	return &chplan.Project{Roles: expHistogramRoles(s), Input: perSeries, Projections: projs}, expHistogramMergeScaleWindowCols{
 		MergedScale:     &chplan.ColumnRef{Name: hqWinMergedScaleAlias},
 		TotalRowCount:   &chplan.ColumnRef{Name: hqWinTotalRowCountAlias},
 		TotalGroupCount: &chplan.ColumnRef{Name: hqWinTotalGroupCountAlias},
@@ -627,7 +627,7 @@ func expHistogramGroupMergeSumMap(perSeries chplan.Node, anchor *chplan.ColumnRe
 	if isAvg {
 		projs = expHistogramAvgScaleProjections(projs, s)
 	}
-	return &chplan.Project{Roles: metricRoles(s), Input: guarded, Projections: projs}
+	return &chplan.Project{Roles: expHistogramRoles(s), Input: guarded, Projections: projs}
 }
 
 // ExpHistogramMergeLowerer decides how the across-series exponential-
