@@ -648,7 +648,14 @@ var inputs = map[string]chplan.Node{
 	// elsewhere) consumes them as metadata.
 	"pushdown_through_histogram_quantile": &chplan.HistogramQuantile{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_histogram"},
+			Input: &chplan.Scan{Table: "otel_metrics_histogram", Columns: []string{
+				"BucketCounts", "ExplicitBounds", "MetricName", "le_bucket_key",
+			}, Roles: []chplan.Column{
+				{Name: "BucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+				{Name: "ExplicitBounds", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldExplicitBounds},
+				{Name: "MetricName", Role: chplan.RoleMetricName},
+				{Name: "le_bucket_key", Role: chplan.RoleOpaque},
+			}},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},

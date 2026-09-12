@@ -91,6 +91,21 @@ func TestLower_HistogramQuantile_Native(t *testing.T) {
 			if hq.ZeroThresholdColumn != s.ZeroThresholdColumn {
 				t.Errorf("ZeroThresholdColumn = %q, want %q", hq.ZeroThresholdColumn, s.ZeroThresholdColumn)
 			}
+			for field, want := range map[chplan.HistogramField]string{
+				chplan.HistogramFieldCount:                s.CountColumn,
+				chplan.HistogramFieldSum:                  s.SumColumn,
+				chplan.HistogramFieldScale:                s.ScaleColumn,
+				chplan.HistogramFieldZeroCount:            s.ZeroCountColumn,
+				chplan.HistogramFieldPositiveOffset:       s.PositiveOffsetColumn,
+				chplan.HistogramFieldPositiveBucketCounts: s.PositiveBucketCountsColumn,
+				chplan.HistogramFieldNegativeOffset:       s.NegativeOffsetColumn,
+				chplan.HistogramFieldNegativeBucketCounts: s.NegativeBucketCountsColumn,
+			} {
+				got, ok := hq.Input.RowType().FindHistogramField(field)
+				if !ok || got.Name != want {
+					t.Errorf("HistogramQuantileNative child field %d = %#v, %v; want %q", field, got, ok, want)
+				}
+			}
 			// Walk to find the Scan and assert the target table is the
 			// exp-histogram table (not the classic histogram table or
 			// the SumTable / GaugeTable).

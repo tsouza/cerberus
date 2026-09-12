@@ -220,6 +220,30 @@ type hqNativeHelperColumns struct {
 // interpolated quantile as the `Value` column, matching the Sample
 // contract the lowering's wrapping Project consumes.
 func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative) error {
+	resolved := *h
+	fields := []struct {
+		field    chplan.HistogramField
+		target   *string
+		optional bool
+	}{
+		{chplan.HistogramFieldCount, &resolved.CountColumn, false},
+		{chplan.HistogramFieldSum, &resolved.SumColumn, false},
+		{chplan.HistogramFieldScale, &resolved.ScaleColumn, false},
+		{chplan.HistogramFieldZeroThreshold, &resolved.ZeroThresholdColumn, true},
+		{chplan.HistogramFieldZeroCount, &resolved.ZeroCountColumn, false},
+		{chplan.HistogramFieldPositiveOffset, &resolved.PositiveOffsetColumn, false},
+		{chplan.HistogramFieldPositiveBucketCounts, &resolved.PositiveBucketCountsColumn, false},
+		{chplan.HistogramFieldNegativeOffset, &resolved.NegativeOffsetColumn, false},
+		{chplan.HistogramFieldNegativeBucketCounts, &resolved.NegativeBucketCountsColumn, false},
+	}
+	for _, requirement := range fields {
+		column, err := quantileHistogramField("HistogramQuantileNative", h.Input, requirement.field, requirement.optional)
+		if err != nil {
+			return err
+		}
+		*requirement.target = column
+	}
+	h = &resolved
 	if h.Input == nil {
 		return fmt.Errorf("%w: HistogramQuantileNative.Input is nil", ErrUnsupported)
 	}

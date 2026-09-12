@@ -596,7 +596,7 @@ func buildHistogramNativeRangeTree(
 		{Expr: &chplan.ColumnRef{Name: s.SumColumn}, Alias: s.SumColumn},
 	}...)
 	rebuilt := &chplan.Project{
-		Roles:       metricRoles(s),
+		Roles:       metricScanRoles(s, s.ExpHistogramTable),
 		Input:       agg,
 		Projections: rebuiltProjs,
 	}
@@ -721,7 +721,7 @@ func buildHistogramNativeRangeTreeMerge(
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
 	// Routed through expHistogramMergeSortStage first — see its doc.
 	rebuilt := &chplan.Project{
-		Roles: metricRoles(s),
+		Roles: metricScanRoles(s, s.ExpHistogramTable),
 		Input: expHistogramMergeSortStage(agg, ctx.resourceBounds.HistogramMergeMaxCostUnits),
 		Projections: append(
 			[]chplan.Projection{
