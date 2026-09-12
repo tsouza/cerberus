@@ -45,7 +45,7 @@ func (e *emitter) emitMetricsSecondStage(m *chplan.MetricsSecondStage) error {
 
 // emitMetricsSecondStageTopK renders the topk/bottomk wrap:
 //
-//	SELECT * FROM (<inner>) ORDER BY <ValueAlias> <DESC|ASC>
+//	SELECT * FROM (<inner>) ORDER BY <RoleValue> <DESC|ASC>
 //	  LIMIT <K> [BY <PartitionBy_1>, <PartitionBy_2>, ...]
 //
 // K <= 0 is rejected — TraceQL's parser validates `limit > 0` so the
@@ -80,10 +80,10 @@ func (e *emitter) emitMetricsSecondStageTopK(m *chplan.MetricsSecondStage, value
 
 // emitMetricsSecondStageThreshold renders the threshold wrap:
 //
-//	SELECT * FROM (<inner>) WHERE <ValueAlias> <Op> <Value>
+//	SELECT * FROM (<inner>) WHERE <RoleValue> <Op> <Value>
 //
 // The threshold predicate flows through Builder.Expr as a
-// chplan.Binary{ValueAlias <Op> LitFloat(<Value>)} so the SQL shape
+// chplan.Binary{RoleValue <Op> LitFloat(<Value>)} so the SQL shape
 // matches the rest of the emitter's comparison rendering (parenthesis
 // rules, parameter binding) without duplicating the operator table.
 func (e *emitter) emitMetricsSecondStageThreshold(m *chplan.MetricsSecondStage, valueColumn string) error {

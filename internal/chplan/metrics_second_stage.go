@@ -50,7 +50,7 @@ func (o SecondStageOp) String() string {
 // or a `RangeWindow` wrapping a MetricsAggregate (matrix path); the
 // emitter wraps the inner SQL with the variant-specific clause:
 //
-//   - SecondStageTopK / SecondStageBottomK: `ORDER BY <ValueAlias>
+//   - SecondStageTopK / SecondStageBottomK: `ORDER BY <RoleValue>
 //     <DESC|ASC> LIMIT K [BY <PartitionBy>...]`. The PartitionBy slot
 //     is the anchor column for matrix queries (`anchor_ts`); empty for
 //     instant queries. ClickHouse's `LIMIT N BY <col>` keeps N rows
@@ -58,7 +58,7 @@ func (o SecondStageOp) String() string {
 //     per anchor, matching Tempo's `processTopK` per-anchor selection
 //     (see engine_metrics.go: processTopK loops timestamps and picks
 //     the top-K series at each).
-//   - SecondStageThreshold: `WHERE <ValueAlias> <ThresholdOp>
+//   - SecondStageThreshold: `WHERE <RoleValue> <ThresholdOp>
 //     <ThresholdValue>`. Filters individual data points whose Value
 //     does not satisfy the comparison; same SQL shape works for both
 //     instant and matrix inputs because the predicate is per-row.
