@@ -3,6 +3,7 @@ package promql
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -95,5 +96,43 @@ func TestRowTypeOptimizerPreservesDeclarations(t *testing.T) {
 	optimized := optimizer.Default().Run(context.Background(), plan)
 	if got := optimized.RowType(); !got.Equal(want) {
 		t.Fatalf("optimizer lost output declaration: got %#v, want %#v", got, want)
+	}
+}
+
+func TestRowTypeExpHistogramRateCarriesPhysicalPayload(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(
+		"rate(dense_exp_hist[5m])",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	plan, err := LowerAt(context.Background(), expr, s, at, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	histogram, ok := plan.(*chplan.HistogramProjection)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.HistogramProjection", plan)
+	}
+	want := []chplan.HistogramField{
+		chplan.HistogramFieldCount,
+		chplan.HistogramFieldSum,
+		chplan.HistogramFieldScale,
+		chplan.HistogramFieldZeroCount,
+		chplan.HistogramFieldPositiveOffset,
+		chplan.HistogramFieldPositiveBucketCounts,
+		chplan.HistogramFieldNegativeOffset,
+		chplan.HistogramFieldNegativeBucketCounts,
+	}
+	childSchema := histogram.Input.RowType()
+	if childSchema.Open {
+		t.Fatal("HistogramProjection child schema is open")
+	}
+	for _, field := range want {
+		if _, ok := childSchema.FindHistogramField(field); !ok {
+			t.Errorf("HistogramProjection child schema is missing field %d: %#v", field, childSchema)
+		}
 	}
 }
