@@ -524,6 +524,41 @@ func TestSamplePayloadRequiresCompletePublicHistogramWithoutDiscriminator(t *tes
 		}
 		capturePanic(t, func() { validateSamplePayload(chplan.Schema{Columns: incomplete}) })
 	}
+	capturePanic(t, func() {
+		validateSamplePayload(chplan.Schema{Columns: []chplan.Column{columns[0]}})
+	})
+}
+
+func TestSampleRoleResolversRejectEachAmbiguousBoundary(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	base := []chplan.Column{
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}
+	for _, extra := range []chplan.Column{
+		{Name: "helper", Role: chplan.RoleHistogramField},
+		{Name: "kind", Role: chplan.RoleDiscriminator},
+	} {
+		row := chplan.Schema{Columns: append(append([]chplan.Column(nil), base...), extra)}
+		capturePanic(t, func() {
+			resolveSampleRoleRefs(row, s, sampleProjectionPolicy{name: preserveSampleName}, sampleProjectionLayout{canonical: true})
+		})
+	}
+	open := chplan.Schema{Columns: append([]chplan.Column(nil), base...), Open: true}
+	capturePanic(t, func() {
+		resolveSampleRoleRefs(open, s, sampleProjectionPolicy{name: preserveSampleName}, sampleProjectionLayout{canonical: true})
+	})
+
+	_, ok, err := resolveOptionalSampleRoleName(chplan.Schema{Columns: []chplan.Column{
+		{Name: "first_value", Role: chplan.RoleValue},
+		{Name: "second_value", Role: chplan.RoleValue},
+	}}, chplan.RoleValue)
+	if err == nil || ok {
+		t.Fatalf("duplicate value roles resolved: ok=%v err=%v", ok, err)
+	}
 }
 
 func TestSampleForwardRejectsUnknownPolicy(t *testing.T) {
