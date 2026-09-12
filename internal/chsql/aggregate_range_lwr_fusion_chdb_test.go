@@ -128,7 +128,7 @@ func TestAggregateRangeLWRFusion_MatchesUnfused_ChDB(t *testing.T) {
 // forcing the ordinary opaque-subquery path this test compares against.
 func rangeLWRFusionAggregate(fn chplan.Fn, direct bool) *chplan.Aggregate {
 	lwr := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: rangeLWRFusionSeedTable},
+		Input:         rangeLWRTestInput(rangeLWRFusionSeedTable),
 		Start:         rangeLWRFusionStart,
 		End:           rangeLWRFusionEnd,
 		Step:          rangeLWRFusionStep,

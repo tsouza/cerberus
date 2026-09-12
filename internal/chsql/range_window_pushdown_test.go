@@ -386,7 +386,7 @@ func TestRangeLWRInnerScanTimeBound_BothSet(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           end,
 		Step:          30 * time.Second,
@@ -417,7 +417,7 @@ func TestRangeLWRInnerScanTimeBound_ZeroGridSuppressed(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRTestInput("otel_metrics_gauge"),
 		Step:          30 * time.Second,
 		Lookback:      5 * time.Minute,
 		MetricNameCol: "MetricName",
@@ -541,7 +541,7 @@ func TestRangeLWRInnerScanTimeBound_OnlyOneSet(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeLWR{
-				Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+				Input:         rangeLWRTestInput("otel_metrics_gauge"),
 				Start:         c.start,
 				End:           c.end,
 				Step:          30 * time.Second,
@@ -583,7 +583,7 @@ func TestRangeLWRInnerScanTimeBound_OffsetAndSpanEdges(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           end,
 		Step:          30 * time.Second,
@@ -624,7 +624,7 @@ func TestRangeLWRRejectsBadInput(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 	mkBase := func() chplan.RangeLWR {
 		return chplan.RangeLWR{
-			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:         rangeLWRTestInput("otel_metrics_gauge"),
 			Start:         start,
 			End:           end,
 			Step:          30 * time.Second,

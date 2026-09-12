@@ -52,10 +52,10 @@ const RangeLWRSampleTimestampColumn = "lwr_sample_ts"
 //
 // Input is the matchers-filtered scan (Scan, or Filter-over-Scan, or the
 // gauge+sum merge() Scan / companion UnionAll). It must expose the
-// MetricNameCol / AttributesCol / TimestampCol / ValueCol columns under
-// those names; the dual-table gauge+sum merge for unsuffixed names is
-// preserved transparently because it lives inside Input's Scan
-// (UnionTables → CH `merge(...)`).
+// metric-name / attributes / timestamp / value roles in a closed row schema.
+// Their physical names need not match this node's public output aliases. The
+// dual-table gauge+sum merge for unsuffixed names is preserved transparently
+// because it lives inside Input's Scan (UnionTables → CH `merge(...)`).
 type RangeLWR struct {
 	Input Node
 
@@ -131,8 +131,9 @@ type RangeLWR struct {
 	// byte-unchanged.
 	ArgAndMaxFusion bool
 
-	// Column names on Input (canonical OTel-CH: MetricName / Attributes /
-	// TimeUnix / Value).
+	// Public output aliases (canonical OTel-CH: MetricName / Attributes /
+	// TimeUnix / Value). The emitter resolves the corresponding physical input
+	// columns from Input's row-schema roles rather than trusting these aliases.
 	MetricNameCol string
 	AttributesCol string
 	TimestampCol  string

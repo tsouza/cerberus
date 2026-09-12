@@ -3681,7 +3681,7 @@ func TestEmitRangeLWR_EachColumnEmptyErrors(t *testing.T) {
 	t.Parallel()
 	base := func() *chplan.RangeLWR {
 		return &chplan.RangeLWR{
-			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 			Step:          30 * time.Second,
 			MetricNameCol: "MetricName",
 			AttributesCol: "Attributes",
@@ -3729,7 +3729,7 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 
 	// Pinned grid → computed anchor count least(11, …) (5m / 30s + 1).
 	pinned := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          30 * time.Second,
@@ -3747,7 +3747,7 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 
 	// Zero-span grid (Start == End): exactly one anchor, must NOT error.
 	zeroSpan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start, // span == 0
 		Step:          30 * time.Second,
@@ -3769,7 +3769,7 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 	// emit cleanly. The `&&` → `||` mutant would enter the span branch on
 	// the zero End, computing a negative span and erroring.
 	oneBound := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           time.Time{}, // zero
 		Step:          30 * time.Second,
@@ -3799,7 +3799,7 @@ func TestEmitRangeLWR_LookbackSign(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          30 * time.Second,
