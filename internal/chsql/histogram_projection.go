@@ -27,13 +27,6 @@ func (e *emitter) emitHistogramProjection(h *chplan.HistogramProjection) error {
 	if h.Input == nil {
 		return fmt.Errorf("%w: HistogramProjection.Input is nil", ErrUnsupported)
 	}
-	// ZeroThresholdColumn is intentionally NOT required, mirroring
-	// HistogramQuantileNative: the upstream OTel-CH exp-histogram DDL
-	// does not persist the OTLP zero_threshold field, so the default
-	// schema leaves it empty and the projection renders a constant `0.`
-	// literal for the HistogramZeroThreshold output column instead —
-	// the output shape stays nine columns regardless of what the input
-	// schema persists.
 	if h.CountColumn == "" || h.SumColumn == "" || h.ScaleColumn == "" ||
 		h.ZeroCountColumn == "" || h.PositiveOffsetColumn == "" ||
 		h.PositiveBucketCountsColumn == "" || h.NegativeOffsetColumn == "" ||
@@ -42,6 +35,49 @@ func (e *emitter) emitHistogramProjection(h *chplan.HistogramProjection) error {
 			"PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts column names",
 			ErrUnsupported)
 	}
+	countCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldCount, "histogram count")
+	if err != nil {
+		return err
+	}
+	sumCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldSum, "histogram sum")
+	if err != nil {
+		return err
+	}
+	scaleCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldScale, "histogram scale")
+	if err != nil {
+		return err
+	}
+	zeroCountCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldZeroCount, "histogram zero count")
+	if err != nil {
+		return err
+	}
+	positiveOffsetCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldPositiveOffset, "histogram positive offset")
+	if err != nil {
+		return err
+	}
+	positiveBucketsCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldPositiveBucketCounts, "histogram positive bucket counts")
+	if err != nil {
+		return err
+	}
+	negativeOffsetCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldNegativeOffset, "histogram negative offset")
+	if err != nil {
+		return err
+	}
+	negativeBucketsCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldNegativeBucketCounts, "histogram negative bucket counts")
+	if err != nil {
+		return err
+	}
+	zeroThresholdCol, err := optionalHistogramChildColumn(h.Input, chplan.HistogramFieldZeroThreshold, "histogram zero threshold")
+	if err != nil {
+		return err
+	}
+	// ZeroThresholdColumn is intentionally NOT required, mirroring
+	// HistogramQuantileNative: the upstream OTel-CH exp-histogram DDL
+	// does not persist the OTLP zero_threshold field, so the default
+	// schema leaves it empty and the projection renders a constant `0.`
+	// literal for the HistogramZeroThreshold output column instead —
+	// the output shape stays nine columns regardless of what the input
+	// schema persists.
 	sub, err := e.subqueryFrag(h.Input)
 	if err != nil {
 		return err
@@ -56,15 +92,19 @@ func (e *emitter) emitHistogramProjection(h *chplan.HistogramProjection) error {
 		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	sb.SelectAs(histogramFloatFrag(Col(h.CountColumn)), chplan.HistogramCountColumn)
-	sb.SelectAs(histogramFloatFrag(Col(h.SumColumn)), chplan.HistogramSumColumn)
-	sb.SelectAs(histogramIndexFrag(Col(h.ScaleColumn)), chplan.HistogramScaleColumn)
-	sb.SelectAs(histogramFloatFrag(histogramProjectionZeroThresholdFrag(h)), chplan.HistogramZeroThresholdColumn)
-	sb.SelectAs(histogramFloatFrag(Col(h.ZeroCountColumn)), chplan.HistogramZeroCountColumn)
-	sb.SelectAs(histogramIndexFrag(Col(h.PositiveOffsetColumn)), chplan.HistogramPositiveOffsetColumn)
-	sb.SelectAs(histogramBucketsFrag(Col(h.PositiveBucketCountsColumn)), chplan.HistogramPositiveBucketCountsColumn)
-	sb.SelectAs(histogramIndexFrag(Col(h.NegativeOffsetColumn)), chplan.HistogramNegativeOffsetColumn)
-	sb.SelectAs(histogramBucketsFrag(Col(h.NegativeBucketCountsColumn)), chplan.HistogramNegativeBucketCountsColumn)
+	sb.SelectAs(histogramFloatFrag(Col(countCol)), chplan.HistogramCountColumn)
+	sb.SelectAs(histogramFloatFrag(Col(sumCol)), chplan.HistogramSumColumn)
+	sb.SelectAs(histogramIndexFrag(Col(scaleCol)), chplan.HistogramScaleColumn)
+	zeroThreshold := zeroBandOrigin()
+	if zeroThresholdCol != "" {
+		zeroThreshold = Col(zeroThresholdCol)
+	}
+	sb.SelectAs(histogramFloatFrag(zeroThreshold), chplan.HistogramZeroThresholdColumn)
+	sb.SelectAs(histogramFloatFrag(Col(zeroCountCol)), chplan.HistogramZeroCountColumn)
+	sb.SelectAs(histogramIndexFrag(Col(positiveOffsetCol)), chplan.HistogramPositiveOffsetColumn)
+	sb.SelectAs(histogramBucketsFrag(Col(positiveBucketsCol)), chplan.HistogramPositiveBucketCountsColumn)
+	sb.SelectAs(histogramIndexFrag(Col(negativeOffsetCol)), chplan.HistogramNegativeOffsetColumn)
+	sb.SelectAs(histogramBucketsFrag(Col(negativeBucketsCol)), chplan.HistogramNegativeBucketCountsColumn)
 	return e.emitSelect(sb)
 }
 
@@ -107,17 +147,4 @@ func histogramIndexFrag(f Frag) Frag { return Call("toInt32", f) }
 // already applies before its own bucket walk.
 func histogramBucketsFrag(f Frag) Frag {
 	return Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), f)
-}
-
-// histogramProjectionZeroThresholdFrag renders the HistogramZeroThreshold
-// output column: the stored per-row value when the schema persists one,
-// or the CH-portable shape token `0.` when ZeroThresholdColumn is empty
-// (see zeroBandOrigin in histogram_quantile_native.go, the same
-// precedent for a constant Float64 literal that rides verbatim rather
-// than through InlineLit).
-func histogramProjectionZeroThresholdFrag(h *chplan.HistogramProjection) Frag {
-	if h.ZeroThresholdColumn == "" {
-		return zeroBandOrigin()
-	}
-	return Col(h.ZeroThresholdColumn)
 }

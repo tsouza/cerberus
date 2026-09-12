@@ -38,7 +38,7 @@ func TestEmit_HistogramProjection_MissingColumns(t *testing.T) {
 	t.Parallel()
 
 	base := &chplan.HistogramProjection{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      closedHistogramTestScan("otel_metrics_exponential_histogram", true),
 		CountColumn:                "Count",
 		SumColumn:                  "Sum",
 		ScaleColumn:                "Scale",
@@ -92,7 +92,7 @@ func TestEmit_HistogramProjection_NoZeroThresholdColumn(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.HistogramProjection{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      closedHistogramTestScan("otel_metrics_exponential_histogram", false),
 		CountColumn:                "Count",
 		SumColumn:                  "Sum",
 		ScaleColumn:                "Scale",
@@ -123,7 +123,7 @@ func TestEmit_HistogramProjection_ShapeSanity(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.HistogramProjection{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      closedHistogramTestScan("otel_metrics_exponential_histogram", true),
 		CountColumn:                "Count",
 		SumColumn:                  "Sum",
 		ScaleColumn:                "Scale",
