@@ -29,7 +29,7 @@
       "evidence": {
         "guard": [
           "past returning if b.ReturnBool",
-          "if step \u003c 0"
+          "if sub.Step \u003c 0"
         ],
         "callers": [
           "lowerMixedExpHistogramFamily"
@@ -48,7 +48,7 @@
       "evidence": {
         "guard": [
           "past returning if b.ReturnBool",
-          "past returning if step \u003c 0",
+          "past returning if sub.Step \u003c 0",
           "past returning if err != nil",
           "if state == subqueryGridUnavailable"
         ],
