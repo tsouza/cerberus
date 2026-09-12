@@ -13,11 +13,16 @@ import (
 // Rendered shape:
 //
 //	SELECT s.* FROM (<input>) AS s
-//	WHERE `TraceId` GLOBAL IN (
-//	  SELECT `TraceId` FROM (<input>)
-//	  GROUP BY `TraceId`
-//	  ORDER BY min(`Timestamp`) DESC, `TraceId` ASC
+//	WHERE `<trace-id role>` GLOBAL IN (
+//	  SELECT `<trace-id role>` FROM (<input>)
+//	  GROUP BY `<trace-id role>`
+//	  ORDER BY min(`<timestamp role>`) DESC, `<trace-id role>` ASC
 //	  LIMIT <TraceLimit>)
+//
+// The physical driver names come from the input's closed row schema. Each role
+// must identify exactly one named column, and a physical name cannot also
+// identify an output with another role. The outer SELECT s.* deliberately
+// preserves the child's complete row shape; the drivers are inputs only.
 //
 // The top-N subquery ranks each trace by its start time (min span Timestamp),
 // newest first, with a TraceId-ascending tie-break — the same order
@@ -61,7 +66,7 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 	inputSchema := n.Input.RowType()
 	traceID, hasTraceID := uniqueSearchTraceLimitInputColumn(inputSchema, chplan.RoleTraceID)
 	timestamp, hasTimestamp := uniqueSearchTraceLimitInputColumn(inputSchema, chplan.RoleTimestamp)
-	if inputSchema.Open || !hasTraceID || !hasTimestamp || traceID.Name == timestamp.Name {
+	if inputSchema.Open || !hasTraceID || !hasTimestamp {
 		return fmt.Errorf("%w: SearchTraceLimit input schema is open, ambiguous, or lacks named identity/timestamp roles", ErrUnsupported)
 	}
 	if n.TraceLimit <= 0 {

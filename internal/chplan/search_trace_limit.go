@@ -16,8 +16,11 @@ package chplan
 //
 // The node wraps the lowered plain-search row source — a bare Scan (`{}`) or
 // Filter(Scan) (`{ <matchers> }`), with the request time window folded into
-// the predicate. TraceLimit <= 0 is a no-op (the emitter renders Input
-// unchanged); the lowering never constructs it that way.
+// the predicate. Its trace-ID and timestamp input drivers are the uniquely
+// named RoleTraceID and RoleTimestamp columns in Input.RowType; they are not
+// properties of this pass-through node. The emitter rejects an open or
+// ambiguous input schema, a missing or unnamed driver, and TraceLimit <= 0.
+// Lowering only constructs the node with a closed schema and a positive limit.
 //
 // L1 (fat-trace): the node bounds the trace COUNT, not the spans-per-trace.
 // A single trace with millions of matched spans still drains every matched
