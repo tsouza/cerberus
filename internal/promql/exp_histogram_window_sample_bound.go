@@ -113,12 +113,15 @@ func ExpHistogramWindowCostUnitsForMemory(chQueryMaxMemory int64) int64 {
 		return expHistogramWindowCostUnitsPerGiB
 	}
 	units := (chQueryMaxMemory / bytesPerGiB) * expHistogramWindowCostUnitsPerGiB
-	// Proportional remainder, so a 1.5 GiB cap is not rounded down to a
-	// 1 GiB one. Adding the zero remainder is deliberately unconditional:
-	// the branch would distinguish no output at an exact-GiB boundary.
-	rem := chQueryMaxMemory % bytesPerGiB
-	units += (rem * expHistogramWindowCostUnitsPerGiB) / bytesPerGiB
-	return max(units, expHistogramWindowCostUnitsFloor)
+	if rem := chQueryMaxMemory % bytesPerGiB; rem > 0 {
+		// Proportional remainder, so a 1.5 GiB cap is not rounded down to
+		// a 1 GiB one.
+		units += (rem * expHistogramWindowCostUnitsPerGiB) / bytesPerGiB
+	}
+	if units < expHistogramWindowCostUnitsFloor {
+		return expHistogramWindowCostUnitsFloor
+	}
+	return units
 }
 
 // expHistogramWindowSamplesExpr is S: how many samples the group's window
