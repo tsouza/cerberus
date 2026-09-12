@@ -185,6 +185,19 @@ const (
 // therefore skipped by the loop below rather than left silently uncovered.
 var nativeTsAxisInstantOutOfScope = map[string]bool{"increase": true, "delta": true}
 
+func nativeTsAxisInstantTestScan() *chplan.Scan {
+	roles := []chplan.Column{
+		{Name: nativeScanBoundTSCol, Role: chplan.RoleTimestamp},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	return &chplan.Scan{
+		Table:   "otel_metrics_gauge",
+		Columns: []string{nativeScanBoundTSCol, "Attributes", "Value"},
+		Roles:   roles,
+	}
+}
+
 // TestNativeTSGrid_TsAxis_InstantEmitter covers nativeGridTsAxisFrag's OTHER
 // caller. RangeWindowGridNativeInstant is a distinct node type with its own
 // emitter, so the registry loop above cannot reach it — the same gap
@@ -211,7 +224,7 @@ func TestNativeTSGrid_TsAxis_InstantEmitter(t *testing.T) {
 			t.Parallel()
 
 			node := &chplan.RangeWindowGridNativeInstant{
-				Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+				Input:           nativeTsAxisInstantTestScan(),
 				Func:            fn,
 				Range:           nativeTsAxisInstantWindow,
 				Anchor:          anchor,
@@ -249,7 +262,7 @@ func TestNativeTSGrid_TsAxis_InstantOutOfScopeStillRejected(t *testing.T) {
 			t.Parallel()
 
 			node := &chplan.RangeWindowGridNativeInstant{
-				Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+				Input:           nativeTsAxisInstantTestScan(),
 				Func:            fn,
 				Range:           nativeTsAxisInstantWindow,
 				Anchor:          anchor,
