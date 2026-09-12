@@ -166,3 +166,76 @@ func TestSortByLabelOverMixedSetOpOr_ShadowCollision_ChDB(t *testing.T) {
 		})
 	}
 }
+
+func TestSortByLabelOverMixedSetOpOr_MetricNameMatching_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, tkShadowSeed)
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	type identity struct{ name, series string }
+	cases := []struct {
+		name  string
+		query string
+		want  map[identity]bool
+	}{
+		{
+			name:  "histogram lhs on name",
+			query: `sort_by_label(` + tkShadowHistMetric + ` or on(__name__) ` + tkShadowFloatMetric + `, "series")`,
+			want: map[identity]bool{
+				{tkShadowHistMetric, "dup"}:   true,
+				{tkShadowFloatMetric, "dup"}:  true,
+				{tkShadowFloatMetric, "solo"}: true,
+			},
+		},
+		{
+			name:  "float lhs on name",
+			query: `sort_by_label(` + tkShadowFloatMetric + ` or on(__name__) ` + tkShadowHistMetric + `, "series")`,
+			want: map[identity]bool{
+				{tkShadowHistMetric, "dup"}:   true,
+				{tkShadowFloatMetric, "dup"}:  true,
+				{tkShadowFloatMetric, "solo"}: true,
+			},
+		},
+		{
+			name:  "ordinary label control",
+			query: `sort_by_label(` + tkShadowHistMetric + ` or on(series) ` + tkShadowFloatMetric + `, "series")`,
+			want: map[identity]bool{
+				{tkShadowHistMetric, "dup"}:   true,
+				{tkShadowFloatMetric, "solo"}: true,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, foEvalTS, foEvalTS)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): %v", tc.query, err)
+			}
+			sqlText, args, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit(%q): %v", tc.query, err)
+			}
+			rows := fixture.queryOverEmitted(t, "`MetricName`, `Attributes`['series']", sqlText, args)
+			defer func() { _ = rows.Close() }()
+			got := map[identity]bool{}
+			for rows.Next() {
+				var id identity
+				if err := rows.Scan(&id.name, &id.series); err != nil {
+					t.Fatal(err)
+				}
+				got[id] = true
+			}
+			if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("query %q: identities = %#v, want %#v", tc.query, got, tc.want)
+			}
+		})
+	}
+}

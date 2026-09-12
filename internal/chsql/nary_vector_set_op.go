@@ -70,7 +70,7 @@ func (e *emitter) emitNaryVectorSetOp(s *chplan.NaryVectorSetOp) error {
 		return err
 	}
 
-	sig := setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
+	sig := setOpMatchKeyFrags(s.Match, s.MetricNameColumn, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
 	outCols := naryVectorSetOpOutputCols(s)
 
 	sideArms := make([]Frag, len(s.Arms))
