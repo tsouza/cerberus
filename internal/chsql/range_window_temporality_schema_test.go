@@ -9,7 +9,7 @@ import (
 func temporalityTestScan(table string) *chplan.Scan {
 	return &chplan.Scan{
 		Table:   table,
-		Columns: []string{"MetricName", "Attributes", "TimeUnix", "Value", "AggregationTemporality"},
+		Columns: []string{"Attributes", "TimeUnix", "Value", "AggregationTemporality"},
 		Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
 	}
 }
