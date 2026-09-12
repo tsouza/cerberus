@@ -328,7 +328,7 @@ func checkZeroBucketScope(
 			"fixture %s: its quantile answers exactly 0, which for a native histogram can only "+
 				"come from the zero band, so the answer IS the zero threshold — a value neither "+
 				"side can read and both must invent as 0. Declare `scope: %s` so this agreement "+
-				"is recorded rather than counted as coverage.",
+				"is recorded rather than counted as coverage",
 			c.Name, ScopeExceptZeroBucket,
 		)
 	case !earned && declared:
@@ -336,7 +336,7 @@ func checkZeroBucketScope(
 			"fixture %s declares `scope: %s`, but its answer does not depend on the invented zero "+
 				"threshold: no sample of it is a zero-band quantile over an exponential-histogram "+
 				"seed. Compare it in full — this scope records one specific un-oracleable axis and "+
-				"is not a way to narrow a comparison.",
+				"is not a way to narrow a comparison",
 			c.Name, ScopeExceptZeroBucket,
 		)
 	}

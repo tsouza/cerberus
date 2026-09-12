@@ -39,7 +39,7 @@ const (
 var errTempoSpanIdentityUnavailable = errors.New("tempo span identity unavailable")
 
 func tempoSpanIdentityUnavailable(err error) error {
-	return fmt.Errorf("%w: %v", errTempoSpanIdentityUnavailable, err)
+	return fmt.Errorf("%w: %w", errTempoSpanIdentityUnavailable, err)
 }
 
 // tracesTable is the one table a TraceQL fixture's seed creates.
@@ -134,7 +134,7 @@ func rejectNarrowingSections(c *Case) error {
 					"spanset pipeline over every seeded span; %s narrows cerberus's scan in the "+
 					"storage layer, which upstream applies before the pipeline the oracle runs. "+
 					"The two answers would differ about what was READ, not about the query. "+
-					"Remove the `parity:` section from this fixture.",
+					"Remove the `parity:` section from this fixture",
 				c.Name, section, section,
 			)
 		}
@@ -585,7 +585,7 @@ func compareSpanSets(t *testing.T, c *Case, p *Parity, got, want []oracle.Result
 			"fixture %s: reference engine matched %d span(s), cerberus %d.\n"+
 				"  reference: %v\n  cerberus:  %v\n"+
 				"This is a real disagreement about the answer, not a golden to regenerate — "+
-				"there is no update path for this check.",
+				"there is no update path for this check",
 			c.Name, len(got), len(want), got, want,
 		))
 	}

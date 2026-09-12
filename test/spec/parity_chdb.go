@@ -104,8 +104,8 @@ var (
 	errParityRefusal      = errors.New("parity comparison refused")
 )
 
-func parityDisagreement(err error) error { return fmt.Errorf("%w: %v", errParityDisagreement, err) }
-func parityRefusal(err error) error      { return fmt.Errorf("%w: %v", errParityRefusal, err) }
+func parityDisagreement(err error) error { return fmt.Errorf("%w: %w", errParityDisagreement, err) }
+func parityRefusal(err error) error      { return fmt.Errorf("%w: %w", errParityRefusal, err) }
 
 // RunParity checks a fixture's answer against a REAL reference engine.
 //
@@ -241,7 +241,7 @@ func runParity(t *testing.T, c *Case, p *Parity, eval ParityEval, roundTrip Roun
 		return parityRefusal(fmt.Errorf(
 			"fixture %s carries a `parity:` section but no executable round-trip. "+
 				"The parity check reads the seeded rows back out of chDB, so it needs the same "+
-				"`seed:` + `expected_rows:` opt-in RunRoundTrip needs.", c.Name,
+				"`seed:` + `expected_rows:` opt-in RunRoundTrip needs", c.Name,
 		))
 	}
 	if !roundTrip.seeded || roundTrip.fixtureName != c.Name {
@@ -292,7 +292,7 @@ func runParity(t *testing.T, c *Case, p *Parity, eval ParityEval, roundTrip Roun
 				"fixture %s is enrolled against the %q oracle, but this lane was built without "+
 					"the `chdb_agpl_oracle` build tag, so the Loki oracle is compiled out and the "+
 					"fixture would be checked against nothing. Run this package with "+
-					"`-tags chdb,agpl_oracle,chdb_agpl_oracle`.", c.Name, p.Oracle,
+					"`-tags chdb,agpl_oracle,chdb_agpl_oracle`", c.Name, p.Oracle,
 			)
 		}
 		got, err = lokiParityEvaluator(t, db, c, q)
@@ -948,7 +948,7 @@ func compareAgainstReference(
 			"reference engine returned %d sample(s), cerberus %d.\n"+
 				"  reference: %v\n  cerberus:  %v\n"+
 				"This is a real disagreement about the answer, not a golden to regenerate — "+
-				"there is no update path for this check.",
+				"there is no update path for this check",
 			len(got), len(want), got, want,
 		))
 	}
