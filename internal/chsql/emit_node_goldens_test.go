@@ -387,7 +387,7 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 			name: "bare selector arms fuse to a single pass",
 			plan: intersect(filtered("SpanName", "left"), filtered("Duration", "5")),
 			want: []string{
-				"SELECT * FROM `otel_traces`",
+				"SELECT `TraceId`, `SpanId` FROM `otel_traces`",
 				"WHERE ((`SpanName` = ?) OR (`Duration` = ?))",
 				fusedGateLeft,
 				fusedGateRight,
@@ -400,7 +400,7 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 			// is a tautology and every trace already satisfies both gates.
 			name: "unfiltered arms need neither restriction nor gate",
 			plan: intersect(scan(), scan()),
-			want: []string{"SELECT * FROM `otel_traces`", identityDedup},
+			want: []string{"SELECT `TraceId`, `SpanId` FROM `otel_traces`", identityDedup},
 			notWant: []string{
 				"_setand_", "UNION ALL", "QUALIFY", "WHERE",
 			},
@@ -532,7 +532,7 @@ func TestEmitNode_SetOperation_Union(t *testing.T) {
 	}
 	// Both arms should still be wrapped in parens — each is a complete
 	// SELECT joined by the SELECT-level UNION ALL binary.
-	if !strings.Contains(sql, "(SELECT * FROM `otel_traces`)") {
+	if !strings.Contains(sql, "(SELECT `TraceId`, `SpanId` FROM `otel_traces`)") {
 		t.Errorf("SetUnion arms not parenthesised: %q", sql)
 	}
 	if args != nil {

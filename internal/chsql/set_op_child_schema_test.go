@@ -12,7 +12,8 @@ import (
 
 func setOpSchemaScan(table, traceID, spanID string) *chplan.Scan {
 	return &chplan.Scan{
-		Table: table,
+		Table:   table,
+		Columns: []string{traceID, spanID},
 		Roles: []chplan.Column{
 			{Name: traceID, Role: chplan.RoleTraceID},
 			{Name: spanID, Role: chplan.RoleSpanID},
@@ -62,5 +63,60 @@ func TestSetOperationRejectsMissingChildIdentityRole(t *testing.T) {
 	_, _, err := chsql.Emit(context.Background(), plan)
 	if !errors.Is(err, chsql.ErrUnsupported) {
 		t.Fatalf("Emit error = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestSetOperationRejectsAmbiguousChildIdentitySchema(t *testing.T) {
+	closed := func(columns []string, roles []chplan.Column) *chplan.Scan {
+		return &chplan.Scan{Table: "spans", Columns: columns, Roles: roles}
+	}
+	valid := func() *chplan.Scan { return setOpSchemaScan("spans", "trace", "span") }
+	tests := map[string]*chplan.Scan{
+		"open":                   {Table: "spans", Roles: []chplan.Column{{Name: "trace", Role: chplan.RoleTraceID}, {Name: "span", Role: chplan.RoleSpanID}}},
+		"duplicate trace":        closed([]string{"trace_a", "trace_b", "span"}, []chplan.Column{{Name: "trace_a", Role: chplan.RoleTraceID}, {Name: "trace_b", Role: chplan.RoleTraceID}, {Name: "span", Role: chplan.RoleSpanID}}),
+		"duplicate span":         closed([]string{"trace", "span_a", "span_b"}, []chplan.Column{{Name: "trace", Role: chplan.RoleTraceID}, {Name: "span_a", Role: chplan.RoleSpanID}, {Name: "span_b", Role: chplan.RoleSpanID}}),
+		"unnamed trace":          closed([]string{"", "span"}, []chplan.Column{{Role: chplan.RoleTraceID}, {Name: "span", Role: chplan.RoleSpanID}}),
+		"unnamed span":           closed([]string{"trace", ""}, []chplan.Column{{Name: "trace", Role: chplan.RoleTraceID}, {Role: chplan.RoleSpanID}}),
+		"shared identity name":   closed([]string{"identity", "identity"}, []chplan.Column{{Name: "identity", Role: chplan.RoleTraceID}, {Name: "identity", Role: chplan.RoleSpanID}}),
+		"conflicting trace name": closed([]string{"trace", "trace", "span"}, []chplan.Column{{Name: "trace", Role: chplan.RoleTraceID}, {Name: "trace", Role: chplan.RoleAttributes}, {Name: "span", Role: chplan.RoleSpanID}}),
+	}
+	for name, malformed := range tests {
+		for _, side := range []string{"left", "right"} {
+			t.Run(name+"/"+side, func(t *testing.T) {
+				left, right := chplan.Node(valid()), chplan.Node(valid())
+				if side == "left" {
+					left = malformed
+				} else {
+					right = malformed
+				}
+				_, _, err := chsql.Emit(context.Background(), &chplan.SetOperation{
+					Left: left, Right: right, Op: chplan.SetUnion,
+					TraceIDColumn: "trace", SpanIDColumn: "span",
+				})
+				if !errors.Is(err, chsql.ErrUnsupported) {
+					t.Fatalf("Emit error = %v, want ErrUnsupported", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSetOperationRejectsNilChild(t *testing.T) {
+	for _, side := range []string{"left", "right"} {
+		t.Run(side, func(t *testing.T) {
+			left, right := chplan.Node(setOpSchemaScan("spans", "trace", "span")), chplan.Node(setOpSchemaScan("spans", "trace", "span"))
+			if side == "left" {
+				left = nil
+			} else {
+				right = nil
+			}
+			_, _, err := chsql.Emit(context.Background(), &chplan.SetOperation{
+				Left: left, Right: right, Op: chplan.SetUnion,
+				TraceIDColumn: "trace", SpanIDColumn: "span",
+			})
+			if !errors.Is(err, chsql.ErrUnsupported) {
+				t.Fatalf("Emit error = %v, want ErrUnsupported", err)
+			}
+		})
 	}
 }

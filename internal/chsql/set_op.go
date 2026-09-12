@@ -140,14 +140,41 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 }
 
 func setOperationIdentity(s *chplan.SetOperation) (string, string, bool) {
-	leftTrace, leftHasTrace := s.Left.RowType().Find(chplan.RoleTraceID)
-	leftSpan, leftHasSpan := s.Left.RowType().Find(chplan.RoleSpanID)
-	rightTrace, rightHasTrace := s.Right.RowType().Find(chplan.RoleTraceID)
-	rightSpan, rightHasSpan := s.Right.RowType().Find(chplan.RoleSpanID)
-	ok := s.TraceIDColumn != "" && s.SpanIDColumn != "" &&
-		leftHasTrace && leftHasSpan && rightHasTrace && rightHasSpan &&
-		leftTrace.Name != "" && leftSpan.Name != "" && rightTrace.Name != "" && rightSpan.Name != ""
-	return leftTrace.Name, leftSpan.Name, ok
+	if s == nil || s.Left == nil || s.Right == nil || s.TraceIDColumn == "" || s.SpanIDColumn == "" {
+		return "", "", false
+	}
+	leftTrace, leftSpan, leftOK := setOperationChildIdentity(s.Left.RowType())
+	_, _, rightOK := setOperationChildIdentity(s.Right.RowType())
+	return leftTrace, leftSpan, leftOK && rightOK
+}
+
+func setOperationChildIdentity(row chplan.Schema) (string, string, bool) {
+	if row.Open {
+		return "", "", false
+	}
+	roleName := func(role chplan.ColumnRole) (string, bool) {
+		name := ""
+		count := 0
+		for _, column := range row.Columns {
+			if column.Role == role {
+				name = column.Name
+				count++
+			}
+		}
+		return name, count == 1 && name != ""
+	}
+	traceID, traceOK := roleName(chplan.RoleTraceID)
+	spanID, spanOK := roleName(chplan.RoleSpanID)
+	if !traceOK || !spanOK || traceID == spanID {
+		return "", "", false
+	}
+	for _, column := range row.Columns {
+		if (column.Name == traceID && column.Role != chplan.RoleTraceID) ||
+			(column.Name == spanID && column.Role != chplan.RoleSpanID) {
+			return "", "", false
+		}
+	}
+	return traceID, spanID, true
 }
 
 // intersectQuery assembles the `&&` fallback shape described in
