@@ -24,6 +24,32 @@ INSERT INTO session_recovery_probe VALUES ('probe', map('k', 'v'), now64(9), 1.0
 
 const sessionRecoveryPlainQuery = `SELECT MetricName, Attributes, TimeUnix, Value FROM session_recovery_probe`
 
+func TestQueryDecodesMapProjectionAliases(t *testing.T) {
+	c := NewChDB(t)
+	c.Seed(t, sessionRecoverySeedDDL)
+
+	queries := []string{
+		sessionRecoveryPlainQuery,
+		`SELECT MetricName, Attributes AS labels, TimeUnix, Value FROM session_recovery_probe`,
+		`SELECT MetricName, Attributes AS labels_map, TimeUnix, Value FROM session_recovery_probe`,
+	}
+	for _, query := range queries {
+		rows, err := c.Query(context.Background(), query)
+		if err != nil {
+			t.Fatalf("query %q: %v", query, err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("query %q: got %d rows, want 1", query, len(rows))
+		}
+		if got := rows[0].Labels["k"]; got != "v" {
+			t.Errorf("query %q: label k = %q, want %q", query, got, "v")
+		}
+		if got := rows[0].Value; got != 1 {
+			t.Errorf("query %q: value = %v, want 1", query, got)
+		}
+	}
+}
+
 // sessionRecoveryBoomQuery raises a ClickHouse exception via throwIf —
 // the same guard idiom internal/promql's duplicate-labelset and
 // many-to-many guards plant in real emitted SQL (see
