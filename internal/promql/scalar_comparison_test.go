@@ -117,6 +117,41 @@ func TestScalarComparisonPredicateResolvesValueRole(t *testing.T) {
 	}
 }
 
+func TestScalarComparisonValueRefRejectsNonValueAndAmbiguousProjects(t *testing.T) {
+	t.Parallel()
+
+	input := sampleForwardTestInput(
+		chplan.Column{Name: "labels", Role: chplan.RoleAttributes},
+		chplan.Column{Name: "value", Role: chplan.RoleValue},
+		chplan.Column{Name: "other_value", Role: chplan.RoleValue},
+	)
+	project := func(columns ...chplan.Column) *chplan.Project {
+		projections := make([]chplan.Projection, len(columns))
+		for i, column := range columns {
+			projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name}
+		}
+		return &chplan.Project{Input: input, Roles: columns, Projections: projections}
+	}
+
+	valid := project(
+		chplan.Column{Name: "labels", Role: chplan.RoleAttributes},
+		chplan.Column{Name: "value", Role: chplan.RoleValue},
+	)
+	if got := scalarComparisonValueRef(valid); got.Name != "value" {
+		t.Fatalf("value ref = %q, want value", got.Name)
+	}
+
+	for _, invalid := range []*chplan.Project{
+		project(chplan.Column{Name: "labels", Role: chplan.RoleAttributes}),
+		project(
+			chplan.Column{Name: "value", Role: chplan.RoleValue},
+			chplan.Column{Name: "other_value", Role: chplan.RoleValue},
+		),
+	} {
+		capturePanic(t, func() { scalarComparisonValueRef(invalid) })
+	}
+}
+
 func TestScalarComparisonPriorBoundaryEquivalence(t *testing.T) {
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})

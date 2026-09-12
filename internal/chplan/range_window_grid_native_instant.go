@@ -89,12 +89,14 @@ type RangeWindowGridNativeInstant struct {
 	// without moving Anchor itself. Zero means no offset.
 	Offset time.Duration
 
-	// Column names on Input (canonical OTel-CH: Attributes / TimeUnix /
-	// Value, plus MetricName only when GroupBy has been widened by the
-	// name-collision guard). TimestampColumn / ValueColumn are the two
-	// positional arguments of the aggregate's second paren group.
+	// TimestampColumn names the per-sample timestamp on Input (canonical
+	// OTel-CH: TimeUnix), the first positional argument of the aggregate's
+	// second paren group.
 	TimestampColumn string
-	ValueColumn     string
+
+	// ValueColumn is the public reduced-window value output alias. The
+	// aggregate's physical value input is resolved from Input's RoleValue.
+	ValueColumn string
 
 	// GroupBy is the per-series identity key — ordinarily just Attributes,
 	// widened to also carry MetricName when the caller applies the
@@ -110,6 +112,35 @@ type RangeWindowGridNativeInstant struct {
 func (*RangeWindowGridNativeInstant) planNode() {}
 
 func (r *RangeWindowGridNativeInstant) Children() []Node { return []Node{r.Input} }
+
+// InputValueColumn resolves the aggregate's physical value argument from the
+// child schema. It fails closed unless RoleValue is uniquely declared under a
+// non-empty physical name that no other output shares.
+func (r *RangeWindowGridNativeInstant) InputValueColumn() (string, bool) {
+	if r == nil || r.Input == nil {
+		return "", false
+	}
+	row := r.Input.RowType()
+	if row.Open {
+		return "", false
+	}
+	value := ""
+	nameCount := make(map[string]int, len(row.Columns))
+	for _, column := range row.Columns {
+		nameCount[column.Name]++
+		if column.Role != RoleValue {
+			continue
+		}
+		if column.Name == "" || value != "" {
+			return "", false
+		}
+		value = column.Name
+	}
+	if value == "" || nameCount[value] != 1 {
+		return "", false
+	}
+	return value, true
+}
 
 // Equal compares two RangeWindowGridNativeInstant nodes field-by-field,
 // mirroring [RangeWindowStaleResample.Equal]'s compact shape: a scalar-fields
