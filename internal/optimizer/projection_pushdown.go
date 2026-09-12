@@ -458,22 +458,25 @@ func nativeRangeWindowColumns(r *chplan.RangeWindowGridNative) []string {
 }
 
 // resampleRangeWindowColumns returns the sorted, deduped set of base columns a
-// RangeWindowStaleResample's emit reads off the inner Scan. emitRangeWindowStaleResample
-// (chsql/range_window_stale_resample.go) reads EXACTLY four named columns:
+// RangeWindowStaleResample's emit reads off the inner Scan. The node resolves
+// exactly four names from its child's closed schema:
 //
-//   - TimestampCol and ValueCol — fed positionally into the
+//   - RoleTimestamp and RoleValue — fed positionally into the
 //     timeSeriesResampleToGridWithStaleness aggregate's second paren group.
-//   - MetricNameCol and AttributesCol — the inner SELECT's series keys and
+//   - RoleMetricName and RoleAttributes — the inner SELECT's series keys and
 //     `GROUP BY` list (and the canonical 4-column Sample identity columns).
 //
 // Every other identifier the emit names — `grid`, `grid_ts`, `grid_val`,
 // `anchor_ts` — is SYNTHETIC (produced inside the subquery), so none is a Scan
-// read. The node carries the column names as bare strings (no Exprs), so the
-// set is strictly those four. Dropping any of them — in particular the identity
+// read. The set is strictly those four. Dropping any of them — in particular the identity
 // columns — 502s the query at runtime, so the enumeration must match the emit's
 // reads exactly (the same #860/#861 failure class the native-rate path guards).
 func resampleRangeWindowColumns(r *chplan.RangeWindowStaleResample) []string {
-	return stageColumns([]string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol})
+	columns, ok := r.InputColumns()
+	if !ok {
+		return nil
+	}
+	return stageColumns([]string{columns.MetricName, columns.Attributes, columns.Timestamp, columns.Value})
 }
 
 // rangeBucketFanoutColumns returns the sorted, deduped set of base columns

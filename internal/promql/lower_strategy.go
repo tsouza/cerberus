@@ -1092,17 +1092,28 @@ func (n NativeStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.No
 		return n.Fallback.LowerStaleness(in)
 	}
 	return &chplan.RangeWindowStaleResample{
-		Input:         in.input,
-		Start:         in.start,
-		End:           in.end,
-		Step:          in.step,
-		Lookback:      in.lookback,
-		Offset:        in.offset,
-		MetricNameCol: in.metricNameCol,
-		AttributesCol: in.attributesCol,
-		TimestampCol:  in.timestampCol,
-		ValueCol:      in.valueCol,
+		Input:    closedStaleResampleInput(in.input, in.metricNameCol, in.attributesCol, in.timestampCol, in.valueCol),
+		Start:    in.start,
+		End:      in.end,
+		Step:     in.step,
+		Lookback: in.lookback,
+		Offset:   in.offset,
 	}
+}
+
+func closedStaleResampleInput(input chplan.Node, metricName, attributes, timestamp, value string) chplan.Node {
+	names := []string{metricName, attributes, timestamp, value}
+	roles := []chplan.Column{
+		{Name: metricName, Role: chplan.RoleMetricName},
+		{Name: attributes, Role: chplan.RoleAttributes},
+		{Name: timestamp, Role: chplan.RoleTimestamp},
+		{Name: value, Role: chplan.RoleValue},
+	}
+	projections := make([]chplan.Projection, len(names))
+	for i, name := range names {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: name}}
+	}
+	return &chplan.Project{Input: input, Projections: projections, Roles: roles}
 }
 
 // FanoutChangesLowerer is the concrete DEFAULT ChangesLowerer: it returns the

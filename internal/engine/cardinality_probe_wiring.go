@@ -469,19 +469,20 @@ func findCardinalityProbeCarrier(plan chplan.Node) (*cardinalityProbeCarrier, bo
 		seriesKey := []chplan.Expr{&chplan.ColumnRef{Name: c.AttributesCol}}
 		return cardinalityProbeCarrierFromGroupBy(c.Input, seriesKey, c.TimestampCol, c.Start, c.End, c.Offset, c.Lookback)
 	case *chplan.RangeWindowStaleResample:
-		// Shares RangeLWR's exact field shape (Input, a series-key column,
-		// TimestampCol, Start, End, Offset, Lookback) and its emitter
+		// Shares RangeLWR's carrier geometry (Input, a child-schema series key
+		// and timestamp, Start, End, Offset, Lookback), and its emitter
 		// (chsql/range_window_stale_resample.go) calls the SAME
 		// maybePushRangeScanTimeBound helper with the identical (tsCol,
 		// start, end, offset, span) argument shape — see this file's own
 		// top-level doc, point 1: the stated selection criterion is
 		// sharing that one formula, which this sixth carrier honestly
 		// meets too, so it is no longer excluded.
-		if c.Input == nil || c.AttributesCol == "" {
+		columns, ok := c.InputColumns()
+		if !ok {
 			return nil, false
 		}
-		seriesKey := []chplan.Expr{&chplan.ColumnRef{Name: c.AttributesCol}}
-		return cardinalityProbeCarrierFromGroupBy(c.Input, seriesKey, c.TimestampCol, c.Start, c.End, c.Offset, c.Lookback)
+		seriesKey := []chplan.Expr{&chplan.ColumnRef{Name: columns.Attributes}}
+		return cardinalityProbeCarrierFromGroupBy(c.Input, seriesKey, columns.Timestamp, c.Start, c.End, c.Offset, c.Lookback)
 	default:
 		return nil, false
 	}
