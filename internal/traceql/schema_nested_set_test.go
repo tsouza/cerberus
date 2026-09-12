@@ -50,21 +50,21 @@ func TestNestedSetAnnotatePreservesClosedChildIdentities(t *testing.T) {
 	}
 }
 
-func TestNestedSetAnnotateClosesOpenInputWithConfiguredIdentities(t *testing.T) {
+func TestNestedSetAnnotatePreservesOpenInputWithConfiguredIdentities(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
 	open := spanScan(s)
 	plan := nestedSetAnnotate(open, s)
-	if plan.Input == open {
-		t.Fatal("nested-set constructor did not close an open lowering input")
+	if plan.Input != open {
+		t.Fatal("nested-set constructor replaced open pass-through input")
 	}
 	got := plan.Input.RowType()
-	if got.Open {
-		t.Fatal("nested-set constructor left lowering input schema open")
+	if !got.Open {
+		t.Fatal("nested-set constructor unexpectedly narrowed open input")
 	}
 	traceID, traceOK := got.Find(chplan.RoleTraceID)
 	spanID, spanOK := got.Find(chplan.RoleSpanID)
 	if !traceOK || traceID.Name != s.TraceIDColumn || !spanOK || spanID.Name != s.SpanIDColumn {
-		t.Fatalf("closed identities = (%#v, %#v), want configured trace/span roles", traceID, spanID)
+		t.Fatalf("open identities = (%#v, %#v), want configured trace/span roles", traceID, spanID)
 	}
 }

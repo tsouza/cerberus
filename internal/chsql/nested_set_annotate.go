@@ -202,9 +202,6 @@ func nestedSetInputIdentities(input chplan.Node) (string, string, error) {
 		return "", "", fmt.Errorf("%w: NestedSetAnnotate input is nil", ErrUnsupported)
 	}
 	schema := input.RowType()
-	if schema.Open {
-		return "", "", fmt.Errorf("%w: NestedSetAnnotate input schema is open", ErrUnsupported)
-	}
 	findUnique := func(role chplan.ColumnRole) (string, bool) {
 		name := ""
 		for _, column := range schema.Columns {

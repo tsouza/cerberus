@@ -107,9 +107,7 @@ func TestNestedSetAnnotateRejectsMalformedChildIdentitySchemas(t *testing.T) {
 		needle string
 	}{
 		{name: "nil", input: nil, needle: "input is nil"},
-		{name: "open", input: &chplan.Scan{Table: "source", Roles: []chplan.Column{
-			{Name: "trace", Role: chplan.RoleTraceID}, {Name: "span", Role: chplan.RoleSpanID},
-		}}, needle: "schema is open"},
+		{name: "open without identities", input: &chplan.Scan{Table: "source"}, needle: "requires distinct"},
 		{name: "missing trace", input: identityProject(
 			chplan.Column{Name: "span", Role: chplan.RoleSpanID},
 		), needle: "requires distinct"},

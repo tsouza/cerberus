@@ -41,7 +41,7 @@ const (
 //
 // Output schema: every Input column, plus NestedSetLeftColumn /
 // NestedSetRightColumn / NestedSetParentColumn (Int64). Input must expose a
-// closed schema with unique, distinct RoleTraceID and RoleSpanID columns (the
+// schema that publishes unique, distinct RoleTraceID and RoleSpanID columns (the
 // join keys back to the numbering). The four named columns below belong
 // exclusively to SpansTable's physical schema used by the numbering walk;
 // they need not match the child identities' names.
