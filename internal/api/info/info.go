@@ -82,7 +82,7 @@ type OptState struct {
 	// Snapshot, this is read from the LIVE re-probed resolution: a workload
 	// name entered CERBERUS_CH_QUERY_WORKLOAD reports "" here until (and
 	// unless) the boot or a later re-probe finds the connected server
-	// actually accepts it — see docs/operations.md#workload-scheduling.
+	// actually accepts it — see docs/operations.md#workload-scheduling-server-side-isolation-between-query-and-ingest.
 	QueryWorkload string
 }
 

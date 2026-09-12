@@ -5,7 +5,7 @@ import "context"
 // SettingWorkload is the ClickHouse per-query setting that assigns a
 // dispatched query to a named `WORKLOAD` for CPU-slot / IO-byte scheduling
 // (`CREATE WORKLOAD` / `CREATE RESOURCE`, ClickHouse's server-side workload
-// scheduling — see docs/operations.md#workload-scheduling). cerberus never
+// scheduling — see docs/operations.md#workload-scheduling-server-side-isolation-between-query-and-ingest). cerberus never
 // creates or alters WORKLOAD/RESOURCE objects itself: they are server
 // objects an operator provisions against a cluster cerberus, in the common
 // bring-your-own-ClickHouse deployment, does not own. This setting only
