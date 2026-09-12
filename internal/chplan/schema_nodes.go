@@ -19,7 +19,7 @@ func (s *Scan) RowType() Schema {
 
 func (*OneRow) RowType() Schema { return Schema{Columns: []Column{{Name: "1"}}} }
 func (*StepGrid) RowType() Schema {
-	return Schema{Columns: []Column{{RangeWindowAnchorColumn, RoleAnchor}}}
+	return Schema{Columns: []Column{{Name: RangeWindowAnchorColumn, Role: RoleAnchor}}}
 }
 func (f *Filter) RowType() Schema             { return f.Input.RowType() }
 func (l *Limit) RowType() Schema              { return l.Input.RowType() }
@@ -117,7 +117,7 @@ func payloadSchema(out Schema, histogram, mixed bool) Schema {
 		out.Columns = append(out.Columns, histogramColumns()...)
 	}
 	if mixed {
-		out.Columns = append(out.Columns, Column{MixedDiscriminatorColumn, RoleDiscriminator})
+		out.Columns = append(out.Columns, Column{Name: MixedDiscriminatorColumn, Role: RoleDiscriminator})
 	}
 	return out
 }
@@ -144,9 +144,9 @@ func (h *HistogramProjection) RowType() Schema {
 func windowSchema(input Schema, keys []Expr, matrix bool, timestamp, value string) Schema {
 	out := groupSchema(input, keys, nil, nil)
 	if matrix {
-		out.Columns = append(out.Columns, Column{RangeWindowAnchorColumn, RoleAnchor}, Column{timestamp, RoleTimestamp})
+		out.Columns = append(out.Columns, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor}, Column{Name: timestamp, Role: RoleTimestamp})
 	}
-	out.Columns = append(out.Columns, Column{value, RoleValue})
+	out.Columns = append(out.Columns, Column{Name: value, Role: RoleValue})
 	return out
 }
 
@@ -170,7 +170,7 @@ func (r *RangeWindowGridNative) RowType() Schema {
 		keys.Columns = append(keys.Columns, roleColumn(groupNames[i], input, nil))
 	}
 	keys.Columns = append(keys.Columns, projectSchema(input, r.Recollapse, nil).Columns...)
-	keys.Columns = append(keys.Columns, Column{RangeWindowAnchorColumn, RoleAnchor}, Column{r.TimestampColumn, RoleTimestamp}, Column{r.ValueColumn, RoleValue})
+	keys.Columns = append(keys.Columns, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor}, Column{Name: r.TimestampColumn, Role: RoleTimestamp}, Column{Name: r.ValueColumn, Role: RoleValue})
 	return keys
 }
 
@@ -186,7 +186,7 @@ func (r *RangeWindow) RowType() Schema {
 	case *MetricsCompare:
 		out := m.RowType()
 		value := out.Columns[len(out.Columns)-1]
-		out.Columns = append(out.Columns[:len(out.Columns)-1], Column{RangeWindowAnchorColumn, RoleAnchor}, value)
+		out.Columns = append(out.Columns[:len(out.Columns)-1], Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor}, value)
 		return out
 	}
 	input := r.Input.RowType()
@@ -195,16 +195,16 @@ func (r *RangeWindow) RowType() Schema {
 	}
 	out := groupSchema(input, r.GroupBy, nil, nil)
 	if r.OuterRange > 0 {
-		out.Columns = append(out.Columns, Column{RangeWindowAnchorColumn, RoleAnchor})
+		out.Columns = append(out.Columns, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor})
 		if r.TimestampColumn != "" {
 			timestamp := r.TimestampColumn
 			if timestamp == RangeWindowAnchorColumn {
 				timestamp = "TimeUnix"
 			}
-			out.Columns = append(out.Columns, Column{timestamp, RoleTimestamp})
+			out.Columns = append(out.Columns, Column{Name: timestamp, Role: RoleTimestamp})
 		}
 	}
-	out.Columns = append(out.Columns, Column{r.ValueColumn, RoleValue})
+	out.Columns = append(out.Columns, Column{Name: r.ValueColumn, Role: RoleValue})
 	if r.Func == "predict_linear" && !r.Identity && r.OuterRange == 0 && r.PredictLinearSlopeColumn != "" {
 		out.Columns = append(out.Columns, Column{Name: r.PredictLinearSlopeColumn})
 	}
@@ -214,12 +214,12 @@ func (r *RangeWindow) RowType() Schema {
 func (r *RangeWindow) variantWindowSchema(input Schema, variants bool) Schema {
 	out := groupSchema(input, r.GroupBy, nil, nil)
 	if r.OuterRange > 0 || r.DownsampleTier {
-		out.Columns = append(out.Columns, Column{RangeWindowAnchorColumn, RoleAnchor})
+		out.Columns = append(out.Columns, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor})
 		if r.TimestampColumn != RangeWindowAnchorColumn {
-			out.Columns = append(out.Columns, Column{r.TimestampColumn, RoleTimestamp})
+			out.Columns = append(out.Columns, Column{Name: r.TimestampColumn, Role: RoleTimestamp})
 		}
 	}
-	out.Columns = append(out.Columns, Column{r.ValueColumn, RoleValue})
+	out.Columns = append(out.Columns, Column{Name: r.ValueColumn, Role: RoleValue})
 	if variants {
 		out.Columns = append(out.Columns, Column{Name: r.VariantColumn})
 	}

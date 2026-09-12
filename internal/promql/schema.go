@@ -28,16 +28,58 @@ func metricScanRoles(s schema.Metrics, table string) []chplan.Column {
 		// Histogram storage has no float Value; the histogram lowering
 		// explicitly synthesizes any scalar placeholder in a later Project.
 		roles = roles[:len(roles)-1]
-		names := []string{s.CountColumn, s.SumColumn}
+		fields := []struct {
+			name     string
+			identity chplan.HistogramField
+		}{{s.CountColumn, chplan.HistogramFieldCount}, {s.SumColumn, chplan.HistogramFieldSum}}
 		if table == s.ExpHistogramTable {
-			names = append(names, s.ScaleColumn, s.ZeroThresholdColumn, s.ZeroCountColumn, s.PositiveOffsetColumn,
-				s.PositiveBucketCountsColumn, s.NegativeOffsetColumn, s.NegativeBucketCountsColumn)
+			fields = append(
+				fields,
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.ScaleColumn, chplan.HistogramFieldScale},
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.ZeroThresholdColumn, chplan.HistogramFieldZeroThreshold},
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.ZeroCountColumn, chplan.HistogramFieldZeroCount},
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.PositiveOffsetColumn, chplan.HistogramFieldPositiveOffset},
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.PositiveBucketCountsColumn, chplan.HistogramFieldPositiveBucketCounts},
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.NegativeOffsetColumn, chplan.HistogramFieldNegativeOffset},
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.NegativeBucketCountsColumn, chplan.HistogramFieldNegativeBucketCounts},
+			)
 		} else {
-			names = append(names, s.BucketCountsColumn, s.ExplicitBoundsColumn)
+			fields = append(
+				fields,
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.BucketCountsColumn, chplan.HistogramFieldBucketCounts},
+				struct {
+					name     string
+					identity chplan.HistogramField
+				}{s.ExplicitBoundsColumn, chplan.HistogramFieldExplicitBounds},
+			)
 		}
-		for _, name := range names {
-			if name != "" {
-				roles = append(roles, chplan.Column{Name: name, Role: chplan.RoleHistogramField})
+		for _, field := range fields {
+			if field.name != "" {
+				roles = append(roles, chplan.Column{Name: field.name, Role: chplan.RoleHistogramField, HistogramField: field.identity})
 			}
 		}
 	}
