@@ -192,6 +192,8 @@ func classicBucketLatestAggs(s schema.Metrics) []chplan.AggFunc {
 // fields the merge and interpolation kernels read.
 func nativeExpHistLatestAggs(s schema.Metrics) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
+		latestArgMax(s.CountColumn, s),
+		latestArgMax(s.SumColumn, s),
 		latestArgMax(s.ScaleColumn, s),
 		latestArgMax(s.ZeroCountColumn, s),
 		latestArgMax(s.PositiveOffsetColumn, s),
@@ -596,7 +598,7 @@ func buildHistogramNativeRangeTree(
 		{Expr: &chplan.ColumnRef{Name: s.SumColumn}, Alias: s.SumColumn},
 	}...)
 	rebuilt := &chplan.Project{
-		Roles:       metricRoles(s),
+		Roles:       metricScanRoles(s, s.ExpHistogramTable),
 		Input:       agg,
 		Projections: rebuiltProjs,
 	}
@@ -721,7 +723,7 @@ func buildHistogramNativeRangeTreeMerge(
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
 	// Routed through expHistogramMergeSortStage first — see its doc.
 	rebuilt := &chplan.Project{
-		Roles: metricRoles(s),
+		Roles: metricScanRoles(s, s.ExpHistogramTable),
 		Input: expHistogramMergeSortStage(agg, ctx.resourceBounds.HistogramMergeMaxCostUnits),
 		Projections: append(
 			[]chplan.Projection{

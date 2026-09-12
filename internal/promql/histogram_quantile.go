@@ -1447,7 +1447,7 @@ func (sh classicBucketShaping) reshape(
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
 		)
-		return &chplan.Project{Roles: metricRoles(s), Input: group, Projections: projections}, false
+		return &chplan.Project{Roles: metricScanRoles(s, s.HistogramTable), Input: group, Projections: projections}, false
 	}
 
 	// Layer 1: the merged layout (union of every row's bounds) and the
@@ -1481,8 +1481,8 @@ func (sh classicBucketShaping) reshape(
 	)
 
 	return &chplan.Project{
-		Roles:       metricRoles(s),
-		Input:       &chplan.Project{Roles: metricRoles(s), Input: group, Projections: merged},
+		Roles:       metricScanRoles(s, s.HistogramTable),
+		Input:       &chplan.Project{Roles: metricScanRoles(s, s.HistogramTable), Input: group, Projections: merged},
 		Projections: repaired,
 	}, true
 }
@@ -2151,7 +2151,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// the folded {Positive,Negative}{Offset,BucketCounts}. Routed through
 	// expHistogramMergeSortStage first — see its doc for why.
 	rebuilt := &chplan.Project{
-		Roles: metricRoles(s),
+		Roles: metricScanRoles(s, s.ExpHistogramTable),
 		Input: expHistogramMergeSortStage(agg, ctx.resourceBounds.HistogramMergeMaxCostUnits),
 		Projections: append(
 			[]chplan.Projection{{Expr: attrsRebuild, Alias: s.AttributesColumn}},
