@@ -39,3 +39,29 @@ func TestMetricsCompareTimestampOwnershipRejectsMalformedSchemas(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsCompareRootTimestampOwnershipRejectsMultipleScans(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		right string
+	}{
+		{name: "same timestamp", right: "root_time"},
+		{name: "conflicting timestamp", right: "other_time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := &CrossJoin{
+				Left: &Scan{Table: "roots_a", Roles: []Column{
+					{Name: "root_time", Role: RoleTimestamp},
+				}},
+				Right: &Scan{Table: "roots_b", Roles: []Column{
+					{Name: tc.right, Role: RoleTimestamp},
+				}},
+			}
+			if got, ok := (&MetricsCompare{RootLookup: root}).RootLookupTimestampColumn(); ok {
+				t.Errorf("RootLookupTimestampColumn() = (%q, true), want multi-scan rejection", got)
+			}
+		})
+	}
+}

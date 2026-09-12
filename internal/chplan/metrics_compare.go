@@ -127,22 +127,22 @@ func (m *MetricsCompare) RootLookupTimestampColumn() (string, bool) {
 	}
 	var timestamp string
 	valid := true
-	found := false
+	scanCount := 0
 	Walk(m.RootLookup, func(node Node) bool {
 		scan, ok := node.(*Scan)
 		if !ok {
 			return true
 		}
+		scanCount++
 		column, columnOK := uniqueMetricsCompareTimestamp(scan.RowType())
-		if !columnOK || (found && timestamp != column) {
+		if !columnOK || scanCount > 1 {
 			valid = false
 			return false
 		}
 		timestamp = column
-		found = true
 		return true
 	})
-	return timestamp, valid && found
+	return timestamp, valid && scanCount == 1
 }
 
 func uniqueMetricsCompareTimestamp(row Schema) (string, bool) {
