@@ -198,7 +198,7 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	for tried < n {
 		plan := generatePlan(rng, 0)
 
-		gotPre, errPre := runPlan(ctx, db, plan)
+		gotPre, errPre := runPlan(ctx, db, executablePropertyBaseline(plan))
 		if errPre != nil {
 			// Generator produced something the emitter can't render
 			// (e.g. a degenerate Projection list). Skip — this is

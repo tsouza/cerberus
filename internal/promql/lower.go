@@ -3728,6 +3728,13 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 			input, recollapseProjections, groupBy = hoisted, projections, rawGroupBy
 		}
 	}
+	if input.RowType().Open {
+		var ok bool
+		input, ok = closeNativeMatrixInput(input, groupBy, s)
+		if !ok {
+			return nil
+		}
+	}
 	return &chplan.RangeWindowGridNative{
 		Input:           input,
 		Func:            rw.Func,
@@ -3749,6 +3756,47 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 		// literal before reaching here, so any element present is native-safe.
 		Scalars: rw.Scalars,
 	}
+}
+
+// closeNativeMatrixInput gives the native matrix emitter a truthful closed
+// child schema when label-shaping hoist exposes the raw Scan / Filter(Scan).
+// GroupBy owns every raw identity and recollapse dependency at this boundary;
+// timestamp and value are the remaining physical aggregate inputs. Matcher
+// columns stay below this Project and therefore remain in scope.
+func closeNativeMatrixInput(input chplan.Node, groupBy []chplan.Expr, s schema.Metrics) (chplan.Node, bool) {
+	names := make([]string, 0, len(groupBy)+2)
+	seen := make(map[string]bool, len(groupBy)+2)
+	for _, expr := range groupBy {
+		ref, ok := expr.(*chplan.ColumnRef)
+		if !ok || ref.Name == "" {
+			return nil, false
+		}
+		if !seen[ref.Name] {
+			names = append(names, ref.Name)
+			seen[ref.Name] = true
+		}
+	}
+	for _, name := range []string{s.TimestampColumn, s.ValueColumn} {
+		if name == "" {
+			return nil, false
+		}
+		if !seen[name] {
+			names = append(names, name)
+			seen[name] = true
+		}
+	}
+
+	declared := chplan.Schema{Columns: metricRoles(s)}
+	projections := make([]chplan.Projection, len(names))
+	roles := make([]chplan.Column, len(names))
+	for i, name := range names {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name}
+		roles[i] = chplan.Column{Name: name}
+		if column, ok := declared.ByName(name); ok {
+			roles[i] = column
+		}
+	}
+	return &chplan.Project{Input: input, Projections: projections, Roles: roles}, true
 }
 
 // nativeTSGridInstantNode returns a chplan.RangeWindowGridNativeInstant when rw

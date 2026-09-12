@@ -422,8 +422,10 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // a RangeWindowGridNative's emit reads off the inner Scan. emitRangeWindowGridNative
 // (chsql/range_window_grid_native.go) reads EXACTLY three things off the Scan:
 //
-//   - TimestampColumn and ValueColumn — fed positionally into the
-//     timeSeriesRateToGrid aggregate's second paren group (`Col(...)` each).
+//   - the child schema's RoleTimestamp and RoleValue columns — fed
+//     positionally into the timeSeriesRateToGrid aggregate's second paren
+//     group (`Col(...)` each). The node's TimestampColumn / ValueColumn are
+//     public output aliases and are not Scan reads.
 //   - the column refs walked out of GroupBy — the inner SELECT's series keys
 //     and `GROUP BY` list (rendered by collectGroupByFrags).
 //   - the column refs walked out of Recollapse — the deferred label-shaping
@@ -436,7 +438,7 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // (produced inside the subquery via the timeSeriesRateToGrid /
 // timeSeriesRange / ARRAY JOIN machinery), so it is never a Scan read and must
 // NOT be added here. The native node carries no ScalarExprs (unlike
-// RangeWindow), so this set is strictly {TimestampColumn, ValueColumn} ∪
+// RangeWindow), so this set is strictly {RoleTimestamp, RoleValue} ∪
 // refs(GroupBy) ∪ refs(Recollapse). Dropping any of these — in particular the
 // identity columns the GroupBy walks (the MetricName-class #860/#861 failure)
 // — 502s the native query at runtime, so the enumeration must match the emit's
@@ -450,11 +452,50 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // invariant-relaxation away from re-opening the #860/#861 dropped-column
 // class. Both ship.
 func nativeRangeWindowColumns(r *chplan.RangeWindowGridNative) []string {
-	bare := []string{r.TimestampColumn, r.ValueColumn}
+	bare := nativeRangeWindowInputRoleColumns(r.Input)
+	if len(bare) != 2 {
+		return nil
+	}
 	var roots []chplan.Expr
 	roots = append(roots, r.GroupBy...)
 	roots = append(roots, projectionExprs(r.Recollapse)...)
 	return stageColumns(bare, roots...)
+}
+
+func nativeRangeWindowInputRoleColumns(input chplan.Node) []string {
+	if input == nil {
+		return nil
+	}
+	row := input.RowType()
+	var timestamp, value string
+	seenNames := make(map[string]chplan.ColumnRole, len(row.Columns))
+	for _, column := range row.Columns {
+		if column.Name == "" {
+			continue
+		}
+		if role, ok := seenNames[column.Name]; ok && role != column.Role {
+			return nil
+		}
+		seenNames[column.Name] = column.Role
+		var slot *string
+		switch column.Role {
+		case chplan.RoleTimestamp:
+			slot = &timestamp
+		case chplan.RoleValue:
+			slot = &value
+		}
+		if slot == nil {
+			continue
+		}
+		if *slot != "" {
+			return nil
+		}
+		*slot = column.Name
+	}
+	if timestamp == "" || value == "" {
+		return nil
+	}
+	return []string{timestamp, value}
 }
 
 // resampleRangeWindowColumns returns the sorted, deduped set of base columns a

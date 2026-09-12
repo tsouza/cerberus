@@ -62,7 +62,7 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 	// (timestamp, value) pair, the pass-through identity key, and the three
 	// inputs of the shaping tower. `k`, the tower's lambda parameter, is
 	// deliberately absent.
-	want := []string{"Attributes", "MetricName", "ResourceAttributes", "ServiceName", "TimeUnix", "Value"}
+	want := []string{"Attributes", "MetricName", "ResourceAttributes", "ServiceName", "sample_time", "sample_value"}
 
 	node := func(groupBy ...string) *chplan.RangeWindowGridNative {
 		keys := make([]chplan.Expr, 0, len(groupBy))
@@ -70,12 +70,18 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 			keys = append(keys, &chplan.ColumnRef{Name: name})
 		}
 		return &chplan.RangeWindowGridNative{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input: &chplan.Scan{
+				Table: "otel_metrics_sum",
+				Roles: []chplan.Column{
+					{Name: "sample_time", Role: chplan.RoleTimestamp},
+					{Name: "sample_value", Role: chplan.RoleValue},
+				},
+			},
 			Func:            "rate",
 			Range:           5 * time.Minute,
 			Step:            30 * time.Second,
-			TimestampColumn: "TimeUnix",
-			ValueColumn:     "Value",
+			TimestampColumn: "public_time",
+			ValueColumn:     "public_value",
 			GroupBy:         keys,
 			Recollapse:      []chplan.Projection{{Expr: recollapseTower(), Alias: "Attributes"}},
 		}
@@ -106,6 +112,45 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 
 			if got := nativeRangeWindowColumns(node(tc.groupBy...)); !reflect.DeepEqual(got, want) {
 				t.Errorf("nativeRangeWindowColumns() = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestNativeRangeWindowColumns_MalformedRolesFailClosedBeforeExpressionWalk(t *testing.T) {
+	t.Parallel()
+
+	validRoles := []chplan.Column{
+		{Name: "sample_time", Role: chplan.RoleTimestamp},
+		{Name: "sample_value", Role: chplan.RoleValue},
+	}
+	for _, tc := range []struct {
+		name  string
+		roles []chplan.Column
+	}{
+		{name: "missing value", roles: validRoles[:1]},
+		{name: "duplicate timestamp", roles: []chplan.Column{
+			{Name: "sample_time", Role: chplan.RoleTimestamp},
+			{Name: "other_time", Role: chplan.RoleTimestamp},
+			{Name: "sample_value", Role: chplan.RoleValue},
+		}},
+		{name: "conflicting same name", roles: []chplan.Column{
+			{Name: "sample", Role: chplan.RoleTimestamp},
+			{Name: "sample", Role: chplan.RoleValue},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			node := &chplan.RangeWindowGridNative{
+				Input:   &chplan.Scan{Table: "otel_metrics_sum", Roles: tc.roles},
+				GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}},
+				Recollapse: []chplan.Projection{{
+					Expr:  &chplan.ColumnRef{Name: "ResourceAttributes"},
+					Alias: "Attributes",
+				}},
+			}
+			if got := nativeRangeWindowColumns(node); got != nil {
+				t.Fatalf("nativeRangeWindowColumns() = %v, want nil for malformed roles", got)
 			}
 		})
 	}

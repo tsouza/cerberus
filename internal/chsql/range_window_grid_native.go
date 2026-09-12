@@ -529,6 +529,10 @@ func (e *emitter) nativeGridArrayLevel(r *chplan.RangeWindowGridNative) (arrayLe
 	if r.ValueColumn == "" {
 		return nil, nil, nativeTSGridAgg{}, nil, fmt.Errorf("%w: RangeWindowGridNative.ValueColumn unset", ErrUnsupported)
 	}
+	inputColumns, err := resolveNativeMatrixInputColumns(r)
+	if err != nil {
+		return nil, nil, nativeTSGridAgg{}, nil, err
+	}
 	if r.Step <= 0 {
 		return nil, nil, nativeTSGridAgg{}, nil, fmt.Errorf("%w: RangeWindowGridNative requires Step > 0 (range mode)", ErrUnsupported)
 	}
@@ -598,7 +602,7 @@ func (e *emitter) nativeGridArrayLevel(r *chplan.RangeWindowGridNative) (arrayLe
 	if r.Func == "predict_linear" {
 		gridParams = append(gridParams, InlineLit(int64(r.Scalars[0])))
 	}
-	tsAxis := nativeGridTsAxisFrag(r.Func, r.TimestampColumn)
+	tsAxis := nativeGridTsAxisFrag(r.Func, inputColumns.timestamp)
 	// timeSeriesRange(start, end, step_s) — the parallel anchor-timestamp
 	// axis. Its i-th element is the anchor of gridAgg's i-th value, so the
 	// ARRAY JOIN below pairs them 1:1. It MUST render the UNSHIFTED query grid
@@ -622,7 +626,7 @@ func (e *emitter) nativeGridArrayLevel(r *chplan.RangeWindowGridNative) (arrayLe
 		// Inner SELECT — one row per series carrying the (grid, grid_ts) pair.
 		inner := NewQuery().From(innerSub)
 		inner.Select(groupFrags...)
-		inner.Select(As(Parametric(agg.Fn, gridParams, tsAxis, Col(r.ValueColumn)), nativeGridArrayAlias))
+		inner.Select(As(Parametric(agg.Fn, gridParams, tsAxis, Col(inputColumns.value)), nativeGridArrayAlias))
 		inner.Select(As(gridTS, nativeGridTSAlias))
 		// Prune the inner scan to the offset-shifted half-open grid span
 		// `(Start - Offset - Range, End - Offset]` BEFORE the per-series GROUP
@@ -630,7 +634,7 @@ func (e *emitter) nativeGridArrayLevel(r *chplan.RangeWindowGridNative) (arrayLe
 		// timeSeries*ToGrid aggregate otherwise consumes every retained sample
 		// of every matching series. Gated on Start/End (always pinned on this
 		// node, but kept for a single uniform contract with the fan-out shapes).
-		maybePushRangeScanTimeBound(inner, r.TimestampColumn, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
+		maybePushRangeScanTimeBound(inner, inputColumns.timestamp, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
 		// GroupBy is a no-op on an empty slice, so no length guard is needed.
 		inner.GroupBy(groupFrags...)
 
@@ -643,8 +647,8 @@ func (e *emitter) nativeGridArrayLevel(r *chplan.RangeWindowGridNative) (arrayLe
 	// same one, on the same level, so the hoist changes no granule pruning.
 	state := NewQuery().From(innerSub)
 	state.Select(groupFrags...)
-	state.Select(As(Parametric(agg.StateFn, gridParams, tsAxis, Col(r.ValueColumn)), nativeGridStateAlias))
-	maybePushRangeScanTimeBound(state, r.TimestampColumn, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
+	state.Select(As(Parametric(agg.StateFn, gridParams, tsAxis, Col(inputColumns.value)), nativeGridStateAlias))
+	maybePushRangeScanTimeBound(state, inputColumns.timestamp, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
 	state.GroupBy(groupFrags...)
 
 	// Middle (merge) SELECT — evaluate the shaping tower once per raw
