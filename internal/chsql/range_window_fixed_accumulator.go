@@ -531,7 +531,7 @@ func (e *emitter) emitFixedAccumulatorExtrapolatedMatrix(r *chplan.RangeWindow, 
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 
 	hasTemporality := windowTemporalityProjected(r)
 	needsResetTerm := kind.isCounter()

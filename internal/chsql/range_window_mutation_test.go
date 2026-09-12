@@ -44,7 +44,7 @@ func mutTestStart() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UT
 func fusibleInner() *chplan.RangeWindow {
 	start := mutTestStart()
 	return &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		OuterRange:      10 * time.Minute,
@@ -81,7 +81,7 @@ func fusedOuter() *chplan.RangeWindow {
 func TestHoltWintersSmoothingWeightsEmit(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_gauge", "TimeUnix"),
 		Func:            "holt_winters",
 		Scalars:         []float64{0.25, 0.125},
 		TimestampColumn: "TimeUnix",
@@ -120,7 +120,7 @@ func TestWindowedArrayPairsMatrixMinWindowBoundary(t *testing.T) {
 	start := mutTestStart()
 	base := func() *chplan.RangeWindow {
 		return &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 			Func:            "irate",
 			Range:           5 * time.Minute,
 			OuterRange:      5 * time.Minute,
@@ -164,7 +164,7 @@ func TestOverTimeDirectRejectsZeroStepSubquery(t *testing.T) {
 	t.Parallel()
 	start := mutTestStart()
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 		Func:            "count_over_time",
 		Range:           5 * time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -407,7 +407,7 @@ func TestOverTimeDirectMatrixNoGroupBy(t *testing.T) {
 	t.Parallel()
 	start := mutTestStart()
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
 		Func:            "count_over_time",
 		Range:           5 * time.Minute,
 		OuterRange:      5 * time.Minute,

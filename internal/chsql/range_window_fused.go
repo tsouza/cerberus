@@ -190,6 +190,9 @@ type fusedSubqueryGrid struct {
 func (e *emitter) newFusedSubqueryGrid(
 	r, inner *chplan.RangeWindow, kind extrapolationKind,
 ) (*fusedSubqueryGrid, error) {
+	if err := validateRangeWindowInputTimestamp(inner); err != nil {
+		return nil, err
+	}
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
 		return nil, err
@@ -230,11 +233,11 @@ func (e *emitter) newFusedSubqueryGrid(
 func (g *fusedSubqueryGrid) samplesQuery() *QueryBuilder {
 	q := NewQuery().From(g.innerSub)
 	q.Select(g.groupFrags...)
-	q.Select(As(seriesArrayPairFrag(g.inner, g.inner.TimestampColumn, g.inner.ValueColumn), "samples"))
+	q.Select(As(seriesArrayPairFrag(g.inner, rangeWindowInputTimestampColumn(g.inner), g.inner.ValueColumn), "samples"))
 	if g.temporality != nil {
 		q.Select(As(Call("any", Col(g.inner.TemporalityColumn)), windowTemporalityAlias))
 	}
-	maybePushInnerScanTimeBounds(q, g.inner, g.inner.TimestampColumn, g.rangeNS)
+	maybePushInnerScanTimeBounds(q, g.inner, rangeWindowInputTimestampColumn(g.inner), g.rangeNS)
 	q.GroupBy(g.groupFrags...)
 	return q
 }

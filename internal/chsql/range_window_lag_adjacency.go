@@ -301,7 +301,7 @@ func (e *emitter) emitLagAdjacencyChangesResets(r *chplan.RangeWindow, kernel fu
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 
 	annotate := lagAdjacencyAnnotateLayer(e, r, innerSub, groupFrags, srcTs, false)
 
@@ -403,7 +403,7 @@ func (e *emitter) emitLagAdjacencyPairs(r *chplan.RangeWindow, isIrate bool) err
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 
 	hasTemporality := windowTemporalityProjected(r)
 	annotate := lagAdjacencyAnnotateLayer(e, r, innerSub, groupFrags, srcTs, true)

@@ -44,14 +44,14 @@ func OffsetReanchoredColumnExpr(column string, offset time.Duration) Expr {
 // Input shapes (the emitter discriminates at render time):
 //
 //   - Row-shape relation (PromQL / LogQL): every row carries the
-//     per-sample (TimestampColumn, ValueColumn) pair plus the GroupBy
+//     per-sample (RoleTimestamp, ValueColumn) pair plus the GroupBy
 //     series identity. The emitter (internal/chsql/range_window.go)
 //     produces ClickHouse SQL using the windowed-array idiom: GROUP BY
 //     series, build a sorted (ts, value) array via groupArray +
 //     arraySort, arrayFilter to the per-step window, then apply the
 //     function-specific aggregation. Func names the PromQL operator
-//     (`rate`, `*_over_time`, …); TimestampColumn / ValueColumn are
-//     required.
+//     (`rate`, `*_over_time`, …); TimestampColumn is the public output
+//     alias and ValueColumn is still the input/output value name.
 //
 //   - MetricsAggregate input (TraceQL): the underlying relation is a
 //     chplan.MetricsAggregate whose Inner is a per-span Scan/Filter
@@ -119,8 +119,10 @@ type RangeWindow struct {
 	// uses the user-supplied start + k*Step grid (not epoch-aligned).
 	StepAlign bool
 
-	// TimestampColumn names the column carrying the per-sample timestamp
-	// on Input (typically "TimeUnix" for OTel-CH).
+	// TimestampColumn names the public timestamp output alias. Ordinary
+	// range-window emitters resolve their physical input from RoleTimestamp
+	// on Input. The special Metrics* dispatches also use it as their nested
+	// source name; downsample emission is output-only.
 	TimestampColumn string
 
 	// ValueColumn names the column carrying the per-sample float value

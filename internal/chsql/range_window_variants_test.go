@@ -75,7 +75,7 @@ func fusedTestWindow() *chplan.RangeWindow {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeWindow{
 		Input: &chplan.Project{
-			Input: &chplan.Scan{Table: "otel_logs"},
+			Input: rangeWindowTimestampTestScan("otel_logs", "Timestamp", "ResourceAttributes", "Len"),
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "ResourceAttributes"},
 				{Expr: &chplan.ColumnRef{Name: "Timestamp"}},
