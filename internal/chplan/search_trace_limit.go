@@ -33,10 +33,8 @@ package chplan
 // the same row-drain backstop a wide fat result set leans on — not a distinct
 // unbounded path — so the trace-count bound deliberately leaves it alone.
 type SearchTraceLimit struct {
-	Input           Node
-	TraceIDColumn   string
-	TimestampColumn string
-	TraceLimit      int64
+	Input      Node
+	TraceLimit int64
 }
 
 func (*SearchTraceLimit) planNode() {}
@@ -48,8 +46,6 @@ func (n *SearchTraceLimit) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	return n.TraceIDColumn == o.TraceIDColumn &&
-		n.TimestampColumn == o.TimestampColumn &&
-		n.TraceLimit == o.TraceLimit &&
+	return n.TraceLimit == o.TraceLimit &&
 		n.Input.Equal(o.Input)
 }

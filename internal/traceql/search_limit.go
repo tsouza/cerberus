@@ -562,10 +562,8 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	return &chplan.SearchTraceLimit{
-		Input:           input,
-		TraceIDColumn:   s.TraceIDColumn,
-		TimestampColumn: s.TimestampColumn,
-		TraceLimit:      limit,
+		Input:      input,
+		TraceLimit: limit,
 	}
 }
 

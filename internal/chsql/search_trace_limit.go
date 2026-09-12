@@ -55,8 +55,10 @@ import (
 // (...)` CTE would not remove the second scan: ClickHouse inlines a CTE at
 // every reference rather than materialising it, so there is nothing to lift.
 func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
-	if n.TraceIDColumn == "" || n.TimestampColumn == "" {
-		return fmt.Errorf("%w: SearchTraceLimit column names unset", ErrUnsupported)
+	traceID, hasTraceID := n.Input.RowType().Find(chplan.RoleTraceID)
+	timestamp, hasTimestamp := n.Input.RowType().Find(chplan.RoleTimestamp)
+	if !hasTraceID || !hasTimestamp || traceID.Name == "" || timestamp.Name == "" {
+		return fmt.Errorf("%w: SearchTraceLimit input identity or timestamp role unset or unnamed", ErrUnsupported)
 	}
 	if n.TraceLimit <= 0 {
 		// The lowering gates node construction on `limit > 0`
@@ -77,17 +79,17 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 	}
 
 	topN := NewQuery().
-		Select(Col(n.TraceIDColumn)).
+		Select(Col(traceID.Name)).
 		From(innerSub).
-		GroupBy(Col(n.TraceIDColumn)).
-		OrderBy(Call("min", Col(n.TimestampColumn)), true).
-		OrderBy(Col(n.TraceIDColumn), false).
+		GroupBy(Col(traceID.Name)).
+		OrderBy(Call("min", Col(timestamp.Name)), true).
+		OrderBy(Col(traceID.Name), false).
 		Limit(n.TraceLimit).
 		Frag()
 
 	sb := NewQuery().
 		Select(verbatim("s.*")).
 		From(aliasedFrag(outerSub, "s")).
-		Where(InSubquery(Col(n.TraceIDColumn), topN))
+		Where(InSubquery(Col(traceID.Name), topN))
 	return e.emitSelect(sb)
 }

@@ -146,7 +146,7 @@ func allNodeKinds() []chplan.Node {
 			MetricNameCol: "MetricName", AttributesCol: "Attributes",
 			TimestampCol: "TimeUnix", ValueCol: "Value",
 		},
-		&chplan.SearchTraceLimit{Input: leaf, TraceIDColumn: "TraceId", TimestampColumn: "TimeUnix", TraceLimit: 20},
+		&chplan.SearchTraceLimit{Input: leaf, TraceLimit: 20},
 	}
 }
 
