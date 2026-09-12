@@ -2763,7 +2763,9 @@ func compareNodeInternal() *chplan.MetricsCompare {
 				&chplan.ColumnRef{Name: "SpanName"},
 			}},
 		}},
-		Inner: &chplan.Scan{Table: "otel_traces"},
+		Inner: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+		}},
 	}
 }
 

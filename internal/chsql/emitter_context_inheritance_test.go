@@ -242,15 +242,19 @@ func TestEmitCompareRootLegInheritsAttrStrategies(t *testing.T) {
 				&chplan.ColumnRef{Name: "SpanName"},
 			}},
 		}},
-		SelAlias:      "is_selection",
-		AttrAlias:     "attr",
-		ValAlias:      "val",
-		ValueAlias:    "Value",
-		Inner:         &chplan.Scan{Table: "otel_traces"},
+		SelAlias:   "is_selection",
+		AttrAlias:  "attr",
+		ValAlias:   "val",
+		ValueAlias: "Value",
+		Inner: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+		}},
 		TraceIDColumn: "TraceId",
 		RootLookup: &chplan.Aggregate{
 			Input: &chplan.Filter{
-				Input: &chplan.Scan{Table: "otel_traces"},
+				Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+					{Name: "Timestamp", Role: chplan.RoleTimestamp},
+				}},
 				Predicate: &chplan.Binary{
 					Op:    chplan.OpEq,
 					Left:  &chplan.ColumnRef{Name: "ParentSpanId"},
