@@ -23,21 +23,21 @@ func TestMetricScanRolesStorageContracts(t *testing.T) {
 		chplan.Column{Name: s.ValueColumn, Role: chplan.RoleValue})
 	classic := append(append([]chplan.Column{}, identity...),
 		chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
-		chplan.Column{Name: s.CountColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.SumColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.BucketCountsColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.ExplicitBoundsColumn, Role: chplan.RoleHistogramField})
+		chplan.Column{Name: s.CountColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldCount},
+		chplan.Column{Name: s.SumColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldSum},
+		chplan.Column{Name: s.BucketCountsColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+		chplan.Column{Name: s.ExplicitBoundsColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldExplicitBounds})
 	native := append(append([]chplan.Column{}, identity...),
 		chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
-		chplan.Column{Name: s.CountColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.SumColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.ScaleColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.ZeroThresholdColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.ZeroCountColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.PositiveOffsetColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.PositiveBucketCountsColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.NegativeOffsetColumn, Role: chplan.RoleHistogramField},
-		chplan.Column{Name: s.NegativeBucketCountsColumn, Role: chplan.RoleHistogramField})
+		chplan.Column{Name: s.CountColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldCount},
+		chplan.Column{Name: s.SumColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldSum},
+		chplan.Column{Name: s.ScaleColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldScale},
+		chplan.Column{Name: s.ZeroThresholdColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldZeroThreshold},
+		chplan.Column{Name: s.ZeroCountColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldZeroCount},
+		chplan.Column{Name: s.PositiveOffsetColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldPositiveOffset},
+		chplan.Column{Name: s.PositiveBucketCountsColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldPositiveBucketCounts},
+		chplan.Column{Name: s.NegativeOffsetColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldNegativeOffset},
+		chplan.Column{Name: s.NegativeBucketCountsColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldNegativeBucketCounts})
 	const configuredPrefixTable = "custom_delta_prefix"
 	for _, tc := range []struct {
 		name   string
