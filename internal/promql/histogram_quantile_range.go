@@ -192,8 +192,6 @@ func classicBucketLatestAggs(s schema.Metrics) []chplan.AggFunc {
 // fields the merge and interpolation kernels read.
 func nativeExpHistLatestAggs(s schema.Metrics) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
-		latestArgMax(s.CountColumn, s),
-		latestArgMax(s.SumColumn, s),
 		latestArgMax(s.ScaleColumn, s),
 		latestArgMax(s.ZeroCountColumn, s),
 		latestArgMax(s.PositiveOffsetColumn, s),
