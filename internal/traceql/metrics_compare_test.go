@@ -53,6 +53,13 @@ func TestLowerMetricsCompare_Defaults(t *testing.T) {
 	if mc.RootLookup == nil {
 		t.Error("RootLookup = nil, want the per-trace root-span relation on the default schema")
 	}
+	s := schema.DefaultOTelTraces()
+	if got, ok := mc.InputTimestampColumn(); !ok || got != s.TimestampColumn {
+		t.Errorf("InputTimestampColumn() = (%q, %v), want (%q, true)", got, ok, s.TimestampColumn)
+	}
+	if got, ok := mc.RootLookupTimestampColumn(); !ok || got != s.TimestampColumn {
+		t.Errorf("RootLookupTimestampColumn() = (%q, %v), want (%q, true)", got, ok, s.TimestampColumn)
+	}
 	if mc.TraceIDColumn != "TraceId" {
 		t.Errorf("TraceIDColumn = %q, want TraceId", mc.TraceIDColumn)
 	}
