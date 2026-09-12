@@ -23,7 +23,7 @@ func TestEmitMetricsHistogramOverTimeBare(t *testing.T) {
 		IsDuration:  true,
 		BucketAlias: "__bucket",
 		ValueAlias:  "Value",
-		Inner:       &chplan.Scan{Table: "otel_traces"},
+		Inner:       metricsTimestampTestScan("otel_traces", "Timestamp"),
 	}
 
 	sql, args, err := chsql.Emit(context.Background(), plan)
@@ -73,7 +73,7 @@ func TestEmitMetricsHistogramOverTimeNonDuration(t *testing.T) {
 		IsDuration:  false,
 		BucketAlias: "__bucket",
 		ValueAlias:  "Value",
-		Inner:       &chplan.Scan{Table: "otel_traces"},
+		Inner:       metricsTimestampTestScan("otel_traces", "Timestamp"),
 	}
 
 	sql, _, err := chsql.Emit(context.Background(), plan)
@@ -100,7 +100,7 @@ func TestEmitMetricsHistogramOverTimeByLabel(t *testing.T) {
 		GroupByAliases: []string{"service.name"},
 		BucketAlias:    "__bucket",
 		ValueAlias:     "Value",
-		Inner:          &chplan.Scan{Table: "otel_traces"},
+		Inner:          metricsTimestampTestScan("otel_traces", "Timestamp"),
 	}
 
 	sql, _, err := chsql.Emit(context.Background(), plan)
@@ -137,7 +137,7 @@ func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 			IsDuration:  true,
 			BucketAlias: "__bucket",
 			ValueAlias:  "Value",
-			Inner:       &chplan.Scan{Table: "otel_traces"},
+			Inner:       metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Range:           time.Minute,
@@ -204,7 +204,7 @@ func TestEmitRangeWindowHistogramLeftOpenWindow(t *testing.T) {
 			IsDuration:  true,
 			BucketAlias: "__bucket",
 			ValueAlias:  "Value",
-			Inner:       &chplan.Scan{Table: "otel_traces"},
+			Inner:       metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Range:           time.Minute,
@@ -243,7 +243,7 @@ func TestEmitRangeWindowHistogramRejectsZeroStep(t *testing.T) {
 			IsDuration:  true,
 			BucketAlias: "__bucket",
 			ValueAlias:  "Value",
-			Inner:       &chplan.Scan{Table: "otel_traces"},
+			Inner:       metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		TimestampColumn: "Timestamp",
 	}
@@ -264,7 +264,7 @@ func TestEmitMetricsHistogramOverTimeRejectsNilAttr(t *testing.T) {
 	plan := &chplan.MetricsHistogramOverTime{
 		BucketAlias: "__bucket",
 		ValueAlias:  "Value",
-		Inner:       &chplan.Scan{Table: "otel_traces"},
+		Inner:       metricsTimestampTestScan("otel_traces", "Timestamp"),
 	}
 	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {

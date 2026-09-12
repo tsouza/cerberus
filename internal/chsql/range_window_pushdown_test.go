@@ -54,7 +54,7 @@ func TestRangeWindowMetricsInnerScanPushdown_BothSet(t *testing.T) {
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Range:           time.Minute,
@@ -102,7 +102,7 @@ func TestRangeWindowMetricsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 				Input: &chplan.MetricsAggregate{
 					Op:         chplan.MetricsOpRate,
 					ValueAlias: "Value",
-					Inner:      &chplan.Scan{Table: "otel_traces"},
+					Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 				},
 				Step:            time.Minute,
 				Range:           time.Minute,
@@ -203,7 +203,7 @@ func TestRangeWindowMetricsQuantileBucketsInnerScanPushdown_BothSet(t *testing.T
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			Quantiles:  []float64{0.95},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Range:           time.Minute,
@@ -250,7 +250,7 @@ func TestRangeWindowMetricsQuantileBucketsInnerScanPushdown_OnlyOneSet(t *testin
 					Attr:       &chplan.ColumnRef{Name: "Duration"},
 					Quantiles:  []float64{0.95},
 					ValueAlias: "Value",
-					Inner:      &chplan.Scan{Table: "otel_traces"},
+					Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 				},
 				Step:            time.Minute,
 				Range:           time.Minute,
@@ -284,7 +284,7 @@ func TestEmitMetricsExemplarsInnerScanPushdown_BothSet(t *testing.T) {
 	m := &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 	}
 	rw := &chplan.RangeWindow{
 		Input:           m,
@@ -335,7 +335,7 @@ func TestEmitMetricsExemplarsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 			m := &chplan.MetricsAggregate{
 				Op:         chplan.MetricsOpRate,
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 			}
 			rw := &chplan.RangeWindow{
 				Input:           m,

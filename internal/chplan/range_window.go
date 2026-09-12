@@ -119,8 +119,9 @@ type RangeWindow struct {
 	// uses the user-supplied start + k*Step grid (not epoch-aligned).
 	StepAlign bool
 
-	// TimestampColumn names the column carrying the per-sample timestamp
-	// on Input (typically "TimeUnix" for OTel-CH).
+	// TimestampColumn names the public timestamp output. Ordinary inputs still
+	// use this legacy selector; special Metrics* inputs resolve their nested
+	// physical timestamp from the nested relation's RoleTimestamp declaration.
 	TimestampColumn string
 
 	// ValueColumn names the column carrying the per-sample float value

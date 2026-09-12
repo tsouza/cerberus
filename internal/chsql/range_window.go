@@ -1127,7 +1127,11 @@ func formatFloat(v float64) string {
 // metrics semantics: each bucket covers exactly its Step width).
 func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.MetricsAggregate) error {
 	if r.TimestampColumn == "" {
-		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for MetricsAggregate input)", ErrUnsupported)
+		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required output alias)", ErrUnsupported)
+	}
+	tsCol, ok := m.InputTimestampColumn()
+	if !ok {
+		return fmt.Errorf("%w: MetricsAggregate requires a unique named timestamp role on its nested input", ErrUnsupported)
 	}
 	if r.Step <= 0 {
 		return fmt.Errorf("%w: RangeWindow wrapping MetricsAggregate requires Step > 0", ErrUnsupported)
@@ -1193,7 +1197,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 
 	// Sample-fanout SELECT: fan each Inner row across only the anchors
 	// whose `(anchor_ts - range, anchor_ts]` window contains its
-	// timestamp (sample-side fanout — ≤ range/step + 1 anchors per row,
+	// schema-owned timestamp (sample-side fanout — ≤ range/step + 1 anchors per row,
 	// not the full N-anchor grid; see sampleAnchorFanoutFrag), projecting
 	// group-by cols, [the metric operand as metric_arg,] and anchor_ts.
 	// Group-by columns are aliased so the outer SELECT / GROUP BY can
@@ -1202,7 +1206,6 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	// predicate IS the window predicate, so no per-row `(anchor_ts -
 	// range, anchor_ts]` re-check survives downstream.
 	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
-	tsCol := r.TimestampColumn
 	tsIdent := func(b *Builder) { b.Ident(tsCol) }
 	fanout := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
@@ -1255,7 +1258,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	var source Frag
 	if zeroFill {
 		grid := e.metricsZeroFillGridArm(
-			inner, r, m, groupAliases, end, stepNS, rangeNS, numAnchors, nil,
+			inner, r, m, tsCol, groupAliases, end, stepNS, rangeNS, numAnchors, nil,
 		)
 		source = Paren(UnionAll(fanout.Frag(), grid))
 	} else {
@@ -1335,12 +1338,12 @@ func (e *emitter) metricsZeroFillGridArm(
 	inner Frag,
 	r *chplan.RangeWindow,
 	m *chplan.MetricsAggregate,
+	tsCol string,
 	groupAliases []string,
 	end Frag,
 	stepNS, rangeNS, numAnchors int64,
 	extraCols []zeroFillExtraCol,
 ) Frag {
-	tsCol := r.TimestampColumn
 	var disc *QueryBuilder
 	if len(groupAliases) > 0 {
 		disc = NewQuery().From(inner)
@@ -1499,6 +1502,10 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	if m.Inner == nil {
 		return fmt.Errorf("%w: quantile_over_time matrix path requires MetricsAggregate.Inner", ErrUnsupported)
 	}
+	tsCol, ok := m.InputTimestampColumn()
+	if !ok {
+		return fmt.Errorf("%w: MetricsAggregate requires a unique named timestamp role on its nested input", ErrUnsupported)
+	}
 	// Fail closed on a zero-window spans inner (see emitRangeWindowMetrics).
 	// Redundant when reached via emitRangeWindowMetrics, but keeps this entry
 	// point safe if ever called directly.
@@ -1534,7 +1541,6 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	}
 
 	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
-	tsCol := r.TimestampColumn
 	tsIdent := func(b *Builder) { b.Ident(tsCol) }
 
 	// Sample arm — sample-side fanout (≤ range/step + 1 anchors per
@@ -1566,7 +1572,7 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	// (which can never satisfy the `>= 2` bucketize guard); see
 	// metricsZeroFillGridArm.
 	grid := e.metricsZeroFillGridArm(
-		inner, r, m, groupAliases, end, stepNS, rangeNS, numAnchors,
+		inner, r, m, tsCol, groupAliases, end, stepNS, rangeNS, numAnchors,
 		[]zeroFillExtraCol{{frag: InlineLit(int64(0)), alias: "metric_arg"}},
 	)
 

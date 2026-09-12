@@ -138,7 +138,7 @@ var plans = map[string]chplan.Node{
 	// Limit(OrderBy(Scan, Timestamp DESC), N).
 	"order_by_timestamp_desc": &chplan.Limit{
 		Input: &chplan.OrderBy{
-			Input: &chplan.Scan{Table: "otel_traces"},
+			Input: metricsTimestampTestScan("otel_traces", "Timestamp"),
 			Keys: []chplan.OrderKey{
 				{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true},
 			},
@@ -147,7 +147,7 @@ var plans = map[string]chplan.Node{
 	},
 	// OrderBy — two-key (composite sort).
 	"order_by_composite": &chplan.OrderBy{
-		Input: &chplan.Scan{Table: "otel_traces"},
+		Input: metricsTimestampTestScan("otel_traces", "Timestamp"),
 		Keys: []chplan.OrderKey{
 			{Expr: &chplan.ColumnRef{Name: "ServiceName"}, Desc: false},
 			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true},
@@ -225,8 +225,8 @@ var plans = map[string]chplan.Node{
 
 	// StructuralJoin — TraceQL `>` (parent_of).
 	"structural_join_child": &chplan.StructuralJoin{
-		Left:               &chplan.Scan{Table: "otel_traces"},
-		Right:              &chplan.Scan{Table: "otel_traces"},
+		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
 		Op:                 chplan.StructuralChild,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -234,8 +234,8 @@ var plans = map[string]chplan.Node{
 	},
 	// StructuralJoin — TraceQL `<` (child_of).
 	"structural_join_parent": &chplan.StructuralJoin{
-		Left:               &chplan.Scan{Table: "otel_traces"},
-		Right:              &chplan.Scan{Table: "otel_traces"},
+		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
 		Op:                 chplan.StructuralParent,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -244,8 +244,8 @@ var plans = map[string]chplan.Node{
 	// StructuralJoin — TraceQL `>>` (recursive descendant; unbounded
 	// depth via CH `WITH RECURSIVE`).
 	"structural_join_descendant": &chplan.StructuralJoin{
-		Left:               &chplan.Scan{Table: "otel_traces"},
-		Right:              &chplan.Scan{Table: "otel_traces"},
+		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
 		Op:                 chplan.StructuralDescendant,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -253,8 +253,8 @@ var plans = map[string]chplan.Node{
 	},
 	// StructuralJoin — TraceQL `<<` (recursive ancestor; unbounded depth).
 	"structural_join_ancestor": &chplan.StructuralJoin{
-		Left:               &chplan.Scan{Table: "otel_traces"},
-		Right:              &chplan.Scan{Table: "otel_traces"},
+		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
 		Op:                 chplan.StructuralAncestor,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -263,8 +263,8 @@ var plans = map[string]chplan.Node{
 	// StructuralJoin — recursive descendant with MaxDepth = 3 (the
 	// recursive step's WHERE clause caps the walk).
 	"structural_join_descendant_bounded": &chplan.StructuralJoin{
-		Left:               &chplan.Scan{Table: "otel_traces"},
-		Right:              &chplan.Scan{Table: "otel_traces"},
+		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
 		Op:                 chplan.StructuralDescendant,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -485,7 +485,7 @@ var plans = map[string]chplan.Node{
 
 	// FieldAccess — TraceQL dotted attribute access.
 	"filter_field_access": &chplan.Filter{
-		Input: &chplan.Scan{Table: "otel_traces"},
+		Input: metricsTimestampTestScan("otel_traces", "Timestamp"),
 		Predicate: &chplan.Binary{
 			Op: chplan.OpEq,
 			Left: &chplan.FieldAccess{
@@ -566,20 +566,20 @@ var plans = map[string]chplan.Node{
 	"metrics_aggregate_rate_bare": &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 	},
 	"metrics_aggregate_sum_over_time_bare": &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpSumOverTime,
 		Attr:       &chplan.ColumnRef{Name: "Duration"},
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 	},
 	"metrics_aggregate_quantile_over_time_bare": &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpQuantileOverTime,
 		Attr:       &chplan.ColumnRef{Name: "Duration"},
 		Quantiles:  []float64{0.95},
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 	},
 	// Multi-phi quantile_over_time pins the instant-shape fanout:
 	// inner SELECT computes `quantiles(p1, p2, ...)(<attr>)` returning
@@ -591,7 +591,7 @@ var plans = map[string]chplan.Node{
 		Attr:       &chplan.ColumnRef{Name: "Duration"},
 		Quantiles:  []float64{0.5, 0.9, 0.99},
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 	},
 
 	// MetricsSecondStage wraps a MetricsAggregate (instant) — TraceQL's
@@ -604,7 +604,7 @@ var plans = map[string]chplan.Node{
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Op:         chplan.SecondStageTopK,
 		K:          5,
@@ -614,7 +614,7 @@ var plans = map[string]chplan.Node{
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Op:         chplan.SecondStageBottomK,
 		K:          3,
@@ -624,7 +624,7 @@ var plans = map[string]chplan.Node{
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Op:             chplan.SecondStageThreshold,
 		ThresholdOp:    chplan.OpGt,
@@ -636,7 +636,7 @@ var plans = map[string]chplan.Node{
 			Op:         chplan.MetricsOpSumOverTime,
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Op:             chplan.SecondStageThreshold,
 		ThresholdOp:    chplan.OpLt,
@@ -654,7 +654,7 @@ var plans = map[string]chplan.Node{
 				GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
 				GroupByAliases: []string{"service"},
 				ValueAlias:     "Value",
-				Inner:          &chplan.Scan{Table: "otel_traces"},
+				Inner:          metricsTimestampTestScan("otel_traces", "Timestamp"),
 			},
 			Step:            time.Minute,
 			OuterRange:      5 * time.Minute,
@@ -672,7 +672,7 @@ var plans = map[string]chplan.Node{
 			Input: &chplan.MetricsAggregate{
 				Op:         chplan.MetricsOpRate,
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 			},
 			Op:         chplan.SecondStageTopK,
 			K:          5,
@@ -693,7 +693,7 @@ var plans = map[string]chplan.Node{
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Range:           5 * time.Minute,
 		Step:            time.Minute,
@@ -706,7 +706,7 @@ var plans = map[string]chplan.Node{
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
 			GroupByAliases: []string{"service"},
 			ValueAlias:     "Value",
-			Inner:          &chplan.Scan{Table: "otel_traces"},
+			Inner:          metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		OuterRange:      10 * time.Minute,
@@ -717,7 +717,7 @@ var plans = map[string]chplan.Node{
 			Op:         chplan.MetricsOpSumOverTime,
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -729,7 +729,7 @@ var plans = map[string]chplan.Node{
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			Quantiles:  []float64{0.95},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -745,7 +745,7 @@ var plans = map[string]chplan.Node{
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			Quantiles:  []float64{0.5, 0.9, 0.99},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -763,7 +763,7 @@ var plans = map[string]chplan.Node{
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
 			GroupByAliases: []string{"service"},
 			ValueAlias:     "Value",
-			Inner:          &chplan.Scan{Table: "otel_traces"},
+			Inner:          metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		OuterRange:      5 * time.Minute,
@@ -827,7 +827,7 @@ var plans = map[string]chplan.Node{
 	// parameter (not splice into the SQL), so CH-special chars in the
 	// key are no-op.
 	"filter_map_access_dotted_key": &chplan.Filter{
-		Input: &chplan.Scan{Table: "otel_traces"},
+		Input: metricsTimestampTestScan("otel_traces", "Timestamp"),
 		Predicate: &chplan.Binary{
 			Op: chplan.OpEq,
 			Left: &chplan.MapAccess{

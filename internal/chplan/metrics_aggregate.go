@@ -122,10 +122,10 @@ func (o MetricsOp) String() string {
 //   - Inner: the underlying spanset relation — typically
 //     Scan(<traces-table>) or Filter(<predicate>, Scan(<traces-table>)).
 //
-// For the matrix path (wrapping RangeWindow), the emitter also reads
-// the underlying timestamp column from the wrapping RangeWindow's
-// TimestampColumn slot; the per-span Timestamp column is the matrix
-// shape's bucket key.
+// For the matrix path (wrapping RangeWindow), the emitter resolves the
+// underlying timestamp from RoleTimestamp on Inner. The wrapping window's
+// TimestampColumn remains the public output contract and never selects a
+// physical column from this nested relation.
 type MetricsAggregate struct {
 	Op                  MetricsOp
 	Attr                Expr
