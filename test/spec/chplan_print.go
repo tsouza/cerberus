@@ -271,6 +271,9 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.LagAdjacency {
 			b.WriteString(" lagAdjacency=true")
 		}
+		if v.IgnoreInputTemporality {
+			b.WriteString(" ignoreInputTemporality=true")
+		}
 		if len(v.Variants) > 0 {
 			vs := make([]string, len(v.Variants))
 			for i, a := range v.Variants {

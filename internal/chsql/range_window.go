@@ -310,7 +310,7 @@ func windowTemporalityProjected(r *chplan.RangeWindow) bool {
 // the immediate child schema. Validation at the RangeWindow dispatch boundary
 // guarantees that a non-empty result is unique, named, and closed.
 func rangeWindowTemporalityColumn(r *chplan.RangeWindow) string {
-	if r.IgnoreInputTemporality {
+	if r == nil || r.Input == nil || r.IgnoreInputTemporality {
 		return ""
 	}
 	column, ok := r.Input.RowType().Find(chplan.RoleTemporality)
