@@ -216,6 +216,7 @@ func nativeClassicHistogramNode(in classicHistogramWindowInput, pred chplan.Expr
 	// the native ladder is built over the restricted layout exactly as the
 	// fan-out's aggregation is. No-op when leMatchers is empty.
 	rawSide = classicBucketLeRestriction(rawSide, in.leMatchers, in.s)
+	rawSide = closeNativeClassicHistogramInput(rawSide, in.s)
 
 	return &chplan.RangeBucketGridNative{
 		Input: rawSide,
@@ -227,14 +228,33 @@ func nativeClassicHistogramNode(in classicHistogramWindowInput, pred chplan.Expr
 		// and the aggregate's is the same span, so Offset threads through
 		// unchanged — see chplan.RangeBucketGridNative.Offset.
 		Offset: in.win.offset,
-		// The grouping keys read the raw table columns, so this is a
-		// series-identity BINDING site — see [canonicalGroupKeyExpr].
-		GroupBy:           canonicalGroupKeyExprs([]chplan.Expr{histogramIdentityExpr(in.s)}, in.s),
+		// The child Project binds the canonical series identity once; every
+		// native-grid level consumes that closed output by its public alias.
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: in.s.AttributesColumn}},
 		GroupByAliases:    []string{in.s.AttributesColumn},
 		AnchorAlias:       stepGridAnchorColumn,
 		TimestampCol:      in.s.TimestampColumn,
 		BucketCountsCol:   in.s.BucketCountsColumn,
 		ExplicitBoundsCol: in.s.ExplicitBoundsColumn,
+	}
+}
+
+func closeNativeClassicHistogramInput(input chplan.Node, s schema.Metrics) chplan.Node {
+	roles := []chplan.Column{
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.BucketCountsColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+		{Name: s.ExplicitBoundsColumn, Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldExplicitBounds},
+	}
+	return &chplan.Project{
+		Input: input,
+		Roles: roles,
+		Projections: []chplan.Projection{
+			{Expr: histogramIdentityExpr(s), Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
+		},
 	}
 }
 
