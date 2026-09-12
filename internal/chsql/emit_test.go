@@ -606,9 +606,8 @@ var plans = map[string]chplan.Node{
 			ValueAlias: "Value",
 			Inner:      &chplan.Scan{Table: "otel_traces"},
 		},
-		Op:         chplan.SecondStageTopK,
-		K:          5,
-		ValueAlias: "Value",
+		Op: chplan.SecondStageTopK,
+		K:  5,
 	},
 	"metrics_second_stage_bottomk_instant": &chplan.MetricsSecondStage{
 		Input: &chplan.MetricsAggregate{
@@ -616,9 +615,8 @@ var plans = map[string]chplan.Node{
 			ValueAlias: "Value",
 			Inner:      &chplan.Scan{Table: "otel_traces"},
 		},
-		Op:         chplan.SecondStageBottomK,
-		K:          3,
-		ValueAlias: "Value",
+		Op: chplan.SecondStageBottomK,
+		K:  3,
 	},
 	"metrics_second_stage_threshold_gt": &chplan.MetricsSecondStage{
 		Input: &chplan.MetricsAggregate{
@@ -629,7 +627,6 @@ var plans = map[string]chplan.Node{
 		Op:             chplan.SecondStageThreshold,
 		ThresholdOp:    chplan.OpGt,
 		ThresholdValue: 10,
-		ValueAlias:     "Value",
 	},
 	"metrics_second_stage_threshold_lt": &chplan.MetricsSecondStage{
 		Input: &chplan.MetricsAggregate{
@@ -641,7 +638,6 @@ var plans = map[string]chplan.Node{
 		Op:             chplan.SecondStageThreshold,
 		ThresholdOp:    chplan.OpLt,
 		ThresholdValue: 0.5,
-		ValueAlias:     "Value",
 	},
 	// MetricsSecondStage wrapping a RangeWindow over MetricsAggregate —
 	// the matrix shape. PartitionBy=["anchor_ts"] so `LIMIT K BY
@@ -663,7 +659,6 @@ var plans = map[string]chplan.Node{
 		Op:          chplan.SecondStageTopK,
 		K:           5,
 		PartitionBy: []string{"anchor_ts"},
-		ValueAlias:  "Value",
 	},
 	// Chained second-stage: `| topk(5) | > 10` nests as an outer
 	// Threshold wrapping an inner TopK.
@@ -674,14 +669,12 @@ var plans = map[string]chplan.Node{
 				ValueAlias: "Value",
 				Inner:      &chplan.Scan{Table: "otel_traces"},
 			},
-			Op:         chplan.SecondStageTopK,
-			K:          5,
-			ValueAlias: "Value",
+			Op: chplan.SecondStageTopK,
+			K:  5,
 		},
 		Op:             chplan.SecondStageThreshold,
 		ThresholdOp:    chplan.OpGt,
 		ThresholdValue: 10,
-		ValueAlias:     "Value",
 	},
 
 	// RangeWindow wrapping MetricsAggregate — the matrix shape used

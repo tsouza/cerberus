@@ -114,7 +114,6 @@ func TestEmit_RangeWindowUnknownFunc(t *testing.T) {
 //
 //   - Nil Input → ErrUnsupported (Input is required; no parent to
 //     project from).
-//   - Empty ValueAlias → ErrUnsupported (no column to sort or filter).
 //   - Topk with K=0 → ErrUnsupported (LIMIT 0 disables the second-stage
 //     intent; TraceQL's parser already rejects this, so it's a lowering
 //     bug if it reaches the emitter).
@@ -139,28 +138,17 @@ func TestEmit_MetricsSecondStage_Errors(t *testing.T) {
 		{
 			"nil Input",
 			&chplan.MetricsSecondStage{
-				Input:      nil,
-				Op:         chplan.SecondStageTopK,
-				K:          5,
-				ValueAlias: "Value",
-			},
-		},
-		{
-			"empty ValueAlias",
-			&chplan.MetricsSecondStage{
-				Input:      baseInput(),
-				Op:         chplan.SecondStageTopK,
-				K:          5,
-				ValueAlias: "",
+				Input: nil,
+				Op:    chplan.SecondStageTopK,
+				K:     5,
 			},
 		},
 		{
 			"topk with K=0",
 			&chplan.MetricsSecondStage{
-				Input:      baseInput(),
-				Op:         chplan.SecondStageTopK,
-				K:          0,
-				ValueAlias: "Value",
+				Input: baseInput(),
+				Op:    chplan.SecondStageTopK,
+				K:     0,
 			},
 		},
 		{
@@ -170,15 +158,13 @@ func TestEmit_MetricsSecondStage_Errors(t *testing.T) {
 				Op:             chplan.SecondStageThreshold,
 				ThresholdOp:    chplan.OpAnd,
 				ThresholdValue: 10,
-				ValueAlias:     "Value",
 			},
 		},
 		{
 			"SecondStageInvalid op",
 			&chplan.MetricsSecondStage{
-				Input:      baseInput(),
-				Op:         chplan.SecondStageInvalid,
-				ValueAlias: "Value",
+				Input: baseInput(),
+				Op:    chplan.SecondStageInvalid,
 			},
 		},
 	}

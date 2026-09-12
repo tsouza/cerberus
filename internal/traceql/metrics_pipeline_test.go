@@ -392,10 +392,6 @@ func TestLowerMetricsSecondStage(t *testing.T) {
 					t.Errorf("MetricsSecondStage.ThresholdValue = %v, want %v", ss.ThresholdValue, tc.wantThreshV)
 				}
 			}
-			if ss.ValueAlias != "Value" {
-				t.Errorf("MetricsSecondStage.ValueAlias = %q, want %q", ss.ValueAlias, "Value")
-			}
-
 			// Walk the nested chain — count how many
 			// MetricsSecondStage wraps stack on top of the
 			// MetricsAggregate.

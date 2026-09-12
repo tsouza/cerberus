@@ -86,10 +86,9 @@ func (o SecondStageOp) String() string {
 //     timestamp bucket — matching Tempo's per-anchor top-K semantics.
 //     Empty for instant queries (the limit applies globally to the
 //     single row-per-series shape).
-//   - ValueAlias: the column name carrying the per-anchor value (the
-//     `ValueAlias` slot of the inner MetricsAggregate; "Value" in every
-//     current code path but kept configurable so the IR doesn't pin a
-//     magic string).
+//
+// The consumed value column is the unique RoleValue published by
+// Input.RowType; it is not a separate driver field.
 type MetricsSecondStage struct {
 	Input          Node
 	Op             SecondStageOp
@@ -97,7 +96,6 @@ type MetricsSecondStage struct {
 	ThresholdOp    BinaryOp
 	ThresholdValue float64
 	PartitionBy    []string
-	ValueAlias     string
 }
 
 func (*MetricsSecondStage) planNode() {}
@@ -109,7 +107,7 @@ func (m *MetricsSecondStage) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if m.Op != o.Op || m.K != o.K || m.ValueAlias != o.ValueAlias {
+	if m.Op != o.Op || m.K != o.K {
 		return false
 	}
 	if m.ThresholdOp != o.ThresholdOp || m.ThresholdValue != o.ThresholdValue {
