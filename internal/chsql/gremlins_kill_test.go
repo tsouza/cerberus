@@ -3149,7 +3149,10 @@ func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
 
 func nsAnnotateInternal() *chplan.NestedSetAnnotate {
 	return &chplan.NestedSetAnnotate{
-		Input:              &chplan.Scan{Table: "otel_traces"},
+		Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "TraceId", Role: chplan.RoleTraceID},
+			{Name: "SpanId", Role: chplan.RoleSpanID},
+		}},
 		SpansTable:         "otel_traces",
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",

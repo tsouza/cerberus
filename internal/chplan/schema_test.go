@@ -106,6 +106,36 @@ func TestRowTypeEveryNode(t *testing.T) {
 	assertCoversEverySealedKind(t, nodeMarkerMethod, covered, "RowType cases", "add an output-schema assertion")
 }
 
+func TestNestedSetAnnotateRowTypePreservesChildIdentityRoles(t *testing.T) {
+	t.Parallel()
+	child := &Project{
+		Input: &Scan{Table: "source"},
+		Projections: []Projection{
+			{Expr: &ColumnRef{Name: "physical_trace"}, Alias: "child_trace"},
+			{Expr: &ColumnRef{Name: "physical_span"}, Alias: "child_span"},
+		},
+		Roles: []Column{
+			{Name: "child_trace", Role: RoleTraceID},
+			{Name: "child_span", Role: RoleSpanID},
+		},
+	}
+	got := (&NestedSetAnnotate{
+		Input:         child,
+		TraceIDColumn: "lookup_trace",
+		SpanIDColumn:  "lookup_span",
+	}).RowType()
+	want := Schema{Columns: []Column{
+		{Name: "child_trace", Role: RoleTraceID},
+		{Name: "child_span", Role: RoleSpanID},
+		{Name: NestedSetLeftColumn},
+		{Name: NestedSetRightColumn},
+		{Name: NestedSetParentColumn},
+	}}
+	if !got.Equal(want) {
+		t.Fatalf("RowType = %#v, want %#v", got, want)
+	}
+}
+
 func TestHistogramProjectionRowTypeDeclaresCanonicalRoles(t *testing.T) {
 	t.Parallel()
 

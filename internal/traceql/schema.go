@@ -13,3 +13,14 @@ func spanScan(s schema.Traces) *chplan.Scan {
 		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
 	}}
 }
+
+func nestedSetAnnotate(input chplan.Node, s schema.Traces) *chplan.NestedSetAnnotate {
+	return &chplan.NestedSetAnnotate{
+		Input:              input,
+		SpansTable:         s.SpansTable,
+		TraceIDColumn:      s.TraceIDColumn,
+		SpanIDColumn:       s.SpanIDColumn,
+		ParentSpanIDColumn: s.ParentSpanIDColumn,
+		TimestampColumn:    s.TimestampColumn,
+	}
+}

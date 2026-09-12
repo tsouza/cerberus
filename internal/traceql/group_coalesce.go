@@ -117,14 +117,7 @@ func nestedSetColumnForFieldExpr(e traceql.FieldExpression) (string, bool) {
 // numbering CTE materialises the synthetic nested-set columns. Shared by
 // the group / aggregate key paths and lowerSpansetFilter.
 func annotateNestedSet(n chplan.Node, s schema.Traces) chplan.Node {
-	return &chplan.NestedSetAnnotate{
-		Input:              n,
-		SpansTable:         s.SpansTable,
-		TraceIDColumn:      s.TraceIDColumn,
-		SpanIDColumn:       s.SpanIDColumn,
-		ParentSpanIDColumn: s.ParentSpanIDColumn,
-		TimestampColumn:    s.TimestampColumn,
-	}
+	return nestedSetAnnotate(n, s)
 }
 
 // foldTrailingGroupByIntoMetrics rewrites `{...} | by(X) | <metric>()` so the
