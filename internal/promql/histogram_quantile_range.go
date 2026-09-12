@@ -883,7 +883,11 @@ func closeRangeBucketFanoutInput(input chplan.Node, timestamp string, groupBy []
 		if column, ok := inputSchema.ByName(name); ok {
 			roles[i] = column
 		}
-		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name}
+		expr := chplan.Expr(&chplan.ColumnRef{Name: name})
+		if roles[i].Role == chplan.RoleAttributes {
+			expr = chplan.CanonicalAttributesExpr(expr)
+		}
+		projections[i] = chplan.Projection{Expr: expr, Alias: name}
 	}
 	return &chplan.Project{Input: input, Projections: projections, Roles: roles}
 }
