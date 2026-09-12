@@ -41,7 +41,11 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 			ValueColumn:     "Value",
 		}
 		if temporality {
-			r.TemporalityColumn = "AggregationTemporality"
+			r.Input = &chplan.Scan{
+				Table:   "otel_metrics_sum",
+				Columns: []string{"AggregationTemporality"},
+				Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+			}
 		}
 		if groupBy {
 			r.GroupBy = []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}
@@ -53,6 +57,9 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 		}
 		return r
 	}
+
+	ignoredTemporality := newInstantRangeWindow("rate", true, true, 0)
+	ignoredTemporality.IgnoreInputTemporality = true
 
 	cases := []struct {
 		name string
@@ -90,6 +97,12 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 		{
 			name:          "instant rate() with no TemporalityColumn: no JOIN",
 			r:             newInstantRangeWindow("rate", false, true, 0),
+			wantJoinToken: "",
+			wantHasJoin:   false,
+		},
+		{
+			name:          "instant rate() with ignored input temporality: no JOIN",
+			r:             ignoredTemporality,
 			wantJoinToken: "",
 			wantHasJoin:   false,
 		},

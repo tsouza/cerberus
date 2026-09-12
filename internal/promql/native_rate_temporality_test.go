@@ -29,8 +29,8 @@ func TestNativeRateLowererSplitsTemporality(t *testing.T) {
 	if !ok {
 		t.Fatalf("delta union arm = %T, want *chplan.RangeWindow", union.Inputs[1])
 	}
-	if fanout.TemporalityColumn != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
-		t.Errorf("fan-out TemporalityColumn = %q, want schema temporality column", fanout.TemporalityColumn)
+	if got := rangeWindowTemporalityColumn(fanout); got != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
+		t.Errorf("fan-out temporality role = %q, want schema temporality column", got)
 	}
 	assertTemporalityFilter(t, native.Input, chplan.OpNe)
 	assertTemporalityFilter(t, fanout.Input, chplan.OpEq)
@@ -62,8 +62,8 @@ func TestFanoutRateLowererPreservesTemporalityColumn(t *testing.T) {
 	if !ok {
 		t.Fatalf("temporality-bearing fan-out rate = %T, want unchanged fan-out RangeWindow", plan)
 	}
-	if rw.TemporalityColumn != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
-		t.Errorf("TemporalityColumn = %q, want schema temporality column", rw.TemporalityColumn)
+	if got := rangeWindowTemporalityColumn(rw); got != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
+		t.Errorf("temporality role = %q, want schema temporality column", got)
 	}
 	assertFilterOmitsTemporalityFusion(t, rw.Input)
 }

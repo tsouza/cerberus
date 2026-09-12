@@ -190,7 +190,7 @@ type lowerCtx struct {
 	// TimeUnix, Value) with a 5th passthrough column,
 	// schema.Metrics.AggregationTemporalityColumn, so a rate() / increase()
 	// range-vector call over an unambiguous Sum- or Histogram-table scan
-	// can read it back downstream (chplan.RangeWindow.TemporalityColumn —
+	// can resolve it downstream from chplan.RoleTemporality —
 	// see issue #1628). lowerRangeVectorCall sets this ONLY when it has
 	// already confirmed, via the SAME resolveSelectorRouting call the inner
 	// lowerVectorSelector is about to make, that the selector resolves to a

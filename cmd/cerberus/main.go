@@ -826,7 +826,7 @@ func newPromHandler(
 		// internal/engine/actuals_wiring.go inert.
 		Actuals: actualsTracker,
 		// PromQL-only: TraceQL / LogQL plans never carry a
-		// chplan.RangeWindow.TemporalityColumn (the OTel Sum
+		// chplan.RoleTemporality input (the OTel Sum
 		// AggregationTemporality concept), so this is inert for the other
 		// heads and is not wired onto their engines — see
 		// engine.Engine.DeltaPrefixLookback's doc.

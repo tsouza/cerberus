@@ -1617,8 +1617,12 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 			Alias: s.AggregationTemporalityColumn,
 		})
 	}
+	roles := metricRoles(s)
+	if ctx.wantsTemporalityColumn && s.AggregationTemporalityColumn != "" {
+		roles = append(roles, chplan.Column{Name: s.AggregationTemporalityColumn, Role: chplan.RoleTemporality})
+	}
 	return &chplan.Project{
-		Roles:       metricRoles(s),
+		Roles:       roles,
 		Input:       input,
 		Projections: projections,
 	}
@@ -1769,11 +1773,11 @@ func downsampleTierEligibleFunc(funcName string) bool {
 // table the tier is actually fed from. Unlike attachDeltaPrefixAggregateArm
 // this does NOT gate on counterTemporalityRangeFn(funcName) first — idelta()
 // and last_over_time() are not counterTemporalityRangeFn members (neither
-// ever needs rw.TemporalityColumn populated: idelta never counter-corrects
+// ever needs a RoleTemporality input: idelta never counter-corrects
 // and last_over_time is temporality-agnostic), so this resolves its own
 // eligibility verdict directly via rangeVectorCounterTemporalityColumn /
 // rangeVectorSingleGaugeTable, purely as eligibility oracles — neither
-// resolved value is ever assigned to rw.TemporalityColumn.
+// resolved value is ever carried into the range-window child schema.
 //
 // irate() and idelta() accept only an unambiguous Sum/Histogram-table
 // resolution (rangeVectorCounterTemporalityColumn != "") — a gauge has no
@@ -3228,15 +3232,14 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return nil, err
 	}
 	rw := &chplan.RangeWindow{
-		Input:             inner,
-		Func:              c.Func.Name,
-		Range:             ms.Range,
-		End:               anchor.End,
-		Offset:            anchor.Offset,
-		TimestampColumn:   s.TimestampColumn,
-		ValueColumn:       s.ValueColumn,
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-		TemporalityColumn: temporalityCol,
+		Input:           inner,
+		Func:            c.Func.Name,
+		Range:           ms.Range,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 	attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
 	attachDownsampleTierArm(rw, c.Func.Name, vs, s, rangeCtx)
@@ -3718,7 +3721,7 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 	// classifier: it fires even for a CUMULATIVE-temporality window,
 	// trading the native path's performance for the runtime branch that
 	// proves the answer right regardless of what the data turns out to be.
-	if rw.TemporalityColumn != "" {
+	if rangeWindowTemporalityColumn(rw) != "" {
 		return nil
 	}
 	input, groupBy := rw.Input, rw.GroupBy
@@ -3788,7 +3791,7 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 //     optionally wrapped in the canonical selector-attributes Project — the
 //     same row-shape relation nativeTSGridMatrixNode requires
 //     (isNativeRateInput).
-//   - rw.TemporalityColumn must be empty — mirrors nativeTSGridMatrixNode's
+//   - the RoleTemporality input must be absent — mirrors nativeTSGridMatrixNode's
 //     identical guard: the native aggregate has no DELTA-temporality runtime
 //     branch (issue #1628), so a temporality-bearing window stays on the
 //     fan-out unconditionally rather than risk the CUMULATIVE-only answer.
@@ -3821,7 +3824,7 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 	if !isNativeRateInput(rw.Input, s) {
 		return nil
 	}
-	if rw.TemporalityColumn != "" {
+	if rangeWindowTemporalityColumn(rw) != "" {
 		return nil
 	}
 	return &chplan.RangeWindowGridNativeInstant{
@@ -3873,7 +3876,7 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 //     (rangeFnCollidesOnNameDrop is unconditionally false for a
 //     name-preserving function — see rangeFnPreservesName), but the check is
 //     kept explicit rather than assumed.
-//   - rw.TemporalityColumn must be empty. last_over_time is not among
+//   - the RoleTemporality input must be absent. last_over_time is not among
 //     counterTemporalityRangeFn's members (it never applies the
 //     counter-reset rule), so this is normally already true; kept as the
 //     same defensive guard nativeTSGridMatrixNode applies.
@@ -3916,7 +3919,7 @@ func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Ra
 	if !isNativeRateInput(rw.Input, s) {
 		return nil
 	}
-	if rw.TemporalityColumn != "" {
+	if rangeWindowTemporalityColumn(rw) != "" {
 		return nil
 	}
 	if len(rw.GroupBy) != 1 || !isIdentityColumnRef(rw.GroupBy[0], s.AttributesColumn) {
@@ -4002,7 +4005,7 @@ func isPlainScanFilter(n chplan.Node) bool {
 // counterTemporalityRangeFn reports whether a range function reads its
 // window as a COUNTER — i.e. whether its per-window arithmetic differs
 // between a CUMULATIVE and a DELTA AggregationTemporality, and so needs
-// chplan.RangeWindow.TemporalityColumn threaded through to the emitter's
+// chplan.RoleTemporality threaded through the child schema to the emitter's
 // runtime branch (chsql.CounterOrDeltaSum for the whole-window sum
 // rate/increase reduce, chsql.CounterOrDeltaPairDelta for irate's
 // last-two-samples pair).
@@ -4073,7 +4076,7 @@ func resolveUnambiguousScanTable(vs *parser.VectorSelector, s schema.Metrics, ct
 }
 
 // rangeVectorCounterTemporalityColumn reports which column
-// chplan.RangeWindow.TemporalityColumn should carry for a
+// the RangeWindow child schema should identify as chplan.RoleTemporality for a
 // counterTemporalityRangeFn call over vs, or "" when none applies.
 //
 // The column only applies when resolveUnambiguousScanTable resolves to the

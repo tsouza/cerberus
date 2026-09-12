@@ -134,31 +134,10 @@ type RangeWindow struct {
 	// though an absolute @ modifier keeps the input window fixed.
 	PredictLinearSlopeColumn string
 
-	// TemporalityColumn names the column carrying the OTel
-	// AggregationTemporality enum for the scanned series (typically
-	// "AggregationTemporality" for an OTel-CH Sum / Histogram table).
-	// Only "rate" / "increase" consult it today.
-	//
-	// Empty (the default) means "not applicable to this Input" — a
-	// Gauge-table scan carries no such column, neither does the
-	// Scan.UnionTables cross-table read (which deliberately drops the
-	// Sum-only column from its projection so the union's column list
-	// still matches) — and the emitter falls back to the historical,
-	// pre-#1628 behaviour of applying Prometheus's counter-reset rule
-	// unconditionally.
-	//
-	// When set, the emitter reads `any(<TemporalityColumn>)` once per
-	// series-window group (a single OTel time series has ONE
-	// temporality for its lifetime, so any() over the window's rows is
-	// exact, not a lossy pick) and branches at RUNTIME between the
-	// DELTA reading (schema.AggregationTemporalityDelta — sum the
-	// window's raw, already-exclusive samples) and the CUMULATIVE
-	// reading (anything else — the counter-reset-aware delta). See
-	// chsql.CounterOrDeltaSum, the shared primitive both the ordinary
-	// counter path and the classic-histogram bucket fold
-	// (internal/promql's counterIncreaseFold) apply the same branch
-	// through, and issue #1628.
-	TemporalityColumn string
+	// IgnoreInputTemporality suppresses the optional RoleTemporality carried
+	// by Input. Native strategy clones set this after filtering out DELTA rows;
+	// it carries no physical column name and cannot select an input by spelling.
+	IgnoreInputTemporality bool
 
 	// DeltaPrefixAggregateInput is the optional second scan side-feeding
 	// exact, retention-independent DELTA-temporality prefix reconstruction
@@ -602,11 +581,12 @@ func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
 	if r.Func != o.Func || r.Range != o.Range || r.Step != o.Step || r.Offset != o.Offset {
 		return false
 	}
-	if r.OuterRange != o.OuterRange || r.Identity != o.Identity || r.StepAlign != o.StepAlign {
+	if r.OuterRange != o.OuterRange || r.Identity != o.Identity || r.StepAlign != o.StepAlign ||
+		r.IgnoreInputTemporality != o.IgnoreInputTemporality {
 		return false
 	}
 	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
-		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn || r.TemporalityColumn != o.TemporalityColumn {
+		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn {
 		return false
 	}
 	if r.InstantScanBounded != o.InstantScanBounded || r.LagAdjacency != o.LagAdjacency ||

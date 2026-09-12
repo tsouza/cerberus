@@ -33,17 +33,16 @@ func TestDeltaMatrixFirstLevelIncludesHistoryBeforeQueryEnvelope(t *testing.T) {
 
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	r := &chplan.RangeWindow{
-		Input:             &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:              "rate",
-		Range:             time.Minute,
-		Start:             start,
-		End:               start.Add(30 * time.Second),
-		Step:              30 * time.Second,
-		OuterRange:        30 * time.Second,
-		TimestampColumn:   "TimeUnix",
-		ValueColumn:       "Value",
-		TemporalityColumn: "AggregationTemporality",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Input:           temporalityTestScan("otel_metrics_sum"),
+		Func:            "rate",
+		Range:           time.Minute,
+		Start:           start,
+		End:             start.Add(30 * time.Second),
+		Step:            30 * time.Second,
+		OuterRange:      30 * time.Second,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 	sqlText, args, err := Emit(context.Background(), r)
 	if err != nil {

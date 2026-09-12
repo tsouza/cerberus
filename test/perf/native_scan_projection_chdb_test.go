@@ -142,7 +142,7 @@ func innerScanColumns(t *testing.T, optimize bool) []string {
 	// concern orthogonal to issue #1628's DELTA-vs-CUMULATIVE runtime
 	// branch. A `rate()` window whose schema DOES declare that column is,
 	// correctly, no longer eligible for native routing
-	// (chplan.RangeWindow.TemporalityColumn forces the fan-out fallback —
+	// (a RoleTemporality input forces the fan-out fallback —
 	// see nativeTSGridMatrixNode), which would make this test measure the
 	// fan-out shape's projected columns instead of the native pushdown it
 	// exists to A/B — and the seed table below never gained the column

@@ -206,7 +206,7 @@ func runDualEmit(t *testing.T, db *sql.DB, native, optimize bool) map[gridCell]f
 	// #1628's DELTA-vs-CUMULATIVE runtime branch, and the inline seed table
 	// below never gained the column either. A `rate()` window whose schema
 	// DOES declare that column is, correctly, no longer eligible for native
-	// routing (chplan.RangeWindow.TemporalityColumn forces the fan-out
+	// routing (a RoleTemporality input forces the fan-out
 	// fallback — see nativeTSGridMatrixNode), which would make the native=true
 	// run fall back too and prove nothing about the two emitters agreeing.
 	s := schema.DefaultOTelMetrics()

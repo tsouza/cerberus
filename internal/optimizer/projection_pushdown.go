@@ -330,7 +330,12 @@ func aggregateColumns(a *chplan.Aggregate) []string {
 // — to applyRangeWindowOverMetricsAggregate instead, since that shape needs
 // to WIDEN an already-narrowed Scan rather than narrow one directly.
 func rangeWindowColumns(r *chplan.RangeWindow) []string {
-	bare := []string{r.TimestampColumn, r.ValueColumn, r.TemporalityColumn}
+	bare := []string{r.TimestampColumn, r.ValueColumn}
+	if !r.IgnoreInputTemporality {
+		if temporality, ok := r.Input.RowType().Find(chplan.RoleTemporality); ok {
+			bare = append(bare, temporality.Name)
+		}
+	}
 	for _, v := range r.Variants {
 		bare = append(bare, v.ValueColumn)
 	}

@@ -940,7 +940,7 @@ func needsTemporalityAgg(windowFn string) bool {
 // histogram table always carries the column when the schema names one
 // (schema.Metrics.AggregationTemporalityColumn's doc: "Int32; sum,
 // histogram, exp_histogram"), so unlike the ordinary counter path's
-// chplan.RangeWindow.TemporalityColumn — which is additionally gated on
+// chplan.RoleTemporality range-window input — which is additionally gated on
 // the scan resolving to an unambiguous Sum/Histogram table — this needs
 // no such gate: every caller of classicBucketWindowAggs scans the
 // histogram table directly.

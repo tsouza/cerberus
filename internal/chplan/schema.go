@@ -12,6 +12,9 @@ const (
 	RoleTimestamp
 	RoleAnchor
 	RoleValue
+	// RoleTemporality identifies the OTel aggregation-temporality input.
+	// It is not part of the public sample payload.
+	RoleTemporality
 	RoleHistogramField
 	RoleDiscriminator
 	RoleTraceID

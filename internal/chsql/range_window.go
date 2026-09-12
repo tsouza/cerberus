@@ -187,7 +187,7 @@ const RangeWindowAnchorAlias = chplan.RangeWindowAnchorColumn
 // windowTemporalityAlias is the SELECT-list alias every windowed-array
 // emitter gives the per-series-window `any(<TemporalityColumn>)` read —
 // the single AggregationTemporality value a series carries for its
-// lifetime (see chplan.RangeWindow.TemporalityColumn), which the
+// lifetime (identified by chplan.RoleTemporality), which the
 // DELTA-vs-CUMULATIVE runtime branch (CounterOrDeltaSum,
 // CounterOrDeltaPairDelta) then reads back by name.
 const windowTemporalityAlias = "temporality"
@@ -303,7 +303,48 @@ func windowTemporalityRef(r *chplan.RangeWindow) Frag {
 // should carry r's AggregationTemporality column down the layer stack as
 // windowTemporalityAlias.
 func windowTemporalityProjected(r *chplan.RangeWindow) bool {
-	return r.TemporalityColumn != ""
+	return rangeWindowTemporalityColumn(r) != ""
+}
+
+// rangeWindowTemporalityColumn resolves the optional storage-only input from
+// the immediate child schema. Validation at the RangeWindow dispatch boundary
+// guarantees that a non-empty result is unique, named, and closed.
+func rangeWindowTemporalityColumn(r *chplan.RangeWindow) string {
+	if r == nil || r.Input == nil || r.IgnoreInputTemporality {
+		return ""
+	}
+	column, ok := r.Input.RowType().Find(chplan.RoleTemporality)
+	if !ok {
+		return ""
+	}
+	return column.Name
+}
+
+func validateRangeWindowTemporality(r *chplan.RangeWindow) error {
+	return validateRangeWindowTemporalitySchema(r.Input.RowType())
+}
+
+func validateRangeWindowTemporalitySchema(row chplan.Schema) error {
+	var found chplan.Column
+	count := 0
+	for _, column := range row.Columns {
+		if column.Role == chplan.RoleTemporality {
+			found = column
+			count++
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+	if row.Open || count != 1 || found.Name == "" {
+		return fmt.Errorf("%w: RangeWindow input has invalid temporality schema", ErrUnsupported)
+	}
+	for _, column := range row.Columns {
+		if column.Name == found.Name && column.Role != chplan.RoleTemporality {
+			return fmt.Errorf("%w: RangeWindow input has conflicting temporality schema", ErrUnsupported)
+		}
+	}
+	return nil
 }
 
 // metricsMultiQuantileFanoutFrag returns a Frag rendering the per-(group,
@@ -374,6 +415,9 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	// own — see emitRangeWindowDownsampleTier's own doc.
 	if r.DownsampleTier {
 		return e.emitRangeWindowDownsampleTier(r)
+	}
+	if err := validateRangeWindowTemporality(r); err != nil {
+		return err
 	}
 	if m, ok := r.Input.(*chplan.MetricsAggregate); ok {
 		return e.emitRangeWindowMetrics(r, m)
@@ -696,7 +740,7 @@ func (e *emitter) emitWindowedArrayPairsAnchoredWithExtra(
 	// Innermost SELECT — groupArray of (ts, value), sorted. When the Input
 	// carries a TemporalityColumn, also read the series' single
 	// AggregationTemporality via any() — a series has ONE temporality for
-	// its lifetime (see chplan.RangeWindow.TemporalityColumn), so any()
+	// its lifetime (identified by chplan.RoleTemporality), so any()
 	// over the window's rows is exact, not a lossy pick. Only irate's value
 	// expression consults it on this path; every other pairs-shape caller
 	// (deriv / predict_linear / timestamp / LogQL log_rate) leaves
@@ -706,7 +750,7 @@ func (e *emitter) emitWindowedArrayPairsAnchoredWithExtra(
 	innermost.Select(groupFrags...)
 	innermost.Select(RawAs(windowSamplePairsFrag(r, r.TimestampColumn, r.ValueColumn), "series_array"))
 	if hasTemporality {
-		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
+		innermost.Select(As(Call("any", Col(rangeWindowTemporalityColumn(r))), windowTemporalityAlias))
 	}
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -808,7 +852,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	if hasTemporality {
-		fanout.Select(Col(r.TemporalityColumn))
+		fanout.Select(Col(rangeWindowTemporalityColumn(r)))
 	}
 	fanout.Select(RawAs(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
@@ -828,7 +872,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
 	if hasTemporality {
-		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
+		regroup.Select(As(Call("any", Col(rangeWindowTemporalityColumn(r))), windowTemporalityAlias))
 	}
 	regroup.Select(RawAs(windowSamplePairsFrag(r, srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
@@ -3920,7 +3964,7 @@ func deltaPrefixLowerBoundFrag(tsCol, rangeStart Frag, lookbackNS int64) Frag {
 // output at all) AND those rows are DELTA — precisely what this tests. It
 // therefore changes no query's result, only what is read to produce it.
 func (e *emitter) deltaPresenceGuardFrag(r *chplan.RangeWindow, windowLo, windowHi Frag) (Frag, error) {
-	if r.TemporalityColumn == "" {
+	if rangeWindowTemporalityColumn(r) == "" {
 		return nil, nil
 	}
 	src, err := e.subqueryFrag(r.Input)
@@ -3928,7 +3972,7 @@ func (e *emitter) deltaPresenceGuardFrag(r *chplan.RangeWindow, windowLo, window
 		return nil, err
 	}
 	probe := NewQuery().From(src)
-	probe.Select(Call("max", Eq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta))))
+	probe.Select(Call("max", Eq(Col(rangeWindowTemporalityColumn(r)), InlineLit(schema.AggregationTemporalityDelta))))
 	probe.Where(windowLo)
 	probe.Where(windowHi)
 	return Subquery(probe), nil
@@ -4249,13 +4293,13 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// Innermost SELECT — groupArray of (ts, value), sorted. When the
 	// Input carries a TemporalityColumn, also read the series' single
 	// AggregationTemporality reading via any() — a series has ONE
-	// temporality for its lifetime (see chplan.RangeWindow.TemporalityColumn),
+	// temporality for its lifetime (identified by chplan.RoleTemporality),
 	// so any() over the window's rows is exact, not a lossy pick.
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
 	innermost.Select(As(seriesArrayPairFrag(r, r.TimestampColumn, r.ValueColumn), "series_array"))
 	if hasTemporality {
-		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
+		innermost.Select(As(Call("any", Col(rangeWindowTemporalityColumn(r))), windowTemporalityAlias))
 	}
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -4318,7 +4362,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// routes through CounterOrDeltaSum so a DELTA-temporality counter (or
 	// classic histogram, via its bucket-domain transcription) sums the
 	// window's raw samples instead of applying the counter-reset rule —
-	// see chplan.RangeWindow.TemporalityColumn and issue #1628.
+	// see chplan.RoleTemporality and issue #1628.
 	temporalityRef := windowTemporalityRef(r)
 	extraColumns := make([]string, 0, 1)
 	if needsDeltaFirstLevel {
@@ -4728,7 +4772,7 @@ func (e *emitter) applyMatrixFanoutScanBound(
 		end,
 		Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
 	)
-	deltaBranch := Eq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta))
+	deltaBranch := Eq(Col(rangeWindowTemporalityColumn(r)), InlineLit(schema.AggregationTemporalityDelta))
 	if lower := deltaPrefixLowerBoundFrag(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS), e.deltaPrefixLookbackNS); lower != nil {
 		deltaBranch = And(deltaBranch, lower)
 	}
@@ -4786,7 +4830,7 @@ func (e *emitter) applyMatrixFanoutScanBoundAggregate(
 	if guard != nil {
 		fanout.Where(Paren(Or(
 			guard,
-			Neq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta)),
+			Neq(Col(rangeWindowTemporalityColumn(r)), InlineLit(schema.AggregationTemporalityDelta)),
 		)))
 	}
 	return nil
@@ -4856,7 +4900,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	if hasTemporality {
-		fanout.Select(Col(r.TemporalityColumn))
+		fanout.Select(Col(rangeWindowTemporalityColumn(r)))
 	}
 	fanout.Select(As(
 		windowedMatrixFanoutAnchorTsFrag(r, end, srcTs, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel, useAggregateDeltaPrefix),
@@ -4885,20 +4929,20 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// rateWindowFanoutBoundedSourceFrag's own doc comment for the full
 	// history of designs that guarded the wrong (downstream) stage first.
 	fanoutSource = rateWindowFanoutBoundedSourceFrag(
-		fanoutSource, groupFrags, srcTs, r.ValueColumn, r.TemporalityColumn, hasTemporality,
+		fanoutSource, groupFrags, srcTs, r.ValueColumn, rangeWindowTemporalityColumn(r), hasTemporality,
 		e.rateWindowFanoutRowBound(), RateWindowFanoutBudgetMessage,
 	)
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array. When
 	// the Input carries a TemporalityColumn, also read the series' single
 	// AggregationTemporality reading via any() — a series has ONE
-	// temporality for its lifetime (see chplan.RangeWindow.TemporalityColumn),
+	// temporality for its lifetime (identified by chplan.RoleTemporality),
 	// so any() over the (series, anchor) group's rows is exact.
 	regroup := NewQuery().From(fanoutSource)
 	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
 	if hasTemporality {
-		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
+		regroup.Select(As(Call("any", Col(rangeWindowTemporalityColumn(r))), windowTemporalityAlias))
 	}
 	if needsDeltaFirstLevel {
 		windowStart := rangeStartFrag(Col("anchor_ts"), rangeNS)
@@ -5011,7 +5055,7 @@ func windowedMatrixFanoutAnchorTsFrag(
 		return sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors)
 	}
 	prefixArray := deltaPrefixAnchorArrayFrag(
-		end, Col(srcTs), Col(r.TemporalityColumn), stepNS, rangeNS, numAnchors,
+		end, Col(srcTs), Col(rangeWindowTemporalityColumn(r)), stepNS, rangeNS, numAnchors,
 	)
 	if useAggregateDeltaPrefix {
 		// The exact mechanism's raw term only ever needs the CURRENT,
@@ -5022,7 +5066,7 @@ func windowedMatrixFanoutAnchorTsFrag(
 		// double-counting) a sample whose first-eligible anchor would
 		// otherwise land on a later day already covered by the aggregate
 		// table.
-		prefixArray = deltaPrefixAggregateRawAnchorArrayFrag(end, Col(srcTs), Col(r.TemporalityColumn), stepNS, rangeNS, numAnchors)
+		prefixArray = deltaPrefixAggregateRawAnchorArrayFrag(end, Col(srcTs), Col(rangeWindowTemporalityColumn(r)), stepNS, rangeNS, numAnchors)
 	}
 	return Call(
 		"arrayJoin",

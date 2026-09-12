@@ -83,5 +83,9 @@ func metricScanRoles(s schema.Metrics, table string) []chplan.Column {
 			}
 		}
 	}
+	if s.AggregationTemporalityColumn != "" &&
+		(table == s.SumTable || table == s.HistogramTable || table == s.ExpHistogramTable) {
+		roles = append(roles, chplan.Column{Name: s.AggregationTemporalityColumn, Role: chplan.RoleTemporality})
+	}
 	return roles
 }

@@ -147,12 +147,13 @@ func TestRangeWindowColumns_Temporality(t *testing.T) {
 	t.Parallel()
 
 	r := &chplan.RangeWindow{
-		Input:             &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:              "rate",
-		TimestampColumn:   "TimeUnix",
-		ValueColumn:       "Value",
-		TemporalityColumn: "AggregationTemporality",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Input: &chplan.Scan{Table: "otel_metrics_sum", Columns: []string{"AggregationTemporality"}, Roles: []chplan.Column{
+			{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+		}},
+		Func:            "rate",
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 	want := []string{"AggregationTemporality", "Attributes", "TimeUnix", "Value"}
 	if got := rangeWindowColumns(r); !reflect.DeepEqual(got, want) {
@@ -170,18 +171,20 @@ func TestRangeWindowColumns_Temporality(t *testing.T) {
 func TestRangeWindowColumns_TemporalityReachesNarrowedScan(t *testing.T) {
 	t.Parallel()
 
-	scan := &chplan.Scan{Table: "otel_metrics_sum"}
+	scan := &chplan.Scan{
+		Table: "otel_metrics_sum",
+		Roles: []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+	}
 	filter := &chplan.Filter{
 		Input:     scan,
 		Predicate: &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "MetricName"}, Right: &chplan.InlineString{V: "x"}},
 	}
 	r := &chplan.RangeWindow{
-		Input:             filter,
-		Func:              "rate",
-		TimestampColumn:   "TimeUnix",
-		ValueColumn:       "Value",
-		TemporalityColumn: "AggregationTemporality",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Input:           filter,
+		Func:            "rate",
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 
 	got, changed := (ProjectionPushdown{}).Apply(r)

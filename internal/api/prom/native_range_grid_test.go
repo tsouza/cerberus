@@ -52,7 +52,7 @@ func planForRangeQuery(t *testing.T, q string, lowerers promql.RangeLowerers) ch
 	// ts_grid_range emitters — a concern orthogonal to issue #1628's
 	// DELTA-vs-CUMULATIVE runtime branch. A `rate()` window whose schema
 	// DOES declare that column is, correctly, no longer eligible for native
-	// routing (chplan.RangeWindow.TemporalityColumn forces the fan-out
+	// routing (a RoleTemporality input forces the fan-out
 	// fallback — see nativeTSGridMatrixNode), which would make every native
 	// case here fall back and assert nothing about what it exists to pin.
 	s := schema.DefaultOTelMetrics()
