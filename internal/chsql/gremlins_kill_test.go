@@ -924,8 +924,8 @@ func TestEmitStructuralJoin_RequiredColumnsTriple(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.StructuralJoin{
-				Left:               metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
-				Right:              metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+				Left:               &chplan.Scan{Table: "otel_traces"},
+				Right:              &chplan.Scan{Table: "otel_traces"},
 				Op:                 chplan.StructuralChild,
 				TraceIDColumn:      c.trace,
 				SpanIDColumn:       c.span,
@@ -1202,7 +1202,7 @@ func TestEmitMetricsSecondStage_PartitionByBoundary(t *testing.T) {
 				K:           5,
 				PartitionBy: c.parts,
 				ValueAlias:  "Value",
-				Input:       metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+				Input:       &chplan.Scan{Table: "otel_traces"},
 			}
 			sql, _, err := Emit(context.Background(), plan)
 			if err != nil {
@@ -1274,7 +1274,7 @@ func TestEmitScan_EmptySelectList(t *testing.T) {
 	t.Parallel()
 	t.Run("no columns → SELECT *", func(t *testing.T) {
 		t.Parallel()
-		plan := metricsTimestampInternalTestScan("otel_traces", "Timestamp")
+		plan := &chplan.Scan{Table: "otel_traces"}
 		sql, _, err := Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
@@ -1306,7 +1306,7 @@ func TestEmitProject_EmptySelectList(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.Project{
 		Projections: nil,
-		Input:       metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+		Input:       &chplan.Scan{Table: "otel_traces"},
 	}
 	sql, _, err := Emit(context.Background(), plan)
 	if err != nil {
@@ -1342,7 +1342,7 @@ func TestEmitLimit_NonPositiveBoundary(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.Limit{
 				Count: c.count,
-				Input: metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+				Input: &chplan.Scan{Table: "otel_traces"},
 			}
 			sql, _, err := Emit(context.Background(), plan)
 			if err != nil {
@@ -1374,7 +1374,7 @@ func TestEmitFilter_EmptySelectList(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.Filter{
 			Predicate: &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "api"}},
-			Input:     metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+			Input:     &chplan.Scan{Table: "otel_traces"},
 		}
 		sql, _, err := Emit(context.Background(), plan)
 		if err != nil {
@@ -1739,7 +1739,7 @@ func TestEmitAggregate_LogicalAndOnEmptyGuard(t *testing.T) {
 		plan := &chplan.Aggregate{
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
 			GroupByAliases: []string{"service"},
-			Input:          metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+			Input:          &chplan.Scan{Table: "otel_traces"},
 		}
 		_, _, err := Emit(context.Background(), plan)
 		if err != nil {
@@ -1752,7 +1752,7 @@ func TestEmitAggregate_LogicalAndOnEmptyGuard(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.Aggregate{
 			AggFuncs: []chplan.AggFunc{{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"}},
-			Input:    metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+			Input:    &chplan.Scan{Table: "otel_traces"},
 		}
 		_, _, err := Emit(context.Background(), plan)
 		if err != nil {
@@ -1762,7 +1762,7 @@ func TestEmitAggregate_LogicalAndOnEmptyGuard(t *testing.T) {
 	// Case: both empty → both original and mutant error (sanity guard).
 	t.Run("both empty errors", func(t *testing.T) {
 		t.Parallel()
-		plan := &chplan.Aggregate{Input: metricsTimestampInternalTestScan("otel_traces", "Timestamp")}
+		plan := &chplan.Aggregate{Input: &chplan.Scan{Table: "otel_traces"}}
 		_, _, err := Emit(context.Background(), plan)
 		if err == nil {
 			t.Fatalf("expected ErrUnsupported for both-empty aggregate")
@@ -1796,7 +1796,7 @@ func TestEmitAggregate_DropEmptyGuard(t *testing.T) {
 				GroupBy:            c.groupBy,
 				AggFuncs:           []chplan.AggFunc{{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"}},
 				DropEmptyOnNoGroup: c.drop,
-				Input:              metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+				Input:              &chplan.Scan{Table: "otel_traces"},
 			}
 			if len(c.groupBy) > 0 {
 				plan.GroupByAliases = []string{"service"}
@@ -1996,7 +1996,7 @@ func TestEmitAggregateNoGroup_AliasPreservation(t *testing.T) {
 			{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "user_value"},
 		},
 		DropEmptyOnNoGroup: true,
-		Input:              metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+		Input:              &chplan.Scan{Table: "otel_traces"},
 	}
 	sql, _, err := Emit(context.Background(), plan)
 	if err != nil {
@@ -2077,7 +2077,7 @@ func TestPartitionPrewhere_LastWhereRetainsExactConjunct(t *testing.T) {
 	b := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "SpanName"}, Right: &chplan.LitString{V: "GET /"}}
 	plan := &chplan.Filter{
 		Predicate: &chplan.Binary{Op: chplan.OpAnd, Left: a, Right: b},
-		Input:     metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+		Input:     &chplan.Scan{Table: "otel_traces"},
 	}
 	sql, _, err := Emit(context.Background(), plan)
 	if err != nil {
@@ -2760,7 +2760,7 @@ func compareNodeInternal() *chplan.MetricsCompare {
 				&chplan.ColumnRef{Name: "SpanName"},
 			}},
 		}},
-		Inner: metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+		Inner: &chplan.Scan{Table: "otel_traces"},
 	}
 }
 
@@ -2960,7 +2960,7 @@ func TestEmitRangeWindowCompare_RootLookupTraceIDGuard(t *testing.T) {
 	t.Run("RootLookup set, TraceIDColumn empty → error", func(t *testing.T) {
 		t.Parallel()
 		m := compareNodeInternal()
-		m.RootLookup = metricsTimestampInternalTestScan("otel_traces", "Timestamp")
+		m.RootLookup = &chplan.Scan{Table: "otel_traces"}
 		m.TraceIDColumn = ""
 		_, _, err := Emit(context.Background(), m)
 		if err == nil {
@@ -2974,7 +2974,7 @@ func TestEmitRangeWindowCompare_RootLookupTraceIDGuard(t *testing.T) {
 	t.Run("RootLookup set, TraceIDColumn present → LEFT JOIN on it", func(t *testing.T) {
 		t.Parallel()
 		m := compareNodeInternal()
-		m.RootLookup = metricsTimestampInternalTestScan("otel_traces", "Timestamp")
+		m.RootLookup = &chplan.Scan{Table: "otel_traces"}
 		m.TraceIDColumn = "TraceId"
 		sql, _, err := Emit(context.Background(), m)
 		if err != nil {
@@ -3144,7 +3144,7 @@ func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
 
 func nsAnnotateInternal() *chplan.NestedSetAnnotate {
 	return &chplan.NestedSetAnnotate{
-		Input:              metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+		Input:              &chplan.Scan{Table: "otel_traces"},
 		SpansTable:         "otel_traces",
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -3521,8 +3521,8 @@ func TestVectorSetOpArmTimestampCol_StopsAtCanonicalProject(t *testing.T) {
 
 func structuralRecursiveNode(op chplan.StructuralOp, maxDepth int) *chplan.StructuralJoin {
 	return &chplan.StructuralJoin{
-		Left:               metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
-		Right:              metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
 		Op:                 op,
 		MaxDepth:           maxDepth,
 		TraceIDColumn:      "TraceId",
@@ -3636,8 +3636,8 @@ func TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth(t *testing.T) {
 func TestEmitStructuralSiblingJoin_Succeeds(t *testing.T) {
 	t.Parallel()
 	j := &chplan.StructuralJoin{
-		Left:               metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
-		Right:              metricsTimestampInternalTestScan("otel_traces", "Timestamp"),
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
 		Op:                 chplan.StructuralSibling,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",

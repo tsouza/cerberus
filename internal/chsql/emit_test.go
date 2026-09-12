@@ -138,7 +138,7 @@ var plans = map[string]chplan.Node{
 	// Limit(OrderBy(Scan, Timestamp DESC), N).
 	"order_by_timestamp_desc": &chplan.Limit{
 		Input: &chplan.OrderBy{
-			Input: metricsTimestampTestScan("otel_traces", "Timestamp"),
+			Input: &chplan.Scan{Table: "otel_traces"},
 			Keys: []chplan.OrderKey{
 				{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true},
 			},
@@ -147,7 +147,7 @@ var plans = map[string]chplan.Node{
 	},
 	// OrderBy — two-key (composite sort).
 	"order_by_composite": &chplan.OrderBy{
-		Input: metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Input: &chplan.Scan{Table: "otel_traces"},
 		Keys: []chplan.OrderKey{
 			{Expr: &chplan.ColumnRef{Name: "ServiceName"}, Desc: false},
 			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true},
@@ -225,8 +225,8 @@ var plans = map[string]chplan.Node{
 
 	// StructuralJoin — TraceQL `>` (parent_of).
 	"structural_join_child": &chplan.StructuralJoin{
-		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
-		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
 		Op:                 chplan.StructuralChild,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -234,8 +234,8 @@ var plans = map[string]chplan.Node{
 	},
 	// StructuralJoin — TraceQL `<` (child_of).
 	"structural_join_parent": &chplan.StructuralJoin{
-		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
-		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
 		Op:                 chplan.StructuralParent,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -244,8 +244,8 @@ var plans = map[string]chplan.Node{
 	// StructuralJoin — TraceQL `>>` (recursive descendant; unbounded
 	// depth via CH `WITH RECURSIVE`).
 	"structural_join_descendant": &chplan.StructuralJoin{
-		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
-		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
 		Op:                 chplan.StructuralDescendant,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -253,8 +253,8 @@ var plans = map[string]chplan.Node{
 	},
 	// StructuralJoin — TraceQL `<<` (recursive ancestor; unbounded depth).
 	"structural_join_ancestor": &chplan.StructuralJoin{
-		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
-		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
 		Op:                 chplan.StructuralAncestor,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -263,8 +263,8 @@ var plans = map[string]chplan.Node{
 	// StructuralJoin — recursive descendant with MaxDepth = 3 (the
 	// recursive step's WHERE clause caps the walk).
 	"structural_join_descendant_bounded": &chplan.StructuralJoin{
-		Left:               metricsTimestampTestScan("otel_traces", "Timestamp"),
-		Right:              metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
 		Op:                 chplan.StructuralDescendant,
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -485,7 +485,7 @@ var plans = map[string]chplan.Node{
 
 	// FieldAccess — TraceQL dotted attribute access.
 	"filter_field_access": &chplan.Filter{
-		Input: metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Input: &chplan.Scan{Table: "otel_traces"},
 		Predicate: &chplan.Binary{
 			Op: chplan.OpEq,
 			Left: &chplan.FieldAccess{
@@ -827,7 +827,7 @@ var plans = map[string]chplan.Node{
 	// parameter (not splice into the SQL), so CH-special chars in the
 	// key are no-op.
 	"filter_map_access_dotted_key": &chplan.Filter{
-		Input: metricsTimestampTestScan("otel_traces", "Timestamp"),
+		Input: &chplan.Scan{Table: "otel_traces"},
 		Predicate: &chplan.Binary{
 			Op: chplan.OpEq,
 			Left: &chplan.MapAccess{
