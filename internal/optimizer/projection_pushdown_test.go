@@ -62,7 +62,7 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 	// (timestamp, value) pair, the pass-through identity key, and the three
 	// inputs of the shaping tower. `k`, the tower's lambda parameter, is
 	// deliberately absent.
-	want := []string{"Attributes", "MetricName", "ResourceAttributes", "ServiceName", "TimeUnix", "Value"}
+	want := []string{"Attributes", "MetricName", "ResourceAttributes", "ServiceName", "sample_time", "sample_value"}
 
 	node := func(groupBy ...string) *chplan.RangeWindowGridNative {
 		keys := make([]chplan.Expr, 0, len(groupBy))
@@ -70,12 +70,19 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 			keys = append(keys, &chplan.ColumnRef{Name: name})
 		}
 		return &chplan.RangeWindowGridNative{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input: &chplan.Scan{
+				Table:   "otel_metrics_sum",
+				Columns: []string{"MetricName", "Attributes", "ResourceAttributes", "ServiceName", "sample_time", "sample_value"},
+				Roles: []chplan.Column{
+					{Name: "sample_time", Role: chplan.RoleTimestamp},
+					{Name: "sample_value", Role: chplan.RoleValue},
+				},
+			},
 			Func:            "rate",
 			Range:           5 * time.Minute,
 			Step:            30 * time.Second,
-			TimestampColumn: "TimeUnix",
-			ValueColumn:     "Value",
+			TimestampColumn: "public_time",
+			ValueColumn:     "public_value",
 			GroupBy:         keys,
 			Recollapse:      []chplan.Projection{{Expr: recollapseTower(), Alias: "Attributes"}},
 		}
