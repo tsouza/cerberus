@@ -285,7 +285,9 @@ func expHistogramWindowCoefficientStage(
 		tsList,
 	}}
 
-	projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+len(extraAliases)+2)
+	// Capacity is not part of the plan contract, and a guessed arithmetic hint
+	// only creates behaviourally equivalent mutation sites.
+	var projs []chplan.Projection
 	for _, name := range keyAliases {
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
 	}

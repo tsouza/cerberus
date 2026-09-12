@@ -478,7 +478,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 	layout := legacySampleProjectionLayout(rewritten)
 	keyOnStep := guardKeysOnTimestamp(rewritten, s)
 	output := rewritten.RowType()
-	mixed := output.HasHistogramPayload() && output.Has(chplan.RoleDiscriminator)
+	mixed := chplan.RowShapeFromSchema(output) == chplan.MixedRowShape
 
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	aliases := []string{s.AttributesColumn}
@@ -519,22 +519,20 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 		default:
 			if mixed && mixedPayload[name] {
 				// Already placed above as `any()` — payload, not identity.
-				continue
-			}
-			// A step-identifying column: the schema timestamp, or the
-			// RangeWindow per-anchor grid column. Whether it belongs in the
-			// key is the same question the name-drop half asks — see
-			// [guardKeysOnTimestamp].
-			if keyOnStep {
+			} else if keyOnStep {
+				// A step-identifying column: the schema timestamp, or the
+				// RangeWindow per-anchor grid column. Whether it belongs in the
+				// key is the same question the name-drop half asks — see
+				// [guardKeysOnTimestamp].
 				groupBy = append(groupBy, &chplan.ColumnRef{Name: name})
 				aliases = append(aliases, name)
-				continue
+			} else {
+				aggs = append(aggs, chplan.AggFunc{
+					Fn:    chplan.FnAny,
+					Args:  []chplan.Expr{&chplan.ColumnRef{Name: name}},
+					Alias: name,
+				})
 			}
-			aggs = append(aggs, chplan.AggFunc{
-				Fn:    chplan.FnAny,
-				Args:  []chplan.Expr{&chplan.ColumnRef{Name: name}},
-				Alias: name,
-			})
 		}
 	}
 

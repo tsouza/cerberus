@@ -82,6 +82,80 @@ func TestRequireScanTimeBound_RejectsUnboundedInstantLeaf(t *testing.T) {
 	}
 }
 
+func TestScanTimeBound_ReachesScalarSubqueryLeaf(t *testing.T) {
+	embedded := instantRateLeaf()
+	root := &chplan.Project{
+		Input: &chplan.OneRow{},
+		Projections: []chplan.Projection{{
+			Expr:  &chplan.ScalarSubquery{Input: embedded},
+			Alias: "Value",
+		}},
+	}
+
+	requireOnly := optimizer.NewWithBatches(
+		optimizer.AnalyzerBatch("test.require", optimizer.RequireScanTimeBound{}),
+	)
+	if v := recoverScanTimeBoundViolation(t, func() {
+		requireOnly.Run(context.Background(), root)
+	}); v == nil {
+		t.Fatal("RequireScanTimeBound did not reject the embedded unbounded leaf")
+	}
+
+	normalizeThenRequire := optimizer.NewWithBatches(
+		optimizer.AnalyzerBatch(
+			"test.scan-time-bound",
+			optimizer.NormalizeScanTimeBound{},
+			optimizer.RequireScanTimeBound{},
+		),
+	)
+	out := normalizeThenRequire.Run(context.Background(), root)
+	if chplan.FirstUnboundedInstantScanTimeBound(out) != nil {
+		t.Fatal("NormalizeScanTimeBound left the embedded leaf unbounded")
+	}
+	if embedded.InstantScanBounded {
+		t.Fatal("optimizer mutated the caller's embedded leaf")
+	}
+}
+
+func TestScanTimeBound_ReachesRangeWindowScalarExpr(t *testing.T) {
+	embedded := instantRateLeaf()
+	root := &chplan.RangeWindow{
+		Func:               "predict_linear",
+		Input:              &chplan.Scan{Table: "otel_metrics_gauge"},
+		Range:              5 * time.Minute,
+		TimestampColumn:    "TimeUnix",
+		ValueColumn:        "Value",
+		InstantScanBounded: true,
+		ScalarExprs: []chplan.Expr{
+			&chplan.ScalarSubquery{Input: embedded},
+		},
+	}
+
+	requireOnly := optimizer.NewWithBatches(
+		optimizer.AnalyzerBatch("test.require", optimizer.RequireScanTimeBound{}),
+	)
+	if v := recoverScanTimeBoundViolation(t, func() {
+		requireOnly.Run(context.Background(), root)
+	}); v == nil {
+		t.Fatal("RequireScanTimeBound did not reject the RangeWindow-owned unbounded scalar leaf")
+	}
+
+	normalizeThenRequire := optimizer.NewWithBatches(
+		optimizer.AnalyzerBatch(
+			"test.scan-time-bound",
+			optimizer.NormalizeScanTimeBound{},
+			optimizer.RequireScanTimeBound{},
+		),
+	)
+	out := normalizeThenRequire.Run(context.Background(), root)
+	if chplan.FirstUnboundedInstantScanTimeBound(out) != nil {
+		t.Fatal("NormalizeScanTimeBound left the RangeWindow-owned scalar leaf unbounded")
+	}
+	if embedded.InstantScanBounded {
+		t.Fatal("optimizer mutated the caller's RangeWindow-owned scalar leaf")
+	}
+}
+
 // TestScanTimeBound_NormalizeThenRequireAccepts proves the establish→verify
 // pairing wired into Default(): NormalizeScanTimeBound marks the same pre-#1098
 // shape, and RequireScanTimeBound then accepts it without panicking. This is

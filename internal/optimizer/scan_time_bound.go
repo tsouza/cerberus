@@ -66,12 +66,17 @@ func (NormalizeScanTimeBound) Name() string { return "normalize-scan-time-bound"
 func (NormalizeScanTimeBound) isAnalyzerRule() {}
 
 func (NormalizeScanTimeBound) Apply(n chplan.Node) (chplan.Node, bool) {
-	rw, ok := n.(*chplan.RangeWindow)
-	if !ok {
+	if rw, ok := n.(*chplan.RangeWindow); ok {
+		if chplan.IsInstantWindowedLeaf(rw) && !rw.InstantScanBounded {
+			bound := chplan.AttachInstantScanTimeBounds(n)
+			return bound, true
+		}
+	}
+	if chplan.FirstUnboundedInstantScanTimeBoundInExprs(n) == nil {
 		return n, false
 	}
-	bound, changed := chplan.WithInstantScanTimeBound(rw)
-	return bound, changed
+	bound := chplan.AttachInstantScanTimeBounds(n)
+	return bound, true
 }
 
 // RequireScanTimeBound is the must-run, fail-closed analyzer rule that
@@ -88,11 +93,11 @@ func (RequireScanTimeBound) Name() string { return "require-scan-time-bound" }
 func (RequireScanTimeBound) isAnalyzerRule() {}
 
 func (RequireScanTimeBound) Apply(n chplan.Node) (chplan.Node, bool) {
-	rw, ok := n.(*chplan.RangeWindow)
-	if !ok {
-		return n, false
+	rw, isRangeWindow := n.(*chplan.RangeWindow)
+	if !isRangeWindow || rw.InstantScanBounded || !chplan.IsInstantWindowedLeaf(rw) {
+		rw = chplan.FirstUnboundedInstantScanTimeBoundInExprs(n)
 	}
-	if chplan.IsInstantWindowedLeaf(rw) && !rw.InstantScanBounded {
+	if rw != nil && chplan.IsInstantWindowedLeaf(rw) && !rw.InstantScanBounded {
 		panic(&ScanTimeBoundViolation{Func: rw.Func, TimestampColumn: rw.TimestampColumn})
 	}
 	return n, false
