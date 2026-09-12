@@ -659,7 +659,9 @@ func TestEmitRangeWindowCompare_TraceIDTsEnvelopeUnreferenced(t *testing.T) {
 	m.RootLookupTraceIDTsEndColumn = "End"
 	// Aggregate straight over Scan: no Filter for the bounds to land in.
 	m.RootLookup = &chplan.Aggregate{
-		Input:   &chplan.Scan{Table: "otel_traces"},
+		Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+		}},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
 		AggFuncs: []chplan.AggFunc{
 			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},
