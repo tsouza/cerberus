@@ -216,9 +216,8 @@ func TestMetricsSecondStage_Walk_VisitsInput(t *testing.T) {
 			Op:    chplan.MetricsOpRate,
 			Inner: &chplan.Scan{Table: "mss_input"},
 		},
-		Op:         chplan.SecondStageTopK,
-		K:          5,
-		ValueAlias: "Value",
+		Op: chplan.SecondStageTopK,
+		K:  5,
 	}
 	assertSentinels(t, visitScans(root), []string{"mss_input"})
 }
@@ -503,10 +502,9 @@ func TestChildren_MetricsSecondStageReturnsExactlyInput(t *testing.T) {
 	t.Parallel()
 	input := &chplan.Scan{Table: "t"}
 	m := &chplan.MetricsSecondStage{
-		Input:      input,
-		Op:         chplan.SecondStageTopK,
-		K:          3,
-		ValueAlias: "Value",
+		Input: input,
+		Op:    chplan.SecondStageTopK,
+		K:     3,
 	}
 	kids := m.Children()
 	if len(kids) != 1 || kids[0] != input {

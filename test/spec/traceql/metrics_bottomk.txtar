@@ -19,7 +19,7 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
   [2]
 ]
 -- chplan --
-MetricsSecondStage op=bottomk k=3 valueAlias=Value
+MetricsSecondStage op=bottomk k=3
   MetricsAggregate op=rate valueAlias=Value
     Filter predicate=true
       Scan(otel_traces)

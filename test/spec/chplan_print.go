@@ -605,9 +605,6 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if len(v.PartitionBy) > 0 {
 			fmt.Fprintf(b, " partitionBy=[%s]", strings.Join(v.PartitionBy, ", "))
 		}
-		if v.ValueAlias != "" {
-			fmt.Fprintf(b, " valueAlias=%s", v.ValueAlias)
-		}
 		b.WriteString("\n")
 		if v.Input != nil {
 			printChild(b, visited, v.Input, depth+1)
