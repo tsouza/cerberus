@@ -80,6 +80,18 @@ func TestEmitNaryVectorSetOp_OrThreeArms(t *testing.T) {
 	}
 }
 
+func TestEmitNaryVectorSetOp_OnMetricName(t *testing.T) {
+	op := naryOp(chplan.VectorSetOr, "a", "b", "c")
+	op.Match = chplan.VectorMatch{On: true, Labels: []string{"__name__"}}
+	sql, _, err := chsql.Emit(context.Background(), op)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "OVER (PARTITION BY `MetricName`)") {
+		t.Fatalf("n-ary set op does not match on MetricName; sql=%s", sql)
+	}
+}
+
 // TestEmitNaryVectorSetOp_AndThreeArms pins the `and` single-pass shape:
 // ONE UNION ALL, ONE groupBitOr window, and the present-in-every-arm
 // WHERE that keeps arm-0 rows whose mask is all-ones (`(1<<3)-1 = 7`).
