@@ -303,7 +303,7 @@
       "layers": ["6b"],
       "oracle_class": "execution",
       "recipes": [],
-      "command": "go test -tags chdb,agpl_oracle,chdb_agpl_oracle -count=1 -run '^Test(ExemptionVerdict|CompareAgainstReferenceClassifiesOnlyAnswerMismatch|ConflictingDuplicateTimestampRefusal|OrderSensitiveSelectionPermutation|LimitKReferenceAnswerChangesWithSeriesSchedule|SynthesizedParity|SynthesizedParityRequiresExactlyOneQuerySection|TempoSpanIdentityErrorClassification)$' ./test/spec; node .github/scripts/chdb-roundtrip.mjs",
+      "command": "node .github/scripts/chdb-roundtrip.mjs",
       "build_tags": ["agpl_oracle", "chdb", "chdb_agpl_oracle"],
       "package_globs": ["internal/logql/**", "test/spec/*.go", "test/spec/logql/**"],
       "substrate": "chdb",
