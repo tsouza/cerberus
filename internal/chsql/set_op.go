@@ -143,9 +143,19 @@ func setOperationIdentity(s *chplan.SetOperation) (string, string, bool) {
 	if s == nil || s.Left == nil || s.Right == nil || s.TraceIDColumn == "" || s.SpanIDColumn == "" {
 		return "", "", false
 	}
-	leftTrace, leftSpan, leftOK := setOperationChildIdentity(s.Left.RowType())
-	_, _, rightOK := setOperationChildIdentity(s.Right.RowType())
-	return leftTrace, leftSpan, leftOK && rightOK
+	leftRow, rightRow := s.Left.RowType(), s.Right.RowType()
+	leftTrace, leftSpan, leftOK := setOperationChildIdentity(leftRow)
+	_, _, rightOK := setOperationChildIdentity(rightRow)
+	if !leftOK || !rightOK || len(leftRow.Columns) != len(rightRow.Columns) {
+		return "", "", false
+	}
+	for i, leftColumn := range leftRow.Columns {
+		if (leftColumn.Role == chplan.RoleTraceID || leftColumn.Role == chplan.RoleSpanID) &&
+			rightRow.Columns[i].Role != leftColumn.Role {
+			return "", "", false
+		}
+	}
+	return leftTrace, leftSpan, true
 }
 
 func setOperationChildIdentity(row chplan.Schema) (string, string, bool) {

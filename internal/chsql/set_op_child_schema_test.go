@@ -66,6 +66,57 @@ func TestSetOperationRejectsMissingChildIdentityRole(t *testing.T) {
 	}
 }
 
+func TestSetOperationRejectsPositionallyMisalignedChildIdentityRoles(t *testing.T) {
+	left := setOpSchemaScan("left_spans", "left_trace", "left_span")
+	right := setOpSchemaScan("right_spans", "right_trace", "right_span")
+	right.Columns = []string{"right_span", "right_trace"}
+	right.Roles = []chplan.Column{
+		{Name: "right_span", Role: chplan.RoleSpanID},
+		{Name: "right_trace", Role: chplan.RoleTraceID},
+	}
+
+	_, _, err := chsql.Emit(context.Background(), &chplan.SetOperation{
+		Left: left, Right: right, Op: chplan.SetUnion,
+		TraceIDColumn: "left_trace", SpanIDColumn: "left_span",
+	})
+	if !errors.Is(err, chsql.ErrUnsupported) {
+		t.Fatalf("Emit error = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestSetOperationRejectsDifferentChildSchemaWidths(t *testing.T) {
+	left := setOpSchemaScan("left_spans", "left_trace", "left_span")
+	right := setOpSchemaScan("right_spans", "right_trace", "right_span")
+	right.Columns = append(right.Columns, "extra")
+	right.Roles = append(right.Roles, chplan.Column{Name: "extra", Role: chplan.RoleAttributes})
+
+	_, _, err := chsql.Emit(context.Background(), &chplan.SetOperation{
+		Left: left, Right: right, Op: chplan.SetUnion,
+		TraceIDColumn: "left_trace", SpanIDColumn: "left_span",
+	})
+	if !errors.Is(err, chsql.ErrUnsupported) {
+		t.Fatalf("Emit error = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestSetOperationRejectsOutputIdentityNotAliasedByLeftSchema(t *testing.T) {
+	for name, identity := range map[string][2]string{
+		"trace": {"declared_trace", "left_span"},
+		"span":  {"left_trace", "declared_span"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := chsql.Emit(context.Background(), &chplan.SetOperation{
+				Left:  setOpSchemaScan("left_spans", "left_trace", "left_span"),
+				Right: setOpSchemaScan("right_spans", "right_trace", "right_span"),
+				Op:    chplan.SetUnion, TraceIDColumn: identity[0], SpanIDColumn: identity[1],
+			})
+			if !errors.Is(err, chsql.ErrUnsupported) {
+				t.Fatalf("Emit error = %v, want ErrUnsupported", err)
+			}
+		})
+	}
+}
+
 func TestSetOperationRejectsAmbiguousChildIdentitySchema(t *testing.T) {
 	closed := func(columns []string, roles []chplan.Column) *chplan.Scan {
 		return &chplan.Scan{Table: "spans", Columns: columns, Roles: roles}
