@@ -118,6 +118,7 @@ services:
     # cerberus dependency below is sufficient; the OTel demo's compose
     # stack uses the same pattern.
     image: otel/opentelemetry-collector-contrib:0.152.1
+    restart: "on-failure:5"
     networks: [cerberus-dev]
     command: ["--config=/etc/otel/config.yaml"]
     # The hostmetricsreceiver inside compose-config.yaml reads /proc + /sys
@@ -507,4 +508,3 @@ services:
       interval: 5s
       timeout: 2s
       retries: 12
-

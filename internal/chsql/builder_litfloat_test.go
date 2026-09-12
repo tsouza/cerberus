@@ -92,6 +92,27 @@ func TestBuilder_LitFloat_WrapsInToFloat64(t *testing.T) {
 	}
 }
 
+func TestBuilder_LitFloat_PreservesNegativeZero(t *testing.T) {
+	plan := &chplan.Project{
+		Input: &chplan.OneRow{},
+		Projections: []chplan.Projection{{
+			Expr:  &chplan.LitFloat{V: math.Copysign(0, -1)},
+			Alias: "v",
+		}},
+	}
+
+	sql, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "-toFloat64(0) AS `v`") {
+		t.Fatalf("negative zero must retain its sign in SQL; got %s", sql)
+	}
+	if len(args) != 0 {
+		t.Fatalf("negative zero must not cross a lossy binder; args = %#v", args)
+	}
+}
+
 // TestBuilder_LitFloat_NonFiniteInline asserts the inline-division
 // path for ±Inf / NaN is NOT wrapped — those values render as
 // `(1.0/0)` / `(-1.0/0)` / `(0.0/0)` directly inside the SQL. They

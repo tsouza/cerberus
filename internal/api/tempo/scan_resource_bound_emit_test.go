@@ -283,7 +283,9 @@ func TestScanResourceBound_CompareFailClosed(t *testing.T) {
 	t.Parallel()
 	s := tracesSchema()
 	cmp := &chplan.MetricsCompare{
-		Inner:     &chplan.Scan{Table: s.SpansTable},
+		Inner: &chplan.Scan{Table: s.SpansTable, Roles: []chplan.Column{
+			{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		}},
 		Selection: &chplan.LitBool{V: true},
 	}
 	rw := &chplan.RangeWindow{

@@ -21,8 +21,8 @@ INSERT INTO otel_traces (Duration, TraceId, SpanId) VALUES
   [3]
 ]
 -- chplan --
-MetricsSecondStage op=threshold threshold=(> 1) valueAlias=Value
-  MetricsSecondStage op=topk k=5 valueAlias=Value
+MetricsSecondStage op=threshold threshold=(> 1)
+  MetricsSecondStage op=topk k=5
     MetricsAggregate op=rate valueAlias=Value
       Filter predicate=true
         Scan(otel_traces)

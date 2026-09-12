@@ -132,7 +132,7 @@ func allNodeKinds() []chplan.Node {
 		&chplan.MetricsAggregate{Attr: expr, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, GroupByDisplayNames: []string{"g"}, Quantiles: []float64{0.5}, Inner: leaf},
 		&chplan.MetricsCompare{Selection: expr, Pairs: expr, RootLookup: leaf, Inner: leaf, TraceIDColumn: "TraceId"},
 		&chplan.MetricsHistogramOverTime{Attr: expr, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, GroupByDisplayNames: []string{"g"}, Inner: leaf},
-		&chplan.MetricsSecondStage{Input: leaf, K: 5, PartitionBy: []string{"p"}, ValueAlias: "v"},
+		&chplan.MetricsSecondStage{Input: leaf, K: 5, PartitionBy: []string{"p"}},
 		&chplan.NestedSetAnnotate{Input: leaf, SpansTable: "spans", TraceIDColumn: "TraceId"},
 		&chplan.InfoJoin{
 			Input: leaf, Info: &chplan.Scan{Table: "info"},

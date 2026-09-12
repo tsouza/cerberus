@@ -1201,8 +1201,11 @@ func TestEmitMetricsSecondStage_PartitionByBoundary(t *testing.T) {
 				Op:          chplan.SecondStageTopK,
 				K:           5,
 				PartitionBy: c.parts,
-				ValueAlias:  "Value",
-				Input:       &chplan.Scan{Table: "otel_traces"},
+				Input: &chplan.MetricsAggregate{
+					Op:         chplan.MetricsOpRate,
+					ValueAlias: "Value",
+					Inner:      &chplan.Scan{Table: "otel_traces"},
+				},
 			}
 			sql, _, err := Emit(context.Background(), plan)
 			if err != nil {
@@ -2760,7 +2763,9 @@ func compareNodeInternal() *chplan.MetricsCompare {
 				&chplan.ColumnRef{Name: "SpanName"},
 			}},
 		}},
-		Inner: &chplan.Scan{Table: "otel_traces"},
+		Inner: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+		}},
 	}
 }
 
