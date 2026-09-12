@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -20,7 +19,7 @@ import (
 // rankWalkNativePlan builds an emittable native-aggregate HistogramQuantile.
 func rankWalkNativePlan() *chplan.HistogramQuantile {
 	return &chplan.HistogramQuantile{
-		Input:                      &chplan.Scan{Table: "otel_metrics_histogram"},
+		Input:                      classicQuantileInput(),
 		Phi:                        0.9,
 		MetricNameColumn:           "MetricName",
 		AttributesColumn:           "Attributes",
@@ -33,43 +32,26 @@ func rankWalkNativePlan() *chplan.HistogramQuantile {
 	}
 }
 
-// TestEmitHistogramQuantileRankWalkNative_RequiresBothArrayColumns pins that
-// the emitter rejects a plan missing EITHER array column, not only one missing
-// both.
-//
-// Kills the INVERT_LOGICAL mutant of
-// histogram_quantile_rankwalk_native.go:`if h.BucketCountsColumn == "" || h.ExplicitBoundsColumn == ""`.
-// The mutant reads `... == "" && ... == ""`, which accepts a plan naming only
-// one of the two arrays and goes on to render `arrayFilter(i -> i = 1 OR “[i]
-// != “[i - 1], …)` over a nameless column. Only the two one-sided cases
-// distinguish the forms; the both-empty and both-present cases agree under
-// either spelling, and are asserted alongside them so the test states the
-// whole contract rather than just the discriminating half.
-func TestEmitHistogramQuantileRankWalkNative_RequiresBothArrayColumns(t *testing.T) {
+// TestEmitHistogramQuantileRankWalkNative_LegacyColumnsDoNotDriveInput pins that
+// physical inputs come from the child schema for the rank-walk path too.
+func TestEmitHistogramQuantileRankWalkNative_LegacyColumnsDoNotDriveInput(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name    string
-		counts  string
-		bounds  string
-		wantErr bool
+		name   string
+		counts string
+		bounds string
 	}{
-		{name: "both present", counts: "BucketCounts", bounds: "ExplicitBounds", wantErr: false},
-		{name: "bounds unset", counts: "BucketCounts", bounds: "", wantErr: true},
-		{name: "counts unset", counts: "", bounds: "ExplicitBounds", wantErr: true},
-		{name: "both unset", counts: "", bounds: "", wantErr: true},
+		{name: "both present", counts: "BucketCounts", bounds: "ExplicitBounds"},
+		{name: "bounds unset", counts: "BucketCounts", bounds: ""},
+		{name: "counts unset", counts: "", bounds: "ExplicitBounds"},
+		{name: "both unset", counts: "", bounds: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			h := rankWalkNativePlan()
 			h.BucketCountsColumn = tc.counts
 			h.ExplicitBoundsColumn = tc.bounds
-			sql, _, err := Emit(context.Background(), h)
-			if tc.wantErr {
-				if !errors.Is(err, ErrUnsupported) {
-					t.Fatalf("Emit err = %v, want ErrUnsupported (SQL: %s)", err, sql)
-				}
-				return
-			}
+			_, _, err := Emit(context.Background(), h)
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}

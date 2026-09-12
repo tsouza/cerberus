@@ -13,7 +13,7 @@ import (
 // every test in this file varies.
 func hqNativeMutationPlan(phi float64) *chplan.HistogramQuantileNative {
 	return &chplan.HistogramQuantileNative{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      nativeQuantileInput(true),
 		Phi:                        phi,
 		ScaleColumn:                "Scale",
 		ZeroCountColumn:            "ZeroCount",
