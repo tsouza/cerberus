@@ -371,6 +371,17 @@ test('a change to the lane harness does not promote a PR to the full matrix', ()
   }
 });
 
+test('a registry glob that contains the lane harness does not report harness files as phase gaps', () => {
+  const result = selectPhases({
+    phases: PHASES,
+    registryGlobs: ['.github/**'],
+    eventName: 'pull_request',
+    changed: new Set(['.github/workflows/mutation.yml', '.github/scripts/mutation-matrix.mjs']),
+  });
+  assert.deepEqual(result.phases, []);
+  assert.deepEqual(result.gaps, []);
+});
+
 // The derivation is only worth having if it reaches every kind of edge the lane
 // actually uses to get from mutation.yml to a file that decides a mutant's
 // fate. Each assertion below names ONE edge kind and one file that is reachable

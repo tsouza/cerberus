@@ -63,7 +63,7 @@ import { HARNESS_PATHS, MUTATION_PRODUCTION_GLOBS, PHASES } from './mutation-pha
 export const MUTATION_LANE_ID = 'quality.mutation';
 export const MUTATION_REGISTRY_PATH = '.github/ci-lanes.json';
 export const MUTATION_MIN_EFFICACY = 95;
-const MUTATION_SEMANTIC_HARNESS_PATHS = new Set([MUTATION_REGISTRY_PATH]);
+const MUTATION_NON_PHASE_PATHS = new Set([...HARNESS_PATHS, MUTATION_REGISTRY_PATH]);
 
 function runsFullMutationLane(eventName) {
   return ['push', 'schedule', 'workflow_dispatch'].includes(String(eventName ?? ''));
@@ -527,7 +527,7 @@ export function selectPhases({
   const selected = phases.filter((phase) => paths.some((p) => phaseClaims(phase, p)));
   const gaps = paths.filter(
     (p) =>
-      !MUTATION_SEMANTIC_HARNESS_PATHS.has(p) &&
+      !MUTATION_NON_PHASE_PATHS.has(p) &&
       registryClaimsPath(registryGlobs, p) &&
       !phases.some((phase) => phaseClaims(phase, p)),
   );
