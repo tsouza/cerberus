@@ -51,7 +51,7 @@ func TestRowTypeEveryNode(t *testing.T) {
 		{&RangeWindowGridNativeInstant{Input: scan, GroupBy: groups, ValueColumn: "value"}, groupValue},
 		{&RangeWindow{Input: scan, GroupBy: groups, ValueColumn: "value"}, groupValue},
 		{&RangeBucketFanout{Input: scan, GroupBy: groups, AnchorAlias: "anchor", AggFuncs: []AggFunc{{Alias: "value"}}}, Schema{Columns: []Column{{Name: "anchor", Role: RoleAnchor}, {Name: "labels", Role: RoleAttributes}, {Name: "value", Role: RoleValue}}}},
-		{&RangeBucketGridNative{Input: scan, GroupBy: groups, AnchorAlias: "anchor", BucketCountsCol: "counts", ExplicitBoundsCol: "bounds"}, Schema{Columns: []Column{{Name: "anchor", Role: RoleAnchor}, {Name: "labels", Role: RoleAttributes}, {Name: "counts"}, {Name: "bounds"}}}},
+		{&RangeBucketGridNative{Input: scan, GroupBy: groups, AnchorAlias: "anchor", BucketCountsCol: "counts", ExplicitBoundsCol: "bounds"}, Schema{Columns: []Column{{Name: "anchor", Role: RoleAnchor}, {Name: "labels", Role: RoleAttributes}, {Name: "counts", Role: RoleHistogramField, HistogramField: HistogramFieldBucketCounts}, {Name: "bounds", Role: RoleHistogramField, HistogramField: HistogramFieldExplicitBounds}}}},
 		{&RangeWindowGridNativeVectorAgg{Input: grid, GroupBy: groups, GroupByAliases: []string{"labels"}, AnchorAlias: "time"}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "anchor_ts", Role: RoleAnchor}, {Name: "time", Role: RoleTimestamp}, {Name: "value", Role: RoleValue}}}},
 		{&MetricsAggregate{Inner: scan, GroupBy: groups, ValueAlias: "value"}, groupValue},
 		{&MetricsHistogramOverTime{Inner: scan, GroupBy: groups, ValueAlias: "value"}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "__bucket"}, {Name: "value", Role: RoleValue}}}},
