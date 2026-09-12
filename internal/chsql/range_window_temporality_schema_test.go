@@ -30,9 +30,9 @@ func TestRangeWindowTemporalityResolvesChildSchema(t *testing.T) {
 }
 
 func TestRangeWindowTemporalityRejectsMalformedChildSchema(t *testing.T) {
-	tests := map[string]*chplan.Scan{
-		"open": {Table: "samples", Roles: []chplan.Column{{Name: "temporality", Role: chplan.RoleTemporality}}},
-		"duplicate": {
+	tests := map[string]chplan.Node{
+		"open": &chplan.Scan{Table: "samples", Roles: []chplan.Column{{Name: "temporality", Role: chplan.RoleTemporality}}},
+		"duplicate": &chplan.Scan{
 			Table: "samples", Columns: []string{"a", "b"},
 			Roles: []chplan.Column{{Name: "a", Role: chplan.RoleTemporality}, {Name: "b", Role: chplan.RoleTemporality}},
 		},
@@ -41,6 +41,20 @@ func TestRangeWindowTemporalityRejectsMalformedChildSchema(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := &chplan.RangeWindow{Input: input}
 			if err := validateRangeWindowTemporality(r); err == nil {
+				t.Fatal("expected malformed temporality schema to fail")
+			}
+		})
+	}
+	malformedRows := map[string]chplan.Schema{
+		"unnamed": {Columns: []chplan.Column{{Role: chplan.RoleTemporality}}},
+		"conflicting": {Columns: []chplan.Column{
+			{Name: "shared", Role: chplan.RoleTemporality},
+			{Name: "shared", Role: chplan.RoleValue},
+		}},
+	}
+	for name, row := range malformedRows {
+		t.Run(name, func(t *testing.T) {
+			if err := validateRangeWindowTemporalitySchema(row); err == nil {
 				t.Fatal("expected malformed temporality schema to fail")
 			}
 		})

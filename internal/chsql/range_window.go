@@ -321,7 +321,10 @@ func rangeWindowTemporalityColumn(r *chplan.RangeWindow) string {
 }
 
 func validateRangeWindowTemporality(r *chplan.RangeWindow) error {
-	row := r.Input.RowType()
+	return validateRangeWindowTemporalitySchema(r.Input.RowType())
+}
+
+func validateRangeWindowTemporalitySchema(row chplan.Schema) error {
 	var found chplan.Column
 	count := 0
 	for _, column := range row.Columns {
