@@ -67,8 +67,7 @@ func carrierTokenCases() []carrierTokenCase {
 			node: func(in chplan.Node) chplan.Node {
 				return &chplan.RangeWindowStaleResample{
 					Input: in, Start: shapeGridStart, End: shapeGridEnd, Step: shapeGridStep,
-					Lookback: shapeCarrierWindow, MetricNameCol: "MetricName", AttributesCol: "Attributes",
-					TimestampCol: "TimeUnix", ValueCol: "Value",
+					Lookback: shapeCarrierWindow,
 				}
 			},
 		},

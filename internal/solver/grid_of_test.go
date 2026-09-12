@@ -39,7 +39,6 @@ func gridOfCarriers() []chplan.GridCarrier {
 		&chplan.RangeWindowStaleResample{
 			Input: leafScan(), Lookback: 5 * time.Minute,
 			Start: gridStart, End: gridEnd, Step: gridStep,
-			TimestampCol: "TimeUnix", ValueCol: "Value",
 		},
 		&chplan.RangeLWR{
 			Input: leafScan(), Lookback: 5 * time.Minute,
@@ -109,7 +108,6 @@ func gridOfInstantCarriers() []chplan.GridCarrier {
 		&chplan.RangeWindowStaleResample{
 			Input: leafScan(), Lookback: 5 * time.Minute,
 			Start: gridStart, End: gridEnd, Step: 0,
-			TimestampCol: "TimeUnix", ValueCol: "Value",
 		},
 		&chplan.RangeLWR{
 			Input: leafScan(), Lookback: 5 * time.Minute,

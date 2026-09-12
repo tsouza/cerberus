@@ -8,6 +8,27 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+func TestResampleRangeWindowColumnsUseClosedChildSchema(t *testing.T) {
+	t.Parallel()
+	roles := []chplan.Column{
+		{Name: "source_name", Role: chplan.RoleMetricName},
+		{Name: "source_labels", Role: chplan.RoleAttributes},
+		{Name: "source_time", Role: chplan.RoleTimestamp},
+		{Name: "source_value", Role: chplan.RoleValue},
+	}
+	input := &chplan.Scan{Table: "samples", Columns: []string{"source_name", "source_labels", "source_time", "source_value"}, Roles: roles}
+	window := &chplan.RangeWindowStaleResample{Input: input}
+	want := []string{"source_labels", "source_name", "source_time", "source_value"}
+	if got := resampleRangeWindowColumns(window); !reflect.DeepEqual(got, want) {
+		t.Fatalf("resampleRangeWindowColumns() = %v, want %v", got, want)
+	}
+
+	input.Columns = nil
+	if got := resampleRangeWindowColumns(window); got != nil {
+		t.Fatalf("open child schema resolved columns %v, want nil", got)
+	}
+}
+
 // recollapseTower is the deferred label-shaping expression the PromQL lowering
 // hoists above the native aggregate:
 //

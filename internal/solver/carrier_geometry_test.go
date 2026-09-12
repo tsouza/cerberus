@@ -138,15 +138,11 @@ func carrierCases() []carrierCase {
 			kind: "RangeWindowStaleResample",
 			plan: func() chplan.Node {
 				return &chplan.RangeWindowStaleResample{
-					Input:         leafScan(),
-					Start:         gridStart,
-					End:           gridEnd,
-					Step:          gridStep,
-					Lookback:      geomResampleLookback,
-					MetricNameCol: "MetricName",
-					AttributesCol: "Attributes",
-					TimestampCol:  "TimeUnix",
-					ValueCol:      "Value",
+					Input:    leafScan(),
+					Start:    gridStart,
+					End:      gridEnd,
+					Step:     gridStep,
+					Lookback: geomResampleLookback,
 				}
 			},
 			wantD:        geomResampleLookback,

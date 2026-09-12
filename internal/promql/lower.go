@@ -3866,8 +3866,8 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 //     optionally wrapped in the canonical selector-attributes Project — the
 //     row-shape relation the native emitter consumes (isNativeRateInput).
 //   - rw.GroupBy must be EXACTLY the plain [Attributes] key.
-//     chplan.RangeWindowStaleResample groups by its fixed (MetricNameCol,
-//     AttributesCol) pair — unlike RangeWindowGridNative it carries no
+//     chplan.RangeWindowStaleResample groups by its child's fixed
+//     (RoleMetricName, RoleAttributes) pair — unlike RangeWindowGridNative it carries no
 //     GroupBy field at all, so it cannot express a widened key.
 //     last_over_time never widens rw.GroupBy in practice
 //     (rangeFnCollidesOnNameDrop is unconditionally false for a
@@ -3888,7 +3888,7 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 // encodes directly via Start/End/Step.
 //
 // The node's output is ALREADY the canonical 4-column Sample shape
-// (MetricName, Attributes, TimestampCol, ValueCol) — its GROUP BY reads the
+// (MetricName, Attributes, RoleTimestamp, RoleValue) — its GROUP BY reads the
 // real per-row MetricName column, so it carries `__name__` through natively
 // for both a single pinned name and a multi-name regex selector alike. The
 // caller (NativeLastOverTimeLowerer.LowerLastOverTime) therefore returns it
@@ -3927,16 +3927,12 @@ func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Ra
 		return nil
 	}
 	return &chplan.RangeWindowStaleResample{
-		Input:         rw.Input,
-		Start:         rw.Start,
-		End:           rw.End,
-		Step:          rw.Step,
-		Lookback:      rw.Range,
-		Offset:        rw.Offset,
-		MetricNameCol: s.MetricNameColumn,
-		AttributesCol: s.AttributesColumn,
-		TimestampCol:  rw.TimestampColumn,
-		ValueCol:      rw.ValueColumn,
+		Input:    closedStaleResampleInput(rw.Input, s.MetricNameColumn, s.AttributesColumn, rw.TimestampColumn, rw.ValueColumn),
+		Start:    rw.Start,
+		End:      rw.End,
+		Step:     rw.Step,
+		Lookback: rw.Range,
+		Offset:   rw.Offset,
 	}
 }
 

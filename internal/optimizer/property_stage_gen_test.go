@@ -110,15 +110,11 @@ func gaugeStageBuilders() []stageBuilder {
 		},
 		func(in chplan.Node) chplan.Node {
 			return &chplan.RangeWindowStaleResample{
-				Input:         in,
-				Step:          propertyStep,
-				Lookback:      propertyLookback,
-				Start:         propertyWindowStart,
-				End:           propertyWindowEnd(),
-				TimestampCol:  "TimeUnix",
-				ValueCol:      "Value",
-				MetricNameCol: propertyGroupColumn,
-				AttributesCol: "Attributes",
+				Input:    closedPropertySampleInput(in),
+				Step:     propertyStep,
+				Lookback: propertyLookback,
+				Start:    propertyWindowStart,
+				End:      propertyWindowEnd(),
 			}
 		},
 		func(in chplan.Node) chplan.Node {
@@ -165,6 +161,28 @@ func gaugeStageBuilders() []stageBuilder {
 			}
 		},
 	}
+}
+
+func closedPropertySampleInput(input chplan.Node) chplan.Node {
+	columns := []string{propertyGroupColumn, "Attributes", "TimeUnix", "Value"}
+	roles := []chplan.Column{
+		{Name: propertyGroupColumn, Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	var scan *chplan.Scan
+	switch node := input.(type) {
+	case *chplan.Scan:
+		scan = node
+	case *chplan.Filter:
+		scan, _ = node.Input.(*chplan.Scan)
+	}
+	if scan != nil {
+		scan.Columns = columns
+		scan.Roles = roles
+	}
+	return input
 }
 
 // histogramStageBuilders are the stage shapes that need the classic

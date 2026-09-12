@@ -32,7 +32,12 @@ const cardinalityProbeTestMetric = "http_requests_total"
 // resolves unambiguously.
 func cardinalityProbeTestFilter(metric string) *chplan.Filter {
 	return &chplan.Filter{
-		Input: &chplan.Scan{Table: "otel_metrics_sum"},
+		Input: &chplan.Scan{Table: "otel_metrics_sum", Columns: []string{"MetricName", "Attributes", "TimeUnix", "Value"}, Roles: []chplan.Column{
+			{Name: "MetricName", Role: chplan.RoleMetricName},
+			{Name: "Attributes", Role: chplan.RoleAttributes},
+			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+			{Name: "Value", Role: chplan.RoleValue},
+		}},
 		Predicate: &chplan.Binary{
 			Op:    chplan.OpEq,
 			Left:  &chplan.ColumnRef{Name: cardinalityProbeMetricNameColumn},
@@ -301,15 +306,11 @@ func cardinalityProbeNewCarrierFixtures() map[string]chplan.Node {
 			ValueCol:      "Value",
 		},
 		"RangeWindowStaleResample": &chplan.RangeWindowStaleResample{
-			Input:         cardinalityProbeTestFilter(cardinalityProbeTestMetric),
-			Start:         cardinalityProbeTestStart,
-			End:           cardinalityProbeTestEnd,
-			Step:          15 * time.Second,
-			Lookback:      5 * time.Minute,
-			MetricNameCol: cardinalityProbeMetricNameColumn,
-			AttributesCol: "Attributes",
-			TimestampCol:  "TimeUnix",
-			ValueCol:      "Value",
+			Input:    cardinalityProbeTestFilter(cardinalityProbeTestMetric),
+			Start:    cardinalityProbeTestStart,
+			End:      cardinalityProbeTestEnd,
+			Step:     15 * time.Second,
+			Lookback: 5 * time.Minute,
 		},
 	}
 }
@@ -535,9 +536,15 @@ func TestFindCardinalityProbeCarrier(t *testing.T) {
 		t.Fatal("expected ok=false for a RangeLWR with no AttributesCol series-identity key")
 	}
 
+	staleInput := cardinalityProbeTestFilter("x")
+	staleInput.Input.(*chplan.Scan).Columns = []string{"MetricName", "TimeUnix", "Value"}
+	staleInput.Input.(*chplan.Scan).Roles = []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
 	staleResampleNoAttributes := &chplan.RangeWindowStaleResample{
-		Input: cardinalityProbeTestFilter("x"), Start: cardinalityProbeTestStart, End: cardinalityProbeTestEnd, Step: time.Minute,
-		TimestampCol: "TimeUnix",
+		Input: staleInput, Start: cardinalityProbeTestStart, End: cardinalityProbeTestEnd, Step: time.Minute,
 	}
 	if _, ok := findCardinalityProbeCarrier(staleResampleNoAttributes); ok {
 		t.Fatal("expected ok=false for a RangeWindowStaleResample with no AttributesCol series-identity key")
