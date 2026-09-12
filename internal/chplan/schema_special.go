@@ -29,7 +29,11 @@ func (r *RangeBucketGridNative) RowType() Schema {
 	input := r.Input.RowType()
 	out := Schema{Columns: []Column{{Name: r.AnchorAlias, Role: RoleAnchor}}}
 	out.Columns = append(out.Columns, groupSchema(input, r.GroupBy, r.GroupByAliases, nil).Columns...)
-	out.Columns = append(out.Columns, roleColumn(r.BucketCountsCol, input, nil), roleColumn(r.ExplicitBoundsCol, input, nil))
+	out.Columns = append(
+		out.Columns,
+		Column{Name: r.BucketCountsCol, Role: RoleHistogramField, HistogramField: HistogramFieldBucketCounts},
+		Column{Name: r.ExplicitBoundsCol, Role: RoleHistogramField, HistogramField: HistogramFieldExplicitBounds},
+	)
 	return out
 }
 
