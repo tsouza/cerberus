@@ -108,9 +108,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           # The selector diffs the PR head against its MERGE BASE, which a
-          # shallow clone cannot resolve. A failed diff is not read as "nothing
-          # changed" — mutation-matrix.mjs falls back to the full matrix — but
-          # that fallback is a safety net, not the intended path.
+          # shallow clone cannot resolve. A failed diff makes mutation-select
+          # red; it is never read as "nothing changed" or promoted to a full
+          # pull-request sweep.
           fetch-depth: 0
 
       # A pull request and a merge group each name a base/head pair; the two are
@@ -123,7 +123,6 @@ jobs:
         env:
           MODE: emit
           EVENT_NAME: ${{ github.event_name }}
-          HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
 

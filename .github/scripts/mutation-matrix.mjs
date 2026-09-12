@@ -16,9 +16,8 @@
 // cost the skip existed to avoid). It is to run the legs whose SCOPE the PR
 // actually changed. A PR editing internal/chplan runs phase1. A PR editing only
 // docs runs nothing and the aggregator passes through honestly, because there
-// was nothing in this lane's scope to check. Push / schedule / dispatch and
-// main pushes, schedules, and dispatches still sweep the FULL matrix, so no
-// leg's floor is ever load-bearing
+// was nothing in this lane's scope to check. Main pushes, schedules, and
+// dispatches still sweep the FULL matrix, so no leg's floor is ever load-bearing
 // on some PR happening to touch it.
 //
 // Three modes (env MODE, or argv[2]; default `verify`):
@@ -44,7 +43,6 @@
 // Env:
 //   MODE          `emit` | `verify` | `dump` (also argv[2]); default `verify`.
 //   EVENT_NAME    github.event_name.
-//   HEAD_REF      github.head_ref (empty off pull_request).
 //   BASE_SHA      (emit, PR/merge group) base commit used for the changed-path projection.
 //   HEAD_SHA      (emit, PR/merge group) candidate commit used for the changed-path projection.
 //   GITHUB_OUTPUT (emit) runner file the matrix JSON is appended to.
@@ -508,10 +506,8 @@ export function resolvePhases(phases, root = process.cwd(), problems = []) {
 // would let a leg partition drift into leaving a file permanently unmutated.
 export function selectPhases({
   phases,
-  harnessPaths,
   registryGlobs = [],
   eventName,
-  headRef,
   changed,
   semanticHarness = { changed: false, failed: false, paths: [] },
 }) {
@@ -519,21 +515,12 @@ export function selectPhases({
     return { phases, reason: `event "${eventName}" always runs the full matrix`, gaps: [] };
   }
   if (changed === null) {
-    return { phases, reason: 'the changed-path set could not be computed', gaps: [] };
+    throw new Error('the changed-path set could not be computed');
   }
   if (semanticHarness.failed) {
-    return {
-      phases,
-      reason: `a semantic harness projection could not be computed (${semanticHarness.cause || 'unknown error'})`,
-      gaps: [],
-    };
-  }
-  if (semanticHarness.changed) {
-    return {
-      phases,
-      reason: `mutation-relevant harness material changed (${semanticHarness.paths.join(', ')})`,
-      gaps: [],
-    };
+    throw new Error(
+      `a semantic harness projection could not be computed (${semanticHarness.cause || 'unknown error'})`,
+    );
   }
 
   const paths = [...changed];
@@ -661,7 +648,6 @@ function main() {
   if (mode === 'verify') return;
 
   const eventName = (process.env.EVENT_NAME || '').trim();
-  const headRef = (process.env.HEAD_REF || '').trim();
   const changed = runsFullMutationLane(eventName)
     ? null
     : changedPaths({ baseSha: process.env.BASE_SHA, headSha: process.env.HEAD_SHA });
@@ -682,10 +668,8 @@ function main() {
   // own CLI invocation.
   const { phases, reason, gaps } = selectPhases({
     phases: resolvedPhases,
-    harnessPaths: HARNESS_PATHS,
     registryGlobs: surface.globs,
     eventName,
-    headRef,
     changed,
     semanticHarness,
   });

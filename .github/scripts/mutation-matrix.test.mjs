@@ -56,10 +56,8 @@ const REGISTRY_SURFACE = registryMutableFiles({ registry: REGISTRY });
 const select = (changed, over = {}) =>
   selectPhases({
     phases: PHASES,
-    harnessPaths: HARNESS_PATHS,
     registryGlobs: REGISTRY_SURFACE.globs,
     eventName: 'pull_request',
-    headRef: 'feat/some-branch',
     changed: changed === null ? null : new Set(changed),
     ...over,
   });
@@ -180,7 +178,10 @@ test('registry semantic projection comparison fails closed and distinguishes rel
 
   sources.set(`${head}:${MUTATION_REGISTRY_PATH}`, '{');
   assert.equal(status().failed, true);
-  assert.equal(select([MUTATION_REGISTRY_PATH], { semanticHarness: status() }).phases.length, PHASES.length);
+  assert.throws(
+    () => select([MUTATION_REGISTRY_PATH], { semanticHarness: status() }),
+    /semantic harness projection could not be computed/,
+  );
 });
 
 test('phase claims outside the registry surface fail bidirectionally', () => {
@@ -256,7 +257,7 @@ test('push, schedule, and dispatch run the full matrix while release PRs stay sc
   for (const eventName of ['push', 'schedule', 'workflow_dispatch']) {
     assert.equal(select(['docs/engine.md'], { eventName }).phases.length, PHASES.length, eventName);
   }
-  const release = select(['CHANGELOG.md'], { headRef: 'release/v1.13.2-chart-0.13.2' });
+  const release = select(['CHANGELOG.md']);
   assert.deepEqual(release.phases, []);
 });
 
@@ -266,19 +267,15 @@ test('a merge-queue batch selects legs from its own diff, like a pull request', 
   // selected. Sweeping the full matrix here instead would bill every batch 18
   // gremlins legs on top of the push-to-main sweep that lands the same SHA — the
   // wall-clock cost scoping exists to remove, paid twice.
-  const inQueue = { eventName: 'merge_group', headRef: '' };
+  const inQueue = { eventName: 'merge_group' };
   assert.deepEqual(names(select(['internal/chplan/plan.go'], inQueue)), ['phase1']);
   assert.deepEqual(select(['docs/engine.md'], inQueue).phases, []);
 
-  // The safety net is unchanged: a batch whose diff cannot be computed sweeps
-  // everything rather than selecting nothing.
-  assert.equal(select(null, inQueue).phases.length, PHASES.length);
+  assert.throws(() => select(null, inQueue), /changed-path set could not be computed/);
 });
 
-test('an uncomputable diff runs the full matrix rather than nothing', () => {
-  const result = select(null);
-  assert.equal(result.phases.length, PHASES.length);
-  assert.match(result.reason, /could not be computed/);
+test('an uncomputable pull-request diff fails selection rather than running full or nothing', () => {
+  assert.throws(() => select(null), /changed-path set could not be computed/);
 });
 
 test('changed-line projection is bound to the exact merge base and added-line roster', () => {
@@ -541,7 +538,7 @@ test('only the registry uses a semantic harness projection', () => {
   const result = select([MUTATION_REGISTRY_PATH], {
     semanticHarness: { changed: true, failed: false, paths: [MUTATION_REGISTRY_PATH] },
   });
-  assert.equal(result.phases.length, PHASES.length);
+  assert.deepEqual(result.phases, []);
 });
 
 test('a docs-only PR runs no phase at all', () => {
@@ -803,10 +800,8 @@ test('a file every leg excludes is reported as a coverage gap, not dropped', () 
   const phases = [{ phase: 'solo', scope: './internal/chplan', efficacy: 95, workers: 0, exclude_files: '^plan\\.go$' }];
   const result = selectPhases({
     phases,
-    harnessPaths: HARNESS_PATHS,
     registryGlobs: REGISTRY_SURFACE.globs,
     eventName: 'pull_request',
-    headRef: 'feat/x',
     changed: new Set(['internal/chplan/plan.go']),
   });
   assert.deepEqual(result.phases, []);
