@@ -21,6 +21,12 @@ func spanScan(s schema.Traces) *chplan.Scan {
 // its recursive numbering walk. Attribute predicates remain below this
 // projection and can therefore still read arbitrary storage columns.
 func closeNestedSetInput(input chplan.Node, s schema.Traces) chplan.Node {
+	// A derived child already owns its physical identity names. Preserve that
+	// closed contract verbatim; configured names below describe SpansTable and
+	// are only the fallback needed to close an open storage-backed rowset.
+	if child := input.RowType(); !child.Open {
+		return input
+	}
 	names := []string{
 		s.TraceIDColumn, s.SpanIDColumn, s.ParentSpanIDColumn,
 		s.TraceStateColumn, s.SpanNameColumn, s.SpanKindColumn,
