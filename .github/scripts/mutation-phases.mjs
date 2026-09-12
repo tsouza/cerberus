@@ -114,11 +114,12 @@ export const PHASES = [
   // OOM'd. It is a pure wall-clock split, so the legs keep gremlins' default
   // fan-out.
   //
-  // Four legs, greedily balanced the same way as the original three (largest
-  // file first, assigned to the smallest running total), land at
-  // 316/317/318/315 — almost exactly the original ~315-mutant band, because
-  // 1266 / 4 lands where 936 / 3 did. Deliberately not thematic: range_window.go
-  // alone now carries 228 mutants (was 186), so any split that kept "the
+  // Re-measured from main run 34654726682 after the catch-all reached 400
+  // executed mutants: the package now carries 1418 executed mutants. Greedy
+  // largest-file-first assignment to the smallest running total (stable ties:
+  // range, builder, compare, other) lands at 356/355/353/354. Deliberately not
+  // thematic: range_window.go alone now carries 244 mutants (was 228), so any
+  // split that kept "the
   // range-window emitters" together would rebuild the critical path it exists
   // to remove.
   //
@@ -131,37 +132,38 @@ export const PHASES = [
     scope: './internal/chsql',
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
-    // range_window(228) + aggregate_range_lwr_fusion(29) +
-    // range_bucket_fanout(17) + range_window_stale_resample(11) +
-    // fnresolution(4) + lwr_fanout_bound(2). range_window.go alone is the
-    // package's single largest file; the rest of this leg is greedy-balance
-    // filler, not theme. late_mat(25) was part of this balance until cerberus
+    // range_window(244) + range_window_variants(31) +
+    // range_window_downsample_tier(25) + histogram_projection(20) + emit(15) +
+    // histogram_quantile_rankwalk_native(8) + metrics_second_stage(7) +
+    // lwr_fanout_bound(6) = 356. range_window.go alone is the package's single
+    // largest file; the rest of this leg is greedy-balance filler, not theme.
+    // late_mat(25) was part of an earlier balance until cerberus
     // #2830 deleted late_mat.go outright; the allowlist kept naming it until
     // the include-tightness check in mutation-matrix.mjs caught the dead name.
-    include_files: '^(aggregate_range_lwr_fusion|fnresolution|lwr_fanout_bound|range_bucket_fanout|range_window|range_window_stale_resample)\\.go$',
+    include_files: '^(emit|histogram_projection|histogram_quantile_rankwalk_native|lwr_fanout_bound|metrics_second_stage|range_window|range_window_downsample_tier|range_window_variants)\\.go$',
   },
   {
     phase: 'phase2-builder',
     scope: './internal/chsql',
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
-    // builder(184) + nested_set_annotate(33) +
-    // range_window_variants(31) + vector_join(27) +
-    // range_lwr(24) + vector_set_op(10) +
-    // nary_vector_set_op(6) + rate_window_fanout_bound(2).
-    include_files: '^(builder|nary_vector_set_op|nested_set_annotate|range_lwr|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
+    // builder(236) + vector_set_op(32) + aggregate_range_lwr_fusion(25) +
+    // scan_resource_bound(22) + histogram_quantile(16) +
+    // range_window_stale_resample(11) + nary_vector_set_op(8) +
+    // fnresolution(5) = 355.
+    include_files: '^(aggregate_range_lwr_fusion|builder|fnresolution|histogram_quantile|nary_vector_set_op|range_window_stale_resample|scan_resource_bound|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-compare',
     scope: './internal/chsql',
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
-    // metrics_compare(84) + emit_node(54) +
-    // exemplars(42) + histogram_quantile_native(41) +
-    // range_window_fused(29) + histogram_over_time(25) +
-    // histogram_projection(21) + emit(12) +
-    // metrics_second_stage(10).
-    include_files: '^(emit|emit_node|exemplars|histogram_over_time|histogram_projection|histogram_quantile_native|metrics_compare|metrics_second_stage|range_window_fused)\\.go$',
+    // emit_node(81) + metrics_compare(64) + set_op(37) + exemplars(34) +
+    // nested_set_annotate(33) + range_window_fused(28) +
+    // histogram_over_time(24) + query_exemplars(19) +
+    // range_bucket_grid_native(14) + range_bucket_grid_native_bound(10) +
+    // tableshape(7) + attr_strategy_fullmap(1) + distinct_attr_keys(1) = 353.
+    include_files: '^(attr_strategy_fullmap|distinct_attr_keys|emit_node|exemplars|histogram_over_time|metrics_compare|nested_set_annotate|query_exemplars|range_bucket_grid_native|range_bucket_grid_native_bound|range_window_fused|set_op|tableshape)\\.go$',
   },
   {
     phase: 'phase2-other',
@@ -171,13 +173,12 @@ export const PHASES = [
     // The scope's CATCH-ALL leg: every internal/chsql file the three curated
     // legs above do not name, including every file added since this table was
     // last edited. On the CI run cerberus issue #3221 worked from, the files
-    // carrying executed mutants here were ddl, prewhere, structural_join,
-    // set_op, range_window_grid_native, scan_resource_bound, query_exemplars,
-    // histogram_quantile, range_bucket_grid_native,
-    // range_window_downsample_tier, range_window_grid_native_instant,
-    // range_bucket_grid_native_bound, emit_size_bound,
-    // histogram_quantile_rankwalk_native, tableshape, search_trace_limit,
-    // distinct_attr_keys and attr_strategy_fullmap; the rest of the leg's
+    // carrying executed mutants here are ddl(75), prewhere(68),
+    // histogram_quantile_native(40), structural_join(37),
+    // range_window_grid_native(32), vector_join(27), range_lwr(24),
+    // range_bucket_fanout(19), range_window_grid_native_instant(11),
+    // emit_size_bound(10), search_trace_limit(7), and
+    // rate_window_fanout_bound(4), totalling 354; the rest of the leg's
     // files carry only mutants the untagged build never reaches. A file newly
     // added to internal/chsql needs no edit here — it is picked up
     // automatically, which is why this leg keeps no positive file list to fall
@@ -227,11 +228,12 @@ export const PHASES = [
     //
     // Documented-equivalent tally (docs/test-strategy.md's "Surviving-mutant
     // policy" #1 — proven, permanent, and NOT absorbed by lowering `efficacy`
-    // below `MUTATION_MIN_EFFICACY`; see that section for why). Measured from
-    // the leg's own CI run on `main`: 386 executed mutants, of which exactly
-    // 10 are proven equivalent (≈2.6%, comfortably under the ~5-point margin
-    // `efficacy` below leaves), and after #3221 those 10 are the leg's ONLY
-    // survivors. Each is adjudicated in its own file's "NOT KILLABLE" footer:
+    // below `MUTATION_MIN_EFFICACY`; see that section for why). Re-measured on
+    // main run 34654726682 before this rebalance: 400 executed mutants, of
+    // which exactly 10 are proven equivalent (2.5%, comfortably under the
+    // ~5-point margin `efficacy` below leaves). Six remain in this catch-all;
+    // set_op.go's two and structural_join.go's two move to phase2-compare with
+    // their source files. Each is adjudicated in its own file's "NOT KILLABLE" footer:
     // prewhere.go's three terminal `break`s (INVERT_LOOPCTRL — a "found it,
     // stop" boolean latch or a sorted-subarray early exit; scanning further
     // can never change the result), its `!columnOK || !literalOK` swap guard
@@ -243,7 +245,7 @@ export const PHASES = [
     // `len(seedWhere) > 0` (both render byte-identical SQL at zero); and
     // emit_size_bound.go's `d > deepest` running maximum (a same-value
     // reassignment at the boundary). #3221 re-derived all ten independently
-    // and confirmed each.
+    // and confirmed each; repartitioning changes ownership, not that verdict.
     //
     // #2741's report that one of its thirteen was a #2730-class CI-timing
     // flake on prewhere.go's `columnOK && literalOK` is RETRACTED by #3221.
@@ -256,7 +258,7 @@ export const PHASES = [
     // discriminates. Re-count this tally the next time a mutant here gets a
     // new "NOT KILLABLE" note.
     exclude_files:
-      '^(aggregate_range_lwr_fusion|builder|emit|emit_node|exemplars|fnresolution|histogram_over_time|histogram_projection|histogram_quantile_native|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|range_bucket_fanout|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
+      '^(aggregate_range_lwr_fusion|attr_strategy_fullmap|builder|distinct_attr_keys|emit|emit_node|exemplars|fnresolution|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_rankwalk_native|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_bucket_grid_native|range_bucket_grid_native_bound|range_window|range_window_downsample_tier|range_window_fused|range_window_stale_resample|range_window_variants|scan_resource_bound|set_op|tableshape|vector_set_op)\\.go$',
   },
   {
     phase: 'phase3-optimizer',
