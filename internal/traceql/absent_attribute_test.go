@@ -275,6 +275,7 @@ func TestAggregateSkipsSpansMissingTheAttribute(t *testing.T) {
 		{"max", `{} | max(span.size) > 5`, "max(toFloat64OrNull(`SpanAttributes`[?]))"},
 		{"sum", `{} | sum(span.size) > 5`, "sum(toFloat64OrNull(`SpanAttributes`[?]))"},
 		{"resource_scope", `{} | avg(resource.replicas) > 5`, "avg(toFloat64OrNull(`ResourceAttributes`[?]))"},
+		{"unscoped", `{} | sum(.payload_bytes) > 100`, "sum(toFloat64OrNull(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?])))"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -333,6 +334,7 @@ func TestMetricsOverTimeSkipsSpansMissingTheAttribute(t *testing.T) {
 		{"max_over_time", `{} | max_over_time(span.latency_ms)`, "max(toFloat64OrNull(`SpanAttributes`[?]))"},
 		{"min_over_time", `{} | min_over_time(span.latency_ms)`, "min(toFloat64OrNull(`SpanAttributes`[?]))"},
 		{"sum_over_time", `{} | sum_over_time(span.latency_ms)`, "sum(toFloat64OrNull(`SpanAttributes`[?]))"},
+		{"unscoped_sum_over_time", `{} | sum_over_time(.payload_bytes)`, "sum(toFloat64OrNull(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?])))"},
 		{"avg_over_time", `{} | avg_over_time(span.latency_ms)`, "avg(toFloat64OrNull(`SpanAttributes`[?]))"},
 		{
 			"quantile_over_time",

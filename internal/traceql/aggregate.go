@@ -340,7 +340,7 @@ func minAggFunc(col, alias string) chplan.AggFunc {
 // arithmetic Binary that was already coerced) keep their existing
 // shape.
 func coerceMapNumericAggInput(expr chplan.Expr) (chplan.Expr, bool) {
-	if _, ok := expr.(*chplan.FieldAccess); ok {
+	if isAttributeRead(expr) {
 		return &chplan.FuncCall{
 			Fn:   chplan.FnToFloat64OrNull,
 			Args: []chplan.Expr{expr},
