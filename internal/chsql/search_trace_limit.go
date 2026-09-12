@@ -55,10 +55,14 @@ import (
 // (...)` CTE would not remove the second scan: ClickHouse inlines a CTE at
 // every reference rather than materialising it, so there is nothing to lift.
 func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
-	traceID, hasTraceID := n.Input.RowType().Find(chplan.RoleTraceID)
-	timestamp, hasTimestamp := n.Input.RowType().Find(chplan.RoleTimestamp)
-	if !hasTraceID || !hasTimestamp || traceID.Name == "" || timestamp.Name == "" {
-		return fmt.Errorf("%w: SearchTraceLimit input identity or timestamp role unset or unnamed", ErrUnsupported)
+	if n.Input == nil {
+		return fmt.Errorf("%w: SearchTraceLimit input unset", ErrUnsupported)
+	}
+	inputSchema := n.Input.RowType()
+	traceID, hasTraceID := uniqueSearchTraceLimitInputColumn(inputSchema, chplan.RoleTraceID)
+	timestamp, hasTimestamp := uniqueSearchTraceLimitInputColumn(inputSchema, chplan.RoleTimestamp)
+	if inputSchema.Open || !hasTraceID || !hasTimestamp || traceID.Name == timestamp.Name {
+		return fmt.Errorf("%w: SearchTraceLimit input schema is open, ambiguous, or lacks named identity/timestamp roles", ErrUnsupported)
 	}
 	if n.TraceLimit <= 0 {
 		// The lowering gates node construction on `limit > 0`
@@ -92,4 +96,27 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 		From(aliasedFrag(outerSub, "s")).
 		Where(InSubquery(Col(traceID.Name), topN))
 	return e.emitSelect(sb)
+}
+
+func uniqueSearchTraceLimitInputColumn(schema chplan.Schema, role chplan.ColumnRole) (chplan.Column, bool) {
+	var found chplan.Column
+	seen := false
+	for _, column := range schema.Columns {
+		if column.Role != role {
+			continue
+		}
+		if seen || column.Name == "" {
+			return chplan.Column{}, false
+		}
+		found, seen = column, true
+	}
+	if !seen {
+		return chplan.Column{}, false
+	}
+	for _, column := range schema.Columns {
+		if column.Name == found.Name && column.Role != role {
+			return chplan.Column{}, false
+		}
+	}
+	return found, true
 }
