@@ -1115,6 +1115,11 @@ func lowerOuterRangeFnOverSubquery(
 	if err != nil {
 		return nil, err
 	}
+	// Resolve and widen the name-bearing spine before the schema-only
+	// timestamp projection snapshots inner.RowType(). Otherwise that Project
+	// omits MetricName, permanently hiding the key from the preserving outer
+	// reducer even though the RangeWindow below is widened afterwards.
+	nameExpr := subqueryPreservedNameExpr(inner, outer.Func.Name, s)
 	inner, err = declareSubqueryTimestampRole(inner, "anchor_ts")
 	if err != nil {
 		return nil, err
@@ -1155,7 +1160,6 @@ func lowerOuterRangeFnOverSubquery(
 	// Non-nil means every RangeWindow from here down to the name-bearing
 	// relation now groups on MetricName — including this outer reducer,
 	// which has to group on the key it is about to project.
-	nameExpr := subqueryPreservedNameExpr(inner, outer.Func.Name, s)
 	if nameExpr != nil {
 		appendNameGroupKey(rw, s)
 	}
@@ -1442,7 +1446,18 @@ func subquerySpineNameWindows(n chplan.Node, s schema.Metrics) ([]*chplan.RangeW
 	case *chplan.Filter:
 		return subquerySpineNameWindows(v.Input, s)
 	case *chplan.Project:
-		return nil, projectCarriesMetricName(v, s)
+		if !projectCarriesMetricName(v, s) {
+			return nil, false
+		}
+		// declareSubqueryTimestampRole inserts a schema-only identity
+		// projection. It must remain transparent to this walk: terminating at
+		// it would accept MetricName while failing to widen the RangeWindow
+		// below, so the emitter would group two equally-labelled metrics into
+		// one unnamed series.
+		if projectIsIdentity(v) {
+			return subquerySpineNameWindows(v.Input, s)
+		}
+		return nil, true
 	case *chplan.UnionAll:
 		if len(v.Inputs) == 0 {
 			return nil, false
@@ -1462,6 +1477,19 @@ func subquerySpineNameWindows(n chplan.Node, s schema.Metrics) ([]*chplan.RangeW
 	// predicate. They contribute no window because they have no
 	// grouping key to widen.
 	return nil, nodeCarriesMetricName(n, s)
+}
+
+func projectIsIdentity(p *chplan.Project) bool {
+	if len(p.Projections) == 0 || len(p.Replacements) != 0 {
+		return false
+	}
+	for _, projection := range p.Projections {
+		ref, ok := projection.Expr.(*chplan.ColumnRef)
+		if !ok || ref.Name == "" || chplan.ProjectionOutputName(projection) != ref.Name {
+			return false
+		}
+	}
+	return true
 }
 
 // nodeCarriesMetricName reports whether n's output relation exposes a
