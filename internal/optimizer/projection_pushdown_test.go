@@ -403,6 +403,89 @@ func TestProjectionPushdown_IgnoresScalarSubqueryPlanColumns(t *testing.T) {
 	}
 }
 
+func TestProjectionPushdown_RangeLWRUsesPhysicalInputRoles(t *testing.T) {
+	t.Parallel()
+	scan := &chplan.Scan{
+		Table: "otel_metrics_gauge",
+		Roles: []chplan.Column{
+			{Name: "physical_metric", Role: chplan.RoleMetricName},
+			{Name: "physical_attributes", Role: chplan.RoleAttributes},
+			{Name: "physical_timestamp", Role: chplan.RoleTimestamp},
+			{Name: "physical_value", Role: chplan.RoleValue},
+		},
+	}
+	plan := &chplan.RangeLWR{
+		Input:         scan,
+		MetricNameCol: "MetricName",
+		AttributesCol: "Attributes",
+		TimestampCol:  "TimeUnix",
+		ValueCol:      "Value",
+	}
+
+	got, changed := (ProjectionPushdown{}).Apply(plan)
+	if !changed {
+		t.Fatal("ProjectionPushdown.Apply() reported no change")
+	}
+	rewritten, ok := got.(*chplan.RangeLWR)
+	if !ok {
+		t.Fatalf("ProjectionPushdown.Apply() returned %T, want *chplan.RangeLWR", got)
+	}
+	rewrittenScan, ok := rewritten.Input.(*chplan.Scan)
+	if !ok {
+		t.Fatalf("rewritten RangeLWR.Input = %T, want *chplan.Scan", rewritten.Input)
+	}
+	want := []string{"physical_attributes", "physical_metric", "physical_timestamp", "physical_value"}
+	if !reflect.DeepEqual(rewrittenScan.Columns, want) {
+		t.Fatalf("rewritten Scan.Columns = %v, want %v", rewrittenScan.Columns, want)
+	}
+
+	missingValue := *scan
+	missingValue.Roles = missingValue.Roles[:len(missingValue.Roles)-1]
+	malformed := *plan
+	malformed.Input = &missingValue
+	if _, changed := (ProjectionPushdown{}).Apply(&malformed); changed {
+		t.Fatal("ProjectionPushdown.Apply() rewrote an incomplete RangeLWR input schema")
+	}
+}
+
+func TestProjectionPushdown_RangeLWRClosesFilteredOpenScan(t *testing.T) {
+	t.Parallel()
+	roles := []chplan.Column{
+		{Name: "physical_metric", Role: chplan.RoleMetricName},
+		{Name: "physical_attributes", Role: chplan.RoleAttributes},
+		{Name: "physical_timestamp", Role: chplan.RoleTimestamp},
+		{Name: "physical_value", Role: chplan.RoleValue},
+		{Name: "tenant"},
+	}
+	filter := &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge", Roles: roles},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "tenant"},
+			Right: &chplan.LitString{V: "acme"},
+		},
+	}
+	plan := &chplan.RangeLWR{
+		Input: filter, MetricNameCol: "MetricName", AttributesCol: "Attributes",
+		TimestampCol: "TimeUnix", ValueCol: "Value",
+	}
+
+	got, changed := (ProjectionPushdown{}).Apply(plan)
+	if !changed {
+		t.Fatal("ProjectionPushdown.Apply() reported no change")
+	}
+	rewritten := got.(*chplan.RangeLWR)
+	rewrittenFilter := rewritten.Input.(*chplan.Filter)
+	rewrittenScan := rewrittenFilter.Input.(*chplan.Scan)
+	want := []string{"physical_attributes", "physical_metric", "physical_timestamp", "physical_value", "tenant"}
+	if !reflect.DeepEqual(rewrittenScan.Columns, want) {
+		t.Fatalf("rewritten Scan.Columns = %v, want %v", rewrittenScan.Columns, want)
+	}
+	if rewritten.Input.RowType().Open {
+		t.Fatal("projection pushdown left the filtered RangeLWR child schema open")
+	}
+}
+
 // narrowedScanColumns digs the (single) Scan out of a rewritten Project
 // tree and returns its Columns. Fails the test if the shape is not the
 // Project(Scan) / Project(Filter(Scan)) the pushdown produces.

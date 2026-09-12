@@ -491,12 +491,48 @@ func rangeBucketFanoutColumns(r *chplan.RangeBucketFanout) []string {
 	return stageColumns([]string{r.TimestampCol}, roots...)
 }
 
-// rangeLWRColumns returns the sorted, deduped set of base columns a
-// RangeLWR's emit reads off the inner Input. emitRangeLWR reads EXACTLY
-// four named columns — MetricNameCol, AttributesCol, TimestampCol,
-// ValueCol (mirrors resampleRangeWindowColumns).
+// rangeLWRColumns returns the sorted, deduped physical columns that
+// RangeLWR's emitter reads from its input.
+// The four physical names come from the child schema roles; the names stored
+// on RangeLWR are public output aliases. An incomplete or ambiguous declaration
+// returns no columns so pushdown declines the rewrite and emission rejects it.
 func rangeLWRColumns(r *chplan.RangeLWR) []string {
-	return stageColumns([]string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol})
+	if r.Input == nil {
+		return nil
+	}
+	var metricName, attributes, timestamp, value string
+	seenNames := make(map[string]chplan.ColumnRole)
+	for _, column := range r.Input.RowType().Columns {
+		if column.Name == "" {
+			continue
+		}
+		if role, ok := seenNames[column.Name]; ok && role != column.Role {
+			return nil
+		}
+		seenNames[column.Name] = column.Role
+		var slot *string
+		switch column.Role {
+		case chplan.RoleMetricName:
+			slot = &metricName
+		case chplan.RoleAttributes:
+			slot = &attributes
+		case chplan.RoleTimestamp:
+			slot = &timestamp
+		case chplan.RoleValue:
+			slot = &value
+		}
+		if slot == nil {
+			continue
+		}
+		if *slot != "" {
+			return nil
+		}
+		*slot = column.Name
+	}
+	if metricName == "" || attributes == "" || timestamp == "" || value == "" {
+		return nil
+	}
+	return stageColumns([]string{metricName, attributes, timestamp, value})
 }
 
 // metricsAggregateColumns returns the sorted, deduped set of base columns
