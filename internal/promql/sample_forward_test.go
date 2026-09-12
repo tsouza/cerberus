@@ -189,6 +189,33 @@ func TestLegacySampleProjectionLayoutDistinguishesCanonicalAndDerivedProjects(t 
 	}
 }
 
+func TestLegacySampleProjectionLayoutKeepsDeclaredAnchorWithoutGridSpine(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	columns := append(metricRoles(s), chplan.Column{Name: chplan.RangeWindowAnchorColumn, Role: chplan.RoleAnchor})
+	input := sampleForwardTestInput(columns...)
+	project := &chplan.Project{Input: input, Roles: columns}
+	for _, column := range columns {
+		project.Projections = append(project.Projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}})
+	}
+	if got := legacySampleProjectionLayout(project); got != (sampleProjectionLayout{canonical: true, anchored: true}) {
+		t.Fatalf("layout = %#v, want canonical plus anchor", got)
+	}
+}
+
+func TestAnchoredGridLayoutSpineAcceptsEitherCrossJoinInput(t *testing.T) {
+	t.Parallel()
+
+	grid := &chplan.RangeWindow{OuterRange: 1}
+	plain := sampleForwardTestInput(chplan.Column{Name: "value", Role: chplan.RoleValue})
+	for _, join := range []*chplan.CrossJoin{{Left: grid, Right: plain}, {Left: plain, Right: grid}} {
+		if !anchoredGridLayoutSpine(join) {
+			t.Fatalf("grid spine was not found through %T", join)
+		}
+	}
+}
+
 func TestLegacySampleProjectionLayoutAcceptsReducedWindowSpine(t *testing.T) {
 	t.Parallel()
 
@@ -446,6 +473,56 @@ func TestSampleForwardPreserveNameCompatibility(t *testing.T) {
 				t.Fatalf("missing name was not synthesized canonically: %#v", first)
 			}
 		}
+	}
+}
+
+func TestSampleForwardRolePolicyBoundaries(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	refs := sampleRoleRefs{Value: &chplan.ColumnRef{Name: "actual_value"}}
+	if got := refs.sourceMetrics(s); got.AttributesColumn != s.AttributesColumn || got.ValueColumn != "actual_value" {
+		t.Fatalf("source metrics = %#v", got)
+	}
+
+	row := chplan.Schema{Columns: []chplan.Column{
+		{Name: s.MetricNameColumn, Role: chplan.RoleOpaque},
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}}
+	resolveSampleRoleRefs(row, s, sampleProjectionPolicy{name: preserveSampleName}, sampleProjectionLayout{canonical: true})
+
+	conflicting := row
+	conflicting.Columns = append([]chplan.Column(nil), row.Columns...)
+	conflicting.Columns[0].Role = chplan.RoleAnchor
+	resolveSampleRoleRefs(conflicting, s, sampleProjectionPolicy{name: dropSampleName}, sampleProjectionLayout{canonical: true})
+	capturePanic(t, func() {
+		resolveSampleRoleRefs(conflicting, s, sampleProjectionPolicy{name: preserveSampleName}, sampleProjectionLayout{canonical: true})
+	})
+
+	validateConfiguredSampleRole(row, s.MetricNameColumn, chplan.RoleMetricName, true)
+	capturePanic(t, func() {
+		validateConfiguredSampleRole(row, s.MetricNameColumn, chplan.RoleMetricName, false)
+	})
+}
+
+func TestSamplePayloadRequiresCompletePublicHistogramWithoutDiscriminator(t *testing.T) {
+	t.Parallel()
+
+	columns := chplan.HistogramPayloadColumns()
+	complete, discriminated := validateSamplePayload(chplan.Schema{Columns: columns})
+	if !complete || discriminated {
+		t.Fatalf("payload = complete:%v discriminated:%v", complete, discriminated)
+	}
+	for _, missing := range columns {
+		incomplete := make([]chplan.Column, 0, len(columns)-1)
+		for _, column := range columns {
+			if column.Name != missing.Name {
+				incomplete = append(incomplete, column)
+			}
+		}
+		capturePanic(t, func() { validateSamplePayload(chplan.Schema{Columns: incomplete}) })
 	}
 }
 

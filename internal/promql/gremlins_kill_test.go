@@ -1005,6 +1005,43 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 	}
 }
 
+func TestGuardLabelRewriteCollision_PureHistogramIsNotMixed(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	columns := append([]chplan.Column{
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}, chplan.HistogramPayloadColumns()...)
+	input := sampleForwardTestInput(columns...)
+	rewritten := &chplan.Project{Input: &chplan.RangeWindow{
+		Input:           input,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}}
+	for _, column := range columns {
+		rewritten.Projections = append(rewritten.Projections,
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name})
+	}
+
+	plan := guardLabelRewriteCollision(rewritten, s)
+	if project, ok := plan.(*chplan.Project); ok {
+		plan = project.Input
+	}
+	agg, ok := plan.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.Aggregate", plan)
+	}
+	for _, aggregate := range agg.AggFuncs {
+		for _, field := range chplan.HistogramPayloadColumns() {
+			if aggregate.Alias == field.Name {
+				t.Fatalf("pure histogram field %q was treated as mixed payload", field.Name)
+			}
+		}
+	}
+}
+
 // TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop pins that two
 // consecutive key-on-step projections BOTH reach the group key, rather
 // than the first one ending the walk. The fixture uses two non-payload,
