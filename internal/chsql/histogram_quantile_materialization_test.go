@@ -40,7 +40,7 @@ func TestEmitHistogramQuantile_MaterialisesEveryArrayWalkOnce(t *testing.T) {
 	// to the quantile itself.
 	newPlan := func(cumulative bool) *chplan.HistogramQuantile {
 		return &chplan.HistogramQuantile{
-			Input:                  &chplan.Scan{Table: "otel_metrics_histogram"},
+			Input:                  classicQuantileTestInput(),
 			Phi:                    0.9,
 			BucketCountsColumn:     "BucketCounts",
 			ExplicitBoundsColumn:   "ExplicitBounds",
