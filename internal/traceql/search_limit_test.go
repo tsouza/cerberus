@@ -103,6 +103,34 @@ func TestSearchWindow_PlainNotDoubleFolded(t *testing.T) {
 	}
 }
 
+func TestSearchTraceLimit_PlainInputSchemaIsClosed(t *testing.T) {
+	t.Parallel()
+
+	plan := lowerSearch(t, `{ resource.service.name = "frontend" }`, 20)
+	limited, ok := plan.(*chplan.SearchTraceLimit)
+	if !ok {
+		t.Fatalf("lowered plan = %T, want *chplan.SearchTraceLimit", plan)
+	}
+	inputSchema := limited.Input.RowType()
+	if inputSchema.Open {
+		t.Fatal("SearchTraceLimit input schema is open")
+	}
+	for role, name := range map[chplan.ColumnRole]string{
+		chplan.RoleTraceID:   "TraceId",
+		chplan.RoleTimestamp: "Timestamp",
+	} {
+		column, found := inputSchema.Find(role)
+		if !found || column.Name != name {
+			t.Fatalf("SearchTraceLimit input role %v = (%q, %v), want (%q, true)", role, column.Name, found, name)
+		}
+	}
+	for _, name := range []string{"Duration", "ParentSpanId", "ResourceAttributes", "SpanId", "SpanName"} {
+		if _, found := inputSchema.ByName(name); !found {
+			t.Errorf("SearchTraceLimit input schema lacks response column %q", name)
+		}
+	}
+}
+
 // lowerSearch parses + lowers a TraceQL query with the given /api/search
 // limit threaded through the context, mirroring the handler path.
 func lowerSearch(t *testing.T, query string, limit int) chplan.Node {
