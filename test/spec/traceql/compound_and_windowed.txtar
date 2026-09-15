@@ -10,24 +10,24 @@ and no Timestamp predicate was emitted at all.
 -- query.traceql --
 { resource.service.name = "a" } && { span.http.status_code = 500 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND ((`ResourceAttributes`[?] = ?) OR (toFloat64OrNull(`SpanAttributes`[?]) = ?)) QUALIFY max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) AND max((toFloat64OrNull(`SpanAttributes`[?]) = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
+SELECT * EXCEPT (`_setand_side`) FROM ((SELECT *, 0 AS `_setand_side` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)))) UNION ALL (SELECT *, 1 AS `_setand_side` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?))))) QUALIFY max(`_setand_side` = 0) OVER (PARTITION BY `TraceId`) AND max(`_setand_side` = 1) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
 -- args --
 [0] int64 = 1782571392000000000
 [1] int64 = 1782573192000000000
 [2] string = "service.name"
 [3] string = "a"
-[4] string = "http.status_code"
-[5] int64 = 500
-[6] string = "service.name"
-[7] string = "a"
-[8] string = "http.status_code"
-[9] int64 = 500
+[4] int64 = 1782571392000000000
+[5] int64 = 1782573192000000000
+[6] string = "http.status_code"
+[7] int64 = 500
 -- chplan --
 SetOperation op=&&
-  Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
-    Scan(otel_traces)
-  Filter predicate=((FnToFloat64OrNull(SpanAttributes["http.status_code"]) = 500) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
-    Scan(otel_traces)
+  Project [TraceId, SpanId, ParentSpanId, SpanName, Duration, Timestamp, ResourceAttributes, SpanAttributes, StatusCode, StatusMessage, SpanKind, ScopeName, ScopeVersion]
+    Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
+      Scan(otel_traces)
+  Project [TraceId, SpanId, ParentSpanId, SpanName, Duration, Timestamp, ResourceAttributes, SpanAttributes, StatusCode, StatusMessage, SpanKind, ScopeName, ScopeVersion]
+    Filter predicate=((FnToFloat64OrNull(SpanAttributes["http.status_code"]) = 500) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
+      Scan(otel_traces)
 -- parity_exempt --
 reason: emitted-sql-only
 detail: `{ resource.service.name = "a" } && { span.http.status_code = 500 }` carries no `seed:` or `expected_rows:` — it pins the emitted SQL for this shape, and executes no answer for any oracle to compare
@@ -39,12 +39,10 @@ detail: `{ resource.service.name = "a" } && { span.http.status_code = 500 }` car
 [4] int64 = 1782573192000000000
 [5] string = "service.name"
 [6] string = "a"
-[7] string = "http.status_code"
-[8] int64 = 500
-[9] string = "service.name"
-[10] string = "a"
-[11] string = "http.status_code"
-[12] int64 = 500
+[7] int64 = 1782571392000000000
+[8] int64 = 1782573192000000000
+[9] string = "http.status_code"
+[10] int64 = 500
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -53,4 +51,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND ((`ResourceAttributes`[?] = ?) OR (toFloat64OrNull(`SpanAttributes`[?]) = ?)) QUALIFY max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) AND max((toFloat64OrNull(`SpanAttributes`[?]) = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`)
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT * EXCEPT (`_setand_side`) FROM ((SELECT *, 0 AS `_setand_side` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)))) UNION ALL (SELECT *, 1 AS `_setand_side` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?))))) QUALIFY max(`_setand_side` = 0) OVER (PARTITION BY `TraceId`) AND max(`_setand_side` = 1) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`)

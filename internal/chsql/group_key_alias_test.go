@@ -30,7 +30,7 @@ func TestEmitAggregate_ShadowingGroupKeyNamesItsAlias(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.Aggregate{
-		Input: &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input: nativeQuantileTestInput(true),
 		GroupBy: []chplan.Expr{
 			&chplan.FuncCall{
 				Fn:   chplan.FnMapSort,

@@ -192,7 +192,7 @@ func (e *emitter) fixedAccumDedupLayer(
 	tag.Select(Col(srcTs))
 	tag.Select(Col(r.ValueColumn))
 	if hasTemporality {
-		tag.Select(Col(r.TemporalityColumn))
+		tag.Select(Col(rangeWindowTemporalityColumn(r)))
 	}
 	tag.Select(As(
 		Neq(WindowFrame(Call("leadInFrame", Col(srcTs)), groupFrags, orderBy, leadFrame), Col(srcTs)),
@@ -211,7 +211,7 @@ func (e *emitter) fixedAccumDedupLayer(
 	dedup.Select(Col(srcTs))
 	dedup.Select(Col(r.ValueColumn))
 	if hasTemporality {
-		dedup.Select(Col(r.TemporalityColumn))
+		dedup.Select(Col(rangeWindowTemporalityColumn(r)))
 	}
 	dedup.Where(Col(lagAdjIsLastOfRunAlias))
 	return dedup, nil
@@ -239,7 +239,7 @@ func fixedAccumLagLayer(r *chplan.RangeWindow, dedupSource Frag, groupFrags []Fr
 	lag.Select(Col(srcTs))
 	lag.Select(Col(r.ValueColumn))
 	if hasTemporality {
-		lag.Select(Col(r.TemporalityColumn))
+		lag.Select(Col(rangeWindowTemporalityColumn(r)))
 	}
 	lag.Select(As(WindowFrame(Call("lagInFrame", Col(srcTs)), groupFrags, orderBy, lagFrame), lagAdjPrevTsAlias))
 	lag.Select(As(WindowFrame(Call("lagInFrame", Col(r.ValueColumn)), groupFrags, orderBy, lagFrame), lagAdjPrevValAlias))
@@ -404,7 +404,7 @@ func (e *emitter) fixedAccumRegroupLayer(
 		fanout.Select(Col(lagAdjPrevValAlias))
 	}
 	if hasTemporality {
-		fanout.Select(Col(r.TemporalityColumn))
+		fanout.Select(Col(rangeWindowTemporalityColumn(r)))
 	}
 	fanout.Select(RawAs(
 		windowedMatrixFanoutAnchorTsFrag(r, end, srcTs, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel, useAggregateDeltaPrefix),
@@ -429,7 +429,7 @@ func (e *emitter) fixedAccumRegroupLayer(
 	regroup.Select(groupFrags...)
 	regroup.Select(Col(RangeWindowAnchorAlias))
 	if hasTemporality {
-		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
+		regroup.Select(As(Call("any", Col(rangeWindowTemporalityColumn(r))), windowTemporalityAlias))
 	}
 	if needsDeltaFirstLevel {
 		inWindowCond := Gt(Col(srcTs), windowStart)

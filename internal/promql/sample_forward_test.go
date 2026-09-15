@@ -117,6 +117,48 @@ func TestLegacySampleProjectionLayoutUsesTemporalRoles(t *testing.T) {
 	}
 }
 
+func TestLegacySampleProjectionLayoutPreservesCanonicalAnchorWithoutGridProvenance(t *testing.T) {
+	t.Parallel()
+
+	inner := &chplan.Project{
+		Input: sampleForwardTestInput(chplan.Column{Name: "opaque", Role: chplan.RoleOpaque}),
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "name"}, Alias: "name"},
+			{Expr: &chplan.ColumnRef{Name: "attrs"}, Alias: "attrs"},
+			{Expr: &chplan.ColumnRef{Name: "time"}, Alias: "time"},
+			{Expr: &chplan.ColumnRef{Name: "anchor"}, Alias: "anchor"},
+			{Expr: &chplan.ColumnRef{Name: "value"}, Alias: "value"},
+		},
+		Roles: []chplan.Column{
+			{Name: "name", Role: chplan.RoleMetricName},
+			{Name: "attrs", Role: chplan.RoleAttributes},
+			{Name: "time", Role: chplan.RoleTimestamp},
+			{Name: "anchor", Role: chplan.RoleAnchor},
+			{Name: "value", Role: chplan.RoleValue},
+		},
+	}
+
+	want := sampleProjectionLayout{canonical: true, anchored: true}
+	if got := legacySampleProjectionLayout(inner); got != want {
+		t.Fatalf("layout = %#v, want %#v", got, want)
+	}
+}
+
+func TestAnchoredGridLayoutSpineCrossJoinAcceptsEitherCarrier(t *testing.T) {
+	t.Parallel()
+
+	grid := &chplan.RangeWindow{}
+	opaque := sampleForwardTestInput(chplan.Column{Name: "opaque", Role: chplan.RoleOpaque})
+	for _, join := range []*chplan.CrossJoin{
+		{Left: grid, Right: opaque},
+		{Left: opaque, Right: grid},
+	} {
+		if !anchoredGridLayoutSpine(join) {
+			t.Fatalf("anchoredGridLayoutSpine(%#v) = false, want true when either CrossJoin input carries a grid", join)
+		}
+	}
+}
+
 func TestLegacySampleProjectionLayoutDistinguishesCanonicalAndDerivedProjects(t *testing.T) {
 	t.Parallel()
 
@@ -186,6 +228,33 @@ func TestLegacySampleProjectionLayoutDistinguishesCanonicalAndDerivedProjects(t 
 				})
 			}
 		})
+	}
+}
+
+func TestLegacySampleProjectionLayoutKeepsDeclaredAnchorWithoutGridSpine(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	columns := append(metricRoles(s), chplan.Column{Name: chplan.RangeWindowAnchorColumn, Role: chplan.RoleAnchor})
+	input := sampleForwardTestInput(columns...)
+	project := &chplan.Project{Input: input, Roles: columns}
+	for _, column := range columns {
+		project.Projections = append(project.Projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}})
+	}
+	if got := legacySampleProjectionLayout(project); got != (sampleProjectionLayout{canonical: true, anchored: true}) {
+		t.Fatalf("layout = %#v, want canonical plus anchor", got)
+	}
+}
+
+func TestAnchoredGridLayoutSpineAcceptsEitherCrossJoinInput(t *testing.T) {
+	t.Parallel()
+
+	grid := &chplan.RangeWindow{OuterRange: 1}
+	plain := sampleForwardTestInput(chplan.Column{Name: "value", Role: chplan.RoleValue})
+	for _, join := range []*chplan.CrossJoin{{Left: grid, Right: plain}, {Left: plain, Right: grid}} {
+		if !anchoredGridLayoutSpine(join) {
+			t.Fatalf("grid spine was not found through %T", join)
+		}
 	}
 }
 
@@ -446,6 +515,91 @@ func TestSampleForwardPreserveNameCompatibility(t *testing.T) {
 				t.Fatalf("missing name was not synthesized canonically: %#v", first)
 			}
 		}
+	}
+}
+
+func TestSampleForwardRolePolicyBoundaries(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	refs := sampleRoleRefs{Value: &chplan.ColumnRef{Name: "actual_value"}}
+	if got := refs.sourceMetrics(s); got.AttributesColumn != s.AttributesColumn || got.ValueColumn != "actual_value" {
+		t.Fatalf("source metrics = %#v", got)
+	}
+
+	row := chplan.Schema{Columns: []chplan.Column{
+		{Name: s.MetricNameColumn, Role: chplan.RoleOpaque},
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}}
+	resolveSampleRoleRefs(row, s, sampleProjectionPolicy{name: preserveSampleName}, sampleProjectionLayout{canonical: true})
+
+	conflicting := row
+	conflicting.Columns = append([]chplan.Column(nil), row.Columns...)
+	conflicting.Columns[0].Role = chplan.RoleAnchor
+	resolveSampleRoleRefs(conflicting, s, sampleProjectionPolicy{name: dropSampleName}, sampleProjectionLayout{canonical: true})
+	capturePanic(t, func() {
+		resolveSampleRoleRefs(conflicting, s, sampleProjectionPolicy{name: preserveSampleName}, sampleProjectionLayout{canonical: true})
+	})
+
+	validateConfiguredSampleRole(row, s.MetricNameColumn, chplan.RoleMetricName, true)
+	capturePanic(t, func() {
+		validateConfiguredSampleRole(row, s.MetricNameColumn, chplan.RoleMetricName, false)
+	})
+}
+
+func TestSamplePayloadRequiresCompletePublicHistogramWithoutDiscriminator(t *testing.T) {
+	t.Parallel()
+
+	columns := chplan.HistogramPayloadColumns()
+	complete, discriminated := validateSamplePayload(chplan.Schema{Columns: columns})
+	if !complete || discriminated {
+		t.Fatalf("payload = complete:%v discriminated:%v", complete, discriminated)
+	}
+	for _, missing := range columns {
+		incomplete := make([]chplan.Column, 0, len(columns)-1)
+		for _, column := range columns {
+			if column.Name != missing.Name {
+				incomplete = append(incomplete, column)
+			}
+		}
+		capturePanic(t, func() { validateSamplePayload(chplan.Schema{Columns: incomplete}) })
+	}
+	capturePanic(t, func() {
+		validateSamplePayload(chplan.Schema{Columns: []chplan.Column{columns[0]}})
+	})
+}
+
+func TestSampleRoleResolversRejectEachAmbiguousBoundary(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	base := []chplan.Column{
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}
+	for _, extra := range []chplan.Column{
+		{Name: "helper", Role: chplan.RoleHistogramField},
+		{Name: "kind", Role: chplan.RoleDiscriminator},
+	} {
+		row := chplan.Schema{Columns: append(append([]chplan.Column(nil), base...), extra)}
+		capturePanic(t, func() {
+			resolveSampleRoleRefs(row, s, sampleProjectionPolicy{name: preserveSampleName}, sampleProjectionLayout{canonical: true})
+		})
+	}
+	open := chplan.Schema{Columns: append([]chplan.Column(nil), base...), Open: true}
+	capturePanic(t, func() {
+		resolveSampleRoleRefs(open, s, sampleProjectionPolicy{name: preserveSampleName}, sampleProjectionLayout{canonical: true})
+	})
+
+	_, ok, err := resolveOptionalSampleRoleName(chplan.Schema{Columns: []chplan.Column{
+		{Name: "first_value", Role: chplan.RoleValue},
+		{Name: "second_value", Role: chplan.RoleValue},
+	}}, chplan.RoleValue)
+	if err == nil || ok {
+		t.Fatalf("duplicate value roles resolved: ok=%v err=%v", ok, err)
 	}
 }
 

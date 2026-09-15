@@ -43,7 +43,7 @@ func TestEmit_HistogramQuantileNative_NoZeroThresholdColumn(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.HistogramQuantileNative{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      nativeQuantileTestInput(false),
 		Phi:                        0.95,
 		ScaleColumn:                "Scale",
 		ZeroCountColumn:            "ZeroCount",
@@ -73,15 +73,11 @@ func TestEmit_HistogramQuantileNative_NoZeroThresholdColumn(t *testing.T) {
 	}
 }
 
-// TestEmit_HistogramQuantileNative_MissingColumns covers the column-name
-// validation: an IR node missing any of the required exp-histogram
-// column names must error rather than producing a query referencing
-// empty identifiers.
-func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
+func TestEmit_HistogramQuantileNative_LegacyColumnsDoNotDriveInput(t *testing.T) {
 	t.Parallel()
 
 	base := &chplan.HistogramQuantileNative{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      nativeQuantileTestInput(true),
 		Phi:                        0.95,
 		ScaleColumn:                "Scale",
 		ZeroCountColumn:            "ZeroCount",
@@ -116,11 +112,8 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 			h := *base
 			tc.mut(&h)
 			_, _, err := chsql.Emit(context.Background(), &h)
-			if err == nil {
-				t.Fatalf("Emit returned nil error for %s", tc.name)
-			}
-			if !errors.Is(err, chsql.ErrUnsupported) {
-				t.Errorf("expected wrapped ErrUnsupported; got %v", err)
+			if err != nil {
+				t.Errorf("Emit: %v", err)
 			}
 		})
 	}
@@ -138,7 +131,7 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.HistogramQuantileNative{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      nativeQuantileTestInput(true),
 		Phi:                        0.95,
 		ScaleColumn:                "Scale",
 		ZeroCountColumn:            "ZeroCount",
@@ -253,7 +246,7 @@ func TestEmit_HistogramQuantileNative_FactorsSharedExpressions(t *testing.T) {
 // tests differ only in the phi they carry.
 func hqNativePlan(phi float64, phiExpr chplan.Expr) *chplan.HistogramQuantileNative {
 	return &chplan.HistogramQuantileNative{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      nativeQuantileTestInput(true),
 		Phi:                        phi,
 		PhiExpr:                    phiExpr,
 		ScaleColumn:                "Scale",

@@ -658,18 +658,17 @@ func lowerSubqueryOverCall(
 	}
 
 	rw := &chplan.RangeWindow{
-		Input:             inner,
-		Func:              canonicalRangeWindowFunc(call.Func.Name),
-		Range:             ms.Range,
-		OuterRange:        sub.Range,
-		Step:              step,
-		StepAlign:         true, // epoch-align inner subquery sample grid (PromQL)
-		End:               anchor.End,
-		Offset:            anchor.Offset,
-		TimestampColumn:   s.TimestampColumn,
-		ValueColumn:       s.ValueColumn,
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-		TemporalityColumn: temporalityCol,
+		Input:           inner,
+		Func:            canonicalRangeWindowFunc(call.Func.Name),
+		Range:           ms.Range,
+		OuterRange:      sub.Range,
+		Step:            step,
+		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 	// predict_linear / double_exponential_smoothing / quantile_over_time
 	// carry extra scalar arguments; bind them exactly as the outer-reducer

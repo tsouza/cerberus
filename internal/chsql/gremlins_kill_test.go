@@ -1422,7 +1422,7 @@ func TestHistogramQuantileNative_AliasFallback(t *testing.T) {
 		SumColumn:                  "Sum",
 		GroupBy:                    []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
 		GroupByAliases:             []string{"alias_a"}, // only one
-		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:                      nativeQuantileInput(true),
 	}
 	sql, _, err := Emit(context.Background(), plan)
 	if err != nil {
@@ -3149,7 +3149,10 @@ func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
 
 func nsAnnotateInternal() *chplan.NestedSetAnnotate {
 	return &chplan.NestedSetAnnotate{
-		Input:              &chplan.Scan{Table: "otel_traces"},
+		Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "TraceId", Role: chplan.RoleTraceID},
+			{Name: "SpanId", Role: chplan.RoleSpanID},
+		}},
 		SpansTable:         "otel_traces",
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -3686,7 +3689,7 @@ func TestEmitRangeLWR_EachColumnEmptyErrors(t *testing.T) {
 	t.Parallel()
 	base := func() *chplan.RangeLWR {
 		return &chplan.RangeLWR{
-			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 			Step:          30 * time.Second,
 			MetricNameCol: "MetricName",
 			AttributesCol: "Attributes",
@@ -3734,7 +3737,7 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 
 	// Pinned grid → computed anchor count least(11, …) (5m / 30s + 1).
 	pinned := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          30 * time.Second,
@@ -3752,7 +3755,7 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 
 	// Zero-span grid (Start == End): exactly one anchor, must NOT error.
 	zeroSpan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start, // span == 0
 		Step:          30 * time.Second,
@@ -3774,7 +3777,7 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 	// emit cleanly. The `&&` → `||` mutant would enter the span branch on
 	// the zero End, computing a negative span and erroring.
 	oneBound := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           time.Time{}, // zero
 		Step:          30 * time.Second,
@@ -3804,7 +3807,7 @@ func TestEmitRangeLWR_LookbackSign(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          30 * time.Second,
@@ -3856,7 +3859,7 @@ func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
 			NegativeBucketCountsColumn: "NegativeBucketCounts",
 			CountColumn:                "Count",
 			SumColumn:                  "Sum",
-			Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+			Input:                      nativeQuantileInput(true),
 		}
 		sql, _, err := Emit(context.Background(), plan)
 		if err != nil {
@@ -4140,7 +4143,7 @@ func instantDeltaPrefixSourceStubWindow() *QueryBuilder {
 // (emitWindowedArrayExtrapolated's needsDeltaFirstLevel gate requires
 // hasTemporality), so this calls it directly to force
 // deltaPresenceGuardFrag's nil branch
-// (range_window.go:deltaPresenceGuardFrag:`r.TemporalityColumn == ""`) and
+// (range_window.go:deltaPresenceGuardFrag: no RoleTemporality input) and
 // exercise the guard==nil path the mutant inverts. A `== nil` mutant would
 // instead call prefix.Where(nil) here, and that nil Frag panics the moment
 // it is invoked during Build() — a difference this test would catch as a
@@ -4154,8 +4157,7 @@ func TestInstantDeltaPrefixSource_GuardNilBranch(t *testing.T) {
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
 		// Intentionally empty: forces deltaPresenceGuardFrag to return nil.
-		TemporalityColumn: "",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -4187,11 +4189,10 @@ func TestInstantDeltaPrefixSource_JoinDispatch(t *testing.T) {
 	build := func(groupBy []chplan.Expr) string {
 		e := &emitter{}
 		r := &chplan.RangeWindow{
-			Input:             &chplan.Scan{Table: "otel_metrics_sum"},
-			TimestampColumn:   "TimeUnix",
-			ValueColumn:       "Value",
-			TemporalityColumn: "AggregationTemporality",
-			GroupBy:           groupBy,
+			Input:           temporalityTestScan("otel_metrics_sum"),
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+			GroupBy:         groupBy,
 		}
 		groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 		if err != nil {

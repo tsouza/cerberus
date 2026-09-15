@@ -2,6 +2,7 @@ package optimizer_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -418,7 +419,13 @@ var inputs = map[string]chplan.Node{
 	// correctness-critical arm: a dropped identity column 502s at runtime.
 	"pushdown_through_range_window_grid_native": &chplan.RangeWindowGridNative{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_sum"},
+			Input: &chplan.Scan{
+				Table: "otel_metrics_sum",
+				Roles: []chplan.Column{
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "Value", Role: chplan.RoleValue},
+				},
+			},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},
@@ -456,7 +463,13 @@ var inputs = map[string]chplan.Node{
 	//     ABOVE the merge and undo nothing visible in the result rows.
 	"pushdown_through_range_window_grid_native_recollapse": &chplan.RangeWindowGridNative{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_sum"},
+			Input: &chplan.Scan{
+				Table: "otel_metrics_sum",
+				Roles: []chplan.Column{
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "Value", Role: chplan.RoleValue},
+				},
+			},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},
@@ -584,7 +597,15 @@ var inputs = map[string]chplan.Node{
 	// predicate ref (MetricName, already part of the identity set here).
 	"pushdown_through_range_lwr": &chplan.RangeLWR{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input: &chplan.Scan{
+				Table: "otel_metrics_gauge",
+				Roles: []chplan.Column{
+					{Name: "MetricName", Role: chplan.RoleMetricName},
+					{Name: "Attributes", Role: chplan.RoleAttributes},
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "Value", Role: chplan.RoleValue},
+				},
+			},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},
@@ -653,7 +674,14 @@ var inputs = map[string]chplan.Node{
 	// elsewhere) consumes them as metadata.
 	"pushdown_through_histogram_quantile": &chplan.HistogramQuantile{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_histogram"},
+			Input: &chplan.Scan{Table: "otel_metrics_histogram", Columns: []string{
+				"BucketCounts", "ExplicitBounds", "MetricName", "le_bucket_key",
+			}, Roles: []chplan.Column{
+				{Name: "BucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+				{Name: "ExplicitBounds", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldExplicitBounds},
+				{Name: "MetricName", Role: chplan.RoleMetricName},
+				{Name: "le_bucket_key", Role: chplan.RoleOpaque},
+			}},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},
@@ -671,6 +699,16 @@ var inputs = map[string]chplan.Node{
 	},
 }
 
+// These fixtures deliberately begin with plans that cannot be emitted until
+// their optimizer rule establishes the required closed schema. Keeping the
+// exceptions explicit prevents unrelated emitter regressions from becoming
+// ordinary golden output.
+var unoptimizedUnsupported = map[string]bool{
+	"pushdown_through_range_window_grid_native":            true,
+	"pushdown_through_range_window_grid_native_recollapse": true,
+	"pushdown_through_range_lwr":                           true,
+}
+
 func TestOptimizer(t *testing.T) {
 	t.Parallel()
 
@@ -681,7 +719,12 @@ func TestOptimizer(t *testing.T) {
 		}
 
 		unoptSQL, _, err := chsql.Emit(context.Background(), input)
-		if err != nil {
+		if unoptimizedUnsupported[c.Name] {
+			if !errors.Is(err, chsql.ErrUnsupported) {
+				t.Fatalf("Emit unoptimized error = %v, want ErrUnsupported", err)
+			}
+			unoptSQL = "<emit error: " + err.Error() + ">"
+		} else if err != nil {
 			t.Fatalf("Emit unoptimized: %v", err)
 		}
 

@@ -15,6 +15,14 @@ func joinScanFixture() Node {
 	return &Scan{Table: "fixture_metrics"}
 }
 
+func joinTemporalityScanFixture() Node {
+	return &Scan{
+		Table:   "fixture_metrics",
+		Columns: []string{"AggregationTemporality"},
+		Roles:   []Column{{Name: "AggregationTemporality", Role: RoleTemporality}},
+	}
+}
+
 // joinCarrierCases returns one minimal fixture per join-bearing Node kind
 // HasJoin claims to find — see HasJoin's own doc for the chsql evidence
 // (which QueryBuilder.Join call each one traces back to) behind every row.
@@ -54,10 +62,9 @@ func joinCarrierCases() []struct {
 			// which the row above's condition alone never sees.
 			"RangeWindow instant rate() over temporality-projected counter (instant delta-prefix JOIN, #3014)",
 			&RangeWindow{
-				Input:             joinScanFixture(),
-				Func:              "rate",
-				OuterRange:        0,
-				TemporalityColumn: "AggregationTemporality",
+				Input:      joinTemporalityScanFixture(),
+				Func:       "rate",
+				OuterRange: 0,
 			},
 		},
 	}
@@ -110,10 +117,9 @@ func TestHasJoin_NonJoinPlansUnaffected(t *testing.T) {
 			// never runs, regardless of TemporalityColumn.
 			"RangeWindow instant delta() over temporality-projected column (not a counter func)",
 			&RangeWindow{
-				Input:             joinScanFixture(),
-				Func:              "delta",
-				OuterRange:        0,
-				TemporalityColumn: "AggregationTemporality",
+				Input:      joinTemporalityScanFixture(),
+				Func:       "delta",
+				OuterRange: 0,
 			},
 		},
 		{
@@ -130,11 +136,10 @@ func TestHasJoin_NonJoinPlansUnaffected(t *testing.T) {
 			// unlike the instant shape's default fallback.
 			"RangeWindow matrix rate() over temporality-projected counter, no DeltaPrefixAggregateInput",
 			&RangeWindow{
-				Input:             joinScanFixture(),
-				Func:              "rate",
-				OuterRange:        10 * time.Minute,
-				Step:              time.Minute,
-				TemporalityColumn: "AggregationTemporality",
+				Input:      joinTemporalityScanFixture(),
+				Func:       "rate",
+				OuterRange: 10 * time.Minute,
+				Step:       time.Minute,
 			},
 		},
 	}

@@ -81,7 +81,7 @@ func TestChplanIRDiscriminatesPlansThatEmitDifferentSQL(t *testing.T) {
 
 func histogramQuantilePlan(native bool) chplan.Node {
 	return &chplan.HistogramQuantile{
-		Input:                      &chplan.Scan{Table: "otel_metrics_histogram"},
+		Input:                      classicQuantileTestInput(),
 		Phi:                        0.9,
 		MetricNameColumn:           "MetricName",
 		AttributesColumn:           "Attributes",
@@ -118,7 +118,6 @@ func downsampleTierPlan(tier bool) chplan.Node {
 		End:                 start.Add(windowRange),
 		TimestampColumn:     "TimeUnix",
 		ValueColumn:         "Value",
-		TemporalityColumn:   "Temporality",
 		GroupBy:             []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 }

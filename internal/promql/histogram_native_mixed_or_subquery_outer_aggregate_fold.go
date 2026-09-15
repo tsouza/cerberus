@@ -115,12 +115,12 @@ func lowerSumOrAvgOverMixedOrSubqueryFoldFn(agg *parser.AggregateExpr, sub *pars
 	if b.ReturnBool {
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
+	if sub.Step < 0 {
+		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", sub.Step)
+	}
 	step := sub.Step
 	if step == 0 {
 		step = defaultSubqueryStep
-	}
-	if step < 0 {
-		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", sub.Step)
 	}
 	gridCtx, state, err := subqueryGridCtx(sub, step, ctx)
 	if err != nil {

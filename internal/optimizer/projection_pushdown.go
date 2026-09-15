@@ -330,7 +330,12 @@ func aggregateColumns(a *chplan.Aggregate) []string {
 // — to applyRangeWindowOverMetricsAggregate instead, since that shape needs
 // to WIDEN an already-narrowed Scan rather than narrow one directly.
 func rangeWindowColumns(r *chplan.RangeWindow) []string {
-	bare := []string{r.TimestampColumn, r.ValueColumn, r.TemporalityColumn}
+	bare := []string{r.TimestampColumn, r.ValueColumn}
+	if !r.IgnoreInputTemporality {
+		if temporality, ok := r.Input.RowType().Find(chplan.RoleTemporality); ok {
+			bare = append(bare, temporality.Name)
+		}
+	}
 	for _, v := range r.Variants {
 		bare = append(bare, v.ValueColumn)
 	}
@@ -422,8 +427,10 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // a RangeWindowGridNative's emit reads off the inner Scan. emitRangeWindowGridNative
 // (chsql/range_window_grid_native.go) reads EXACTLY three things off the Scan:
 //
-//   - TimestampColumn and ValueColumn — fed positionally into the
-//     timeSeriesRateToGrid aggregate's second paren group (`Col(...)` each).
+//   - the child schema's RoleTimestamp and RoleValue columns — fed
+//     positionally into the timeSeriesRateToGrid aggregate's second paren
+//     group (`Col(...)` each). The node's TimestampColumn / ValueColumn are
+//     public output aliases and are not Scan reads.
 //   - the column refs walked out of GroupBy — the inner SELECT's series keys
 //     and `GROUP BY` list (rendered by collectGroupByFrags).
 //   - the column refs walked out of Recollapse — the deferred label-shaping
@@ -436,7 +443,7 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // (produced inside the subquery via the timeSeriesRateToGrid /
 // timeSeriesRange / ARRAY JOIN machinery), so it is never a Scan read and must
 // NOT be added here. The native node carries no ScalarExprs (unlike
-// RangeWindow), so this set is strictly {TimestampColumn, ValueColumn} ∪
+// RangeWindow), so this set is strictly {RoleTimestamp, RoleValue} ∪
 // refs(GroupBy) ∪ refs(Recollapse). Dropping any of these — in particular the
 // identity columns the GroupBy walks (the MetricName-class #860/#861 failure)
 // — 502s the native query at runtime, so the enumeration must match the emit's
@@ -450,11 +457,50 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // invariant-relaxation away from re-opening the #860/#861 dropped-column
 // class. Both ship.
 func nativeRangeWindowColumns(r *chplan.RangeWindowGridNative) []string {
-	bare := []string{r.TimestampColumn, r.ValueColumn}
+	bare := nativeRangeWindowInputRoleColumns(r.Input)
+	if len(bare) != 2 {
+		return nil
+	}
 	var roots []chplan.Expr
 	roots = append(roots, r.GroupBy...)
 	roots = append(roots, projectionExprs(r.Recollapse)...)
 	return stageColumns(bare, roots...)
+}
+
+func nativeRangeWindowInputRoleColumns(input chplan.Node) []string {
+	if input == nil {
+		return nil
+	}
+	row := input.RowType()
+	var timestamp, value string
+	seenNames := make(map[string]chplan.ColumnRole, len(row.Columns))
+	for _, column := range row.Columns {
+		if column.Name == "" {
+			continue
+		}
+		if role, ok := seenNames[column.Name]; ok && role != column.Role {
+			return nil
+		}
+		seenNames[column.Name] = column.Role
+		var slot *string
+		switch column.Role {
+		case chplan.RoleTimestamp:
+			slot = &timestamp
+		case chplan.RoleValue:
+			slot = &value
+		}
+		if slot == nil {
+			continue
+		}
+		if *slot != "" {
+			return nil
+		}
+		*slot = column.Name
+	}
+	if timestamp == "" || value == "" {
+		return nil
+	}
+	return []string{timestamp, value}
 }
 
 // resampleRangeWindowColumns returns the sorted, deduped set of base columns a
@@ -494,12 +540,48 @@ func rangeBucketFanoutColumns(r *chplan.RangeBucketFanout) []string {
 	return stageColumns([]string{r.TimestampCol}, roots...)
 }
 
-// rangeLWRColumns returns the sorted, deduped set of base columns a
-// RangeLWR's emit reads off the inner Input. emitRangeLWR reads EXACTLY
-// four named columns — MetricNameCol, AttributesCol, TimestampCol,
-// ValueCol (mirrors resampleRangeWindowColumns).
+// rangeLWRColumns returns the sorted, deduped physical columns that
+// RangeLWR's emitter reads from its input.
+// The four physical names come from the child schema roles; the names stored
+// on RangeLWR are public output aliases. An incomplete or ambiguous declaration
+// returns no columns so pushdown declines the rewrite and emission rejects it.
 func rangeLWRColumns(r *chplan.RangeLWR) []string {
-	return stageColumns([]string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol})
+	if r.Input == nil {
+		return nil
+	}
+	var metricName, attributes, timestamp, value string
+	seenNames := make(map[string]chplan.ColumnRole)
+	for _, column := range r.Input.RowType().Columns {
+		if column.Name == "" {
+			continue
+		}
+		if role, ok := seenNames[column.Name]; ok && role != column.Role {
+			return nil
+		}
+		seenNames[column.Name] = column.Role
+		var slot *string
+		switch column.Role {
+		case chplan.RoleMetricName:
+			slot = &metricName
+		case chplan.RoleAttributes:
+			slot = &attributes
+		case chplan.RoleTimestamp:
+			slot = &timestamp
+		case chplan.RoleValue:
+			slot = &value
+		}
+		if slot == nil {
+			continue
+		}
+		if *slot != "" {
+			return nil
+		}
+		*slot = column.Name
+	}
+	if metricName == "" || attributes == "" || timestamp == "" || value == "" {
+		return nil
+	}
+	return stageColumns([]string{metricName, attributes, timestamp, value})
 }
 
 // metricsAggregateColumns returns the sorted, deduped set of base columns

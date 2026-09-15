@@ -72,7 +72,16 @@ func deferredShapingTower() chplan.Expr {
 func deferredShapingNode() *chplan.RangeWindowGridNative {
 	start, end, step, window := deferredShapingGrid()
 	return &chplan.RangeWindowGridNative{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input: &chplan.Scan{
+			Table: "otel_metrics_sum",
+			Columns: []string{
+				"MetricName", "Attributes", "ResourceAttributes", "ServiceName", "ScopeAttributes", "TimeUnix", "Value",
+			},
+			Roles: []chplan.Column{
+				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+				{Name: "Value", Role: chplan.RoleValue},
+			},
+		},
 		Func:            "rate",
 		Range:           window,
 		Step:            step,
@@ -115,7 +124,7 @@ func deferredShapingNode() *chplan.RangeWindowGridNative {
 //     merge carries, plus the unchanged scan time bound.
 const deferredShapingSQL = "SELECT `MetricName`, `shaped_key_0` AS `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (" +
 	"SELECT `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`ResourceAttributes`)), mapValues(`ResourceAttributes`)), `Attributes`), map('service_name', toString(`ServiceName`)))) AS `shaped_key_0`, timeSeriesRateToGridMerge(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`grid_state`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (" +
-	"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM `otel_metrics_sum`) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`) " +
+	"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `ScopeAttributes`, `TimeUnix`, `Value` FROM `otel_metrics_sum`) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`) " +
 	"GROUP BY `MetricName`, `shaped_key_0`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL"
 
 // TestEmitRangeWindowGridNative_DeferredShaping pins the whole three-level shape,
@@ -167,7 +176,7 @@ func deferredShapingTwoKeyNode() *chplan.RangeWindowGridNative {
 // map — a wrong label set on every row, with no error.
 const deferredShapingTwoKeySQL = "SELECT `MetricName`, `shaped_key_0` AS `Attributes`, `shaped_key_1` AS `ScopeAttributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (" +
 	"SELECT `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`ResourceAttributes`)), mapValues(`ResourceAttributes`)), `Attributes`), map('service_name', toString(`ServiceName`)))) AS `shaped_key_0`, mapSort(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`ScopeAttributes`)), mapValues(`ScopeAttributes`))) AS `shaped_key_1`, timeSeriesRateToGridMerge(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`grid_state`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (" +
-	"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `ScopeAttributes`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM `otel_metrics_sum`) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `ScopeAttributes`) " +
+	"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `ScopeAttributes`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `ScopeAttributes`, `TimeUnix`, `Value` FROM `otel_metrics_sum`) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `ScopeAttributes`) " +
 	"GROUP BY `MetricName`, `shaped_key_0`, `shaped_key_1`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL"
 
 // TestEmitRangeWindowGridNative_DeferredShapingTwoShapedKeys pins the multi-key

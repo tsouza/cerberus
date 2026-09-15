@@ -12,7 +12,7 @@ import (
 // matchRangeLWRFusion's tests match against.
 func rangeLWRFusionTestLWR() *chplan.RangeLWR {
 	return &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Step:          1, // Duration in ns; only Step > 0 matters for these tests
 		MetricNameCol: "MetricName",
 		AttributesCol: "Attributes",

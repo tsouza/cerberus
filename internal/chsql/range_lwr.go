@@ -69,6 +69,10 @@ import (
 // tuple via `tupleElement` rather than re-aliasing two separately-named
 // collapse columns.
 func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
+	inputColumns, err := resolveRangeLWRInputColumns(r.Input)
+	if err != nil {
+		return err
+	}
 	collapse, err := e.rangeLWRCollapseFrag(r)
 	if err != nil {
 		return err
@@ -79,8 +83,8 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	// consumers. Splitting the re-alias into its own SELECT keeps the
 	// collapse SELECT's argMax(Value, TimeUnix) reference unshadowed.
 	outer := NewQuery().From(collapse)
-	outer.Select(As(Col(r.MetricNameCol), r.MetricNameCol))
-	outer.Select(As(Col(r.AttributesCol), r.AttributesCol))
+	outer.Select(As(Col(inputColumns.metricName), r.MetricNameCol))
+	outer.Select(As(Col(inputColumns.attributes), r.AttributesCol))
 	outer.Select(As(verbatim(rangeLWRAnchorColumn), r.TimestampCol))
 	if r.SampleTimestamp && r.ArgAndMaxFusion {
 		// argAndMax(arg, val) returns Tuple(arg, val) — element 1 is the
@@ -128,6 +132,57 @@ const rangeLWRValueAlias = "lwr_value"
 // tupleElemFrag.
 const rangeLWRArgAndMaxAlias = "lwr_argandmax"
 
+type rangeLWRInputColumns struct {
+	metricName string
+	attributes string
+	timestamp  string
+	value      string
+}
+
+func resolveRangeLWRInputColumns(input chplan.Node) (rangeLWRInputColumns, error) {
+	if input == nil {
+		return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR.Input is nil", ErrUnsupported)
+	}
+	row := input.RowType()
+	if row.Open {
+		return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR requires a closed child schema", ErrUnsupported)
+	}
+
+	var columns rangeLWRInputColumns
+	seenNames := make(map[string]chplan.ColumnRole, len(row.Columns))
+	for _, column := range row.Columns {
+		if column.Name == "" {
+			continue
+		}
+		if role, ok := seenNames[column.Name]; ok && role != column.Role {
+			return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR child column %q has ambiguous roles", ErrUnsupported, column.Name)
+		}
+		seenNames[column.Name] = column.Role
+		slot := (*string)(nil)
+		switch column.Role {
+		case chplan.RoleMetricName:
+			slot = &columns.metricName
+		case chplan.RoleAttributes:
+			slot = &columns.attributes
+		case chplan.RoleTimestamp:
+			slot = &columns.timestamp
+		case chplan.RoleValue:
+			slot = &columns.value
+		}
+		if slot == nil {
+			continue
+		}
+		if *slot != "" {
+			return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR child schema has duplicate role %d", ErrUnsupported, column.Role)
+		}
+		*slot = column.Name
+	}
+	if columns.metricName == "" || columns.attributes == "" || columns.timestamp == "" || columns.value == "" {
+		return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR child schema requires named metric-name, attributes, timestamp, and value roles", ErrUnsupported)
+	}
+	return columns, nil
+}
+
 // rangeLWRFanoutFrag renders RangeLWR's sample-side fan-out stage ONLY —
 // the SELECT that projects the series-identity columns plus the raw
 // (TimestampCol, ValueCol) pair and fans each sample across the bounded
@@ -152,11 +207,12 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 	if r.Step <= 0 {
 		return nil, fmt.Errorf("%w: RangeLWR requires Step > 0", ErrUnsupported)
 	}
-	if r.Input == nil {
-		return nil, fmt.Errorf("%w: RangeLWR.Input is nil", ErrUnsupported)
-	}
 	if r.TimestampCol == "" || r.ValueCol == "" || r.MetricNameCol == "" || r.AttributesCol == "" {
 		return nil, fmt.Errorf("%w: RangeLWR requires MetricName/Attributes/Timestamp/Value column names", ErrUnsupported)
+	}
+	inputColumns, err := resolveRangeLWRInputColumns(r.Input)
+	if err != nil {
+		return nil, err
 	}
 
 	stepNS := r.Step.Nanoseconds()
@@ -184,7 +240,7 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 		return nil, err
 	}
 
-	tsIdent := func(b *Builder) { b.Ident(r.TimestampCol) }
+	tsIdent := func(b *Builder) { b.Ident(inputColumns.timestamp) }
 
 	// Sample-fanout SELECT: project the series-identity columns + the raw
 	// (TimeUnix, Value) pair, then fan each sample across only the anchors
@@ -192,10 +248,10 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 	// UNSHIFTED grid anchor; the index bounds are computed against the
 	// SHIFTED membership base.
 	fanout := NewQuery().From(inner)
-	fanout.Select(Col(r.MetricNameCol))
-	fanout.Select(Col(r.AttributesCol))
-	fanout.Select(Col(r.TimestampCol))
-	fanout.Select(Col(r.ValueCol))
+	fanout.Select(Col(inputColumns.metricName))
+	fanout.Select(Col(inputColumns.attributes))
+	fanout.Select(Col(inputColumns.timestamp))
+	fanout.Select(Col(inputColumns.value))
 	fanout.Select(RawAs(
 		lwrAnchorFanoutFrag(gridBase, shiftBase, tsIdent, stepNS, lookbackNS, numAnchors),
 		rangeLWRAnchorColumn,
@@ -210,12 +266,12 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 	// only narrows the scan and never drops an in-window anchor. Gated on
 	// Start/End being set so the now64()/@-pinned/zero-grid fixtures stay
 	// byte-identical.
-	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
+	maybePushRangeScanTimeBound(fanout, inputColumns.timestamp, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
 	// #2447/#2470: see lwrFanoutBoundedSourceFrag's own doc comment.
 	// #2667: e.rangeLWRFanoutRowBound() resolves the operator override (or
 	// maxRangeLWRFanoutRows's own default) once per Emit call.
-	return lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol, e.rangeLWRFanoutRowBound(), RangeLWRFanoutBudgetMessage), nil
+	return lwrFanoutBoundedSourceFrag(fanout.Frag(), inputColumns.timestamp, e.rangeLWRFanoutRowBound(), RangeLWRFanoutBudgetMessage), nil
 }
 
 // rangeLWRCollapseFrag renders RangeLWR's fan-out + per-series collapse
@@ -235,6 +291,10 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 // does the re-alias, instead of paying for a whole extra opaque-subquery
 // pass over the already-collapsed rows just to rename two columns.
 func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
+	inputColumns, err := resolveRangeLWRInputColumns(r.Input)
+	if err != nil {
+		return nil, err
+	}
 	fanout, err := e.rangeLWRFanoutFrag(r)
 	if err != nil {
 		return nil, err
@@ -251,8 +311,8 @@ func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
 	// per-group anchor, collapsing argMax to an arbitrary sample. The
 	// re-alias happens in the outer Project above instead.)
 	collapse := NewQuery().From(fanout)
-	collapse.Select(Col(r.MetricNameCol))
-	collapse.Select(Col(r.AttributesCol))
+	collapse.Select(Col(inputColumns.metricName))
+	collapse.Select(Col(inputColumns.attributes))
 	collapse.Select(Col(rangeLWRAnchorColumn))
 	if r.SampleTimestamp && r.ArgAndMaxFusion {
 		// Fused form (chopt.FeatureArgAndMaxFusion, cerberus issue #2764):
@@ -263,7 +323,7 @@ func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
 		// only fires when SampleTimestamp is requested (see
 		// [chplan.RangeLWR.ArgAndMaxFusion]'s own doc).
 		collapse.Select(RawAs(
-			Call("argAndMax", Col(r.ValueCol), Col(r.TimestampCol)),
+			Call("argAndMax", Col(inputColumns.value), Col(inputColumns.timestamp)),
 			rangeLWRArgAndMaxAlias,
 		))
 	} else {
@@ -271,8 +331,8 @@ func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
 			aggFuncFrag(chplan.AggFunc{
 				Fn: chplan.FnArgMax,
 				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: r.ValueCol},
-					&chplan.ColumnRef{Name: r.TimestampCol},
+					&chplan.ColumnRef{Name: inputColumns.value},
+					&chplan.ColumnRef{Name: inputColumns.timestamp},
 				},
 			}),
 			rangeLWRValueAlias,
@@ -290,13 +350,13 @@ func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
 			collapse.Select(RawAs(
 				aggFuncFrag(chplan.AggFunc{
 					Fn:   chplan.FnMax,
-					Args: []chplan.Expr{&chplan.ColumnRef{Name: r.TimestampCol}},
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: inputColumns.timestamp}},
 				}),
 				chplan.RangeLWRSampleTimestampColumn,
 			))
 		}
 	}
-	collapse.GroupBy(Col(r.MetricNameCol), Col(r.AttributesCol), Col(rangeLWRAnchorColumn))
+	collapse.GroupBy(Col(inputColumns.metricName), Col(inputColumns.attributes), Col(rangeLWRAnchorColumn))
 
 	return collapse.Frag(), nil
 }

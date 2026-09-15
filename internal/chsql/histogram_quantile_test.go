@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -97,16 +96,11 @@ func TestHistogramQuantileValueFrag_PhiExprGating(t *testing.T) {
 	})
 }
 
-// TestEmitHistogramQuantile_RequiredColumns kills the INVERT_LOGICAL mutant
-// at histogram_quantile.go:`h.BucketCountsColumn == "" ||
-// h.ExplicitBoundsColumn == ""` (`||` -> `&&`). Each column empty ALONE must
-// still error; an `&&` mutant would require BOTH to be empty
-// simultaneously, letting a plan missing just one of the two through.
-func TestEmitHistogramQuantile_RequiredColumns(t *testing.T) {
+func TestEmitHistogramQuantile_LegacyColumnsDoNotDriveInput(t *testing.T) {
 	t.Parallel()
 	base := func() *chplan.HistogramQuantile {
 		return &chplan.HistogramQuantile{
-			Input:                &chplan.Scan{Table: "otel_metrics_histogram"},
+			Input:                classicQuantileInput(),
 			Phi:                  0.5,
 			BucketCountsColumn:   "BucketCounts",
 			ExplicitBoundsColumn: "ExplicitBounds",
@@ -126,8 +120,8 @@ func TestEmitHistogramQuantile_RequiredColumns(t *testing.T) {
 			h := base()
 			c.mutate(h)
 			_, _, err := Emit(context.Background(), h)
-			if !errors.Is(err, ErrUnsupported) {
-				t.Errorf("expected ErrUnsupported, got %v", err)
+			if err != nil {
+				t.Errorf("Emit: %v", err)
 			}
 		})
 	}
@@ -143,7 +137,7 @@ func TestEmitHistogramQuantile_RequiredColumns(t *testing.T) {
 func TestEmitHistogramQuantile_GroupByAliasFallback(t *testing.T) {
 	t.Parallel()
 	h := &chplan.HistogramQuantile{
-		Input:                &chplan.Scan{Table: "otel_metrics_histogram"},
+		Input:                classicQuantileInput(),
 		Phi:                  0.5,
 		BucketCountsColumn:   "BucketCounts",
 		ExplicitBoundsColumn: "ExplicitBounds",

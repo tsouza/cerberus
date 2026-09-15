@@ -87,33 +87,57 @@ func AttachInstantScanTimeBounds(root Node) Node {
 // RangeWindow reachable from n is still unmarked (a read-only pre-check so the
 // already-established common case avoids a clone).
 func needsInstantScanTimeBound(n Node) bool {
-	if n == nil {
-		return false
-	}
-	if rw, ok := n.(*RangeWindow); ok && !rw.InstantScanBounded && IsInstantWindowedLeaf(rw) {
-		return true
-	}
-	for _, c := range n.Children() {
-		if needsInstantScanTimeBound(c) {
-			return true
+	return FirstUnboundedInstantScanTimeBound(n) != nil
+}
+
+// FirstUnboundedInstantScanTimeBound returns the first unbounded instant
+// windowed-array leaf reachable through either the row-flow tree or a plan
+// embedded in an expression slot.
+func FirstUnboundedInstantScanTimeBound(n Node) *RangeWindow {
+	var found *RangeWindow
+	WalkDeep(n, func(node Node) bool {
+		if found != nil {
+			return false
 		}
-	}
-	return false
+		rw, ok := node.(*RangeWindow)
+		if ok && !rw.InstantScanBounded && IsInstantWindowedLeaf(rw) {
+			found = rw
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// FirstUnboundedInstantScanTimeBoundInExprs searches only plan subtrees owned
+// by n's expression slots. Optimizer rules already visit row-flow children;
+// this narrower entry point lets them cover the otherwise invisible subtrees
+// without repeatedly walking the whole row-flow tree at every node.
+func FirstUnboundedInstantScanTimeBoundInExprs(n Node) *RangeWindow {
+	var found *RangeWindow
+	nodeExprs(n, func(expr Expr) {
+		if found != nil {
+			return
+		}
+		InspectExprNodes(expr, func(Expr) bool { return true }, func(sub Node) {
+			if found == nil {
+				found = FirstUnboundedInstantScanTimeBound(sub)
+			}
+		})
+	})
+	return found
 }
 
 // attachInstantWalk mutates n in place — the caller passes a freshly cloned,
 // solely-owned tree — marking each instant windowed-array leaf RangeWindow that
 // is not yet marked.
 func attachInstantWalk(n Node) {
-	if n == nil {
-		return
-	}
-	if rw, ok := n.(*RangeWindow); ok && !rw.InstantScanBounded && IsInstantWindowedLeaf(rw) {
-		rw.InstantScanBounded = true
-	}
-	for _, c := range n.Children() {
-		attachInstantWalk(c)
-	}
+	WalkDeep(n, func(node Node) bool {
+		if rw, ok := node.(*RangeWindow); ok && !rw.InstantScanBounded && IsInstantWindowedLeaf(rw) {
+			rw.InstantScanBounded = true
+		}
+		return true
+	})
 }
 
 // WithInstantScanTimeBound returns rw with InstantScanBounded set, plus whether
