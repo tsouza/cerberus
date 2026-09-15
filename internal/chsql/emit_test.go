@@ -435,7 +435,7 @@ var plans = map[string]chplan.Node{
 
 	// RangeWindow with the LogQL-specific log_rate function.
 	"range_window_log_rate": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_logs"},
+		Input:           closedRangeWindowTestScan("otel_logs", "Timestamp", "ResourceAttributes", "Value"),
 		Func:            "log_rate",
 		Range:           5 * time.Minute,
 		TimestampColumn: "Timestamp",
