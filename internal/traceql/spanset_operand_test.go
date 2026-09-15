@@ -27,12 +27,28 @@ func lowerOperandQuery(t *testing.T, ctx context.Context, q string, s schema.Tra
 	return plan
 }
 
+// unwrapIdentityProjection peels off the narrow-projection wrap
+// lowerSpansetOperation adds to close an open (`SELECT *`) arm's schema
+// for chsql.setOperationIdentity (every SetOperation arm gets one now,
+// plain-or-plain included — see TestUnionArmAlignment's
+// "plain-or-plain still closes both arms"), returning the node
+// underneath. A node that was never wrapped (already closed) passes
+// through unchanged.
+func unwrapIdentityProjection(n chplan.Node) chplan.Node {
+	if p, ok := n.(*chplan.Project); ok {
+		return p.Input
+	}
+	return n
+}
+
 // semiJoinCohort asserts n is the span-granular semi-join a spanset
 // aggregate operand lowers to — a Filter over span rows whose predicate
 // is `<TraceIDColumn> IN (<cohort>)` — and returns the cohort subquery.
+// n may be wrapped in the SetOperation identity-closing Project;
+// unwrapIdentityProjection sees through it.
 func semiJoinCohort(t *testing.T, n chplan.Node, s schema.Traces) chplan.Node {
 	t.Helper()
-	f, ok := n.(*chplan.Filter)
+	f, ok := unwrapIdentityProjection(n).(*chplan.Filter)
 	if !ok {
 		t.Fatalf("arm is %T, want *chplan.Filter (span-granular semi-join)", n)
 	}
@@ -89,9 +105,11 @@ func TestSpansetAggregateOperandIsSpanGranular(t *testing.T) {
 		if _, ok := p.Input.(*chplan.Filter); !ok {
 			t.Fatalf("cohort input is %T, want the scalar-filter *chplan.Filter", p.Input)
 		}
-		// The plain arm is untouched.
-		if _, ok := so.Right.(*chplan.Filter); !ok {
-			t.Fatalf("right arm is %T, want the plain selector *chplan.Filter", so.Right)
+		// The plain arm's row source is untouched underneath the same
+		// identity-closing wrap every arm gets now (see
+		// unwrapIdentityProjection).
+		if _, ok := unwrapIdentityProjection(so.Right).(*chplan.Filter); !ok {
+			t.Fatalf("right arm is %T, want the plain selector *chplan.Filter underneath", so.Right)
 		}
 	})
 

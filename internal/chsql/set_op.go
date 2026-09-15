@@ -97,8 +97,12 @@ const (
 // SELECT, so the UNION token sits between two pre-rendered QueryBuilder
 // Frags rather than abusing a clause slot.
 func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
-	if s.TraceIDColumn == "" || s.SpanIDColumn == "" {
-		return fmt.Errorf("%w: SetOperation column names unset", ErrUnsupported)
+	traceIDColumn, spanIDColumn, ok := setOperationIdentity(s)
+	if !ok {
+		return fmt.Errorf("%w: SetOperation child identity roles unset or unnamed", ErrUnsupported)
+	}
+	if traceIDColumn != s.TraceIDColumn || spanIDColumn != s.SpanIDColumn {
+		return fmt.Errorf("%w: SetOperation output identity does not match left child schema", ErrUnsupported)
 	}
 
 	// Fast path first, BEFORE the arms are rendered: the fused shape
@@ -107,8 +111,8 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 	// both arms, and would advance the shared CTE counter that any
 	// structural closure inside them draws from.
 	if s.Op == chplan.SetIntersect {
-		if scan, arms, ok := fusableIntersect(s); ok {
-			return e.emitFusedIntersect(s, scan, arms)
+		if scan, arms, ok := fusableIntersect(s, traceIDColumn, spanIDColumn); ok {
+			return e.emitFusedIntersect(scan, arms, traceIDColumn, spanIDColumn)
 		}
 	}
 
@@ -123,16 +127,64 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 
 	switch s.Op {
 	case chplan.SetIntersect:
-		return e.emitSelect(intersectQuery(s, leftFrag, rightFrag))
+		return e.emitSelect(intersectQuery(traceIDColumn, spanIDColumn, leftFrag, rightFrag))
 	case chplan.SetUnion:
 		sb := NewQuery().
 			Select(verbatim("*")).
 			From(Paren(UnionAll(leftFrag, rightFrag))).
 			Limit(unionDedupLimitPerIdentity).
-			LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
+			LimitBy(Col(traceIDColumn), Col(spanIDColumn))
 		return e.emitSelect(sb)
 	}
 	return fmt.Errorf("%w: set op %q", ErrUnsupported, s.Op)
+}
+
+func setOperationIdentity(s *chplan.SetOperation) (string, string, bool) {
+	if s == nil || s.Left == nil || s.Right == nil || s.TraceIDColumn == "" || s.SpanIDColumn == "" {
+		return "", "", false
+	}
+	leftRow, rightRow := s.Left.RowType(), s.Right.RowType()
+	leftTrace, leftSpan, leftOK := setOperationChildIdentity(leftRow)
+	_, _, rightOK := setOperationChildIdentity(rightRow)
+	if !leftOK || !rightOK || len(leftRow.Columns) != len(rightRow.Columns) {
+		return "", "", false
+	}
+	for i, leftColumn := range leftRow.Columns {
+		if (leftColumn.Role == chplan.RoleTraceID || leftColumn.Role == chplan.RoleSpanID) &&
+			rightRow.Columns[i].Role != leftColumn.Role {
+			return "", "", false
+		}
+	}
+	return leftTrace, leftSpan, true
+}
+
+func setOperationChildIdentity(row chplan.Schema) (string, string, bool) {
+	if row.Open {
+		return "", "", false
+	}
+	roleName := func(role chplan.ColumnRole) (string, bool) {
+		name := ""
+		count := 0
+		for _, column := range row.Columns {
+			if column.Role == role {
+				name = column.Name
+				count++
+			}
+		}
+		return name, count == 1 && name != ""
+	}
+	traceID, traceOK := roleName(chplan.RoleTraceID)
+	spanID, spanOK := roleName(chplan.RoleSpanID)
+	if !traceOK || !spanOK || traceID == spanID {
+		return "", "", false
+	}
+	for _, column := range row.Columns {
+		if (column.Name == traceID && column.Role != chplan.RoleTraceID) ||
+			(column.Name == spanID && column.Role != chplan.RoleSpanID) {
+			return "", "", false
+		}
+	}
+	return traceID, spanID, true
 }
 
 // intersectQuery assembles the `&&` fallback shape described in
@@ -191,7 +243,7 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 // (a gate no longer sits between the union and its consumer), but both
 // shapes feed the same `LIMIT 1 BY` span-identity dedup and TraceQL fixes
 // the SET of spans a query returns, never their order.
-func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag) *QueryBuilder {
+func intersectQuery(traceIDColumn, spanIDColumn string, leftFrag, rightFrag Frag) *QueryBuilder {
 	// (SELECT *, <side> AS _setand_side FROM (<arm>)) — the arm's rows,
 	// tagged with the arm that produced them.
 	sideArm := func(armFrag Frag, side int) Frag {
@@ -206,7 +258,7 @@ func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag) *QueryBuil
 	armTraceCohort := func(side int) Frag {
 		return Window(
 			Call("max", Eq(Col(intersectSideCol), InlineLit(side))),
-			[]Frag{Col(s.TraceIDColumn)},
+			[]Frag{Col(traceIDColumn)},
 			nil,
 		)
 	}
@@ -219,7 +271,7 @@ func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag) *QueryBuil
 		))).
 		Qualify(armTraceCohort(intersectLeftSide), armTraceCohort(intersectRightSide)).
 		Limit(unionDedupLimitPerIdentity).
-		LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
+		LimitBy(Col(traceIDColumn), Col(spanIDColumn))
 }
 
 // fusableIntersect decides whether an `&&` tree can be served by the
@@ -266,10 +318,10 @@ func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag) *QueryBuil
 // fusable falls back at the level that fails and still fuses below it,
 // because the fallback renders its arms through the ordinary recursive
 // emit.
-func fusableIntersect(s *chplan.SetOperation) (*chplan.Scan, []chplan.Expr, bool) {
+func fusableIntersect(s *chplan.SetOperation, traceIDColumn, spanIDColumn string) (*chplan.Scan, []chplan.Expr, bool) {
 	var scan *chplan.Scan
 	var arms []chplan.Expr
-	if !collectIntersectArms(s, s, &scan, &arms) {
+	if !collectIntersectArms(s, traceIDColumn, spanIDColumn, &scan, &arms) {
 		return nil, nil, false
 	}
 	return scan, arms, true
@@ -278,19 +330,19 @@ func fusableIntersect(s *chplan.SetOperation) (*chplan.Scan, []chplan.Expr, bool
 // collectIntersectArms walks the `&&` chain rooted at root, appending one
 // predicate per leaf arm and pinning the single Scan they must share.
 // Reports false the moment any arm disqualifies.
-func collectIntersectArms(n chplan.Node, root *chplan.SetOperation, scan **chplan.Scan, arms *[]chplan.Expr) bool {
+func collectIntersectArms(n chplan.Node, traceIDColumn, spanIDColumn string, scan **chplan.Scan, arms *[]chplan.Expr) bool {
 	if inner, ok := n.(*chplan.SetOperation); ok {
 		// Only an `&&` on the SAME identity key flattens. A nested `||`
 		// is a different operator, and a nested `&&` keyed on a different
 		// (TraceId, SpanId) pair is a spanset granularity change the gate
 		// must not paper over.
-		if inner.Op != chplan.SetIntersect ||
-			inner.TraceIDColumn != root.TraceIDColumn ||
-			inner.SpanIDColumn != root.SpanIDColumn {
+		innerTraceIDColumn, innerSpanIDColumn, ok := setOperationIdentity(inner)
+		if inner.Op != chplan.SetIntersect || !ok ||
+			innerTraceIDColumn != traceIDColumn || innerSpanIDColumn != spanIDColumn {
 			return false
 		}
-		return collectIntersectArms(inner.Left, root, scan, arms) &&
-			collectIntersectArms(inner.Right, root, scan, arms)
+		return collectIntersectArms(inner.Left, traceIDColumn, spanIDColumn, scan, arms) &&
+			collectIntersectArms(inner.Right, traceIDColumn, spanIDColumn, scan, arms)
 	}
 	pred, armScan, ok := filterChainOverScan(n)
 	if !ok || !gateSafePredicate(pred) {
@@ -407,7 +459,7 @@ func gateSafePredicate(pred chplan.Expr) bool {
 // left arm then all of the right, while one pass emits table order. Both
 // are unordered results feeding the same `LIMIT 1 BY` span-identity dedup
 // — TraceQL's own contract fixes the SET of spans, never their order.
-func (e *emitter) emitFusedIntersect(s *chplan.SetOperation, scan *chplan.Scan, arms []chplan.Expr) error {
+func (e *emitter) emitFusedIntersect(scan *chplan.Scan, arms []chplan.Expr, traceIDColumn, spanIDColumn string) error {
 	common, residuals := splitCommonConjuncts(arms)
 	conds := append([]chplan.Expr(nil), common...)
 	if disj := disjoinArms(residuals); disj != nil {
@@ -437,12 +489,12 @@ func (e *emitter) emitFusedIntersect(s *chplan.SetOperation, scan *chplan.Scan, 
 		}
 		sb.Qualify(Window(
 			Call("max", func(b *Builder) { _ = b.Expr(pred) }),
-			[]Frag{Col(s.TraceIDColumn)},
+			[]Frag{Col(traceIDColumn)},
 			nil,
 		))
 	}
 	sb.Limit(unionDedupLimitPerIdentity).
-		LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
+		LimitBy(Col(traceIDColumn), Col(spanIDColumn))
 	return e.emitSelect(sb)
 }
 
