@@ -3149,7 +3149,10 @@ func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
 
 func nsAnnotateInternal() *chplan.NestedSetAnnotate {
 	return &chplan.NestedSetAnnotate{
-		Input:              &chplan.Scan{Table: "otel_traces"},
+		Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "TraceId", Role: chplan.RoleTraceID},
+			{Name: "SpanId", Role: chplan.RoleSpanID},
+		}},
 		SpansTable:         "otel_traces",
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -4140,7 +4143,7 @@ func instantDeltaPrefixSourceStubWindow() *QueryBuilder {
 // (emitWindowedArrayExtrapolated's needsDeltaFirstLevel gate requires
 // hasTemporality), so this calls it directly to force
 // deltaPresenceGuardFrag's nil branch
-// (range_window.go:deltaPresenceGuardFrag:`r.TemporalityColumn == ""`) and
+// (range_window.go:deltaPresenceGuardFrag: no RoleTemporality input) and
 // exercise the guard==nil path the mutant inverts. A `== nil` mutant would
 // instead call prefix.Where(nil) here, and that nil Frag panics the moment
 // it is invoked during Build() — a difference this test would catch as a
@@ -4154,8 +4157,7 @@ func TestInstantDeltaPrefixSource_GuardNilBranch(t *testing.T) {
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
 		// Intentionally empty: forces deltaPresenceGuardFrag to return nil.
-		TemporalityColumn: "",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -4187,12 +4189,10 @@ func TestInstantDeltaPrefixSource_JoinDispatch(t *testing.T) {
 	build := func(groupBy []chplan.Expr) string {
 		e := &emitter{}
 		r := &chplan.RangeWindow{
-			Input:             rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix"),
-			TimestampColumn:   "TimeUnix",
-			ValueColumn:       "Value",
-			TemporalityColumn: "AggregationTemporality",
-			GroupBy:           groupBy,
-		}
+			Input:           temporalityTestScan("otel_metrics_sum"),
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+			GroupBy:         groupBy}
 		groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 		if err != nil {
 			t.Fatalf("collectGroupByFrags: %v", err)

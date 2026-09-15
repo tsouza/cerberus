@@ -37,14 +37,7 @@ func lowerSelect(prev chplan.Node, sel traceql.SelectOperation, s schema.Traces)
 
 	input := prev
 	if selectsNestedSet(attrs) {
-		input = &chplan.NestedSetAnnotate{
-			Input:              prev,
-			SpansTable:         s.SpansTable,
-			TraceIDColumn:      s.TraceIDColumn,
-			SpanIDColumn:       s.SpanIDColumn,
-			ParentSpanIDColumn: s.ParentSpanIDColumn,
-			TimestampColumn:    s.TimestampColumn,
-		}
+		input = nestedSetAnnotate(prev, s)
 	}
 
 	// Identity columns first; selected attributes after. Each attribute

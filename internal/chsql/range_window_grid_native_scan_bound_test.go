@@ -115,7 +115,7 @@ var nativeScanBoundCases = map[string]nativeScanBoundCase{
 // ts_grid_range scan-bound plumbing — a concern entirely orthogonal to
 // issue #1628's DELTA-vs-CUMULATIVE runtime branch. A `rate()` window
 // whose schema DOES declare that column is, correctly, no longer eligible
-// for native routing (rw.TemporalityColumn set forces the fan-out
+// for native routing (a RoleTemporality input forces the fan-out
 // fallback — see nativeTSGridMatrixNode), which would make every case
 // here fall back and assert nothing about the scan bound it exists to
 // pin. Clearing the column is a real, supported schema shape (an operator

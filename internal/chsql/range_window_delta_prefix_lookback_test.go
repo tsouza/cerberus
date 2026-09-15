@@ -16,14 +16,20 @@ import (
 func deltaCapableInstantWindow() *chplan.RangeWindow {
 	end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeWindow{
-		Input:             rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix", "AggregationTemporality"),
-		Func:              "rate",
-		Range:             5 * time.Minute,
-		End:               end,
-		TimestampColumn:   "TimeUnix",
-		ValueColumn:       "Value",
-		TemporalityColumn: "AggregationTemporality",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Input: &chplan.Scan{
+			Table:   "otel_metrics_sum",
+			Columns: []string{"MetricName", "Attributes", "TimeUnix", "Value", "AggregationTemporality"},
+			Roles: []chplan.Column{
+				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+				{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+			},
+		},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		End:             end,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 }
 
@@ -303,7 +309,7 @@ func TestDeltaPrefixLookback_CumulativeOnlyOutputUnaffected(t *testing.T) {
 	t.Parallel()
 
 	r := deltaCapableInstantWindow()
-	r.TemporalityColumn = "" // no AggregationTemporality column at all
+	r.Input = &chplan.Scan{Table: "otel_metrics_sum"} // no AggregationTemporality role at all
 
 	shortSQL, _, err := Emit(WithDeltaPrefixLookback(context.Background(), time.Minute), r)
 	if err != nil {

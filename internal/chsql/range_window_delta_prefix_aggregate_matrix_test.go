@@ -16,8 +16,7 @@ import (
 func deltaPrefixAggregateMatrixGateWindow(aggInput chplan.Node) *chplan.RangeWindow {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeWindow{
-		Input:                     rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix", "AggregationTemporality"),
-		Func:                      "rate",
+		Input: temporalityTestScan("otel_metrics_sum"), Func: "rate",
 		Range:                     5 * time.Minute,
 		Start:                     start,
 		End:                       start.Add(10 * time.Minute),
@@ -25,7 +24,6 @@ func deltaPrefixAggregateMatrixGateWindow(aggInput chplan.Node) *chplan.RangeWin
 		OuterRange:                10 * time.Minute,
 		TimestampColumn:           "TimeUnix",
 		ValueColumn:               "Value",
-		TemporalityColumn:         "AggregationTemporality",
 		GroupBy:                   []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		DeltaPrefixAggregateInput: aggInput,
 	}
