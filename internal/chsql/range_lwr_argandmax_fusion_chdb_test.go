@@ -87,7 +87,7 @@ func TestRangeLWRArgAndMaxFusion_MatchesUnfused_ChDB(t *testing.T) {
 
 	plan := func(fused bool) *chplan.RangeLWR {
 		return &chplan.RangeLWR{
-			Input:           &chplan.Scan{Table: rangeLWRArgAndMaxFusionSeedTable},
+			Input:           rangeLWRTestInput(rangeLWRArgAndMaxFusionSeedTable),
 			Start:           start,
 			End:             end,
 			Step:            step,
