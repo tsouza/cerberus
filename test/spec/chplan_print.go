@@ -271,6 +271,9 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.LagAdjacency {
 			b.WriteString(" lagAdjacency=true")
 		}
+		if v.IgnoreInputTemporality {
+			b.WriteString(" ignoreInputTemporality=true")
+		}
 		if len(v.Variants) > 0 {
 			vs := make([]string, len(v.Variants))
 			for i, a := range v.Variants {
@@ -287,9 +290,6 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		}
 		if v.PredictLinearSlopeColumn != "" {
 			fmt.Fprintf(b, " predictSlope=%s", v.PredictLinearSlopeColumn)
-		}
-		if v.TemporalityColumn != "" {
-			fmt.Fprintf(b, " temporality=%s", v.TemporalityColumn)
 		}
 		if len(v.GroupBy) > 0 {
 			gb := make([]string, len(v.GroupBy))

@@ -98,7 +98,7 @@ type Config struct {
 	// before a rate()/increase() window's start a DELTA-temporality OTel Sum
 	// counter's prefix-reconstruction scan is allowed to read. Reconstructing
 	// Prometheus's "cumulative counter level immediately before the window"
-	// for a DELTA-temporality series (chplan.RangeWindow.TemporalityColumn)
+	// for a DELTA-temporality series (a RoleTemporality range-window input)
 	// has no natural stopping point short of the series' own first-ever
 	// sample, so the unbounded form reads a metric's ENTIRE retention on
 	// every rate()/increase() query against ANY Sum-typed counter whose table
