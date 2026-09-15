@@ -91,7 +91,7 @@ func TestCounterTemporalityColumnMembership(t *testing.T) {
 						"lowering shape changed and this case no longer probes what it names",
 						query, tc.fn)
 				}
-				got := rw.TemporalityColumn
+				got := rangeWindowTemporalityColumn(rw)
 				if tc.want && got != s.AggregationTemporalityColumn {
 					t.Fatalf("LowerAt(%q): RangeWindow(%s).TemporalityColumn = %q, want %q — "+
 						"%s reconstructs a counter's increase, so it MUST branch at runtime "+

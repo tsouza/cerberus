@@ -19,7 +19,7 @@
 // grid.
 //
 // Unlike irate(), idelta() is gauge-only in PromQL and
-// counterTemporalityRangeFn never sets RangeWindow.TemporalityColumn for it
+// counterTemporalityRangeFn never requests a RoleTemporality input for it
 // (see that function's own doc) — so, unlike its irate() sibling, this test
 // does NOT need to clear AggregationTemporalityColumn for the native path to
 // fire; it is cleared anyway purely to keep the seed schema identical across

@@ -22,7 +22,9 @@ import (
 const setOpWindowEpoch = 1700000000
 
 // fusedIntersectScan returns the one spans Scan every fusable arm reads.
-func fusedIntersectScan() *chplan.Scan { return &chplan.Scan{Table: "otel_traces"} }
+func fusedIntersectScan() *chplan.Scan {
+	return setOpSchemaScan("otel_traces", "TraceId", "SpanId")
+}
 
 // fusedIntersect wraps two arms in the `&&` set op the single-pass gate
 // serves.
