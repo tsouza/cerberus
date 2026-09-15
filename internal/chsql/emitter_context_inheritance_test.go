@@ -160,6 +160,7 @@ func TestSubEmitterCarriesEveryContextSeededBound(t *testing.T) {
 		{"rangeBucketFanoutMaxRows", sub.rangeBucketFanoutMaxRows, e.rangeBucketFanoutMaxRows},
 		{"rangeLWRFanoutMaxRows", sub.rangeLWRFanoutMaxRows, e.rangeLWRFanoutMaxRows},
 		{"rateWindowFanoutMaxRows", sub.rateWindowFanoutMaxRows, e.rateWindowFanoutMaxRows},
+		{"rangeBucketFanoutGroupMaxRows", sub.rangeBucketFanoutGroupMaxRows, e.rangeBucketFanoutGroupMaxRows},
 		{"rangeBucketGridNativeMaxRows", sub.rangeBucketGridNativeMaxRows, e.rangeBucketGridNativeMaxRows},
 		{"rangeBucketGridNativeMaxDensityUnits", sub.rangeBucketGridNativeMaxDensityUnits, e.rangeBucketGridNativeMaxDensityUnits},
 		{"emittedSQLMaxBytes", sub.emittedSQLMaxBytes, e.emittedSQLMaxBytes},

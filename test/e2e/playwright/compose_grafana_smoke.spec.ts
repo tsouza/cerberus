@@ -9,6 +9,7 @@ import {
   generateSelfTraffic,
   awaitSelfTelemetryRangeSignal,
   awaitSeedFixtureSignal,
+  bodyContainsPinnedResourceBoundMessage,
 } from './helpers/index.js';
 
 /**
@@ -97,6 +98,13 @@ const WARMUP_BEFOREALL_TIMEOUT_MS =
 // request can legitimately fire (and its response land) after the passive
 // capture window has already closed. See driveCerberusQLPartition.
 const PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS = 60_000;
+
+// The self-observability dashboard's own native-histogram-consuming panel
+// (test/e2e/grafana/compose/dashboards/cerberus.json) — the ONE panel a
+// pinned resource-bound rejection (issue #3468) can legitimately reach.
+// Kept as a literal so a dashboard-title drift breaks this pin instead of
+// silently widening which panel's errors get excused.
+const P95_LATENCY_PANEL_TITLE = 'P95 latency by language';
 
 test.beforeAll(async ({ request }) => {
   test.setTimeout(WARMUP_BEFOREALL_TIMEOUT_MS);
@@ -296,9 +304,15 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     }
 
     // 3a. HTTP status sweep over every captured response — zero
-    //     tolerance for non-2xx. Every failure is a real bug to fix
-    //     at the source (implement the endpoint, fix the proxy, or
-    //     drop the surface from the iteration).
+    //     tolerance for non-2xx, with ONE pinned exception (issue
+    //     #3468): a `/api/ds/query` response whose body is exactly
+    //     cerberus's own documented resource-exhausted rejection (the
+    //     same "Memory-limit / resource-bound multi-way contract"
+    //     iterate-time-ranges.spec.ts pins) is the guard working as
+    //     designed for a native-histogram-consuming panel under real,
+    //     organically-seeded traffic density — not a bug to fix at the
+    //     source. Every OTHER failure is still zero-tolerance.
+    let sawPinnedRejection = false;
     for (const resp of captured) {
       const status = resp.status();
       if (status < 200 || status > 299) {
@@ -309,6 +323,10 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
           body = await resp.text();
         } catch {
           body = '<unreadable>';
+        }
+        if (resp.url().includes('/api/ds/query') && bodyContainsPinnedResourceBoundMessage(body)) {
+          sawPinnedRejection = true;
+          continue;
         }
         failures.push(
           `[${surface.kind}:${surface.label}] http: ${method} ${path} → ${status}\n  body: ${truncate(body, 800)}`,
@@ -331,6 +349,13 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
       const results = parsed.results ?? {};
       for (const [refId, target] of Object.entries(results)) {
         if (target && typeof target.error === 'string' && target.error.length > 0) {
+          // Same pinned resource-bound carve-out as 3a above (issue
+          // #3468) — a 200-status ds/query response can still tunnel a
+          // per-target pinned rejection.
+          if (bodyContainsPinnedResourceBoundMessage(target.error)) {
+            sawPinnedRejection = true;
+            continue;
+          }
           const dsErr: DSQueryError = {
             url: stripBase(resp.url(), baseURL),
             refId,
@@ -364,9 +389,26 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     //     but errored renders Grafana's red error-state banner. The
     //     stable selector across Grafana 11.x is the "Panel status"
     //     testid; the visible error message lives in the tooltip /
-    //     status icon's aria-label.
+    //     status icon's aria-label — which Grafana renders as the
+    //     generic "Panel status", not the underlying error text, so
+    //     this sweep cannot itself tell a pinned resource-bound
+    //     rejection (issue #3468) from any other panel failure. The
+    //     network-level sweeps above (3a/3b) already identified
+    //     whether THIS surface saw one; the only panel that query can
+    //     legitimately hit is the self-observability dashboard's own
+    //     native-histogram-consuming P95 panel, so an error on that
+    //     ONE known panel, co-occurring with a pinned rejection
+    //     elsewhere on the same page, is annotated rather than failed.
+    //     Any OTHER panel-error stays zero-tolerance.
     const panelErrors = await collectPanelErrors(page);
     for (const { title, message } of panelErrors) {
+      if (sawPinnedRejection && title === P95_LATENCY_PANEL_TITLE) {
+        testInfo.annotations.push({
+          type: 'compose-smoke-resource-bound-rejection',
+          description: `[${surface.kind}:${surface.label}] panel "${title}" showed an error banner alongside a pinned resource-bound rejection elsewhere on this page — expected (issue #3468)`,
+        });
+        continue;
+      }
       failures.push(
         `[${surface.kind}:${surface.label}] panel-error: panel "${title}"\n  message: ${truncate(message, 400)}`,
       );

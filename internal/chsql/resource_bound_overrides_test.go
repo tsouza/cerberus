@@ -49,6 +49,37 @@ func resourceBoundFanoutPlan() *chplan.RangeBucketFanout {
 	}
 }
 
+// resourceBoundFanoutGroupPlan is resourceBoundFanoutPlan's growing-
+// accumulator sibling: the SAME shape, but with a groupArray AggFunc
+// (the collapse shape classicBucketWindowAggs / expHistogramWindowAggs
+// both build — see maxRangeBucketFanoutGroupRows' own doc, issue #3468) in
+// place of the fixed-size argMax the pre-collapse-only sibling plan uses.
+// This is what actually reaches emitRangeBucketFanout's new
+// rangeBucketFanoutHasGrowingAccumulator branch; resourceBoundFanoutPlan
+// deliberately does NOT (its argMax-only AggFuncs is the discriminating
+// control TestWithRangeBucketFanoutMaxRows_OverridesEmittedLimit already
+// pins: exactly two LIMIT literals, never four).
+func resourceBoundFanoutGroupPlan() *chplan.RangeBucketFanout {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return &chplan.RangeBucketFanout{
+		Input:        closedTimestampTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
+		Start:        start,
+		End:          start.Add(5 * time.Minute),
+		Step:         30 * time.Second,
+		Lookback:     5 * time.Minute,
+		GroupBy:      []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AnchorAlias:  "anchor_ts",
+		TimestampCol: "TimeUnix",
+		AggFuncs: []chplan.AggFunc{
+			{
+				Fn:    chplan.FnGroupArray,
+				Alias: "Values",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
+			},
+		},
+	}
+}
+
 // resourceBoundLWRPlan builds a minimal RangeLWR over a bare Scan, matching
 // range_lwr_test.go's own plan shape.
 func resourceBoundLWRPlan() *chplan.RangeLWR {
@@ -114,6 +145,101 @@ func TestWithRangeBucketFanoutMaxRows_OverridesEmittedLimit(t *testing.T) {
 	}
 	if strings.Contains(sqlOverridden, "LIMIT 4000001") {
 		t.Errorf("overridden emit must NOT still carry the default's LIMIT literal\nSQL:\n%s", sqlOverridden)
+	}
+}
+
+// TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards
+// confirms a groupArray-accumulating RangeBucketFanout collapse (issue
+// #3468) carries BOTH the pre-collapse sample-fanout guard
+// (rangeBucketFanoutRowBound, unchanged) AND the new post-collapse
+// group-count guard (rangeBucketFanoutGroupRowBound) — four LIMIT
+// literals total, not two — and that
+// RangeBucketFanoutGroupBudgetMessage, not RangeBucketFanoutBudgetMessage,
+// is the one the new guard's throwIf carries.
+func TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards(t *testing.T) {
+	t.Parallel()
+
+	plan := resourceBoundFanoutGroupPlan()
+
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// FOUR, not two: lwrFanoutBoundedSourceFrag reads its source TWICE
+	// (bounded + the independent truncation probe), and the group guard's
+	// source IS the collapse — which itself already embeds the
+	// pre-collapse guard's own two reads once. Doubling collapse doubles
+	// everything inside it, exactly as it doubles the raw scan beneath the
+	// sample fanout for every RangeBucketFanout/RangeLWR this file's own
+	// design already accepts that cost for.
+	if got := strings.Count(sql, "LIMIT 4000001"); got != 4 {
+		t.Errorf("pre-collapse fanout guard: expected \"LIMIT 4000001\" exactly four times (twice per group-guard read), got %d\nSQL:\n%s", got, sql)
+	}
+	if got := strings.Count(sql, "LIMIT 801"); got != 2 {
+		t.Errorf("post-collapse group guard: expected \"LIMIT 801\" exactly twice, got %d\nSQL:\n%s", got, sql)
+	}
+	if !strings.Contains(sql, chsql.RangeBucketFanoutGroupBudgetMessage) {
+		t.Errorf("emitted SQL missing RangeBucketFanoutGroupBudgetMessage\nSQL:\n%s", sql)
+	}
+	if !strings.Contains(sql, chsql.RangeBucketFanoutBudgetMessage) {
+		t.Errorf("emitted SQL missing RangeBucketFanoutBudgetMessage (the pre-collapse guard should still be present)\nSQL:\n%s", sql)
+	}
+}
+
+// TestWithRangeBucketFanoutGroupMaxRows_OverridesEmittedLimit is
+// TestWithRangeBucketFanoutMaxRows_OverridesEmittedLimit's post-collapse
+// sibling — default maxRangeBucketFanoutGroupRows = 800, overridden to
+// 999.
+func TestWithRangeBucketFanoutGroupMaxRows_OverridesEmittedLimit(t *testing.T) {
+	t.Parallel()
+
+	plan := resourceBoundFanoutGroupPlan()
+
+	sqlDefault, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit (default): %v", err)
+	}
+	if got := strings.Count(sqlDefault, "LIMIT 801"); got != 2 {
+		t.Errorf("default emit: expected \"LIMIT 801\" exactly twice, got %d\nSQL:\n%s", got, sqlDefault)
+	}
+
+	ctx := chsql.WithRangeBucketFanoutGroupMaxRows(context.Background(), 999)
+	sqlOverridden, _, err := chsql.Emit(ctx, plan)
+	if err != nil {
+		t.Fatalf("Emit (overridden): %v", err)
+	}
+	if got := strings.Count(sqlOverridden, "LIMIT 1000"); got != 2 {
+		t.Errorf("overridden emit: expected \"LIMIT 1000\" exactly twice, got %d\nSQL:\n%s", got, sqlOverridden)
+	}
+	if strings.Contains(sqlOverridden, "LIMIT 801") {
+		t.Errorf("overridden emit must NOT still carry the default's LIMIT literal\nSQL:\n%s", sqlOverridden)
+	}
+	// The pre-collapse fanout guard is untouched by this override — only
+	// the post-collapse group guard's own literal should move. Four, not
+	// two — see TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards's
+	// own comment for why.
+	if got := strings.Count(sqlOverridden, "LIMIT 4000001"); got != 4 {
+		t.Errorf("overridden emit: pre-collapse fanout guard changed unexpectedly, expected \"LIMIT 4000001\" four times, got %d\nSQL:\n%s", got, sqlOverridden)
+	}
+}
+
+// TestRangeBucketFanoutGroupGuard_FixedSizeAccumulatorUnaffected is the
+// discriminating control: resourceBoundFanoutPlan's argMax-only AggFuncs
+// must never carry the new group guard, at default OR override — an
+// unconditional application would false-positive-reject a cheap, safe,
+// wide-range dashboard query the new guard was never calibrated to police
+// (see rangeBucketFanoutHasGrowingAccumulator's own doc).
+func TestRangeBucketFanoutGroupGuard_FixedSizeAccumulatorUnaffected(t *testing.T) {
+	t.Parallel()
+
+	plan := resourceBoundFanoutPlan()
+	ctx := chsql.WithRangeBucketFanoutGroupMaxRows(context.Background(), 1)
+	sql, _, err := chsql.Emit(ctx, plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(sql, chsql.RangeBucketFanoutGroupBudgetMessage) {
+		t.Errorf("a fixed-size-accumulator (argMax) collapse must never carry the group guard, even overridden to 1\nSQL:\n%s", sql)
 	}
 }
 

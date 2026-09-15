@@ -19,3 +19,4 @@ export * from './expectations.js';
 export * from './variables.js';
 export * from './depth.js';
 export * from './reconcile.js';
+export * from './resource-bounds.js';

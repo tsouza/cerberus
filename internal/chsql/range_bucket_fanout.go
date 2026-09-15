@@ -204,5 +204,43 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		collapse.Having(Gte(Call("uniqExact", Col(inputTimestamp)), InlineLit(int64(r.MinSamples))))
 	}
 
+	// Issue #3468: a SECOND, independent bound — this one on the collapse's
+	// own OUTPUT row count (one row per (series, anchor) group), not the
+	// pre-collapse sample fanout `fanoutSource` above already caps. Scoped
+	// to collapses whose AggFuncs include a groupArray-family accumulator
+	// (classicBucketWindowAggs, expHistogramWindowAggs — see
+	// maxRangeBucketFanoutGroupRows' own doc for why): an argMax/sumForEach
+	// collapse reduces every group to a FIXED-size row regardless of group
+	// count, the same already-accepted risk class as any ordinary
+	// Aggregate, so gating this guard on the accumulator shape (rather than
+	// applying it unconditionally to every RangeBucketFanout) keeps a wide,
+	// cheap, legitimately safe dashboard query — thousands of anchors x
+	// series, fixed-size per-group state — from a false-positive rejection
+	// this bound was never calibrated to police.
+	if rangeBucketFanoutHasGrowingAccumulator(r.AggFuncs) {
+		guarded := NewQuery().From(lwrFanoutBoundedSourceFrag(
+			collapse.Frag(), r.AnchorAlias, e.rangeBucketFanoutGroupRowBound(), RangeBucketFanoutGroupBudgetMessage,
+		))
+		guarded.Select(Star())
+		return e.emitSelect(guarded)
+	}
+
 	return e.emitSelect(collapse)
+}
+
+// rangeBucketFanoutHasGrowingAccumulator reports whether aggFuncs includes a
+// groupArray-family accumulator — the shape whose per-row state GROWS with
+// in-window row count (classicBucketWindowAggs' ExplicitBounds/BucketCounts/
+// TimeUnix trio, expHistogramWindowAggs' bucket-array + timestamp groupArrays
+// — see histogram_quantile_window.go / histogram_quantile_native_window.go),
+// as opposed to a FIXED-size accumulator (argMax, sumForEach, sum, count,
+// …). See maxRangeBucketFanoutGroupRows' own doc for why only the former
+// needs a bound on the collapse's own output row count.
+func rangeBucketFanoutHasGrowingAccumulator(aggFuncs []chplan.AggFunc) bool {
+	for _, af := range aggFuncs {
+		if af.Fn == chplan.FnGroupArray {
+			return true
+		}
+	}
+	return false
 }

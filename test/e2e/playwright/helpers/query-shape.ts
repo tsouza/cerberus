@@ -217,6 +217,39 @@ export function extractHistogramName(expr: string): string | null {
   return nameMatch[1] ?? null;
 }
 
+// Matches a metric-name root ending in `_exp_hist` — cerberus's own
+// required (not cosmetic) suffix for a native/exponential histogram
+// selector (schema.Metrics.ExpHistogramSuffix; see docs/observability.md).
+// Not anchored to identifier boundaries on the left: a plain substring
+// test is enough to tell "this expression references SOME _exp_hist
+// selector" from "it doesn't", which is all isNativeHistogramSelector
+// needs, and a real PromQL expression is never going to spell `_exp_hist`
+// as an accidental substring of something else.
+const NATIVE_HISTOGRAM_SELECTOR_REGEX = /[A-Za-z0-9_:]_exp_hist\b/;
+
+/**
+ * True iff expr references a native/exponential histogram selector (a
+ * metric name ending in `_exp_hist`).
+ *
+ * A native histogram has no `_bucket` series or `le` label BY DESIGN
+ * (issue #3170) — `extractHistogramName` above legitimately returns null
+ * for `histogram_quantile(q, <name>_exp_hist[…])`, exactly as it does for
+ * the true N6 fabricated-value case (`histogram_quantile(q, foo_total)`,
+ * no bucket series anywhere). The two are NOT the same case: a native
+ * histogram quantile is expected to resolve to real data (its underlying
+ * exponential-histogram rows exist and are queried directly, no
+ * `_bucket` series involved at all), while N6 is a genuine bug class
+ * (a classic, non-histogram counter fabricating a value out of an empty
+ * scan). A caller that sees `extractHistogramName(expr) === null` MUST
+ * check this function before assuming the N6 empty-response contract
+ * applies — see assertions.ts's `assertNoFabricatedValue` /
+ * `assertHistogramComplete` doc comments for the two the null case
+ * splits into.
+ */
+export function isNativeHistogramSelector(expr: string): boolean {
+  return NATIVE_HISTOGRAM_SELECTOR_REGEX.test(expr);
+}
+
 // PromQL identifiers that aren't metric-name selectors — they appear
 // in identifier position but introduce keywords / call-shaped clauses.
 // `by` / `without` / `on` / `ignoring` / `group_left` / `group_right`

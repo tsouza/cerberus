@@ -53,32 +53,39 @@
  * a populated frame, histogram fabricated-value on a populated frame —
  * are still hard failures, with ONE precisely-pinned exception:
  *
- * Memory-limit dual contract (run 27277793810): cerberus stamps a
- * 1 GiB per-query `max_memory_usage` cap on every ClickHouse
- * data-plane query (CERBERUS_CH_QUERY_MAX_MEMORY in
- * test/e2e/k3s/cerberus-values.yaml + docker-compose.yml). cerberus's matrix
- * SQL shape materialises O(anchors × samples) inside ClickHouse, so a
- * wide-window / fine-step tuple (the 24h/15s run-27277793810 case
- * demanded 2.12 GiB) can cross the cap — and whether a given tuple
- * crosses depends on the data volume seeded at run time, which varies
- * with stack uptime and seed timing. The rejection therefore CANNOT be
- * pinned per-tuple deterministically. Instead each tuple has exactly
- * two acceptable outcomes, BOTH exact contracts (neither is
- * tolerance):
+ * Memory-limit / resource-bound multi-way contract (run 27277793810;
+ * widened for cerberus issue #3468): cerberus stamps a 1 GiB per-query
+ * `max_memory_usage` cap on every ClickHouse data-plane query
+ * (CERBERUS_CH_QUERY_MAX_MEMORY in test/e2e/k3s/cerberus-values.yaml +
+ * docker-compose.yml). cerberus's matrix SQL shape materialises
+ * O(anchors × samples) inside ClickHouse, so a wide-window / fine-step
+ * tuple (the 24h/15s run-27277793810 case demanded 2.12 GiB) can cross
+ * the cap — and whether a given tuple crosses depends on the data
+ * volume seeded at run time, which varies with stack uptime and seed
+ * timing. The rejection therefore CANNOT be pinned per-tuple
+ * deterministically. Instead each tuple has exactly two acceptable
+ * outcomes, BOTH exact contracts (neither is tolerance):
  *
  *   - 2xx → the full validity assertions below apply, unchanged.
- *   - 422 with errorType=execution and cerberus's exact memory-limit
- *     message (MEMORY_LIMIT_MESSAGE below, byte-for-byte — pinned in
- *     lock-step with internal/api/prom/handler_memory_limit_test.go)
- *     → the documented resource-exhausted rejection; annotated loudly
- *     so the nightly report shows the 2xx/422 split per run.
+ *   - 422 with errorType=execution and EITHER cerberus's exact
+ *     memory-limit message (MEMORY_LIMIT_MESSAGE below, byte-for-byte —
+ *     pinned in lock-step with internal/api/prom/handler_memory_limit_test.go)
+ *     OR one of cerberus's own emitter-planted resource-bound guard
+ *     messages (RESOURCE_BOUND_GUARD_MESSAGES below) — a native-
+ *     histogram-consuming panel (issue #3170/#3468) can trip its own
+ *     pre-rejection guard instead of ClickHouse's raw memory cap, which
+ *     is the guard doing its documented job (aborting before ClickHouse
+ *     would have to) rather than a different failure class. Either
+ *     branch is the documented resource-exhausted rejection; annotated
+ *     loudly so the nightly report shows the 2xx/422 split per run and
+ *     which contract each 422 took.
  *
- * Any other status, and any 422 whose body deviates from the pinned
- * contract, stays a hard failure. The emitter-redesign task
- * (sample-side anchor fanout) is expected to shrink the CH working
- * set so wide tuples flip back to the 2xx branch — when it lands, the
- * memory-limit annotation count in the nightly report should drop to
- * zero, and this dual contract becomes a dormant guard.
+ * Any other status, and any 422 whose body matches neither contract,
+ * stays a hard failure. The emitter-redesign task (sample-side anchor
+ * fanout) is expected to shrink the CH working set so wide tuples flip
+ * back to the 2xx branch — when it lands, the memory-limit annotation
+ * count in the nightly report should drop to zero, and this contract
+ * becomes a dormant guard.
  *
  * Env:
  *   GRAFANA_URL       default http://localhost:3000
@@ -103,8 +110,12 @@ import {
   extractWithoutKeys,
   generateSelfTraffic,
   isHistogramQuantile,
+  isNativeHistogramSelector,
   iterateDashboards,
   iteratePanels,
+  CH_QUERY_MAX_MEMORY_BYTES,
+  MEMORY_LIMIT_MESSAGE,
+  RESOURCE_BOUND_GUARD_MESSAGES,
 } from './helpers/index.js';
 
 // Self-traffic warmup duration. The matrix's longest range is 24h —
@@ -154,23 +165,6 @@ const STEP_SIZES: Array<{ label: string; stepSeconds: number }> = [
 const MAX_RESOLUTION_POINTS = 11_000;
 const RESOLUTION_CAP_MESSAGE =
   'exceeded maximum resolution of 11,000 points per timeseries';
-
-// ClickHouse per-query memory cap pinned by both stacks via
-// CERBERUS_CH_QUERY_MAX_MEMORY (test/e2e/k3s/cerberus-values.yaml,
-// docker-compose.yml). Kept as a literal so a stack-config drift
-// breaks this pin instead of silently changing the contract.
-const CH_QUERY_MAX_MEMORY_BYTES = 1_073_741_824;
-
-// The exact 422 errorType=execution wire message cerberus's Prom head
-// emits when ClickHouse aborts a query for exceeding the per-query
-// memory cap (CH error 241, MEMORY_LIMIT_EXCEEDED). Byte-for-byte the
-// production message from internal/api/prom/handler.go
-// (promMemoryLimitMessage) — pinned in lock-step with
-// internal/api/prom/handler_memory_limit_test.go. See the
-// "Memory-limit dual contract" section in the file header for why a
-// tuple receiving this rejection is a PINNED-CONTRACT outcome, not a
-// tolerated error.
-const MEMORY_LIMIT_MESSAGE = `query processing would use too much memory in query execution (ClickHouse memory limit exceeded; per-query cap ${CH_QUERY_MAX_MEMORY_BYTES} bytes)`;
 
 // Ceiling on how many matrix tuples this spec has in flight at once.
 //
@@ -404,6 +398,7 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
   // resource-rejection branch on this run.
   let okFrameCount = 0;
   let memoryLimitCount = 0;
+  let resourceBoundGuardCount = 0;
 
   const now = Math.floor(Date.now() / 1000);
 
@@ -457,13 +452,14 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
     try {
       const resp = await request.get(queryURL);
 
-      // Memory-limit dual contract (see file header): a 422 is
-      // acceptable IFF it is exactly cerberus's pinned
-      // resource-exhausted rejection — errorType=execution with the
-      // byte-for-byte MEMORY_LIMIT_MESSAGE. That outcome is asserted
+      // Memory-limit / resource-bound multi-way contract (see file
+      // header): a 422 is acceptable IFF it is exactly cerberus's
+      // pinned resource-exhausted rejection — errorType=execution with
+      // EITHER the byte-for-byte MEMORY_LIMIT_MESSAGE OR one of
+      // RESOURCE_BOUND_GUARD_MESSAGES. That outcome is asserted
       // precisely (a 422 with any other body remains a hard
       // failure) and logged loudly so the nightly report shows
-      // which tuples took the rejection branch.
+      // which tuples took which rejection branch.
       if (resp.status() === 422) {
         const body = await resp.text().catch(() => '<unreadable>');
         let parsed: PromErrorEnvelope | null = null;
@@ -472,20 +468,26 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
         } catch {
           parsed = null;
         }
-        if (
-          parsed?.status === 'error' &&
-          parsed?.errorType === 'execution' &&
-          parsed?.error === MEMORY_LIMIT_MESSAGE
-        ) {
-          memoryLimitCount++;
-          testInfo.annotations.push({
-            type: 'time-ranges-memory-limit',
-            description: `[${surface}] tuple took the 422 memory-limit pinned-contract branch (ClickHouse per-query cap ${CH_QUERY_MAX_MEMORY_BYTES} bytes; run-27277793810 class) for expr: ${e.expr}`,
-          });
-          return;
+        if (parsed?.status === 'error' && parsed?.errorType === 'execution') {
+          if (parsed?.error === MEMORY_LIMIT_MESSAGE) {
+            memoryLimitCount++;
+            testInfo.annotations.push({
+              type: 'time-ranges-memory-limit',
+              description: `[${surface}] tuple took the 422 memory-limit pinned-contract branch (ClickHouse per-query cap ${CH_QUERY_MAX_MEMORY_BYTES} bytes; run-27277793810 class) for expr: ${e.expr}`,
+            });
+            return;
+          }
+          if (RESOURCE_BOUND_GUARD_MESSAGES.includes(parsed.error ?? '')) {
+            resourceBoundGuardCount++;
+            testInfo.annotations.push({
+              type: 'time-ranges-resource-bound-guard',
+              description: `[${surface}] tuple took the 422 resource-bound-guard pinned-contract branch (${JSON.stringify(parsed.error)}) for expr: ${e.expr}`,
+            });
+            return;
+          }
         }
         failures.push(
-          `[${surface}] query_range returned 422 but NOT the pinned memory-limit contract (want errorType=execution + exact message ${JSON.stringify(MEMORY_LIMIT_MESSAGE)})\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+          `[${surface}] query_range returned 422 but NOT a pinned resource-exhausted contract (want errorType=execution + MEMORY_LIMIT_MESSAGE or one of RESOURCE_BOUND_GUARD_MESSAGES)\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
         );
         return;
       }
@@ -553,20 +555,31 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
       // does NOT re-probe `/api/v1/series` for _bucket presence
       // (phase-2 already pins that at the short range; doing it
       // per-(range, step) would 12× the probe count for no extra
-      // signal). Instead we apply the two branches based on the
+      // signal). Instead we apply three branches based on the
       // expression's structure alone:
       //   - histogram_quantile over a `_bucket`-named root → the
       //     response MUST be non-empty (assertHistogramComplete).
-      //   - histogram_quantile over a non-bucket root → the
-      //     response MUST be empty (assertNoFabricatedValue).
+      //   - histogram_quantile over a native/exponential-histogram
+      //     selector (`_exp_hist`, isNativeHistogramSelector — issue
+      //     #3468) → no `_bucket` series exists BY DESIGN, and the
+      //     branch above (frameCount === 0 → annotate, return) has
+      //     already handled "no data" before this code runs, so
+      //     reaching here means the response IS non-empty — exactly
+      //     what a native histogram_quantile should return; no
+      //     fabrication check applies.
+      //   - histogram_quantile over anything else (no `_bucket`, not
+      //     `_exp_hist`) → the response MUST be empty
+      //     (assertNoFabricatedValue) — the true N6 shape.
       if (e.isHistogram) {
         if (e.histogramName === null) {
-          try {
-            assertNoFabricatedValue(envelope, e.expr);
-          } catch (err) {
-            failures.push(
-              `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
-            );
+          if (!isNativeHistogramSelector(e.expr)) {
+            try {
+              assertNoFabricatedValue(envelope, e.expr);
+            } catch (err) {
+              failures.push(
+                `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
+              );
+            }
           }
         } else {
           try {
@@ -610,7 +623,7 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
   // (sample-side anchor fanout) shrinks the CH working set.
   testInfo.annotations.push({
     type: 'time-ranges-branch-split',
-    description: `branch split across ${entries.length} tuple(s): ${okFrameCount} → 2xx populated (full validity assertions), ${emptyFrameCount} → 2xx empty (annotated), ${memoryLimitCount} → 422 memory-limit pinned contract (run-27277793810 class)`,
+    description: `branch split across ${entries.length} tuple(s): ${okFrameCount} → 2xx populated (full validity assertions), ${emptyFrameCount} → 2xx empty (annotated), ${memoryLimitCount} → 422 memory-limit pinned contract (run-27277793810 class), ${resourceBoundGuardCount} → 422 resource-bound-guard pinned contract (issue #3468)`,
   });
 
   if (failures.length > 0) {

@@ -288,12 +288,21 @@ export const K3D_STACK: CrawlStackConfig = {
     'grafana-surface-inventory-k3d artifact.',
   expectedDatasources: CERBERUS_DATASOURCES,
   lints: {
-    // test/e2e/grafana/dashboards/cerberus.json carries one
-    // histogram_quantile panel (p95 over
-    // cerberus_queries_duration_seconds) and NO multi-quantile panel.
-    // Floor 0 declares that fact — lint 2 still judges any
-    // multi-quantile panel a future dashboard adds.
-    minQuantileConsumedFamilies: 1,
+    // test/e2e/grafana/dashboards/cerberus.json carries exactly one
+    // histogram_quantile panel — "P95 latency by language" — and since
+    // cerberus issue #3170/#3171 it queries the NATIVE/exponential
+    // histogram cerberus_queries_duration_exp_hist, not a classic
+    // `_bucket` family (see lints.spec.ts's own doc: a native
+    // histogram_quantile has no classic bucket family for lint 1 to
+    // judge, by design — cerberus.json carries no OTHER
+    // histogram_quantile panel and no multi-quantile panel either).
+    // Floor 0 on both declares that fact; it is not a tolerance —
+    // shrinking BELOW 0 is impossible, and lint 1 / lint 2 still judge
+    // any classic-bucket or multi-quantile panel a future k3d dashboard
+    // adds. Raise this floor back to 1 only alongside a real
+    // classic-bucket-consuming panel actually landing in
+    // test/e2e/grafana/dashboards/cerberus.json.
+    minQuantileConsumedFamilies: 0,
     minMultiQuantilePanels: 0,
   },
   leanSeedRoots: DRILLDOWN_APP_SEEDS,

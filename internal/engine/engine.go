@@ -233,6 +233,9 @@ func applyResourceBoundOverrides(ctx context.Context, bounds ResourceBoundOverri
 	if bounds.MaxEmittedSQLBytes > 0 {
 		ctx = chsql.WithMaxEmittedSQLBytes(ctx, bounds.MaxEmittedSQLBytes)
 	}
+	if bounds.RangeBucketFanoutGroupMaxRows > 0 {
+		ctx = chsql.WithRangeBucketFanoutGroupMaxRows(ctx, bounds.RangeBucketFanoutGroupMaxRows)
+	}
 	return ctx
 }
 
@@ -245,10 +248,11 @@ func applyResourceBoundOverrides(ctx context.Context, bounds ResourceBoundOverri
 // nothing.
 func (e *Engine) resourceBoundOverrides() ResourceBoundOverrides {
 	return ResourceBoundOverrides{
-		RangeBucketFanoutMaxRows: e.RangeBucketFanoutMaxRows,
-		RangeLWRFanoutMaxRows:    e.RangeLWRFanoutMaxRows,
-		RateWindowFanoutMaxRows:  e.RateWindowFanoutMaxRows,
-		MaxEmittedSQLBytes:       e.MaxEmittedSQLBytes,
+		RangeBucketFanoutMaxRows:      e.RangeBucketFanoutMaxRows,
+		RangeLWRFanoutMaxRows:         e.RangeLWRFanoutMaxRows,
+		RateWindowFanoutMaxRows:       e.RateWindowFanoutMaxRows,
+		MaxEmittedSQLBytes:            e.MaxEmittedSQLBytes,
+		RangeBucketFanoutGroupMaxRows: e.RangeBucketFanoutGroupMaxRows,
 	}
 }
 
@@ -1072,6 +1076,20 @@ type Engine struct {
 	RangeBucketFanoutMaxRows int64
 	RangeLWRFanoutMaxRows    int64
 	RateWindowFanoutMaxRows  int64
+
+	// RangeBucketFanoutGroupMaxRows mirrors the operator override for
+	// RangeBucketFanout's collapse OUTPUT row bound (issue #3468,
+	// resource_bound_env.go): CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_ROWS
+	// — a second, independent axis from RangeBucketFanoutMaxRows above (that
+	// one bounds the PRE-collapse sample fanout; this one bounds how many
+	// (series, anchor) groups the collapse itself may hand to a
+	// groupArray-accumulating downstream fold — see
+	// chsql.maxRangeBucketFanoutGroupRows' own doc). PromQL-only, for the
+	// identical reason RangeBucketFanoutMaxRows is: only internal/promql
+	// ever lowers a chplan.RangeBucketFanout. The zero Go value (0) is the
+	// same "operator did not override this one" sentinel the other three
+	// fields above use.
+	RangeBucketFanoutGroupMaxRows int64
 
 	// MaxEmittedSQLBytes mirrors the operator override for chsql's
 	// emitted-SQL statement-size bound (issue #2733,

@@ -1460,6 +1460,19 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chplan.ExpHistogramWindowSampleBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
+	// Cerberus issue #3468: RangeBucketFanout's own post-collapse group-count
+	// bound (lwr_fanout_bound.go's maxRangeBucketFanoutGroupRows) — a SECOND,
+	// independent axis from RangeBucketFanoutBudgetMessage's pre-collapse
+	// sample fanout above. Wired in from the start, per #2522's own lesson
+	// (see RangeBucketGridNativeDensityBudgetMessage's case above): a guard
+	// with no case here falls through to the generic 502 errorType=internal
+	// branch below instead of the intended 422.
+	case throwIfMessageMatches(err, chsql.RangeBucketFanoutGroupBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chsql.RangeBucketFanoutGroupBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
 	}
 	return nil
 }
