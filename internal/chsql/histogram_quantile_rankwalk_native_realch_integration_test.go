@@ -201,7 +201,15 @@ type hqRankWalkDiffQueryResult struct {
 
 func hqRankWalkDiffQuery(table string, phi float64, phiExpr chplan.Expr, native bool) hqRankWalkDiffQueryResult {
 	plan := &chplan.HistogramQuantile{
-		Input:                      &chplan.Scan{Table: table},
+		Input: &chplan.Scan{
+			Table:   table,
+			Columns: []string{"Attributes", "BucketCounts", "ExplicitBounds"},
+			Roles: []chplan.Column{
+				{Name: "Attributes", Role: chplan.RoleAttributes},
+				{Name: "BucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+				{Name: "ExplicitBounds", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldExplicitBounds},
+			},
+		},
 		Phi:                        phi,
 		PhiExpr:                    phiExpr,
 		BucketCountsColumn:         "BucketCounts",

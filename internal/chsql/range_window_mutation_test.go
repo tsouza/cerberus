@@ -445,8 +445,11 @@ func TestFusedSamplesQueryTemporalityGate(t *testing.T) {
 		r := fusedOuter()
 		r.Input.(*chplan.RangeWindow).Input = &chplan.Scan{
 			Table:   "samples",
-			Columns: []string{"AggregationTemporality"},
-			Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+			Columns: []string{"TimeUnix", "AggregationTemporality"},
+			Roles: []chplan.Column{
+				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+				{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+			},
 		}
 		sql, _, err := Emit(context.Background(), r)
 		if err != nil {

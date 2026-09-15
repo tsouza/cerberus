@@ -43,8 +43,11 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 		if temporality {
 			r.Input = &chplan.Scan{
 				Table:   "otel_metrics_sum",
-				Columns: []string{"AggregationTemporality"},
-				Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+				Columns: []string{"TimeUnix", "AggregationTemporality"},
+				Roles: []chplan.Column{
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+				},
 			}
 		}
 		if groupBy {
