@@ -604,6 +604,10 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	if err != nil {
 		return err
 	}
+	inputTS, rootTS, err := compareTimestampColumns(m)
+	if err != nil {
+		return err
+	}
 
 	end := endExprFrag(r)
 	stepNS := r.Step.Nanoseconds()
@@ -622,12 +626,11 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 		numAnchors = 1
 	}
 
-	tsCol := r.TimestampColumn
-	m, bound, err := e.compareWindowedScanBound(r, m, rangeNS)
+	m, bound, err := e.compareWindowedScanBound(r, m, rangeNS, inputTS, rootTS)
 	if err != nil {
 		return err
 	}
-	base, err := e.compareBaseQuery(m, bound, tsCol)
+	base, err := e.compareBaseQuery(m, bound, inputTS)
 	if err != nil {
 		return err
 	}
@@ -639,7 +642,7 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	fanout.SelectAs(compareTupleElementFrag(1), attrA)
 	fanout.SelectAs(compareTupleElementFrag(2), valA)
 	fanout.SelectAs(
-		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
+		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(inputTS) }, stepNS, rangeNS, numAnchors),
 		RangeWindowAnchorAlias,
 	)
 
@@ -658,7 +661,7 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 // fields.
 func compareMatrixRangeNS(r *chplan.RangeWindow) (int64, error) {
 	if r.TimestampColumn == "" {
-		return 0, fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for MetricsCompare input)", ErrUnsupported)
+		return 0, fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required output alias)", ErrUnsupported)
 	}
 	if r.Step <= 0 {
 		return 0, fmt.Errorf("%w: RangeWindow wrapping MetricsCompare requires Step > 0", ErrUnsupported)
@@ -668,6 +671,21 @@ func compareMatrixRangeNS(r *chplan.RangeWindow) (int64, error) {
 		rangeDur = r.Step
 	}
 	return rangeDur.Nanoseconds(), nil
+}
+
+func compareTimestampColumns(m *chplan.MetricsCompare) (input, root string, err error) {
+	input, ok := m.InputTimestampColumn()
+	if !ok {
+		return "", "", fmt.Errorf("%w: MetricsCompare requires a unique named timestamp role on Inner", ErrUnsupported)
+	}
+	if m.RootLookup == nil {
+		return input, "", nil
+	}
+	root, ok = m.RootLookupTimestampColumn()
+	if !ok {
+		return "", "", fmt.Errorf("%w: MetricsCompare requires a unique named timestamp role on RootLookup scans", ErrUnsupported)
+	}
+	return input, root, nil
 }
 
 // compareWindowedScanBound derives the matrix path's scan-bound pushdown: the
@@ -680,9 +698,8 @@ func compareMatrixRangeNS(r *chplan.RangeWindow) (int64, error) {
 // same bound the matrix statement embeds; a second derivation would be a second
 // source of truth for which window the root leg is read under.
 func (e *emitter) compareWindowedScanBound(
-	r *chplan.RangeWindow, m *chplan.MetricsCompare, rangeNS int64,
+	r *chplan.RangeWindow, m *chplan.MetricsCompare, rangeNS int64, inputTS, rootTS string,
 ) (*chplan.MetricsCompare, *compareScanBound, error) {
-	tsCol := r.TimestampColumn
 	// Push the (Start-range, End] Timestamp window INTO each scan of the
 	// compare join (the 's' span scan + the seeded root leg) rather than
 	// above the join where CH 24.12 cannot prune it. Gated on both Start
@@ -697,7 +714,7 @@ func (e *emitter) compareWindowedScanBound(
 	}
 	var bound *compareScanBound
 	if !r.Start.IsZero() && !r.End.IsZero() {
-		lo, hi := innerScanTsBoundsFrags(tsCol, r.Start, r.End, r.Offset.Nanoseconds(), rangeNS)
+		lo, hi := innerScanTsBoundsFrags(inputTS, r.Start, r.End, r.Offset.Nanoseconds(), rangeNS)
 		bound = &compareScanBound{lo: lo, hi: hi}
 	}
 	// Push a `TraceId IN (<windowed cohort>)` seed directly onto the
@@ -741,7 +758,7 @@ func (e *emitter) compareWindowedScanBound(
 		// root-name/root-service enrichment. offsetNS's sign convention matches
 		// offsetShiftedTimeFrag: shiftedNano = wallNano - offsetNS.
 		offsetNS := r.Offset.Nanoseconds()
-		lo, hi := tsBoundExprs(tsCol, r.Start.UnixNano()-offsetNS-rangeNS, r.End.UnixNano()-offsetNS)
+		lo, hi := tsBoundExprs(inputTS, r.Start.UnixNano()-offsetNS-rangeNS, r.End.UnixNano()-offsetNS)
 		seed := compareSeedNode(m.Inner, m.TraceIDColumn, lo, hi)
 		windowed := *m
 		// A root-scoped selection can use the request window directly. For a
@@ -754,9 +771,9 @@ func (e *emitter) compareWindowedScanBound(
 		var envelope *QueryBuilder
 		switch {
 		case m.InnerRootScoped:
-			rootLo, rootHi = lo, hi
+			rootLo, rootHi = tsBoundExprs(rootTS, r.Start.UnixNano()-offsetNS-rangeNS, r.End.UnixNano()-offsetNS)
 		case seed != nil:
-			rootLo, rootHi, envelope = rootLookupTraceIDTsBounds(m, seed, tsCol)
+			rootLo, rootHi, envelope = rootLookupTraceIDTsBounds(m, seed, rootTS)
 		}
 		rootLookup, seeded := windowRootLookupTraceIDSeed(m.RootLookup, m.TraceIDColumn, seed, rootLo, rootHi)
 		windowed.RootLookup = rootLookup
@@ -851,7 +868,11 @@ func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []a
 	// ctxSpansTable are already read off ctx by newEmitter; they are the
 	// same value spansTableFromCtx returned above.
 	e := newEmitter(ctx)
-	windowed, bound, err := e.compareWindowedScanBound(rw, m, rangeNS)
+	inputTS, rootTS, err := compareTimestampColumns(m)
+	if err != nil {
+		return fail(err)
+	}
+	windowed, bound, err := e.compareWindowedScanBound(rw, m, rangeNS, inputTS, rootTS)
 	if err != nil {
 		return fail(err)
 	}

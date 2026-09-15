@@ -105,7 +105,11 @@ func (r *RangeLWR) RowType() Schema {
 }
 
 func (r *RangeWindowStaleResample) RowType() Schema {
-	return sampleSchema(r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol)
+	columns, ok := r.InputColumns()
+	if !ok {
+		return Schema{}
+	}
+	return sampleSchema(columns.MetricName, columns.Attributes, columns.Timestamp, columns.Value)
 }
 
 func (v *VectorJoin) RowType() Schema {

@@ -68,7 +68,9 @@ func compareNode() *chplan.MetricsCompare {
 		AttrAlias:  "attr",
 		ValAlias:   "val",
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+		}},
 	}
 }
 
@@ -85,7 +87,9 @@ func compareNodeWithRoot() *chplan.MetricsCompare {
 	m.TraceIDColumn = "TraceId"
 	m.RootLookup = &chplan.Aggregate{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_traces"},
+			Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+				{Name: "Timestamp", Role: chplan.RoleTimestamp},
+			}},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "ParentSpanId"},
@@ -98,6 +102,59 @@ func compareNodeWithRoot() *chplan.MetricsCompare {
 		},
 	}
 	return m
+}
+
+func TestEmitRangeWindowCompareResolvesPerRelationTimestamps(t *testing.T) {
+	t.Parallel()
+	m := compareNodeWithRoot()
+	m.Inner.(*chplan.Scan).Roles = []chplan.Column{{Name: "cohort_time", Role: chplan.RoleTimestamp}}
+	rootScan := m.RootLookup.(*chplan.Aggregate).Input.(*chplan.Filter).Input.(*chplan.Scan)
+	rootScan.Roles = []chplan.Column{{Name: "root_time", Role: chplan.RoleTimestamp}}
+	m.InnerRootScoped = true
+	rw := &chplan.RangeWindow{
+		Input: m, Range: time.Minute, Step: time.Minute,
+		Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+		TimestampColumn: "public_time",
+	}
+	sql, _, err := chsql.Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	for _, want := range []string{
+		"dateDiff('nanosecond', `cohort_time`",
+		"`cohort_time` > toDateTime64",
+		"`root_time` >= fromUnixTimestamp64Nano(?)",
+		"`root_time` <= fromUnixTimestamp64Nano(?)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("emitted SQL missing relation-owned timestamp %q:\n%s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "`public_time`") {
+		t.Errorf("public RangeWindow timestamp alias selected as a physical compare input:\n%s", sql)
+	}
+}
+
+func TestEmitRangeWindowCompareRejectsMalformedTimestampOwnership(t *testing.T) {
+	t.Parallel()
+	window := func(m *chplan.MetricsCompare) *chplan.RangeWindow {
+		return &chplan.RangeWindow{Input: m, Step: time.Minute, TimestampColumn: "public_time"}
+	}
+	missingInner := compareNode()
+	missingInner.Inner = &chplan.Scan{Table: "otel_traces"}
+	missingRoot := compareNodeWithRoot()
+	missingRoot.RootLookup.(*chplan.Aggregate).Input.(*chplan.Filter).Input = &chplan.Scan{Table: "otel_traces"}
+	for name, plan := range map[string]*chplan.RangeWindow{
+		"inner": window(missingInner),
+		"root":  window(missingRoot),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := chsql.Emit(context.Background(), plan); err == nil {
+				t.Fatal("Emit accepted malformed compare timestamp ownership")
+			}
+		})
+	}
 }
 
 // TestEmitRangeWindowCompare_JoinScanPushdown pins the scan-bounding
@@ -602,7 +659,9 @@ func TestEmitRangeWindowCompare_TraceIDTsEnvelopeUnreferenced(t *testing.T) {
 	m.RootLookupTraceIDTsEndColumn = "End"
 	// Aggregate straight over Scan: no Filter for the bounds to land in.
 	m.RootLookup = &chplan.Aggregate{
-		Input:   &chplan.Scan{Table: "otel_traces"},
+		Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+		}},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
 		AggFuncs: []chplan.AggFunc{
 			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},

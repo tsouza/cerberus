@@ -30,7 +30,7 @@ import "time"
 // Row-shape contract. The emitter (internal/chsql/range_window_stale_resample.go)
 // produces EXACTLY the row shape RangeLWR's emitter produces: one row per
 // (series, anchor_ts) that had an in-window sample, with columns
-// [MetricNameCol, AttributesCol, TimeUnix = anchor_ts, ValueCol]. Grid cells
+// [RoleMetricName, RoleAttributes, RoleTimestamp = anchor_ts, RoleValue]. Grid cells
 // with no sample in the staleness window are NULL in
 // timeSeriesResampleToGridWithStaleness's Array(Nullable(Float64)) result and
 // are filtered to ABSENT rows (matching PromQL's staleness-gap semantics,
@@ -85,15 +85,51 @@ type RangeWindowStaleResample struct {
 	// by Offset WITHOUT moving the emitted anchor timestamp. Zero means no
 	// offset.
 	Offset time.Duration
+}
 
-	// Column names on Input (canonical OTel-CH: MetricName / Attributes /
-	// TimeUnix / Value). TimestampCol / ValueCol are the two positional
-	// arguments of the aggregate's second paren group; MetricNameCol /
-	// AttributesCol are the per-series GROUP BY identity.
-	MetricNameCol string
-	AttributesCol string
-	TimestampCol  string
-	ValueCol      string
+// StaleResampleColumns is the closed four-role sample contract a
+// RangeWindowStaleResample consumes from its child.
+type StaleResampleColumns struct {
+	MetricName string
+	Attributes string
+	Timestamp  string
+	Value      string
+}
+
+// InputColumns resolves the node's four input columns from its child's closed
+// row schema. It fails closed when a required role is absent, unnamed,
+// duplicated, or shares its physical name with another declared role.
+func (r *RangeWindowStaleResample) InputColumns() (StaleResampleColumns, bool) {
+	if r == nil || r.Input == nil {
+		return StaleResampleColumns{}, false
+	}
+	row := r.Input.RowType()
+	if row.Open {
+		return StaleResampleColumns{}, false
+	}
+	var out StaleResampleColumns
+	required := map[ColumnRole]*string{
+		RoleMetricName: &out.MetricName,
+		RoleAttributes: &out.Attributes,
+		RoleTimestamp:  &out.Timestamp,
+		RoleValue:      &out.Value,
+	}
+	nameCount := make(map[string]int, len(row.Columns))
+	for _, column := range row.Columns {
+		nameCount[column.Name]++
+		if target, ok := required[column.Role]; ok {
+			if column.Name == "" || *target != "" {
+				return StaleResampleColumns{}, false
+			}
+			*target = column.Name
+		}
+	}
+	for _, name := range []string{out.MetricName, out.Attributes, out.Timestamp, out.Value} {
+		if name == "" || nameCount[name] != 1 {
+			return StaleResampleColumns{}, false
+		}
+	}
+	return out, true
 }
 
 func (*RangeWindowStaleResample) planNode() {}
@@ -103,7 +139,7 @@ func (r *RangeWindowStaleResample) Children() []Node { return []Node{r.Input} }
 // Equal compares two RangeWindowStaleResample nodes field-by-field. It is written as
 // a single scalar-fields conjunction plus a recursive Input compare (rather than
 // RangeLWR's early-return ladder) — the two nodes carry the identical data shape
-// (Start/End/Step/Lookback/Offset + the canonical column names), so the compact
+// (Start/End/Step/Lookback/Offset), so the compact
 // form keeps the comparison total without the boilerplate parallel that couples
 // the native and fan-out leaves.
 func (r *RangeWindowStaleResample) Equal(other Node) bool {
@@ -112,9 +148,7 @@ func (r *RangeWindowStaleResample) Equal(other Node) bool {
 		return false
 	}
 	scalarsEqual := r.Start.Equal(o.Start) && r.End.Equal(o.End) &&
-		r.Step == o.Step && r.Lookback == o.Lookback && r.Offset == o.Offset &&
-		r.MetricNameCol == o.MetricNameCol && r.AttributesCol == o.AttributesCol &&
-		r.TimestampCol == o.TimestampCol && r.ValueCol == o.ValueCol
+		r.Step == o.Step && r.Lookback == o.Lookback && r.Offset == o.Offset
 	if !scalarsEqual {
 		return false
 	}
