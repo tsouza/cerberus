@@ -21,10 +21,8 @@ const searchTraceLimitScanTable = "otel_traces"
 
 func searchTraceLimitNode(traceLimit int64) *chplan.SearchTraceLimit {
 	return &chplan.SearchTraceLimit{
-		Input:           &chplan.Scan{Table: searchTraceLimitScanTable, Columns: []string{"TraceId", "Timestamp"}},
-		TraceIDColumn:   "TraceId",
-		TimestampColumn: "Timestamp",
-		TraceLimit:      traceLimit,
+		Input:      &chplan.Scan{Table: searchTraceLimitScanTable, Columns: []string{"TraceId", "Timestamp"}, Roles: []chplan.Column{{Name: "TraceId", Role: chplan.RoleTraceID}, {Name: "Timestamp", Role: chplan.RoleTimestamp}}},
+		TraceLimit: traceLimit,
 	}
 }
 
