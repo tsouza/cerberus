@@ -195,7 +195,7 @@ func TestWithRangeLWRFanoutMaxRows_ChangesQueryOutcome(t *testing.T) {
 	const table = "range_lwr_override_metrics"
 	start, end, step, lookback := resourceBoundOverrideGrid()
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: table},
+		Input:         rangeLWRTestInput(table),
 		Start:         start,
 		End:           end,
 		Step:          step,
