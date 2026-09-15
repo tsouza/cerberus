@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "verifiers": [
+    {
+      "id": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "name": "Spec fixture roundtrip",
+      "description": "A TXTAR fixture under test/spec/ that lowers a query to SQL and, where seeded, executes it against chDB and asserts on the returned rows.",
+      "detects": ["wrong SQL lowering", "wrong result rows against a known seed"],
+      "cannot_detect": ["semantic drift against the reference backend's own engine"],
+      "complemented_by": ["VERIFIER-REFERENCE-DIFFERENTIAL"],
+      "substrate": "chdb",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "name": "Reference differential",
+      "description": "Runs a query against both cerberus and the real reference backend (Prometheus/Loki/Tempo) over shared seed data and diffs the responses.",
+      "detects": ["semantic drift against the reference backend"],
+      "cannot_detect": ["internal plan correctness independent of the final response shape"],
+      "complemented_by": ["VERIFIER-SPEC-FIXTURE-ROUNDTRIP"],
+      "substrate": "reference-stack",
+      "relative_cost": "high",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "name": "Static invariant scan",
+      "description": "A source scan rejecting a forbidden pattern outright (e.g. a caching call site outside the one sanctioned result_cache stamp site).",
+      "detects": ["a forbidden pattern reintroduced at any call site"],
+      "cannot_detect": ["a semantically equivalent effect reached through an undetected mechanism"],
+      "complemented_by": [],
+      "substrate": "static",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    }
+  ]
+}

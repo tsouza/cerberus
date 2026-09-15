@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "executions": [
+    {
+      "id": "EXEC-PROMQL-RANGE-ALIGNMENT-SPEC-20260910",
+      "binding": "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC",
+      "observed_at": "2026-09-10T04:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-NO-CACHING-STATIC-20260910",
+      "binding": "BINDING-ARCH-NO-CACHING-STATIC",
+      "observed_at": "2026-09-10T04:05:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    }
+  ]
+}

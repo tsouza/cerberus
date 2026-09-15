@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "bindings": [
+    {
+      "id": "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC",
+      "contract": "PROMQL-RANGE-VECTOR-ALIGNMENT",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "parser-lowering",
+      "test_ref": "test/spec/promql/range_vector_window.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT",
+      "contract": "PROMQL-RANGE-VECTOR-ALIGNMENT",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "reference-differential",
+      "test_ref": "compatibility/prometheus",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+      "contract": "SIGNAL-LABEL-MATCHER-CONSISTENCY",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "promql-parser",
+      "test_ref": "test/spec/promql/label_matcher.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
+      "contract": "SIGNAL-LABEL-MATCHER-CONSISTENCY",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "logql-parser",
+      "test_ref": "test/spec/logql/label_matcher.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-NO-CACHING-STATIC",
+      "contract": "ARCH-NO-QUERY-RESULT-CACHING",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "static-scan",
+      "test_ref": "internal/engine",
+      "status": "active"
+    }
+  ]
+}

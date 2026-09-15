@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    {
+      "id": "CAP-RANGE-VECTOR-SELECTION",
+      "name": "Range vector selection",
+      "description": "Selecting a window of samples ending at each evaluation point, per PromQL's range vector selector syntax.",
+      "status": "active",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "CAP-LINE-FILTER-EXPRESSION",
+      "name": "Line filter expression",
+      "description": "Filtering log lines by a literal or regex match, per LogQL's line filter syntax.",
+      "status": "active",
+      "applicable_heads": ["HEAD-LOGQL"],
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "CAP-SPAN-ATTRIBUTE-FILTER",
+      "name": "Span attribute filter",
+      "description": "Filtering spans by an attribute comparison, per TraceQL's attribute selector syntax.",
+      "status": "active",
+      "applicable_heads": ["HEAD-TRACEQL"],
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "CAP-LABEL-MATCHER-EXPRESSION",
+      "name": "Label matcher expression",
+      "description": "Matching a resource/series label by equality or regex. Every head parses its own label matcher syntax, but the equality/regex semantics are shared, so this capability is explicitly universal rather than attached to one head.",
+      "status": "active",
+      "applicable_heads": "universal",
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    }
+  ]
+}
