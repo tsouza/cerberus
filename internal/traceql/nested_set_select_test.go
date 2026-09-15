@@ -168,7 +168,7 @@ func TestUnionArmAlignment(t *testing.T) {
 		}
 	})
 
-	t.Run("plain-or-plain stays unwrapped", func(t *testing.T) {
+	t.Run("plain-or-plain still closes both arms", func(t *testing.T) {
 		t.Parallel()
 		expr, err := tempo.Parse(`{ kind = server } || { kind = client }`)
 		if err != nil {
@@ -182,11 +182,24 @@ func TestUnionArmAlignment(t *testing.T) {
 		if !ok {
 			t.Fatalf("plan root = %T, want *chplan.SetOperation", plan)
 		}
-		if _, ok := setOp.Left.(*chplan.Project); ok {
-			t.Error("plain || plain must not wrap the left arm")
-		}
-		if _, ok := setOp.Right.(*chplan.Project); ok {
-			t.Error("plain || plain must not wrap the right arm")
+		// Both arms are open `SELECT *` scans — neither is narrow by
+		// alignUnionArms' own definition — so there is no structural/plain
+		// MISMATCH for it to align. Each still gets the narrow-projection
+		// wrap: chsql.setOperationIdentity requires a CLOSED schema to
+		// prove an arm's trace/span identity roles independently, and an
+		// open `SELECT *` schema carries no such proof (see
+		// chsql.setOperationChildIdentity). The wrap's column list is the
+		// same one structuralExtraProjectionColumns already names for the
+		// structural-envelope case, so this closes the schema without
+		// narrowing what the arm actually returns.
+		for side, arm := range map[string]chplan.Node{"left": setOp.Left, "right": setOp.Right} {
+			proj, ok := arm.(*chplan.Project)
+			if !ok {
+				t.Fatalf("%s arm = %T, want *chplan.Project (identity-closing wrap)", side, arm)
+			}
+			if proj.RowType().Open {
+				t.Errorf("%s arm's wrapped schema is still open", side)
+			}
 		}
 	})
 }
