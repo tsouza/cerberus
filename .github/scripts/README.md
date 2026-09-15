@@ -335,6 +335,63 @@ runs; `semantic-model.test.mjs` (`node --test`) pairs each of the acceptance
 criteria above with both a failing and a passing fixture, plus an end-to-end
 pass over the real committed `test/semantic/` files and the real CLI.
 
+## Semantic lane adapter
+
+`lib/semantic-lane-adapter.mjs` binds the semantic contract model above to
+the EXISTING CI lane registry (`ci-lanes.json`, `ci-lane-contract.mjs`)
+instead of duplicating execution policy in the semantic layer (issue #3427).
+It keeps three concerns separate rather than merging them:
+
+- **Execution vs status.** A lane can run without being a required status
+  check (an ordinary PR short-circuits `compose-smoke`/`dashboard`/`profile`
+  to a no-op), and a no-op, missing or cancelled run must never count as
+  observed evidence — `classifyObservedEvidence()` enforces that regardless
+  of what conclusion the wrapping check-run itself reports.
+- **Three policy authorities, recorded separately.** `main_ruleset` (a
+  pull_request/merge_group entry to `main`), `maintenance_ruleset` (a
+  pull_request into a `release/*.x` line), and `release_required_checks`
+  (release.yml's own EXPECTED set, checked on a publishing push to `main`)
+  are three genuinely different sources of truth — `mutation` is the
+  running example: `merge_posture: impact` (diff-scoped, not required) on
+  an ordinary PR, `release_posture: advisory` (not required) on the publish
+  path, and required only on a maintenance-line PR, a fact
+  `classifyLaneRequiredness()` derives from the maintenance ruleset rather
+  than a hand-maintained note.
+- **Drift diagnostics.** `diagnoseRegistryDrift()` cross-checks every
+  lane's self-declared `context.protected` / `release_posture === required`
+  against a captured, offline-readable snapshot of live policy
+  (`test/semantic/policy-snapshot.json`), one check per distinct context
+  name (not per lane — several lanes can legitimately share a required
+  context name, and only one needs to claim it). This is exactly how the
+  issue's own worked example was found: `governance.update-golden-guard`
+  still declared `context.protected: true` after the live check was removed
+  from the ruleset and its workflow disabled.
+
+`semantic-lane-policy-snapshot.mjs` captures that snapshot, reusing
+`release-gate-drift.mjs`'s own `readRequiredContexts` (the live
+`main`-ruleset read) and `parseCheckLists` (the `RELEASE_REQUIRED_CHECKS`
+parser) rather than re-implementing either, plus one new live read for the
+maintenance-lines ruleset (`GET /repos/{o}/{r}/rulesets` +
+`/rulesets/{id}`, resolved by ruleset name so an ID rotation doesn't go
+unnoticed). It is **run by hand, not scheduled**: that endpoint has no
+corresponding Actions `permissions:` scope at all (`administration` is not
+a valid workflow permission), so `github.token` can never read it — see
+the script's own header for why provisioning a secret for this would
+repeat the exact silent-no-op failure mode `release-gate-drift.yml`'s own
+history comment already warns against. Refresh with `node
+.github/scripts/semantic-lane-policy-snapshot.mjs --write` (needs a
+credential with repo admin read, e.g. a maintainer's own `gh auth token`)
+whenever `main`'s ruleset, the maintenance-lines ruleset, or
+`RELEASE_REQUIRED_CHECKS` changes, and commit the refreshed snapshot
+alongside that change.
+
+`semantic-lane-adapter.mjs` is the thin CLI `just semantic-lane-check`
+runs — fully offline, validating `ci-lanes.json` against the checked-in
+snapshot only, never a live network call (same reasoning as invariant 5:
+no live check on every PR). `semantic-lane-adapter.test.mjs` pairs each
+acceptance criterion with a fixture, including a regression pin over the
+real registry and the real snapshot together.
+
 ## Modules
 
 - **`verify-just-invocations.mjs`** — the CI-safety gate for the Justfile

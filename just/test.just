@@ -69,6 +69,18 @@ vet-tagged:
 semantic-check:
     node .github/scripts/semantic-model.mjs
 
+# Cross-checks each CI lane's self-declared requiredness (context.protected,
+# release_posture) against a captured, offline-readable snapshot of the live
+# main ruleset, the live release-maintenance-lines ruleset, and release.yml's
+# RELEASE_REQUIRED_CHECKS (issue #3427). Refresh the snapshot by hand with
+# `node .github/scripts/semantic-lane-policy-snapshot.mjs --write` when any
+# of those three change — see .github/scripts/README.md for why that step
+# cannot be a scheduled CI job.
+
+# Validate the CI lane registry's requiredness against the policy snapshot.
+semantic-lane-check:
+    node .github/scripts/semantic-lane-adapter.mjs
+
 # Run only the tests and compile probes whose evidence depends on the
 # agpl_oracle tag. The focused filters avoid re-running the entire untagged
 # internal and TXTAR suites after the required check gate already ran them.
