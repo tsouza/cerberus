@@ -59,6 +59,16 @@ vet-tagged:
     go vet -tags=migration_tier2 ./test/e2e/migration/...
     go vet -tags=agpl_oracle ./internal/... ./test/agpl_oracle/...
 
+# Validates test/semantic/'s hand-authored JSON semantic contract model:
+# schema, ID uniqueness, cross-references, inheritance/replacement cycles,
+# and evidence assurance (issue #3426). The loader/validator itself lives in
+# .github/scripts/lib/semantic-model.mjs so downstream catalog work can
+# import it directly instead of re-parsing the files.
+
+# Validate the semantic contract metadata model under test/semantic/.
+semantic-check:
+    node .github/scripts/semantic-model.mjs
+
 # Run only the tests and compile probes whose evidence depends on the
 # agpl_oracle tag. The focused filters avoid re-running the entire untagged
 # internal and TXTAR suites after the required check gate already ran them.

@@ -299,6 +299,42 @@ fixed two-tier merge-gate/release-gate split, and the unused protocol was
 retired (#2261): `ci-lanes.json` and `ci-lane-contract.mjs` now describe only
 what actually runs.
 
+## Semantic contract model
+
+`test/semantic/` is the versioned, hand-authored JSON registry for the semantic
+conformance framework (epic #3421, issue #3426): six files — `heads.json`,
+`capabilities.json`, `contracts.json`, `verifiers.json`, `bindings.json`,
+`executions.json` — separating a semantic CONTRACT (an obligation a head owes
+its users) from a VERIFIER (a technique that can produce evidence for one,
+with its own detection blind spots), a BINDING (a concrete test offering a
+verifier's evidence for one contract) and an EXECUTION (an observed run of a
+binding). Every record carries a stable, scope-prefixed ID (`HEAD-`, `CAP-`,
+`PROMQL-`/`LOGQL-`/`TRACEQL-`/`SIGNAL-`/`ARCH-` for contracts, `VERIFIER-`,
+`BINDING-`, `EXEC-`) that is never recycled — a record that stops applying is
+marked `status: "superseded"` with a `replaces`/`replaced_by` pair that names
+its successor back, not deleted.
+
+`lib/semantic-model.mjs` is the Node-builtins-only loader and validator —
+`loadSemanticModel()` / `validateSemanticModel()`, exported for downstream
+catalog work (issues #3427–#3430, #3445, #3456) to import directly rather
+than re-parsing the files. It rejects duplicate or dangling IDs, unknown
+keys/heads/capabilities, cyclic contract inheritance or replacement chains,
+and an empty statement, and it distinguishes malformed metadata (tagged
+`[schema]`/`[reference]`/`[cycle]` in `SemanticModelError.problems`) from
+missing required evidence (tagged `[assurance]`) — a contract's `status`
+(`draft` / `active` / `superseded` / `explicit_deficit`) decides whether
+evidence completeness is enforced at all, but never how it reads: only a
+fully-covered `active` contract counts as assured, and `computeAssurance()`
+buckets every other status as explicitly excluded rather than silently
+passing. Assurance is deliberately a SET of required evidence classes plus
+independence groups, not a numeric score — a required independence group is
+satisfied only by a binding tagged with that exact group, so several
+correlated bindings sharing one group can never stand in for a second,
+distinct one. `semantic-model.mjs` is the thin CLI `just semantic-check`
+runs; `semantic-model.test.mjs` (`node --test`) pairs each of the acceptance
+criteria above with both a failing and a passing fixture, plus an end-to-end
+pass over the real committed `test/semantic/` files and the real CLI.
+
 ## Modules
 
 - **`verify-just-invocations.mjs`** — the CI-safety gate for the Justfile

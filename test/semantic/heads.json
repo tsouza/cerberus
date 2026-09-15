@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "heads": [
+    {
+      "id": "HEAD-PROMQL",
+      "name": "PromQL",
+      "description": "The metrics query head. Parses with the upstream Apache prometheus parser and serves the Prometheus HTTP API.",
+      "status": "active",
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "HEAD-LOGQL",
+      "name": "LogQL",
+      "description": "The logs query head. Parses with cerberus's in-house Apache reimplementation and serves the Loki HTTP API.",
+      "status": "active",
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "HEAD-TRACEQL",
+      "name": "TraceQL",
+      "description": "The traces query head. Parses with cerberus's in-house Apache reimplementation and serves the Tempo HTTP API.",
+      "status": "active",
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    }
+  ]
+}
