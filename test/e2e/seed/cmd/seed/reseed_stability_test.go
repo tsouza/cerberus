@@ -52,12 +52,39 @@ const reseedStabilityTickInterval = 2 * time.Second
 // to catch it.
 const reseedStabilitySentinelSlack = 5 * time.Second
 
-// reseedStabilityBoundSlackTicks is the generous multiple applied to a
-// family's own single-tick row count when bounding its post-test total:
-// covers this test's own reseedStabilityTicks plus whatever the
-// concurrently-running background rolling re-seeder (30s cadence) could
-// plausibly add during this test's short run.
-const reseedStabilityBoundSlackTicks = reseedStabilityTicks + 3
+// productionReSeedInterval mirrors the cadence `.github/scripts/
+// e2e-seed-rolling.mjs`'s reseedIntervalFlag passes to the background
+// rolling re-seeder (`--re-seed-interval=30s`) — the SAME process whose
+// ticks this test's own row-count bound (reseedStabilityBoundTicks below)
+// has to stay safely above. Named here because reseed_stability_test.go
+// has no way to read the flag value back from that already-launched
+// process; keep the two literals in sync by hand if the cadence ever
+// changes.
+const productionReSeedInterval = 30 * time.Second
+
+// reseedStabilityBoundTicks returns the maximum number of re-seed ticks'
+// worth of rows a family with the given stale-row margin (stale.go's
+// staleMargin) can legitimately hold at once, plus this test's own
+// reseedStabilityTicks layered on top.
+//
+// stale.go's package doc comment already states the production trade-off:
+// a margin wider than a family's own re-seed window bounds duplication to
+// "roughly (margin / tick-interval) copies rather than eliminating it".
+// The background rolling re-seeder reinserts a family's FULL window every
+// productionReSeedInterval without deduplication, and a row only leaves
+// once its own tick's insertion is more than margin in the past — so once
+// the re-seeder has been running for at least margin (always true by the
+// time this test runs after e2e-bwc-verify's hot-cold aging wait, whose
+// own tierAfter sleep plus its 8 sequential `OPTIMIZE TABLE ... FINAL`
+// calls reliably exceed a minute), ceil(margin/productionReSeedInterval)
+// of its ticks are simultaneously "not yet stale" at any moment — a real
+// steady state, not unbounded growth, but one the previous flat
+// reseedStabilityTicks+3 bound (issue #3469) was too small to cover for
+// every family whose margin exceeds a handful of ticks.
+func reseedStabilityBoundTicks(margin time.Duration) int {
+	backgroundTicks := int((margin + productionReSeedInterval - 1) / productionReSeedInterval)
+	return backgroundTicks + reseedStabilityTicks
+}
 
 // Per-family row counts, expressed as multiples of the SAME
 // cadence/sample declarations stale.go derives its DELETE margins from
@@ -263,10 +290,11 @@ func TestReSeedRowCountStability(t *testing.T) {
 			if total == 0 {
 				t.Errorf("%s: expected rows after seeding, got 0", fam.name)
 			}
-			bound := uint64(fam.rowsPerTick * reseedStabilityBoundSlackTicks) //nolint:gosec // G115: small, non-negative, compile-time-bounded product
+			boundTicks := reseedStabilityBoundTicks(fam.margin)
+			bound := uint64(fam.rowsPerTick * boundTicks) //nolint:gosec // G115: small, non-negative, compile-time-bounded product
 			if total > bound {
-				t.Errorf("%s: row count %d exceeds the bounded-duplication ceiling %d (%d rows/tick x %d ticks of slack) — growth looks unbounded",
-					fam.name, total, bound, fam.rowsPerTick, reseedStabilityBoundSlackTicks)
+				t.Errorf("%s: row count %d exceeds the bounded-duplication ceiling %d (%d rows/tick x %d ticks, derived from the family's %ds staleMargin against the %ds production re-seed cadence) — growth looks unbounded",
+					fam.name, total, bound, fam.rowsPerTick, boundTicks, marginSeconds(fam.margin), int(productionReSeedInterval/time.Second))
 			}
 		})
 	}
