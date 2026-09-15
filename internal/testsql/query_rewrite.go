@@ -153,7 +153,7 @@ func IsDriverOpaqueColumn(name string) bool {
 // whose ORDER BY references a known Map column (subscripted or bare),
 // and the FROM clause is exactly one parenthesised subquery. Every
 // other shape passes through untouched.
-func NestMapOrderBy(query string) string {
+func NestMapOrderBy(query string, mapColumns ...string) string {
 	q := strings.TrimSpace(query)
 	head, tail := splitOuterSelect(q)
 	if head == "" {
@@ -182,7 +182,7 @@ func NestMapOrderBy(query string) string {
 		return query
 	}
 	orderBy := trailer[len("ORDER BY "):]
-	if !clauseReferencesMapColumn(orderBy) {
+	if !clauseReferencesMapColumn(orderBy, mapColumns) {
 		return query
 	}
 	return "SELECT " + head + " FROM (SELECT * FROM " + fromBody + " ORDER BY " + orderBy + ")"
@@ -232,7 +232,7 @@ func NestMapOrderBy(query string) string {
 // head) whose WHERE references a known Map column, and the FROM clause
 // is exactly one parenthesised subquery. Every other shape passes
 // through untouched.
-func NestMapWhere(query string) string {
+func NestMapWhere(query string, mapColumns ...string) string {
 	q := strings.TrimSpace(query)
 	head, tail := splitOuterSelect(q)
 	if head == "" {
@@ -252,7 +252,7 @@ func NestMapWhere(query string) string {
 		// scope, so a predicate sitting behind one binds exactly as if it
 		// were at this level. Peel however many such wrappers separate the
 		// WHERE from here and rewrap at the level it actually collides.
-		if nested, changed := nestMapWhereThroughStarWrappers(fromBody); changed {
+		if nested, changed := nestMapWhereThroughStarWrappers(fromBody, mapColumns); changed {
 			return "SELECT " + head + " FROM " + nested
 		}
 		return query
@@ -261,7 +261,7 @@ func NestMapWhere(query string) string {
 		return query
 	}
 	where, rest := splitWherePredicate(trailer[len("WHERE "):])
-	if !clauseReferencesMapColumn(where) {
+	if !clauseReferencesMapColumn(where, mapColumns) {
 		return query
 	}
 	out := "SELECT " + head + " FROM (SELECT * FROM " + fromBody + " WHERE " + where + ")"
@@ -279,7 +279,7 @@ func NestMapWhere(query string) string {
 // found and rewrote one; a false return leaves fromBody's caller to
 // pass the original query through untouched, the same conservative
 // default [NestMapWhere] and [NestMapOrderBy] both keep.
-func nestMapWhereThroughStarWrappers(fromBody string) (string, bool) {
+func nestMapWhereThroughStarWrappers(fromBody string, mapColumns []string) (string, bool) {
 	sub, ok := stripOuterParens(fromBody)
 	if !ok {
 		return fromBody, false
@@ -293,7 +293,7 @@ func nestMapWhereThroughStarWrappers(fromBody string) (string, bool) {
 		return fromBody, false
 	}
 	if innerTrailer == "" {
-		nested, changed := nestMapWhereThroughStarWrappers(innerFromBody)
+		nested, changed := nestMapWhereThroughStarWrappers(innerFromBody, mapColumns)
 		if !changed {
 			return fromBody, false
 		}
@@ -303,7 +303,7 @@ func nestMapWhereThroughStarWrappers(fromBody string) (string, bool) {
 		return fromBody, false
 	}
 	where, rest := splitWherePredicate(innerTrailer[len("WHERE "):])
-	if !clauseReferencesMapColumn(where) {
+	if !clauseReferencesMapColumn(where, mapColumns) {
 		return fromBody, false
 	}
 	wrapped := "SELECT * FROM (SELECT * FROM " + innerFromBody + " WHERE " + where + ")"
@@ -407,8 +407,13 @@ func splitParenthesisedFrom(tail string) (fromBody, trailer string, ok bool) {
 // clause text, so a plain substring match on the quoted name catches
 // every syntactic position it can appear in without needing a real SQL
 // parser.
-func clauseReferencesMapColumn(clause string) bool {
+func clauseReferencesMapColumn(clause string, extra []string) bool {
 	for _, name := range mapColumnNames {
+		if strings.Contains(clause, "`"+name+"`") {
+			return true
+		}
+	}
+	for _, name := range extra {
 		if strings.Contains(clause, "`"+name+"`") {
 			return true
 		}
@@ -836,6 +841,40 @@ func SeedTableColumns(seed string) map[string][]string {
 	return cols
 }
 
+// SeedMapColumns returns the physical columns declared with a Map type in a
+// fixture seed. It uses the same conservative CREATE TABLE grammar as
+// [SeedTableColumns]; callers can therefore supply type evidence for custom
+// schema names without teaching the SQL rewriter those names globally.
+func SeedMapColumns(seed string) []string {
+	var columns []string
+	for _, stmt := range SplitStatements(seed) {
+		trimmed := stripLeadingNoise(stmt)
+		if _, ok := createTableTail(trimmed); !ok {
+			continue
+		}
+		open := strings.IndexByte(trimmed, '(')
+		if open < 0 {
+			continue
+		}
+		closeParen := matchParen(trimmed, open)
+		if closeParen < 0 {
+			continue
+		}
+		for _, def := range splitTopLevelCommas(trimmed[open+1 : closeParen]) {
+			def = strings.TrimSpace(def)
+			name := firstToken(def)
+			if name == "" || isGeneratedColumnDef(def) {
+				continue
+			}
+			typeDecl := strings.TrimSpace(def[len(name):])
+			if strings.HasPrefix(strings.ToUpper(typeDecl), "MAP(") {
+				columns = append(columns, unquoteIdent(name))
+			}
+		}
+	}
+	return columns
+}
+
 // isGeneratedColumnDef reports whether a CREATE TABLE column definition
 // declares a MATERIALIZED or ALIAS column — the two ClickHouse column
 // kinds a bare `SELECT *` omits from its result set (DEFAULT columns,
@@ -893,15 +932,26 @@ func isGeneratedColumnDef(def string) bool {
 // failure loud rather than silently mis-rewriting a shape this pass
 // cannot canonically enumerate.
 func RewriteMapProjections(query string) string {
+	return rewriteMapProjections(query, nil)
+}
+
+// RewriteMapProjectionsWithMapColumns is [RewriteMapProjections] with
+// fixture-derived physical Map column names. It is intended for adapters
+// that own both the seed DDL and the query rewrite.
+func RewriteMapProjectionsWithMapColumns(query string, mapColumns []string) string {
+	return rewriteMapProjections(query, mapColumns)
+}
+
+func rewriteMapProjections(query string, mapColumns []string) string {
 	if head, body := stripWithHead(query); head != "" {
-		return head + RewriteMapProjections(body)
+		return head + rewriteMapProjections(body, mapColumns)
 	}
 	if inner, ok := starOverSubquery(query); ok {
-		return "SELECT * FROM (" + RewriteMapProjections(inner) + ")"
+		return "SELECT * FROM (" + rewriteMapProjections(inner, mapColumns) + ")"
 	}
 	if arms, ok := splitTopLevelUnionAll(query); ok {
 		for i, a := range arms {
-			arms[i] = RewriteMapProjections(a)
+			arms[i] = rewriteMapProjections(a, mapColumns)
 		}
 		return strings.Join(arms, " UNION ALL ")
 	}
@@ -909,10 +959,10 @@ func RewriteMapProjections(query string) string {
 	if head == "" {
 		// A UNION-ALL arm arrives wrapped in its own parens.
 		if inner, ok := stripOuterParens(query); ok {
-			return "(" + RewriteMapProjections(inner) + ")"
+			return "(" + rewriteMapProjections(inner, mapColumns) + ")"
 		}
 		// Any other parenthesised-branch UNION glue (`UNION DISTINCT`).
-		if rewritten, ok := rewriteUnionMapProjections(query); ok {
+		if rewritten, ok := rewriteUnionMapProjections(query, mapColumns); ok {
 			return rewritten
 		}
 		return query
@@ -923,12 +973,21 @@ func RewriteMapProjections(query string) string {
 		if alias == "" {
 			alias = mapColAlias(strings.TrimSpace(expr))
 		}
-		if !IsDriverOpaqueColumn(alias) {
+		if !IsDriverOpaqueColumn(alias) && !isKnownMapProjection(expr, mapColumns) {
 			continue
 		}
 		projs[i] = "toJSONString(" + expr + ") AS `" + alias + "`"
 	}
 	return "SELECT " + strings.Join(projs, ", ") + tail
+}
+
+// isKnownMapProjection reports whether expr is a direct projection of a
+// known Map column. It deliberately accepts only a bare or qualified column
+// reference: inferring the return type of arbitrary SQL expressions belongs
+// to ClickHouse, not this textual test adapter.
+func isKnownMapProjection(expr string, mapColumns []string) bool {
+	name := mapColAlias(strings.TrimSpace(expr))
+	return IsMapColumn(name) || slices.Contains(mapColumns, name)
 }
 
 // rewriteUnionMapProjections walks a top-level UNION query
@@ -937,7 +996,7 @@ func RewriteMapProjections(query string) string {
 // (rewritten, true) on success, ("", false) when the shape doesn't
 // match the expected union form. Branches that don't parse as
 // `SELECT ... FROM ...` are left alone.
-func rewriteUnionMapProjections(query string) (string, bool) {
+func rewriteUnionMapProjections(query string, mapColumns []string) (string, bool) {
 	query = strings.TrimSpace(query)
 	if !strings.HasPrefix(query, "(") {
 		return "", false
@@ -976,7 +1035,7 @@ func rewriteUnionMapProjections(query string) (string, bool) {
 				return "", false
 			}
 			inner := query[i+1 : end]
-			rewrittenInner := RewriteMapProjections(strings.TrimSpace(inner))
+			rewrittenInner := rewriteMapProjections(strings.TrimSpace(inner), mapColumns)
 			if rewrittenInner != strings.TrimSpace(inner) {
 				rewrote = true
 			}

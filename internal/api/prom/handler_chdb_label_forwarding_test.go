@@ -45,7 +45,7 @@ func TestQueryRange_LabelRewritePhysicalColumns_ChDB(t *testing.T) {
 			physicalSeed := seed
 			if schemaName == "custom" {
 				metrics.MetricNameColumn = "metric_id"
-				metrics.AttributesColumn = "labels"
+				metrics.AttributesColumn = "labels_map"
 				metrics.TimestampColumn = "sample_time"
 				metrics.ValueColumn = "sample_value"
 				// Preserve ResourceAttributes as a separate physical field while

@@ -97,3 +97,43 @@ func TestEmitVectorSetOp_StepAlignedMatchKey(t *testing.T) {
 		})
 	}
 }
+
+func TestEmitVectorSetOp_MetricNameMatchKey(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		match      chplan.VectorMatch
+		want       string
+		forbidName bool
+	}{
+		{name: "default", want: "PARTITION BY mapSort(`Attributes`)", forbidName: true},
+		{name: "on name", match: chplan.VectorMatch{On: true, Labels: []string{"__name__"}}, want: "PARTITION BY `MetricName`"},
+		{name: "on name and label", match: chplan.VectorMatch{On: true, Labels: []string{"__name__", "series"}}, want: "PARTITION BY tuple(`MetricName`, mapSort(mapFilter("},
+		{name: "on ordinary label", match: chplan.VectorMatch{On: true, Labels: []string{"series"}}, want: "PARTITION BY mapSort(mapFilter(", forbidName: true},
+		{name: "ignoring name", match: chplan.VectorMatch{Labels: []string{"__name__"}}, want: "PARTITION BY mapSort(`Attributes`)", forbidName: true},
+		{name: "ignoring ordinary label", match: chplan.VectorMatch{Labels: []string{"series"}}, want: "PARTITION BY mapSort(mapFilter(", forbidName: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			op := setOpPair(chplan.VectorSetOr, false)
+			op.Match = tc.match
+			sql := emitSetOp(t, op)
+			if !strings.Contains(sql, tc.want) {
+				t.Fatalf("missing match key %q; sql=%s", tc.want, sql)
+			}
+			if tc.forbidName && strings.Contains(sql, "PARTITION BY tuple(`MetricName`") {
+				t.Fatalf("metric name unexpectedly participates in matching; sql=%s", sql)
+			}
+		})
+	}
+}
+
+func TestEmitVectorSetOp_StepAlignedOnMetricName(t *testing.T) {
+	op := setOpPair(chplan.VectorSetOr, true)
+	op.Match = chplan.VectorMatch{On: true, Labels: []string{"__name__"}}
+	sql := emitSetOp(t, op)
+	want := "OVER (PARTITION BY `MetricName`, `TimeUnix`)"
+	if !strings.Contains(sql, want) {
+		t.Fatalf("missing metric-name plus timestamp key %q; sql=%s", want, sql)
+	}
+}

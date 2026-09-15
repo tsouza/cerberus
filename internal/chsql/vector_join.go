@@ -554,15 +554,36 @@ func matchCheckGuardFrag(attrsCol string) Frag {
 }
 
 // setOpMatchKeyFrags returns the key a vector set operator matches
-// on: the label signature alone in instant mode, extended with the
+// on: the set-op label signature alone in instant mode, extended with the
 // evaluation-timestamp column in range mode, where every arm
 // projects the shared grid anchor under that name.
-func setOpMatchKeyFrags(m chplan.VectorMatch, attrsCol, tsCol string, stepAligned bool) []Frag {
-	keys := []Frag{matchKeyGroupExprFrag(m, attrsCol)}
+func setOpMatchKeyFrags(m chplan.VectorMatch, metricNameCol, attrsCol, tsCol string, stepAligned bool) []Frag {
+	keys := []Frag{setOpMatchKeyFrag(m, metricNameCol, attrsCol)}
 	if stepAligned {
 		keys = append(keys, Col(tsCol))
 	}
 	return keys
+}
+
+func setOpMatchKeyFrag(m chplan.VectorMatch, metricNameCol, attrsCol string) Frag {
+	labels := make([]string, 0, len(m.Labels))
+	matchMetricName := false
+	for _, label := range m.Labels {
+		if label == setOpMetricNameLabel {
+			matchMetricName = m.On
+			continue
+		}
+		labels = append(labels, label)
+	}
+
+	attrsMatch := matchKeyGroupExprFrag(chplan.VectorMatch{Labels: labels, On: m.On}, attrsCol)
+	if !matchMetricName {
+		return attrsMatch
+	}
+	if m.On && len(labels) == 0 {
+		return Col(metricNameCol)
+	}
+	return Call("tuple", Col(metricNameCol), attrsMatch)
 }
 
 // canonicalMatchKeyFrag wraps a Map-valued match key in the canonical

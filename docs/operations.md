@@ -3278,7 +3278,7 @@ selection between them:
 - **Release gate** — the full matrix: every merge-gate check plus the
   cost-dominating lanes an ordinary PR does not need to wait on —
   `perf-guards` and `benchstat diff`, the chDB `roundtrip` / `integration` /
-  `chdb-build` lanes, `gremlins` mutation testing, all six `compatibility/*`
+  `chdb-build` lanes, the full `gremlins` mutation sweep, all six `compatibility/*`
   differential heads, `migration-e2e`, `perf-nightly` (the #2370 real-data
   regression gate — like `migration-e2e` it has no `pull_request:` trigger
   at all, only `push: [main, release/*.x]` + `schedule` + manual dispatch,
@@ -3294,12 +3294,10 @@ selection between them:
   `dashboard` short-circuit on the same ordinary-PR / release-PR split,
   documented in `e2e.yml` rather than through `RUN_HEAVY` itself). A release
   PR's head branch always matches, so its green status reflects the complete
-  matrix; an ordinary PR pays only the merge gate's cost. `mutation` keeps its
-  own diff-scoped selection (run only the phases whose package the PR
-  touched) rather than a blanket no-op, because that scoping is what closed
-  the v1.13.2-cycle hollow-green class described in `mutation.yml` — but
-  `mutation` was never required by either gate; it is informational
-  everywhere (see the de-gated-lanes table below).
+  matrix; an ordinary PR pays only the merge gate's cost. `mutation` is the
+  exception to that release-PR promotion: its required PR context remains
+  diff-scoped on every pull request and merge group, while the complete sweep
+  runs only after landing on `main`, nightly, or by manual dispatch.
 
 This is a fixed split, not a per-diff selection: an ordinary PR always runs
 the same merge-gate set regardless of which files it touches, and a release
@@ -3430,7 +3428,7 @@ now the only thing standing between them and a publish.
 | Lane                         | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `compose-smoke-shard-info`   | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `mutation`                   | A test-QUALITY ratchet, not a property of the artifact — not a required check on `main`'s merge gate (its diff-scoped selection runs on ordinary PRs for author-time visibility only; see "Two-tier test fence" above) and not required by this preflight; the one place it IS required is the maintenance-line ruleset, on a pull request into `release/*.x` (see "Maintenance lines" below). Requiring it here would put its ~11-leg full-sweep matrix on the critical path of every publish. A direct hotfix push to a maintenance line therefore publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly.                                                  |
+| `mutation`                   | The diff-scoped aggregate is a required PR and merge-group gate, but it is not re-run by the publish preflight: the candidate already passed that gate before merge. Full mutation runs after landing on `main`, nightly, or by manual dispatch rather than on a release PR. The individual `gremlins …` legs remain implementation details of the aggregate.                                                                                                                                                                                                                                                                                                                                        |
 | `gremlins`                   | The `mutation` aggregator's own matrix legs (e.g. `gremlins phase4-promql-a`) post their OWN check-runs, under their own names — they do not share the `mutation` prefix, so de-gating `mutation` alone never covered them. Same reasoning as that row: a test-quality ratchet, not a property of the artifact. Caught when v1.16.0's release commit blocked on 6 pre-existing, already-tracked red `gremlins phase4-promql-*` legs even though `mutation` itself was already de-gated.                                                                                                                                                                                                              |
 | `drought`                    | `chaos-not-applicable-rate.yml`'s Wednesday-cron detector for the chaos lane's silent not-applicable outcomes. It mines chaos-job run HISTORY, not the commit it happens to post against, so a red run says nothing about the commit being released — its own header comment already excludes it from PR gating for the identical reason. Left required, an unlucky coincidence between the cron and a release push would hold a release hostage to accumulated chaos-lane drift the release itself did not cause.                                                                                                                                                                                   |
 | `update-golden-guard`        | Structural, not a cost trade. It guards a PULL REQUEST against merging while an `update-golden.yml` dispatch is still regenerating its head branch (#2350). A publish commit has no head branch to strand and no pull request to hold back, and `update-golden-guard.yml` triggers on `pull_request` / `merge_group` / `workflow_run` only — with no push trigger on `main` or a maintenance line, a release commit can never carry that check-run, so requiring it would make the preflight wait out its window and abort every publish. Its enforcement points are the merge gate and the merge queue, both of which a change passes before reaching a release commit.                             |
@@ -3640,14 +3638,12 @@ The maintenance branches are **not** unprotected. The repository ruleset
   `main`'s seventeen: it drops the PR-hygiene and merge-gate-only contexts
   (`pr-body`, `forbid-deferral`, `update-golden-guard`, `CodeQL`,
   `agpl-clean`, `config-docs`, `link-check`, `schema-ddl`, `strict-scan`,
-  `quickstart`) and adds the three `roundtrip` legs, `profile` and
-  `mutation` — release-gate lanes `main` never requires as a status check.
-  `mutation` is therefore required in exactly one place in this repository:
-  a pull request into a maintenance line. On `main` it is informational
-  (diff-scoped, author-time signal only), and `release.yml`'s preflight
-  de-gates it from every publish — including the maintenance-line publish
-  that follows such a merge — so that its ~11-leg matrix never sits on the
-  critical path of shipping a hotfix (see the
+  `quickstart`) and adds the three `roundtrip` legs and `profile`, which
+  `main` does not require as status checks. `mutation` appears in both
+  rulesets. On both main and
+  maintenance-line pull requests it is diff-scoped; `release.yml`'s preflight
+  de-gates it from the publish that follows such a merge because the candidate
+  already passed the required aggregate (see the
   [de-gated lanes table](#de-gated-lanes-on-the-publish-path)).
 
 There is no `creation` rule, so cutting a **new** line (`git push origin

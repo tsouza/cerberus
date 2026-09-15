@@ -13,8 +13,9 @@ import (
 // `or` (drop those whose signature already has a LHS row). Neither name
 // takes user input; both match CH's bare-identifier grammar.
 const (
-	setOpSideCol    = "_setop_side"
-	setOpHasLeftCol = "_setop_has_left"
+	setOpSideCol         = "_setop_side"
+	setOpHasLeftCol      = "_setop_has_left"
+	setOpMetricNameLabel = "__name__"
 	// setOpHasRightCol is `_setop_has_left`'s mirror —
 	// `max(_setop_side = 1) OVER (PARTITION BY <sig>)` — projected only
 	// by a [chplan.VectorSetOp.MixedDropCollisions] union, whose survival
@@ -79,9 +80,9 @@ const (
 // rewrite (`toJSONString(Attributes)`) into the WHERE comparison,
 // producing a `String IN Set<Map>` type mismatch.
 //
-// The match key is a label signature — the full Attributes column
-// (default), or the projected mapFilter expression for `on(...)` /
-// `ignoring(...)` — extended with the evaluation timestamp in range
+// The match key is a label signature — the full Attributes column by
+// default, or the selected MetricName / mapFilter parts for
+// `on(...)` / `ignoring(...)` — extended with the evaluation timestamp in range
 // mode (StepAligned), where PromQL matches the arms once per evaluation
 // timestamp and every arm carries per-step rows under the shared grid
 // anchor. Instant mode keys on the signature alone: each arm holds one
@@ -238,7 +239,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 				As(
 					Window(
 						Call("max", Eq(Col(setOpSideCol), InlineLit(0))),
-						setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned),
+						setOpMatchKeyFrags(s.Match, s.MetricNameColumn, s.AttributesColumn, s.TimestampColumn, s.StepAligned),
 						nil,
 					),
 					setOpHasLeftCol,
@@ -312,7 +313,7 @@ func (e *emitter) emitMixedVectorSetOp(s *chplan.VectorSetOp) error {
 
 	sideArmL := mixedVectorSetOpSideArmFrag(s, leftArm, 0)
 	sideArmR := mixedVectorSetOpSideArmFrag(s, rightArm, 1)
-	partition := setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
+	partition := setOpMatchKeyFrags(s.Match, s.MetricNameColumn, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
 	sideFlag := func(side int, alias string) Frag {
 		return As(Window(Call("max", Eq(Col(setOpSideCol), InlineLit(side))), partition, nil), alias)
 	}
@@ -936,7 +937,7 @@ func validateVectorSetOpSampleKinds(s *chplan.VectorSetOp) error {
 // row-level DISTINCT over the whole SELECT list — exactly the
 // per-(signature, timestamp) key set the range shape needs.
 func setOpInSubqueryFrag(s *chplan.VectorSetOp, sub Frag, in bool) Frag {
-	keys := setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
+	keys := setOpMatchKeyFrags(s.Match, s.MetricNameColumn, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
 	var sig Frag
 	if len(keys) == 1 {
 		sig = keys[0]

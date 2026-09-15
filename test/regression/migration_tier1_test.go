@@ -40,6 +40,7 @@ const (
 	tier1SeedPkgDir      = "../../test/e2e/migration/seed"
 	tier1ComposeProject  = "cerberus-migration-tier1"
 	tier1CerberusService = "cerberus"
+	rootComposePath      = "../../docker-compose.yml"
 )
 
 // The gateway under test is configured from a file, not from the compose
@@ -240,6 +241,7 @@ type composeService struct {
 	Environment map[string]string `yaml:"environment"`
 	Volumes     []string          `yaml:"volumes"`
 	Ports       []string          `yaml:"ports"`
+	Restart     string            `yaml:"restart"`
 }
 
 type composeFile struct {
@@ -432,6 +434,35 @@ func TestMigrationTier1SchemaAuthority(t *testing.T) {
 	}
 	if scanned == 0 {
 		t.Fatalf("%s holds no Go files; the seeder's write clients are gone", tier1SeedPkgDir)
+	}
+}
+
+func TestSchemaAuthorityCollectorsHaveBoundedStartupRetry(t *testing.T) {
+	t.Parallel()
+	const (
+		collectorService = "otel-collector"
+		boundedRestart   = "on-failure:5"
+		writebackService = "otel-collector-writeback"
+	)
+
+	for _, path := range []string{rootComposePath, tier1ComposePath} {
+		cf := readCompose(t, path)
+		collector, ok := cf.Services[collectorService]
+		if !ok {
+			t.Fatalf("%s has no %q service", path, collectorService)
+		}
+		if collector.Restart != boundedRestart {
+			t.Errorf("%s %s restart = %q, want capped %q", path, collectorService, collector.Restart, boundedRestart)
+		}
+	}
+
+	tier2 := readCompose(t, tier2ComposePath)
+	writeback, ok := tier2.Services[writebackService]
+	if !ok {
+		t.Fatalf("%s has no %q service", tier2ComposePath, writebackService)
+	}
+	if writeback.Restart != "" {
+		t.Errorf("%s %s restart = %q, want empty: it starts only after healthy Cerberus", tier2ComposePath, writebackService, writeback.Restart)
 	}
 }
 

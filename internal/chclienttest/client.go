@@ -290,10 +290,11 @@ func (c *Client) Seed(t testing.TB, ddl string) {
 // predicate fused directly atop the final projection is the same gap
 // for a trailing WHERE instead of ORDER BY — see [testsql.NestMapWhere].
 func (c *Client) prepareQuery(query string) string {
+	mapColumns := testsql.SeedMapColumns(c.seedDDL)
 	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(c.seedDDL))
-	query = testsql.RewriteMapProjections(query)
-	query = testsql.NestMapOrderBy(query)
-	query = testsql.NestMapWhere(query)
+	query = testsql.RewriteMapProjectionsWithMapColumns(query, mapColumns)
+	query = testsql.NestMapOrderBy(query, mapColumns...)
+	query = testsql.NestMapWhere(query, mapColumns...)
 	return query
 }
 

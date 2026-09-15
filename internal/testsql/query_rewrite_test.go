@@ -19,6 +19,21 @@ func TestRewriteMapProjections(t *testing.T) {
 			want: "SELECT `MetricName`, toJSONString(`Attributes`) AS `Attributes`, `TimeUnix`, abs(`Value`) AS `Value` FROM `otel_metrics_gauge`",
 		},
 		{
+			name: "attributes under arbitrary alias",
+			in:   "SELECT `MetricName`, `Attributes` AS `labels_map`, `TimeUnix`, `Value` FROM `otel_metrics_gauge`",
+			want: "SELECT `MetricName`, toJSONString(`Attributes`) AS `labels_map`, `TimeUnix`, `Value` FROM `otel_metrics_gauge`",
+		},
+		{
+			name: "qualified attributes under arbitrary alias",
+			in:   "SELECT g.`MetricName`, g.`Attributes` AS `labels_map`, g.`TimeUnix`, g.`Value` FROM `otel_metrics_gauge` AS g",
+			want: "SELECT g.`MetricName`, toJSONString(g.`Attributes`) AS `labels_map`, g.`TimeUnix`, g.`Value` FROM `otel_metrics_gauge` AS g",
+		},
+		{
+			name: "non-map source under arbitrary alias remains untouched",
+			in:   "SELECT `MetricName`, `Value` AS `labels_map`, `TimeUnix`, `Value` FROM `otel_metrics_gauge`",
+			want: "SELECT `MetricName`, `Value` AS `labels_map`, `TimeUnix`, `Value` FROM `otel_metrics_gauge`",
+		},
+		{
 			name: "no map column",
 			in:   "SELECT `MetricName`, `TimeUnix`, `Value` FROM `otel_metrics_gauge`",
 			want: "SELECT `MetricName`, `TimeUnix`, `Value` FROM `otel_metrics_gauge`",
@@ -111,6 +126,26 @@ func TestRewriteMapProjections(t *testing.T) {
 				t.Errorf("rewrite mismatch\n got: %s\nwant: %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRewriteMapProjectionsWithMapColumns(t *testing.T) {
+	seed := `CREATE TABLE custom_metrics (
+		metric_id String,
+		labels_map Map(String, String),
+		sample_value Float64
+	) ENGINE = Memory`
+	mapColumns := SeedMapColumns(seed)
+
+	query := "SELECT `metric_id`, `labels_map`, `sample_value` FROM `custom_metrics`"
+	want := "SELECT `metric_id`, toJSONString(`labels_map`) AS `labels_map`, `sample_value` FROM `custom_metrics`"
+	if got := RewriteMapProjectionsWithMapColumns(query, mapColumns); got != want {
+		t.Fatalf("rewrite mismatch\n got: %s\nwant: %s", got, want)
+	}
+
+	control := "SELECT `metric_id`, `sample_value` AS `other_name` FROM `custom_metrics`"
+	if got := RewriteMapProjectionsWithMapColumns(control, mapColumns); got != control {
+		t.Fatalf("non-Map projection changed\n got: %s\nwant: %s", got, control)
 	}
 }
 

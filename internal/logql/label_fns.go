@@ -57,7 +57,10 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 		return nil, fmt.Errorf("logql: label_replace: %w", err)
 	}
 
-	cols := logSampleColumns(inner, s)
+	cols, err := logSampleColumns(inner, s)
+	if err != nil {
+		return nil, err
+	}
 	attrs := &chplan.LabelReplace{
 		Map:              &chplan.ColumnRef{Name: cols.attrsCol},
 		Dst:              e.Dst,
@@ -80,7 +83,7 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 			{Expr: cols.metricName, Alias: sampleMetricNameCol},
 			{Expr: attrs, Alias: sampleAttributesCol},
 			{Expr: cols.timeExpr, Alias: sampleTimeUnixCol},
-			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
+			{Expr: &chplan.ColumnRef{Name: cols.valueCol}, Alias: rangeAggSynthValueColumn},
 		},
 	}, nil
 }

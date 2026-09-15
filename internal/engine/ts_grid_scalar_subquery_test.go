@@ -49,15 +49,16 @@ func scalarInteriorTSGridPlan(interior chplan.Node) chplan.Node {
 func resampleInterior() *chplan.RangeWindowStaleResample {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeWindowStaleResample{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
-		Start:         start,
-		End:           start.Add(5 * time.Minute),
-		Step:          30 * time.Second,
-		Lookback:      5 * time.Minute,
-		MetricNameCol: "MetricName",
-		AttributesCol: "Attributes",
-		TimestampCol:  "TimeUnix",
-		ValueCol:      "Value",
+		Input: &chplan.Scan{Table: "otel_metrics_gauge", Columns: []string{"MetricName", "Attributes", "TimeUnix", "Value"}, Roles: []chplan.Column{
+			{Name: "MetricName", Role: chplan.RoleMetricName},
+			{Name: "Attributes", Role: chplan.RoleAttributes},
+			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+			{Name: "Value", Role: chplan.RoleValue},
+		}},
+		Start:    start,
+		End:      start.Add(5 * time.Minute),
+		Step:     30 * time.Second,
+		Lookback: 5 * time.Minute,
 	}
 }
 

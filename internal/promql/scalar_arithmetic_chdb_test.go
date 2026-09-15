@@ -55,6 +55,7 @@ func TestScalarArithmeticShadowAndValuesParity_ChDB(t *testing.T) {
 		// nonzero operands are pinned separately by SQL/IR equivalence.
 		{"atan2", "0", false, true, func(v float64) float64 { return math.Atan2(v, 0) }},
 		{"atan2", "0", true, true, func(v float64) float64 { return math.Atan2(0, v) }},
+		{"atan2", "-0", true, true, func(v float64) float64 { return math.Atan2(math.Copysign(0, -1), v) }},
 		{"/", "3", true, false, func(v float64) float64 { return 3 / v }},
 		{"%", "0", false, false, func(float64) float64 { return math.NaN() }},
 		{"+", "NaN", false, false, func(float64) float64 { return math.NaN() }},

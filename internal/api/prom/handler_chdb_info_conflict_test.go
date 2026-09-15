@@ -48,9 +48,9 @@ var infoConflictSeedTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // info metric collides with the first on `version` or contributes a
 // disjoint `revision`.
 //
-// The histogram table is created because a `__name__` regex selector fans
-// the scan out across the classic-histogram companion families; it stays
-// empty, it just has to exist.
+// The histogram tables are created because a `__name__` regex selector fans
+// the scan out across the classic- and exponential-histogram companion
+// families; they stay empty, they just have to exist.
 func infoConflictSeed(buildInfoLabels string) string {
 	ts := infoConflictSeedTime.Format("2006-01-02 15:04:05.000000000")
 	return gaugeDDL + `
@@ -63,6 +63,19 @@ CREATE TABLE otel_metrics_histogram (
     BucketCounts Array(UInt64),
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);` + fmt.Sprintf(`
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
     ('up',          map('job', 'api'),                       toDateTime64('%s', 9), 1.0),
     ('target_info', map('job', 'api', 'version', '1.2.3'),   toDateTime64('%s', 9), 1.0),
