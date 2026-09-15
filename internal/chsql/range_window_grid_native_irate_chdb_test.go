@@ -21,7 +21,7 @@
 //
 // AggregationTemporalityColumn is CLEARED on the schema, unlike the
 // rate()/increase() dual-emit tests. This is load-bearing, not cosmetic:
-// irate() (unlike delta()) DOES set RangeWindow.TemporalityColumn whenever
+// irate() (unlike delta()) DOES request a RoleTemporality input whenever
 // AggregationTemporalityColumn is configured and the selector routes singly
 // to the Sum table (rangeVectorCounterTemporalityColumn) — and
 // nativeTSGridMatrixNode's unconditional TemporalityColumn guard would then
@@ -171,7 +171,7 @@ func runDualEmitIrate(t *testing.T, db *sql.DB, native, optimize bool) map[gridC
 	}
 	// AggregationTemporalityColumn cleared — see the file doc for why this
 	// one, unlike rate()/delta()'s own dual-emit siblings, is load-bearing
-	// for irate(): with it set, rw.TemporalityColumn would be non-empty and
+	// for irate(): with it declared, the RoleTemporality lookup succeeds and
 	// nativeTSGridMatrixNode's guard would send every window to the fan-out
 	// fallback, so the native=true half would silently prove nothing.
 	s := schema.DefaultOTelMetrics()

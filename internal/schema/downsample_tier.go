@@ -44,7 +44,7 @@ const (
 	// any(AggregationTemporality) column — a single OTel series carries ONE
 	// temporality for its lifetime, so any() over each bucket's rows is
 	// exact, not a lossy pick (the same property
-	// chplan.RangeWindow.TemporalityColumn's own doc relies on for the raw
+	// chplan.RoleTemporality range-window input relies on for the raw
 	// fan-out path). irate()'s read (internal/chsql's
 	// emitRangeWindowDownsampleTier) branches on it via the SAME
 	// chsql.CounterOrDeltaPairDelta primitive the fan-out's irateValueFrag
