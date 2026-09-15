@@ -318,10 +318,8 @@ func generateStageInput(rng *rand.Rand, table string) chplan.Node {
 			{Name: "MetricName", Role: chplan.RoleMetricName},
 			{Name: "Attributes", Role: chplan.RoleAttributes},
 			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
-			{Name: "Count"},
-			{Name: "Sum"},
-			{Name: "BucketCounts"},
-			{Name: "ExplicitBounds"},
+			{Name: "BucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+			{Name: "ExplicitBounds", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldExplicitBounds},
 		}
 	}
 	columns := make([]string, len(roles))
