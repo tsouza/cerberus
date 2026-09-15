@@ -889,8 +889,14 @@ func TestRangeWindowGridNativeInnerScanTimeBound(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeWindowGridNative{
-		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
-		Func:            "rate",
+		Input: &chplan.Scan{
+			Table:   "otel_metrics_sum",
+			Columns: []string{"TimeUnix", "Value"},
+			Roles: []chplan.Column{
+				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+				{Name: "Value", Role: chplan.RoleValue},
+			},
+		}, Func: "rate",
 		Start:           start,
 		End:             end,
 		Step:            30 * time.Second,
@@ -944,8 +950,14 @@ func TestRangeWindowGridNativeRejectsBadInput(t *testing.T) {
 	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 	base := chplan.RangeWindowGridNative{
-		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
-		Func:            "rate",
+		Input: &chplan.Scan{
+			Table:   "otel_metrics_sum",
+			Columns: []string{"TimeUnix", "Value"},
+			Roles: []chplan.Column{
+				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+				{Name: "Value", Role: chplan.RoleValue},
+			},
+		}, Func: "rate",
 		Start:           start,
 		End:             end,
 		Step:            30 * time.Second,
@@ -1061,8 +1073,14 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 	t.Run("RangeWindowGridNative_rate", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.RangeWindowGridNative{
-			Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
-			Func:            "rate",
+			Input: &chplan.Scan{
+				Table:   "otel_metrics_sum",
+				Columns: []string{"TimeUnix", "Value"},
+				Roles: []chplan.Column{
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "Value", Role: chplan.RoleValue},
+				},
+			}, Func: "rate",
 			Start:           start,
 			End:             end,
 			Step:            120 * time.Second,

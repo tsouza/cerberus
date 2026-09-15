@@ -432,7 +432,13 @@ var inputs = map[string]chplan.Node{
 	// correctness-critical arm: a dropped identity column 502s at runtime.
 	"pushdown_through_range_window_grid_native": &chplan.RangeWindowGridNative{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_sum"},
+			Input: &chplan.Scan{
+				Table: "otel_metrics_sum",
+				Roles: []chplan.Column{
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "Value", Role: chplan.RoleValue},
+				},
+			},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},
@@ -470,7 +476,13 @@ var inputs = map[string]chplan.Node{
 	//     ABOVE the merge and undo nothing visible in the result rows.
 	"pushdown_through_range_window_grid_native_recollapse": &chplan.RangeWindowGridNative{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_sum"},
+			Input: &chplan.Scan{
+				Table: "otel_metrics_sum",
+				Roles: []chplan.Column{
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "Value", Role: chplan.RoleValue},
+				},
+			},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},
@@ -700,12 +712,14 @@ var inputs = map[string]chplan.Node{
 	},
 }
 
-// These fixtures deliberately begin with a plan that cannot be emitted until
-// its optimizer rule establishes the required closed schema. Keeping the
-// exception explicit prevents an unrelated emitter regression from being
-// recorded as ordinary golden output.
+// These fixtures deliberately begin with plans that cannot be emitted until
+// their optimizer rule establishes the required closed schema. Keeping the
+// exceptions explicit prevents unrelated emitter regressions from becoming
+// ordinary golden output.
 var unoptimizedUnsupported = map[string]bool{
-	"pushdown_through_range_lwr": true,
+	"pushdown_through_range_window_grid_native":            true,
+	"pushdown_through_range_window_grid_native_recollapse": true,
+	"pushdown_through_range_lwr":                           true,
 }
 
 func TestOptimizer(t *testing.T) {
