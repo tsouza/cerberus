@@ -68,6 +68,11 @@ package chplan
 //     and per-group count ("is_selection" / "attr" / "val" / "Value").
 //   - Inner: the underlying spanset relation (Filter / Scan tree from
 //     the query's `{...}` pipeline).
+//   - InputTimestampColumn / RootLookupTimestampColumn: schema-owned physical
+//     timestamps for the cohort and root-enrichment relations. A wrapping
+//     RangeWindow's TimestampColumn remains the public output name. The
+//     trace_id_ts table keeps its own explicitly configured Start/End column
+//     names because it is a separate physical relation, not a plan child.
 //
 // Wrapping by chplan.RangeWindow produces the `/api/metrics/query_range`
 // matrix shape — one row per (cohort, attr, val, anchor_ts). Bare
@@ -100,6 +105,63 @@ type MetricsCompare struct {
 	// request-window Timestamp losslessly — the seed's roots are then in-window
 	// by construction. Only meaningful when RootLookup != nil.
 	InnerRootScoped bool
+}
+
+// InputTimestampColumn resolves the physical timestamp owned by the compare
+// cohort relation. A wrapping RangeWindow's TimestampColumn is an output name
+// and is deliberately not consulted.
+func (m *MetricsCompare) InputTimestampColumn() (string, bool) {
+	if m == nil || m.Inner == nil {
+		return "", false
+	}
+	return uniqueMetricsCompareTimestamp(m.Inner.RowType())
+}
+
+// RootLookupTimestampColumn resolves the physical timestamp owned by the
+// optional root-enrichment relation. RootLookup does not publish this input
+// through its aggregate output, so resolution happens at its physical scan
+// boundary. Every scan in that relation must agree on one timestamp name.
+func (m *MetricsCompare) RootLookupTimestampColumn() (string, bool) {
+	if m == nil || m.RootLookup == nil {
+		return "", false
+	}
+	var timestamp string
+	valid := true
+	scanCount := 0
+	Walk(m.RootLookup, func(node Node) bool {
+		scan, ok := node.(*Scan)
+		if !ok {
+			return true
+		}
+		scanCount++
+		column, columnOK := uniqueMetricsCompareTimestamp(scan.RowType())
+		if !columnOK || scanCount > 1 {
+			valid = false
+			return false
+		}
+		timestamp = column
+		return true
+	})
+	return timestamp, valid && scanCount == 1
+}
+
+func uniqueMetricsCompareTimestamp(row Schema) (string, bool) {
+	nameCount := make(map[string]int, len(row.Columns))
+	var timestamp string
+	for _, column := range row.Columns {
+		nameCount[column.Name]++
+		if column.Role != RoleTimestamp {
+			continue
+		}
+		if column.Name == "" || timestamp != "" {
+			return "", false
+		}
+		timestamp = column.Name
+	}
+	if timestamp == "" || nameCount[timestamp] != 1 {
+		return "", false
+	}
+	return timestamp, true
 }
 
 func (*MetricsCompare) planNode() {}

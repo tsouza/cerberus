@@ -137,6 +137,12 @@ func TestProjectSamples_VectorAggregateRefsAttributes(t *testing.T) {
 	// a *chplan.Project whose Alias list includes "Attributes" — the
 	// canonical-shape marker `isVectorAggregateSampleShape` keys on.
 	plan := &chplan.Project{
+		Roles: []chplan.Column{
+			{Name: "MetricName", Role: chplan.RoleMetricName},
+			{Name: "Attributes", Role: chplan.RoleAttributes},
+			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+			{Name: "Value", Role: chplan.RoleValue},
+		},
 		Input: &chplan.Scan{Table: s.LogsTable},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
@@ -266,6 +272,12 @@ func TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix(t *testing.T) 
 	// is a `bucket_ts` ColumnRef (re-aliased to TimeUnix by the inner
 	// Project) carrying the per-anchor timestamp.
 	plan := &chplan.Project{
+		Roles: []chplan.Column{
+			{Name: "MetricName", Role: chplan.RoleMetricName},
+			{Name: "Attributes", Role: chplan.RoleAttributes},
+			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+			{Name: "Value", Role: chplan.RoleValue},
+		},
 		Input: &chplan.Scan{Table: s.LogsTable},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
