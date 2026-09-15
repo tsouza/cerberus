@@ -81,6 +81,12 @@ func matchRangeLWRFusion(a *chplan.Aggregate) (*chplan.RangeLWR, rangeLWRFusionK
 	if !ok {
 		return nil, rangeLWRFusionNone
 	}
+	inputColumns, err := resolveRangeLWRInputColumns(lwr.Input)
+	if err != nil || inputColumns.metricName != lwr.MetricNameCol ||
+		inputColumns.attributes != lwr.AttributesCol || inputColumns.timestamp != lwr.TimestampCol ||
+		inputColumns.value != lwr.ValueCol {
+		return nil, rangeLWRFusionNone
+	}
 	// SampleTimestamp publishes a 5th column neither fused rendering
 	// accounts for below — decline rather than silently drop it.
 	if lwr.SampleTimestamp {
