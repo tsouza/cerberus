@@ -1036,79 +1036,12 @@ func lowerOuterRangeFnOverSubquery(
 	// (cerberus issue #2543, [lowerHistogramNativeSubqueryInner]) reaches
 	// this reducer's RangeWindow below, which folds over TimestampColumn
 	// "anchor_ts" / ValueColumn s.ValueColumn — columns a histogram-shaped
-	// row publishes neither meaningfully (Value is only the placeholder
-	// [chplan.HistogramProjection] always carries alongside its real nine
-	// Histogram*Column fields; see that type's own doc comment). The
-	// RangeWindow below must never be built over one, on pain of a
-	// ClickHouse "Unknown identifier" 502.
-	//
-	// max_over_time, min_over_time, stddev_over_time, stdvar_over_time,
-	// quantile_over_time, mad_over_time, deriv, predict_linear,
-	// double_exponential_smoothing (holt_winters), ts_of_max_over_time,
-	// ts_of_min_over_time are the functions reference Prometheus itself
-	// defines no real histogram semantics for — each reads only
-	// `matrixVal[0].Floats` in reference (tsouza/prometheus's
-	// promql/functions.go), so an all-histogram window has nothing for
-	// them to answer and reference itself answers EMPTY (annotated with a
-	// "histogram(s) ignored" warning cerberus has no wire channel for),
-	// never an error. [histogramSubqueryFloatOnlyDropFunc] names exactly
-	// this eleven-function set — cerberus issue #2563, the
-	// subquery-composition sibling of [rangeVectorFloatOnlyDropFuncs] /
-	// [dropExpHistogramSamplesForRangeVector]'s identical plain
-	// MatrixSelector coverage (range_fns.go) — and this branch answers the
-	// canonical drop-and-empty plan [dropExpHistogramSamples] builds,
-	// after validating the outer call's own scalar parameter(s) exactly as
-	// the plain-matrix siblings do: reference validates predict_linear's
-	// horizon / holt_winters' smoothing factors / quantile_over_time's phi
-	// BEFORE ever walking the window's samples, so an invalid parameter
-	// must still surface as an error even though every window is about to
-	// answer empty (mirrors
-	// [validateHistogramDroppingAggregationParam]'s identical
-	// param-before-drop discipline, histogram_native_drop_aggregation.go).
-	// A throwaway RangeWindow absorbs [threadOuterRangeFnScalars]'s
-	// mutations since nothing downstream ever reads them: an empty result
-	// has no row for any Value expression — original or phi-folded — to
-	// appear on.
-	//
-	// Cerberus issue #2545 gave the REMAINING functions that DO have real
-	// histogram semantics — count_over_time, present_over_time,
-	// last_over_time, first_over_time, resets, changes,
-	// ts_of_first_over_time, ts_of_last_over_time — their own dedicated
-	// lowering ([selectFnOverExpHistogramSubquery] /
-	// [lowerSelectFnOverExpHistogramSubquery],
-	// histogram_native_subquery_select.go), dispatched from
-	// [lowerHistogramNativeRoot] ahead of the generic `lower()` path that
-	// reaches this function, so none of those eight names can reach this
-	// branch any more. rate/increase/delta/irate/idelta/sum_over_time/
-	// avg_over_time are intercepted the same way, one level earlier
-	// still, by [rangeFnOverExpHistogramSubquery] /
-	// [lowerExpHistogramRangeFnOverSubquery] (histogram_native_range_fn.go).
+	// row publishes neither meaningfully. See
+	// [lowerOuterRangeFnOverHistogramSubquery]'s own doc for the full
+	// per-function histogram-semantics breakdown; this branch only routes
+	// to it.
 	if rowsMayContainHistograms(inner) {
-		kind := liveSampleKind(inner)
-		// Cerberus issue #2724: inner may have reached this Histogram/Mixed
-		// shape via a further and/unless/or wrapping a mixed `or`, a bare
-		// and/unless-forwarded histogram selector, or (since cerberus issue
-		// #3227) a bare mixed `or` — any shape [lowerSubquery]'s ordinary
-		// dispatch resolves this way, and the validated physical row shape
-		// says which continuation applies, so no AST recognizer is needed.
-		// [lowerHistogramOrMixedSubqueryOuterFnInput] answers every one of
-		// the fifteen SELECT/FOLD-family names for it; anything else
-		// (deriv, predict_linear, ...) falls through unmatched to this
-		// function's own existing float-only-drop / rejection handling
-		// below, unchanged.
-		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
-			return nil, err
-		}
-		if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, kind, outer.Func.Name, sub, s, ctx); matched {
-			return node, err
-		}
-		if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name) {
-			return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", outer.Func.Name)
-		}
-		if _, _, err := threadOuterRangeFnScalars(outer, &chplan.RangeWindow{}, s, ctx); err != nil {
-			return nil, err
-		}
-		return dropExpHistogramSamples(inner, s), nil
+		return lowerOuterRangeFnOverHistogramSubquery(outer, sub, inner, s, ctx)
 	}
 
 	anchor, err := subqueryAnchor(sub, ctx)
@@ -1281,6 +1214,84 @@ func lowerOuterRangeFnOverSubquery(
 		return wrapRangeWindowPreserveName(rw, s, nameExpr), nil
 	}
 	return rw, nil
+}
+
+// lowerOuterRangeFnOverHistogramSubquery handles lowerOuterRangeFnOverSubquery's
+// histogram/mixed-shape arm: inner's rows may carry native histogram samples,
+// which the plain float-only RangeWindow path below it must never be built
+// over (a ClickHouse "Unknown identifier" 502 — TimestampColumn "anchor_ts" /
+// ValueColumn s.ValueColumn name columns a histogram-shaped row publishes
+// neither meaningfully; see chplan.HistogramProjection's own doc comment).
+//
+// Cerberus issue #2545 gave the functions that DO have real histogram
+// semantics — count_over_time, present_over_time, last_over_time,
+// first_over_time, resets, changes, ts_of_first_over_time,
+// ts_of_last_over_time — their own dedicated lowering
+// ([selectFnOverExpHistogramSubquery] / [lowerSelectFnOverExpHistogramSubquery],
+// histogram_native_subquery_select.go), dispatched from
+// [lowerHistogramNativeRoot] ahead of the generic `lower()` path that reaches
+// this function, so none of those eight names can reach here any more.
+// rate/increase/delta/irate/idelta/sum_over_time/avg_over_time are
+// intercepted the same way, one level earlier still, by
+// [rangeFnOverExpHistogramSubquery] / [lowerExpHistogramRangeFnOverSubquery]
+// (histogram_native_range_fn.go).
+//
+// The REMAINING functions — max_over_time, min_over_time, stddev_over_time,
+// stdvar_over_time, quantile_over_time, mad_over_time, deriv, predict_linear,
+// double_exponential_smoothing (holt_winters), ts_of_max_over_time,
+// ts_of_min_over_time — are the ones reference Prometheus itself defines no
+// real histogram semantics for: each reads only `matrixVal[0].Floats` in
+// reference (tsouza/prometheus's promql/functions.go), so an all-histogram
+// window has nothing for them to answer and reference itself answers EMPTY
+// (annotated with a "histogram(s) ignored" warning cerberus has no wire
+// channel for), never an error. [histogramSubqueryFloatOnlyDropFunc] names
+// exactly this eleven-function set — cerberus issue #2563, the
+// subquery-composition sibling of [rangeVectorFloatOnlyDropFuncs] /
+// [dropExpHistogramSamplesForRangeVector]'s identical plain MatrixSelector
+// coverage (range_fns.go) — and the tail of this function answers the
+// canonical drop-and-empty plan [dropExpHistogramSamples] builds, after
+// validating the outer call's own scalar parameter(s) exactly as the
+// plain-matrix siblings do: reference validates predict_linear's horizon /
+// holt_winters' smoothing factors / quantile_over_time's phi BEFORE ever
+// walking the window's samples, so an invalid parameter must still surface
+// as an error even though every window is about to answer empty (mirrors
+// [validateHistogramDroppingAggregationParam]'s identical param-before-drop
+// discipline, histogram_native_drop_aggregation.go). A throwaway RangeWindow
+// absorbs [threadOuterRangeFnScalars]'s mutations since nothing downstream
+// ever reads them: an empty result has no row for any Value expression —
+// original or phi-folded — to appear on.
+func lowerOuterRangeFnOverHistogramSubquery(
+	outer *parser.Call,
+	sub *parser.SubqueryExpr,
+	inner chplan.Node,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	kind := liveSampleKind(inner)
+	// Cerberus issue #2724: inner may have reached this Histogram/Mixed
+	// shape via a further and/unless/or wrapping a mixed `or`, a bare
+	// and/unless-forwarded histogram selector, or (since cerberus issue
+	// #3227) a bare mixed `or` — any shape [lowerSubquery]'s ordinary
+	// dispatch resolves this way, and the validated physical row shape
+	// says which continuation applies, so no AST recognizer is needed.
+	// [lowerHistogramOrMixedSubqueryOuterFnInput] answers every one of
+	// the fifteen SELECT/FOLD-family names for it; anything else
+	// (deriv, predict_linear, ...) falls through unmatched to this
+	// function's own existing float-only-drop / rejection handling
+	// below, unchanged.
+	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+		return nil, err
+	}
+	if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, kind, outer.Func.Name, sub, s, ctx); matched {
+		return node, err
+	}
+	if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name) {
+		return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", outer.Func.Name)
+	}
+	if _, _, err := threadOuterRangeFnScalars(outer, &chplan.RangeWindow{}, s, ctx); err != nil {
+		return nil, err
+	}
+	return dropExpHistogramSamples(inner, s), nil
 }
 
 // subqueryPreservedNameExpr resolves the expression an outer

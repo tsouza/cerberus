@@ -60,7 +60,11 @@ func TestEmit_HoltWintersIR_StillRenders(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input: &chplan.Scan{
+			Table:   "otel_metrics_sum",
+			Columns: []string{"Attributes", "Value", "TimeUnix"},
+			Roles:   []chplan.Column{{Name: "TimeUnix", Role: chplan.RoleTimestamp}},
+		},
 		Func:            "holt_winters",
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
