@@ -90,6 +90,56 @@ const bucketGridRateFn = "timeSeriesRateToGrid"
 // experimental gate, so it costs no additional capability.
 const bucketGridSeenFn = "timeSeriesResetsToGrid"
 
+type rangeBucketGridNativeInputColumns struct {
+	timestamp      string
+	bucketCounts   string
+	explicitBounds string
+}
+
+func resolveRangeBucketGridNativeInputColumns(input chplan.Node) (rangeBucketGridNativeInputColumns, error) {
+	if input == nil {
+		return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative.Input is nil", ErrUnsupported)
+	}
+	row := input.RowType()
+	if row.Open {
+		return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative requires a closed child schema", ErrUnsupported)
+	}
+
+	var columns rangeBucketGridNativeInputColumns
+	seenNames := make(map[string]chplan.Column, len(row.Columns))
+	for _, column := range row.Columns {
+		if column.Name != "" {
+			if seen, ok := seenNames[column.Name]; ok &&
+				(seen.Role != column.Role || seen.HistogramField != column.HistogramField) {
+				return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative child column %q has ambiguous roles", ErrUnsupported, column.Name)
+			}
+			seenNames[column.Name] = column
+		}
+
+		var slot *string
+		switch {
+		case column.Role == chplan.RoleTimestamp:
+			slot = &columns.timestamp
+		case column.Role == chplan.RoleHistogramField && column.HistogramField == chplan.HistogramFieldBucketCounts:
+			slot = &columns.bucketCounts
+		case column.Role == chplan.RoleHistogramField && column.HistogramField == chplan.HistogramFieldExplicitBounds:
+			slot = &columns.explicitBounds
+		case column.HistogramField == chplan.HistogramFieldBucketCounts || column.HistogramField == chplan.HistogramFieldExplicitBounds:
+			return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative child column %q has an incompatible histogram role", ErrUnsupported, column.Name)
+		default:
+			continue
+		}
+		if column.Name == "" || *slot != "" {
+			return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative requires unique named timestamp, bucket-count, and explicit-bound child roles", ErrUnsupported)
+		}
+		*slot = column.Name
+	}
+	if columns.timestamp == "" || columns.bucketCounts == "" || columns.explicitBounds == "" {
+		return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative child schema is missing timestamp, bucket-count, or explicit-bound roles", ErrUnsupported)
+	}
+	return columns, nil
+}
+
 // emitRangeBucketGridNative renders a chplan.RangeBucketGridNative — the
 // ClickHouse-native lowering of the classic-histogram `rate` window fold that
 // sits under `histogram_quantile(phi, <agg> by(le) (rate(<bucket>[range])))`
@@ -191,8 +241,9 @@ const bucketGridSeenFn = "timeSeriesResetsToGrid"
 // stamps it onto the per-query ClickHouse context, exactly as it does for
 // chplan.RangeWindowGridNative.
 func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) error {
-	if r.Input == nil {
-		return fmt.Errorf("%w: RangeBucketGridNative.Input is nil", ErrUnsupported)
+	inputColumns, err := resolveRangeBucketGridNativeInputColumns(r.Input)
+	if err != nil {
+		return err
 	}
 	if r.Step <= 0 {
 		return fmt.Errorf("%w: RangeBucketGridNative requires Step > 0 (range mode)", ErrUnsupported)
@@ -265,9 +316,9 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	for i, g := range r.GroupBy {
 		unnest.Select(As(bucketGridGroupKeyFrag(g), r.GroupByAliases[i]))
 	}
-	unnest.Select(Col(r.TimestampCol))
-	unnest.Select(As(Call("arrayJoin", bucketGridRungsFrag(r)), bucketGridRungAlias))
-	maybePushRangeScanTimeBound(unnest, r.TimestampCol, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
+	unnest.Select(Col(inputColumns.timestamp))
+	unnest.Select(As(Call("arrayJoin", bucketGridRungsFrag(inputColumns.bucketCounts, inputColumns.explicitBounds)), bucketGridRungAlias))
+	maybePushRangeScanTimeBound(unnest, inputColumns.timestamp, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
 
 	// Level 0b — split the tuple so the aggregate level can group on the bound
 	// and reduce the count. Kept as its own level because a GROUP BY key that
@@ -275,7 +326,7 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	// ClickHouse resolves.
 	rungs := NewQuery().From(unnest.Frag())
 	rungs.Select(keyCols...)
-	rungs.Select(Col(r.TimestampCol))
+	rungs.Select(Col(inputColumns.timestamp))
 	rungs.Select(As(TupleIndex(Col(bucketGridRungAlias), 1), bucketGridLeAlias))
 	rungs.Select(As(TupleIndex(Col(bucketGridRungAlias), 2), bucketGridCumAlias))
 
@@ -302,7 +353,7 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	// precedent (subqueryFrag), at the cost of that fifth copy of the Input
 	// subplan's own SQL text in the emitted query.
 	densityGuarded := bucketGridDensityBoundedSourceFrag(
-		axis1Guarded, rungs.Frag(), keyCols, inner, r.TimestampCol, r.ExplicitBoundsCol,
+		axis1Guarded, rungs.Frag(), keyCols, inner, inputColumns.timestamp, inputColumns.explicitBounds,
 		r.Start, r.End, offsetNS, r.Range.Nanoseconds(), r.NumAnchors(),
 		e.rangeBucketGridNativeMaxDensityUnits, RangeBucketGridNativeDensityBudgetMessage,
 	)
@@ -310,9 +361,9 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	grids.Select(keyCols...)
 	grids.Select(Col(bucketGridLeAlias))
 	grids.Select(As(Parametric(bucketGridRateFn, gridParams,
-		Col(r.TimestampCol), Col(bucketGridCumAlias)), bucketGridRateArrayAlias))
+		Col(inputColumns.timestamp), Col(bucketGridCumAlias)), bucketGridRateArrayAlias))
 	grids.Select(As(Parametric(bucketGridSeenFn, gridParams,
-		Col(r.TimestampCol), Col(bucketGridCumAlias)), bucketGridSeenArrayAlias))
+		Col(inputColumns.timestamp), Col(bucketGridCumAlias)), bucketGridSeenArrayAlias))
 	grids.Select(As(anchorAxis, bucketGridTSArrayAlias))
 	grids.GroupBy(append(append([]Frag{}, keyCols...), Col(bucketGridLeAlias))...)
 
@@ -428,11 +479,11 @@ func bucketGridGroupKeyFrag(expr chplan.Expr) Frag {
 // the +Inf rung's total comes from `arraySum` over the WHOLE counts array and
 // the finite rungs from the first `length(<bounds>)` entries, so a row storing
 // an overflow bucket and a row omitting it both produce the same ladder.
-func bucketGridRungsFrag(r *chplan.RangeBucketGridNative) Frag {
+func bucketGridRungsFrag(bucketCounts, explicitBounds string) Frag {
 	countsF := Call("arrayMap",
 		Lambda1(bucketGridCountParam, Call("toFloat64", BareIdent(bucketGridCountParam))),
-		Col(r.BucketCountsCol))
-	bounds := Col(r.ExplicitBoundsCol)
+		Col(bucketCounts))
+	bounds := Col(explicitBounds)
 	finiteCounts := Call("arraySlice", countsF, InlineLit(int64(1)), Call("length", bounds))
 	// cumAtBound mirrors internal/promql's classicBucketRowCumulativeExpr
 	// exactly (see this function's own doc): a filter-sum over every one of

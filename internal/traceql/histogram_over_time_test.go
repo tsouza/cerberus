@@ -90,6 +90,9 @@ func TestLowerHistogramOverTime(t *testing.T) {
 			if h.Inner == nil {
 				t.Errorf("Inner is nil; want the spanset tree")
 			}
+			if timestamp, ok := h.InputTimestampColumn(); !ok || timestamp != s.TimestampColumn {
+				t.Errorf("InputTimestampColumn() = (%q, %v), want (%q, true)", timestamp, ok, s.TimestampColumn)
+			}
 		})
 	}
 }

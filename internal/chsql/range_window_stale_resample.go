@@ -63,8 +63,9 @@ const nativeResampleFn = "timeSeriesResampleToGridWithStaleness"
 // the plan (shared planHasTSGridNative path) and stamps
 // allow_experimental_time_series_aggregate_functions=1 onto the per-query ctx.
 func (e *emitter) emitRangeWindowStaleResample(r *chplan.RangeWindowStaleResample) error {
-	if r.TimestampCol == "" || r.ValueCol == "" || r.MetricNameCol == "" || r.AttributesCol == "" {
-		return fmt.Errorf("%w: RangeWindowStaleResample requires MetricName/Attributes/Timestamp/Value column names", ErrUnsupported)
+	columns, ok := r.InputColumns()
+	if !ok {
+		return fmt.Errorf("%w: RangeWindowStaleResample requires a closed child schema with unique named metric-name/attributes/timestamp/value roles", ErrUnsupported)
 	}
 	if r.Step <= 0 {
 		return fmt.Errorf("%w: RangeWindowStaleResample requires Step > 0 (range mode)", ErrUnsupported)
@@ -92,8 +93,8 @@ func (e *emitter) emitRangeWindowStaleResample(r *chplan.RangeWindowStaleResampl
 	gridAgg := Parametric(
 		nativeResampleFn,
 		[]Frag{startFrag, endFrag, InlineLit(stepSeconds), InlineLit(stalenessSeconds)},
-		Col(r.TimestampCol),
-		Col(r.ValueCol),
+		Col(columns.Timestamp),
+		Col(columns.Value),
 	)
 	// timeSeriesRange(start, end, step_s) — the parallel anchor-timestamp axis,
 	// exploded 1:1 with gridAgg in the ARRAY JOIN below. It MUST render the
@@ -118,8 +119,8 @@ func (e *emitter) emitRangeWindowStaleResample(r *chplan.RangeWindowStaleResampl
 
 	// Inner SELECT — one row per series carrying the (grid, grid_ts) pair.
 	inner := NewQuery().From(innerSub)
-	inner.Select(Col(r.MetricNameCol))
-	inner.Select(Col(r.AttributesCol))
+	inner.Select(Col(columns.MetricName))
+	inner.Select(Col(columns.Attributes))
 	inner.Select(As(gridAgg, nativeGridArrayAlias))
 	inner.Select(As(gridTS, nativeGridTSAlias))
 	// Prune the inner scan to the offset-shifted half-open grid span
@@ -128,17 +129,17 @@ func (e *emitter) emitRangeWindowStaleResample(r *chplan.RangeWindowStaleResampl
 	// resample aggregate otherwise consumes every retained sample of every
 	// matching series. Gated on Start/End (always pinned on this node, but
 	// kept for a single uniform contract with the fan-out shapes).
-	maybePushRangeScanTimeBound(inner, r.TimestampCol, r.Start, r.End, offsetNS, r.Lookback.Nanoseconds())
-	inner.GroupBy(Col(r.MetricNameCol), Col(r.AttributesCol))
+	maybePushRangeScanTimeBound(inner, columns.Timestamp, r.Start, r.End, offsetNS, r.Lookback.Nanoseconds())
+	inner.GroupBy(Col(columns.MetricName), Col(columns.Attributes))
 
 	// Outer SELECT — explode the parallel arrays in lockstep, drop NULL cells,
 	// cast to a non-nullable Float64, and surface anchor_ts under the schema
 	// timestamp column name (the canonical 4-column Sample contract).
 	outer := NewQuery().From(inner.Frag())
-	outer.Select(Col(r.MetricNameCol))
-	outer.Select(Col(r.AttributesCol))
-	outer.Select(As(nativeAnchorTimestampFrag(), r.TimestampCol))
-	outer.Select(As(Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias))), r.ValueCol))
+	outer.Select(Col(columns.MetricName))
+	outer.Select(Col(columns.Attributes))
+	outer.Select(As(nativeAnchorTimestampFrag(), columns.Timestamp))
+	outer.Select(As(Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias))), columns.Value))
 	outer.ArrayJoin(
 		As(Col(nativeGridArrayAlias), nativeGridValAlias),
 		As(Col(nativeGridTSAlias), RangeWindowAnchorAlias),

@@ -205,10 +205,9 @@ func lowerTopKBottomK(inner chplan.Node, t *traceql.TopKBottomK) (chplan.Node, e
 		return nil, fmt.Errorf("traceql: %s(%d): limit must be > 0", t.Op(), limit)
 	}
 	return &chplan.MetricsSecondStage{
-		Input:      inner,
-		Op:         op,
-		K:          int64(limit),
-		ValueAlias: metricsValueAlias,
+		Input: inner,
+		Op:    op,
+		K:     int64(limit),
 	}, nil
 }
 
@@ -230,7 +229,6 @@ func lowerMetricsFilter(inner chplan.Node, f *traceql.MetricsFilter) (chplan.Nod
 		Op:             chplan.SecondStageThreshold,
 		ThresholdOp:    op,
 		ThresholdValue: f.Value(),
-		ValueAlias:     metricsValueAlias,
 	}, nil
 }
 
