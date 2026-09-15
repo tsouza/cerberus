@@ -597,7 +597,15 @@ var inputs = map[string]chplan.Node{
 	// predicate ref (MetricName, already part of the identity set here).
 	"pushdown_through_range_lwr": &chplan.RangeLWR{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input: &chplan.Scan{
+				Table: "otel_metrics_gauge",
+				Roles: []chplan.Column{
+					{Name: "MetricName", Role: chplan.RoleMetricName},
+					{Name: "Attributes", Role: chplan.RoleAttributes},
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "Value", Role: chplan.RoleValue},
+				},
+			},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "MetricName"},
@@ -691,6 +699,7 @@ var inputs = map[string]chplan.Node{
 var unoptimizedUnsupported = map[string]bool{
 	"pushdown_through_range_window_grid_native":            true,
 	"pushdown_through_range_window_grid_native_recollapse": true,
+	"pushdown_through_range_lwr":                           true,
 }
 
 func TestOptimizer(t *testing.T) {

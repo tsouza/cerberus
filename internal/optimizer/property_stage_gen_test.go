@@ -119,7 +119,7 @@ func gaugeStageBuilders() []stageBuilder {
 		},
 		func(in chplan.Node) chplan.Node {
 			return &chplan.RangeLWR{
-				Input:         in,
+				Input:         closeRangeLWRSampleInput(in),
 				Step:          propertyStep,
 				Lookback:      propertyLookback,
 				Start:         propertyWindowStart,
@@ -209,6 +209,29 @@ func closeNativeMatrixPropertyInput(input chplan.Node) chplan.Node {
 		closed := *node
 		closed.Input = closeNativeMatrixPropertyInput(node.Input)
 		return &closed
+	default:
+		return input
+	}
+}
+
+func closeRangeLWRSampleInput(input chplan.Node) chplan.Node {
+	roles := []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	names := []string{"MetricName", "Attributes", "TimeUnix", "Value"}
+	switch node := input.(type) {
+	case *chplan.Scan:
+		resolved := *node
+		resolved.Columns = names
+		resolved.Roles = roles
+		return &resolved
+	case *chplan.Filter:
+		resolved := *node
+		resolved.Input = closeRangeLWRSampleInput(node.Input)
+		return &resolved
 	default:
 		return input
 	}
