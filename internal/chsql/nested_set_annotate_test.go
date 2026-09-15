@@ -71,7 +71,7 @@ func TestNestedSetAnnotate_StructuralInput_RenderedOnce(t *testing.T) {
 	if got := strings.Count(sql, "WITH RECURSIVE _struct_closure"); got != 1 {
 		t.Errorf("structural closure CTE must render exactly once, got %d:\n%s", got, sql)
 	}
-	wantScope := "IN ((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?))))"
+	wantScope := "IN ((SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`SpanKind` = ?))))"
 	if !strings.Contains(sql, wantScope) {
 		t.Errorf("anchor trace scope must be the UNION ALL of the arm scans;\nwant substring: %s\ngot:\n%s", wantScope, sql)
 	}
@@ -156,7 +156,7 @@ func TestNestedSetAnnotate_LimitInput_ScopeDropsLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	wantScope := "IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))"
+	wantScope := "IN (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?)))"
 	if !strings.Contains(sql, wantScope) {
 		t.Errorf("Limit input's scope must recurse past the LIMIT;\nwant substring: %s\ngot:\n%s", wantScope, sql)
 	}
