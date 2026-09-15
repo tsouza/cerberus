@@ -54,7 +54,7 @@ func resourceBoundFanoutPlan() *chplan.RangeBucketFanout {
 func resourceBoundLWRPlan() *chplan.RangeLWR {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeLWR{
-		Input:         closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
+		Input:         rangeLWRTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          30 * time.Second,
