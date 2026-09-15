@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-09-15T22:56:16.942Z",
+  "main_ruleset": {
+    "required_checks": [
+      "CodeQL",
+      "agpl-clean",
+      "chart-validate",
+      "check",
+      "config-docs",
+      "coverage",
+      "forbid-deferral",
+      "forbid-skip",
+      "link-check",
+      "lint",
+      "pr-body",
+      "probe",
+      "property (PromQL + LogQL + TraceQL, rapid N=500)",
+      "quickstart",
+      "schema-ddl",
+      "strict-scan"
+    ]
+  },
+  "maintenance_ruleset": {
+    "ruleset_id": 18472142,
+    "ref_patterns": [
+      "refs/heads/release/*.x"
+    ],
+    "required_checks": [
+      "chart-validate",
+      "check",
+      "coverage",
+      "forbid-skip",
+      "lint",
+      "mutation",
+      "probe",
+      "profile",
+      "property (PromQL + LogQL + TraceQL, rapid N=500)",
+      "roundtrip (logql)",
+      "roundtrip (promql)",
+      "roundtrip (traceql)"
+    ]
+  },
+  "release_required_checks": [
+    "check",
+    "lint",
+    "forbid-skip",
+    "forbid-deferral",
+    "agpl-clean",
+    "config-docs",
+    "link-check",
+    "schema-ddl",
+    "chart-validate",
+    "compatibility/prometheus",
+    "compatibility/loki",
+    "compatibility/tempo",
+    "compatibility/prometheus-forced-route",
+    "probe",
+    "roundtrip (promql)",
+    "roundtrip (logql)",
+    "roundtrip (traceql)",
+    "perf-guards",
+    "strict-scan",
+    "pr-body",
+    "quickstart",
+    "compose-smoke",
+    "dashboard",
+    "coverage",
+    "profile",
+    "property (PromQL + LogQL + TraceQL, rapid N=500)",
+    "migration-e2e",
+    "perf-nightly",
+    "CodeQL"
+  ]
+}

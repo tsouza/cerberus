@@ -91,7 +91,6 @@ var branchProtectionContexts = []string{
 	"quickstart",
 	"schema-ddl",
 	"strict-scan",
-	"update-golden-guard",
 }
 
 const workflowsDir = "../../.github/workflows"

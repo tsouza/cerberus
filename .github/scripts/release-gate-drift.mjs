@@ -95,6 +95,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 
 import { error, notice, log, appendStepSummary } from './lib/gh.mjs';
 
@@ -294,7 +296,7 @@ export async function apiPaged({ url, headers, what, pick, fetchImpl = globalThi
   );
 }
 
-function tokenHeaders(token) {
+export function tokenHeaders(token) {
   return {
     Accept: 'application/vnd.github+json',
     Authorization: `Bearer ${token}`,
@@ -840,14 +842,22 @@ async function selfTest() {
   log('release-gate-drift self-test: OK');
 }
 
-if (process.argv.includes('--self-test')) {
-  selfTest().catch((e) => {
-    error(String(e?.message ?? e), { title: 'release gate drift self-test' });
-    process.exit(1);
-  });
-} else {
-  main().catch((e) => {
-    error(String(e?.message ?? e), { title: 'release gate drift' });
-    process.exit(1);
-  });
+// Guarded so this module can be imported for its exported functions (see
+// semantic-lane-policy-snapshot.mjs, cerberus issue #3427) without also
+// running its own live-network CLI as a side effect of the import — the
+// same idiom ci-lane-contract.mjs and semantic-model.mjs already use.
+const invokedDirectly =
+  process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (invokedDirectly) {
+  if (process.argv.includes('--self-test')) {
+    selfTest().catch((e) => {
+      error(String(e?.message ?? e), { title: 'release gate drift self-test' });
+      process.exit(1);
+    });
+  } else {
+    main().catch((e) => {
+      error(String(e?.message ?? e), { title: 'release gate drift' });
+      process.exit(1);
+    });
+  }
 }

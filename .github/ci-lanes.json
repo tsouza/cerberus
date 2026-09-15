@@ -1515,7 +1515,7 @@
       "context": {
         "match": "exact",
         "name": "update-golden-guard",
-        "protected": true
+        "protected": false
       },
       "purpose": "governance",
       "layers": [],
