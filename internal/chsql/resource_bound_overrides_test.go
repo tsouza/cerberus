@@ -152,8 +152,7 @@ func TestWithRangeBucketFanoutMaxRows_OverridesEmittedLimit(t *testing.T) {
 // confirms a groupArray-accumulating RangeBucketFanout collapse (issue
 // #3468) carries BOTH the pre-collapse sample-fanout guard
 // (rangeBucketFanoutRowBound, unchanged) AND the new post-collapse
-// group-count guard (rangeBucketFanoutGroupRowBound) — four LIMIT
-// literals total, not two — and that
+// group-count guard (rangeBucketFanoutGroupRowBound), and that
 // RangeBucketFanoutGroupBudgetMessage, not RangeBucketFanoutBudgetMessage,
 // is the one the new guard's throwIf carries.
 func TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards(t *testing.T) {
@@ -165,15 +164,19 @@ func TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards(t *tes
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// FOUR, not two: lwrFanoutBoundedSourceFrag reads its source TWICE
-	// (bounded + the independent truncation probe), and the group guard's
-	// source IS the collapse — which itself already embeds the
-	// pre-collapse guard's own two reads once. Doubling collapse doubles
-	// everything inside it, exactly as it doubles the raw scan beneath the
-	// sample fanout for every RangeBucketFanout/RangeLWR this file's own
-	// design already accepts that cost for.
-	if got := strings.Count(sql, "LIMIT 4000001"); got != 4 {
-		t.Errorf("pre-collapse fanout guard: expected \"LIMIT 4000001\" exactly four times (twice per group-guard read), got %d\nSQL:\n%s", got, sql)
+	// TWO, not four: the group guard (rangeBucketFanoutGroupGuardedQuery,
+	// range_bucket_fanout.go) registers collapse as a named CTE and
+	// references it by name from both the bounded read and the probe's
+	// own inner read, rather than re-embedding collapse's SQL text twice
+	// — so the pre-collapse fanout guard nested inside collapse renders
+	// exactly once, at collapse's own two-LIMIT baseline, regardless of
+	// how many times the group guard's OWN CTE reference repeats. See
+	// that function's own doc comment (issue #3471) for why: a literal
+	// double-embedding here compounds with a composition whose OWN
+	// lowering already duplicates its input relation, and a real query
+	// crossed the emitted-SQL size bound (issue #2733) because of it.
+	if got := strings.Count(sql, "LIMIT 4000001"); got != 2 {
+		t.Errorf("pre-collapse fanout guard: expected \"LIMIT 4000001\" exactly twice (rendered once, inside the CTE body), got %d\nSQL:\n%s", got, sql)
 	}
 	if got := strings.Count(sql, "LIMIT 801"); got != 2 {
 		t.Errorf("post-collapse group guard: expected \"LIMIT 801\" exactly twice, got %d\nSQL:\n%s", got, sql)
@@ -183,6 +186,9 @@ func TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards(t *tes
 	}
 	if !strings.Contains(sql, chsql.RangeBucketFanoutBudgetMessage) {
 		t.Errorf("emitted SQL missing RangeBucketFanoutBudgetMessage (the pre-collapse guard should still be present)\nSQL:\n%s", sql)
+	}
+	if !strings.Contains(sql, "WITH _rbf_group_") {
+		t.Errorf("emitted SQL missing the group guard's named CTE\nSQL:\n%s", sql)
 	}
 }
 
@@ -215,11 +221,11 @@ func TestWithRangeBucketFanoutGroupMaxRows_OverridesEmittedLimit(t *testing.T) {
 		t.Errorf("overridden emit must NOT still carry the default's LIMIT literal\nSQL:\n%s", sqlOverridden)
 	}
 	// The pre-collapse fanout guard is untouched by this override — only
-	// the post-collapse group guard's own literal should move. Four, not
-	// two — see TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards's
-	// own comment for why.
-	if got := strings.Count(sqlOverridden, "LIMIT 4000001"); got != 4 {
-		t.Errorf("overridden emit: pre-collapse fanout guard changed unexpectedly, expected \"LIMIT 4000001\" four times, got %d\nSQL:\n%s", got, sqlOverridden)
+	// the post-collapse group guard's own literal should move. Twice, not
+	// four — see TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards's
+	// own comment for why the CTE keeps this at collapse's own baseline.
+	if got := strings.Count(sqlOverridden, "LIMIT 4000001"); got != 2 {
+		t.Errorf("overridden emit: pre-collapse fanout guard changed unexpectedly, expected \"LIMIT 4000001\" twice, got %d\nSQL:\n%s", got, sqlOverridden)
 	}
 }
 

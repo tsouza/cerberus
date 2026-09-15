@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -218,14 +219,67 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// series, fixed-size per-group state — from a false-positive rejection
 	// this bound was never calibrated to police.
 	if rangeBucketFanoutHasGrowingAccumulator(r.AggFuncs) {
-		guarded := NewQuery().From(lwrFanoutBoundedSourceFrag(
-			collapse.Frag(), r.AnchorAlias, e.rangeBucketFanoutGroupRowBound(), RangeBucketFanoutGroupBudgetMessage,
+		return e.emitSelect(rangeBucketFanoutGroupGuardedQuery(
+			e, collapse, r.AnchorAlias, e.rangeBucketFanoutGroupRowBound(), RangeBucketFanoutGroupBudgetMessage,
 		))
-		guarded.Select(Star())
-		return e.emitSelect(guarded)
 	}
 
 	return e.emitSelect(collapse)
+}
+
+// rangeBucketFanoutGroupGuardedQuery wraps collapse in the SAME LIMIT-plus-
+// independent-truncation-probe shape lwrFanoutBoundedSourceFrag renders, but
+// through a named CTE rather than embedding collapse's own SQL text twice.
+//
+// Issue #3471 (found reviewing #3468's own PR): collapse is not a leaf — for
+// a mixed float/histogram composition stacking several range-vector levels,
+// each level's own lowering already names its input relation more than once
+// (splitMixedRelByDiscriminator's own doc explains why), so collapse can
+// ALREADY be a large, several-times-duplicated subtree by the time this
+// guard wraps it. lwrFanoutBoundedSourceFrag's literal embedding (bounded +
+// an independently re-embedded probe, mirroring rate_window_fanout_bound.go
+// / lwr_fanout_bound.go's own established design) is fine at THAT layer
+// because it wraps a comparatively small pre-collapse fanout SELECT — but
+// applied a second time, here, on top of an already-multiplied collapse, it
+// compounds: a real query the emitted-SQL size bound (issue #2733) had
+// already proven fits under ClickHouse's max_query_size grew past it
+// (test/e2e mixed-subquery composition tests, level 2/query_range:
+// 229,839 bytes before this function existed, 402,526+ bytes with the
+// literal-embedding version — see this repo's PR history for the numbers).
+//
+// QueryBuilder.With's own doc names exactly this trade: "buys emitted-TEXT
+// linearity and never fewer reads" — collapse's SQL is registered ONCE as a
+// CTE and referenced by name from both the bounded read and the probe's
+// inner read, so ClickHouse still evaluates it twice (the identical
+// execution-cost profile every sibling fanout guard already accepts) while
+// the RENDERED TEXT carries it only once. This is deliberately NOT applied
+// to lwrFanoutBoundedSourceFrag's own two existing call sites (the
+// pre-collapse fanout wrap above, and RangeLWR's identical wrap) — neither
+// has ever been observed compounding with an ALREADY-duplicated subtree the
+// way this second, later-added guard does, and widening the change risks
+// unrelated golden churn for a problem that has not been shown to exist
+// there.
+func rangeBucketFanoutGroupGuardedQuery(
+	e *emitter, collapse *QueryBuilder, probeColumn string, maxRows int64, message string,
+) *QueryBuilder {
+	cteName := "_rbf_group_" + strconv.Itoa(e.nextCTESeq())
+	cteRef := func() Frag { return verbatim(cteName) }
+
+	bounded := NewQuery().From(cteRef())
+	bounded.Select(Star())
+	bounded.Limit(maxRows + 1)
+
+	probe := NewQuery().From(cteRef())
+	probe.Select(Col(probeColumn))
+	probe.Limit(maxRows + 1)
+	probeCount := NewQuery().From(probe.Frag())
+	probeCount.Select(As(Call("count"), "n"))
+
+	guarded := NewQuery().With(cteName, collapse.Frag())
+	guarded.From(bounded.Frag())
+	guarded.Select(Star())
+	guarded.Where(lwrFanoutGuardFrag(probeCount, maxRows, message))
+	return guarded
 }
 
 // rangeBucketFanoutHasGrowingAccumulator reports whether aggFuncs includes a
