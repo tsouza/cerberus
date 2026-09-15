@@ -424,15 +424,11 @@ func TestRangeWindowStaleResample_Equal_NilInputIsADifference(t *testing.T) {
 
 	populated := func(input chplan.Node) *chplan.RangeWindowStaleResample {
 		return &chplan.RangeWindowStaleResample{
-			Input:         input,
-			Start:         time.Unix(1_700_000_000, 0).UTC(),
-			End:           time.Unix(1_700_003_600, 0).UTC(),
-			Step:          30 * time.Second,
-			Lookback:      5 * time.Minute,
-			MetricNameCol: "MetricName",
-			AttributesCol: "Attributes",
-			TimestampCol:  "TimeUnix",
-			ValueCol:      "Value",
+			Input:    input,
+			Start:    time.Unix(1_700_000_000, 0).UTC(),
+			End:      time.Unix(1_700_003_600, 0).UTC(),
+			Step:     30 * time.Second,
+			Lookback: 5 * time.Minute,
 		}
 	}
 

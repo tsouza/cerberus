@@ -38,7 +38,7 @@ func TestRowTypeEveryNode(t *testing.T) {
 		{&SetOperation{Left: traces, Right: traces}, Schema{Columns: traceRoles}},
 		{&NestedSetAnnotate{Input: traces}, Schema{Columns: append(slices.Clone(traceRoles), Column{Name: NestedSetLeftColumn}, Column{Name: NestedSetRightColumn}, Column{Name: NestedSetParentColumn})}},
 		{&RangeLWR{Input: scan, MetricNameCol: "name", AttributesCol: "labels", TimestampCol: "time", ValueCol: "value"}, canonical},
-		{&RangeWindowStaleResample{Input: scan, MetricNameCol: "name", AttributesCol: "labels", TimestampCol: "time", ValueCol: "value"}, canonical},
+		{&RangeWindowStaleResample{Input: scan}, canonical},
 		{&VectorJoin{Left: scan, Right: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
 		{&VectorSetOp{Left: scan, Right: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
 		{&NaryVectorSetOp{Arms: []Node{scan, scan}, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},

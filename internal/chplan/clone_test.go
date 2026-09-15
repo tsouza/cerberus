@@ -143,8 +143,6 @@ func allNodeKinds() []chplan.Node {
 		&chplan.RangeWindowStaleResample{
 			Input: leaf, Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			Step: time.Minute, Lookback: 5 * time.Minute, Offset: time.Minute,
-			MetricNameCol: "MetricName", AttributesCol: "Attributes",
-			TimestampCol: "TimeUnix", ValueCol: "Value",
 		},
 		&chplan.SearchTraceLimit{Input: leaf, TraceIDColumn: "TraceId", TimestampColumn: "TimeUnix", TraceLimit: 20},
 	}
