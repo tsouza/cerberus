@@ -33,7 +33,7 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 
 	newInstantRangeWindow := func(fn string, temporality, groupBy bool, outerRange time.Duration) *chplan.RangeWindow {
 		r := &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input:           rangeWindowTimestampTestScan("otel_metrics_sum", "TimeUnix", "AggregationTemporality"),
 			Func:            fn,
 			Range:           5 * time.Minute,
 			End:             end,
@@ -43,8 +43,11 @@ func TestInstantCounterJoinAgreesWithHasJoin(t *testing.T) {
 		if temporality {
 			r.Input = &chplan.Scan{
 				Table:   "otel_metrics_sum",
-				Columns: []string{"AggregationTemporality"},
-				Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+				Columns: []string{"TimeUnix", "AggregationTemporality"},
+				Roles: []chplan.Column{
+					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+					{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+				},
 			}
 		}
 		if groupBy {

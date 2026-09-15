@@ -83,7 +83,10 @@ func shapedDeltaPrefixInput(scan *chplan.Scan, extra ...chplan.Projection) *chpl
 	}, extra...)
 	roles := []chplan.Column(nil)
 	for _, projection := range projections {
-		if projection.Alias == "AggregationTemporality" {
+		switch projection.Alias {
+		case "TimeUnix":
+			roles = append(roles, chplan.Column{Name: projection.Alias, Role: chplan.RoleTimestamp})
+		case "AggregationTemporality":
 			roles = append(roles, chplan.Column{Name: projection.Alias, Role: chplan.RoleTemporality})
 		}
 	}

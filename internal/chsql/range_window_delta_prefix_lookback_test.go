@@ -19,7 +19,10 @@ func deltaCapableInstantWindow() *chplan.RangeWindow {
 		Input: &chplan.Scan{
 			Table:   "otel_metrics_sum",
 			Columns: []string{"MetricName", "Attributes", "TimeUnix", "Value", "AggregationTemporality"},
-			Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+			Roles: []chplan.Column{
+				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+				{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+			},
 		},
 		Func:            "rate",
 		Range:           5 * time.Minute,
@@ -306,7 +309,11 @@ func TestDeltaPrefixLookback_CumulativeOnlyOutputUnaffected(t *testing.T) {
 	t.Parallel()
 
 	r := deltaCapableInstantWindow()
-	r.Input = &chplan.Scan{Table: "otel_metrics_sum"} // no AggregationTemporality role at all
+	r.Input = &chplan.Scan{ // no AggregationTemporality role at all
+		Table:   "otel_metrics_sum",
+		Columns: []string{"Attributes", "TimeUnix", "Value"},
+		Roles:   []chplan.Column{{Name: "TimeUnix", Role: chplan.RoleTimestamp}},
+	}
 
 	shortSQL, _, err := Emit(WithDeltaPrefixLookback(context.Background(), time.Minute), r)
 	if err != nil {

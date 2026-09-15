@@ -154,7 +154,7 @@ func TestPromQLMatrixInnerScanPushdown_OffsetAware(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
-				Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+				Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 				Func:            "rate",
 				Step:            30 * time.Second,
 				Range:           5 * time.Minute,
@@ -896,8 +896,7 @@ func TestRangeWindowGridNativeInnerScanTimeBound(t *testing.T) {
 				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
 				{Name: "Value", Role: chplan.RoleValue},
 			},
-		},
-		Func:            "rate",
+		}, Func: "rate",
 		Start:           start,
 		End:             end,
 		Step:            30 * time.Second,
@@ -958,8 +957,7 @@ func TestRangeWindowGridNativeRejectsBadInput(t *testing.T) {
 				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
 				{Name: "Value", Role: chplan.RoleValue},
 			},
-		},
-		Func:            "rate",
+		}, Func: "rate",
 		Start:           start,
 		End:             end,
 		Step:            30 * time.Second,
@@ -1082,8 +1080,7 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 					{Name: "TimeUnix", Role: chplan.RoleTimestamp},
 					{Name: "Value", Role: chplan.RoleValue},
 				},
-			},
-			Func:            "rate",
+			}, Func: "rate",
 			Start:           start,
 			End:             end,
 			Step:            120 * time.Second,

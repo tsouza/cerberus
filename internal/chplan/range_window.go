@@ -44,14 +44,14 @@ func OffsetReanchoredColumnExpr(column string, offset time.Duration) Expr {
 // Input shapes (the emitter discriminates at render time):
 //
 //   - Row-shape relation (PromQL / LogQL): every row carries the
-//     per-sample (TimestampColumn, ValueColumn) pair plus the GroupBy
+//     per-sample (RoleTimestamp, ValueColumn) pair plus the GroupBy
 //     series identity. The emitter (internal/chsql/range_window.go)
 //     produces ClickHouse SQL using the windowed-array idiom: GROUP BY
 //     series, build a sorted (ts, value) array via groupArray +
 //     arraySort, arrayFilter to the per-step window, then apply the
 //     function-specific aggregation. Func names the PromQL operator
-//     (`rate`, `*_over_time`, …); TimestampColumn / ValueColumn are
-//     required.
+//     (`rate`, `*_over_time`, …); TimestampColumn is the public output
+//     alias and ValueColumn is still the input/output value name.
 //
 //   - MetricsAggregate input (TraceQL): the underlying relation is a
 //     chplan.MetricsAggregate whose Inner is a per-span Scan/Filter
@@ -119,10 +119,19 @@ type RangeWindow struct {
 	// uses the user-supplied start + k*Step grid (not epoch-aligned).
 	StepAlign bool
 
-	// TimestampColumn names the public timestamp output. Ordinary inputs and
-	// MetricsCompare still use this legacy selector; MetricsAggregate and
-	// MetricsHistogramOverTime resolve their nested physical timestamp from the
-	// nested relation's RoleTimestamp declaration.
+	// TimestampColumn names the public timestamp output alias. The physical
+	// INPUT timestamp column is resolved separately, by role rather than by
+	// this field, for every dispatch but one:
+	//   - Ordinary row-shape inputs, MetricsAggregate, MetricsHistogramOverTime
+	//     and MetricsCompare all resolve their input timestamp from the
+	//     RoleTimestamp-tagged column on their own (nested) relation.
+	//   - A nested RangeWindow input — PromQL subquery stacking, e.g.
+	//     avg_over_time(rate(m[1m])[5m:1m]) — is the exception: the inner
+	//     window has already resolved and projected its own timestamp under
+	//     this same name, so the outer window reuses TimestampColumn as-is
+	//     as that nested source name.
+	// DownsampleTier emission (checked before any Input dispatch) is
+	// output-only: Input is unused for timestamp purposes there.
 	TimestampColumn string
 
 	// ValueColumn names the column carrying the per-sample float value

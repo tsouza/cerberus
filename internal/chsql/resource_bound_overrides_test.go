@@ -72,7 +72,7 @@ func resourceBoundLWRPlan() *chplan.RangeLWR {
 func resourceBoundRateWindowPlan() *chplan.RangeWindow {
 	end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Func:            "rate",
 		Range:           5 * time.Minute,
 		Start:           end.Add(-10 * time.Minute),

@@ -242,7 +242,7 @@ func (e *emitter) emitRangeWindowVariantsInstant(r *chplan.RangeWindow) error {
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
 	innermost.Select(As(
-		groupArrayVariantTupleFrag(r.TimestampColumn, valueColumns),
+		groupArrayVariantTupleFrag(rangeWindowInputTimestampColumn(r), valueColumns),
 		"series_array",
 	))
 	innerSub, err := e.subqueryFrag(r.Input)
@@ -306,7 +306,7 @@ func (e *emitter) emitRangeWindowVariantsMatrix(r *chplan.RangeWindow) error {
 	if err != nil {
 		return err
 	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	innerSub, srcTs := fanoutTsSource(innerSub, rangeWindowInputTimestampColumn(r))
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor), carrying
 	// every distinct value so the regroup can build one shared tuple array.

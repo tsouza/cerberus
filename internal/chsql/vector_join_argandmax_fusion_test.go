@@ -15,8 +15,8 @@ import (
 // roleMany vs roleOne), and the fusion flag itself.
 func vectorJoinArgAndMaxFusionPlan(match chplan.VectorMatch, stepAligned, fused bool) *chplan.VectorJoin {
 	return &chplan.VectorJoin{
-		Left:             &chplan.Scan{Table: "otel_metrics_gauge"},
-		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Left:             closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value"),
+		Right:            closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 		Op:               chplan.OpAdd,
 		Match:            match,
 		StepAligned:      stepAligned,
@@ -118,7 +118,7 @@ func TestEmitVectorJoin_ArgAndMaxFusion_DerivedUnaffected(t *testing.T) {
 	match := chplan.VectorMatch{}
 	derivedOperand := func() chplan.Node {
 		return &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input:           closedRangeWindowTestScan("otel_metrics_sum", "TimeUnix", "Attributes", "Value", "AggregationTemporality"),
 			Func:            "rate",
 			Range:           5 * time.Minute,
 			TimestampColumn: "TimeUnix",

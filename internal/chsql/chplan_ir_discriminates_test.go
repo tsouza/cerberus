@@ -108,7 +108,7 @@ func downsampleTierPlan(tier bool) chplan.Node {
 	)
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeWindow{
-		Input:               &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:               closedRangeWindowTestScan("otel_metrics_gauge", "TimeUnix", "Attributes", "Value", "Temporality"),
 		DownsampleTierInput: &chplan.Scan{Table: "otel_metrics_gauge_downsampled"},
 		DownsampleTier:      tier,
 		Func:                "last_over_time",

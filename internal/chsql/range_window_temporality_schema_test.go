@@ -10,7 +10,10 @@ func temporalityTestScan(table string) *chplan.Scan {
 	return &chplan.Scan{
 		Table:   table,
 		Columns: []string{"Attributes", "TimeUnix", "Value", "AggregationTemporality"},
-		Roles:   []chplan.Column{{Name: "AggregationTemporality", Role: chplan.RoleTemporality}},
+		Roles: []chplan.Column{
+			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+			{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+		},
 	}
 }
 

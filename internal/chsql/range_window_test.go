@@ -10,6 +10,14 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
+func rangeWindowPublicTestScan(table string) *chplan.Scan {
+	return &chplan.Scan{
+		Table:   table,
+		Columns: []string{"Attributes", "TimeUnix", "Value"},
+		Roles:   []chplan.Column{{Name: "TimeUnix", Role: chplan.RoleTimestamp}},
+	}
+}
+
 // TestRangeWindowGapFunctionsEmit asserts the per-function value
 // expression for the four compatibility-lane gaps closed in the
 // original five-function batch that this test was carved out of.
@@ -32,7 +40,7 @@ func TestRangeWindowGapFunctionsEmit(t *testing.T) {
 
 	base := func(fn string) *chplan.RangeWindow {
 		return &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+			Input:           rangeWindowPublicTestScan("otel_metrics_gauge"),
 			Func:            fn,
 			TimestampColumn: "TimeUnix",
 			ValueColumn:     "Value",
@@ -154,7 +162,7 @@ func TestRangeWindowMatrixSurfacesTimestampColumn(t *testing.T) {
 
 	base := func(fn string) *chplan.RangeWindow {
 		return &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Input:           rangeWindowPublicTestScan("otel_metrics_sum"),
 			Func:            fn,
 			Range:           rangeDur,
 			Start:           start,

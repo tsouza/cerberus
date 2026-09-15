@@ -98,7 +98,7 @@ func fusedDiffPlan(
 ) *chplan.RangeWindow {
 	innerStart := start.Add(-offset - subRange)
 	inner := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: fusedDiffTable},
+		Input:           rangeWindowTimestampTestScan(fusedDiffTable, "TimeUnix"),
 		Func:            innerFn,
 		Range:           innerRange,
 		Step:            subStep,
