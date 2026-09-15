@@ -16,6 +16,14 @@ func TestComputedTopKScalarValueRole(t *testing.T) {
 		wantError string
 	}{
 		{"custom", []chplan.Column{{Name: "sample_value", Role: chplan.RoleValue}}, ""},
+		// The scalar-value scan below to a non-value column, so the
+		// role-finding loop's FIRST iteration must not stop the search:
+		// only `continue` past it reaches the RoleValue column on the
+		// second iteration. Inverting that `continue` to a `break` exits
+		// on the first (non-value) column and leaves kValueColumn empty,
+		// turning this accepted shape into the "value role is missing"
+		// rejection below.
+		{"value column is not first", []chplan.Column{{Name: "req_id", Role: chplan.RoleAttributes}, {Name: "sample_value", Role: chplan.RoleValue}}, ""},
 		{"missing", []chplan.Column{{Name: "Value"}}, "value role is missing"},
 		{"unnamed", []chplan.Column{{Role: chplan.RoleValue}}, "one named scalar value column"},
 		{"multiple", []chplan.Column{{Name: "first", Role: chplan.RoleValue}, {Name: "second", Role: chplan.RoleValue}}, "one named scalar value column"},
