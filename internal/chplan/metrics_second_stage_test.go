@@ -21,7 +21,6 @@ func TestMetricsSecondStageEqual(t *testing.T) {
 		Op:          chplan.SecondStageTopK,
 		K:           5,
 		PartitionBy: []string{"anchor_ts"},
-		ValueAlias:  "Value",
 	}
 	same := &chplan.MetricsSecondStage{
 		Input: &chplan.MetricsAggregate{
@@ -32,7 +31,6 @@ func TestMetricsSecondStageEqual(t *testing.T) {
 		Op:          chplan.SecondStageTopK,
 		K:           5,
 		PartitionBy: []string{"anchor_ts"},
-		ValueAlias:  "Value",
 	}
 	if !base.Equal(same) {
 		t.Fatalf("identical MetricsSecondStage trees should be Equal")
@@ -50,13 +48,6 @@ func TestMetricsSecondStageEqual(t *testing.T) {
 	diffK.K = 10
 	if base.Equal(&diffK) {
 		t.Errorf("different K should not be Equal")
-	}
-
-	// Different ValueAlias.
-	diffAlias := *same
-	diffAlias.ValueAlias = "other"
-	if base.Equal(&diffAlias) {
-		t.Errorf("different ValueAlias should not be Equal")
 	}
 
 	// Different PartitionBy length.
@@ -94,7 +85,6 @@ func TestMetricsSecondStageEqual(t *testing.T) {
 		Op:             chplan.SecondStageThreshold,
 		ThresholdOp:    chplan.OpGt,
 		ThresholdValue: 10,
-		ValueAlias:     "Value",
 	}
 	thresholdSame := *threshold
 	if !threshold.Equal(&thresholdSame) {
@@ -128,10 +118,9 @@ func TestMetricsSecondStageChildren(t *testing.T) {
 		Inner:      &chplan.Scan{Table: "otel_traces"},
 	}
 	ms := &chplan.MetricsSecondStage{
-		Input:      inner,
-		Op:         chplan.SecondStageTopK,
-		K:          5,
-		ValueAlias: "Value",
+		Input: inner,
+		Op:    chplan.SecondStageTopK,
+		K:     5,
 	}
 	kids := ms.Children()
 	if len(kids) != 1 {

@@ -4,6 +4,6 @@
 -- sql --
 SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces`)) WHERE (`Value` > toFloat64(?))
 -- chplan --
-MetricsSecondStage op=threshold threshold=(> 10) valueAlias=Value
+MetricsSecondStage op=threshold threshold=(> 10)
   MetricsAggregate op=rate valueAlias=Value
     Scan(otel_traces)
