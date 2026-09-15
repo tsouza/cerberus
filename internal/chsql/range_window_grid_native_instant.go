@@ -56,6 +56,10 @@ func (e *emitter) emitRangeWindowGridNativeInstant(r *chplan.RangeWindowGridNati
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindowGridNativeInstant.TimestampColumn unset", ErrUnsupported)
 	}
+	inputTimestamp, err := timestampChildColumn("RangeWindowGridNativeInstant", r.Input)
+	if err != nil {
+		return err
+	}
 	inputValueColumn, ok := r.InputValueColumn()
 	if !ok {
 		return fmt.Errorf("%w: RangeWindowGridNativeInstant requires a closed child schema with one unique named value role", ErrUnsupported)
@@ -102,7 +106,7 @@ func (e *emitter) emitRangeWindowGridNativeInstant(r *chplan.RangeWindowGridNati
 	if r.Func == "predict_linear" {
 		gridParams = append(gridParams, InlineLit(int64(r.Scalars[0])))
 	}
-	tsAxis := nativeGridTsAxisFrag(r.Func, r.TimestampColumn)
+	tsAxis := nativeGridTsAxisFrag(r.Func, inputTimestamp)
 
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -117,7 +121,7 @@ func (e *emitter) emitRangeWindowGridNativeInstant(r *chplan.RangeWindowGridNati
 	// so ClickHouse skips granules outside the eval window instead of
 	// scanning the series' full retention — the memory/perf win this
 	// feature exists for (cerberus issue #2748).
-	maybePushRangeScanTimeBound(inner, r.TimestampColumn, r.Anchor, r.Anchor, offsetNS, r.Range.Nanoseconds())
+	maybePushRangeScanTimeBound(inner, inputTimestamp, r.Anchor, r.Anchor, offsetNS, r.Range.Nanoseconds())
 	inner.GroupBy(groupFrags...)
 
 	outer := NewQuery().From(inner.Frag())
