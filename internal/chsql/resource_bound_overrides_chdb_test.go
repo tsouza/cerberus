@@ -128,7 +128,7 @@ func TestWithRangeBucketFanoutMaxRows_ChangesQueryOutcome(t *testing.T) {
 	const table = "range_bucket_fanout_override_metrics"
 	start, end, step, lookback := resourceBoundOverrideGrid()
 	plan := &chplan.RangeBucketFanout{
-		Input:        &chplan.Scan{Table: table},
+		Input:        closedTimestampTestScan(table, "TimeUnix", "Attributes", "Value"),
 		Start:        start,
 		End:          end,
 		Step:         step,

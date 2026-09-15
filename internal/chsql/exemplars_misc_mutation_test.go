@@ -108,7 +108,7 @@ func TestRangeBucketFanoutEmptyGroupBy(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.RangeBucketFanout{
-		Input:        &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:        closedTimestampTestScan("otel_metrics_exponential_histogram", "TimeUnix", "BucketCounts"),
 		Start:        time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
 		End:          time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC),
 		Step:         30 * time.Second,

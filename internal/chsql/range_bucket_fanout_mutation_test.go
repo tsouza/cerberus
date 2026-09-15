@@ -14,7 +14,7 @@ import (
 // per-function "no sample emitted" floor set to minSamples.
 func fanoutMinSamplesPlan(minSamples int) *chplan.RangeBucketFanout {
 	return &chplan.RangeBucketFanout{
-		Input:        &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Input:        closedTimestampTestScan("otel_metrics_exponential_histogram", "TimeUnix", "Attributes", "BucketCounts"),
 		Start:        time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
 		End:          time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC),
 		Step:         30 * time.Second,

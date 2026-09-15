@@ -2390,10 +2390,8 @@ func TestSearchTraceLimit_Equal_Positive(t *testing.T) {
 	t.Parallel()
 	build := func() *chplan.SearchTraceLimit {
 		return &chplan.SearchTraceLimit{
-			Input:           &chplan.Scan{Table: "otel_traces"},
-			TraceIDColumn:   "TraceId",
-			TimestampColumn: "Timestamp",
-			TraceLimit:      20,
+			Input:      &chplan.Scan{Table: "otel_traces"},
+			TraceLimit: 20,
 		}
 	}
 	if !build().Equal(build()) {
@@ -2410,24 +2408,6 @@ func TestSearchTraceLimit_Equal_Negative_TraceLimit(t *testing.T) {
 	b := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceLimit: 200}
 	if a.Equal(b) {
 		t.Errorf("different TraceLimit should not be Equal")
-	}
-}
-
-func TestSearchTraceLimit_Equal_Negative_TraceIDColumn(t *testing.T) {
-	t.Parallel()
-	a := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceIDColumn: "TraceId", TraceLimit: 5}
-	b := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceIDColumn: "Trace_Id", TraceLimit: 5}
-	if a.Equal(b) {
-		t.Errorf("different TraceIDColumn should not be Equal")
-	}
-}
-
-func TestSearchTraceLimit_Equal_Negative_TimestampColumn(t *testing.T) {
-	t.Parallel()
-	a := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TimestampColumn: "Timestamp", TraceLimit: 5}
-	b := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TimestampColumn: "TimeUnix", TraceLimit: 5}
-	if a.Equal(b) {
-		t.Errorf("different TimestampColumn should not be Equal")
 	}
 }
 

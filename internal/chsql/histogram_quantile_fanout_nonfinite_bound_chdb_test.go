@@ -30,6 +30,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/chsqltest"
+	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/testsql"
@@ -82,6 +83,7 @@ func TestHistogramQuantileFanout_ChDB_NonFiniteBoundExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LowerAtRangeOpts(%q): %v", hqFanoutNonFiniteQuery, err)
 	}
+	plan = optimizer.Default().Run(context.Background(), plan)
 	sqlStr, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit(%q): %v", hqFanoutNonFiniteQuery, err)
