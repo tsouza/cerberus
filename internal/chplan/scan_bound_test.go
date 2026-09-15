@@ -519,6 +519,38 @@ func TestAttachInstantScanTimeBounds_MarksEveryLeafInTheTree(t *testing.T) {
 	}
 }
 
+func TestAttachInstantScanTimeBounds_MarksScalarSubqueryLeaf(t *testing.T) {
+	embedded := instantWindow(spansScan())
+	root := &Project{
+		Input: spansScan(),
+		Projections: []Projection{{
+			Expr:  &ScalarSubquery{Input: embedded},
+			Alias: "Value",
+		}},
+	}
+
+	out := AttachInstantScanTimeBounds(root)
+	if out == root {
+		t.Fatal("an embedded unbounded leaf must clone the root")
+	}
+	if embedded.InstantScanBounded {
+		t.Fatal("the caller's embedded leaf mutated")
+	}
+	var marked *RangeWindow
+	WalkDeep(out, func(n Node) bool {
+		if rw, ok := n.(*RangeWindow); ok {
+			marked = rw
+		}
+		return true
+	})
+	if marked == nil || !marked.InstantScanBounded {
+		t.Fatal("ScalarSubquery leaf was not marked")
+	}
+	if FirstUnboundedInstantScanTimeBound(out) != nil {
+		t.Fatal("marked deep tree still reports an unbounded leaf")
+	}
+}
+
 func TestWithInstantScanTimeBound(t *testing.T) {
 	rw := instantWindow(spansScan())
 	got, changed := WithInstantScanTimeBound(rw)

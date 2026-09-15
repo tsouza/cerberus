@@ -117,6 +117,48 @@ func TestLegacySampleProjectionLayoutUsesTemporalRoles(t *testing.T) {
 	}
 }
 
+func TestLegacySampleProjectionLayoutPreservesCanonicalAnchorWithoutGridProvenance(t *testing.T) {
+	t.Parallel()
+
+	inner := &chplan.Project{
+		Input: sampleForwardTestInput(chplan.Column{Name: "opaque", Role: chplan.RoleOpaque}),
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "name"}, Alias: "name"},
+			{Expr: &chplan.ColumnRef{Name: "attrs"}, Alias: "attrs"},
+			{Expr: &chplan.ColumnRef{Name: "time"}, Alias: "time"},
+			{Expr: &chplan.ColumnRef{Name: "anchor"}, Alias: "anchor"},
+			{Expr: &chplan.ColumnRef{Name: "value"}, Alias: "value"},
+		},
+		Roles: []chplan.Column{
+			{Name: "name", Role: chplan.RoleMetricName},
+			{Name: "attrs", Role: chplan.RoleAttributes},
+			{Name: "time", Role: chplan.RoleTimestamp},
+			{Name: "anchor", Role: chplan.RoleAnchor},
+			{Name: "value", Role: chplan.RoleValue},
+		},
+	}
+
+	want := sampleProjectionLayout{canonical: true, anchored: true}
+	if got := legacySampleProjectionLayout(inner); got != want {
+		t.Fatalf("layout = %#v, want %#v", got, want)
+	}
+}
+
+func TestAnchoredGridLayoutSpineCrossJoinAcceptsEitherCarrier(t *testing.T) {
+	t.Parallel()
+
+	grid := &chplan.RangeWindow{}
+	opaque := sampleForwardTestInput(chplan.Column{Name: "opaque", Role: chplan.RoleOpaque})
+	for _, join := range []*chplan.CrossJoin{
+		{Left: grid, Right: opaque},
+		{Left: opaque, Right: grid},
+	} {
+		if !anchoredGridLayoutSpine(join) {
+			t.Fatalf("anchoredGridLayoutSpine(%#v) = false, want true when either CrossJoin input carries a grid", join)
+		}
+	}
+}
+
 func TestLegacySampleProjectionLayoutDistinguishesCanonicalAndDerivedProjects(t *testing.T) {
 	t.Parallel()
 
