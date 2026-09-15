@@ -119,10 +119,19 @@ type RangeWindow struct {
 	// uses the user-supplied start + k*Step grid (not epoch-aligned).
 	StepAlign bool
 
-	// TimestampColumn names the public timestamp output alias. Ordinary
-	// range-window emitters resolve their physical input from RoleTimestamp
-	// on Input. The special Metrics* dispatches also use it as their nested
-	// source name; downsample emission is output-only.
+	// TimestampColumn names the public timestamp output alias. The physical
+	// INPUT timestamp column is resolved separately, by role rather than by
+	// this field, for every dispatch but one:
+	//   - Ordinary row-shape inputs, MetricsAggregate, MetricsHistogramOverTime
+	//     and MetricsCompare all resolve their input timestamp from the
+	//     RoleTimestamp-tagged column on their own (nested) relation.
+	//   - A nested RangeWindow input — PromQL subquery stacking, e.g.
+	//     avg_over_time(rate(m[1m])[5m:1m]) — is the exception: the inner
+	//     window has already resolved and projected its own timestamp under
+	//     this same name, so the outer window reuses TimestampColumn as-is
+	//     as that nested source name.
+	// DownsampleTier emission (checked before any Input dispatch) is
+	// output-only: Input is unused for timestamp purposes there.
 	TimestampColumn string
 
 	// ValueColumn names the column carrying the per-sample float value

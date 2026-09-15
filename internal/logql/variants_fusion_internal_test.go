@@ -259,6 +259,7 @@ func TestIsVariantPlan_AcceptsBothShapes(t *testing.T) {
 	t.Parallel()
 	sampleShaped := func(input chplan.Node) chplan.Node {
 		return &chplan.Project{
+			Roles: logSampleRoles(),
 			Input: input,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
