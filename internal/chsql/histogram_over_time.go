@@ -179,7 +179,7 @@ func histogramBucketFrag(attr chplan.Expr, isDuration bool) Frag {
 // that case.
 func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.MetricsHistogramOverTime) error {
 	if r.TimestampColumn == "" {
-		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for MetricsHistogramOverTime input)", ErrUnsupported)
+		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required output alias)", ErrUnsupported)
 	}
 	if r.Step <= 0 {
 		return fmt.Errorf("%w: RangeWindow wrapping MetricsHistogramOverTime requires Step > 0", ErrUnsupported)
@@ -189,6 +189,10 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	}
 	if m.Inner == nil {
 		return fmt.Errorf("%w: MetricsHistogramOverTime.Inner is nil", ErrUnsupported)
+	}
+	tsCol, ok := m.InputTimestampColumn()
+	if !ok {
+		return fmt.Errorf("%w: MetricsHistogramOverTime requires a unique named timestamp role on its nested input", ErrUnsupported)
 	}
 	// Fail closed if the inner is a spans scan with no request window: the
 	// shared maybePushInnerScanTimeBounds (here and in the zero-fill arm)
@@ -242,7 +246,6 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		alias := groupAliases[i]
 		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	tsCol := r.TimestampColumn
 	innerSb.SelectAs(histogramBucketFrag(m.Attr, m.IsDuration), bucketAlias)
 	innerSb.SelectAs(
 		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
@@ -262,6 +265,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		inner:        inner,
 		r:            r,
 		m:            m,
+		tsCol:        tsCol,
 		groupAliases: groupAliases,
 		bucketAlias:  bucketAlias,
 		attrGuard:    attrGuard,
@@ -302,6 +306,7 @@ type histogramZeroFillArgs struct {
 	inner        Frag
 	r            *chplan.RangeWindow
 	m            *chplan.MetricsHistogramOverTime
+	tsCol        string
 	groupAliases []string
 	bucketAlias  string
 	attrGuard    Frag
@@ -330,7 +335,7 @@ func histogramZeroFillGridArm(a histogramZeroFillArgs) Frag {
 	}
 	disc.SelectAs(histogramBucketFrag(a.m.Attr, a.m.IsDuration), a.bucketAlias)
 	disc.Where(a.attrGuard)
-	maybePushInnerScanTimeBounds(disc, a.r, a.r.TimestampColumn, a.rangeNS)
+	maybePushInnerScanTimeBounds(disc, a.r, a.tsCol, a.rangeNS)
 	discKeys := make([]Frag, 0, len(a.groupAliases)+1)
 	for _, alias := range a.groupAliases {
 		al := alias

@@ -616,7 +616,12 @@ var inputs = map[string]chplan.Node{
 			Op:   chplan.MetricsOpAvgOverTime,
 			Attr: &chplan.ColumnRef{Name: "Duration"},
 			Inner: &chplan.Filter{
-				Input: &chplan.Scan{Table: "otel_traces"},
+				Input: &chplan.Scan{
+					Table: "otel_traces",
+					Roles: []chplan.Column{
+						{Name: "Timestamp", Role: chplan.RoleTimestamp},
+					},
+				},
 				Predicate: &chplan.Binary{
 					Op:    chplan.OpEq,
 					Left:  &chplan.ColumnRef{Name: "SpanName"},

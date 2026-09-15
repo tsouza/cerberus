@@ -58,6 +58,39 @@ func TestPhysicalScans_PropagateThroughEverySpliceSeam(t *testing.T) {
 		}
 	})
 
+	// The next two cases prime e.physicalScans to a nonzero value before
+	// the call under test, so an emitSelect/splice that OVERWRITES rather
+	// than ACCUMULATES the count is distinguishable: renderNode's own
+	// emit_node.go:`saveB, saveArgs, saveScans := e.b, e.args, e.physicalScans`
+	// save/restore round-trips a caller's earlier count through exactly
+	// this field for every nested subquery, so an overwrite would
+	// silently drop whichever sibling scan rendered first.
+
+	t.Run("emitter.emitSelect accumulates onto a nonzero count", func(t *testing.T) {
+		t.Parallel()
+		e := &emitter{physicalScans: 1}
+		sb := NewQuery().Select(Star()).From(physicalTableFrag("otel_logs"))
+		if err := e.emitSelect(sb); err != nil {
+			t.Fatal(err)
+		}
+		if e.physicalScans != 2 {
+			t.Fatalf("emitter.physicalScans = %d after emitSelect from a primed count of 1, want 2 (1 prior + 1 from this SELECT)", e.physicalScans)
+		}
+	})
+
+	t.Run("emitter.splice accumulates onto a nonzero count", func(t *testing.T) {
+		t.Parallel()
+		e := &emitter{physicalScans: 1}
+		b := NewBuilder()
+		physicalTableFrag("otel_metrics_sum")(b)
+		if err := e.splice(b); err != nil {
+			t.Fatal(err)
+		}
+		if e.physicalScans != 2 {
+			t.Fatalf("emitter.physicalScans = %d after splice from a primed count of 1, want 2 (1 prior + 1 spliced)", e.physicalScans)
+		}
+	})
+
 	t.Run("countPhysicalScans adds exactly n", func(t *testing.T) {
 		t.Parallel()
 		b := NewBuilder()
