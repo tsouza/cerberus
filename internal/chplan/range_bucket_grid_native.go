@@ -35,10 +35,9 @@ import "time"
 // so the across-series merge Aggregate above it is unaffected by the
 // substitution.
 //
-// Input is the matchers-filtered scan (Scan, or Filter-over-Scan, possibly
-// with the `le` restriction Project). It must expose TimestampCol,
-// BucketCountsCol, ExplicitBoundsCol and the GroupBy expressions' source
-// columns.
+// Input must expose a closed row schema containing the timestamp, classic
+// bucket-count, and explicit-bound roles plus the GroupBy expressions' source
+// columns. Their physical names need not match this node's public aliases.
 type RangeBucketGridNative struct {
 	Input Node
 
@@ -69,9 +68,10 @@ type RangeBucketGridNative struct {
 	// AnchorAlias is the output column name for the grid anchor.
 	AnchorAlias string
 
-	// TimestampCol / BucketCountsCol / ExplicitBoundsCol name the classic
-	// histogram row's columns on Input, and the latter two are also the
-	// output aliases of the rebuilt ladder.
+	// TimestampCol is the public timestamp name retained for the plan contract.
+	// BucketCountsCol / ExplicitBoundsCol are the output aliases of the rebuilt
+	// ladder. The emitter resolves all three physical inputs from Input's row
+	// schema rather than trusting these public names.
 	TimestampCol      string
 	BucketCountsCol   string
 	ExplicitBoundsCol string

@@ -95,12 +95,16 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 
 	// Fused shape: one scan feeding every arm's aggregation.
 	if top, ok := fuseVariants(lowered); ok {
-		return variantFusedSampleShape(top, s, lc), nil
+		return variantFusedSampleShape(top, s, lc)
 	}
 
 	arms := make([]chplan.Node, 0, len(lowered))
 	for i, inner := range lowered {
-		arms = append(arms, variantSampleArm(inner, s, lc, i))
+		arm, err := variantSampleArm(inner, s, lc, i)
+		if err != nil {
+			return nil, err
+		}
+		arms = append(arms, arm)
 	}
 
 	// A single-arm `variants(m) of (...)` is legal LogQL; it still tags
@@ -501,8 +505,11 @@ func windowsAgreeModuloFunc(windows []*chplan.RangeWindow) bool {
 // known request End anchors the synthetic TimeUnix inside the window
 // (CH evaluates now64 at execution time, which is load-sensitive); a
 // bare lowering with no window falls back to `now64(9)`.
-func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) chplan.Node {
-	cols := logSampleColumns(inner, s)
+func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) (chplan.Node, error) {
+	cols, err := logSampleColumns(inner, s)
+	if err != nil {
+		return nil, err
+	}
 
 	// TimeUnix source: forward the per-anchor / vector-aggregate column
 	// when the inner shape already carries one; otherwise anchor an
@@ -534,16 +541,19 @@ func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) 
 			{Expr: cols.metricName, Alias: sampleMetricNameCol},
 			{Expr: attrs, Alias: sampleAttributesCol},
 			{Expr: tsExpr, Alias: sampleTimeUnixCol},
-			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
+			{Expr: &chplan.ColumnRef{Name: cols.valueCol}, Alias: rangeAggSynthValueColumn},
 		},
-	}
+	}, nil
 }
 
 // variantFusedSampleShape re-shapes the fused plan into the canonical Sample
 // contract, folding the fused window's own variant COLUMN into Attributes
 // where [variantSampleArm] stamps a per-arm literal.
-func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) chplan.Node {
-	cols := logSampleColumns(top, s)
+func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
+	cols, err := logSampleColumns(top, s)
+	if err != nil {
+		return nil, err
+	}
 	tsExpr := cols.timeExpr
 	if !cols.hasNativeTime && !lc.End.IsZero() {
 		tsExpr = timeLiteralExpr(lc.End)
@@ -568,9 +578,9 @@ func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) chplan
 			{Expr: cols.metricName, Alias: sampleMetricNameCol},
 			{Expr: attrs, Alias: sampleAttributesCol},
 			{Expr: tsExpr, Alias: sampleTimeUnixCol},
-			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
+			{Expr: &chplan.ColumnRef{Name: cols.valueCol}, Alias: rangeAggSynthValueColumn},
 		},
-	}
+	}, nil
 }
 
 // fusedVariantWindow returns the fused RangeWindow at the base of plan, if
@@ -586,7 +596,7 @@ func fusedVariantWindow(plan chplan.Node) (*chplan.RangeWindow, bool) {
 
 // isVariantPlan reports whether plan is what a multi-variant lowering
 // produces — either the UnionAll of per-arm subtrees, every arm already in
-// the canonical Sample shape (a top-level Project aliasing `Attributes`), or
+// the canonical Sample shape according to its declared schema roles, or
 // the fused single-pass shape, a Sample-shaped Project over a RangeWindow
 // carrying its arms in [chplan.RangeWindow.Variants].
 //
@@ -595,19 +605,29 @@ func fusedVariantWindow(plan chplan.Node) (*chplan.RangeWindow, bool) {
 // `ResourceAttributes`, a column the variant Project has already consumed
 // into `Attributes`).
 func isVariantPlan(plan chplan.Node) bool {
+	matched, err := checkedVariantPlan(plan)
+	return err == nil && matched
+}
+
+func checkedVariantPlan(plan chplan.Node) (bool, error) {
 	if p, ok := plan.(*chplan.Project); ok {
 		if _, fused := fusedVariantWindow(p); fused {
-			return isVectorAggregateSampleShape(p)
+			_, matched, err := resolveLogSampleShape(p.RowType())
+			return matched, err
 		}
 	}
 	u, ok := plan.(*chplan.UnionAll)
 	if !ok || len(u.Inputs) == 0 {
-		return false
+		return false, nil
 	}
 	for _, arm := range u.Inputs {
-		if !isVectorAggregateSampleShape(arm) {
-			return false
+		_, matched, err := resolveLogSampleShape(arm.RowType())
+		if err != nil {
+			return false, err
+		}
+		if !matched {
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }

@@ -68,7 +68,9 @@ func compareNode() *chplan.MetricsCompare {
 		AttrAlias:  "attr",
 		ValAlias:   "val",
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+		}},
 	}
 }
 
@@ -85,7 +87,9 @@ func compareNodeWithRoot() *chplan.MetricsCompare {
 	m.TraceIDColumn = "TraceId"
 	m.RootLookup = &chplan.Aggregate{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_traces"},
+			Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+				{Name: "Timestamp", Role: chplan.RoleTimestamp},
+			}},
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  &chplan.ColumnRef{Name: "ParentSpanId"},
@@ -98,6 +102,59 @@ func compareNodeWithRoot() *chplan.MetricsCompare {
 		},
 	}
 	return m
+}
+
+func TestEmitRangeWindowCompareResolvesPerRelationTimestamps(t *testing.T) {
+	t.Parallel()
+	m := compareNodeWithRoot()
+	m.Inner.(*chplan.Scan).Roles = []chplan.Column{{Name: "cohort_time", Role: chplan.RoleTimestamp}}
+	rootScan := m.RootLookup.(*chplan.Aggregate).Input.(*chplan.Filter).Input.(*chplan.Scan)
+	rootScan.Roles = []chplan.Column{{Name: "root_time", Role: chplan.RoleTimestamp}}
+	m.InnerRootScoped = true
+	rw := &chplan.RangeWindow{
+		Input: m, Range: time.Minute, Step: time.Minute,
+		Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+		TimestampColumn: "public_time",
+	}
+	sql, _, err := chsql.Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	for _, want := range []string{
+		"dateDiff('nanosecond', `cohort_time`",
+		"`cohort_time` > toDateTime64",
+		"`root_time` >= fromUnixTimestamp64Nano(?)",
+		"`root_time` <= fromUnixTimestamp64Nano(?)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("emitted SQL missing relation-owned timestamp %q:\n%s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "`public_time`") {
+		t.Errorf("public RangeWindow timestamp alias selected as a physical compare input:\n%s", sql)
+	}
+}
+
+func TestEmitRangeWindowCompareRejectsMalformedTimestampOwnership(t *testing.T) {
+	t.Parallel()
+	window := func(m *chplan.MetricsCompare) *chplan.RangeWindow {
+		return &chplan.RangeWindow{Input: m, Step: time.Minute, TimestampColumn: "public_time"}
+	}
+	missingInner := compareNode()
+	missingInner.Inner = &chplan.Scan{Table: "otel_traces"}
+	missingRoot := compareNodeWithRoot()
+	missingRoot.RootLookup.(*chplan.Aggregate).Input.(*chplan.Filter).Input = &chplan.Scan{Table: "otel_traces"}
+	for name, plan := range map[string]*chplan.RangeWindow{
+		"inner": window(missingInner),
+		"root":  window(missingRoot),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := chsql.Emit(context.Background(), plan); err == nil {
+				t.Fatal("Emit accepted malformed compare timestamp ownership")
+			}
+		})
+	}
 }
 
 // TestEmitRangeWindowCompare_JoinScanPushdown pins the scan-bounding
@@ -229,19 +286,47 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 	// so a test that only greps the whole filter region for a Timestamp bound is
 	// hollow — it passes on the non-root shape too. Slicing at the seed opener
 	// pins the prefix that differs between the two arms.
-	prefixBeforeSeed := func(t *testing.T, innerRootScoped bool) string {
+	rangeWindowStart := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	rangeWindowEnd := time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC)
+	const (
+		rangeWindowRange = time.Minute
+		// A nonzero, distinct-from-Range offset makes every term of
+		// compareWindowedScanBound's bound arithmetic (Start, End, Range,
+		// Offset) a different magnitude, so a mutant that flips any one
+		// term's sign or swaps which operand it subtracts changes the
+		// resulting nanosecond value — an offset of 0 (the zero value a
+		// bare struct literal would otherwise carry) makes every `±offsetNS`
+		// mutation a no-op and hides exactly the mutants this test exists
+		// to catch.
+		rangeWindowOffset = 30 * time.Second
+	)
+
+	// prefixBeforeSeed returns the root leg's own scan-filter prefix text
+	// AND the args bound strictly WITHIN that prefix (isolated by counting
+	// `?` placeholders positionally, since args bind in the order their
+	// placeholders render). Isolation matters here specifically: the 's'
+	// leg's own scan bound (innerScanTsBoundsFrags) uses the identical
+	// [Start-range, End] offset-shifted formula for a DIFFERENT reason
+	// (#1214's scan-amplification fix), so the SAME nanosecond values
+	// legitimately appear elsewhere in the statement's full args slice
+	// regardless of whether THIS bound — the root leg's own — computed
+	// them correctly. Searching the whole args slice would pass on a
+	// broken root-leg formula by coincidentally matching the 's' leg's
+	// unrelated (correct) bound.
+	prefixBeforeSeed := func(t *testing.T, innerRootScoped bool) (string, []any) {
 		t.Helper()
 		m := compareNodeWithRoot()
 		m.InnerRootScoped = innerRootScoped
 		rw := &chplan.RangeWindow{
 			Input:           m,
-			Range:           time.Minute,
+			Range:           rangeWindowRange,
 			Step:            time.Minute,
-			Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
-			End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+			Start:           rangeWindowStart,
+			End:             rangeWindowEnd,
+			Offset:          rangeWindowOffset,
 			TimestampColumn: "Timestamp",
 		}
-		sql, _, err := chsql.Emit(context.Background(), rw)
+		sql, args, err := chsql.Emit(context.Background(), rw)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -255,15 +340,47 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 		if start < 0 || seed < 0 || seed <= start {
 			t.Fatalf("expected root leg ParentSpanId filter then TraceId-IN seed:\n%s", rLeg)
 		}
-		return rLeg[start:seed] // the scan filter BEFORE the seed subquery
+		// start/seed are indices into rLeg, which is sql[:onIdx] — a
+		// prefix of sql — so they are valid indices into sql too, and
+		// counting `?` up to each position gives the corresponding
+		// position in the (positionally-bound) args slice. start marks
+		// the BEGINNING of the `ParentSpanId` = ? text, whose own `?`
+		// must be excluded from "argsWithin" — only the Timestamp bound's
+		// two placeholders come after it.
+		const parentSpanIDFilter = "`ParentSpanId` = ?"
+		afterParentSpanID := start + len(parentSpanIDFilter)
+		argsBefore := strings.Count(sql[:afterParentSpanID], "?")
+		argsWithin := strings.Count(sql[afterParentSpanID:seed], "?")
+		return rLeg[start:seed], args[argsBefore : argsBefore+argsWithin]
 	}
 
 	// Root-scoped: the direct request-window Timestamp bound is conjoined onto
 	// the scan filter, ahead of the (retained) TraceId-IN seed.
-	rootPrefix := prefixBeforeSeed(t, true)
+	rootPrefix, rootBoundArgs := prefixBeforeSeed(t, true)
 	if !strings.Contains(rootPrefix, "`Timestamp` >= fromUnixTimestamp64Nano(?)") ||
 		!strings.Contains(rootPrefix, "`Timestamp` <= fromUnixTimestamp64Nano(?)") {
 		t.Errorf("root-scoped: direct Timestamp bound must precede the TraceId-IN seed, got prefix:\n%s", rootPrefix)
+	}
+	// A placeholder proves the shape; it says nothing about the VALUE bound
+	// to it. The root-scoped bound must be the SAME lookback window the
+	// 's' leg's own scan uses (innerScanTsBoundsFrags): [Start-range, End],
+	// offset-shifted. compareWindowedScanBound computes it as
+	// r.Start.UnixNano()-offsetNS-rangeNS / r.End.UnixNano()-offsetNS — pin
+	// both arithmetic operators and both operands' signs by asserting the
+	// exact nanosecond values (scoped to THIS bound's own two args, not
+	// the statement's full args slice — see prefixBeforeSeed) a wrong sign
+	// or a swapped operand would silently produce a different (still
+	// plausible-looking) timestamp for.
+	wantRootLoNano := rangeWindowStart.UnixNano() - rangeWindowOffset.Nanoseconds() - rangeWindowRange.Nanoseconds()
+	wantRootHiNano := rangeWindowEnd.UnixNano() - rangeWindowOffset.Nanoseconds()
+	if len(rootBoundArgs) != 2 {
+		t.Fatalf("root-scoped: expected exactly 2 args bound within the scan-filter prefix, got %v", rootBoundArgs)
+	}
+	if rootBoundArgs[0] != wantRootLoNano {
+		t.Errorf("root-scoped: lower bound arg = %v, want %d (Start-Offset-Range)", rootBoundArgs[0], wantRootLoNano)
+	}
+	if rootBoundArgs[1] != wantRootHiNano {
+		t.Errorf("root-scoped: upper bound arg = %v, want %d (End-Offset)", rootBoundArgs[1], wantRootHiNano)
 	}
 
 	// Negative arm (regression discriminator): a non-root selection must NOT gain
@@ -273,7 +390,7 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 	// envelope of TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound is
 	// off too: asserting on the Timestamp column rather than on one bound's
 	// rendering pins that NEITHER bound shape reaches this scan.
-	nonRootPrefix := prefixBeforeSeed(t, false)
+	nonRootPrefix, _ := prefixBeforeSeed(t, false)
 	if strings.Contains(nonRootPrefix, "`Timestamp`") {
 		t.Errorf("non-root: root scan must stay unbounded (no Timestamp bound before the seed), got prefix:\n%s", nonRootPrefix)
 	}
@@ -602,7 +719,9 @@ func TestEmitRangeWindowCompare_TraceIDTsEnvelopeUnreferenced(t *testing.T) {
 	m.RootLookupTraceIDTsEndColumn = "End"
 	// Aggregate straight over Scan: no Filter for the bounds to land in.
 	m.RootLookup = &chplan.Aggregate{
-		Input:   &chplan.Scan{Table: "otel_traces"},
+		Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+		}},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
 		AggFuncs: []chplan.AggFunc{
 			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},
