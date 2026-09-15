@@ -81,6 +81,17 @@ semantic-check:
 semantic-lane-check:
     node .github/scripts/semantic-lane-adapter.mjs
 
+# Resolves every semantic binding's test_ref against the property-shape
+# rosters, the TXTAR spec corpus, the surface-parity/rejection-parity
+# ledgers and the QL feature inventory, and reports any that dangle (issue
+# #3428). Not yet wired into `ci.yml` as a standing gate — see
+# .github/scripts/lib/semantic-evidence-adapter.mjs's own header and issue
+# #3475 for why — but always safe to run locally.
+
+# Resolve semantic bindings against their claimed evidence.
+semantic-evidence-check:
+    node .github/scripts/semantic-evidence-adapter.mjs
+
 # Run only the tests and compile probes whose evidence depends on the
 # agpl_oracle tag. The focused filters avoid re-running the entire untagged
 # internal and TXTAR suites after the required check gate already ran them.
