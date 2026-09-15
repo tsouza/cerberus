@@ -74,6 +74,10 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	if r.TimestampCol == "" {
 		return fmt.Errorf("%w: RangeBucketFanout requires TimestampCol", ErrUnsupported)
 	}
+	inputTimestamp, err := timestampChildColumn("RangeBucketFanout", r.Input)
+	if err != nil {
+		return err
+	}
 	if r.AnchorAlias == "" {
 		return fmt.Errorf("%w: RangeBucketFanout requires AnchorAlias", ErrUnsupported)
 	}
@@ -128,7 +132,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		return err
 	}
 
-	tsIdent := func(b *Builder) { b.Ident(r.TimestampCol) }
+	tsIdent := func(b *Builder) { b.Ident(inputTimestamp) }
 
 	// Sample-fanout SELECT: pass through every Input column (`*`) and add
 	// the bounded grid anchor. `*` is required so the AggFunc source
@@ -146,7 +150,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// arrayJoin fans each source row across its anchors — same granule-
 	// prune contract as emitRangeLWR. Gated on Start/End so the
 	// now64()/@-pinned/zero-grid fixtures stay byte-identical.
-	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
+	maybePushRangeScanTimeBound(fanout, inputTimestamp, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
 	// #2447: cap how many (series, anchor) fanout rows can ever reach the
 	// collapse GROUP BY below via a genuine LIMIT + truncation probe — that
@@ -158,7 +162,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// real calibration numbers.
 	// #2667: e.rangeBucketFanoutRowBound() resolves the operator override
 	// (or maxRangeBucketFanoutRows's own default) once per Emit call.
-	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol, e.rangeBucketFanoutRowBound(), RangeBucketFanoutBudgetMessage)
+	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), inputTimestamp, e.rangeBucketFanoutRowBound(), RangeBucketFanoutBudgetMessage)
 
 	// Collapse SELECT: GROUP BY (<user-keys>, anchor) with the configured
 	// AggFuncs. The user group keys are projected first (under their
@@ -197,7 +201,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// group may hold several series that share a scrape instant, and the
 	// rule is about how many scrapes the window spans, not how many rows.
 	if r.MinSamples > fanoutNoMinSampleFilter {
-		collapse.Having(Gte(Call("uniqExact", Col(r.TimestampCol)), InlineLit(int64(r.MinSamples))))
+		collapse.Having(Gte(Call("uniqExact", Col(inputTimestamp)), InlineLit(int64(r.MinSamples))))
 	}
 
 	return e.emitSelect(collapse)

@@ -97,7 +97,7 @@ func gaugeStageBuilders() []stageBuilder {
 			// Scan. A pushdown that drops any of them fails here with
 			// UNKNOWN_IDENTIFIER instead of silently shipping.
 			return &chplan.RangeWindowGridNative{
-				Input:           in,
+				Input:           declareNativeMatrixPropertyRoles(in),
 				Func:            "rate",
 				Range:           propertyRange,
 				Step:            propertyStep,
@@ -110,20 +110,16 @@ func gaugeStageBuilders() []stageBuilder {
 		},
 		func(in chplan.Node) chplan.Node {
 			return &chplan.RangeWindowStaleResample{
-				Input:         in,
-				Step:          propertyStep,
-				Lookback:      propertyLookback,
-				Start:         propertyWindowStart,
-				End:           propertyWindowEnd(),
-				TimestampCol:  "TimeUnix",
-				ValueCol:      "Value",
-				MetricNameCol: propertyGroupColumn,
-				AttributesCol: "Attributes",
+				Input:    closedPropertySampleInput(in),
+				Step:     propertyStep,
+				Lookback: propertyLookback,
+				Start:    propertyWindowStart,
+				End:      propertyWindowEnd(),
 			}
 		},
 		func(in chplan.Node) chplan.Node {
 			return &chplan.RangeLWR{
-				Input:         in,
+				Input:         closeRangeLWRSampleInput(in),
 				Step:          propertyStep,
 				Lookback:      propertyLookback,
 				Start:         propertyWindowStart,
@@ -165,6 +161,102 @@ func gaugeStageBuilders() []stageBuilder {
 			}
 		},
 	}
+}
+
+func declareNativeMatrixPropertyRoles(input chplan.Node) chplan.Node {
+	roles := []chplan.Column{
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	switch node := input.(type) {
+	case *chplan.Scan:
+		resolved := *node
+		resolved.Roles = roles
+		return &resolved
+	case *chplan.Filter:
+		resolved := *node
+		resolved.Input = declareNativeMatrixPropertyRoles(node.Input)
+		return &resolved
+	default:
+		return input
+	}
+}
+
+// executablePropertyBaseline closes only the native-grid scan in the
+// pre-optimizer comparison plan. The generated plan itself remains open so
+// ProjectionPushdown must perform the real narrowing under test.
+func executablePropertyBaseline(node chplan.Node) chplan.Node {
+	rewritten, _ := chplan.RewriteChildren(node, func(child chplan.Node) (chplan.Node, bool) {
+		next := executablePropertyBaseline(child)
+		return next, next != child
+	})
+	grid, ok := rewritten.(*chplan.RangeWindowGridNative)
+	if !ok {
+		return rewritten
+	}
+	closed := *grid
+	closed.Input = closeNativeMatrixPropertyInput(grid.Input)
+	return &closed
+}
+
+func closeNativeMatrixPropertyInput(input chplan.Node) chplan.Node {
+	switch node := input.(type) {
+	case *chplan.Scan:
+		closed := *node
+		closed.Columns = []string{"MetricName", "TimeUnix", "Value"}
+		return &closed
+	case *chplan.Filter:
+		closed := *node
+		closed.Input = closeNativeMatrixPropertyInput(node.Input)
+		return &closed
+	default:
+		return input
+	}
+}
+
+func closeRangeLWRSampleInput(input chplan.Node) chplan.Node {
+	roles := []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	names := []string{"MetricName", "Attributes", "TimeUnix", "Value"}
+	switch node := input.(type) {
+	case *chplan.Scan:
+		resolved := *node
+		resolved.Columns = names
+		resolved.Roles = roles
+		return &resolved
+	case *chplan.Filter:
+		resolved := *node
+		resolved.Input = closeRangeLWRSampleInput(node.Input)
+		return &resolved
+	default:
+		return input
+	}
+}
+
+func closedPropertySampleInput(input chplan.Node) chplan.Node {
+	columns := []string{propertyGroupColumn, "Attributes", "TimeUnix", "Value"}
+	roles := []chplan.Column{
+		{Name: propertyGroupColumn, Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	var scan *chplan.Scan
+	switch node := input.(type) {
+	case *chplan.Scan:
+		scan = node
+	case *chplan.Filter:
+		scan, _ = node.Input.(*chplan.Scan)
+	}
+	if scan != nil {
+		scan.Columns = columns
+		scan.Roles = roles
+	}
+	return input
 }
 
 // histogramStageBuilders are the stage shapes that need the classic
@@ -266,16 +358,26 @@ func generateStagePlan(rng *rand.Rand) chplan.Node {
 // generateStageInput returns the Scan or Filter(Scan) a stage node sits
 // directly over — the two adjacencies applyStageScan recognises.
 func generateStageInput(rng *rand.Rand, table string) chplan.Node {
-	scan := &chplan.Scan{Table: table}
-	if table == propertyTable {
-		scan.Columns = []string{"MetricName", "Attributes", "TimeUnix", "Value"}
-		scan.Roles = []chplan.Column{
+	roles := []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	if table == propertyHistogramTable {
+		roles = []chplan.Column{
 			{Name: "MetricName", Role: chplan.RoleMetricName},
 			{Name: "Attributes", Role: chplan.RoleAttributes},
 			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
-			{Name: "Value", Role: chplan.RoleValue},
+			{Name: "BucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+			{Name: "ExplicitBounds", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldExplicitBounds},
 		}
 	}
+	columns := make([]string, len(roles))
+	for i, role := range roles {
+		columns[i] = role.Name
+	}
+	scan := &chplan.Scan{Table: table, Columns: columns, Roles: roles}
 	if rng.Intn(2) == 0 {
 		return scan
 	}

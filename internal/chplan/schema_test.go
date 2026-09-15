@@ -38,7 +38,7 @@ func TestRowTypeEveryNode(t *testing.T) {
 		{&SetOperation{Left: traces, Right: traces}, Schema{Columns: traceRoles}},
 		{&NestedSetAnnotate{Input: traces}, Schema{Columns: append(slices.Clone(traceRoles), Column{Name: NestedSetLeftColumn}, Column{Name: NestedSetRightColumn}, Column{Name: NestedSetParentColumn})}},
 		{&RangeLWR{Input: scan, MetricNameCol: "name", AttributesCol: "labels", TimestampCol: "time", ValueCol: "value"}, canonical},
-		{&RangeWindowStaleResample{Input: scan, MetricNameCol: "name", AttributesCol: "labels", TimestampCol: "time", ValueCol: "value"}, canonical},
+		{&RangeWindowStaleResample{Input: scan}, canonical},
 		{&VectorJoin{Left: scan, Right: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
 		{&VectorSetOp{Left: scan, Right: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
 		{&NaryVectorSetOp{Arms: []Node{scan, scan}, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
@@ -51,7 +51,7 @@ func TestRowTypeEveryNode(t *testing.T) {
 		{&RangeWindowGridNativeInstant{Input: scan, GroupBy: groups, ValueColumn: "value"}, groupValue},
 		{&RangeWindow{Input: scan, GroupBy: groups, ValueColumn: "value"}, groupValue},
 		{&RangeBucketFanout{Input: scan, GroupBy: groups, AnchorAlias: "anchor", AggFuncs: []AggFunc{{Alias: "value"}}}, Schema{Columns: []Column{{Name: "anchor", Role: RoleAnchor}, {Name: "labels", Role: RoleAttributes}, {Name: "value", Role: RoleValue}}}},
-		{&RangeBucketGridNative{Input: scan, GroupBy: groups, AnchorAlias: "anchor", BucketCountsCol: "counts", ExplicitBoundsCol: "bounds"}, Schema{Columns: []Column{{Name: "anchor", Role: RoleAnchor}, {Name: "labels", Role: RoleAttributes}, {Name: "counts"}, {Name: "bounds"}}}},
+		{&RangeBucketGridNative{Input: scan, GroupBy: groups, AnchorAlias: "anchor", BucketCountsCol: "counts", ExplicitBoundsCol: "bounds"}, Schema{Columns: []Column{{Name: "anchor", Role: RoleAnchor}, {Name: "labels", Role: RoleAttributes}, {Name: "counts", Role: RoleHistogramField, HistogramField: HistogramFieldBucketCounts}, {Name: "bounds", Role: RoleHistogramField, HistogramField: HistogramFieldExplicitBounds}}}},
 		{&RangeWindowGridNativeVectorAgg{Input: grid, GroupBy: groups, GroupByAliases: []string{"labels"}, AnchorAlias: "time"}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "anchor_ts", Role: RoleAnchor}, {Name: "time", Role: RoleTimestamp}, {Name: "value", Role: RoleValue}}}},
 		{&MetricsAggregate{Inner: scan, GroupBy: groups, ValueAlias: "value"}, groupValue},
 		{&MetricsHistogramOverTime{Inner: scan, GroupBy: groups, ValueAlias: "value"}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "__bucket"}, {Name: "value", Role: RoleValue}}}},
@@ -104,6 +104,36 @@ func TestRowTypeEveryNode(t *testing.T) {
 		})
 	}
 	assertCoversEverySealedKind(t, nodeMarkerMethod, covered, "RowType cases", "add an output-schema assertion")
+}
+
+func TestNestedSetAnnotateRowTypePreservesChildIdentityRoles(t *testing.T) {
+	t.Parallel()
+	child := &Project{
+		Input: &Scan{Table: "source"},
+		Projections: []Projection{
+			{Expr: &ColumnRef{Name: "physical_trace"}, Alias: "child_trace"},
+			{Expr: &ColumnRef{Name: "physical_span"}, Alias: "child_span"},
+		},
+		Roles: []Column{
+			{Name: "child_trace", Role: RoleTraceID},
+			{Name: "child_span", Role: RoleSpanID},
+		},
+	}
+	got := (&NestedSetAnnotate{
+		Input:         child,
+		TraceIDColumn: "lookup_trace",
+		SpanIDColumn:  "lookup_span",
+	}).RowType()
+	want := Schema{Columns: []Column{
+		{Name: "child_trace", Role: RoleTraceID},
+		{Name: "child_span", Role: RoleSpanID},
+		{Name: NestedSetLeftColumn},
+		{Name: NestedSetRightColumn},
+		{Name: NestedSetParentColumn},
+	}}
+	if !got.Equal(want) {
+		t.Fatalf("RowType = %#v, want %#v", got, want)
+	}
 }
 
 func TestHistogramProjectionRowTypeDeclaresCanonicalRoles(t *testing.T) {

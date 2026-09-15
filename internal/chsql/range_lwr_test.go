@@ -10,6 +10,20 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
+func rangeLWRTestInput(table string) chplan.Node {
+	columns := []chplan.Column{
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+		{Name: "Value", Role: chplan.RoleValue},
+	}
+	projections := make([]chplan.Projection, len(columns))
+	for i, column := range columns {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name}
+	}
+	return &chplan.Project{Input: &chplan.Scan{Table: table}, Roles: columns, Projections: projections}
+}
+
 // TestEmitRangeLWR_SinglePassShape pins the structural invariants of the
 // RangeLWR emitter: a bounded sample-side fan-out (arrayJoin over a
 // `range(greatest(0, ...), least(N, ...))` index set), a per-(series,
@@ -22,7 +36,7 @@ func TestEmitRangeLWR_SinglePassShape(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          30 * time.Second,
@@ -65,7 +79,7 @@ func TestEmitRangeLWR_OffsetShiftsWindowNotAnchor(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          time.Minute,
@@ -94,7 +108,7 @@ func TestEmitRangeLWR_OffsetShiftsWindowNotAnchor(t *testing.T) {
 func TestEmitRangeLWR_RejectsZeroStep(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRTestInput("otel_metrics_gauge"),
 		Step:          0,
 		MetricNameCol: "MetricName",
 		AttributesCol: "Attributes",
@@ -119,7 +133,7 @@ func TestEmitRangeLWR_FanoutLimitIsMaxRowsPlusOne(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := &chplan.RangeLWR{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:         rangeLWRTestInput("otel_metrics_gauge"),
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
 		Step:          30 * time.Second,
@@ -152,7 +166,7 @@ func TestEmitRangeLWR_FanoutLimitIsMaxRowsPlusOne(t *testing.T) {
 func rangeLWRArgAndMaxFusionTestPlan(sampleTimestamp, fused bool) *chplan.RangeLWR {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return &chplan.RangeLWR{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Input:           rangeLWRTestInput("otel_metrics_gauge"),
 		Start:           start,
 		End:             start.Add(5 * time.Minute),
 		Step:            30 * time.Second,

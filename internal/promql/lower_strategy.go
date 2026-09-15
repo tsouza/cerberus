@@ -617,14 +617,14 @@ type NativeRateLowerer struct {
 // changes/resets/deriv/predict_linear, none of which is ever
 // temporality-gated — see counterTemporalityRangeFn).
 func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if rw.TemporalityColumn != "" {
+	if temporalityColumn := rangeWindowTemporalityColumn(rw); temporalityColumn != "" {
 		cumulative := *rw
-		cumulative.Input = nativeTemporalityFilter(rw.Input, rw.TemporalityColumn)
+		cumulative.Input = nativeTemporalityFilter(rw.Input, temporalityColumn)
 		// The native aggregate is safe only after DELTA rows are excluded.
-		cumulative.TemporalityColumn = ""
+		cumulative.IgnoreInputTemporality = true
 		if native := nativeTSGridRateNode(&cumulative, s, n.Recollapse); native != nil {
 			delta := *rw
-			delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
+			delta.Input = temporalityFilter(rw.Input, temporalityColumn, chplan.OpEq)
 			return derivedRateArm(&chplan.UnionAll{Inputs: []chplan.Node{
 				native,
 				&delta,
@@ -633,7 +633,7 @@ func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) c
 		if n.Instant {
 			if native := nativeTSGridInstantNode(&cumulative, "rate", s); native != nil {
 				delta := *rw
-				delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
+				delta.Input = temporalityFilter(rw.Input, temporalityColumn, chplan.OpEq)
 				// No derivedRateArm-style wrapping Project here: unlike the
 				// matrix arm above, the two arms ALREADY publish byte-identical
 				// columns — nativeTSGridInstantNode's own SELECT and the
@@ -787,14 +787,14 @@ type NativeIncreaseLowerer struct {
 // predicate is the intrinsic SHAPE check (increase func, materialised grid,
 // plain Scan/Filter input) — see nativeTSGridMatrixNode.
 func (n NativeIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if rw.TemporalityColumn != "" {
+	if temporalityColumn := rangeWindowTemporalityColumn(rw); temporalityColumn != "" {
 		cumulative := *rw
-		cumulative.Input = nativeTemporalityFilter(rw.Input, rw.TemporalityColumn)
+		cumulative.Input = nativeTemporalityFilter(rw.Input, temporalityColumn)
 		// The native aggregate is safe only after DELTA rows are excluded.
-		cumulative.TemporalityColumn = ""
+		cumulative.IgnoreInputTemporality = true
 		if native := nativeTSGridMatrixNode(&cumulative, "increase", s, noRecollapse); native != nil {
 			delta := *rw
-			delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
+			delta.Input = temporalityFilter(rw.Input, temporalityColumn, chplan.OpEq)
 			return derivedRateArm(&chplan.UnionAll{Inputs: []chplan.Node{
 				native,
 				&delta,
@@ -913,7 +913,7 @@ func (l FixedAccumulatorDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, s schem
 //   - rw.Variants must be empty: the fused multi-arm shape has its own
 //     emitter and does not participate in this decomposition.
 //
-// rw.TemporalityColumn is deliberately NOT excluded: a temporality-bearing
+// A RoleTemporality input is deliberately NOT excluded: a temporality-bearing
 // rate()/increase() window IS eligible (see this file's earlier doc comment
 // and chsql/range_window_fixed_accumulator.go's own "Temporality-bearing
 // counters" section) — the DELTA/CUMULATIVE runtime branch and the
@@ -1092,17 +1092,28 @@ func (n NativeStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.No
 		return n.Fallback.LowerStaleness(in)
 	}
 	return &chplan.RangeWindowStaleResample{
-		Input:         in.input,
-		Start:         in.start,
-		End:           in.end,
-		Step:          in.step,
-		Lookback:      in.lookback,
-		Offset:        in.offset,
-		MetricNameCol: in.metricNameCol,
-		AttributesCol: in.attributesCol,
-		TimestampCol:  in.timestampCol,
-		ValueCol:      in.valueCol,
+		Input:    closedStaleResampleInput(in.input, in.metricNameCol, in.attributesCol, in.timestampCol, in.valueCol),
+		Start:    in.start,
+		End:      in.end,
+		Step:     in.step,
+		Lookback: in.lookback,
+		Offset:   in.offset,
 	}
+}
+
+func closedStaleResampleInput(input chplan.Node, metricName, attributes, timestamp, value string) chplan.Node {
+	names := []string{metricName, attributes, timestamp, value}
+	roles := []chplan.Column{
+		{Name: metricName, Role: chplan.RoleMetricName},
+		{Name: attributes, Role: chplan.RoleAttributes},
+		{Name: timestamp, Role: chplan.RoleTimestamp},
+		{Name: value, Role: chplan.RoleValue},
+	}
+	projections := make([]chplan.Projection, len(names))
+	for i, name := range names {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: name}}
+	}
+	return &chplan.Project{Input: input, Projections: projections, Roles: roles}
 }
 
 // FanoutChangesLowerer is the concrete DEFAULT ChangesLowerer: it returns the
@@ -1579,14 +1590,14 @@ type NativeIrateLowerer struct {
 // internal/promql/lower.go, guards on the native arm's own Func specifically
 // to keep the two apart).
 func (n NativeIrateLowerer) LowerIrate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if rw.TemporalityColumn != "" {
+	if temporalityColumn := rangeWindowTemporalityColumn(rw); temporalityColumn != "" {
 		cumulative := *rw
-		cumulative.Input = nativeTemporalityFilter(rw.Input, rw.TemporalityColumn)
+		cumulative.Input = nativeTemporalityFilter(rw.Input, temporalityColumn)
 		// The native aggregate is safe only after DELTA rows are excluded.
-		cumulative.TemporalityColumn = ""
+		cumulative.IgnoreInputTemporality = true
 		if native := nativeTSGridMatrixNode(&cumulative, "irate", s, noRecollapse); native != nil {
 			delta := *rw
-			delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
+			delta.Input = temporalityFilter(rw.Input, temporalityColumn, chplan.OpEq)
 			return derivedIrateArm(&chplan.UnionAll{Inputs: []chplan.Node{
 				native,
 				&delta,

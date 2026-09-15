@@ -190,7 +190,7 @@ func TestPromQL_RateDupTimestamp_RowAndNative(t *testing.T) {
 			// ts_grid_range emitters, a concern orthogonal to issue #1628's
 			// DELTA-vs-CUMULATIVE runtime branch. A `rate()` window whose
 			// schema DOES declare that column is, correctly, no longer
-			// eligible for native routing (chplan.RangeWindow.TemporalityColumn
+			// eligible for native routing (the RoleTemporality input
 			// forces the fan-out fallback — see nativeTSGridMatrixNode), which
 			// would make native_path/rate fall back and assert nothing about
 			// the native aggregate this suite exists to pin.

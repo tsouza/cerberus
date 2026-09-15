@@ -206,11 +206,20 @@ func TestAllocs_Lower(t *testing.T) {
 		// is what confirms the growth is confined to the `le` path rather
 		// than being a slip in a shared fast path. Re-baselined: aggregation
 		// 429, same ~1.2× headroom.
+		//
+		// declareSubqueryTimestampRole (cerberus issue #3403): an outer
+		// range-vector fn over a subquery whose inner lost the TimeUnix
+		// RoleTimestamp declaration along the way (an Aggregate/binary
+		// composition, say) now gets it re-stated via a schema-only
+		// Project — one node per inner column plus the walk that builds
+		// it. ONLY the subquery case moves, confirming the growth is
+		// confined to that new re-declaration rather than a shared-path
+		// slip. Re-baselined: subquery 213, same ~1.2× headroom.
 		{"instant", `up`, 220},
 		{"range", `rate(http_requests_total[5m])`, 195},
 		{"binary", `(up * 2) > 1`, 240},
 		{"aggregation", `sum by (le)(rate(http_request_duration_seconds_bucket[1m]))`, 515},
-		{"subquery", `max_over_time(rate(http_requests_total[1m])[5m:30s])`, 200},
+		{"subquery", `max_over_time(rate(http_requests_total[1m])[5m:30s])`, 256},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

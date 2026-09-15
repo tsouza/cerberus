@@ -235,7 +235,7 @@ func (g *fusedSubqueryGrid) samplesQuery() *QueryBuilder {
 	q.Select(g.groupFrags...)
 	q.Select(As(seriesArrayPairFrag(g.inner, rangeWindowInputTimestampColumn(g.inner), g.inner.ValueColumn), "samples"))
 	if g.temporality != nil {
-		q.Select(As(Call("any", Col(g.inner.TemporalityColumn)), windowTemporalityAlias))
+		q.Select(As(Call("any", Col(rangeWindowTemporalityColumn(g.inner))), windowTemporalityAlias))
 	}
 	maybePushInnerScanTimeBounds(q, g.inner, rangeWindowInputTimestampColumn(g.inner), g.rangeNS)
 	q.GroupBy(g.groupFrags...)

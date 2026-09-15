@@ -55,13 +55,12 @@ func deltaPrefixCanonicalizedWindow(end time.Time, rng time.Duration, aggTable s
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: "AggregationTemporality"}, Alias: "AggregationTemporality"},
 		),
-		Func:              "rate",
-		Range:             rng,
-		End:               end,
-		TimestampColumn:   "TimeUnix",
-		ValueColumn:       "Value",
-		TemporalityColumn: "AggregationTemporality",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Func:            "rate",
+		Range:           rng,
+		End:             end,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 	if aggTable != "" {
 		r.DeltaPrefixAggregateInput = shapedDeltaPrefixInput(
@@ -82,10 +81,13 @@ func shapedDeltaPrefixInput(scan *chplan.Scan, extra ...chplan.Projection) *chpl
 	projections := append([]chplan.Projection{
 		{Expr: chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}), Alias: "Attributes"},
 	}, extra...)
-	roles := make([]chplan.Column, 0, 1)
+	roles := []chplan.Column(nil)
 	for _, projection := range projections {
-		if projection.Alias == "TimeUnix" {
-			roles = append(roles, chplan.Column{Name: "TimeUnix", Role: chplan.RoleTimestamp})
+		switch projection.Alias {
+		case "TimeUnix":
+			roles = append(roles, chplan.Column{Name: projection.Alias, Role: chplan.RoleTimestamp})
+		case "AggregationTemporality":
+			roles = append(roles, chplan.Column{Name: projection.Alias, Role: chplan.RoleTemporality})
 		}
 	}
 	return &chplan.Project{Input: scan, Projections: projections, Roles: roles}

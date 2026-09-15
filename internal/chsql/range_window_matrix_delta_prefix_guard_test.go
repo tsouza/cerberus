@@ -45,16 +45,15 @@ func matrixDeltaGuardTestWindow() (*chplan.RangeWindow, time.Time) {
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: "AggregationTemporality"}, Alias: "AggregationTemporality"},
 		),
-		Func:              "rate",
-		Range:             time.Minute,
-		End:               end,
-		Start:             start,
-		Step:              step,
-		OuterRange:        end.Sub(start),
-		TimestampColumn:   "TimeUnix",
-		ValueColumn:       "Value",
-		TemporalityColumn: "AggregationTemporality",
-		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Func:            "rate",
+		Range:           time.Minute,
+		End:             end,
+		Start:           start,
+		Step:            step,
+		OuterRange:      end.Sub(start),
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		DeltaPrefixAggregateInput: matrixDeltaGuardShapedInput(
 			&chplan.Scan{Table: "otel_metrics_sum_delta_prefix"},
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: "BucketStart"}, Alias: "BucketStart"},
@@ -68,10 +67,13 @@ func matrixDeltaGuardShapedInput(scan *chplan.Scan, extra ...chplan.Projection) 
 	projections := append([]chplan.Projection{
 		{Expr: chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}), Alias: "Attributes"},
 	}, extra...)
-	roles := make([]chplan.Column, 0, 1)
+	roles := []chplan.Column(nil)
 	for _, projection := range projections {
-		if projection.Alias == "TimeUnix" {
-			roles = append(roles, chplan.Column{Name: "TimeUnix", Role: chplan.RoleTimestamp})
+		switch projection.Alias {
+		case "TimeUnix":
+			roles = append(roles, chplan.Column{Name: projection.Alias, Role: chplan.RoleTimestamp})
+		case "AggregationTemporality":
+			roles = append(roles, chplan.Column{Name: projection.Alias, Role: chplan.RoleTemporality})
 		}
 	}
 	return &chplan.Project{Input: scan, Projections: projections, Roles: roles}
@@ -90,7 +92,7 @@ func matrixDeltaGuardEmit(t *testing.T, r *chplan.RangeWindow) string {
 // TestDeltaMatrixAggregateDailyFanout_GuardAppliedToAggregateTableScan kills
 // range_window.go:deltaMatrixLevelSourceAggregateDailyFanout:`guard != nil`
 // (CONDITIONALS_NEGATION): for this window,
-// r.TemporalityColumn is always set, so deltaPresenceGuardFrag always
+// the RoleTemporality input is always present, so deltaPresenceGuardFrag always
 // returns a non-nil guard — flipping the check to `guard == nil` means
 // aggDaily.Where(guard) is never called, silently dropping the guard from
 // the aggregate-table (otel_metrics_sum_delta_prefix) day-bucket scan. That

@@ -22,6 +22,7 @@ func overrideTestPlan() *chplan.RangeBucketGridNative {
 		Input: &chplan.Scan{
 			Table:   "otel_metrics_histogram",
 			Columns: []string{"SeriesID", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+			Roles:   rangeBucketGridNativeTestRoles(),
 		},
 		Start:             start,
 		End:               start.Add(9 * time.Minute),

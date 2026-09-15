@@ -27,10 +27,8 @@ func TestDispatchRouteACursor_StampsPhysicalScanMultiplier(t *testing.T) {
 		name: "tempo",
 		parseFn: func(context.Context, string) (chplan.Node, engine.Meta, error) {
 			return &chplan.SearchTraceLimit{
-				Input:           &chplan.Scan{Table: "otel_traces", Columns: []string{"TraceId", "Timestamp"}},
-				TraceIDColumn:   "TraceId",
-				TimestampColumn: "Timestamp",
-				TraceLimit:      20,
+				Input:      &chplan.Scan{Table: "otel_traces", Columns: []string{"TraceId", "Timestamp"}, Roles: []chplan.Column{{Name: "TraceId", Role: chplan.RoleTraceID}, {Name: "Timestamp", Role: chplan.RoleTimestamp}}},
+				TraceLimit: 20,
 			}, engine.Meta{}, nil
 		},
 	}

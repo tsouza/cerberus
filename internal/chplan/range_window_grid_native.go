@@ -39,7 +39,7 @@ import (
 //     pinned (the materialised query_range grid). Instant queries
 //     (Step == 0) have no grid and are never eligible.
 //   - The inner relation is a plain Scan / Filter (a row-shape relation
-//     carrying the per-sample (TimestampColumn, ValueColumn) pair) — the
+//     carrying one named RoleTimestamp / RoleValue pair) — the
 //     same shape RangeWindow's row-shape matrix emitter handles. Inputs
 //     that route through MetricsAggregate / MetricsHistogramOverTime /
 //     MetricsCompare keep their own emit branches and never lower here.
@@ -103,10 +103,10 @@ type RangeWindowGridNative struct {
 	// [End - Offset - Range, End - Offset]. Zero means no offset.
 	Offset time.Duration
 
-	// TimestampColumn / ValueColumn name the per-sample timestamp / value
-	// columns on Input (typically "TimeUnix" / "Value" for OTel-CH) — the
-	// two positional arguments of timeSeriesRateToGrid's second paren
-	// group.
+	// TimestampColumn / ValueColumn name the public matrix outputs. The
+	// emitter resolves the physical per-sample timestamp / value pair from
+	// RoleTimestamp / RoleValue on Input. Keeping the output names explicit
+	// preserves configured datasource and wrapper contracts.
 	TimestampColumn string
 	ValueColumn     string
 

@@ -24,6 +24,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
@@ -933,20 +934,13 @@ func TestAbsentAttrsMap_NameSkipContinuesPastLaterMatchers(t *testing.T) {
 
 // TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop pins that a
 // mixed-payload column does not swallow the projection after it: the
-// payload column is skipped by the `continue` under
+// payload column is handled by the first branch under
 // duplicate_labelset_guard.go:`if mixed && mixedPayload[name]` and the
 // trailing projection still reaches the group key. The fixture needs a
 // mixed-payload column FOLLOWED by another projection, and forces
 // `keyOnStep = true` (via an Aggregate input whose GroupByAliases already
 // names the timestamp column, see guardKeysOnTimestamp) so that trailing
 // projection lands in the group key, then asserts its alias survived.
-//
-// It does NOT kill the INVERT_LOOPCTRL mutant on that `continue`, and no
-// test can: the rewrite is equivalent, adjudicated in this package's NOT
-// KILLABLE footer (gremlins_kill_window_bounds_test.go, class 7). The
-// `continue` sits inside a `switch` that is the whole body of the `for`,
-// so `break` binds to the switch rather than to the loop and control
-// reaches the next iteration either way.
 func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) {
 	t.Parallel()
 
@@ -1005,17 +999,49 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 	}
 }
 
+func TestGuardLabelRewriteCollision_PureHistogramIsNotMixed(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	columns := append([]chplan.Column{
+		{Name: s.AttributesColumn, Role: chplan.RoleAttributes},
+		{Name: s.ValueColumn, Role: chplan.RoleValue},
+	}, chplan.HistogramPayloadColumns()...)
+	input := sampleForwardTestInput(columns...)
+	rewritten := &chplan.Project{Input: &chplan.RangeWindow{
+		Input:           input,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}}
+	for _, column := range columns {
+		rewritten.Projections = append(rewritten.Projections,
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name})
+	}
+
+	plan := guardLabelRewriteCollision(rewritten, s)
+	if project, ok := plan.(*chplan.Project); ok {
+		plan = project.Input
+	}
+	agg, ok := plan.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.Aggregate", plan)
+	}
+	for _, aggregate := range agg.AggFuncs {
+		for _, field := range chplan.HistogramPayloadColumns() {
+			if aggregate.Alias == field.Name {
+				t.Fatalf("pure histogram field %q was treated as mixed payload", field.Name)
+			}
+		}
+	}
+}
+
 // TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop pins that two
 // consecutive key-on-step projections BOTH reach the group key, rather
 // than the first one ending the walk. The fixture uses two non-payload,
 // non-canonical projections in a row and an Aggregate input that already
 // names the timestamp column, so `keyOnStep` is true and both take the
 // duplicate_labelset_guard.go:`if keyOnStep` branch.
-//
-// Like its mixed-payload sibling above, it does NOT kill the
-// INVERT_LOOPCTRL mutant on that branch's `continue` — the rewrite is
-// equivalent for the same reason, and is adjudicated in this package's
-// NOT KILLABLE footer (gremlins_kill_window_bounds_test.go, class 7).
 func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 	t.Parallel()
 
@@ -1074,4 +1100,144 @@ func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 				agg.GroupByAliases, colA, colB)
 		}
 	}
+}
+
+// TestAnchoredGridLayoutSpine_CrossJoinIsAnchoredIfEitherSideIs kills the
+// `||` -> `&&` flip at
+// instant_fns.go:anchoredGridLayoutSpine:`return anchoredGridLayoutSpine(node.Left) || anchoredGridLayoutSpine(node.Right)`.
+//
+// A CrossJoin fans a per-anchor grid across a lookup side that carries no
+// grid of its own (the Tempo/PromQL broadcast join TestLowerFloatFoldOverSubqueryInput_InstantPinnedNoCrossJoin's
+// sibling tests build), so anchored-ness is a property of the WHOLE join:
+// either side alone already proves every output row carries an anchor.
+// Requiring BOTH sides to be anchored (the `&&` mutant) misclassifies the
+// ordinary asymmetric shape — one side a grid-bearing node, the other a
+// bare lookup — as unanchored, which downstream routes onto the
+// non-anchored (canonical) sample-projection layout and drops the anchor
+// column real rows do carry.
+func TestAnchoredGridLayoutSpine_CrossJoinIsAnchoredIfEitherSideIs(t *testing.T) {
+	t.Parallel()
+
+	grid := &chplan.StepGrid{Step: time.Minute}
+	lookup := &chplan.Scan{Table: "otel_traces"}
+
+	cases := []struct {
+		name        string
+		join        *chplan.CrossJoin
+		wantAnchord bool
+	}{
+		{"grid on the left only", &chplan.CrossJoin{Left: grid, Right: lookup}, true},
+		{"grid on the right only", &chplan.CrossJoin{Left: lookup, Right: grid}, true},
+		{"neither side carries a grid", &chplan.CrossJoin{Left: lookup, Right: lookup}, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := anchoredGridLayoutSpine(tc.join); got != tc.wantAnchord {
+				t.Fatalf("anchoredGridLayoutSpine(%s) = %v, want %v (mutant `||` -> `&&` at "+
+					"instant_fns.go:anchoredGridLayoutSpine's CrossJoin case would require BOTH "+
+					"sides anchored instead of either)", tc.name, got, tc.wantAnchord)
+			}
+		})
+	}
+}
+
+// TestScalarComparisonValueRef_SingleNamedValueColumnResolvesDirectly pins
+// the ordinary, well-formed case scalarComparisonValueRef exists for: a
+// Project whose Roles cleanly declares one RoleValue column, resolved
+// straight from `declared`, never falling through to the RowType()
+// fallback. Four mutants on the surrounding guards
+// (scalar_comparison.go:scalarComparisonValueRef:`if column.Role != chplan.RoleValue {`,
+// scalar_comparison.go:scalarComparisonValueRef:`if valueName != "" || name == "" {`
+// twice over, and
+// scalar_comparison.go:scalarComparisonValueRef:`if valueName == "" {`)
+// each independently misroute this single-column, single-iteration case
+// into the fallback, which panics here because the fixture carries no
+// Input to resolve a role from — so any one of the four flips this test
+// from a clean return into a panic.
+func TestScalarComparisonValueRef_SingleNamedValueColumnResolvesDirectly(t *testing.T) {
+	t.Parallel()
+
+	project := &chplan.Project{
+		Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "foo"}, Alias: "foo"}},
+		Roles:       []chplan.Column{{Name: "foo", Role: chplan.RoleValue}},
+	}
+	got := scalarComparisonValueRef(project)
+	if got == nil || got.Name != "foo" {
+		t.Fatalf("scalarComparisonValueRef = %#v, want *ColumnRef{Name: %q}", got, "foo")
+	}
+}
+
+// TestScalarComparisonValueRef_NonValueColumnSkipContinuesToTheValueColumn
+// kills the INVERT_LOOPCTRL mutant at
+// scalar_comparison.go:scalarComparisonValueRef:`continue` (the one
+// guarded by `if column.Role != chplan.RoleValue`): a non-value column
+// ahead of the real RoleValue column must be skipped PAST, not treated as
+// a reason to stop the walk. `break` there exits before ever reaching the
+// value column, falling to the same fallback panic as the test above.
+func TestScalarComparisonValueRef_NonValueColumnSkipContinuesToTheValueColumn(t *testing.T) {
+	t.Parallel()
+
+	project := &chplan.Project{
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "attr"}, Alias: "attr"},
+			{Expr: &chplan.ColumnRef{Name: "foo"}, Alias: "foo"},
+		},
+		// Roles is declared out of projection order (Value column first,
+		// Attributes second) so projectRolesAlignWithOutputs' positional
+		// check fails and a mutant that reaches the fallback resolves
+		// RowType() through Input rather than coincidentally rediscovering
+		// the same answer from `declared` a second way. Project.Input is
+		// deliberately left nil: the ONLY path that would touch it is the
+		// fallback the mutant takes, so a nil-pointer panic there is itself
+		// the kill signal, not a fixture bug.
+		Roles: []chplan.Column{
+			{Name: "foo", Role: chplan.RoleValue},
+			{Name: "attr", Role: chplan.RoleAttributes},
+		},
+	}
+	got := scalarComparisonValueRef(project)
+	if got == nil || got.Name != "foo" {
+		t.Fatalf("scalarComparisonValueRef = %#v, want *ColumnRef{Name: %q} (the non-value "+
+			"`attr` projection must be skipped past, not stop the walk before reaching `foo`)", got, "foo")
+	}
+}
+
+// TestScalarComparisonValueRef_DuplicateValueColumnsRejected kills the
+// `||` -> `&&` flip at
+// scalar_comparison.go:scalarComparisonValueRef:`if valueName != "" || name == "" {`.
+// Two RoleValue-declared projections is the duplicate/ambiguous shape the
+// guard exists to reject: the original `||` catches it the moment the
+// SECOND one is seen (valueName already set from the first). The `&&`
+// mutant requires BOTH valueName already set AND the new name empty
+// before it objects, so it silently accepts the second value column, and
+// its own name overwrites the first — the last of the two duplicates
+// wins instead of the walk failing loudly.
+func TestScalarComparisonValueRef_DuplicateValueColumnsRejected(t *testing.T) {
+	t.Parallel()
+
+	project := &chplan.Project{
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "foo"}, Alias: "foo"},
+			{Expr: &chplan.ColumnRef{Name: "bar"}, Alias: "bar"},
+		},
+		Roles: []chplan.Column{
+			{Name: "foo", Role: chplan.RoleValue},
+			{Name: "bar", Role: chplan.RoleValue},
+		},
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("scalarComparisonValueRef did not panic on two RoleValue projections " +
+				"(mutant `||` -> `&&` silently keeps the LAST one instead of rejecting the " +
+				"ambiguous shape)")
+		}
+		if msg, ok := r.(string); !ok || !strings.Contains(msg, "requires one named column") {
+			t.Fatalf("panic = %v, want the ambiguous-role message", r)
+		}
+	}()
+	_ = scalarComparisonValueRef(project)
 }

@@ -19,7 +19,18 @@ import (
 
 func nsAnnotateOver(input chplan.Node) *chplan.NestedSetAnnotate {
 	return &chplan.NestedSetAnnotate{
-		Input:              input,
+		Input: &chplan.Project{
+			Input: input,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "TraceId"}},
+				{Expr: &chplan.ColumnRef{Name: "SpanId"}},
+				{Expr: &chplan.ColumnRef{Name: "ParentSpanId"}},
+			},
+			Roles: []chplan.Column{
+				{Name: "TraceId", Role: chplan.RoleTraceID},
+				{Name: "SpanId", Role: chplan.RoleSpanID},
+			},
+		},
 		SpansTable:         "otel_traces",
 		TraceIDColumn:      "TraceId",
 		SpanIDColumn:       "SpanId",
@@ -30,7 +41,15 @@ func nsAnnotateOver(input chplan.Node) *chplan.NestedSetAnnotate {
 
 func nsFilterScan(col, val string) chplan.Node {
 	return &chplan.Filter{
-		Input: &chplan.Scan{Table: "otel_traces"},
+		Input: &chplan.Scan{
+			Table:   "otel_traces",
+			Columns: []string{"TraceId", "SpanId", "ParentSpanId"},
+			Roles: []chplan.Column{
+				{Name: "TraceId", Role: chplan.RoleTraceID},
+				{Name: "SpanId", Role: chplan.RoleSpanID},
+				{Name: "ParentSpanId", Role: chplan.RoleParentSpanID},
+			},
+		},
 		Predicate: &chplan.Binary{
 			Op:    chplan.OpEq,
 			Left:  &chplan.ColumnRef{Name: col},
@@ -50,6 +69,93 @@ func nsStructuralJoin(op chplan.StructuralOp) *chplan.StructuralJoin {
 	}
 }
 
+func TestNestedSetAnnotateResolvesChildIdentitiesAndPreservesLookupColumns(t *testing.T) {
+	t.Parallel()
+	input := &chplan.Project{
+		Input: &chplan.Scan{Table: "source"},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "physical_trace"}, Alias: "child_trace"},
+			{Expr: &chplan.ColumnRef{Name: "physical_span"}, Alias: "child_span"},
+		},
+		Roles: []chplan.Column{
+			{Name: "child_trace", Role: chplan.RoleTraceID},
+			{Name: "child_span", Role: chplan.RoleSpanID},
+		},
+	}
+	plan := &chplan.NestedSetAnnotate{
+		Input:              input,
+		SpansTable:         "lookup_spans",
+		TraceIDColumn:      "lookup_trace",
+		SpanIDColumn:       "lookup_span",
+		ParentSpanIDColumn: "lookup_parent",
+		TimestampColumn:    "lookup_time",
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	for _, want := range []string{
+		"m.`child_trace` = ns.`lookup_trace`",
+		"m.`child_span` = ns.`lookup_span`",
+		"FROM `lookup_spans`",
+		"`lookup_parent`",
+		"`lookup_time`",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("SQL missing %q:\n%s", want, sql)
+		}
+	}
+}
+
+func TestNestedSetAnnotateRejectsMalformedChildIdentitySchemas(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		input  chplan.Node
+		needle string
+	}{
+		{name: "nil", input: nil, needle: "input is nil"},
+		{name: "open without identities", input: &chplan.Scan{Table: "source"}, needle: "requires distinct"},
+		{name: "missing trace", input: identityProject(
+			chplan.Column{Name: "span", Role: chplan.RoleSpanID},
+		), needle: "requires distinct"},
+		{name: "missing span", input: identityProject(
+			chplan.Column{Name: "trace", Role: chplan.RoleTraceID},
+		), needle: "requires distinct"},
+		{name: "ambiguous trace", input: identityProject(
+			chplan.Column{Name: "trace_a", Role: chplan.RoleTraceID},
+			chplan.Column{Name: "trace_b", Role: chplan.RoleTraceID},
+			chplan.Column{Name: "span", Role: chplan.RoleSpanID},
+		), needle: "requires distinct"},
+		{name: "shared name", input: identityProject(
+			chplan.Column{Name: "identity", Role: chplan.RoleTraceID},
+			chplan.Column{Name: "identity", Role: chplan.RoleSpanID},
+		), needle: "requires distinct"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := nsAnnotateOver(tc.input)
+			plan.Input = tc.input
+			_, _, err := chsql.Emit(context.Background(), plan)
+			if err == nil || !strings.Contains(err.Error(), tc.needle) {
+				t.Fatalf("Emit error = %v, want substring %q", err, tc.needle)
+			}
+		})
+	}
+}
+
+func identityProject(columns ...chplan.Column) chplan.Node {
+	projections := make([]chplan.Projection, len(columns))
+	for i, column := range columns {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}}
+	}
+	return &chplan.Project{
+		Input:       &chplan.Scan{Table: "source"},
+		Projections: projections,
+		Roles:       columns,
+	}
+}
+
 // TestNestedSetAnnotate_StructuralInput_RenderedOnce pins the
 // dedup contract for a bare structural-join input: the recursive
 // closure CTE appears exactly once (FROM arm), and the anchor scope
@@ -63,7 +169,7 @@ func TestNestedSetAnnotate_StructuralInput_RenderedOnce(t *testing.T) {
 	if got := strings.Count(sql, "WITH RECURSIVE _struct_closure"); got != 1 {
 		t.Errorf("structural closure CTE must render exactly once, got %d:\n%s", got, sql)
 	}
-	wantScope := "IN ((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?))))"
+	wantScope := "IN ((SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`SpanKind` = ?))))"
 	if !strings.Contains(sql, wantScope) {
 		t.Errorf("anchor trace scope must be the UNION ALL of the arm scans;\nwant substring: %s\ngot:\n%s", wantScope, sql)
 	}
@@ -109,7 +215,7 @@ func TestNestedSetAnnotate_UnionOfStructural_RenderedOnce(t *testing.T) {
 	}
 	// The Project passes TraceId through bare, so the `||` arm's scope
 	// recurses past it down to the Filter(Scan) leaf.
-	wantPlainScope := "UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))))"
+	wantPlainScope := "UNION ALL (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?))))"
 	if !strings.Contains(sql, wantPlainScope) {
 		t.Errorf("plain `||` arm scope must recurse through the bare-TraceId Project;\nwant substring: %s\ngot:\n%s", wantPlainScope, sql)
 	}
@@ -148,7 +254,7 @@ func TestNestedSetAnnotate_LimitInput_ScopeDropsLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	wantScope := "IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))"
+	wantScope := "IN (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?)))"
 	if !strings.Contains(sql, wantScope) {
 		t.Errorf("Limit input's scope must recurse past the LIMIT;\nwant substring: %s\ngot:\n%s", wantScope, sql)
 	}
@@ -292,7 +398,7 @@ func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testin
 	// lowering never produces, and the universal emit guard (spansscan) rejects
 	// the windowless recursive otel_traces scan it would otherwise emit. The
 	// asserted windowed top-N (driven by NestedSetAnnotate.Window*) is unchanged.
-	sj := n.Input.(*chplan.SetOperation).Left.(*chplan.StructuralJoin)
+	sj := n.Input.(*chplan.Project).Input.(*chplan.SetOperation).Left.(*chplan.StructuralJoin)
 	sj.TimestampColumn = "Timestamp"
 	sj.WindowStartNano = startNano
 	sj.WindowEndNano = endNano
@@ -343,7 +449,7 @@ func TestNestedSetAnnotate_TraceLimit_ZeroUnbounded(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	// The anchor scope is the bare UNION-ALL superset, no newest-N wrap.
-	wantUnbounded := "WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) UNION ALL"
+	wantUnbounded := "WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (((SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) UNION ALL"
 	if !strings.Contains(sql, wantUnbounded) {
 		t.Errorf("unbounded anchor scope changed;\nwant substring: %s\ngot:\n%s", wantUnbounded, sql)
 	}

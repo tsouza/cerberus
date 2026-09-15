@@ -58,6 +58,7 @@ func buildGridNativePlan(t *testing.T, numAnchors int) (string, []any) {
 		Input: &chplan.Scan{
 			Table:   "otel_metrics_histogram",
 			Columns: []string{"SeriesID", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+			Roles:   rangeBucketGridNativeTestRoles(),
 		},
 		Start:             start,
 		End:               end,
@@ -321,6 +322,7 @@ func TestRangeBucketGridNativeBound_PassesNearProductionReferenceCardinalityOrdi
 		Input: &chplan.Scan{
 			Table:   "otel_metrics_histogram",
 			Columns: []string{"SeriesID", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+			Roles:   rangeBucketGridNativeTestRoles(),
 		},
 		Start:             start,
 		End:               end,
@@ -564,6 +566,7 @@ func TestRangeBucketGridNativeBound_DensityGuardPassesRealisticProductionDensity
 		Input: &chplan.Scan{
 			Table:   "otel_metrics_histogram",
 			Columns: []string{"SeriesID", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+			Roles:   rangeBucketGridNativeTestRoles(),
 		},
 		Start:             start,
 		End:               end,
@@ -632,6 +635,7 @@ func TestRangeBucketGridNativeBound_DensityGuardPassesReported2651ShapeAtRealist
 		Input: &chplan.Scan{
 			Table:   "otel_metrics_histogram",
 			Columns: []string{"SeriesID", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+			Roles:   rangeBucketGridNativeTestRoles(),
 		},
 		Start:             start,
 		End:               end,
