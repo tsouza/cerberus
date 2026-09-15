@@ -638,6 +638,10 @@ jobs:
         run: |
           node --test .github/scripts/ci-lane-contract.test.mjs
           MODE=registry node .github/scripts/ci-lane-contract.mjs
+      - name: Validate the semantic contract metadata model
+        run: |
+          node --test .github/scripts/semantic-model.test.mjs
+          node .github/scripts/semantic-model.mjs
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
           tool: just
