@@ -46,6 +46,11 @@ import {
   extractTraceQLByKeys,
   extractWithoutKeys,
   isHistogramQuantile,
+  isNativeHistogramSelector,
+  isPinnedResourceBoundRejection,
+  bodyContainsPinnedResourceBoundMessage,
+  MEMORY_LIMIT_MESSAGE,
+  RESOURCE_BOUND_GUARD_MESSAGES,
   iterateDashboards,
   iteratePanels,
   iterateDrilldownApps,
@@ -161,6 +166,75 @@ test('extractHistogramName returns null when no _bucket is referenced', () => {
 test('extractHistogramName returns null for non-histogram exprs', () => {
   expect(extractHistogramName('rate(foo[5m])')).toBeNull();
   expect(extractHistogramName('up')).toBeNull();
+});
+
+test('isNativeHistogramSelector detects an _exp_hist selector', () => {
+  expect(
+    isNativeHistogramSelector(
+      'histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))',
+    ),
+  ).toBe(true);
+});
+
+test('isNativeHistogramSelector is false for the true N6 shape and for classic _bucket exprs', () => {
+  expect(isNativeHistogramSelector('histogram_quantile(0.95, foo_total)')).toBe(false);
+  expect(
+    isNativeHistogramSelector('histogram_quantile(0.95, rate(foo_bucket[5m]))'),
+  ).toBe(false);
+  expect(isNativeHistogramSelector('rate(foo[5m])')).toBe(false);
+});
+
+test('isPinnedResourceBoundRejection accepts the exact memory-limit and guard-message contracts', () => {
+  expect(
+    isPinnedResourceBoundRejection(
+      422,
+      JSON.stringify({ status: 'error', errorType: 'execution', error: MEMORY_LIMIT_MESSAGE }),
+    ),
+  ).toBe(true);
+  for (const msg of RESOURCE_BOUND_GUARD_MESSAGES) {
+    expect(
+      isPinnedResourceBoundRejection(
+        422,
+        JSON.stringify({ status: 'error', errorType: 'execution', error: msg }),
+      ),
+    ).toBe(true);
+  }
+});
+
+test('isPinnedResourceBoundRejection rejects everything else', () => {
+  // Wrong status.
+  expect(
+    isPinnedResourceBoundRejection(
+      400,
+      JSON.stringify({ status: 'error', errorType: 'execution', error: MEMORY_LIMIT_MESSAGE }),
+    ),
+  ).toBe(false);
+  // Wrong errorType.
+  expect(
+    isPinnedResourceBoundRejection(
+      422,
+      JSON.stringify({ status: 'error', errorType: 'bad_data', error: MEMORY_LIMIT_MESSAGE }),
+    ),
+  ).toBe(false);
+  // Unrelated message.
+  expect(
+    isPinnedResourceBoundRejection(
+      422,
+      JSON.stringify({ status: 'error', errorType: 'execution', error: 'something else' }),
+    ),
+  ).toBe(false);
+  // Malformed body.
+  expect(isPinnedResourceBoundRejection(422, 'not json')).toBe(false);
+});
+
+test('bodyContainsPinnedResourceBoundMessage matches a Grafana-rewrapped tunneled error', () => {
+  const body = JSON.stringify({
+    results: {
+      A: { error: `execution: ${RESOURCE_BOUND_GUARD_MESSAGES[0]}` },
+    },
+  });
+  expect(bodyContainsPinnedResourceBoundMessage(body)).toBe(true);
+  expect(bodyContainsPinnedResourceBoundMessage('some unrelated body')).toBe(false);
 });
 
 test('assertLabelShape passes when every key is observed', () => {

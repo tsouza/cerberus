@@ -70,6 +70,7 @@ import {
   expressionHasMatcherFor,
   extractDataSourceProxyURL,
   generateSelfTraffic,
+  isPinnedResourceBoundRejection,
   iterateDashboards,
   iteratePanels,
 } from './helpers/index.js';
@@ -272,6 +273,22 @@ test('filter-drill: every aggregating panel produces a non-empty subset when fil
       const resp = await request.get(baselineURL);
       if (resp.status() < 200 || resp.status() > 299) {
         const body = await resp.text().catch(() => '<unreadable>');
+        // Pinned resource-bound rejection (issue #3468): the same
+        // documented outcome iterate-time-ranges.spec.ts's own "Memory-
+        // limit / resource-bound multi-way contract" pins — a
+        // native-histogram-consuming panel's baseline query can
+        // legitimately cross ClickHouse's memory cap or one of
+        // cerberus's own pre-rejection guards depending on the traffic
+        // this run happens to have seeded. Annotate and skip the drill
+        // (there is no baseline to drill on), rather than a hard
+        // failure — the SAME treatment baselineCount === 0 gets below.
+        if (isPinnedResourceBoundRejection(resp.status(), body)) {
+          testInfo.annotations.push({
+            type: 'filter-drill-resource-bound-rejection',
+            description: `[${surface}] baseline query took a pinned resource-bound rejection (${resp.status()}) — drill skipped\n  body: ${body.slice(0, 300)}`,
+          });
+          continue;
+        }
         failures.push(
           `[${surface}] baseline query → ${resp.status()}\n  url: ${baselineURL}\n  body: ${body.slice(
             0,
@@ -353,6 +370,16 @@ test('filter-drill: every aggregating panel produces a non-empty subset when fil
         const resp = await request.get(filteredURL);
         if (resp.status() < 200 || resp.status() > 299) {
           const body = await resp.text().catch(() => '<unreadable>');
+          // Same pinned resource-bound carve-out as the baseline query
+          // above (issue #3468) — a filtered query over the identical
+          // native-histogram-consuming panel can hit the same guards.
+          if (isPinnedResourceBoundRejection(resp.status(), body)) {
+            testInfo.annotations.push({
+              type: 'filter-drill-resource-bound-rejection',
+              description: `[${surface}] filtered query (${key}="${value}") took a pinned resource-bound rejection (${resp.status()})\n  body: ${body.slice(0, 300)}`,
+            });
+            continue;
+          }
           failures.push(
             `[${surface}] filtered query (${key}="${value}") → ${resp.status()}\n  url: ${filteredURL}\n  body: ${body.slice(
               0,

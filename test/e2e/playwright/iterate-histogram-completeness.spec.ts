@@ -72,6 +72,7 @@ import {
   extractHistogramName,
   generateSelfTraffic,
   isHistogramQuantile,
+  isNativeHistogramSelector,
   iterateDashboards,
   iteratePanels,
 } from './helpers/index.js';
@@ -92,15 +93,6 @@ const QUERY_STEP_SECONDS = 15;
  * Prometheus `/api/v1/query_range` response shape (the subset we
  * read). Sample columns live under `data.result[].values`.
  */
-/**
- * Selector suffix that routes a metric onto cerberus's native
- * (exponential) histogram path. Mirrors the default
- * `schema.Metrics.ExpHistogramSuffix` ("_exp_hist") — see
- * internal/schema/otel.go. A histogram_quantile whose inner selector
- * carries this suffix has no classic `_bucket` companions by design.
- */
-const NATIVE_HISTOGRAM_SELECTOR_REGEX = /[A-Za-z0-9_:]_exp_hist\b/;
-
 type PromQueryRangeResponse = {
   status?: string;
   data?: {
@@ -343,7 +335,7 @@ test('histogram-completeness: every histogram_quantile panel has its _bucket / _
       // for the N6 shape (`histogram_quantile(0.95, foo_total)` —
       // no `_bucket` suffix in the inner expression).
       if (t.histogramName === null) {
-        if (NATIVE_HISTOGRAM_SELECTOR_REGEX.test(t.expr)) {
+        if (isNativeHistogramSelector(t.expr)) {
           // Native (exponential) histogram quantile. The `_exp_hist`
           // suffix routes the selector onto cerberus's exp-histogram
           // table (schema.ExpHistogramSuffix) — classic `_bucket` /

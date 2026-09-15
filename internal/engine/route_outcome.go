@@ -189,6 +189,15 @@ var timeSliceableResourceBoundMessages = []string{
 	chsql.RangeBucketFanoutBudgetMessage,
 	chsql.RangeLWRFanoutBudgetMessage,
 	chsql.RateWindowFanoutBudgetMessage,
+	// RangeBucketFanoutGroupBudgetMessage (issue #3468) counts a cost —
+	// (series, anchor) group count feeding a groupArray-accumulating
+	// window fold — that scales with the request's own anchor grid
+	// exactly like its three siblings above, and a time-sliced shard's
+	// narrower grid genuinely lowers it while the ceiling stays whole-query
+	// (routeBExecCtx threads RangeBucketFanoutGroupMaxRows to every shard
+	// verbatim, via applyResourceBoundOverrides) — the same qualifying
+	// reasoning this list's own doc comment gives for the other three.
+	chsql.RangeBucketFanoutGroupBudgetMessage,
 }
 
 // isTimeSliceableResourceBound reports whether err is one of cerberus's own
