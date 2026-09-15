@@ -179,7 +179,13 @@ func TestScanResourceBound_HistogramFailClosed(t *testing.T) {
 	m := &chplan.MetricsHistogramOverTime{
 		Attr:       &chplan.ColumnRef{Name: "Duration"},
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: s.SpansTable},
+		Inner: &chplan.Scan{
+			Table:   s.SpansTable,
+			Columns: []string{"Duration", s.TimestampColumn},
+			Roles: []chplan.Column{
+				{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+			},
+		},
 	}
 	rw := &chplan.RangeWindow{
 		Input: m, Step: time.Minute, Range: time.Minute, TimestampColumn: "Timestamp",
@@ -253,7 +259,13 @@ func TestScanResourceBound_ExemplarsBoundedAndFailClosed(t *testing.T) {
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "resource.service.name"}},
 		GroupByAliases: []string{"resource.service.name"},
 		ValueAlias:     "Value",
-		Inner:          &chplan.Scan{Table: s.SpansTable},
+		Inner: &chplan.Scan{
+			Table:   s.SpansTable,
+			Columns: []string{"resource.service.name", s.TimestampColumn},
+			Roles: []chplan.Column{
+				{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+			},
+		},
 	}
 	rw := &chplan.RangeWindow{
 		Input: m, Step: time.Minute, Range: time.Minute,
@@ -283,7 +295,9 @@ func TestScanResourceBound_CompareFailClosed(t *testing.T) {
 	t.Parallel()
 	s := tracesSchema()
 	cmp := &chplan.MetricsCompare{
-		Inner:     &chplan.Scan{Table: s.SpansTable},
+		Inner: &chplan.Scan{Table: s.SpansTable, Roles: []chplan.Column{
+			{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+		}},
 		Selection: &chplan.LitBool{V: true},
 	}
 	rw := &chplan.RangeWindow{
@@ -305,7 +319,13 @@ func TestScanResourceBound_MetricsMatrixFailClosed(t *testing.T) {
 		Op:             chplan.MetricsOpCountOverTime,
 		GroupByAliases: nil,
 		ValueAlias:     "Value",
-		Inner:          &chplan.Scan{Table: s.SpansTable},
+		Inner: &chplan.Scan{
+			Table:   s.SpansTable,
+			Columns: []string{s.TimestampColumn},
+			Roles: []chplan.Column{
+				{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
+			},
+		},
 	}
 	rw := &chplan.RangeWindow{
 		Input: m, Step: time.Minute, Range: time.Minute, TimestampColumn: "Timestamp",

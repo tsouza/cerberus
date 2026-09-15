@@ -54,7 +54,7 @@ func TestRangeWindowMetricsInnerScanPushdown_BothSet(t *testing.T) {
 		Input: &chplan.MetricsAggregate{
 			Op:         chplan.MetricsOpRate,
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Range:           time.Minute,
@@ -102,7 +102,7 @@ func TestRangeWindowMetricsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 				Input: &chplan.MetricsAggregate{
 					Op:         chplan.MetricsOpRate,
 					ValueAlias: "Value",
-					Inner:      &chplan.Scan{Table: "otel_traces"},
+					Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 				},
 				Step:            time.Minute,
 				Range:           time.Minute,
@@ -203,7 +203,7 @@ func TestRangeWindowMetricsQuantileBucketsInnerScanPushdown_BothSet(t *testing.T
 			Attr:       &chplan.ColumnRef{Name: "Duration"},
 			Quantiles:  []float64{0.95},
 			ValueAlias: "Value",
-			Inner:      &chplan.Scan{Table: "otel_traces"},
+			Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 		},
 		Step:            time.Minute,
 		Range:           time.Minute,
@@ -250,7 +250,7 @@ func TestRangeWindowMetricsQuantileBucketsInnerScanPushdown_OnlyOneSet(t *testin
 					Attr:       &chplan.ColumnRef{Name: "Duration"},
 					Quantiles:  []float64{0.95},
 					ValueAlias: "Value",
-					Inner:      &chplan.Scan{Table: "otel_traces"},
+					Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 				},
 				Step:            time.Minute,
 				Range:           time.Minute,
@@ -284,7 +284,7 @@ func TestEmitMetricsExemplarsInnerScanPushdown_BothSet(t *testing.T) {
 	m := &chplan.MetricsAggregate{
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
+		Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 	}
 	rw := &chplan.RangeWindow{
 		Input:           m,
@@ -335,7 +335,7 @@ func TestEmitMetricsExemplarsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 			m := &chplan.MetricsAggregate{
 				Op:         chplan.MetricsOpRate,
 				ValueAlias: "Value",
-				Inner:      &chplan.Scan{Table: "otel_traces"},
+				Inner:      metricsTimestampTestScan("otel_traces", "Timestamp"),
 			}
 			rw := &chplan.RangeWindow{
 				Input:           m,
@@ -990,16 +990,12 @@ func TestRangeWindowStaleResampleInnerScanTimeBound(t *testing.T) {
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
 	plan := &chplan.RangeWindowStaleResample{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
-		Start:         start,
-		End:           end,
-		Step:          30 * time.Second,
-		Lookback:      5 * time.Minute,
-		Offset:        2 * time.Minute,
-		MetricNameCol: "MetricName",
-		AttributesCol: "Attributes",
-		TimestampCol:  "TimeUnix",
-		ValueCol:      "Value",
+		Input:    staleResampleTestInput(),
+		Start:    start,
+		End:      end,
+		Step:     30 * time.Second,
+		Lookback: 5 * time.Minute,
+		Offset:   2 * time.Minute,
 	}
 	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
@@ -1091,16 +1087,12 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 	t.Run("RangeWindowStaleResample", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.RangeWindowStaleResample{
-			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
-			Start:         start,
-			End:           end,
-			Step:          120 * time.Second,
-			Lookback:      5 * time.Minute,
-			Offset:        offset,
-			MetricNameCol: "MetricName",
-			AttributesCol: "Attributes",
-			TimestampCol:  "TimeUnix",
-			ValueCol:      "Value",
+			Input:    staleResampleTestInput(),
+			Start:    start,
+			End:      end,
+			Step:     120 * time.Second,
+			Lookback: 5 * time.Minute,
+			Offset:   offset,
 		}
 		sql, _, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
@@ -1117,8 +1109,8 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 }
 
 // TestRangeWindowStaleResampleRejectsBadInput pins the resample emitter's
-// pre-flight guards: the 4-way column-name OR, Step <= 0, and the
-// pinned-Start/End requirement. Under a mutated guard the bad-input plan
+// temporal pre-flight guards: Step <= 0 and the pinned-Start/End requirement.
+// Child-schema rejection is covered separately. Under a mutated guard the bad-input plan
 // would emit SQL instead of erroring, so each case kills the
 // CONDITIONALS_NEGATION / INVERT_LOGICAL / CONDITIONALS_BOUNDARY mutants
 // on those guards.
@@ -1128,25 +1120,17 @@ func TestRangeWindowStaleResampleRejectsBadInput(t *testing.T) {
 	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 	base := chplan.RangeWindowStaleResample{
-		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
-		Start:         start,
-		End:           end,
-		Step:          30 * time.Second,
-		Lookback:      5 * time.Minute,
-		MetricNameCol: "MetricName",
-		AttributesCol: "Attributes",
-		TimestampCol:  "TimeUnix",
-		ValueCol:      "Value",
+		Input:    staleResampleTestInput(),
+		Start:    start,
+		End:      end,
+		Step:     30 * time.Second,
+		Lookback: 5 * time.Minute,
 	}
 
 	cases := []struct {
 		name  string
 		mutfn func(p *chplan.RangeWindowStaleResample)
 	}{
-		{name: "no_timestamp_col", mutfn: func(p *chplan.RangeWindowStaleResample) { p.TimestampCol = "" }},
-		{name: "no_value_col", mutfn: func(p *chplan.RangeWindowStaleResample) { p.ValueCol = "" }},
-		{name: "no_metric_name_col", mutfn: func(p *chplan.RangeWindowStaleResample) { p.MetricNameCol = "" }},
-		{name: "no_attributes_col", mutfn: func(p *chplan.RangeWindowStaleResample) { p.AttributesCol = "" }},
 		{name: "zero_step", mutfn: func(p *chplan.RangeWindowStaleResample) { p.Step = 0 }},
 		{name: "neg_step", mutfn: func(p *chplan.RangeWindowStaleResample) { p.Step = -time.Second }},
 		{name: "zero_start", mutfn: func(p *chplan.RangeWindowStaleResample) { p.Start = time.Time{} }},

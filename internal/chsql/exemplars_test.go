@@ -131,6 +131,42 @@ func TestEmitMetricsExemplars_ShapeSanity(t *testing.T) {
 	}
 }
 
+// TestEmitMetricsExemplars_ZeroMaxPerSeriesDisablesCap pins the documented
+// boundary of maxPerSeries (EmitMetricsExemplars's doc comment): 0 must
+// disable the per-series cap entirely, emitting no LIMIT / LIMIT BY at
+// all, rather than a `LIMIT 0 BY` that would silently drop every
+// exemplar row. A positive value must still cap. The two cases isolate
+// the `maxPerSeries > 0` guard from both sides of its boundary.
+func TestEmitMetricsExemplars_ZeroMaxPerSeriesDisablesCap(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+	m := &chplan.MetricsAggregate{
+		Op:             chplan.MetricsOpRate,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "resource.service.name"}},
+		GroupByAliases: []string{"resource.service.name"},
+		ValueAlias:     "Value",
+		Inner:          &chplan.Scan{Table: "otel_traces"},
+	}
+	rw := &chplan.RangeWindow{
+		Input:           m,
+		Step:            time.Minute,
+		Range:           time.Minute,
+		Start:           start,
+		End:             end,
+		TimestampColumn: "Timestamp",
+	}
+
+	sql, _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0, "")
+	if err != nil {
+		t.Fatalf("EmitMetricsExemplars(maxPerSeries=0): %v", err)
+	}
+	if strings.Contains(sql, "LIMIT") {
+		t.Errorf("maxPerSeries=0 must disable the cap entirely; got a LIMIT clause:\nSQL=%s", sql)
+	}
+}
+
 // TestEmitMetricsExemplars_StructuralUnwindowedInnerRejected is the FIX B
 // regression for the exemplars emit-path bypass. The inner of a
 // `{ } >> { } | rate()` structural metric is a recursive descendant closure
