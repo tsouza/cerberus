@@ -3824,8 +3824,25 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 	if rw.TemporalityColumn != "" {
 		return nil
 	}
+	input := rw.Input
+	if input.RowType().Open {
+		// A resource-empty custom schema deliberately leaves the selector as
+		// a raw Scan. Close its public sample boundary here, above any matcher
+		// Filter, so the native node can resolve the physical value role
+		// without narrowing columns needed by that predicate.
+		input = &chplan.Project{
+			Roles: metricRoles(s),
+			Input: input,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+				{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+			},
+		}
+	}
 	return &chplan.RangeWindowGridNativeInstant{
-		Input:           rw.Input,
+		Input:           input,
 		Func:            rw.Func,
 		Range:           rw.Range,
 		Anchor:          rw.End,
