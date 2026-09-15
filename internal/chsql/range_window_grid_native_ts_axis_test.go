@@ -185,16 +185,15 @@ const (
 // therefore skipped by the loop below rather than left silently uncovered.
 var nativeTsAxisInstantOutOfScope = map[string]bool{"increase": true, "delta": true}
 
-func nativeTsAxisInstantTestScan() *chplan.Scan {
-	roles := []chplan.Column{
-		{Name: nativeScanBoundTSCol, Role: chplan.RoleTimestamp},
-		{Name: "Attributes", Role: chplan.RoleAttributes},
-		{Name: "Value", Role: chplan.RoleValue},
-	}
+func nativeTsAxisInstantInput() *chplan.Scan {
 	return &chplan.Scan{
 		Table:   "otel_metrics_gauge",
-		Columns: []string{nativeScanBoundTSCol, "Attributes", "Value"},
-		Roles:   roles,
+		Columns: []string{"Attributes", nativeScanBoundTSCol, "Value"},
+		Roles: []chplan.Column{
+			{Name: "Attributes", Role: chplan.RoleAttributes},
+			{Name: nativeScanBoundTSCol, Role: chplan.RoleTimestamp},
+			{Name: "Value", Role: chplan.RoleValue},
+		},
 	}
 }
 
@@ -224,7 +223,7 @@ func TestNativeTSGrid_TsAxis_InstantEmitter(t *testing.T) {
 			t.Parallel()
 
 			node := &chplan.RangeWindowGridNativeInstant{
-				Input:           nativeTsAxisInstantTestScan(),
+				Input:           nativeTsAxisInstantInput(),
 				Func:            fn,
 				Range:           nativeTsAxisInstantWindow,
 				Anchor:          anchor,
@@ -262,7 +261,7 @@ func TestNativeTSGrid_TsAxis_InstantOutOfScopeStillRejected(t *testing.T) {
 			t.Parallel()
 
 			node := &chplan.RangeWindowGridNativeInstant{
-				Input:           nativeTsAxisInstantTestScan(),
+				Input:           nativeTsAxisInstantInput(),
 				Func:            fn,
 				Range:           nativeTsAxisInstantWindow,
 				Anchor:          anchor,

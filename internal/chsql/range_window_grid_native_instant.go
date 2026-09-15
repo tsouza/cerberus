@@ -60,6 +60,10 @@ func (e *emitter) emitRangeWindowGridNativeInstant(r *chplan.RangeWindowGridNati
 	if err != nil {
 		return err
 	}
+	inputValueColumn, ok := r.InputValueColumn()
+	if !ok {
+		return fmt.Errorf("%w: RangeWindowGridNativeInstant requires a closed child schema with one unique named value role", ErrUnsupported)
+	}
 	if r.ValueColumn == "" {
 		return fmt.Errorf("%w: RangeWindowGridNativeInstant.ValueColumn unset", ErrUnsupported)
 	}
@@ -111,7 +115,7 @@ func (e *emitter) emitRangeWindowGridNativeInstant(r *chplan.RangeWindowGridNati
 
 	inner := NewQuery().From(innerSub)
 	inner.Select(groupFrags...)
-	inner.Select(As(Parametric(agg.Fn, gridParams, tsAxis, Col(r.ValueColumn)), nativeGridArrayAlias))
+	inner.Select(As(Parametric(agg.Fn, gridParams, tsAxis, Col(inputValueColumn)), nativeGridArrayAlias))
 	// Prune the inner scan to the SAME single-window bound the matrix
 	// emitter uses (Anchor for both the start and end of the pruning span),
 	// so ClickHouse skips granules outside the eval window instead of
