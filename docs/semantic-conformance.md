@@ -19,32 +19,32 @@ A verifier's `substrate` is never collapsed into one meaning. `chdb` and `real-c
 
 | status           | count  |
 | ---------------- | ------ |
-| active           | 41     |
+| active           | 50     |
 | draft            | 0      |
 | superseded       | 1      |
 | explicit_deficit | 1      |
-| **total**        | **43** |
+| **total**        | **52** |
 
-Of the 41 active contracts, **41** are structurally assured (bound evidence covers every required class and independence group).
+Of the 50 active contracts, **50** are structurally assured (bound evidence covers every required class and independence group).
 
 ### Verifiers
 
 | status     | count  |
 | ---------- | ------ |
-| active     | 16     |
+| active     | 25     |
 | draft      | 0      |
 | superseded | 0      |
-| **total**  | **16** |
+| **total**  | **25** |
 
 ### Bindings
 
-| status    | count  |
-| --------- | ------ |
-| active    | 92     |
-| draft     | 0      |
-| **total** | **92** |
+| status    | count   |
+| --------- | ------- |
+| active    | 117     |
+| draft     | 0       |
+| **total** | **117** |
 
-Executions on record: **86**.
+Executions on record: **106**.
 
 ## Evidence system inventory
 
@@ -57,47 +57,57 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | surface-parity-symbol | 0               |
 | rejection-parity-site | 1               |
 | oracle-inventory-case | 0               |
-| unclassified          | 45              |
+| unclassified          | 70              |
 
 ## Lane inventory (merge / release obligations)
 
-| CI lane                               | merge-required | release-required | active bindings bound |
-| ------------------------------------- | -------------- | ---------------- | --------------------- |
-| ci.forbid-skip                        | true           | true             | 65                    |
-| ci.lint                               | true           | true             | 92                    |
-| compatibility.gate                    | false          | false            | 79                    |
-| governance.forbid-deferral            | true           | true             | 92                    |
-| governance.pr-body                    | true           | true             | 5                     |
-| security.codeql                       | true           | true             | 22                    |
-| chdb.perf-guards                      | false          | true             | 47                    |
-| chdb.roundtrip-promql                 | false          | true             | 8                     |
-| chdb.strict-scan                      | true           | true             | 47                    |
-| ci.check                              | true           | true             | 52                    |
-| performance.profile                   | false          | true             | 47                    |
-| quality.coverage-measured             | true           | true             | 74                    |
-| quality.post-merge-drift              | false          | false            | 33                    |
-| chdb.roundtrip-logql                  | false          | true             | 13                    |
-| chdb.roundtrip-traceql                | false          | true             | 10                    |
-| agpl.oracle                           | false          | false            | 8                     |
-| chdb.probe                            | true           | true             | 11                    |
-| ci.agpl-clean                         | true           | true             | 14                    |
-| e2e.chaos                             | false          | false            | 14                    |
-| e2e.quickstart                        | true           | true             | 14                    |
-| e2e.startup-bench                     | false          | false            | 14                    |
-| performance.benchmark                 | false          | false            | 14                    |
-| quality.coverage-enrollment           | true           | true             | 14                    |
-| quality.mutation                      | false          | false            | 3                     |
-| quality.property                      | true           | true             | 19                    |
-| compatibility.loki                    | false          | true             | 6                     |
-| compatibility.prometheus              | false          | true             | 5                     |
-| compatibility.prometheus-floor        | false          | false            | 4                     |
-| compatibility.prometheus-forced-route | false          | true             | 5                     |
-| chdb.integration-promql               | false          | false            | 1                     |
-| compatibility.promql-surface          | false          | false            | 1                     |
-| e2e.compose-crawl                     | false          | false            | 9                     |
-| e2e.compose-smoke                     | false          | true             | 9                     |
-| e2e.dashboard                         | false          | true             | 8                     |
-| compatibility.tempo                   | false          | true             | 4                     |
+| CI lane                                                     | merge-required | release-required | active bindings bound |
+| ----------------------------------------------------------- | -------------- | ---------------- | --------------------- |
+| ci.forbid-skip                                              | true           | true             | 81                    |
+| ci.lint                                                     | true           | true             | 117                   |
+| compatibility.gate                                          | false          | false            | 104                   |
+| governance.forbid-deferral                                  | true           | true             | 117                   |
+| governance.pr-body                                          | true           | true             | 6                     |
+| security.codeql                                             | true           | true             | 22                    |
+| chdb.perf-guards                                            | false          | true             | 60                    |
+| chdb.probe                                                  | true           | true             | 18                    |
+| chdb.strict-scan                                            | true           | true             | 57                    |
+| ci.agpl-clean                                               | true           | true             | 23                    |
+| ci.check                                                    | true           | true             | 68                    |
+| e2e.chaos                                                   | false          | false            | 26                    |
+| e2e.compose-crawl                                           | false          | false            | 16                    |
+| e2e.compose-smoke                                           | false          | true             | 16                    |
+| e2e.quickstart                                              | true           | true             | 23                    |
+| e2e.startup-bench                                           | false          | false            | 23                    |
+| performance.benchmark                                       | false          | false            | 26                    |
+| performance.profile                                         | false          | true             | 60                    |
+| quality.coverage-enrollment                                 | true           | true             | 23                    |
+| quality.coverage-measured                                   | true           | true             | 98                    |
+| agpl.oracle                                                 | false          | false            | 14                    |
+| e2e.dashboard                                               | false          | true             | 12                    |
+| chdb.roundtrip-promql                                       | false          | true             | 8                     |
+| quality.post-merge-drift                                    | false          | false            | 37                    |
+| chdb.roundtrip-logql                                        | false          | true             | 13                    |
+| chdb.roundtrip-traceql                                      | false          | true             | 10                    |
+| quality.mutation                                            | false          | false            | 3                     |
+| perf-nightly-selfcheck.perf-nightly-selfcheck               | false          | false            | 2                     |
+| perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify | false          | false            | 2                     |
+| perf-nightly.perf-nightly                                   | false          | true             | 2                     |
+| perf-nightly.perf-nightly-health-notify                     | false          | false            | 2                     |
+| perf-nightly.ts-grid-instant-memory                         | false          | true             | 2                     |
+| quality.property                                            | true           | true             | 19                    |
+| compatibility.loki                                          | false          | true             | 6                     |
+| compatibility.prometheus                                    | false          | true             | 5                     |
+| compatibility.prometheus-floor                              | false          | false            | 4                     |
+| compatibility.prometheus-forced-route                       | false          | true             | 5                     |
+| chdb.integration-promql                                     | false          | false            | 1                     |
+| compatibility.promql-surface                                | false          | false            | 1                     |
+| compatibility.tempo                                         | false          | true             | 4                     |
+| e2e.bwc-minio                                               | false          | false            | 3                     |
+| e2e.datashard                                               | false          | false            | 3                     |
+| e2e.datashard-replica-affinity                              | false          | false            | 3                     |
+| e2e.nightly-health-notify                                   | false          | false            | 3                     |
+| migration.e2e                                               | false          | true             | 3                     |
 
 0 active binding(s) resolve to no CI lane from their test_ref alone (expected for non-file-shaped identities such as property-shape IDs): (none).
 
@@ -124,8 +134,8 @@ That query returns, for **TRACEQL-STRUCTURAL-RELATION-SEMANTICS**:
 - **Its count-only limitation** — the property-based verifier(s) bound here
   report only what their own `cannot_detect` documents:
 - divergence in a shape the generator's grammar or dataset pool never draws — each gen/\*.go file documents its own deliberate exclusions / drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)
-- semantic drift against the reference backend's own engine
-- **Its required complements** — verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL` documents required complement(s) `VERIFIER-REFERENCE-DIFFERENTIAL` that no active binding on this contract supplies; verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents required complement(s) `VERIFIER-REFERENCE-DIFFERENTIAL` that no active binding on this contract supplies.
+- semantic drift against the reference backend's own engine / an emit-type mismatch chDB coerces silently (e.g. UInt8/UInt64 -> \*float64) but production clickhouse-go's real strict positional scan rejects with a 502 -- chDB is a coercive, not a strict, oracle for this class, so a green roundtrip here says nothing about whether the identical query strict-scans cleanly; only VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN's real-server evidence can show that
+- **Its required complements** — verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL` documents required complement(s) `VERIFIER-REFERENCE-DIFFERENTIAL` that no active binding on this contract supplies; verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents required complement(s) `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL` that no active binding on this contract supplies.
 
 This is the general shape the whole report follows: every contract card below
 carries the same bound-evidence / observed-evidence / blind-spots /
@@ -205,6 +215,10 @@ A PromQL regex label matcher (=~ / !~), including one on \_\_name\_\_, matches o
 
 - The anchoring fix (anchoredRegexPattern, internal/chsql/builder.go, issue #1741) is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for PromQL only — the mechanism's LogQL/TraceQL correctness is SIGNAL-LABEL-MATCHER-CONSISTENCY's and each head's own contract, not re-proven here.
 - The compat corpus's discriminating case (query-corpus/header.yml item 4, job=~"dem" against a seeded job="demo") is a cerberus-authored addition, not one of the cases copied from the upstream compliance corpus — it discriminates only cerberus's own lowering bug, since reference Prometheus has nothing to diverge on for an already-anchored matcher; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE.
+
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`
 
 ### PROMQL-LABEL-REPLACE-CAPTURE-GROUP-PARTICIPATION
 
@@ -334,6 +348,10 @@ A range vector selector's window is anchored to the evaluation timestamp, not to
 
 - Subquery-nested range vectors are covered by a separate contract, not this one.
 
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`
+
 ### PROMQL-REFERENCE-VERSION-PIN-CORRESPONDENCE
 
 The upstream Prometheus version cerberus's PromQL parser fork is based on (go.mod's github.com/prometheus/prometheus require line, substituted via the zero-patch tsouza/prometheus:cerberus-parser fork) and the real Prometheus server image the compat lane runs (compatibility/prometheus/docker-compose.yml's prom/prometheus: tag) agree at MAJOR.MINOR grain, the grain at which PromQL grammar and evaluation semantics actually change.
@@ -415,7 +433,7 @@ Third-party provenance for a PromQL compatibility test case attaches only to the
 **Complement gaps** (informational — does not change assurance above):
 
 - verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### LOGQL-LABEL-MATCHER-REGEX-ANCHORING
 
@@ -444,6 +462,10 @@ A LogQL stream-selector matcher and a \`| label=~"..."\` label-filter matcher (=
 - The anchoring fix is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for LogQL only — the mechanism's PromQL correctness is PROMQL-LABEL-MATCHER-REGEX-ANCHORING's job and TraceQL's is its own head's, not re-proven here.
 - compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml is a cerberus-authored addition under cerberus-queries/, not part of the vendored loki-bench corpus — see LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE and the compat harness README's third-party-vs-cerberus-owned distinction; this contract's reference evidence discriminates only cerberus's own lowering, since reference Loki has nothing to diverge on for an already-anchored matcher.
 
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`
+
 ### LOGQL-LINE-FILTER-REGEX-SEMANTICS
 
 A LogQL regex line filter (|~) matches using RE2 semantics identical to Loki's, including case-insensitive (?i) and multiline anchors.
@@ -468,7 +490,7 @@ A LogQL regex line filter (|~) matches using RE2 semantics identical to Loki's, 
 
 **Complement gaps** (informational — does not change assurance above):
 
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### LOGQL-ORACLE-PARSER-LEAF-HELPER-BOUNDARY
 
@@ -522,7 +544,7 @@ A LogQL pipeline evaluates its stream-selector matchers first, then its MultiSta
 
 **Complement gaps** (informational — does not change assurance above):
 
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE
 
@@ -615,6 +637,10 @@ LogQL's structured-extraction stages (\`| json\`, \`| logfmt\`, \`| unpack\`, \`
 - Zero property-oracle evidence exists for this entire surface — see this contract's own required\_evidence\_classes, deliberately excluding "property"; LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE's own blind\_spots names the exact two-kind (LineFilterExpr/LabelFmtExpr) ceiling this scope sits below.
 - Most structured-extraction and metric-aggregation TXTAR fixtures are parity\_exempt for the same log-query-answer reason LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY documents; range\_agg\_without\_grouping\_unwrap.txtar (a metric-form, non-log-answer query) is one of the few unwrap fixtures with a real \`-- parity --\` section, so this contract's reference evidence is real but narrow — it does not generalize to every unwrap/range-aggregation shape the spec corpus otherwise pins only via chDB execution.
 
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`
+
 ### LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE
 
 compatibility/loki/upstream-skip-baseline.txt pins the exact set of <suite>/<file>.yaml#<description> corpus entries the VENDORED grafana/loki:pkg/logql/bench snapshot itself marks skip: true (roughly 15 queries: quantile/stddev unwrap aggregations, structured-metadata numeric label filters, a JSON parser regression) — it records what the upstream corpus itself declines to run, not a cerberus-side tolerance list. The driver loads the full corpus every run (includeSkipped=true), partitions it, and fails the run on any drift between the file and the corpus's actual skip: true set in either direction, so a silent upstream flip cannot move the scored boundary unnoticed. It never suppresses a cerberus-vs-reference diff for any query cerberus and the vendored corpus both attempt.
@@ -674,7 +700,7 @@ A scoped attribute reference (\`resource.<key>\` / \`span.<key>\`) reads only it
 **Complement gaps** (informational — does not change assurance above):
 
 - verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### TRACEQL-ORACLE-AUTHORITY-SEPARATION
 
@@ -766,7 +792,7 @@ The randomized TraceQL property sweep (test/property/traceql\_test.go, test/prop
 **Complement gaps** (informational — does not change assurance above):
 
 - verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION
 
@@ -827,7 +853,7 @@ TraceQL's child relation (\`A > B\`) matches only a B span whose immediate Paren
 **Complement gaps** (informational — does not change assurance above):
 
 - verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE
 
@@ -860,7 +886,7 @@ count() and avg|min|max|sum(duration) in a TraceQL pipeline (\`{ ... } | count()
 **Complement gaps** (informational — does not change assurance above):
 
 - verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### TRACEQL-TRANSPORT-ARM-INDEPENDENCE
 
@@ -964,6 +990,33 @@ Each API head owns its own admission budget, drawn from its own semaphore, wired
 - The semaphore-capacity-recovery group and the real-network-connection-teardown-boundary group prove two DIFFERENT resources' recovery on two DIFFERENT substrates, and neither implies the other: the admit package's own semaphore is an in-process integer counter released by a Go defer with no I/O at all (chaos\_test.go's evidence, substrate runner, no chDB and no real ClickHouse), while the pooled ClickHouse connection a request's handler may have held is released — or destroyed — by clickhouse-go's real driver internals against a live TCP session, provable only against a genuine server (conn\_teardown\_integration\_test.go's evidence, substrate real-clickhouse, gated behind the \`integration\` build tag and Docker, run via \`just chclient-integration\`). A request whose admission slot is proven to recover here can still have destroyed its underlying ClickHouse connection, and vice versa; this contract does not claim the two recover together.
 - Admission control caps aggregate concurrency per process per head; it is not tenant fairness. Cerberus reads no tenant header on any serving path and ships no tenant isolation (docs/operations.md 'Security posture': 'Cerberus ships no authentication, no authorization, and no tenant isolation... No tenant header is read'), so a budget exhausted by one caller rejects every other caller on that same head indiscriminately, by design — this contract's per-head/per-budget separation is a concurrency-and-blast-radius boundary between HEADS and TRANSPORTS, never a fairness or isolation boundary between tenants or callers sharing one head.
 
+### SIGNAL-CONSUMER-CORPUS-WIRE-REPLAY-001
+
+A captured, REAL Grafana request shape, replayed against cerberus's in-process HTTP handlers, decodes on the consumer's own terms — strict gogo/protobuf unmarshal into tempopb types for Tempo, bare logproto-shaped JSON for Loki, Prom API envelopes for Prometheus — and a request that survives a route-memo retry decodes identically to one that does not. The corpus is a growing, never-shrinking snapshot (test/consumer-corpus/grafana-<version>/\*.json) of shapes actually observed from Grafana, not a hypothetical or synthetic contract.
+
+- scope: `signal` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
+- related contracts: `ARCH-CH-DATA-SHARD-FANOUT-BOUND-001`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `wire-shape-stub-replay, route-memo-retry-preserves-decode-contract`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **pass**.
+
+- class `execution`: **pass** (BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO, BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB)
+- group `wire-shape-stub-replay`: **pass** (BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB)
+- group `route-memo-retry-preserves-decode-contract`: **pass** (BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO)
+
+| binding                                        | verifier                        | evidence class | independence group                         | test_ref                                                                                                           | observed | CI lane obligations                                                                                                                                                                                                                                |
+| ---------------------------------------------- | ------------------------------- | -------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO | VERIFIER-CONSUMER-CORPUS-REPLAY | execution      | route-memo-retry-preserves-decode-contract | `test/consumer-corpus/route_memo_replay_test.go:TestConsumerCorpus_RouteMemoRetry_PreservesConsumerDecodeContract` | pass     | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB       | VERIFIER-CONSUMER-CORPUS-REPLAY | execution      | wire-shape-stub-replay                     | `test/consumer-corpus/replay_test.go:TestConsumerCorpus_Replay_Stub`                                               | pass     | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+
+**Blind spots:**
+
+- The corpus only ever contains shapes already captured; Layer 9's e2e crawler and drilldown specs are the corpus MINERS, so a Grafana request shape never observed live has no evidence here regardless of how plausible it looks.
+- The stub-backed default lane pins wire shape and status only, with canned rows; the chdb-tagged lane additionally evaluates data predicates over small seeds, but neither lane exercises production-scale cardinality — that is Layer 12's and ARCH-CH-DATA-SHARD-FANOUT-BOUND-001's job, not this one's.
+- A known-unfixed consumer-contract bug stays enrolled as a failing entry, never tolerated or allow-listed (docs/test-strategy.md, Layer 7b) — so a red corpus entry in this contract's own evidence trail is the layer correctly doing its job, not a flake to explain away.
+
 ### SIGNAL-LABEL-MATCHER-CONSISTENCY
 
 A label matcher's equality and regex semantics behave identically across every head that parses one, independent of that head's own query syntax.
@@ -991,7 +1044,35 @@ A label matcher's equality and regex semantics behave identically across every h
 
 **Complement gaps** (informational — does not change assurance above):
 
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
+
+### SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001
+
+After a migration-scenario ingest, cerberus answers the SAME logical telemetry read back over its OWN wire (the Prometheus/Loki/Tempo HTTP APIs) that the pinned reference backends answer read back over THEIR OWN wire for the identical seeded window — each side checked independently against an oracle rebuilt in-process from the archetype's data declaration and the seeder's manifest, never one side diffed directly against the other. A negative control deliberately perturbs one side and asserts the harness reports the disagreement, so a silently broken comparator cannot read as perfect parity. Tier 2 extends this to alert FIRING: a real Grafana-managed external ruler pointed at cerberus must fire the same alert to the same dead-end receiver that query-level parity alone cannot see.
+
+- scope: `signal` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `tier1-substrate-mechanism, tier1-query-parity, tier2-firing-parity`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **unknown**.
+
+- class `execution`: **unknown** (BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY, BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE, BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING)
+- group `tier1-substrate-mechanism`: **unknown** (BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE)
+- group `tier1-query-parity`: **unknown** (BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY)
+- group `tier2-firing-parity`: **unknown** (BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING)
+
+| binding                                       | verifier                         | evidence class | independence group        | test_ref                                                    | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------- | -------------------------------- | -------------- | ------------------------- | ----------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY    | VERIFIER-MIGRATION-TIER-SCENARIO | execution      | tier1-query-parity        | `test/e2e/migration/tier1_parity_test.go:TestTier1Parity`   | unknown  | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.bwc-minio; e2e.chaos; e2e.dashboard (release-required); e2e.datashard; e2e.datashard-replica-affinity; e2e.nightly-health-notify; governance.forbid-deferral (merge-required) (release-required); migration.e2e (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE | VERIFIER-MIGRATION-TIER-SCENARIO | execution      | tier1-substrate-mechanism | `test/e2e/migration/tier1_stack_test.go:TestTier1Substrate` | unknown  | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.bwc-minio; e2e.chaos; e2e.dashboard (release-required); e2e.datashard; e2e.datashard-replica-affinity; e2e.nightly-health-notify; governance.forbid-deferral (merge-required) (release-required); migration.e2e (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING    | VERIFIER-MIGRATION-TIER-SCENARIO | execution      | tier2-firing-parity       | `test/e2e/migration/tier2_ruler_test.go:TestTier2Substrate` | unknown  | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.bwc-minio; e2e.chaos; e2e.dashboard (release-required); e2e.datashard; e2e.datashard-replica-affinity; e2e.nightly-health-notify; governance.forbid-deferral (merge-required) (release-required); migration.e2e (release-required); quality.coverage-measured (merge-required) (release-required) |
+
+**Blind spots:**
+
+- Layer 14 is a WORKFLOW lane, not a code lane: a lowering or emitter bug only surfaces here if one of the eight seeded archetypes happens to shape a query into it, and it surfaces as an opaque parity diff rather than a located defect — Layers 1-13 own locating it, not this contract.
+- Customer topologies beyond the eight seeded archetypes, and the scope limits docs/migration-testing.md section 6.4 records, are out of scope by construction.
+- This lane carries no pull\_request: trigger and no entry in the live main-branch ruleset (main\_posture is not required on an ordinary PR) — but it IS a required RELEASE gate: release.yml's RELEASE\_REQUIRED\_CHECKS names migration-e2e, so nothing publishes until it posts green on the shipping commit. The two postures are genuinely different authorities (test/semantic's own lane adapter exists specifically to keep them from being conflated); this contract's evidence is release-gated, never PR-merge-gated, and calling the lane flatly 'informational' without that qualification understates its actual release-blocking weight.
 
 ### SIGNAL-RESOURCE-001
 
@@ -1084,7 +1165,152 @@ Predicate-evaluation authority belongs to the head that parsed it: a PromQL/LogQ
 
 **Complement gaps** (informational — does not change assurance above):
 
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
+
+### ARCH-CH-CIRCUIT-BREAKER-RESILIENCE-001
+
+The shared CH circuit breaker shields every head from amplifying a transient ClickHouse outage into a request storm: it opens after N consecutive failures inside its window, fast-fails while open, probes exactly once during HALF-OPEN even under concurrent callers, and closes again on a successful probe. This state-machine logic is proven deterministically against a fault-injecting fake driver.Conn; the SAME contract is proven again against a REAL ClickHouse outage (a genuine k3d pod-kill) end to end, including the documented 502-then-503 rejection ordering and /readyz reporting circuit in its body while /healthz stays unaffected.
+
+- scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
+- related contracts: `ARCH-CH-DATA-SHARD-FANOUT-BOUND-001`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `breaker-deterministic-state-machine, breaker-live-fault-corroboration`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **unknown**.
+
+- class `execution`: **pass** (BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT, BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE)
+- group `breaker-deterministic-state-machine`: **pass** (BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE)
+- group `breaker-live-fault-corroboration`: **unknown** (BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT)
+
+| binding                                       | verifier                               | evidence class | independence group                  | test_ref                                                                             | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------- | -------------------------------------- | -------------- | ----------------------------------- | ------------------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT    | VERIFIER-LIVE-STACK-CHAOS-INJECTION    | execution      | breaker-live-fault-corroboration    | `.github/scripts/chaos-run.mjs#ch-pod-kill`                                          | unknown  | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); governance.pr-body (merge-required) (release-required)                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE | VERIFIER-DETERMINISTIC-CHAOS-INJECTION | execution      | breaker-deterministic-state-machine | `internal/chclient/breaker_chaos_test.go:TestBreaker_OpensAfterNConsecutiveFailures` | pass     | chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+
+**Blind spots:**
+
+- The deterministic evidence exercises the breaker's Client surface directly against a fake driver.Conn; it proves the state machine's own transition logic, never whether a real deployment's actual failure timing (dial latency, TCP RST versus timeout) trips the SAME thresholds the same way.
+- The live-stack evidence gates the network-partition scenario on a runtime kube-router-enforcement probe: when the pinned k3d image is not actually enforcing NetworkPolicy, that scenario records not-applicable rather than a vacuous pass, and the breaker contract is covered by the pod-kill scenario instead for that run — a single green run does not by itself distinguish a genuinely-not-applicable precondition from one that has permanently stopped materialising; only the separate weekly chaos-not-applicable-rate audit resolves that ambiguity.
+- Live-stack chaos is informational only (push-to-main + nightly + manual dispatch, never a PR gate, never in release.yml's RELEASE\_REQUIRED\_CHECKS) — a red run here never blocks a merge or a release, even though a red run is a real failure to fix, never a tolerated one (docs/test-strategy.md's own 'informational does not mean tolerated' framing).
+
+### ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001
+
+A handler holding a streaming ClickHouse cursor owns closing it through chclient.CloseCursor before cancelling that query's own context — never the reverse — and that close completes within chclient.CursorDrainBudget regardless of how much of the result set went unread. Closing before cancelling is what lets clickhouse-go release the pooled connection back to the idle pool instead of destroying the socket outright; bounding the drain is what stops a client that walks away mid-stream from pinning a pool slot for as long as ClickHouse takes to finish streaming an abandoned result set.
+
+- scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
+- related contracts: `SIGNAL-ADMISSION-001`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `prom-seam-close-before-cancel-order, prom-seam-bounded-drain, real-network-connection-recovery`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **pass**.
+
+- class `execution`: **pass** (BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY, BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND, BINDING-ARCH-CURSOR-TEARDOWN-PROM-ORDER)
+- group `prom-seam-close-before-cancel-order`: **pass** (BINDING-ARCH-CURSOR-TEARDOWN-PROM-ORDER)
+- group `prom-seam-bounded-drain`: **pass** (BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND)
+- group `real-network-connection-recovery`: **pass** (BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY)
+
+| binding                                  | verifier                                   | evidence class | independence group                  | test_ref                                                                                         | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------- | ------------------------------------------ | -------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY | VERIFIER-REAL-CLICKHOUSE-INTEGRATION       | execution      | real-network-connection-recovery    | `internal/chclient/conn_teardown_integration_test.go:TestCursorTeardown_ReturnsConnectionToPool` | pass     | chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND  | VERIFIER-DETERMINISTIC-TEARDOWN-ORDER-TEST | execution      | prom-seam-bounded-drain             | `test/regression/cursor_teardown_order_test.go:TestPromRangeCursorTeardownIsBounded`             | pass     | agpl.oracle; ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)                                                                                                                                                                                                                                                                                                                                                                                                         |
+| BINDING-ARCH-CURSOR-TEARDOWN-PROM-ORDER  | VERIFIER-DETERMINISTIC-TEARDOWN-ORDER-TEST | execution      | prom-seam-close-before-cancel-order | `test/regression/cursor_teardown_order_test.go:TestPromRangeCursorClosedBeforeContextCancel`     | pass     | agpl.oracle; ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+**Blind spots:**
+
+- Only the prom /api/v1/query\_range seam has a dedicated deterministic ordering/bound regression today; loki and tempo compose the identical chclient.CloseCursor mechanism through their own handlers but carry no seam-specific regression test of their own — docs/test-strategy.md's own Layer 6f row names this exact gap ('which callers use the contract').
+- The deterministic ordering and drain-bound tests (test/regression/cursor\_teardown\_order\_test.go) run against a fake cursor; they prove the HANDLER's own call order and timeout, never whether a real pooled connection is actually returned or destroyed by that order — only conn\_teardown\_integration\_test.go's real-server evidence proves that consequence, and it proves it directly at the chclient API boundary, not through any HTTP seam, so it says nothing about which CALLERS get the order right.
+- The real-network evidence pins max\_block\_size so the result streams past the driver's block-buffer depth; with a single block the driver's own teardown branch is a coin flip and the two arms stop diverging (docs/test-strategy.md, Layer 6f) — a future change to that pinned setting could silently make the differential vacuous without failing outright.
+
+### ARCH-CH-DATA-SHARD-FANOUT-BOUND-001
+
+internal/chclient's data-shard fan-out gate bounds how many concurrent ClickHouse dispatches one query may hold open at once, sized once from Config.DataShardCount (or an explicit multiplier override) and shared by every dispatch path — QueryCursor, QueryStrings, QueryOpen — that composes it. DataShardCount<=1, the value of every deployment that predates this field, allocates no semaphore at all; a cancelled dispatch issues KILL QUERY before releasing its slot so the abandoned query actually stops consuming server resources instead of merely freeing local bookkeeping; that release is idempotent; and a gate denial is breaker-neutral, never itself tripping the CH circuit breaker.
+
+- scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
+- related contracts: `ARCH-CH-CIRCUIT-BREAKER-RESILIENCE-001`, `ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `gate-allocation-floor, gate-concurrency-cap, gate-cancel-kill-ordering, gate-denial-breaker-neutral`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **pass**.
+
+- class `execution`: **pass** (BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR, BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER, BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP, BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL)
+- group `gate-allocation-floor`: **pass** (BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR)
+- group `gate-concurrency-cap`: **pass** (BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP)
+- group `gate-cancel-kill-ordering`: **pass** (BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER)
+- group `gate-denial-breaker-neutral`: **pass** (BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL)
+
+| binding                                          | verifier                            | evidence class | independence group          | test_ref                                                                                                          | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------ | ----------------------------------- | -------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR       | VERIFIER-RESOURCE-FANOUT-BOUND-TEST | execution      | gate-allocation-floor       | `internal/chclient/fanout_gate_test.go:TestNewDataShardFanoutGate_DataShardCountLE1_NeverAllocates`               | pass     | chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER      | VERIFIER-RESOURCE-FANOUT-BOUND-TEST | execution      | gate-cancel-kill-ordering   | `internal/chclient/fanout_gate_test.go:TestAcquireDataShardFanout_CancelledDispatch_IssuesKillQueryBeforeRelease` | pass     | chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP        | VERIFIER-RESOURCE-FANOUT-BOUND-TEST | execution      | gate-concurrency-cap        | `internal/chclient/fanout_gate_test.go:TestQueryOpen_ConcurrentDataShardFanout_NeverExceedsCap`                   | pass     | chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL | VERIFIER-RESOURCE-FANOUT-BOUND-TEST | execution      | gate-denial-breaker-neutral | `internal/chclient/fanout_gate_test.go:TestQueryCursor_DataShardFanoutGate_DeniedIsBreakerNeutral`                | pass     | chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+
+**Blind spots:**
+
+- Every assertion here runs against a fake driver.Conn; whether a REAL ClickHouse server actually honors the issued KILL QUERY and frees its own resources promptly is unproven — no real-clickhouse-substrate binding exists for this specific claim today (tracked as cerberus issue #3489, filed rather than silently widened into an existing binding's claim).
+- This is a DIFFERENT fan-out axis from Layer 12's SQL-plan compute fan-out (peak intermediate rows versus leaf scan rows inside one dispatch, ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001's own claim): this contract bounds concurrent DISPATCH COUNT to ClickHouse, Layer 12 bounds ROW CARDINALITY inside one dispatch. A deployment can satisfy one while violating the other.
+- DataShardCount>1 with a custom multiplier is a configuration surface no deployment currently ships in production (cerberus issue #3081/#3128's own 'zero behavior change' framing); the concurrency-cap and multiplier-scaling evidence is exercised only synthetically, never against a real multi-shard ClickHouse cluster.
+
+### ARCH-CH-STRICT-SCAN-DIFFERENTIAL-001
+
+Every type/schema-coercion, offline-corpus write+read, and query\_log/enum-reconciliation seam chDB's looser decode cannot exercise is re-verified against a REAL ClickHouse server through the production clickhouse-go strict-scan client path: an emit-type mismatch chDB coerces silently but production strict-scans and 502s on, a system.query\_log.type predicate ClickHouse would otherwise silently coerce to String and match nothing, and a deployed exit\_status Enum8 narrower than the member set the binary writes, which a no-op CREATE TABLE IF NOT EXISTS leaves invisible until a real insert rejects it.
+
+- scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `corpus-decode-differential, query-log-exit-status-enum-reconciliation`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **pass**.
+
+- class `execution`: **pass** (BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL, BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION)
+- group `corpus-decode-differential`: **pass** (BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL)
+- group `query-log-exit-status-enum-reconciliation`: **pass** (BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION)
+
+| binding                                      | verifier                             | evidence class | independence group                        | test_ref                                                                                          | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------- | ------------------------------------ | -------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL | VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN | execution      | corpus-decode-differential                | `test/spec/strictscan_integration_test.go:TestStrictScanDifferential`                             | pass     | chdb.perf-guards (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                |
+| BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION | VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN | execution      | query-log-exit-status-enum-reconciliation | `internal/optcorpus/enummigrate_realch_integration_test.go:TestCorpusEnumMigrationRealClickHouse` | pass     | chdb.perf-guards (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+
+**Blind spots:**
+
+- Tempo search-row decoders have no strict-scan recipe of their own yet (cerberus issue #1635, which has a hidden pipeline stage to reproduce) — this contract's coverage of the Tempo head is narrower than its universal applicable\_heads scope might suggest.
+- This contract catches TYPE/SCHEMA coercion divergence only; a row that scans successfully but carries the WRONG value is Layer 6a-c's (chDB roundtrip) job, never this one's — a green strict-scan result says nothing about row-level correctness.
+- strict-scan's real-CH evidence rides the required strict-scan CI lane exclusively; it needs testcontainers and Docker, so — per CLAUDE.md invariant 5 — a red result is reproduced by reading the CI log for the exact rule/assertion, never chased with a local speculative pre-flight run.
+
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN` documents complement(s) not in active use here: `VERIFIER-OPTIMIZER-PROPERTY-EQUIVALENCE`, `VERIFIER-REFERENCE-DIFFERENTIAL`, `VERIFIER-SPEC-FIXTURE-ROUNDTRIP`
+
+### ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001
+
+Cerberus holds its compute fan-factor — peak intermediate rows over leaf scan rows — flat as the query corpus grows: a static lint rejects a structurally-unbounded shape (an unbounded CrossJoin, an arrayJoin feeding a JOIN, an uncapped WITH RECURSIVE, a correlated subquery) on every corpus fixture's lowered plan and emitted SQL with no chDB execution at all, and a chDB-executed ratchet separately pins each fixture's measured fan factor, structural flags, and recursion depth against a committed baseline (test/perf/cardinality-baseline/<head>/<name>.json, scale-wall-baseline.json), raise-only.
+
+- scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
+- related contracts: `ARCH-CH-DATA-SHARD-FANOUT-BOUND-001`
+
+**Bound evidence** (structural — assured: **true**): required classes `static-analysis, execution`, required independence groups `static-fanout-lint, cardinality-scale-wall-ratchet`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **pass**.
+
+- class `static-analysis`: **pass** (BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT)
+- class `execution`: **pass** (BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET)
+- group `static-fanout-lint`: **pass** (BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT)
+- group `cardinality-scale-wall-ratchet`: **pass** (BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET)
+
+| binding                                         | verifier                            | evidence class  | independence group             | test_ref                                                               | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------------------------- | ----------------------------------- | --------------- | ------------------------------ | ---------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET | VERIFIER-CARDINALITY-FANOUT-RATCHET | execution       | cardinality-scale-wall-ratchet | `test/perf/cardinality_ratchet_test.go:TestCardinalityRatchet`         | pass     | chdb.perf-guards (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                             |
+| BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT         | VERIFIER-STATIC-INVARIANT-SCAN      | static-analysis | static-fanout-lint             | `internal/perf/fanout/lint_test.go:TestRule1_UnboundedCrossJoin_Trips` | pass     | chdb.perf-guards (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+
+**Blind spots:**
+
+- The static lint and the ratchet each cover only their OWN corpus/fixture set; a construct with no lint rule and no recorded baseline fixture is invisible to both — the corpus-wide nightly test/perf/profile profiler is the wide net for that residual class, and it is release-required (release.yml's RELEASE\_REQUIRED\_CHECKS names \`profile\`) but absent from the live main-branch PR ruleset, so an ordinary PR can merge without it having run even once.
+- test/perf/scale\_wall\_pin\_chdb\_test.go and test/perf/solver\_decision\_ratchet\_test.go pin two adjacent but DISTINCT claims riding the same perf-guards job — recursion-depth/structural-flag equality and route A/B classification stability respectively — a pass on the cardinality ratchet alone is not evidence for either.
+- This bounds ROW CARDINALITY inside one dispatch; it is a different axis from ARCH-CH-DATA-SHARD-FANOUT-BOUND-001's concurrent-DISPATCH-COUNT bound at the ClickHouse-driver level — a fixture can satisfy one while violating the other.
 
 ### ARCH-HEAD-EMIT-001
 
@@ -1114,7 +1340,7 @@ internal/chsql's typed-Frag emission (CLAUDE.md invariant 10) preserves the opti
 
 **Complement gaps** (informational — does not change assurance above):
 
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### ARCH-HEAD-LOWER-001
 
@@ -1146,7 +1372,7 @@ Each head's lowering step — internal/promql/lower.go, internal/logql/lower.go,
 
 **Complement gaps** (informational — does not change assurance above):
 
-- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### ARCH-HEAD-OPTIMIZE-001
 
@@ -1176,6 +1402,10 @@ internal/optimizer's rewrites never change a query's observable outcome: every r
 - internal/optimizer/termination\_test.go pins idempotence and convergence PER RULE; it does not itself assert that a rewrite preserves the query's answer, only that repeated application stabilizes — a rule could converge to a stable but wrong rewrite and this binding alone would not catch it.
 - The optimized/unoptimized SQL and chplan pairs (test/spec/optimizer, and the sql\_optimized/chplan sections every promql/logql/traceql fixture also carries) are TEXT-EQUALITY snapshots: they pin the exact rewrite shape for the fixtures that exist, but two SQL strings that differ yet are semantically equivalent under ClickHouse's real execution would show as an unrelated-looking diff here, not a false pass — and a byte-identical pair alone proves nothing about the two statements' actual result rows without chDB execution.
 - internal/optimizer/property\_test.go's generator grammar is narrow (Scan/Filter/Project plus a small predicate language over one seed table) per its own doc comment; internal/optimizer/property\_coverage\_test.go's uncoveredOptimizerKinds ledger names exactly which chplan node kinds (NestedSetAnnotate, StructuralJoin, TopK, VectorJoin at last count) the property never round-trips and why — those kinds' optimizer treatment relies on the TXTAR structural pair and reviewer discipline alone, not property-based semantic proof.
+
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-OPTIMIZER-PROPERTY-EQUIVALENCE` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`
 
 ### ARCH-HEAD-WIRE-001
 
@@ -1310,6 +1540,33 @@ No package under internal/\*\* uses unsafe.Pointer or reflect.Value.FieldByName 
 - This repo's own operating record shows a plain golangci-lint invocation from an agent worktree can report "No issues found" WITHOUT actually analysing (a poisoned or cross-worktree-polluted cache, or a run against the wrong build-tag set) — a local green run is not evidence this contract holds; only a real CI \`lint\` job run is, per CLAUDE.md invariant 5's own three CI-only lanes.
 - The rule fires only inside internal/\*\*, inverted via \`path-except\` in .golangci.yml's exclusions; a package genuinely needing one of these patterns outside internal/\*\* (there is none today) would ship unreviewed by this gate.
 
+### ARCH-PERF-BASELINE-MEASURED-EVIDENCE-001
+
+test/perf/nightly's real-ClickHouse nightly gate measures each pinned sentinel's max-of-5 peak memory (and its expected HTTP outcome) against a committed baseline plus an absolute cap-relative ceiling, for the EXACT sentinel shapes and the EXACT ClickHouse/cerberus version combination pinned at measurement time. A green result is MEASURED evidence that this specific combination did not regress past the committed threshold; it is never a semantic proof that the underlying mechanism is bounded for a sentinel shape, data volume, or ClickHouse version the baseline has not itself measured — a new shape needs its own sentinel, and a version bump needs its own re-measurement, before either can claim this contract's coverage. The baseline's own two-prong (calibration vs absolute-ceiling) scheme is kept from silently going slack by a separate, deterministic structural pin: prong B (the absolute ceiling) is asserted to never be looser than prong A (the calibrated baseline) for the same measurement.
+
+- scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
+- related contracts: `SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `nightly-real-ch-memory-gate, baseline-prong-ordering-invariant`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **unknown**.
+
+- class `execution`: **pass** (BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE, BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING)
+- group `nightly-real-ch-memory-gate`: **unknown** (BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE)
+- group `baseline-prong-ordering-invariant`: **pass** (BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING)
+
+| binding                                   | verifier                          | evidence class | independence group                | test_ref                                                                               | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------- | --------------------------------- | -------------- | --------------------------------- | -------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE   | VERIFIER-PERF-BASELINE-REGRESSION | execution      | nightly-real-ch-memory-gate       | `test/perf/nightly/realch_perfnightly_integration_test.go:TestPerfNightlyRealCH`       | unknown  | chdb.perf-guards (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); perf-nightly-selfcheck.perf-nightly-selfcheck; perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify; perf-nightly.perf-nightly (release-required); perf-nightly.perf-nightly-health-notify; perf-nightly.ts-grid-instant-memory (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING | VERIFIER-GO-UNIT-TEST             | execution      | baseline-prong-ordering-invariant | `test/perf/nightly/baseline_test.go:TestNightlyBaseline_ProngBIsNeverLooserThanProngA` | pass     | chdb.perf-guards (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); perf-nightly-selfcheck.perf-nightly-selfcheck; perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify; perf-nightly.perf-nightly (release-required); perf-nightly.perf-nightly-health-notify; perf-nightly.ts-grid-instant-memory (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+
+**Blind spots:**
+
+- Wall-clock regressions are explicitly out of scope for this contract: those are performance.benchmark's (benchstat, manual dispatch) job, and that lane's release\_posture is advisory even at release — release.yml's RELEASE\_REQUIRED\_CHECKS does not name it, unlike perf-nightly.
+- perf-nightly carries no pull\_request: trigger and no live main-ruleset entry — but release.yml's RELEASE\_REQUIRED\_CHECKS DOES name perf-nightly, so, like migration-e2e, its actual release-blocking weight is stronger than a flat 'nightly-only' description would suggest; this contract's evidence is release-gated, not PR-merge-gated.
+- A sentinel's calibrated bound is only as good as the calibration measurement that produced it; TestNightlyBaseline\_CalibrationMeasurementPassesBothProngs pins that the calibration run itself clears both prongs, but neither prong test detects a calibration measurement taken against a since-drifted production sample shape.
+
 ### ARCH-REGENERATED-ARTIFACTS-ONLY
 
 Every generated artefact family (the test/spec/ TXTAR goldens, the solver decision baseline, the parity ledgers, the cardinality baseline, the coverage-floor ledger, and their siblings) is rewritten only by its \`just update-golden <shard>\` recipe (or, for the coverage floor, \`just update-coverage-floor\`), never hand-edited. \`just update-golden\` refuses to run against a shard set narrower than the current diff implies, and every generated path is marked \`-merge\` in .gitattributes so a three-way line merge conflicts loudly instead of silently blending records.
@@ -1336,6 +1593,43 @@ Every generated artefact family (the test/spec/ TXTAR goldens, the solver decisi
 - TestNoGeneratedArtifactEscapesTheMergeGate and TestGeneratedArtifactsRefuseLineMerge (test/regression/generated\_artifact\_merge\_gate\_test.go) pin that every glob under generated territory carries -merge or a documented handAuthoredMarker exemption; they detect a MISSING -merge marking, not a hand-edited value that still parses and still carries a plausible shape — exactly the PR #1422 failure mode: JSON that blended cleanly, parsed, and was silently wrong.
 - post-merge-drift.yml re-regenerates and diffs the tree-wide-derived artefacts (the parity ledgers, the cardinality baseline, the solver decision baseline) against what landed on main, but only AFTER a merge — it is deliberately not a required, PR-blocking check (there is no PR left to block by the time it runs), so any drift it catches has already reached main.
 - A new generated artefact family that forgets to add its glob to .gitattributes' -merge list, or forgets to register its regeneration in golden-shards.mjs's coverage derivation, is not caught by any binding here — that registration is reviewer discipline at the time the new family is introduced.
+
+### ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001
+
+Every goroutine a request's own handling spawns terminates by the time that request finishes — on the happy path, an error return, a concurrent-request burst, a route-memo retry, and a handler panic alike — and a handler panic still runs its deferred cleanup (releasing an already-acquired admission slot) rather than crashing the process. Proven deterministically, in-process, against a stubbed querier by injecting exactly these fault shapes and asserting goleak.VerifyNone finds no leaked goroutine and no admission slot is left held.
+
+- scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
+- related contracts: `ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001`, `SIGNAL-ADMISSION-001`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `goroutine-leak-normal-request, goroutine-leak-error-path, goroutine-leak-concurrent-path, goroutine-leak-route-memo-retry, panic-recovery-releases-admission-slot`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **pass**.
+
+- class `execution`: **pass** (BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT, BINDING-ARCH-CANCELLATION-CLEANUP-ERROR, BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL, BINDING-ARCH-CANCELLATION-CLEANUP-PANIC, BINDING-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO)
+- group `goroutine-leak-normal-request`: **pass** (BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL)
+- group `goroutine-leak-error-path`: **pass** (BINDING-ARCH-CANCELLATION-CLEANUP-ERROR)
+- group `goroutine-leak-concurrent-path`: **pass** (BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT)
+- group `goroutine-leak-route-memo-retry`: **pass** (BINDING-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO)
+- group `panic-recovery-releases-admission-slot`: **pass** (BINDING-ARCH-CANCELLATION-CLEANUP-PANIC)
+
+| binding                                      | verifier                               | evidence class | independence group                     | test_ref                                                                              | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------------- | -------------------------------------- | -------------- | -------------------------------------- | ------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT | VERIFIER-DETERMINISTIC-CHAOS-INJECTION | execution      | goroutine-leak-concurrent-path         | `test/regression/goleak_test.go:TestNoGoroutineLeak_ConcurrentRequests`               | pass     | agpl.oracle; ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| BINDING-ARCH-CANCELLATION-CLEANUP-ERROR      | VERIFIER-DETERMINISTIC-CHAOS-INJECTION | execution      | goroutine-leak-error-path              | `test/regression/goleak_test.go:TestNoGoroutineLeak_UnderError`                       | pass     | agpl.oracle; ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL     | VERIFIER-DETERMINISTIC-CHAOS-INJECTION | execution      | goroutine-leak-normal-request          | `test/regression/goleak_test.go:TestNoGoroutineLeak_PromQuery`                        | pass     | agpl.oracle; ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| BINDING-ARCH-CANCELLATION-CLEANUP-PANIC      | VERIFIER-GO-UNIT-TEST                  | execution      | panic-recovery-releases-admission-slot | `internal/api/admit/chaos_test.go:TestAdmit_MiddlewareUnderHandlerPanic_ReleasesSlot` | pass     | chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; governance.forbid-deferral (merge-required) (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO | VERIFIER-DETERMINISTIC-CHAOS-INJECTION | execution      | goroutine-leak-route-memo-retry        | `test/regression/goleak_test.go:TestNoGoroutineLeak_RouteMemo`                        | pass     | agpl.oracle; ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+
+**Blind spots:**
+
+- goleak's own ignore-list (opts, test/regression/goleak\_test.go) excludes known persistent runtime goroutines such as Go's HTTP idle-connection cleaner; a leak that happens to match one of those signatures is not caught.
+- This contract proves absence of a LEAKED GOROUTINE, never absence of a leaked non-goroutine resource — a held ClickHouse connection is ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001's claim, not this one's.
+- All evidence here runs against a stubbed querier, deterministic and in-process; Layer 13's live-stack chaos only passively corroborates process-level recovery after a real fault storm (all three heads 200, no lingering 5xx) as an end-of-run health gate, never as a dedicated per-goroutine scenario — docs/test-strategy.md's own Layer 13 'Handler panic' bullet says so explicitly.
+
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-DETERMINISTIC-CHAOS-INJECTION` documents complement(s) not in active use here: `VERIFIER-LIVE-STACK-CHAOS-INJECTION`
 
 ### ARCH-TYPED-SQL-ONLY
 
