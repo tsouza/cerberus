@@ -656,6 +656,7 @@ jobs:
       - name: Validate the semantic contract metadata model
         run: |
           node --test .github/scripts/semantic-model.test.mjs
+          node --test .github/scripts/semantic-counterexamples.test.mjs
           just semantic-check
       - name: Validate the semantic lane adapter against the checked-in policy snapshot
         run: |

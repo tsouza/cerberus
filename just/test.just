@@ -63,9 +63,14 @@ vet-tagged:
 # schema, ID uniqueness, cross-references, inheritance/replacement cycles,
 # and evidence assurance (issue #3426). The loader/validator itself lives in
 # .github/scripts/lib/semantic-model.mjs so downstream catalog work can
-# import it directly instead of re-parsing the files.
+# import it directly instead of re-parsing the files. Also validates
+# test/semantic/counterexamples/*.json (issue #3445), the bounded cohort of
+# already-fixed historical bugs joined to their contract(s), discovery
+# mechanism, and current replay owner — schema, contract/binding
+# cross-references against the same model, and locator/replay-test path
+# existence on disk, via .github/scripts/lib/semantic-counterexamples.mjs.
 
-# Validate the semantic contract metadata model under test/semantic/.
+# Validate the semantic contract metadata model under test/semantic/ (and its counterexample records).
 semantic-check:
     node .github/scripts/semantic-model.mjs
 

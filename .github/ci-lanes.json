@@ -668,7 +668,8 @@
         ".github/scripts/semantic-*.mjs",
         "docs/semantic-conformance.json",
         "docs/semantic-conformance.md",
-        "test/semantic/*.json"
+        "test/semantic/*.json",
+        "test/semantic/counterexamples/*.json"
       ],
       "substrate": "runner",
       "risk_domains": ["ci", "governance", "semantic-conformance"],
