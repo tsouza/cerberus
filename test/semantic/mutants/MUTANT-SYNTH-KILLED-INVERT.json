@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-SYNTH-KILLED-INVERT",
+  "title": "ClampUpper's upper-bound comparison is inverted",
+  "synthetic": true,
+  "synthetic_rationale": "Exercises the runner's ordinary killed path end-to-end: a real behavioral change the fixture's own detector distinguishes. Not a per-head query mutation \u2014 those arrive in #3449-#3451 once this runner exists.",
+  "violated_contracts": [
+    "SYNTHETIC-CLAMP-UPPER-BOUND"
+  ],
+  "transformation": {
+    "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
+    "patch_path": "test/semantic/mutants/patches/killed-invert.patch",
+    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
+    "expected_mutated_fingerprint": "8f2155010033f16f00e0a9d48821ec4f049e5ea33064c250bb947ee4f9eada01"
+  },
+  "detectors": [
+    {
+      "id": "clamp-upper-inversion",
+      "package": "./test/semantic/mutants/testdata/fixtures",
+      "test_run": "^TestClampUpperCatchesInversion$",
+      "build_tags": [],
+      "timeout_seconds": 15
+    }
+  ],
+  "expected_detection": "killed",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": false,
+    "memory_max": "1GiB",
+    "memory_hold": "1s"
+  },
+  "notes": null
+}

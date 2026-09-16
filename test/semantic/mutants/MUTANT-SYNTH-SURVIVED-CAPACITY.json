@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-SYNTH-SURVIVED-CAPACITY",
+  "title": "PreallocCapacity drops its +1 growth headroom term",
+  "synthetic": true,
+  "synthetic_rationale": "Exercises the runner's survived path with a real, honest test gap: the fixture's detector only asserts a lower bound, so it cannot see the dropped headroom term. Not a per-head query mutation.",
+  "violated_contracts": [
+    "SYNTHETIC-PREALLOC-HEADROOM"
+  ],
+  "transformation": {
+    "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
+    "patch_path": "test/semantic/mutants/patches/survived-capacity.patch",
+    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
+    "expected_mutated_fingerprint": "7fd79fc16b3f082fdcb0cfa1e8aa41fa37f79bb3503629b0de59c4f0566b17a8"
+  },
+  "detectors": [
+    {
+      "id": "prealloc-capacity-lower-bound",
+      "package": "./test/semantic/mutants/testdata/fixtures",
+      "test_run": "^TestPreallocCapacityAtLeastN$",
+      "build_tags": [],
+      "timeout_seconds": 15
+    }
+  ],
+  "expected_detection": "survived",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": false,
+    "memory_max": "1GiB",
+    "memory_hold": "1s"
+  },
+  "notes": "Documents a genuine detector weakness (headroom is unchecked), not a runner defect. A future strengthened detector should assert the exact capacity, at which point this record's expected_detection becomes killed."
+}

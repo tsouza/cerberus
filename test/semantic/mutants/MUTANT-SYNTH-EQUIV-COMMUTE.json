@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-SYNTH-EQUIV-COMMUTE",
+  "title": "CommutativeSum's operand order is swapped",
+  "synthetic": true,
+  "synthetic_rationale": "Exercises the runner's equivalent-reviewed path: a mutation that survives AND has an audited, fingerprint-tied equivalence review, so the runner must reclassify it away from a bare survivor. Not a per-head query mutation.",
+  "violated_contracts": [
+    "SYNTHETIC-COMMUTATIVE-OPERAND-ORDER"
+  ],
+  "transformation": {
+    "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
+    "patch_path": "test/semantic/mutants/patches/equiv-commute.patch",
+    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
+    "expected_mutated_fingerprint": "6f44822ba1dc2c387fe5726bef558791eb6b0ae392a0d2d0f73906924c4bb907"
+  },
+  "detectors": [
+    {
+      "id": "commutative-sum-operand-order",
+      "package": "./test/semantic/mutants/testdata/fixtures",
+      "test_run": "^TestCommutativeSumMatchesOperandOrder$",
+      "build_tags": [],
+      "timeout_seconds": 15
+    }
+  ],
+  "expected_detection": "equivalent-reviewed",
+  "equivalence_review": {
+    "reviewer": "cerberus-core",
+    "reviewed_at": "2026-09-16T00:00:00Z",
+    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
+    "rationale": "a+b and b+a are byte-for-byte identical under Go's two's-complement int addition for every pair of inputs: addition is commutative and neither operand order can overflow differently. No test can distinguish them because there is nothing to distinguish. Hand-verified against Go's spec (arithmetic operators), not merely asserted."
+  },
+  "isolation": {
+    "requires_chdb": false,
+    "memory_max": "1GiB",
+    "memory_hold": "1s"
+  },
+  "notes": "The equivalence_review.source_fingerprint must equal transformation.source_fingerprint; if arith.go changes, this review goes stale and the runner falls back to reporting a bare survived until re-reviewed."
+}

@@ -555,6 +555,135 @@ into a multi-minute integration test; it verifies that mechanism routes
 correctly and leaves running it to a developer's own
 `just semantic-replay <id>`.
 
+## Semantic mutation runner
+
+`test/semantic/mutants/*.json` (issue #3448, unblocked by spike #3447) is a
+mutant record: one hand-authored, contract-linked source transformation,
+paired with the detector(s) that should catch it, the isolation it needs,
+and — for a mutant the author has hand-reviewed and judged equivalent — an
+audited review tied to the exact source it reviewed. Unlike the gremlins
+lane's automatic operator sweep (`mutate` / `mutate-chdb`, `just/mutation.just`,
+neither of which this module reads, writes, or otherwise touches), a mutant
+record here names one specific, reviewable mutation as a unified diff — the
+format #3447's spike settled on precisely because it is also what lets a
+mutant be reviewed and versioned like a #3445 counterexample record — never a
+bulk-generated AST edit. This issue's own scope is the RUNNER, record
+validation, and synthetic self-tests; real per-head query-language mutants
+arrive in #3449-#3451 once this runner exists, and every record currently
+committed carries `synthetic: true` for exactly that reason. Its target,
+`test/semantic/mutants/testdata/fixtures/` — never imported by production
+code — sits under a `testdata/` path component deliberately: Go's own
+tooling ignores that component in every `...` wildcard (`go build ./...`,
+`go vet ./...`, the coverage-floor ledger, `go list ./...`), so this
+synthetic package never needs a `test/coverage-floor/` entry the way a real
+package would, while `go test ./.../testdata/fixtures` — exactly how every
+detector invokes it — still works fine given an explicit path. #3520 tracks
+a validator rule still owed before #3449 lands: nothing here yet stops a
+future NON-synthetic record from declaring `expected_detection: "survived"`
+and passing on a real, live, undetected bug — the synthetic
+`MUTANT-SYNTH-SURVIVED-CAPACITY` record correctly does exactly that today
+only because it is a self-test of the runner's own survived path, not a
+claim about production code.
+
+`lib/semantic-mutation.mjs` is the Node-builtins-only loader/validator
+(`validateMutantRecord()` / `loadMutants()`, reusing `lib/semantic-model.mjs`'s
+own schema primitives — including the shared `existingPathValue()` that
+`lib/semantic-counterexamples.mjs` also imports from there now, rather than
+each keeping its own copy) plus the execution engine implementing the
+protocol #3447's spike approved: apply the mutant's patch to a scratch copy
+of its target file and point `go test -overlay` at the swap — never a
+disposable worktree, never a write to this checkout. `applyTransformation()`
+fails closed in three independent ways, checked in order: the live target
+file's own SHA-256 must match the record's declared `source_fingerprint`
+BEFORE `git apply` ever runs (a stale mutant is refused, never silently
+tested unmodified); `git apply --check` must pass; and the patched content's
+own SHA-256 must match `expected_mutated_fingerprint` after applying.
+`classifyGoTestOutput()` is the pure verdict reader: a per-test
+`--- FAIL: TestName` line is `killed` (a panic testing's OWN harness caught
+and reported this way counts too, per the spike's own finding), a bare
+`PASS` is `survived`, a `[build failed]` trailer (stdout only — Go's compiler
+diagnostics themselves land on stderr, which this check deliberately never
+heuristically pattern-matches, to avoid false-positiving on a passing
+detector's own printed output) is `build-failed`, Go's own
+`panic: test timed out after ...` watchdog signature or this runner's own
+wall-clock SIGKILL is `timeout`, and anything else that leaves no
+interpretable PASS/FAIL — an external signal, or an exit with neither a
+`PASS` nor a `--- FAIL:` line (a direct `os.Exit()` bypassing testing's own
+reporting; a panic on a goroutine testing is not supervising, which tears
+the whole process down without a `--- FAIL:` line either) — is
+`infrastructure-error`. Only an outcome the detector's OWN harness
+adjudicated is ever `killed`; an unadjudicated process death never is.
+`runMutant()` orchestrates all seven as one closed, never-collapsed
+vocabulary: it runs each selected detector's clean control FIRST and aborts
+the whole measurement as `infrastructure-error` on any failure (a broken
+baseline is never silently skipped), then verifies the transformation, then
+runs the mutant, then — only for a bare `survived` — checks a non-null
+`equivalence_review` whose own `source_fingerprint` still matches the
+just-observed live source before reclassifying to `equivalent-reviewed`; a
+stale review (the target file has since changed) falls back to a plain
+`survived` needing re-review rather than being trusted. This is never an
+automatic exemption list (repo invariant 7): the review is prose a human
+wrote and it is tied to a cryptographic fingerprint of the exact content it
+reviewed, not a name on a list.
+
+`runGoTest()` passes Go's own `-timeout=<timeout_seconds>s` on every
+invocation — this repo's own documented timeout doctrine
+(`just/test.just`, `test/regression/go_test_timeout_budget_test.go`): Go's
+watchdog dumps every goroutine's stack before the process exits on its own,
+which a runner-level SIGKILL alone cannot produce. This runner's own
+wall-clock kill still exists, a few seconds later, purely as a backstop for
+the case where Go's watchdog itself somehow does not fire, and — since `go
+test`'s `-exec` wrapper spawns the test binary as a descendant — it kills
+the whole detached process GROUP, not just the top-level `go` PID, so a
+mutant that trips `mutant-memory-guard.mjs`'s own breach handling can never
+be left running orphaned past this runner's own deadline. Isolation reuses
+`mutant-memory-guard.mjs` entirely unchanged, via `go test -exec` (its value
+double-quoted, since `-exec` is whitespace-split with no shell involved and
+an unquoted path containing a space would silently truncate), exactly as
+that script's own header documents — this module imports its
+`byteSize()`/`goDurationSeconds()` parsers to validate a record's
+`isolation.memory_max`/`memory_hold` rather than duplicating that grammar,
+and every record sets `memory_hold` comfortably below its own
+`timeout_seconds` so a real breach's ledger evidence has time to be written
+before this runner's own deadline reaps the tree. `readMemoryBreaches()`
+reads that ledger — before the scratch directory is ever removed — and folds
+any breach record into the corresponding detector's own result under
+`memory_breaches`, so a real breach is never silently collapsed into a bare
+`timeout` with no trace of why the detector actually hung.
+
+Every write lands under one `mkdtempSync()` scratch directory per invocation
+(`RUNNER_TEMP` when set, the OS temp dir otherwise — `scratchRootFor()`),
+unique by construction, so concurrent runs never collide and nothing is ever
+written into a real target file; `createScratchDir()` is called by the CLI
+BEFORE any async work starts specifically so a `SIGINT`/`SIGTERM` handler
+registered immediately after can still clean up the exact path, and cleanup
+runs on every exit path — normal completion, a thrown error, or a signal —
+via one idempotent function, only AFTER the result (scratch-relative paths,
+folded-in memory-ledger evidence and all) has already been printed.
+
+`semantic-mutation.mjs` is the thin CLI `just semantic-mutate <mutant-id>`
+runs: loads the record, runs it, prints the full result (every mutant/source/
+detector/artifact identity field, on every outcome) as JSON, appends a
+`renderMutantsSummary()` overview plus a one-line per-record row to
+`GITHUB_STEP_SUMMARY`, and exits `0` only when the observed classification
+matches the record's own declared `expected_detection` — the same "did this
+regress" posture `gremlins-threshold.mjs` and `forbid-contradicted-mutants.mjs`
+already apply to the unrelated gremlins lane, which this module never
+modifies. `semantic-mutation.test.mjs` (root, `node --test`) pairs every
+acceptance criterion with a fixture — including the three pure negative
+cases the issue calls out by name (a failing clean control aborts before the
+mutant is ever attempted, zero selected detectors is a hard usage error
+raised before any run, and a `source_fingerprint` mismatch never invokes
+`git` at all) — plus real `git apply`/filesystem integration tests, an
+argv-assertion test pinning `runGoTest()`'s exact `go test` invocation
+against an injected `spawnFn`, and an end-to-end load of the real committed
+`test/semantic/mutants/` corpus. None of that needs a Go toolchain (confirmed
+by running the suite with `go` removed from `PATH`) — `.github/scripts/
+semantic-mutation-corpus.mjs` is the one place a real `go test -overlay`
+actually runs, against every real committed record, in a Go-equipped CI job
+(`check-build` in `ci.yml`); its own header explains why the split is
+load-bearing rather than redundant.
+
 ## Semantic lane adapter
 
 `lib/semantic-lane-adapter.mjs` binds the semantic contract model above to

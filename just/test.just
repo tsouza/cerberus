@@ -74,6 +74,33 @@ vet-tagged:
 semantic-check:
     node .github/scripts/semantic-model.mjs
 
+# Executes one hand-authored, contract-linked mutant from test/semantic/mutants/
+# (issue #3448) against its declared detector(s), using the isolated-execution
+# protocol issue #3447's spike approved: apply the mutant's unified diff to a
+# scratch copy of its target file, point `go test -overlay` at the swap, and
+# never touch this checkout. A failing clean control aborts before the mutant
+# is ever attempted; a declared source_fingerprint that disagrees with the
+# live target file fails closed (invalid-transform) before `git apply` ever
+# runs. Classifies the result as exactly one of killed / survived /
+# equivalent-reviewed / invalid-transform / build-failed / timeout /
+# infrastructure-error and exits 0 only when that matches the record's own
+# expected_detection. This is a PARALLEL mechanism to gremlins' own generic
+# mutation lane (`mutate`, `mutate-chdb` below) — it runs one hand-picked,
+# contract-linked mutation on demand, never gremlins' automatic operator
+# sweep, and never changes gremlins' own thresholds or reporting.
+#
+# `just semantic-mutate <mutant-id>` — id is a record's own `id` field (the
+# JSON filename minus `.json`), e.g. `just semantic-mutate
+# MUTANT-SYNTH-KILLED-INVERT`. The runner's own writes land under a per-run
+# mkdtemp() scratch directory (RUNNER_TEMP when set), cleaned up on normal
+# exit, on error, and on SIGINT/SIGTERM alike — concurrent invocations never
+# share a path. Scope: the runner and its synthetic self-test records only;
+# real per-head query-language mutants arrive in #3449-#3451.
+
+# Run one semantic mutant from test/semantic/mutants/ and classify the result.
+semantic-mutate MUTANT_ID:
+    node .github/scripts/semantic-mutation.mjs {{MUTANT_ID}}
+
 # Cross-checks each CI lane's self-declared requiredness (context.protected,
 # release_posture) against a captured, offline-readable snapshot of the live
 # main ruleset, the live release-maintenance-lines ruleset, and release.yml's

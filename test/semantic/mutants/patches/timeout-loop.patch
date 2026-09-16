@@ -1,0 +1,13 @@
+diff --git a/test/semantic/mutants/testdata/fixtures/arith.go b/test/semantic/mutants/testdata/fixtures/arith.go
+index 494329d23..e0a492b5c 100644
+--- a/test/semantic/mutants/testdata/fixtures/arith.go
++++ b/test/semantic/mutants/testdata/fixtures/arith.go
+@@ -43,7 +43,7 @@ func CommutativeSum(a, b int) int {
+ // wall-clock ceiling is what must catch it.
+ func SpinUntil(n int) int {
+ 	total := 0
+-	for i := 0; i < n; i++ {
++	for i := 0; i < n; i-- {
+ 		total += i
+ 	}
+ 	return total

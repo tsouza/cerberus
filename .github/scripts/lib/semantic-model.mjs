@@ -48,7 +48,7 @@
 // acceptance criteria — they are different failure classes even though both
 // fail the same command.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 // Bumped 1 -> 2 by issue #3459: executions.json's EXECUTION_KEYS gained ten
@@ -291,6 +291,24 @@ export function stringArray(value, path, problems, { allowEmpty = true, pattern 
     if (seen.has(value[i]))
       fail(problems, "schema", `${path} contains duplicate ${JSON.stringify(value[i])}`);
     seen.add(value[i]);
+  }
+  return true;
+}
+
+// existingPathValue is a string field that is real evidence only if it
+// resolves on disk TODAY — a dangling path is a validation failure rather
+// than a silently stale string. Exported for the same reason the primitives
+// above are (see the header comment on isObject/fail/exactObject/etc.): a
+// sibling record kind outside the six files this module owns —
+// lib/semantic-counterexamples.mjs's locator_path/replay_test_path (#3445)
+// and lib/semantic-mutation.mjs's transformation.target_path/patch_path
+// (#3448) both apply this exact discipline to their own path fields, and
+// both import it from here rather than each keeping its own copy.
+export function existingPathValue(value, path, problems, { root }) {
+  if (!stringValue(value, path, problems)) return false;
+  if (!existsSync(resolve(root, value))) {
+    fail(problems, "reference", `${path} does not exist on disk: ${value}`);
+    return false;
   }
   return true;
 }

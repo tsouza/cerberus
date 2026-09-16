@@ -673,7 +673,8 @@
         "docs/semantic-guide.json",
         "docs/semantic-guide.md",
         "test/semantic/*.json",
-        "test/semantic/counterexamples/*.json"
+        "test/semantic/counterexamples/*.json",
+        "test/semantic/mutants/*.json"
       ],
       "substrate": "runner",
       "risk_domains": ["ci", "governance", "semantic-conformance"],

@@ -161,6 +161,19 @@ jobs:
           just build
           just vet-tagged
 
+      # semantic-mutation-corpus.mjs (#3448) runs `just semantic-mutate <id>`
+      # for real, for every record under test/semantic/mutants/, against a
+      # real `go test -overlay`. This is the ONE place that happens: the
+      # forbid-skip job's own self-test (semantic-mutation.test.mjs) injects
+      # a fake runGoTestFn deliberately, so it needs no Go toolchain and that
+      # job installs none — without this step, the `-overlay` argv line
+      # itself had zero CI execution (see semantic-mutation-corpus.mjs's own
+      # header for how that was found). The currently-committed corpus is
+      # seven synthetic, untagged, chdb-free records; this settles in low
+      # single-digit seconds per record.
+      - name: Execute the semantic-mutation runner's synthetic corpus
+        run: node .github/scripts/semantic-mutation-corpus.mjs
+
       # The test/oracle nested module quarantines cerberus's test-only
       # consumers of the AGPLv3 grafana/loki / grafana/tempo parsers out
       # of the root module graph (so they never reach the Apache-2.0
@@ -728,6 +741,25 @@ jobs:
       # Self-test only, same rationale as the step above.
       - name: Self-test the compat execution report
         run: node --test .github/scripts/compat-execution-report.test.mjs
+      # semantic-mutation.mjs (#3448, unblocked by spike #3447) executes one
+      # hand-authored, contract-linked mutant from test/semantic/mutants/
+      # via `go test -overlay`. Self-test only here, same rationale as
+      # semantic-execution-adapter/verify-just-invocations/e2e-up below: this
+      # job installs no Go toolchain at all (it validates JSON/JS metadata,
+      # not Go code), so `just semantic-mutate` cannot run here regardless —
+      # every acceptance-criterion negative case (a failing clean control
+      # aborts, zero detectors is an error, a fingerprint mismatch never
+      # invokes git) is a pure or injected-fake test that needs no Go
+      # toolchain, plus real git/filesystem integration tests, an
+      # argv-assertion test against an injected spawnFn, and an end-to-end
+      # load of the real committed test/semantic/mutants/ corpus. The real
+      # `go test -overlay` execution this suite deliberately never performs
+      # runs separately in `check-build`'s "Execute the semantic-mutation
+      # runner's synthetic corpus" step, which IS Go-equipped.
+      - name: Self-test the semantic mutation runner
+        run: |
+          node --test .github/scripts/semantic-mutation.test.mjs
+          node --test .github/scripts/semantic-mutation-corpus.test.mjs
       # verify-just-invocations.mjs (#3093) dry-runs every `just <recipe>
       # [args...]` found inside a workflow run: step, catching a missing
       # recipe AND an arity mismatch a plain `just --show` existence check

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-SYNTH-INFRA-EXIT",
+  "title": "ExitAbruptly bypasses go test's own reporting with a direct process exit",
+  "synthetic": true,
+  "synthetic_rationale": "Exercises the runner's infrastructure-error path: the mutated process terminates without producing well-formed go test PASS/FAIL output, which must never be read as a kill (a crash is not a semantic kill) nor as a survivor. Not a per-head query mutation.",
+  "violated_contracts": [
+    "SYNTHETIC-NO-BYPASS-OF-TEST-REPORTING"
+  ],
+  "transformation": {
+    "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
+    "patch_path": "test/semantic/mutants/patches/infra-exit.patch",
+    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
+    "expected_mutated_fingerprint": "2a4f1385f59667c33ca650c78f6392905b7654bad380b05b8a6547fdbd8461e8"
+  },
+  "detectors": [
+    {
+      "id": "exit-abruptly-returns-input",
+      "package": "./test/semantic/mutants/testdata/fixtures",
+      "test_run": "^TestExitAbruptlyReturnsInput$",
+      "build_tags": [],
+      "timeout_seconds": 15
+    }
+  ],
+  "expected_detection": "infrastructure-error",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": false,
+    "memory_max": "1GiB",
+    "memory_hold": "1s"
+  },
+  "notes": null
+}
