@@ -2,8 +2,8 @@
 // semantic-mutation-corpus.mjs's own orchestration (record discovery and
 // pass/fail aggregation), via an injected spawnFn — never a real `just`/`go`
 // invocation. The real execution this script exists for runs in CI's
-// `check-build` job ("Execute the semantic-mutation runner's synthetic
-// corpus"), not here; see this script's own header for why.
+// `check-build` job ("Execute the semantic-mutation runner's corpus"), not
+// here; see this script's own header for why.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
