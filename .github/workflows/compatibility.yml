@@ -257,12 +257,15 @@ jobs:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
     # as green — so a release could publish with this differential never
-    # executed. The condition runs the job whenever a planner did not
-    # succeed, and the first step fails it loudly; a docs-only or
-    # not-heavy change still skips by design.
+    # executed. `gate` itself skips (never fails) on a docs-only change, so
+    # the condition runs the job whenever `changes` did not succeed or
+    # `gate` genuinely failed or was cancelled — never merely skipped — and
+    # the first step fails it loudly; a docs-only or not-heavy change still
+    # skips by design.
     if: >-
       always() &&
-      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+      ((needs.changes.result != 'success' ||
+        (needs.gate.result != 'success' && needs.gate.result != 'skipped')) ||
        (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -282,7 +285,7 @@ jobs:
     # turns red.
     steps:
       - name: gate on the planner jobs
-        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        if: needs.changes.result != 'success' || (needs.gate.result != 'success' && needs.gate.result != 'skipped')
         run: |
           echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
           exit 1
@@ -460,18 +463,21 @@ jobs:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
     # as green — so a release could publish with this differential never
-    # executed. The condition runs the job whenever a planner did not
-    # succeed, and the first step fails it loudly; a docs-only or
-    # not-heavy change still skips by design.
+    # executed. `gate` itself skips (never fails) on a docs-only change, so
+    # the condition runs the job whenever `changes` did not succeed or
+    # `gate` genuinely failed or was cancelled — never merely skipped — and
+    # the first step fails it loudly; a docs-only or not-heavy change still
+    # skips by design.
     if: >-
       always() &&
-      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+      ((needs.changes.result != 'success' ||
+        (needs.gate.result != 'success' && needs.gate.result != 'skipped')) ||
        (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: gate on the planner jobs
-        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        if: needs.changes.result != 'success' || (needs.gate.result != 'success' && needs.gate.result != 'skipped')
         run: |
           echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
           exit 1
@@ -608,18 +614,21 @@ jobs:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
     # as green — so a release could publish with this differential never
-    # executed. The condition runs the job whenever a planner did not
-    # succeed, and the first step fails it loudly; a docs-only or
-    # not-heavy change still skips by design.
+    # executed. `gate` itself skips (never fails) on a docs-only change, so
+    # the condition runs the job whenever `changes` did not succeed or
+    # `gate` genuinely failed or was cancelled — never merely skipped — and
+    # the first step fails it loudly; a docs-only or not-heavy change still
+    # skips by design.
     if: >-
       always() &&
-      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+      ((needs.changes.result != 'success' ||
+        (needs.gate.result != 'success' && needs.gate.result != 'skipped')) ||
        (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: gate on the planner jobs
-        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        if: needs.changes.result != 'success' || (needs.gate.result != 'success' && needs.gate.result != 'skipped')
         run: |
           echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
           exit 1
@@ -790,18 +799,21 @@ jobs:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
     # as green — so a release could publish with this differential never
-    # executed. The condition runs the job whenever a planner did not
-    # succeed, and the first step fails it loudly; a docs-only or
-    # not-heavy change still skips by design.
+    # executed. `gate` itself skips (never fails) on a docs-only change, so
+    # the condition runs the job whenever `changes` did not succeed or
+    # `gate` genuinely failed or was cancelled — never merely skipped — and
+    # the first step fails it loudly; a docs-only or not-heavy change still
+    # skips by design.
     if: >-
       always() &&
-      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+      ((needs.changes.result != 'success' ||
+        (needs.gate.result != 'success' && needs.gate.result != 'skipped')) ||
        (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: gate on the planner jobs
-        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        if: needs.changes.result != 'success' || (needs.gate.result != 'success' && needs.gate.result != 'skipped')
         run: |
           echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
           exit 1
@@ -827,18 +839,21 @@ jobs:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
     # as green — so a release could publish with this differential never
-    # executed. The condition runs the job whenever a planner did not
-    # succeed, and the first step fails it loudly; a docs-only or
-    # not-heavy change still skips by design.
+    # executed. `gate` itself skips (never fails) on a docs-only change, so
+    # the condition runs the job whenever `changes` did not succeed or
+    # `gate` genuinely failed or was cancelled — never merely skipped — and
+    # the first step fails it loudly; a docs-only or not-heavy change still
+    # skips by design.
     if: >-
       always() &&
-      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+      ((needs.changes.result != 'success' ||
+        (needs.gate.result != 'success' && needs.gate.result != 'skipped')) ||
        (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: gate on the planner jobs
-        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        if: needs.changes.result != 'success' || (needs.gate.result != 'success' && needs.gate.result != 'skipped')
         run: |
           echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
           exit 1
@@ -965,12 +980,15 @@ jobs:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
     # as green — so a release could publish with this differential never
-    # executed. The condition runs the job whenever a planner did not
-    # succeed, and the first step fails it loudly; a docs-only or
-    # not-heavy change still skips by design.
+    # executed. `gate` itself skips (never fails) on a docs-only change, so
+    # the condition runs the job whenever `changes` did not succeed or
+    # `gate` genuinely failed or was cancelled — never merely skipped — and
+    # the first step fails it loudly; a docs-only or not-heavy change still
+    # skips by design.
     if: >-
       always() &&
-      ((needs.changes.result != 'success' || needs.gate.result != 'success') ||
+      ((needs.changes.result != 'success' ||
+        (needs.gate.result != 'success' && needs.gate.result != 'skipped')) ||
        (needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -984,7 +1002,7 @@ jobs:
     # diverged or crashed, so the workflow badge correctly turns red.
     steps:
       - name: gate on the planner jobs
-        if: needs.changes.result != 'success' || needs.gate.result != 'success'
+        if: needs.changes.result != 'success' || (needs.gate.result != 'success' && needs.gate.result != 'skipped')
         run: |
           echo "::error::changes=${{ needs.changes.result }} gate=${{ needs.gate.result }}; a release-required differential must not be skipped into green."
           exit 1
