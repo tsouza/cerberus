@@ -300,6 +300,56 @@ test("a synthetic record may still declare a bare survived (its whole purpose)",
   assert.deepEqual(problems, []);
 });
 
+test("linked_issue must be null on a synthetic record", () => {
+  const { problems } = validate(exampleMutantRecord({ linked_issue: 1234 }));
+  assert.ok(problems.some((p) => p.includes("linked_issue must be null on a synthetic record")));
+});
+
+test("linked_issue: a non-synthetic record may declare a positive integer", () => {
+  const { problems } = validate(
+    exampleMutantRecord({
+      synthetic: false,
+      synthetic_rationale: null,
+      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
+      expected_detection: "killed",
+      linked_issue: 1234,
+    }),
+    "MUTANT-SYNTH-EXAMPLE.json",
+    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
+  );
+  assert.deepEqual(problems, []);
+});
+
+test("linked_issue: a non-synthetic record may leave it null (no observed regression yet)", () => {
+  const { problems } = validate(
+    exampleMutantRecord({
+      synthetic: false,
+      synthetic_rationale: null,
+      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
+      expected_detection: "killed",
+      linked_issue: null,
+    }),
+    "MUTANT-SYNTH-EXAMPLE.json",
+    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
+  );
+  assert.deepEqual(problems, []);
+});
+
+test("linked_issue: a non-positive-integer value is rejected", () => {
+  const { problems } = validate(
+    exampleMutantRecord({
+      synthetic: false,
+      synthetic_rationale: null,
+      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
+      expected_detection: "killed",
+      linked_issue: -1,
+    }),
+    "MUTANT-SYNTH-EXAMPLE.json",
+    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
+  );
+  assert.ok(problems.some((p) => p.includes("linked_issue")));
+});
+
 // --- loadMutants: end-to-end over the real committed corpus -------------
 
 test("loadMutants: the real committed test/semantic/mutants/ corpus is valid", () => {
@@ -819,7 +869,7 @@ test("loadMutantExecutions: loads a valid ledger and cross-checks mutant referen
           status: "killed",
           run_ref: "local",
           source_sha: null,
-          detectors: [{ id: "d1", classification: "killed" }],
+          detectors: [{ id: "d1", classification: "killed", duration_ms: 1234 }],
         },
       ],
     };
@@ -830,6 +880,62 @@ test("loadMutantExecutions: loads a valid ledger and cross-checks mutant referen
     });
     assert.equal(result.size, 1);
     assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").status, "killed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadMutantExecutions: a detector's duration_ms may be null (unmeasured) or a positive integer", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
+  try {
+    const doc = {
+      schema_version: 1,
+      executions: [
+        {
+          id: "MUTEXEC-EXAMPLE-20260916",
+          mutant: "MUTANT-SYNTH-EXAMPLE",
+          observed_at: "2026-09-16T00:00:00Z",
+          status: "killed",
+          run_ref: "local",
+          source_sha: null,
+          detectors: [
+            { id: "d1", classification: "killed", duration_ms: null },
+            { id: "d2", classification: "killed", duration_ms: 4312 },
+          ],
+        },
+      ],
+    };
+    const path = writeLedger(dir, doc);
+    const result = loadMutantExecutions(path, { root: dir, mutantIds: new Set(["MUTANT-SYNTH-EXAMPLE"]) });
+    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").detectors[0].duration_ms, null);
+    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").detectors[1].duration_ms, 4312);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadMutantExecutions: rejects a non-positive duration_ms", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
+  try {
+    const doc = {
+      schema_version: 1,
+      executions: [
+        {
+          id: "MUTEXEC-EXAMPLE-20260916",
+          mutant: "MUTANT-SYNTH-EXAMPLE",
+          observed_at: "2026-09-16T00:00:00Z",
+          status: "killed",
+          run_ref: "local",
+          source_sha: null,
+          detectors: [{ id: "d1", classification: "killed", duration_ms: 0 }],
+        },
+      ],
+    };
+    const path = writeLedger(dir, doc);
+    assert.throws(
+      () => loadMutantExecutions(path, { root: dir, mutantIds: new Set(["MUTANT-SYNTH-EXAMPLE"]) }),
+      SemanticModelError,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -921,9 +1027,14 @@ test("loadMutantExecutions: the most recently observed_at record wins per mutant
   }
 });
 
-test("loadMutantExecutions: the real committed ledger (if present) loads and cross-checks against the real corpus", () => {
+test("loadMutantExecutions: the real committed ledger loads, is non-empty, and cross-checks against the real corpus", () => {
   const records = loadMutants();
   const result = loadMutantExecutions(undefined, { mutantIds: new Set(records.keys()) });
+  // A bare non-empty check alone would pass even if the file were deleted
+  // (loadMutantExecutions returns an empty Map for a missing ledger — see
+  // its own "missing file" test above) — pin the exact real count so this
+  // test cannot go vacuous under either failure mode.
+  assert.equal(result.size, 6, "one committed observation per real (non-synthetic) mutant record");
   // Every execution in the committed ledger must resolve to a real mutant
   // and report one of the seven closed classifications — loadMutantExecutions
   // itself already enforces this; this is an end-to-end confirmation over

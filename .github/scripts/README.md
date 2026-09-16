@@ -577,13 +577,14 @@ tooling ignores that component in every `...` wildcard (`go build ./...`,
 `go vet ./...`, the coverage-floor ledger, `go list ./...`), so this
 synthetic package never needs a `test/coverage-floor/` entry the way a real
 package would, while `go test ./.../testdata/fixtures` — exactly how every
-detector invokes it — still works fine given an explicit path. #3520 tracks
-a validator rule still owed before #3449 lands: nothing here yet stops a
-future NON-synthetic record from declaring `expected_detection: "survived"`
-and passing on a real, live, undetected bug — the synthetic
-`MUTANT-SYNTH-SURVIVED-CAPACITY` record correctly does exactly that today
-only because it is a self-test of the runner's own survived path, not a
-claim about production code.
+detector invokes it — still works fine given an explicit path. #3520/#3532
+closed the gap that once existed here: `NON_SYNTHETIC_CLASSIFICATIONS`
+restricts a non-synthetic record's `expected_detection` to `"killed"` or
+`"equivalent-reviewed"` only — a bare `"survived"` on real evidence would be
+an expected-failure/tolerance-list entry, forbidden outright by repo
+invariant 7. Only the synthetic `MUTANT-SYNTH-SURVIVED-CAPACITY` record may
+still declare it, since exercising that classification path is its own
+entire purpose, not a claim about production code.
 
 `lib/semantic-mutation.mjs` is the Node-builtins-only loader/validator
 (`validateMutantRecord()` / `loadMutants()`, reusing `lib/semantic-model.mjs`'s
@@ -900,6 +901,73 @@ fresh": `semantic-report.test.mjs`'s `node --test` suite, then `just
 semantic-report-check`) — the assurance gap those two document (dangling
 fixtures, no pipeline to append executions yet) does not apply here, since a
 stale generated doc is a plain diff CI can catch on every PR.
+
+## Semantic mutation cohort report
+
+`lib/semantic-mutation-report.mjs` (issue #3452) extends the semantic report
+above with a bounded, versioned cohort report over `test/semantic/mutants/`
+— embedded as `docs/semantic-conformance.{md,json}`'s own `.mutation_cohort`
+key, never a separate generated pair. It never computes a universal kill
+percentage: the seven synthetic harness self-test records (`synthetic_cohort`
+— one is DESIGNED to survive, one to time out, exercising every one of
+`lib/semantic-mutation.mjs`'s own seven classification paths) and the six
+real, per-head domain mutations (`semantic_cohort`) stay permanently
+separate, and `escape_rate`/`kill_rate` are computed ONLY over the latter.
+
+`dispositionBucket()` is the one function every rate calls to draw the
+denominator line: `"killed"`/`"survived"` are `denominator` (a real detector
+ran, against a validly-applied, non-equivalent mutation, with a passing
+clean control — `runMutant()`'s own contract already guarantees the control
+passed for either of these two outcomes), `"equivalent-reviewed"` is its own
+`equivalent` bucket, `"invalid-transform"` is `invalid`, and
+`"build-failed"`/`"timeout"`/`"infrastructure-error"` are `incomplete` — the
+measurement itself never finished, so none of the three ever counts as
+either a kill or a clean escape. `dispositionRates()` reports every
+`CLASSIFICATIONS` value explicitly (even at zero) alongside the denominator-
+scoped rate, `null` (never `0`) when the denominator is zero, and a
+`small_sample` flag below `SMALL_COHORT_DENOMINATOR_FLOOR` (10) — today's
+real six-record denominator is flagged.
+
+**Declared vs. resolved, mirrored from the report above's bound-vs-observed
+split.** A mutant record's own `expected_detection` is a DECLARATION,
+re-verified by the required `ci.check` corpus step
+(`semantic-mutation-corpus.mjs`) on every PR — but #3520/#3532 already
+forbid a non-synthetic record from ever declaring `"survived"` (see
+"Semantic mutation runner" above), so the one real escape this report exists
+to surface can only ever be a fresh OBSERVATION overriding a valid
+declaration, never the declaration itself. `test/semantic/
+mutant-executions.json` is that observation ledger — hand-authored and
+reviewed, exactly like `executions.json` (never written by this module).
+`resolveDisposition()` prefers a ledger entry over the bare declaration when
+one exists; `cohortFingerprint()` (published as `cohort_revision`) hashes
+the RESOLVED status, not the declaration, specifically so a ledger
+observation overriding a stale `equivalent-reviewed` adjudication moves the
+published revision even though the record's own committed JSON never
+changed. `disposition_disagreements` lists every record whose latest
+observation disagrees with what it still declares — the ledger is never
+cross-checked against `expected_detection` by anything else, so this is the
+one place such a drift becomes visible. `unresolved_survivors` lists every
+non-synthetic record whose RESOLVED disposition is `"survived"` with no
+`linked_issue` set — `linked_issue` (`lib/semantic-mutation.mjs`) is a
+nullable positive integer, always null on a synthetic record, otherwise a
+non-synthetic record's author may set it (before or after an observation) to
+name the issue tracking a real regression the ledger caught.
+
+`semantic-mutation-pilot-report.mjs` is the scheduled, INFORMATIONAL
+complement (`.github/workflows/semantic-mutation-pilot.yml`, lane
+`quality.semantic-mutation-pilot` in `.github/ci-lanes.json`) — never a merge
+or release gate (`merge_posture`/`main_posture` `"never"`, `release_posture`
+`"advisory"`, so it can never become a required check and can never make the
+required `ci.check` corpus step or the traditional `mutation` gremlins lane
+look green). `runPilot()` re-runs every real record via the SAME
+`lib/semantic-mutation.mjs` `runMutant()` the CLI and the corpus script both
+drive, printing each run's revision-bound observation — including each
+detector's own `runGoTest()` `durationMs`, the runtime/cost metadata this
+issue's own acceptance criteria name — as a ready-to-review
+`mutant-executions.json` entry to the job summary; it never writes the
+ledger itself, and a mismatch against a record's declared
+`expected_detection` is logged but never fails the job (the required corpus
+step already owns that gate).
 
 ## Semantic impact
 

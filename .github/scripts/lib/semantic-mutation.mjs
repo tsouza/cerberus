@@ -390,31 +390,28 @@ export function validateMutantRecord(raw, at, problems, opts = {}) {
   nullableStringValue(raw.notes, `${at}.notes`, problems);
 
   // linked_issue is the traceability seam issue #3452's own acceptance
-  // criteria requires: a REAL (non-synthetic) mutant whose expected_detection
-  // is "survived" is a domain-semantic gap nothing caught, and it must name
-  // the open defect/evidence issue tracking it BEFORE the record can be
-  // authored at all — this is a schema-level fail-closed gate, not a
-  // reporting-time reminder, mirroring the equivalence_review conditional-
-  // nullability immediately above. A synthetic survivor (the runner's own
-  // pedagogical MUTANT-SYNTH-SURVIVED-CAPACITY fixture, which demonstrates a
-  // real test gap on purpose) is never asked for one: it is not a per-head
-  // query mutation and has nothing to link. Never required for any other
-  // expected_detection, including "equivalent-reviewed" — a genuinely
-  // equivalent mutant is not a defect to track.
-  const requiresLinkedIssue = synthetic === false && raw.expected_detection === "survived";
-  if (requiresLinkedIssue && raw.linked_issue === null) {
-    fail(
-      problems,
-      "schema",
-      `${at}.linked_issue is required (non-null) when a non-synthetic record's expected_detection is "survived" ` +
-        "— a real escape must name the open defect/evidence issue tracking it",
-    );
-  } else if (!requiresLinkedIssue && raw.linked_issue !== null) {
-    fail(
-      problems,
-      "schema",
-      `${at}.linked_issue must be null unless expected_detection is "survived" on a non-synthetic record`,
-    );
+  // criteria requires — but it can only ever be a DECLARATION-TIME
+  // annotation, never a declaration-time REQUIREMENT: #3520/#3532 already
+  // forbid a non-synthetic record from declaring expected_detection
+  // "survived" at all (NON_SYNTHETIC_CLASSIFICATIONS above), so "this
+  // record's own declared status is survived" can never be true for a
+  // record that loads at all — a schema rule keyed off it would be
+  // unreachable dead code. The real traceability case #3452 cares about is
+  // a REAL regression an actual execution OBSERVED (test/semantic/
+  // mutant-executions.json, via resolveDisposition in
+  // lib/semantic-mutation-report.mjs) even though this record still
+  // declares "killed"/"equivalent-reviewed" — a fact only knowable at
+  // report-build time, never at record-authoring time, so lib/semantic-
+  // mutation-report.mjs's own unresolvedSurvivors (keyed off the RESOLVED
+  // disposition, not this field's declared expected_detection) is where
+  // that requirement actually lives; see its own header. This function only
+  // validates the field's SHAPE: null on a synthetic record (nothing real
+  // to link), otherwise either null (not yet linked) or a positive integer
+  // — a non-synthetic record's author may set it ahead of any observation,
+  // to pre-acknowledge a known regression, or after one via the report's
+  // own unresolved_survivors list telling them which record needs it.
+  if (synthetic === true && raw.linked_issue !== null) {
+    fail(problems, "schema", `${at}.linked_issue must be null on a synthetic record`);
   } else if (raw.linked_issue !== null) {
     positiveIntegerValue(raw.linked_issue, `${at}.linked_issue`, problems);
   }
@@ -516,12 +513,19 @@ const MUTANT_EXECUTION_KEYS = new Set([
   "detectors",
 ]);
 
-const MUTANT_EXECUTION_DETECTOR_KEYS = new Set(["id", "classification"]);
+const MUTANT_EXECUTION_DETECTOR_KEYS = new Set(["id", "classification", "duration_ms"]);
 
+// duration_ms is the runtime/cost metadata issue #3452's own acceptance
+// criteria names ("exact detector outcomes and runtime/cost metadata") —
+// runGoTest's own durationMs, milliseconds wall-clock for that ONE detector
+// run (never a sum across detectors, and never the clean control's own
+// duration, which this ledger does not separately carry). Nullable: a
+// hand-authored or pre-#3452 entry may not have timed anything.
 function validateMutantExecutionDetector(raw, at, problems) {
   if (!exactObject(raw, MUTANT_EXECUTION_DETECTOR_KEYS, at, problems)) return;
   stringValue(raw.id, `${at}.id`, problems);
   enumValue(raw.classification, CLASSIFICATION_SET, `${at}.classification`, problems);
+  if (raw.duration_ms !== null) positiveIntegerValue(raw.duration_ms, `${at}.duration_ms`, problems);
 }
 
 function validateMutantExecution(raw, at, problems, { mutantIds } = {}) {

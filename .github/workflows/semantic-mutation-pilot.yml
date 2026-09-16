@@ -64,9 +64,10 @@ jobs:
         with:
           tool: just
 
-      # Four of the six real records are chdb-tagged (PROMQL-COUNTER-RESET-
-      # COMPENSATION and both TRACEQL records) — same requirement as
-      # ci.yml's check-build job's own corpus step.
+      # Four of the six real records are chdb-tagged (both PROMQL records —
+      # COUNTER-RESET-COMPENSATION and RANGE-WINDOW-BOUNDARY-CLOSED-LEFT —
+      # and both TRACEQL records) — same requirement as ci.yml's check-build
+      # job's own corpus step.
       - name: Install libchdb.so
         run: just chdb-install
 
