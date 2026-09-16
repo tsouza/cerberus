@@ -1,0 +1,18 @@
+-- query.logql --
+{job="api",env!="prod",region=~"us-.*",cell!~"staging.*"}
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', if(Body = 'wrong-job', 'other', 'api'),
+        'env', if(Body = 'wrong-env', 'prod', 'staging'),
+        'region', if(Body = 'wrong-region', 'eu-west', 'us-east'),
+        'cell', if(Body = 'wrong-cell', 'staging-2', 'prod-1')
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES ('match'), ('wrong-env'), ('wrong-region'), ('wrong-cell'), ('wrong-job');
+-- expected_rows --
+[]
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api",env!="prod",region=~"us-.*",cell!~"staging.*"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
