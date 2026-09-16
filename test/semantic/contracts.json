@@ -523,6 +523,39 @@
       "owner": "cerberus-core",
       "replaces": null,
       "replaced_by": null
+    },
+    {
+      "id": "SIGNAL-ADMISSION-001",
+      "statement": "Each API head owns its own admission budget, drawn from its own semaphore, wired into that head's own serving surface: HEAD-PROMQL's CERBERUS_ADMIT_PROM, HEAD-LOGQL's CERBERUS_ADMIT_LOKI, and HEAD-TRACEQL's CERBERUS_ADMIT_TEMPO each cap that head's own admit.New(BudgetRequest) semaphore, and HEAD-LOGQL additionally owns a fourth, fully independent budget — CERBERUS_ADMIT_TAIL, admit.NewTail(BudgetTail) — scoped only to the long-lived /tail WebSocket and drawn from a separate semaphore than HEAD-LOGQL's own request budget. Saturating any one of these four budgets rejects only a caller drawing on that budget: it consumes no capacity from, and triggers no rejection against, any of the other three. Rejection surfaces in the shape native to its caller's transport — an HTTP caller gets 503 Service Unavailable with a Retry-After header (admit.Limiter.Middleware), a gRPC stream gets codes.ResourceExhausted (admit.Limiter.StreamInterceptor), and an already-upgraded /tail WebSocket gets a 1013 (Try Again Later) close frame instead of either — and in every case, releasing a held slot returns its capacity regardless of whether the request completed, returned an error, or its handler panicked, so a subsequent caller on that same budget is admitted. This capacity-recovery guarantee is proven only at the in-process admission-semaphore layer; recovery of the separate ClickHouse connection a request's handler may have held is a distinct claim, owned by internal/chclient's own connection-teardown behavior and provable only against a real server, never by this contract's deterministic, no-network evidence.",
+      "scope": "signal",
+      "applicable_heads": ["HEAD-PROMQL", "HEAD-LOGQL", "HEAD-TRACEQL"],
+      "applicable_capabilities": [],
+      "authority": "design-decision",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": [
+        "promql-admission-wiring",
+        "logql-admission-wiring",
+        "traceql-admission-wiring",
+        "cross-head-budget-isolation",
+        "tail-budget-isolation",
+        "grpc-transport-rejection",
+        "semaphore-capacity-recovery",
+        "real-network-connection-teardown-boundary"
+      ],
+      "blind_spots": [
+        "HEAD-TRACEQL's admission is exposed over both HTTP and gRPC (internal/api/tempo/grpc.NewServer's grpc.ChainStreamInterceptor(service.Limiter.StreamInterceptor(), ...)); the traceql-admission-wiring group's binding covers the HTTP surface only, and grpc-transport-rejection's binding proves admit.Limiter.StreamInterceptor()'s own behavior against a fake grpc.ServerStream, not that NewServer's real *grpc.Server actually invokes it end to end for a dialed client — that specific wiring gap is tracked as cerberus issue #3485, filed rather than silently widened into an existing binding's claim.",
+        "cross-head-budget-isolation is proven at the generic admit.Limiter level (internal/api/admit/chaos_test.go constructs two Limiter values directly and shows one's saturation does not touch the other); it does not itself prove cerberus's own process wiring never passes the SAME *admit.Limiter pointer to two heads — that risk is guarded by cmd/cerberus/main.go's admitLimiters struct (its own doc comment names the exact bug a positional 4-tuple of same-typed pointers would let compile and silently mount /tail on the query budget), not by an executable binding in this contract.",
+        "tail-budget-isolation's evidence proves the direction 'a saturated tail budget leaves the request budget fully admitting' (TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted) and the tail budget's own rejection shape (TestConformance_LokiTailRejectedAtTailCap); the symmetric direction — a saturated request budget still admits a fresh /tail upgrade — is internal/api/loki/conformance_test.go's TestConformance_LokiFullQueryBudgetLeavesTailAdmitted, cited here for completeness but not separately required, since it exercises the same underlying semaphore-independence claim this group already covers.",
+        "The semaphore-capacity-recovery group and the real-network-connection-teardown-boundary group prove two DIFFERENT resources' recovery on two DIFFERENT substrates, and neither implies the other: the admit package's own semaphore is an in-process integer counter released by a Go defer with no I/O at all (chaos_test.go's evidence, substrate runner, no chDB and no real ClickHouse), while the pooled ClickHouse connection a request's handler may have held is released — or destroyed — by clickhouse-go's real driver internals against a live TCP session, provable only against a genuine server (conn_teardown_integration_test.go's evidence, substrate real-clickhouse, gated behind the `integration` build tag and Docker, run via `just chclient-integration`). A request whose admission slot is proven to recover here can still have destroyed its underlying ClickHouse connection, and vice versa; this contract does not claim the two recover together.",
+        "Admission control caps aggregate concurrency per process per head; it is not tenant fairness. Cerberus reads no tenant header on any serving path and ships no tenant isolation (docs/operations.md 'Security posture': 'Cerberus ships no authentication, no authorization, and no tenant isolation... No tenant header is read'), so a budget exhausted by one caller rejects every other caller on that same head indiscriminately, by design — this contract's per-head/per-budget separation is a concurrency-and-blast-radius boundary between HEADS and TRANSPORTS, never a fairness or isolation boundary between tenants or callers sharing one head."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
     }
   ]
 }
