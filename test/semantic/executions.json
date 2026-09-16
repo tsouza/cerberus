@@ -308,6 +308,146 @@
       "observed_at": "2026-09-16T00:00:00Z",
       "result": "pass",
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL-20260916",
+      "binding": "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-STRUCTURAL-CHILD-PROPERTY-20260916",
+      "binding": "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY-20260916",
+      "binding": "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-STRUCTURAL-CHILD-SPEC-20260916",
+      "binding": "BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-STRUCTURAL-DESCENDANT-SPEC-20260916",
+      "binding": "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY-20260916",
+      "binding": "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY-20260916",
+      "binding": "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC-20260916",
+      "binding": "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY-20260916",
+      "binding": "BINDING-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY-20260916",
+      "binding": "BINDING-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-TRACE-SCOPED-COUNT-SPEC-20260916",
+      "binding": "BINDING-TRACEQL-TRACE-SCOPED-COUNT-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY-20260916",
+      "binding": "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC-20260916",
+      "binding": "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-TRANSPORT-ARM-HTTP-20260916",
+      "binding": "BINDING-TRACEQL-TRANSPORT-ARM-HTTP",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-TRANSPORT-ARM-GRPC-20260916",
+      "binding": "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP-20260916",
+      "binding": "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY-20260916",
+      "binding": "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE-20260916",
+      "binding": "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE-20260916",
+      "binding": "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC-20260916",
+      "binding": "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     }
   ]
 }

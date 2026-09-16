@@ -146,6 +146,186 @@
       "status": "active"
     },
     {
+      "id": "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
+      "contract": "TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "reference-differential",
+      "test_ref": "test/spec/traceql/bool_attr.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
+      "contract": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "structural-child-property-oracle",
+      "test_ref": "test/property/gen#traceql.structural.child",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY",
+      "contract": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "structural-descendant-property-oracle",
+      "test_ref": "test/property/gen#traceql.structural.descendant",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC",
+      "contract": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "structural-child-property-oracle",
+      "test_ref": "test/spec/traceql/edge_chain_child_5.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC",
+      "contract": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "structural-descendant-property-oracle",
+      "test_ref": "test/spec/traceql/recursive_descendant.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
+      "contract": "TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "resource-scope-property-oracle",
+      "test_ref": "test/property/gen#traceql.selector.resource-attribute",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
+      "contract": "TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "span-scope-property-oracle",
+      "test_ref": "test/property/gen#traceql.selector.span-attribute",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
+      "contract": "TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "unscoped-coalesce-spec-fixture",
+      "test_ref": "test/spec/traceql/unscoped_bool_attr.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY",
+      "contract": "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "count-pipeline-property-oracle",
+      "test_ref": "test/property/gen#traceql.pipeline.count",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY",
+      "contract": "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "duration-aggregate-pipeline-property-oracle",
+      "test_ref": "test/property/gen#traceql.pipeline.duration-aggregate",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-TRACE-SCOPED-COUNT-SPEC",
+      "contract": "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "count-pipeline-property-oracle",
+      "test_ref": "test/spec/traceql/count_per_trace.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
+      "contract": "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "select-pipeline-property-oracle",
+      "test_ref": "test/property/gen#traceql.pipeline.select",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
+      "contract": "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "select-pipeline-property-oracle",
+      "test_ref": "test/spec/traceql/select_attrs.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-TRANSPORT-ARM-HTTP",
+      "contract": "TRACEQL-TRANSPORT-ARM-INDEPENDENCE",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "compat-http-transport",
+      "test_ref": "compatibility/tempo/driver/diff.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
+      "contract": "TRACEQL-TRANSPORT-ARM-INDEPENDENCE",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "compat-grpc-transport",
+      "test_ref": "compatibility/tempo/driver/grpc_diff.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+      "contract": "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "random-property-sweep",
+      "test_ref": "test/property/oracle/traceql/evaluator.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
+      "contract": "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "local-property-oracle",
+      "test_ref": "test/property/oracle/traceql/evaluator.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
+      "contract": "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
+      "verifier": "VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR",
+      "evidence_class": "execution",
+      "independence_group": "in-process-forked-reference-evaluator",
+      "test_ref": "test/spec/parityoracle/traceql/oracle.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
+      "contract": "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "live-reference-runtime-differential",
+      "test_ref": "compatibility/tempo/driver/differ.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC",
+      "contract": "TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "attr-type-hint-query-driven-coercion",
+      "test_ref": "test/spec/traceql/bool_attr.txtar#parity",
+      "status": "active"
+    },
+    {
       "id": "BINDING-ARCH-NO-CACHING-STATIC",
       "contract": "ARCH-NO-QUERY-RESULT-CACHING",
       "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
