@@ -602,6 +602,7 @@ setop_or_subquery_name_native_resample.txtar
 setop_unless_range_gap.txtar
 setop_unless_rate.txtar
 sgn_metric.txtar
+signal_label_matcher_consistency.txtar
 sort_ascending.txtar
 sort_by_label_ascending.txtar
 sort_by_label_desc_mixed_or_mirror.txtar

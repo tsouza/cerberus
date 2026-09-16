@@ -7,7 +7,7 @@
       "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
       "evidence_class": "execution",
       "independence_group": "parser-lowering",
-      "test_ref": "test/spec/promql/range_vector_window.txtar",
+      "test_ref": "test/spec/promql/edge_rate_at_timestamp_range_pinned.txtar",
       "status": "active"
     },
     {
@@ -25,7 +25,7 @@
       "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
       "evidence_class": "execution",
       "independence_group": "promql-parser",
-      "test_ref": "test/spec/promql/label_matcher.txtar",
+      "test_ref": "test/spec/promql/signal_label_matcher_consistency.txtar",
       "status": "active"
     },
     {
@@ -34,7 +34,7 @@
       "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
       "evidence_class": "execution",
       "independence_group": "logql-parser",
-      "test_ref": "test/spec/logql/label_matcher.txtar",
+      "test_ref": "test/spec/logql/signal_label_matcher_consistency.txtar",
       "status": "active"
     },
     {
