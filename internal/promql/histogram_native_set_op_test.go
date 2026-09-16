@@ -197,3 +197,58 @@ func TestLower_ExpHistogram_SetOpComposes(t *testing.T) {
 		}
 	})
 }
+
+// TestLower_ExpHistogram_MixedOrOverForwardedSetOp pins the shape
+// [lowerExpHistogramValuedOrForwardedOperand] (this file) exists for: a
+// mixed `or` whose histogram side is not a plain histogram-valued
+// selector but an `and`/`unless` chain FORWARDING one
+// ([isExpHistogramForwardedThroughSetOp], cerberus issue #2571). No
+// untagged test previously exercised this branch — every existing
+// coverage of the forwarded-through-`or` shape lives in
+// histogram_native_mixed_or_setop_forwarded_chdb_test.go, which is
+// `//go:build chdb` and so does not exist in the mutation lane's
+// untagged build (docs/test-strategy.md's "Covered-and-unpinned" guard
+// against exactly this).
+//
+// The query's LHS, `(latency_exp_hist and up)`, forwards a histogram
+// LHS ([isExpHistogramForwardedThroughSetOp]) over a FLOAT RHS. That RHS
+// is deliberately float, not another histogram selector: an `and`
+// between two histogram-valued operands is itself
+// [isExpHistogramValuedShape] (cerberus issue #2324's [expHistogramSetOp]
+// recognises it directly), which would route through
+// [lowerExpHistogramValuedOrForwardedOperand]'s FIRST branch instead of
+// exercising the forwarded-through-`or` second branch this test targets.
+func TestLower_ExpHistogram_MixedOrOverForwardedSetOp(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	const query = `(latency_exp_hist and up) or up`
+	expr, err := p.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+	if err != nil {
+		t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
+	}
+	outer, ok := plan.(*chplan.VectorSetOp)
+	if !ok {
+		t.Fatalf("lower(%q): plan root is %T, want *chplan.VectorSetOp", query, plan)
+	}
+	if !outer.Mixed {
+		t.Fatalf("lower(%q): VectorSetOp.Mixed = false, want true", query)
+	}
+	if !outer.MixedHistogramOnLeft {
+		t.Fatalf("lower(%q): VectorSetOp.MixedHistogramOnLeft = false, want true (the `and`-forwarded operand is the LHS)", query)
+	}
+	inner, ok := outer.Left.(*chplan.VectorSetOp)
+	if !ok {
+		t.Fatalf("lower(%q): outer.Left is %T, want the forwarded operand's own *chplan.VectorSetOp", query, outer.Left)
+	}
+	if !inner.Histogram {
+		t.Fatalf("lower(%q): forwarded operand's VectorSetOp.Histogram = false, want true", query)
+	}
+}
