@@ -92,6 +92,23 @@ semantic-lane-check:
 semantic-evidence-check:
     node .github/scripts/semantic-evidence-adapter.mjs
 
+# SIGNAL-RESOURCE-001's (issue #3457) end-to-end evidence: seeds ONE
+# deterministic OTel resource independently into each head's own
+# custom-named table and proves it is queryable through that head's own
+# documented resource projection — PromQL/LogQL's dotted-key
+# normalization vs TraceQL's dotted, scope-qualified addressing, and each
+# signal's own native timestamp precision. Needs libchdb.so (see `just
+# chdb-install`). test/semantic/resourcefixture's untagged companion file
+# (the configuration/normalization half of the same contract) already
+# runs under the default `just test-unit` — this recipe is the chDB
+# execution half only, standalone like `perf-profile` /
+# `chclient-integration`: not wired into ci.yml, always safe to run
+# locally or on demand.
+
+# Run SIGNAL-RESOURCE-001's chDB cross-head resource-fixture evidence. Needs libchdb.so.
+semantic-resource-fixture:
+    go test -tags chdb -count=1 ./test/semantic/resourcefixture/...
+
 # Run only the tests and compile probes whose evidence depends on the
 # agpl_oracle tag. The focused filters avoid re-running the entire untagged
 # internal and TXTAR suites after the required check gate already ran them.
