@@ -74,7 +74,7 @@ const (
 	EnvRangeBucketFanoutFoldCostMaxUnits = "CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS"
 )
 
-// ResourceBoundOverrides is the resolved operator override for the four
+// ResourceBoundOverrides is the resolved operator override for the five
 // env vars above. A zero field means "the operator did not set this one" —
 // the caller (emitForHead / routeBExecCtx) leaves the corresponding chsql
 // ctx value unthreaded so chsql falls back to its own compiled-in,
@@ -93,7 +93,7 @@ type ResourceBoundOverrides struct {
 	RangeBucketFanoutFoldCostMaxUnits int64
 }
 
-// ResourceBoundsFromEnv reads the four CERBERUS_CH_* knobs above.
+// ResourceBoundsFromEnv reads the five CERBERUS_CH_* knobs above.
 // An unset var resolves its field to 0 (see ResourceBoundOverrides' own
 // doc); a set var is parsed as a base-10 int64 and must be strictly
 // positive. A parse failure or a non-positive value is returned as an
