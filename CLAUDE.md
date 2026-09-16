@@ -289,5 +289,11 @@ so they cost nothing until something needs them.
   the dependency gotchas.
 - `docs/upstream-forks.md` — the `tsouza/*` fork boundary, the parser dependency map, and the
   transitive-dependency `replace` entries.
+- `docs/semantic-guide.md` — generated: task → affected contracts → canonical execution →
+  counterexample search → optional adversarial probes → required reference/release evidence, a
+  compact contract index, and the selected architectural rules drawn from `test/semantic/*.json`.
+  Links `docs/semantic-conformance.md` for the full per-contract report and `just semantic-impact`
+  for a live patch-impact read. Never a merge gate by itself — see the doc's own "Metadata
+  integrity" section.
 - `docs/observability.md`, `docs/health.md`, `docs/performance.md`, `docs/solver.md`,
   `docs/coverage.md`, `docs/forbid-skip.md`, `docs/migration.md` — subsystem references.

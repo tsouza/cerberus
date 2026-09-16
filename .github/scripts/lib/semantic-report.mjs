@@ -517,7 +517,7 @@ function mdEscape(text) {
 // keeps the rendered text equal to the source string. Never applied to text
 // already inside a backtick code span (there these characters are already
 // inert, and escaping them would print the backslashes literally).
-function mdEscapeProse(text) {
+export function mdEscapeProse(text) {
   return String(text)
     .replaceAll("\\", "\\\\")
     .replaceAll("`", "\\`")

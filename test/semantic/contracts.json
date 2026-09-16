@@ -622,7 +622,7 @@
     },
     {
       "id": "ARCH-TYPED-SQL-ONLY",
-      "statement": "internal/chsql/** composes ClickHouse SQL exclusively through typed chsql Frags (QueryBuilder slots, and expression constructors such as Call / Eq / And / Cast / Lambda1 / Subquery / InlineLit); no file outside internal/chsql/builder.go and the two KNOWN_GOOD sites in internal/chsql/emit_node.go and internal/chsql/emit.go writes a raw SQL token via strings.Builder, writeSQL(...), or sb.Write*, and no verbatim(...) call anywhere in internal/chsql/** builds an expression shape via string concatenation.",
+      "statement": "internal/chsql/** composes ClickHouse SQL exclusively through typed chsql Frags (QueryBuilder slots, and expression constructors such as Call / Eq / And / Cast / Lambda1 / Subquery / InlineLit; CLAUDE.md invariant 10); no file outside internal/chsql/builder.go and the two KNOWN_GOOD sites in internal/chsql/emit_node.go and internal/chsql/emit.go writes a raw SQL token via strings.Builder, writeSQL(...), or sb.Write*, and no verbatim(...) call anywhere in internal/chsql/** builds an expression shape via string concatenation.",
       "scope": "architecture",
       "applicable_heads": "universal",
       "applicable_capabilities": [],
@@ -644,7 +644,7 @@
     },
     {
       "id": "ARCH-REGENERATED-ARTIFACTS-ONLY",
-      "statement": "Every generated artefact family (the test/spec/ TXTAR goldens, the solver decision baseline, the parity ledgers, the cardinality baseline, the coverage-floor ledger, and their siblings) is rewritten only by its `just update-golden <shard>` recipe (or, for the coverage floor, `just update-coverage-floor`), never hand-edited. `just update-golden` refuses to run against a shard set narrower than the current diff implies, and every generated path is marked `-merge` in .gitattributes so a three-way line merge conflicts loudly instead of silently blending records.",
+      "statement": "Every generated artefact family (the test/spec/ TXTAR goldens, the solver decision baseline, the parity ledgers, the cardinality baseline, the coverage-floor ledger, and their siblings) is rewritten only by its `just update-golden <shard>` recipe (or, for the coverage floor, `just update-coverage-floor`), never hand-edited (CLAUDE.md invariant 9). `just update-golden` refuses to run against a shard set narrower than the current diff implies, and every generated path is marked `-merge` in .gitattributes so a three-way line merge conflicts loudly instead of silently blending records.",
       "scope": "architecture",
       "applicable_heads": "universal",
       "applicable_capabilities": [],
@@ -667,7 +667,7 @@
     },
     {
       "id": "ARCH-NO-SILENT-SKIP-OR-TOLERANCE",
-      "statement": "No test suite silently skips, soft-asserts, silently recovers, or tolerates an expected failure: a Go test never calls t.Skip / t.Skipf / t.SkipNow, never soft-asserts via assert.Contains(x, \"\") or assert.ElementsMatch(x, []T{}), and never wraps a panic in defer recover() to swallow it; a compatibility overlay never carries a non-empty should_skip: block; no test escape-hatch token (EXPECTED_TOLERATED, isKnownTolerated, skipReason, and siblings) exists outside its own documented origin; a Playwright spec never calls test.skip / test.fixme / test.only; and a Gherkin scenario never carries one of forbid-skip.mjs's scenario-suppressing tags (its own 'feature-discipline' CHECK names the closed set) nor routes through godog.ErrSkip / ErrPending.",
+      "statement": "No test suite silently skips, soft-asserts, silently recovers, or tolerates an expected failure (CLAUDE.md invariant 6): a Go test never calls t.Skip / t.Skipf / t.SkipNow, never soft-asserts via assert.Contains(x, \"\") or assert.ElementsMatch(x, []T{}), and never wraps a panic in defer recover() to swallow it; a compatibility overlay never carries a non-empty should_skip: block; no test escape-hatch token (EXPECTED_TOLERATED, isKnownTolerated, skipReason, and siblings) exists outside its own documented origin; a Playwright spec never calls test.skip / test.fixme / test.only; and a Gherkin scenario never carries one of forbid-skip.mjs's scenario-suppressing tags (its own 'feature-discipline' CHECK names the closed set) nor routes through godog.ErrSkip / ErrPending.",
       "scope": "architecture",
       "applicable_heads": "universal",
       "applicable_capabilities": [],
@@ -689,7 +689,7 @@
     },
     {
       "id": "ARCH-AGPL-BINARY-REACHABILITY",
-      "statement": "No AGPLv3 package is reachable from ./cmd/cerberus: `go list -deps ./cmd/cerberus`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.",
+      "statement": "No AGPLv3 package is reachable from ./cmd/cerberus (CLAUDE.md invariant 14): `go list -deps ./cmd/cerberus`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.",
       "scope": "architecture",
       "applicable_heads": "universal",
       "applicable_capabilities": [],
@@ -711,7 +711,7 @@
     },
     {
       "id": "ARCH-PARSER-ACCESSOR-DISCIPLINE",
-      "statement": "No package under internal/** uses unsafe.Pointer or reflect.Value.FieldByName against an upstream parser's internals; when cerberus needs a field or method a parser does not export, the accessor is added to the relevant tsouza/* upstream fork (docs/upstream-forks.md), the go.mod replace directive is bumped, and internal/** consumes the typed accessor instead.",
+      "statement": "No package under internal/** uses unsafe.Pointer or reflect.Value.FieldByName against an upstream parser's internals (CLAUDE.md invariant 11); when cerberus needs a field or method a parser does not export, the accessor is added to the relevant tsouza/* upstream fork (docs/upstream-forks.md), the go.mod replace directive is bumped, and internal/** consumes the typed accessor instead.",
       "scope": "architecture",
       "applicable_heads": "universal",
       "applicable_capabilities": [],
@@ -733,7 +733,7 @@
     },
     {
       "id": "ARCH-PACKAGE-DEPENDENCY-DECLARATION",
-      "statement": "Every internal/** package is declared in exactly one component of .go-arch-lint.yml (or as a commonComponent, importable from every layer), and every internal/** package that carries statements is enrolled with a floor in test/coverage-floor/. Both registrations are required for a new package; go-arch-lint enforces the first, coverage-package-floor.mjs the second, and both gates run in CI.",
+      "statement": "Every internal/** package is declared in exactly one component of .go-arch-lint.yml (or as a commonComponent, importable from every layer), and every internal/** package that carries statements is enrolled with a floor in test/coverage-floor/ (CLAUDE.md invariant 16). Both registrations are required for a new package; go-arch-lint enforces the first, coverage-package-floor.mjs the second, and both gates run in CI.",
       "scope": "architecture",
       "applicable_heads": "universal",
       "applicable_capabilities": [],
