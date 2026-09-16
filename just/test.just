@@ -84,9 +84,9 @@ semantic-lane-check:
 # Resolves every semantic binding's test_ref against the property-shape
 # rosters, the TXTAR spec corpus, the surface-parity/rejection-parity
 # ledgers and the QL feature inventory, and reports any that dangle (issue
-# #3428). Not yet wired into `ci.yml` as a standing gate — see
-# .github/scripts/lib/semantic-evidence-adapter.mjs's own header and issue
-# #3475 for why — but always safe to run locally.
+# #3428). Wired into the required `forbid-skip` job (issue #3436), enrolled
+# in .github/ci-lanes.json as lane `ci.semantic-conformance` — also always
+# safe to run locally.
 
 # Resolve semantic bindings against their claimed evidence.
 semantic-evidence-check:
