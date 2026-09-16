@@ -290,6 +290,15 @@
       "status": "active"
     },
     {
+      "id": "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
+      "contract": "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "random-property-sweep",
+      "test_ref": "test/property/oracle/traceql/evaluator.go",
+      "status": "active"
+    },
+    {
       "id": "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
       "contract": "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
       "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",

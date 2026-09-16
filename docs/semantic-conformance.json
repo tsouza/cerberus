@@ -6,9 +6,9 @@
     "contracts": {
       "draft": 0,
       "active": 50,
-      "superseded": 1,
+      "superseded": 2,
       "explicit_deficit": 1,
-      "total": 52
+      "total": 53
     },
     "verifiers": {
       "draft": 0,
@@ -18,11 +18,11 @@
     },
     "bindings": {
       "draft": 0,
-      "active": 117,
-      "total": 117
+      "active": 118,
+      "total": 118
     },
     "executions": {
-      "total": 106
+      "total": 107
     }
   },
   "assurance_summary": {
@@ -30,7 +30,8 @@
     "excluded": {
       "draft": [],
       "superseded": [
-        "PROMQL-INSTANT-VECTOR-LOOKBACK-LEGACY"
+        "PROMQL-INSTANT-VECTOR-LOOKBACK-LEGACY",
+        "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY"
       ],
       "explicit_deficit": [
         "PROMQL-LABEL-REPLACE-CAPTURE-GROUP-PARTICIPATION"
@@ -43,7 +44,7 @@
     "surface-parity-symbol": 0,
     "rejection-parity-site": 1,
     "oracle-inventory-case": 0,
-    "unclassified": 70
+    "unclassified": 71
   },
   "lane_inventory": {
     "lanes": [
@@ -123,6 +124,7 @@
           "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
           "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
           "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
@@ -247,6 +249,7 @@
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
           "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
           "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
@@ -362,6 +365,7 @@
           "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
           "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
           "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
@@ -486,6 +490,7 @@
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
           "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
           "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
@@ -543,6 +548,7 @@
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
           "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
           "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
           "BINDING-TRACEQL-TRANSPORT-ARM-HTTP"
         ],
@@ -1197,6 +1203,7 @@
           "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
           "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
           "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
@@ -1446,6 +1453,7 @@
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
           "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
           "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
           "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY",
@@ -1634,6 +1642,7 @@
       "TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION",
       "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
       "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY",
+      "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY",
       "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET",
       "TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION",
       "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
@@ -14794,7 +14803,7 @@
     },
     {
       "id": "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
-      "statement": "TraceQL has three structurally distinct sources of automated evidence, and none stands in for another. (1) The LOCAL property oracle (test/property/oracle/traceql/evaluator.go) is a from-scratch, in-tree spec implementation with zero dependency on Tempo's own code, whose evidence is row-count-only (TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY). (2) The IN-PROCESS reference evaluator (test/spec/parityoracle/traceql/oracle.go) runs the REAL upstream tempotraceql engine against a real vparquet4.Span built through a documented fork accessor, so it is identity-aware (TraceID/SpanID) and exercises Tempo's actual structural-operator code, but it never starts a live Tempo server and never crosses any wire/HTTP boundary. (3) The LIVE reference-runtime differential (compatibility/tempo) runs a real, separately-started reference Tempo binary end-to-end over both HTTP and gRPC (TRACEQL-TRANSPORT-ARM-INDEPENDENCE) and diffs the actual wire responses, TraceID-keyed. A pass from any one source is never reported, or treated internally, as corroborating another source's claim.",
+      "statement": "TraceQL has three structurally distinct sources of automated evidence, and none stands in for another. (1) The LOCAL property oracle (test/property/oracle/traceql/evaluator.go) is a from-scratch, in-tree spec implementation with zero dependency on Tempo's own code, whose /api/search evidence is TraceID-identity-aware at the trace level (TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY). (2) The IN-PROCESS reference evaluator (test/spec/parityoracle/traceql/oracle.go) runs the REAL upstream tempotraceql engine against a real vparquet4.Span built through a documented fork accessor, so it is identity-aware (TraceID/SpanID) and exercises Tempo's actual structural-operator code, but it never starts a live Tempo server and never crosses any wire/HTTP boundary. (3) The LIVE reference-runtime differential (compatibility/tempo) runs a real, separately-started reference Tempo binary end-to-end over both HTTP and gRPC (TRACEQL-TRANSPORT-ARM-INDEPENDENCE) and diffs the actual wire responses, TraceID-keyed. A pass from any one source is never reported, or treated internally, as corroborating another source's claim.",
       "scope": "head",
       "applicable_heads": [
         "HEAD-TRACEQL"
@@ -14806,7 +14815,7 @@
       "owner": "cerberus-core",
       "inherits_from": null,
       "related_contracts": [
-        "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY",
+        "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY",
         "TRACEQL-TRANSPORT-ARM-INDEPENDENCE",
         "TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY"
       ],
@@ -15148,7 +15157,7 @@
       ],
       "applicable_capabilities": [],
       "authority": "operational-invariant",
-      "status": "active",
+      "status": "superseded",
       "deficit_reason": null,
       "owner": "cerberus-core",
       "inherits_from": null,
@@ -15157,7 +15166,7 @@
         "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE"
       ],
       "replaces": null,
-      "replaced_by": null,
+      "replaced_by": "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY",
       "blind_spots": [
         "Because every OutcomeRow carries an empty label map by construction (both oracleFn and cerberusFn in test/property/traceql_test.go), the framework's CompareOutcomes groups every row under one label key \"{}\" — two runs that matched a DIFFERENT set of spans but the SAME COUNT are indistinguishable to this property lane; TRACEQL-ORACLE-AUTHORITY-SEPARATION's identity-aware sources are what close that gap, not this one.",
         "The 17-shape roster (test/property/gen/shapes.go's traceQLShapeRoster) fixes which query shapes are drawn; a shape combination outside the roster (e.g. select() chained after a structural operator, or a nested aggregate) carries no property evidence of any kind, count-only or otherwise."
@@ -15177,7 +15186,7 @@
         ],
         "missing_evidence_classes": [],
         "missing_independence_groups": [],
-        "assured": true
+        "assured": false
       },
       "observed_evidence": {
         "byEvidenceClass": {
@@ -15288,6 +15297,156 @@
       ]
     },
     {
+      "id": "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY",
+      "statement": "The randomized TraceQL property sweep's /api/search comparator (test/property/traceql_test.go, test/property/oracle/traceql/evaluator.go, test/property/framework.go's CompareTraceIdentityOutcomes) expresses every outcome as a per-TraceID multiset comparison against Tempo's /api/search wire contract — TraceSummary.TraceID plus, for a selector/structural/select() shape, SpanSet.Matched (the trace's true matched-span count) — rather than a bare row count. A run that matched the wrong traces at the same total row count, a missing or duplicated trace identity, or a scope-swapped match is caught. A trace-scoped aggregate pipeline shape (count()/avg|min|max|sum(duration)) compares only the SET of satisfying TraceIDs, since /api/search collapses an aggregate's matching rows to one summary per trace with no SpanSet at all (see TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE). Neither shape infers per-SPAN identity — SpanID is never compared — because /api/search only exposes a capped spanSet as a diagnostic sample, not the true matched-span roster.",
+      "scope": "head",
+      "applicable_heads": [
+        "HEAD-TRACEQL"
+      ],
+      "applicable_capabilities": [],
+      "authority": "reference-implementation",
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "inherits_from": null,
+      "related_contracts": [
+        "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
+        "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET",
+        "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE"
+      ],
+      "replaces": "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY",
+      "replaced_by": null,
+      "blind_spots": [
+        "SpanID identity within a matched trace is never verified — only the trace-level TraceID multiset and the wire's own SpanSet.Matched count are compared; a system that matched the wrong SPAN inside the right trace, holding that trace's total matched-span count constant, is indistinguishable from a correct match to this property lane.",
+        "The trace-scoped aggregate shapes (count()/avg|min|max|sum(duration)) compare only the SET of satisfying TraceIDs, never a per-trace multiplicity — /api/search's aggregate-shape summaries carry no SpanSet at all (the Aggregate collapses to one row per trace before the wire shaper ever sees it), so there is no wire-observable per-trace count beyond presence/absence for these shapes; see TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE.",
+        "The 17-shape roster (test/property/gen/shapes.go's traceQLShapeRoster) still fixes which query shapes are drawn; a shape combination outside the roster carries no property evidence of any kind, identity-aware or otherwise."
+      ],
+      "required_evidence_classes": [
+        "property"
+      ],
+      "required_independence_groups": [
+        "random-property-sweep"
+      ],
+      "bound_evidence": {
+        "covered_evidence_classes": [
+          "property"
+        ],
+        "covered_independence_groups": [
+          "random-property-sweep"
+        ],
+        "missing_evidence_classes": [],
+        "missing_independence_groups": [],
+        "assured": true
+      },
+      "observed_evidence": {
+        "byEvidenceClass": {
+          "property": {
+            "status": "pass",
+            "binding_ids": [
+              "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP"
+            ]
+          }
+        },
+        "byIndependenceGroup": {
+          "random-property-sweep": {
+            "status": "pass",
+            "binding_ids": [
+              "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP"
+            ]
+          }
+        },
+        "overall": "pass"
+      },
+      "bindings": [
+        {
+          "id": "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
+          "verifier": {
+            "id": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+            "name": "Property-based oracle differential",
+            "substrate": "chdb",
+            "relative_cost": "medium",
+            "detects": [
+              "value-level divergence across a wide generated input space",
+              "a regression reintroduced into a previously-fixed bug class the generator's dataset specifically engineers for"
+            ],
+            "cannot_detect": [
+              "divergence in a shape the generator's grammar or dataset pool never draws — each gen/*.go file documents its own deliberate exclusions",
+              "drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)"
+            ],
+            "complemented_by": [
+              "VERIFIER-REFERENCE-DIFFERENTIAL"
+            ]
+          },
+          "evidence_class": "property",
+          "independence_group": "random-property-sweep",
+          "test_ref": "test/property/oracle/traceql/evaluator.go",
+          "evidence_system": null,
+          "observed": {
+            "status": "pass",
+            "observed_at": "2026-09-16T12:00:00Z",
+            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
+            "execution_id": "EXEC-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP-20260916",
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
+          },
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.property",
+              "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "security.codeql",
+              "context_name": "CodeQL",
+              "merge_required": true,
+              "release_required": true
+            }
+          ]
+        }
+      ],
+      "complement_gaps": [
+        {
+          "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+          "missing_complements": [
+            "VERIFIER-REFERENCE-DIFFERENTIAL"
+          ]
+        }
+      ]
+    },
+    {
       "id": "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET",
       "statement": "`| select(<attr>, ...)` adds the named attributes as extra projected columns on an already-matched spanset; it never changes which spans or traces satisfy the preceding filter/structural/aggregate pipeline stage — a query's result row count (and TraceID/SpanID set) is identical with or without a trailing select().",
       "scope": "head",
@@ -15300,11 +15459,13 @@
       "deficit_reason": null,
       "owner": "cerberus-core",
       "inherits_from": null,
-      "related_contracts": [],
+      "related_contracts": [
+        "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY"
+      ],
       "replaces": null,
       "replaced_by": null,
       "blind_spots": [
-        "The property oracle folds select() into the SAME row-count code path as a bare selector (test/property/oracle/traceql/evaluator.go's Evaluate: pipelineNone and pipelineSelect share one branch) — the property evidence proves row-count invariance, not that the PROJECTED COLUMN VALUES themselves are correct; that is the txtar fixtures' (select_attrs.txtar / select_one_attr.txtar / select_intrinsics.txtar) expected_rows job, not the property sweep's.",
+        "The property oracle folds select() into the SAME per-span TraceID-multiset code path as a bare selector (test/property/oracle/traceql/evaluator.go's Evaluate: pipelineNone and pipelineSelect share one branch) — the property evidence proves TraceID-multiset invariance (TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY), not that the PROJECTED COLUMN VALUES themselves are correct; that is the txtar fixtures' (select_attrs.txtar / select_one_attr.txtar / select_intrinsics.txtar) expected_rows job, not the property sweep's.",
         "The generator draws only a single select() attribute (traceQLSelectShape always selects span.http.method); a multi-attribute select() list is exercised only by the txtar fixtures, never swept."
       ],
       "required_evidence_classes": [
@@ -16174,12 +16335,12 @@
       "owner": "cerberus-core",
       "inherits_from": null,
       "related_contracts": [
-        "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY"
+        "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY"
       ],
       "replaces": null,
       "replaced_by": null,
       "blind_spots": [
-        "The property oracle's own outcome shape (test/property/oracle/traceql/evaluator.go's Evaluate doc) emits one EMPTY-LABEL row per matching trace; it proves the ROW COUNT is trace-scoped, not that any individual trace's identity was the right one — see TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY for that distinction.",
+        "The property oracle's outcome rows carry the matching trace's TraceID (test/property/oracle/traceql/evaluator.go's Evaluate doc) and the comparator multiset-compares TraceIDs (TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY) — but only a per-trace SET for this pipeline shape, since /api/search's aggregate-shape summaries carry no SpanSet/Matched count to compare a multiplicity against.",
         "gen.TraceQLDataset draws at most 3 traces per iteration (traceQLMaxTraces); a dataset with many more traces sharing the same threshold-crossing aggregate value is not exercised by the property sweep."
       ],
       "required_evidence_classes": [

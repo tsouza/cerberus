@@ -300,6 +300,7 @@ func TestRunShapeExamplesRejectsInvalidRosterBeforeCallbacks(t *testing.T) {
 					systemCalls++
 					return Outcome{}
 				},
+				nil,
 			)
 			if got != tc.want {
 				t.Fatalf("runShapeExamples() = %q, want %q", got, tc.want)
@@ -636,4 +637,146 @@ func TestValidateDeterministicOutcomesRequiresRowEvidence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func traceRows(ids ...string) []OutcomeRow {
+	rows := make([]OutcomeRow, len(ids))
+	for i, id := range ids {
+		rows[i] = OutcomeRow{Labels: map[string]string{}, TraceID: id}
+	}
+	return rows
+}
+
+// TestCompareTraceIdentityOutcomesCatchesSubstitutedIdentity pins the exact
+// gap issue #3443 closes: the old row-count-only comparator passed when the
+// two sides matched the SAME NUMBER of rows but different traces entirely.
+// Two matched spans on each side (equal total row count) but a wholly
+// different TraceID must now fail.
+func TestCompareTraceIdentityOutcomesCatchesSubstitutedIdentity(t *testing.T) {
+	oracle := Outcome{Rows: traceRows("trace-a", "trace-a")}
+	system := Outcome{Rows: traceRows("trace-b", "trace-b")}
+
+	if got := CompareTraceIdentityOutcomes(oracle, system); got == "" {
+		t.Fatal("CompareTraceIdentityOutcomes passed a substituted-TraceID same-row-count negative control")
+	}
+
+	// The row-count-only comparator this replaces would have passed the
+	// same pair — pinning that is what makes the assertion above meaningful
+	// rather than a comparator that just happens to always fail.
+	if got := ValidateOutcomes(oracle, system); got != "" {
+		t.Fatalf("row-count comparator unexpectedly rejected the same pair (= %q); the negative control above proves nothing", got)
+	}
+}
+
+func TestCompareTraceIdentityOutcomesFailsClosed(t *testing.T) {
+	tests := []struct {
+		name       string
+		oracle     Outcome
+		system     Outcome
+		wantPasses bool
+		wantParts  []string
+	}{
+		{
+			name:       "identical multiset passes regardless of order",
+			oracle:     Outcome{Rows: traceRows("t1", "t1", "t2")},
+			system:     Outcome{Rows: traceRows("t2", "t1", "t1")},
+			wantPasses: true,
+		},
+		{
+			name:      "missing trace",
+			oracle:    Outcome{Rows: traceRows("t1")},
+			system:    Outcome{},
+			wantParts: []string{"missing trace in system: t1"},
+		},
+		{
+			name:      "extra trace",
+			oracle:    Outcome{},
+			system:    Outcome{Rows: traceRows("t1")},
+			wantParts: []string{"extra trace in system: t1"},
+		},
+		{
+			name:      "duplicated match inside the right trace",
+			oracle:    Outcome{Rows: traceRows("t1")},
+			system:    Outcome{Rows: traceRows("t1", "t1")},
+			wantParts: []string{"trace t1: matched-span count want=1 got=2"},
+		},
+		{
+			name:      "missing span inside the right trace",
+			oracle:    Outcome{Rows: traceRows("t1", "t1", "t1")},
+			system:    Outcome{Rows: traceRows("t1", "t1")},
+			wantParts: []string{"trace t1: matched-span count want=3 got=2"},
+		},
+		{
+			name:      "scope-swapped match: right count, wrong trace pair",
+			oracle:    Outcome{Rows: traceRows("t1", "t2")},
+			system:    Outcome{Rows: traceRows("t1", "t3")},
+			wantParts: []string{"missing trace in system: t2", "extra trace in system: t3"},
+		},
+		{
+			name:      "empty TraceID on the oracle side is a comparator-usage bug",
+			oracle:    Outcome{Rows: []OutcomeRow{{Labels: map[string]string{}}}},
+			system:    Outcome{Rows: traceRows("t1")},
+			wantParts: []string{"oracle: row[0] has an empty TraceID"},
+		},
+		{
+			name:      "empty TraceID on the system side is a comparator-usage bug",
+			oracle:    Outcome{Rows: traceRows("t1")},
+			system:    Outcome{Rows: []OutcomeRow{{Labels: map[string]string{}}}},
+			wantParts: []string{"system: row[0] has an empty TraceID"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CompareTraceIdentityOutcomes(tc.oracle, tc.system)
+			if tc.wantPasses {
+				if got != "" {
+					t.Fatalf("CompareTraceIdentityOutcomes() = %q, want success", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatal("CompareTraceIdentityOutcomes() passed a fail-closed negative control")
+			}
+			for _, part := range tc.wantParts {
+				if !strings.Contains(got, part) {
+					t.Errorf("CompareTraceIdentityOutcomes() = %q, want substring %q", got, part)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateOutcomesWithComparatorStillFailsClosedOnErrors proves
+// CompareFn never sees either side when one has errored — an oracle or
+// system error must stay red under a custom comparator exactly as it does
+// under the default one, per validateOutcomesWith's ordering.
+func TestValidateOutcomesWithComparatorStillFailsClosedOnErrors(t *testing.T) {
+	alwaysPass := func(Outcome, Outcome) string { return "" }
+	oracleErr := errors.New("oracle rejected generated shape")
+
+	got := validateOutcomesWith(Outcome{Err: oracleErr}, Outcome{Rows: traceRows("t1")}, alwaysPass)
+	if !strings.Contains(got, "oracle error") || !strings.Contains(got, oracleErr.Error()) {
+		t.Fatalf("validateOutcomesWith() = %q, want it to report the oracle error without ever reaching the comparator", got)
+	}
+}
+
+// TestRunUsesConfiguredComparator proves Config.Compare actually reaches
+// the rapid.Check loop: a comparator that ignores the values entirely must
+// let a value mismatch through, and one that always fails must reject an
+// otherwise-agreeing pair — either behavior only shows up if Run is really
+// calling the configured comparator instead of its own default.
+func TestRunUsesConfiguredComparator(t *testing.T) {
+	dgen := func(_ *rapid.T) Dataset {
+		return Dataset{
+			DDL:     "CREATE TABLE metrics",
+			Metrics: &MetricsModel{Series: []SeriesData{{MetricName: "up", Points: []Point{{Value: 1}}}}},
+		}
+	}
+	qgen := func(_ *rapid.T, _ Dataset) Query { return Query{ShapeID: "test.shape.compare-override", String: "up"} }
+
+	t.Run("always-pass comparator overrides a real mismatch", func(t *testing.T) {
+		oracle := func(_ Dataset, _ Query) Outcome { return Outcome{Rows: []OutcomeRow{{Value: 1}}} }
+		system := func(_ Dataset, _ Query) Outcome { return Outcome{Rows: []OutcomeRow{{Value: 2}}} }
+		Run(t, Config{Compare: func(Outcome, Outcome) string { return "" }}, dgen, qgen, oracle, system)
+	})
 }

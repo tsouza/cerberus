@@ -469,7 +469,12 @@ const PACKAGE_LINE_RE = /^package\s+(\S+)\s*$/m;
 // Matches `property.RunShapeExamples(\n\tt,\n\tgen.PromQLShapeIDs(),` and the
 // RunShapeCases sibling — the exact two-argument opening every live-roster
 // property test in this repo uses (see test/property/promql_test.go etc.).
-const LIVE_ROSTER_CALL_RE = /property\.(RunShapeExamples|RunShapeCases)\(\s*t,\s*(gen\.\w+)\(\)/;
+// RunShapeExamplesWithComparator (issue #3443) is the same opening with a
+// third, comparator-callback argument — test/property/traceql_test.go's own
+// roster call — so it must match here too or the family silently vanishes
+// from discovery.
+const LIVE_ROSTER_CALL_RE =
+  /property\.(RunShapeExamples(?:WithComparator)?|RunShapeCases)\(\s*t,\s*(gen\.\w+)\(\)/;
 // Any of the three randomized-search entry points this repo's property
 // tests use (test/regression/property_live_roster_floor_test.go's own
 // propertyRandomRunnerFloor pins the same three call names).

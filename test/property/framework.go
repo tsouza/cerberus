@@ -360,18 +360,29 @@ type Outcome struct {
 // and cerberus must populate it for stream-shaped outcomes; the
 // comparator's row matcher pairs entries by (label set, timestamp,
 // line) so two rows with identical labels + ts but different lines
-// won't collide.
+// won't collide. TraceID carries a TraceQL /api/search row's trace
+// identity — both the oracle (test/property/oracle/traceql.Evaluate) and
+// cerberus (traceql_test.go's runCerberusTraceQL) populate it from the
+// same wire contract (Tempo's TraceSummary.TraceID), so
+// CompareTraceIdentityOutcomes can catch a run that matched the wrong
+// trace at the same row count — something the default label-keyed
+// comparator, which never inspects TraceID, cannot.
 //
-// Exactly one of Histogram, Line, or Value is meaningful for a row. The
-// comparator checks histogram structure and every numeric field before
-// falling back to line or float comparison, so a histogram can never pass
-// vacuously through Value's zero value.
+// Exactly one of Histogram, Line, Value, or TraceID is the identity a row's
+// family compares on. The comparator checks histogram structure and every
+// numeric field before falling back to line or float comparison, so a
+// histogram can never pass vacuously through Value's zero value;
+// CompareTraceIdentityOutcomes is a separate, opt-in comparator (see
+// CompareFn) that reads TraceID instead of Labels, so a TraceQL row never
+// needs to smuggle its trace identity into the generic label map the way
+// #3442 moved TraceQL's dataset model away from.
 type OutcomeRow struct {
 	Labels      map[string]string
 	TimestampMs int64
 	Value       float64
 	Histogram   *Histogram
 	Line        string
+	TraceID     string
 }
 
 // Histogram is the decoded Prometheus HTTP representation of one native-
@@ -426,14 +437,34 @@ type ShapeExampleFn[S ~string] func(shapeID S, seed int) (Dataset, Query)
 // clients, request contexts, and failures are all owned by the correct test.
 type ShapeOutcomeFn func(t *testing.T, d Dataset, q Query) Outcome
 
-// Config is a forward-looking knob bag. Today it carries no fields
-// that the framework reads — rapid's per-test iteration count is
+// CompareFn is a family-specific successful-outcome comparator. Passed via
+// Config.Compare (or RunShapeExamplesWithComparator), it replaces the
+// default per-label-key row-count comparison (the unexported
+// compareOutcomeRows) for a family whose outcome rows carry stronger,
+// endpoint-specific identity evidence than a generic (labels, ts, value)
+// triple can express — see CompareTraceIdentityOutcomes for the concrete
+// TraceQL case.
+//
+// Compare only ever runs once the shared fail-closed error check has
+// already passed both sides (see validateOutcomesWith) — an oracle or
+// system error can never reach a family comparator, so no comparator can
+// accidentally launder an error state into a pass.
+type CompareFn func(oracle, system Outcome) string
+
+// Config is a forward-looking knob bag. Compare is the one field the
+// framework reads today — rapid's per-test iteration count is instead
 // controlled via the `-rapid.checks=N` CLI flag (default 100), so a
-// developer chasing a flake or running an overnight sweep crank N up
+// developer chasing a flake or running an overnight sweep cranks N up
 // without touching the runner. The type stays exported so future
 // fields (e.g., per-runner timeout, generator-specific knobs) can land
 // without breaking the Run signature.
-type Config struct{}
+type Config struct {
+	// Compare overrides the default row-count comparator Run uses once both
+	// sides have produced a successful Outcome. Nil keeps the default
+	// (label-keyed multiset row-count comparison) every non-TraceQL family
+	// uses.
+	Compare CompareFn
+}
 
 // ValidateGeneratedQuery rejects vacuous generator output before either side
 // executes. A randomized property without a stable shape ID cannot contribute
@@ -702,7 +733,30 @@ func RunShapeExamples[S ~string](
 	system ShapeOutcomeFn,
 ) {
 	t.Helper()
-	if invalid := runShapeExamples(t, shapeIDs, example, oracle, system); invalid != "" {
+	if invalid := runShapeExamples(t, shapeIDs, example, oracle, system, nil); invalid != "" {
+		t.Fatal(invalid)
+	}
+}
+
+// RunShapeExamplesWithComparator is RunShapeExamples's sibling for a family
+// whose outcome rows carry evidence a generic label-keyed row count cannot
+// interpret (see CompareFn) — TraceQL's TraceID-identity comparator is the
+// motivating case. compare must be non-nil: a nil comparator would silently
+// fall back to RunShapeExamples's default and mask the caller's explicit
+// intent to use a stronger check.
+func RunShapeExamplesWithComparator[S ~string](
+	t *testing.T,
+	shapeIDs []S,
+	example ShapeExampleFn[S],
+	oracle ShapeOutcomeFn,
+	system ShapeOutcomeFn,
+	compare CompareFn,
+) {
+	t.Helper()
+	if compare == nil {
+		t.Fatal("RunShapeExamplesWithComparator requires a non-nil comparator")
+	}
+	if invalid := runShapeExamples(t, shapeIDs, example, oracle, system, compare); invalid != "" {
 		t.Fatal(invalid)
 	}
 }
@@ -713,10 +767,14 @@ func runShapeExamples[S ~string](
 	example ShapeExampleFn[S],
 	oracle ShapeOutcomeFn,
 	system ShapeOutcomeFn,
+	compare CompareFn,
 ) string {
 	t.Helper()
 	if invalid := validateShapeRoster(shapeIDs); invalid != "" {
 		return invalid
+	}
+	if compare == nil {
+		compare = compareOutcomeRows
 	}
 	for _, shapeID := range shapeIDs {
 		shapeID := shapeID
@@ -742,7 +800,7 @@ func runShapeExamples[S ~string](
 				if len(oracleOutcome.Rows) == 0 {
 					continue
 				}
-				if diff := ValidateDeterministicOutcomes(oracleOutcome, system(t, dataset, query)); diff != "" {
+				if diff := validateDeterministicOutcomesWith(oracleOutcome, system(t, dataset, query), compare); diff != "" {
 					t.Fatalf("property shape %q failed\n--- query ---\n%s\n--- dataset ---\n%s\n--- diff ---\n%s",
 						query.ShapeID, query.String, dumpDataset(dataset), diff)
 				}
@@ -774,13 +832,18 @@ func runShapeExamples[S ~string](
 // `-rapid.checks=1000` for a wider sweep.
 func Run(
 	t *testing.T,
-	_ Config,
+	cfg Config,
 	dgen DatasetGen,
 	qgen QueryGen,
 	oracle OracleFn,
 	ch CerberusFn,
 ) {
 	t.Helper()
+
+	compare := cfg.Compare
+	if compare == nil {
+		compare = compareOutcomeRows
+	}
 
 	rapid.Check(t, func(rt *rapid.T) {
 		ds := dgen(rt)
@@ -795,7 +858,7 @@ func Run(
 		oracleOut := oracle(ds, q)
 		cerberusOut := ch(ds, q)
 
-		if diff := ValidateOutcomes(oracleOut, cerberusOut); diff != "" {
+		if diff := validateOutcomesWith(oracleOut, cerberusOut, compare); diff != "" {
 			rt.Fatalf("property drift\n--- query ---\n%s\nevalTs=%d\n--- dataset ---\n%s\n--- diff ---\n%s",
 				q.String, q.EvalTs, dumpDataset(ds), diff)
 		}
@@ -848,6 +911,14 @@ func RunLogs(
 // The function is pure so negative controls can prove every error state is
 // rejected without booting chDB or an HTTP handler.
 func ValidateOutcomes(oracle, system Outcome) string {
+	return validateOutcomesWith(oracle, system, compareOutcomeRows)
+}
+
+// validateOutcomesWith is ValidateOutcomes parameterised over the successful-
+// outcome comparator. The fail-closed error check runs unconditionally,
+// before compare ever sees either side — see CompareFn's doc for why that
+// ordering is load-bearing.
+func validateOutcomesWith(oracle, system Outcome, compare CompareFn) string {
 	var failures []string
 	if oracle.Err != nil {
 		failures = append(failures, fmt.Sprintf("oracle error: %v", oracle.Err))
@@ -858,7 +929,7 @@ func ValidateOutcomes(oracle, system Outcome) string {
 	if len(failures) > 0 {
 		return strings.Join(failures, "\n")
 	}
-	return compareOutcomeRows(oracle, system)
+	return compare(oracle, system)
 }
 
 // ValidateDeterministicOutcomes is the non-vacuity verdict for an enrolled
@@ -867,7 +938,14 @@ func ValidateOutcomes(oracle, system Outcome) string {
 // evidence on both sides. An empty agreement therefore fails after the normal
 // fail-closed error and value comparison.
 func ValidateDeterministicOutcomes(oracle, system Outcome) string {
-	if diff := ValidateOutcomes(oracle, system); diff != "" {
+	return validateDeterministicOutcomesWith(oracle, system, compareOutcomeRows)
+}
+
+// validateDeterministicOutcomesWith is ValidateDeterministicOutcomes
+// parameterised over the successful-outcome comparator, mirroring
+// validateOutcomesWith's relationship to ValidateOutcomes.
+func validateDeterministicOutcomesWith(oracle, system Outcome, compare CompareFn) string {
+	if diff := validateOutcomesWith(oracle, system, compare); diff != "" {
 		return diff
 	}
 	if len(oracle.Rows) == 0 {
@@ -948,6 +1026,92 @@ func compareOutcomeRows(want, got Outcome) string {
 	}
 
 	return diff.String()
+}
+
+// CompareTraceIdentityOutcomes is the TraceQL-specific CompareFn plugged in
+// through Config.Compare / RunShapeExamplesWithComparator. It replaces the
+// default per-label-key ROW COUNT comparison with a per-TraceID multiset
+// comparison, so two outcomes with the same total row count but a
+// substituted, missing, duplicated, or scope-swapped trace identity are
+// caught — something an empty-label row count can never distinguish (the
+// gap TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY's evidence closes).
+//
+// Every TraceQL /api/search projection this repo generates — selector,
+// structural, select(), and trace-scoped count()/avg|min|max|sum(duration)
+// pipeline rows alike — carries a real TraceID (see
+// test/property/oracle/traceql.Evaluate and traceql_test.go's
+// runCerberusTraceQL); an empty TraceID on either side is therefore a
+// comparator-usage bug, not a legitimate "no identity" outcome, and is
+// reported as a mismatch rather than silently grouped under "".
+func CompareTraceIdentityOutcomes(oracle, system Outcome) string {
+	var diag strings.Builder
+	if invalid := invalidTraceIDRows(oracle.Rows); invalid != "" {
+		fmt.Fprintf(&diag, "oracle: %s\n", invalid)
+	}
+	if invalid := invalidTraceIDRows(system.Rows); invalid != "" {
+		fmt.Fprintf(&diag, "system: %s\n", invalid)
+	}
+	if diag.Len() > 0 {
+		return diag.String()
+	}
+
+	wantCounts := traceIDCounts(oracle.Rows)
+	gotCounts := traceIDCounts(system.Rows)
+
+	ids := make(map[string]struct{}, len(wantCounts)+len(gotCounts))
+	for id := range wantCounts {
+		ids[id] = struct{}{}
+	}
+	for id := range gotCounts {
+		ids[id] = struct{}{}
+	}
+	sortedIDs := make([]string, 0, len(ids))
+	for id := range ids {
+		sortedIDs = append(sortedIDs, id)
+	}
+	sort.Strings(sortedIDs)
+
+	var diff strings.Builder
+	for _, id := range sortedIDs {
+		want, got := wantCounts[id], gotCounts[id]
+		switch {
+		case want == 0:
+			fmt.Fprintf(&diff, "extra trace in system: %s (matched-span count=%d)\n", id, got)
+		case got == 0:
+			fmt.Fprintf(&diff, "missing trace in system: %s (want matched-span count=%d)\n", id, want)
+		case want != got:
+			fmt.Fprintf(&diff, "trace %s: matched-span count want=%d got=%d\n", id, want, got)
+		}
+	}
+	return diff.String()
+}
+
+// invalidTraceIDRows reports the first row (if any) whose TraceID is empty
+// — every TraceQL outcome this comparator is used for stamps a real
+// dataset-generated TraceID on every row, so an empty one means the caller
+// wired CompareTraceIdentityOutcomes to an Outcome that was never built for
+// it (see CompareTraceIdentityOutcomes's doc).
+func invalidTraceIDRows(rows []OutcomeRow) string {
+	for i, r := range rows {
+		if strings.TrimSpace(r.TraceID) == "" {
+			return fmt.Sprintf("row[%d] has an empty TraceID", i)
+		}
+	}
+	return ""
+}
+
+// traceIDCounts multiset-counts rows by TraceID. A selector/structural/
+// select() shape's rows carry one entry per matched span (so a trace with
+// N matching spans counts N times); a trace-scoped aggregate pipeline shape
+// carries exactly one row per satisfying trace (see oracle/traceql.Evaluate
+// and runCerberusTraceQL's traceIdentityRows) — the same counting logic
+// serves both, since the row-emission side is what encodes the distinction.
+func traceIDCounts(rows []OutcomeRow) map[string]int {
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		out[r.TraceID]++
+	}
+	return out
 }
 
 func compareHistograms(want, got *Histogram) string {
