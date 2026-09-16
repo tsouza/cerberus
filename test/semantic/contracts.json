@@ -38,6 +38,174 @@
       "replaced_by": null
     },
     {
+      "id": "PROMQL-COUNTER-RESET-EXTRAPOLATION",
+      "statement": "rate()/increase()/delta() and the *_over_time family extrapolate a counter's samples across its selected window using Prometheus's own boundary-extrapolation rule, and treat a value decrease between consecutive samples as a counter reset (adding the pre-reset value back in) rather than as a negative rate, for both a randomly generated dataset and an engineered counter profile that resets mid-window.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "applicable_capabilities": [],
+      "authority": "specification",
+      "required_evidence_classes": ["property"],
+      "required_independence_groups": ["instant-random-property-oracle", "instant-window-engineered-property-oracle"],
+      "blind_spots": [
+        "test/property/gen's random MetricsDataset generator draws series with a bounded value range and sample count; it is not an exhaustive sweep of every possible counter-reset timing relative to the query window.",
+        "The deterministic cross-path proof in test/property/rate_dup_timestamp_test.go (gen.CounterDup*) pins one specific duplicate-timestamp reset shape; it is a fixed regression fixture, not a property, and is not counted as one of this contract's two required independence groups."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "PROMQL-NATIVE-HISTOGRAM-PAYLOAD-BEHAVIOR",
+      "statement": "The native-histogram value functions (histogram_count, histogram_sum, histogram_avg, histogram_stddev, histogram_stdvar, histogram_fraction) and histogram_quantile over a native exponential-histogram selector, sum, rate, or increase compute the same payload Prometheus's own engine would from the identical exponential-histogram buckets, for both a randomly generated bucket layout and the real reference server.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "applicable_capabilities": [],
+      "authority": "specification",
+      "required_evidence_classes": ["property", "reference"],
+      "required_independence_groups": ["exp-histogram-property-oracle", "reference-differential"],
+      "blind_spots": [
+        "compatibility/prometheus/query-corpus/header.yml documents its native-histogram compat cases as a CERBERUS-OWNED replacement for upstream's float-only histogram_* cases (upstream's own demo fixture seeds no native histogram) — this contract's reference evidence is real reference-server evidence, but it is not third-party-provenanced; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE.",
+        "gen.ExpHistogramShapeIDs's bucket layouts are drawn from the generator's own scale/bound pool (test/property/gen/exp_histogram.go); a bucket layout outside that pool (an extreme scale, a fully empty bucket run at a boundary) is not exercised by this contract's property evidence."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "statement": "A PromQL regex label matcher (=~ / !~), including one on __name__, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~\"ap\" matches job=\"ap\" and rejects job=\"api\"/job=\"apiserver\", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "applicable_capabilities": ["CAP-LABEL-MATCHER-EXPRESSION"],
+      "authority": "specification",
+      "required_evidence_classes": ["execution", "reference"],
+      "required_independence_groups": ["spec-fixture-roundtrip", "reference-differential"],
+      "blind_spots": [
+        "The anchoring fix (anchoredRegexPattern, internal/chsql/builder.go, issue #1741) is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for PromQL only — the mechanism's LogQL/TraceQL correctness is SIGNAL-LABEL-MATCHER-CONSISTENCY's and each head's own contract, not re-proven here.",
+        "The compat corpus's discriminating case (query-corpus/header.yml item 4, job=~\"dem\" against a seeded job=\"demo\") is a cerberus-authored addition, not one of the cases copied from the upstream compliance corpus — it discriminates only cerberus's own lowering bug, since reference Prometheus has nothing to diverge on for an already-anchored matcher; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE."
+      ],
+      "related_contracts": ["SIGNAL-LABEL-MATCHER-CONSISTENCY"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "PROMQL-ORACLE-PARSER-SHARING-BOUNDARY",
+      "statement": "Cerberus's PromQL lowering and its from-scratch property oracle (test/property/oracle/promql/evaluator.go) parse every query through the exact same single-sourced configuration (internal/promql/promparse.New()) of the upstream, zero-patch-forked github.com/prometheus/prometheus/promql/parser grammar, so their agreement on whether a query PARSES is not independent evidence of anything — only their agreement on the computed VALUE is. The spec-lane parity oracle (test/spec/parityoracle/promql/oracle.go) is the one architected exception: it builds its own, independent, and deliberately MORE PERMISSIVE parser configuration (promqltest.TestParserOpts) rather than sharing promparse.New, so a broader accept surface there only means fewer fixtures go unattempted and never widens what counts as a passing answer.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["static-analysis"],
+      "required_independence_groups": ["parser-single-source-scan"],
+      "blind_spots": [
+        "test/regression/promql_parser_options_single_source_test.go (TestPromQLParserOptionsHaveASingleSource) walks non-test Go files for a second direct upstream-parser construction by AST shape; a construction it does not recognize as one (an indirect wrapper, a build-tagged file the walk's skippedDirs excludes) would not be caught.",
+        "This contract records an evidence-SCOPE limitation, not a grammar-correctness proof: it says nothing about whether promparse.New's configuration itself matches Prometheus's grammar — that is the compat lane's job (invariant 7), not this contract's."
+      ],
+      "related_contracts": ["PROMQL-ORACLE-ENGINE-ANSWER-FLAG-PARITY"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "PROMQL-ORACLE-ENGINE-ANSWER-FLAG-PARITY",
+      "statement": "The spec-lane parity oracle's in-process promql.Engine (test/spec/parityoracle/promql/oracle.go) and the real prom/prometheus server the compat lane runs (compatibility/prometheus/docker-compose.yml) are held to identical values for every promql.EngineOpts field that changes a query's ANSWER rather than merely its accept/reject boundary — currently EnableDelayedNameRemoval=false on both, aligned down to the real server's documented default per cerberus issue #3271. The oracle's PARSER acceptance is explicitly NOT held to this same equivalence rule; see PROMQL-ORACLE-PARSER-SHARING-BOUNDARY.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "applicable_capabilities": [],
+      "authority": "design-decision",
+      "required_evidence_classes": ["static-analysis"],
+      "required_independence_groups": ["oracle-engine-flag-parity-scan"],
+      "blind_spots": [
+        "test/regression/promql_oracle_engine_parity_test.go mechanically pins exactly ONE flag (EnableDelayedNameRemoval) by matching a fixed regex against the compose file's --enable-feature line and the oracle's own constant; a future answer-affecting promql.EngineOpts field introduced to either side without a matching addition to this test is not caught.",
+        "This contract only proves the two sides are CONFIGURED the same way; it is not itself evidence the configuration they share is correct — that is what the compat lane's own per-query diffs (invariant 7) and PROMQL-RANGE-VECTOR-ALIGNMENT's reference-differential binding are for."
+      ],
+      "related_contracts": ["PROMQL-ORACLE-PARSER-SHARING-BOUNDARY"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "PROMQL-REFERENCE-VERSION-PIN-CORRESPONDENCE",
+      "statement": "The upstream Prometheus version cerberus's PromQL parser fork is based on (go.mod's github.com/prometheus/prometheus require line, substituted via the zero-patch tsouza/prometheus:cerberus-parser fork) and the real Prometheus server image the compat lane runs (compatibility/prometheus/docker-compose.yml's prom/prometheus: tag) agree at MAJOR.MINOR grain, the grain at which PromQL grammar and evaluation semantics actually change.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["static-analysis"],
+      "required_independence_groups": ["fork-version-skew-scan"],
+      "blind_spots": [
+        "test/regression/fork_version_skew_test.go checks MAJOR.MINOR only, by design (patch releases don't move the grammar) — a semantics-affecting patch release on either side, if one ever shipped, would not be caught.",
+        "The test reads go.mod's require line, not the replace line's own pseudo-version tag; a replace directive pointing at a fork commit that silently diverges from the require line's declared upstream base is a scenario this scan does not model (docs/upstream-forks.md's zero-patch policy is what keeps that scenario from arising in practice, not this test)."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE",
+      "statement": "Third-party provenance for a PromQL compatibility test case attaches only to the subset of compatibility/prometheus/query-corpus copied near-verbatim from the compatibility/prometheus/upstream git submodule (prometheus/compliance, pinned by gitlink commit) and run through its own promql-compliance-tester binary; every case query-corpus/header.yml documents as a cerberus-owned addition alongside them carries only cerberus's own reference-differential authority against the real server it runs against, never third-party provenance.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["manual-review"],
+      "required_independence_groups": ["corpus-provenance-documentation-review"],
+      "blind_spots": [
+        "query-corpus/header.yml's provenance list is hand-maintained prose, not schema-checked against the corpus file it describes; a future edit that adds a new cerberus-owned case without a matching header.yml entry would misattribute that case as upstream-derived and nothing here would catch it.",
+        "The submodule pin (ignore = dirty in .gitmodules) proves the checked-out commit is what the superproject intends, but it does not itself prove header.yml's per-case attribution is accurate — that cross-check is what VERIFIER-DOCUMENTED-PROVENANCE-REVIEW's binding records as a reviewed, not automated, claim."
+      ],
+      "related_contracts": ["PROMQL-NATIVE-HISTOGRAM-PAYLOAD-BEHAVIOR", "PROMQL-LABEL-MATCHER-REGEX-ANCHORING"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "PROMQL-LABEL-REPLACE-CAPTURE-GROUP-PARTICIPATION",
+      "statement": "label_replace's regex substitution resolves a $name reference shared by multiple capture groups to whichever group actually took part in the match, matching Go's Regexp.expand (and Prometheus's) leftmost-participation semantics, for every shape ClickHouse's extractGroups can express; a shape this repository cannot yet express through extractGroups is rejected outright rather than silently answered wrong.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-PROMQL"],
+      "applicable_capabilities": [],
+      "authority": "reference-implementation",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["label-replace-rejection-boundary"],
+      "blind_spots": [
+        "The rejection-parity catalogue entry this contract's binding cites (internal/promql/label_fns.go:labelReplaceAttributesBuilder#d11e3df4) pins that exactly ONE worked trigger query is rejected; it is not an exhaustive proof over every nullable-shared-capture-group regex shape.",
+        "See cerberus issue #1956 for the two identified-but-unbuilt mechanisms that would close this gap, and ClickHouse/ClickHouse#114733 for the upstream fix that would let the guard (and this deficit) be deleted outright rather than narrowed further."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "explicit_deficit",
+      "deficit_reason": "cerberus issue #1956 (open): a nullable capture group sharing a name with another inside a REPEATED alternation branch, or under a quantifier with no non-nullable ancestor to probe, is not yet distinguished from a participating one via ClickHouse's extractGroups. The two currently-known trigger shapes are rejected (test/rejection-parity/catalogue's labelReplaceAttributesBuilder#d11e3df4 entry, tracking_issue 1956), but the guard's exhaustiveness over every such shape is unproven, so this contract stays an explicit deficit rather than active until #1956 closes.",
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
       "id": "LOGQL-LINE-FILTER-REGEX-SEMANTICS",
       "statement": "A LogQL regex line filter (|~) matches using RE2 semantics identical to Loki's, including case-insensitive (?i) and multiline anchors.",
       "scope": "head",

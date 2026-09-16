@@ -9,6 +9,69 @@
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     },
     {
+      "id": "EXEC-PROMQL-COUNTER-RESET-INSTANT-PROPERTY-20260916",
+      "binding": "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY-20260916",
+      "binding": "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-PROMQL-RANGE-ALIGNMENT-RANGE-PROPERTY-20260916",
+      "binding": "BINDING-PROMQL-RANGE-ALIGNMENT-RANGE-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-PROMQL-NATIVE-HISTOGRAM-PROPERTY-20260916",
+      "binding": "BINDING-PROMQL-NATIVE-HISTOGRAM-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-PROMQL-LABEL-MATCHER-ANCHORING-SPEC-20260916",
+      "binding": "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-PROMQL-PARSER-SINGLE-SOURCE-SCAN-20260916",
+      "binding": "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN-20260916",
+      "binding": "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-PROMQL-FORK-VERSION-SKEW-SCAN-20260916",
+      "binding": "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY-20260916",
+      "binding": "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
       "id": "EXEC-ARCH-NO-CACHING-STATIC-20260910",
       "binding": "BINDING-ARCH-NO-CACHING-STATIC",
       "observed_at": "2026-09-10T04:05:00Z",
