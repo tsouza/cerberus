@@ -682,6 +682,20 @@ jobs:
         run: |
           node --test .github/scripts/semantic-report.test.mjs
           just semantic-report-check
+      # semantic-execution-adapter.mjs (#3459) normalizes existing Go
+      # test/report artifacts (go test -json, compatibility/internal/
+      # score.CaseSet's JSON shape) and GitHub Actions run identity into
+      # revision-bound execution observations for test/semantic/
+      # executions.json. Self-test only here, same rationale as
+      # verify-just-invocations/compose-grafana-smoke/e2e-up below — a real
+      # go-test-json stream or compat-cases.json is what a real property/
+      # compat CI run exercises this against, once #3462 wires the pipeline;
+      # there is no committed artifact for a live CLI run here to check
+      # against the way the four semantic-* steps above run their CLIs
+      # against the real committed test/semantic/ model. No `just` recipe
+      # either, for the same reason — there is nothing yet for one to wrap.
+      - name: Self-test the semantic execution adapter
+        run: node --test .github/scripts/semantic-execution-adapter.test.mjs
       # verify-just-invocations.mjs (#3093) dry-runs every `just <recipe>
       # [args...]` found inside a workflow run: step, catching a missing
       # recipe AND an arity mismatch a plain `just --show` existence check

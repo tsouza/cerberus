@@ -32,7 +32,7 @@ const CLI_PATH = join(SCRIPT_DIR, "semantic-model.mjs");
 
 function baseHeads() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     heads: [
       { id: "HEAD-PROMQL", name: "PromQL", description: "d", status: "active", owner: "core", replaces: null, replaced_by: null },
       { id: "HEAD-LOGQL", name: "LogQL", description: "d", status: "active", owner: "core", replaces: null, replaced_by: null },
@@ -43,7 +43,7 @@ function baseHeads() {
 
 function baseCapabilities() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     capabilities: [
       {
         id: "CAP-EXAMPLE",
@@ -82,12 +82,12 @@ function exampleContract(overrides = {}) {
 }
 
 function baseContracts(overrides = {}) {
-  return { schema_version: 1, contracts: [exampleContract(overrides)] };
+  return { schema_version: 2, contracts: [exampleContract(overrides)] };
 }
 
 function baseVerifiers() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     verifiers: [
       {
         id: "VERIFIER-EXAMPLE",
@@ -121,7 +121,7 @@ function exampleBinding(overrides = {}) {
 
 function fullyAssuredBindings() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     bindings: [
       exampleBinding({ id: "BINDING-EXAMPLE-A", independence_group: "group-a" }),
       exampleBinding({ id: "BINDING-EXAMPLE-B", independence_group: "group-b" }),
@@ -130,7 +130,7 @@ function fullyAssuredBindings() {
 }
 
 function baseExecutions() {
-  return { schema_version: 1, executions: [] };
+  return { schema_version: 2, executions: [] };
 }
 
 // A complete, valid document set. Individual tests deep-clone and mutate.
@@ -322,6 +322,16 @@ test("an execution referencing an unknown binding fails validation", () => {
     observed_at: "2026-09-10T00:00:00Z",
     result: "pass",
     run_ref: "https://example.invalid/run/1",
+    selection: "executed",
+    selection_reason: null,
+    source_sha: null,
+    run_id: null,
+    run_attempt: null,
+    job: null,
+    event: null,
+    substrate: null,
+    reference_version: null,
+    dataset_fingerprint: null,
   });
   const problems = problemsOf(() => validateSemanticModel(docs));
   assert.ok(problems.some((p) => p.startsWith("[reference]") && p.includes("references unknown binding BINDING-DOES-NOT-EXIST")));

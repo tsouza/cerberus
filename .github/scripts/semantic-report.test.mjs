@@ -40,7 +40,7 @@ const CLI_PATH = join(SCRIPT_DIR, "semantic-report.mjs");
 
 function heads() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     heads: [
       { id: "HEAD-PROMQL", name: "PromQL", description: "d", status: "active", owner: "core", replaces: null, replaced_by: null },
       { id: "HEAD-LOGQL", name: "LogQL", description: "d", status: "active", owner: "core", replaces: null, replaced_by: null },
@@ -50,7 +50,7 @@ function heads() {
 }
 
 function capabilities() {
-  return { schema_version: 1, capabilities: [] };
+  return { schema_version: 2, capabilities: [] };
 }
 
 function contract(overrides = {}) {
@@ -112,6 +112,16 @@ function execution(overrides = {}) {
     observed_at: "2026-09-10T00:00:00Z",
     result: "pass",
     run_ref: "https://example.invalid/run/1",
+    selection: "executed",
+    selection_reason: null,
+    source_sha: null,
+    run_id: null,
+    run_attempt: null,
+    job: null,
+    event: null,
+    substrate: null,
+    reference_version: null,
+    dataset_fingerprint: null,
     ...overrides,
   };
 }
@@ -120,10 +130,10 @@ function buildModel({ contracts = [contract()], verifiers = [verifier()], bindin
   const documents = {
     heads: heads(),
     capabilities: capabilities(),
-    contracts: { schema_version: 1, contracts },
-    verifiers: { schema_version: 1, verifiers },
-    bindings: { schema_version: 1, bindings },
-    executions: { schema_version: 1, executions },
+    contracts: { schema_version: 2, contracts },
+    verifiers: { schema_version: 2, verifiers },
+    bindings: { schema_version: 2, bindings },
+    executions: { schema_version: 2, executions },
   };
   return validateSemanticModel(documents);
 }

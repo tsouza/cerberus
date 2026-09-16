@@ -77,16 +77,16 @@ function fixtureModel() {
   ];
   const documents = {
     heads: {
-      schema_version: 1,
+      schema_version: 2,
       heads: [head("HEAD-PROMQL", "PromQL"), head("HEAD-LOGQL", "LogQL"), head("HEAD-TRACEQL", "TraceQL")],
     },
-    capabilities: { schema_version: 1, capabilities: [] },
+    capabilities: { schema_version: 2, capabilities: [] },
     contracts: {
-      schema_version: 1,
+      schema_version: 2,
       contracts: contracts.map(({ _testRefPrefix, ...c }) => c),
     },
     verifiers: {
-      schema_version: 1,
+      schema_version: 2,
       verifiers: [
         {
           id: "VERIFIER-EXAMPLE",
@@ -104,7 +104,7 @@ function fixtureModel() {
       ],
     },
     bindings: {
-      schema_version: 1,
+      schema_version: 2,
       bindings: contracts.map((c) => ({
         id: `BINDING-${c.id}`,
         contract: c.id,
@@ -115,7 +115,7 @@ function fixtureModel() {
         status: "active",
       })),
     },
-    executions: { schema_version: 1, executions: [] },
+    executions: { schema_version: 2, executions: [] },
   };
   return validateSemanticModel(documents);
 }

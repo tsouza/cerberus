@@ -1757,7 +1757,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-AGPL-REACHABILITY-SCAN-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -1916,7 +1919,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CAP-FILTER-LABEL-MATCHER-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -2016,7 +2022,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CAP-FILTER-LINE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -2116,7 +2125,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CAP-FILTER-SPAN-ATTR-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -2301,7 +2313,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -2365,7 +2380,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-BREAKER-RESILIENCE-STATE-MACHINE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -2580,7 +2598,10 @@
             "observed_at": "2026-09-16T06:01:06Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CURSOR-TEARDOWN-CH-RECOVERY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -2714,7 +2735,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CURSOR-TEARDOWN-PROM-BOUND-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -2788,7 +2812,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CURSOR-TEARDOWN-PROM-ORDER-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -2956,7 +2983,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -3091,7 +3121,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -3226,7 +3259,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-FANOUT-BOUND-CONCURRENCY-CAP-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -3361,7 +3397,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -3573,7 +3612,10 @@
             "observed_at": "2026-09-16T06:04:18Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -3671,7 +3713,10 @@
             "observed_at": "2026-09-16T06:04:18Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-STRICT-SCAN-ENUM-RECONCILIATION-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -3880,7 +3925,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -3963,7 +4011,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-COMPUTE-FANOUT-STATIC-LINT-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -4153,7 +4204,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-EMIT-ROUNDTRIP-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -4250,7 +4304,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-EMIT-STRUCTURAL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -4433,7 +4490,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-LOWER-LOGQL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -4533,7 +4593,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-LOWER-PROMQL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -4633,7 +4696,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-LOWER-TRACEQL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -4828,7 +4894,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-OPTIMIZE-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -4962,7 +5031,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -5053,7 +5125,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-OPTIMIZE-TERMINATION-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -5274,7 +5349,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-WIRE-LOGQL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -5371,7 +5449,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-WIRE-PROMQL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -5468,7 +5549,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-HEAD-WIRE-TRACEQL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -5649,7 +5733,10 @@
             "observed_at": "2026-09-10T04:05:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-NO-CACHING-STATIC-20260910",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -5764,7 +5851,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-NO-CACHING-WINDOW-TESTS-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -5946,7 +6036,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-NO-SKIP-SCAN-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -6084,7 +6177,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-DEPENDENCY-COVERAGE-FLOOR-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -6151,7 +6247,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-DEPENDENCY-GO-ARCH-LINT-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -6256,7 +6355,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-PARSER-ACCESSOR-FORBIDIGO-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -6373,7 +6475,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -6488,7 +6593,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-PERF-BASELINE-PRONG-ORDERING-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -6676,7 +6784,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-GOLDEN-MERGE-GATE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -6755,7 +6866,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-GOLDEN-SHARD-COVERAGE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -6939,7 +7053,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-CONCURRENT-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7015,7 +7132,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-ERROR-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7091,7 +7211,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-NORMAL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7164,7 +7287,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-PANIC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7306,7 +7432,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7456,7 +7585,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-TYPED-SQL-RAW-SCAN-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7521,7 +7653,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-ARCH-TYPED-SQL-VERBATIM-SCAN-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7668,7 +7803,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7738,7 +7876,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-LABEL-FORMAT-SPEC-FIXTURE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7930,7 +8071,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -7982,7 +8126,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-LABEL-MATCHER-ANCHORING-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -8150,7 +8297,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-LINE-FILTER-REGEX-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -8317,7 +8467,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -8394,7 +8547,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -8543,7 +8699,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -8643,7 +8802,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -8822,7 +8984,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -8891,7 +9056,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9055,7 +9223,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-STATUS-CODE-DIFFERENTIAL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9108,7 +9279,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9205,7 +9379,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9336,7 +9513,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-RANGE-AGGREGATION-REFERENCE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9436,7 +9616,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-STRUCTURED-EXTRACTION-FIXTURE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9536,7 +9719,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-UNWRAP-FIXTURE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9700,7 +9886,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9820,7 +10009,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-COUNTER-RESET-INSTANT-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -9889,7 +10081,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -10086,7 +10281,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -10150,7 +10348,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-LABEL-MATCHER-ANCHORING-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -10314,7 +10515,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -10553,7 +10757,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -10616,7 +10823,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-NATIVE-HISTOGRAM-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -10750,7 +10960,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -10889,7 +11102,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-PARSER-SINGLE-SOURCE-SCAN-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -11047,7 +11263,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -11092,7 +11311,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-RANGE-ALIGNMENT-RANGE-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -11162,7 +11384,10 @@
             "observed_at": "2026-09-10T04:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-RANGE-ALIGNMENT-SPEC-20260910",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -11324,7 +11549,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-PROMQL-FORK-VERSION-SKEW-SCAN-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -11464,7 +11692,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -11655,7 +11886,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-CAPACITY-RECOVERY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -11793,7 +12027,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -11926,7 +12163,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -12065,7 +12305,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-GRPC-TRANSPORT-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -12207,7 +12450,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-LOGQL-WIRING-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -12355,7 +12601,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-PROMQL-WIRING-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -12509,7 +12758,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -12657,7 +12909,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-TAIL-INDEPENDENCE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -12805,7 +13060,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-ADMISSION-TRACEQL-WIRING-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13025,7 +13283,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13087,7 +13348,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-CONSUMER-WIRE-REPLAY-STUB-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13224,7 +13488,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13324,7 +13591,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13512,7 +13782,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13617,7 +13890,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13722,7 +13998,10 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0
+            "execution_count": 0,
+            "selection": null,
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13919,7 +14198,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-RESOURCE-CONFIG-PROJECTION-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -13982,7 +14264,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-RESOURCE-LOGQL-FIXTURE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14045,7 +14330,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-RESOURCE-PROMQL-FIXTURE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14108,7 +14396,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-SIGNAL-RESOURCE-TRACEQL-FIXTURE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14265,7 +14556,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14334,7 +14628,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14404,7 +14701,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14613,7 +14913,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14716,7 +15019,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14773,7 +15079,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -14918,7 +15227,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -15069,7 +15381,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -15139,7 +15454,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -15314,7 +15632,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -15500,7 +15821,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-STRUCTURAL-CHILD-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -15570,7 +15894,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-STRUCTURAL-CHILD-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -15669,7 +15996,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -15739,7 +16069,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-STRUCTURAL-DESCENDANT-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -15932,7 +16265,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -16002,7 +16338,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-TRACE-SCOPED-COUNT-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -16101,7 +16440,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -16251,7 +16593,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-TRANSPORT-ARM-GRPC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -16306,7 +16651,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-TRANSPORT-ARM-HTTP-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {
@@ -16433,7 +16781,10 @@
             "observed_at": "2026-09-16T00:00:00Z",
             "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
             "execution_id": "EXEC-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC-20260916",
-            "execution_count": 1
+            "execution_count": 1,
+            "selection": "executed",
+            "source_sha": null,
+            "revision_bound": false
           },
           "obligations": [
             {

@@ -150,6 +150,22 @@ export function bindingObservedStatus(model, binding) {
     run_ref: latest?.run_ref ?? null,
     execution_id: latest?.id ?? null,
     execution_count: executions.length,
+    // Revision-binding (cerberus issue #3459). `selection`/`source_sha` are
+    // the latest execution's own optional fields, surfaced as-is (null for
+    // every pre-#3459 or hand-authored record — see semantic-model.mjs's
+    // EXECUTION_KEYS comment: absence is always an explicit null, never an
+    // omitted key). `revision_bound` collapses them into the one question
+    // a reader actually has: was this "pass" ever tied to a NAMED commit,
+    // or merely recorded as having happened sometime? A latest execution
+    // whose OWN selection already reads non-"executed" (selected_not_run /
+    // no_op / stale / unavailable) is never revision_bound — that latest
+    // record is non-evidence by construction (see classifyExecutionObservation
+    // above), so it cannot anchor a positive claim either. This field never
+    // changes `status` itself: a non-revision-bound pass is still a real
+    // pass, exactly as it was before this issue existed.
+    selection: latest?.selection ?? null,
+    source_sha: latest?.source_sha ?? null,
+    revision_bound: latest?.selection === "executed" && latest?.source_sha != null,
   };
 }
 
@@ -474,6 +490,19 @@ const DISCLAIMER_BOUND_VS_OBSERVED =
   "recorded revision. A binding can be bound with no observation on record " +
   "at all, which reports as `unknown`, never as an assumed pass.";
 
+const DISCLAIMER_REVISION_BOUND =
+  "\"Observed\" is weaker still than it looks: a recorded pass says a " +
+  "verifier ran SOMETIME, not that it ran against the specific candidate a " +
+  "reader actually cares about. `revision_bound` (each binding row below) " +
+  "is a third, narrower claim: the latest recorded execution both carries a " +
+  "real \"executed\" selection and names the commit it ran against " +
+  "(`source_sha`). A pre-existing or hand-authored execution with no " +
+  "`source_sha` reports `revision_bound: false` even while its `observed` " +
+  "status stays a real pass — this display never upgrades or downgrades " +
+  "`observed` itself, and a binding with no revision-bound observation on " +
+  "record shows an unknown ACHIEVED assurance rather than a silently " +
+  "assumed one.";
+
 function mdEscape(text) {
   return String(text).replaceAll("|", "\\|");
 }
@@ -511,7 +540,10 @@ function renderBindingRow(binding) {
         .map((o) => `${o.lane_id}${o.merge_required ? " (merge-required)" : ""}${o.release_required ? " (release-required)" : ""}`)
         .join("; ")
     : "no owning CI lane resolved";
-  return `| ${binding.id} | ${verifierId} | ${binding.evidence_class} | ${binding.independence_group} | \`${mdEscape(binding.test_ref)}\` | ${binding.observed.status} | ${obligations} |`;
+  const revisionBound = binding.observed.revision_bound
+    ? `yes (\`${binding.observed.source_sha}\`)`
+    : "no";
+  return `| ${binding.id} | ${verifierId} | ${binding.evidence_class} | ${binding.independence_group} | \`${mdEscape(binding.test_ref)}\` | ${binding.observed.status} | ${revisionBound} | ${obligations} |`;
 }
 
 function renderWorkedExample(report) {
@@ -598,8 +630,8 @@ function renderContractCard(contract) {
   lines.push("");
 
   if (contract.bindings.length > 0) {
-    lines.push("| binding | verifier | evidence class | independence group | test_ref | observed | CI lane obligations |");
-    lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+    lines.push("| binding | verifier | evidence class | independence group | test_ref | observed | revision-bound | CI lane obligations |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
     for (const b of contract.bindings) lines.push(renderBindingRow(b));
     lines.push("");
   }
@@ -672,6 +704,7 @@ export function renderMarkdown(report) {
   parts.push("## Scope and denominator\n");
   parts.push(`${DISCLAIMER_SCOPE}\n`);
   parts.push(`${DISCLAIMER_BOUND_VS_OBSERVED}\n`);
+  parts.push(`${DISCLAIMER_REVISION_BOUND}\n`);
   parts.push(`${DISCLAIMER_GOLDEN_VS_REFERENCE}\n`);
 
   parts.push("### Contracts\n");
