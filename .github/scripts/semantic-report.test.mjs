@@ -16,7 +16,6 @@ import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel, validateSemanticModel } 
 import { loadRegistry } from "./ci-lane-contract.mjs";
 import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
 import {
-  DEFAULT_REPORT_JSON_PATH,
   DEFAULT_REPORT_MD_PATH,
   WORKED_EXAMPLE_CONTRACT_ID,
   bindingObservedStatus,
