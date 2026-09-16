@@ -100,6 +100,14 @@ type spanView struct {
 	name       string
 	statusCode string
 	durationNs int64
+	// scopeResourceValue / scopeSpanValue carry the "environment" attribute
+	// at the resource and span scopes respectively — the same key name at
+	// two different scopes, with independently-drawn values, so
+	// resource.environment and span.environment can be told apart even
+	// when both are present on the same span (see gen/traceql.go's
+	// TraceQLScopeCollisionAttributeKey doc for the generator side).
+	scopeResourceValue string
+	scopeSpanValue     string
 }
 
 // spanKey identifies a span within a trace — TraceId alone isn't
@@ -120,15 +128,17 @@ func spanViews(d property.Dataset) []spanView {
 	out := make([]spanView, 0, len(d.Traces.Spans))
 	for _, s := range d.Traces.Spans {
 		out = append(out, spanView{
-			traceID:    s.TraceID,
-			spanID:     s.SpanID,
-			parentID:   s.ParentSpanID,
-			service:    s.ResourceAttributes["service.name"],
-			cluster:    s.ResourceAttributes["cluster"],
-			httpMethod: s.SpanAttributes["http.method"],
-			name:       s.Name,
-			statusCode: s.StatusCode,
-			durationNs: s.DurationNs,
+			traceID:            s.TraceID,
+			spanID:             s.SpanID,
+			parentID:           s.ParentSpanID,
+			service:            s.ResourceAttributes["service.name"],
+			cluster:            s.ResourceAttributes["cluster"],
+			httpMethod:         s.SpanAttributes["http.method"],
+			name:               s.Name,
+			statusCode:         s.StatusCode,
+			durationNs:         s.DurationNs,
+			scopeResourceValue: s.ResourceAttributes["environment"],
+			scopeSpanValue:     s.SpanAttributes["environment"],
 		})
 	}
 	return out
@@ -167,10 +177,14 @@ func filterSpans(spans []spanView, conds []condition) []spanView {
 
 // attrGetter resolves a `resource.<attr>` / `span.<attr>` path to the
 // spanView field it reads. Kept as an explicit allow-list — a path
-// outside the generator's pool (TraceQLServicePool /
-// TraceQLClusterPool / TraceQLHTTPMethodPool) is a generator bug, not
-// a real query, so it fails the parse rather than silently reading a
-// zero value.
+// outside the generator's pools (TraceQLServicePool / TraceQLClusterPool
+// / TraceQLHTTPMethodPool / TraceQLScopeCollisionResourceValuePool /
+// TraceQLScopeCollisionSpanValuePool) is a generator bug, not a real
+// query, so it fails the parse rather than silently reading a zero
+// value. resource.environment and span.environment are two distinct
+// cases below, each reading its own spanView field, deliberately never
+// collapsed into one shared "environment" getter — that collapse is
+// exactly the scope-mixing bug this attribute exists to catch.
 func attrGetter(attr string) (func(spanView) string, error) {
 	switch attr {
 	case "resource.service.name":
@@ -179,6 +193,10 @@ func attrGetter(attr string) (func(spanView) string, error) {
 		return func(sv spanView) string { return sv.cluster }, nil
 	case "span.http.method":
 		return func(sv spanView) string { return sv.httpMethod }, nil
+	case "resource.environment":
+		return func(sv spanView) string { return sv.scopeResourceValue }, nil
+	case "span.environment":
+		return func(sv spanView) string { return sv.scopeSpanValue }, nil
 	}
 	return nil, fmt.Errorf("unsupported attribute path %q", attr)
 }
@@ -427,11 +445,19 @@ func parseBase(s string) (baseQuery, error) {
 // relation to some left-side match (op == ">" / ">>").
 //
 // Both structural operators are evaluated by walking a span's parent
-// chain — sound because the generator only ever produces linear
-// parent→child chains (see gen/traceql.go's TraceQLDataset doc), so
-// "some ancestor matches Left" reduces to a chain walk rather than a
-// general tree search. The Left side is restricted to spans reachable
-// from an empty-parent root. TraceQL's ingest-time nested-set walk never
+// pointer upward, one hop at a time (bySpanID lookups below) — this is
+// already a general ancestor traversal, independent of whether the trace
+// is a linear parent→child chain or a branching tree with siblings (see
+// gen/traceql.go's drawTraceQLBranchingTree): every span has exactly one
+// parent regardless of how many siblings or other children exist
+// elsewhere in the trace, so "some ancestor matches Left" reduces to one
+// walk up THIS span's own chain of parents, never a search over the
+// whole tree. `>` additionally never widens beyond an immediate parent
+// (see the switch below), so a sibling relationship — two spans sharing
+// a parent, neither one the other's ancestor — can never satisfy either
+// operator. See TestEvaluate_BranchingTree for the pinned proof of both
+// claims. The Left side is restricted to spans reachable from an
+// empty-parent root. TraceQL's ingest-time nested-set walk never
 // numbers orphan chains, so they cannot establish structural relations.
 func evalBase(spans []spanView, b baseQuery) ([]spanView, error) {
 	if b.op == "" {
@@ -678,7 +704,7 @@ type parsedQuery struct {
 
 // parseQuery is the hand-rolled recognizer keyed to the generator's
 // accept-set (test/property/gen/traceql.go's TraceQLQuery doc lists
-// all 17 stable shapes). Anything outside that set returns an error — the
+// all 20 stable shapes). Anything outside that set returns an error — the
 // generator never emits other shapes so a parse failure is a generator
 // bug, not a real divergence. (rapid will still surface it as a
 // property-test failure, but the failure log says "oracle: parse"
@@ -758,6 +784,11 @@ func init() {
 		`{ resource.service.name = "api" } | sum(duration) = 120ms`,
 		// Shape 13: select() pipeline stage.
 		`{ resource.service.name = "api" } | select(span.http.method)`,
+		// Shapes 14-16: scope-collision attribute — the same key at the
+		// resource and span scopes, and both together.
+		`{ resource.environment = "prod" }`,
+		`{ span.environment = "canary" }`,
+		`{ resource.environment = "prod" && span.environment = "canary" }`,
 	} {
 		if _, err := parseQuery(q); err != nil {
 			panic(fmt.Sprintf("oracle/traceql: package-init recognizer regression on %q: %v", q, err))

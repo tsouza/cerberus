@@ -1032,7 +1032,7 @@ successfully.
 
 ### Exact semantic-shape roster
 
-`test/property/gen/shapes.go` is the executable source of truth. Its 83 stable
+`test/property/gen/shapes.go` is the executable source of truth. Its 86 stable
 IDs are grouped as follows (brace notation below denotes the exact listed
 expansion, not an open-ended prefix):
 
@@ -1051,14 +1051,18 @@ expansion, not an open-ended prefix):
   `pattern-contains-suffix,pattern-excludes-prefix,pattern-excludes-suffix}`.
   The unqualified pattern pair uses a floating `<_>token<_>` match; the
   prefix/suffix pairs pin the anchored `token<_>` and `<_>token` semantics.
-- **TraceQL — 17.**
+- **TraceQL — 20.**
   `traceql.selector.{service,resource-attribute,span-attribute,regex,`
-  `negated-attribute,conjunction}`;
+  `negated-attribute,conjunction,scope-collision-resource,`
+  `scope-collision-span,scope-collision-conjunction}`;
   `traceql.intrinsic.{duration,status,name}`;
   `traceql.structural.{child,descendant}`; and
   `traceql.pipeline.{count,duration-aggregate,duration-aggregate-min,`
   `duration-aggregate-max,duration-aggregate-sum,select}`. The unsuffixed
-  `duration-aggregate` ID is the average-duration shape.
+  `duration-aggregate` ID is the average-duration shape. The three
+  `scope-collision-*` shapes target the same "environment" attribute name
+  stamped at both the resource and span scopes with disjoint value pools
+  (see gen/traceql.go's `TraceQLScopeCollisionAttributeKey` doc).
 - **PromQL instant window — 24.** The exact Cartesian product
   `promql.instant-window.{wave,positive-increments,monotonic-running-total}.`
   `{sum-over-time,count-over-time,avg-over-time,max-over-time,min-over-time,`

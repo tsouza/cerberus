@@ -8,7 +8,11 @@ import (
 
 // testSpan is the compact per-span fixture shape these tests build
 // datasets from. Mirrors gen/traceql.go's traceQLSpan, minus the
-// timing fields the oracle doesn't read.
+// timing fields the oracle doesn't read. resourceEnv / spanEnv are the
+// scope-collision "environment" attribute at each scope; left as the
+// zero value ("") for fixtures that don't exercise it — attrGetter reads
+// a missing map key as "" too, so that's indistinguishable from an
+// explicit empty value and matches no non-empty query literal.
 type testSpan struct {
 	trace, id, parent string
 	service, cluster  string
@@ -16,6 +20,8 @@ type testSpan struct {
 	name              string
 	status            string
 	durationMs        int64
+	resourceEnv       string
+	spanEnv           string
 }
 
 // buildDataset pivots testSpans into the property.Dataset shape
@@ -32,11 +38,15 @@ func buildDataset(spans ...testSpan) property.Dataset {
 			ResourceAttributes: map[string]string{
 				"service.name": s.service,
 				"cluster":      s.cluster,
+				"environment":  s.resourceEnv,
 			},
-			SpanAttributes: map[string]string{"http.method": s.method},
-			StatusCode:     s.status,
-			DurationNs:     s.durationMs * nsPerMillisecond,
-			TimestampMs:    int64(i),
+			SpanAttributes: map[string]string{
+				"http.method": s.method,
+				"environment": s.spanEnv,
+			},
+			StatusCode:  s.status,
+			DurationNs:  s.durationMs * nsPerMillisecond,
+			TimestampMs: int64(i),
 		})
 	}
 	return property.Dataset{Traces: &property.TracesModel{Spans: records}}
@@ -149,6 +159,104 @@ func TestEvaluate_StructuralRelationsExcludeOrphanChains(t *testing.T) {
 		{"orphan_child_does_not_match", `{ resource.service.name = "orphan" } > { resource.service.name = "orphan-child" }`, 0},
 		{"orphan_descendant_does_not_match", `{ resource.service.name = "orphan" } >> { resource.service.name = "orphan-child" }`, 0},
 		{"plain_filter_still_sees_orphan", `{ resource.service.name = "orphan" }`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Evaluate(dataset, property.Query{String: tc.query})
+			if out.Err != nil {
+				t.Fatalf("query %q: unexpected error: %v", tc.query, out.Err)
+			}
+			if len(out.Rows) != tc.wantCount {
+				t.Fatalf("query %q: row count = %d, want %d", tc.query, len(out.Rows), tc.wantCount)
+			}
+		})
+	}
+}
+
+// TestEvaluate_BranchingTree is the deterministic proof that the oracle's
+// ancestor traversal (evalBase) correctly discriminates a direct child, a
+// grandchild, a reversed relation, and a sibling pair — the four claims
+// gen/traceql.go's drawTraceQLBranchingTree doc lists — against the exact
+// bounded branching-tree topology that generator draws:
+//
+//	root
+//	├── childA
+//	│   └── grandchild
+//	└── childB
+//
+// Every "does NOT match" case below is the concrete counterexample a
+// specific mutant would get wrong: collapsing `>` into `>>` would wrongly
+// match root>grandchild; swapping parent/child would wrongly match
+// childA>root; treating "shares a parent" as "is an ancestor of" would
+// wrongly match either sibling pairing.
+func TestEvaluate_BranchingTree(t *testing.T) {
+	dataset := buildDataset(
+		testSpan{trace: "tree", id: "root", parent: "", service: "root-svc", name: "root"},
+		testSpan{trace: "tree", id: "childA", parent: "root", service: "childA-svc", name: "childA"},
+		testSpan{trace: "tree", id: "childB", parent: "root", service: "childB-svc", name: "childB"},
+		testSpan{trace: "tree", id: "grandchild", parent: "childA", service: "grandchild-svc", name: "grandchild"},
+	)
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantCount int
+	}{
+		{"root_direct_child_childA_matches", `{ resource.service.name = "root-svc" } > { resource.service.name = "childA-svc" }`, 1},
+		{"root_direct_child_childB_matches", `{ resource.service.name = "root-svc" } > { resource.service.name = "childB-svc" }`, 1},
+		{"direct_child_mutant_root_grandchild_does_not_match", `{ resource.service.name = "root-svc" } > { resource.service.name = "grandchild-svc" }`, 0},
+		{"descendant_root_grandchild_matches", `{ resource.service.name = "root-svc" } >> { resource.service.name = "grandchild-svc" }`, 1},
+		{"reversed_relation_childA_root_does_not_match", `{ resource.service.name = "childA-svc" } > { resource.service.name = "root-svc" }`, 0},
+		{"reversed_relation_descendant_childA_root_does_not_match", `{ resource.service.name = "childA-svc" } >> { resource.service.name = "root-svc" }`, 0},
+		{"sibling_childA_childB_direct_child_does_not_match", `{ resource.service.name = "childA-svc" } > { resource.service.name = "childB-svc" }`, 0},
+		{"sibling_childB_childA_direct_child_does_not_match", `{ resource.service.name = "childB-svc" } > { resource.service.name = "childA-svc" }`, 0},
+		{"sibling_descendant_does_not_match", `{ resource.service.name = "childA-svc" } >> { resource.service.name = "childB-svc" }`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Evaluate(dataset, property.Query{String: tc.query})
+			if out.Err != nil {
+				t.Fatalf("query %q: unexpected error: %v", tc.query, out.Err)
+			}
+			if len(out.Rows) != tc.wantCount {
+				t.Fatalf("query %q: row count = %d, want %d", tc.query, len(out.Rows), tc.wantCount)
+			}
+		})
+	}
+}
+
+// TestEvaluate_ScopeCollisionAttributes is the deterministic proof that
+// resource.environment and span.environment — the same attribute key at
+// two different scopes (gen/traceql.go's TraceQLScopeCollisionAttributeKey)
+// — can never accidentally agree. The fixture stamps a value from each
+// scope's pool on the SAME span (prod / canary) and a different pair on a
+// second span (staging / shadow), so a scope mix-up (reading the
+// span-scope map for a resource-scope query, or vice versa) would produce
+// a row count this test does not expect.
+func TestEvaluate_ScopeCollisionAttributes(t *testing.T) {
+	dataset := buildDataset(
+		testSpan{trace: "t", id: "s1", parent: "", service: "api", name: "s1", resourceEnv: "prod", spanEnv: "canary"},
+		testSpan{trace: "t", id: "s2", parent: "", service: "api", name: "s2", resourceEnv: "staging", spanEnv: "shadow"},
+	)
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantCount int
+	}{
+		{"resource_scope_matches_resource_value", `{ resource.environment = "prod" }`, 1},
+		{"span_scope_matches_span_value", `{ span.environment = "canary" }`, 1},
+		// "prod" only ever appears in the resource-scope pool: a
+		// resource-value literal querying the span scope must find
+		// nothing, not accidentally read the resource-scope map.
+		{"span_scope_does_not_see_resource_only_value", `{ span.environment = "prod" }`, 0},
+		// "canary" only ever appears in the span-scope pool: symmetric
+		// check in the other direction.
+		{"resource_scope_does_not_see_span_only_value", `{ resource.environment = "canary" }`, 0},
+		// Both scopes true on the SAME span: the conjunction must AND
+		// across scopes, not collapse to a single map lookup.
+		{"conjunction_requires_both_scopes_on_same_span", `{ resource.environment = "prod" && span.environment = "canary" }`, 1},
+		// Resource-true / span-false pairing on s1: the conjunction must
+		// still fail even though one half matches.
+		{"conjunction_fails_when_span_half_disagrees", `{ resource.environment = "prod" && span.environment = "shadow" }`, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := Evaluate(dataset, property.Query{String: tc.query})

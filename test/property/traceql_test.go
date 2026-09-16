@@ -11,12 +11,15 @@
 //     (shared across iterations; each iteration's
 //     CREATE OR REPLACE TABLE statement keeps replays idempotent).
 //  3. The TraceQL generator (gen.TraceQLQuery) draws a random query
-//     from 17 stable shapes across 14 weighted families — attribute
+//     from 20 stable shapes across 17 weighted families — attribute
 //     matchers (resource + span scope,
 //     equality/negation/regex), duration/status/name intrinsics,
-//     multi-condition filters, structural relations (`>`/`>>`),
-//     count()/avg()/min()/max()/sum() scalar-filter pipelines, and
-//     select() — see gen.TraceQLQuery's doc for the full list.
+//     multi-condition filters, structural relations (`>`/`>>`) —
+//     exercised against both the original linear parent chain and a
+//     bounded branching tree with a real sibling pair — a same-key
+//     resource/span scope-collision attribute, count()/avg()/min()/
+//     max()/sum() scalar-filter pipelines, and select() — see
+//     gen.TraceQLQuery's doc for the full list.
 //  4. The from-scratch oracle (oracle/traceql.Evaluate) evaluates the
 //     query against an in-memory mirror of the dataset, implementing
 //     spanset filter + count() semantics directly from the TraceQL
@@ -186,6 +189,85 @@ INSERT INTO otel_traces VALUES
 	got := runCerberusTraceQL(t.Context(), srv.URL, query)
 	if diff := property.CompareOutcomes(want, got); diff != "" {
 		t.Fatalf("descendant property drift\n%s", diff)
+	}
+}
+
+// TestTraceQLBranchingTreeStructuralRelations is the live-pipeline
+// counterpart to oracle/traceql's TestEvaluate_BranchingTree: it proves
+// the SAME four structural claims against the real cerberus parse →
+// lower → optimize → emit → chDB → HTTP path, not just the from-scratch
+// oracle, on the exact bounded branching-tree topology gen/traceql.go's
+// drawTraceQLBranchingTree draws:
+//
+//	root
+//	├── childA
+//	│   └── grandchild
+//	└── childB
+//
+// Each "does not match" case is the concrete counterexample a specific
+// cerberus bug would fail: a `>` lowering that degrades to `>>` (a
+// direct-child mutant) would wrongly match root>grandchild; a
+// parent/child swap in the structural join would wrongly match
+// childA>root; and treating "shares a parent" as an ancestor/descendant
+// edge would wrongly match either sibling pairing.
+func TestTraceQLBranchingTreeStructuralRelations(t *testing.T) {
+	cli := chclienttest.NewChDB(t)
+	cli.Seed(t, `CREATE TABLE otel_traces (
+    Timestamp DateTime64(9),
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String,
+    SpanKind LowCardinality(String),
+    ServiceName LowCardinality(String),
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String),
+    Duration Int64,
+    StatusCode LowCardinality(String),
+    StatusMessage String,
+    ScopeName String,
+    ScopeVersion String
+) ENGINE = MergeTree ORDER BY (Timestamp, TraceId);
+INSERT INTO otel_traces VALUES
+    (toDateTime64('2026-05-13 12:00:00', 9), '0102030405060708090a0b0c0d0e0f10', '0102030405060708', '', 'root', 'Internal', 'root-svc', map('service.name', 'root-svc'), map(), 1, 'Unset', '', '', ''),
+    (toDateTime64('2026-05-13 12:00:01', 9), '0102030405060708090a0b0c0d0e0f10', '1112131415161718', '0102030405060708', 'childA', 'Internal', 'childa-svc', map('service.name', 'childa-svc'), map(), 1, 'Unset', '', '', ''),
+    (toDateTime64('2026-05-13 12:00:02', 9), '0102030405060708090a0b0c0d0e0f10', '2122232425262728', '0102030405060708', 'childB', 'Internal', 'childb-svc', map('service.name', 'childb-svc'), map(), 1, 'Unset', '', '', ''),
+    (toDateTime64('2026-05-13 12:00:03', 9), '0102030405060708090a0b0c0d0e0f10', '3132333435363738', '1112131415161718', 'grandchild', 'Internal', 'grandchild-svc', map('service.name', 'grandchild-svc'), map(), 1, 'Unset', '', '', '');`)
+
+	h := tempo.New(cli, schema.DefaultOTelTraces(), "v1.0.0-property-branching", nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantCount int
+	}{
+		{"root_direct_child_childA_matches", `{ resource.service.name = "root-svc" } > { resource.service.name = "childa-svc" }`, 1},
+		{"root_direct_child_childB_matches", `{ resource.service.name = "root-svc" } > { resource.service.name = "childb-svc" }`, 1},
+		{"direct_child_mutant_root_grandchild_does_not_match", `{ resource.service.name = "root-svc" } > { resource.service.name = "grandchild-svc" }`, 0},
+		{"descendant_root_grandchild_matches", `{ resource.service.name = "root-svc" } >> { resource.service.name = "grandchild-svc" }`, 1},
+		{"reversed_relation_childA_root_does_not_match", `{ resource.service.name = "childa-svc" } > { resource.service.name = "root-svc" }`, 0},
+		{"reversed_relation_descendant_childA_root_does_not_match", `{ resource.service.name = "childa-svc" } >> { resource.service.name = "root-svc" }`, 0},
+		{"sibling_childA_childB_direct_child_does_not_match", `{ resource.service.name = "childa-svc" } > { resource.service.name = "childb-svc" }`, 0},
+		{"sibling_childB_childA_direct_child_does_not_match", `{ resource.service.name = "childb-svc" } > { resource.service.name = "childa-svc" }`, 0},
+		{"sibling_descendant_does_not_match", `{ resource.service.name = "childa-svc" } >> { resource.service.name = "childb-svc" }`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query := property.Query{
+				String: tc.query,
+				EvalTs: gen.TraceQLAnchorTime().Add(time.Hour).Unix(),
+			}
+			got := runCerberusTraceQL(t.Context(), srv.URL, query)
+			if got.Err != nil {
+				t.Fatalf("query %q: unexpected error: %v", tc.query, got.Err)
+			}
+			if len(got.Rows) != tc.wantCount {
+				t.Fatalf("query %q: row count = %d, want %d\nrows=%+v", tc.query, len(got.Rows), tc.wantCount, got.Rows)
+			}
+		})
 	}
 }
 
