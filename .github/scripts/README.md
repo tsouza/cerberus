@@ -419,6 +419,142 @@ against the real committed `test/semantic/counterexamples/` directory and
 the real CLI; it runs in `ci.yml` alongside `semantic-model.test.mjs` in the
 same "Validate the semantic contract metadata model" step.
 
+**Adding a fourth (or later) record.** A counterexample record only earns
+its keep if its `contracts[].replay_*`/`locator_*` fields stay true to the
+bug they claim to replay. Before adding a new `test/semantic/counterexamples/
+issue-<N>.json`:
+
+1. Pick and confirm the real fix commit and its regression test — read the
+   fix PR's diff, not just its title, and confirm the test it added (or the
+   fixture it touched) is the one that would have caught the original bug.
+2. Verify the query/dataset the regression pins still matches the record's
+   own `summary`/`discovery_narrative`: read the fixture's `seed:` section
+   or the test's own seeded rows, and check they still exercise the
+   described defect shape rather than something the code has since grown
+   past.
+3. Run `node .github/scripts/semantic-replay.mjs --update-fingerprints` so
+   the new record's contract entries get a real, current fingerprint in
+   `test/semantic/replay-fingerprints.json` instead of shipping
+   unfingerprinted — a missing fingerprint fails closed at replay time (see
+   "Semantic replay" below), it does not silently pass.
+4. Run `just semantic-replay CTREX-<N>` and confirm it actually resolves a
+   mechanism for every contract entry and reports `PASS` (or, for a
+   chdb/docker-dependent mechanism on a machine missing that substrate,
+   `SUBSTRATE-UNAVAILABLE` — never `FAIL`/`ERROR`/`STALE`) before merging
+   the record. A record whose replay mechanism cannot even be resolved is a
+   record `just semantic-check`'s schema validation will not catch, because
+   routing is structural over `locator_path`/`replay_test_path`, not a
+   field the six-file model validates.
+
+## Semantic replay
+
+`.github/scripts/lib/semantic-replay.mjs` (issue #3446) routes a
+counterexample record's contract entries to the real, already-existing
+test/harness that replays the historical bug it joins to its fix, and runs
+it. `semantic-counterexamples.mjs` (above) only proves a record's pointers
+resolve to files that exist on disk; it never runs anything. This module is
+the next step: given a record id, actually execute what its `locator_path`/
+`replay_test_path` point at and report a real verdict.
+
+**Routing is structural, not prose.** A contract entry's free-text
+`replay_command` field is inconsistent prose across records — never parsed
+as a source of truth. The real command is derived from the structured
+fields plus the target file's own `//go:build` line (read, never guessed),
+via three routing kinds:
+
+- **go-test-direct** — `replay_test_path` is a `_test.go` file whose content
+  is not a table-driven `spec.Walk`/`spec.WalkShard` corpus walk, and
+  `replay_test_name` names a real `^Test[A-Za-z0-9_]+$` function the file
+  defines. Runs `go test [-tags <read from file>] -count=1
+  -run '^<Name>$' ./<dir>/...`.
+- **go-test-fixture** — either `replay_test_path` is a table-driven
+  `_test.go` file and `locator_path` is a sibling `.txtar` fixture, or
+  `replay_test_path` IS the `.txtar` fixture itself, in which case the
+  companion `*_test.go` in the same directory is located by convention
+  (`roundtrip_chdb_test.go` if present, else the first sorted `*_test.go`
+  that calls `spec.Walk`/`spec.WalkShard`). Either way the fixture's
+  basename becomes the `-run` pattern's subtest segment:
+  `go test [-tags ...] -count=1 -run '^<TestFunc>$/^<fixture>$' ./<dir>/...`,
+  matching `test/spec.WalkShard`'s own subtest-naming convention
+  (`Case.Name`, the fixture's basename without `.txtar`).
+- **compat-corpus** — `locator_path` or `replay_test_path` names a file
+  under `compatibility/<head>/`. Routes to `just compat-<ql>` (`loki` ->
+  `compat-logql`, `prometheus` -> `compat-promql`, `tempo` ->
+  `compat-traceql`). None of the three differential-harness drivers expose
+  a per-case selector flag (confirmed by reading each driver's own
+  `flag.StringVar`/`flag.BoolVar` declarations), so this is always a
+  whole-lane run, and is labeled as such in the reported result.
+
+A contract entry can resolve to more than one mechanism — CTREX-1741's
+`LOGQL-LABEL-MATCHER-REGEX-ANCHORING` entry names both a spec fixture and a
+compat corpus file for the same historical bug, and both are run and
+reported distinctly.
+
+**Source-fingerprint mechanism.** Before running any mechanism, the tool
+recomputes a SHA-256 over a contract entry's own `locator_path` +
+`replay_test_path` bytes (concatenated in that fixed order, deduped when
+both fields name the same path) and compares it against the value checked
+in at `test/semantic/replay-fingerprints.json`, keyed by
+`"<counterexample-id>#<contract-id>"`. A missing or mismatched fingerprint
+is reported as `STALE`, distinct from a real `FAIL`/`ERROR` — it means the
+record's own pointers drifted since the fingerprint was last refreshed, not
+that the replayed test failed. Refresh it by hand, mirroring this repo's
+existing hand-refreshed-snapshot precedent
+(`semantic-lane-policy-snapshot.mjs`):
+
+```sh
+node .github/scripts/semantic-replay.mjs --update-fingerprints
+```
+
+**Independent-oracle-assertion boundary.** This tool's job ends at invoking
+the real target and relaying ITS verdict — exit code + failure text —
+verbatim. It never adds its own "does this output look correct" judgment on
+top. A `PASS` means "the same recorded regression, with the same oracle
+assertions the original fix's test already carries, still passes"; it is
+never proof that some newly generated answer is independently correct.
+
+**Substrate-unavailable vs. a real failure.** A chdb-tagged mechanism checks
+`libchdb.so` is installed (`CHDB_INSTALL_PATH`, the same env var and default
+`just/chdb.just` and `chdb-install.mjs` already use) before running `go
+test`; a compat-corpus mechanism checks `docker info` succeeds before
+attempting `just compat-<ql>`. Either check failing reports
+`SUBSTRATE-UNAVAILABLE`, never folded into `FAIL`/`ERROR`.
+
+**Fail-closed conditions**, each independently distinguishable via the
+result's `status` + `reasonKind`: an unknown counterexample id (the CLI's
+own `EXIT_CODES.UNKNOWN_ID`, before any entry is processed); a missing or
+unresolvable selector (`ERROR` / `unresolved-selector`); zero selected tests
+actually executing — a `-run` pattern that matched nothing (`ERROR` /
+`zero-selected`); a source-fingerprint mismatch (`STALE`, see above).
+
+Usage:
+
+```sh
+just semantic-replay CTREX-1741
+node .github/scripts/semantic-replay.mjs CTREX-1741       # equivalent
+node .github/scripts/semantic-replay.mjs --update-fingerprints
+```
+
+Exit codes: `0` every resolved mechanism passed; `1` at least one mechanism
+`FAIL`ed, `ERROR`ed, or was `STALE`; `2` the counterexample id does not
+resolve to a record; `3` nothing failed/errored/was stale, but at least one
+mechanism was `SUBSTRATE-UNAVAILABLE` — inconclusive, never conflated with a
+clean pass.
+
+**Non-goals.** No new runtime test-assertion framework — this only shells
+out to `go test` / `just <compat-recipe>` and relays what they report. No
+automatic golden updates. This never becomes a required CI status check
+replacing or duplicating the existing fixed lanes: it is a routing/
+reporting layer run by hand, like `semantic-lane-policy-snapshot.mjs`, not a
+merge gate. Only `semantic-replay.test.mjs`'s pure-routing unit tests are
+wired into `ci.yml` (alongside `semantic-counterexamples.test.mjs`, in the
+same "Validate the semantic contract metadata model" step) — that suite
+never shells out to the compat-corpus mechanism's live Docker Compose stack,
+since doing so from inside a fast metadata-validation step would turn it
+into a multi-minute integration test; it verifies that mechanism routes
+correctly and leaves running it to a developer's own
+`just semantic-replay <id>`.
+
 ## Semantic lane adapter
 
 `lib/semantic-lane-adapter.mjs` binds the semantic contract model above to
