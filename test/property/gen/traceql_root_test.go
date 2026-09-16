@@ -4,16 +4,16 @@ import "testing"
 
 func TestTraceQLDatasetUsesEmptyParentForRoots(t *testing.T) {
 	dataset := TraceQLDataset().Example(0)
-	if dataset.Metrics == nil || len(dataset.Metrics.Series) == 0 {
+	if dataset.Traces == nil || len(dataset.Traces.Spans) == 0 {
 		t.Fatal("TraceQL dataset has no generated spans")
 	}
 
 	rootCountByTrace := map[string]int{}
 	spanCountByTrace := map[string]int{}
-	for _, span := range dataset.Metrics.Series {
-		traceID := span.Labels["__traceID__"]
+	for _, span := range dataset.Traces.Spans {
+		traceID := span.TraceID
 		spanCountByTrace[traceID]++
-		if span.Labels["__parentSpanID__"] == "" {
+		if span.ParentSpanID == "" {
 			rootCountByTrace[traceID]++
 		}
 	}

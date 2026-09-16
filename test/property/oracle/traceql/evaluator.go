@@ -83,7 +83,7 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 // spanView is the oracle's per-span snapshot: just the fields the
 // evaluator needs to apply matchers, intrinsics, structural relations,
 // and aggregates. Built once per Evaluate call from the dataset's
-// MetricsModel series.
+// TracesModel spans.
 type spanView struct {
 	traceID    string
 	spanID     string
@@ -104,31 +104,25 @@ type spanKey struct {
 	spanID  string
 }
 
-// spanViews pivots the dataset's MetricsModel into the spanView shape
+// spanViews pivots the dataset's TracesModel into the spanView shape
 // every evaluator helper reads. See gen/traceql.go's TraceQLDataset
-// doc for the reserved-label-key convention this mirrors.
+// doc and property.SpanRecord's doc for the typed field shape this reads.
 func spanViews(d property.Dataset) []spanView {
-	if d.Metrics == nil {
+	if d.Traces == nil {
 		return nil
 	}
-	out := make([]spanView, 0, len(d.Metrics.Series))
-	for _, s := range d.Metrics.Series {
-		var durationNs int64
-		if raw, ok := s.Labels["__duration_ns__"]; ok {
-			if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
-				durationNs = v
-			}
-		}
+	out := make([]spanView, 0, len(d.Traces.Spans))
+	for _, s := range d.Traces.Spans {
 		out = append(out, spanView{
-			traceID:    s.Labels["__traceID__"],
-			spanID:     s.Labels["__spanID__"],
-			parentID:   s.Labels["__parentSpanID__"],
-			service:    s.Labels["resource.service.name"],
-			cluster:    s.Labels["resource.cluster"],
-			httpMethod: s.Labels["span.http.method"],
-			name:       s.MetricName,
-			statusCode: s.Labels["__status__"],
-			durationNs: durationNs,
+			traceID:    s.TraceID,
+			spanID:     s.SpanID,
+			parentID:   s.ParentSpanID,
+			service:    s.ResourceAttributes["service.name"],
+			cluster:    s.ResourceAttributes["cluster"],
+			httpMethod: s.SpanAttributes["http.method"],
+			name:       s.Name,
+			statusCode: s.StatusCode,
+			durationNs: s.DurationNs,
 		})
 	}
 	return out

@@ -15,14 +15,14 @@ import (
 func TestTraceQLDatasetParentChainsAreRooted(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		dataset := TraceQLDataset().Draw(rt, "dataset")
-		if dataset.Metrics == nil || len(dataset.Metrics.Series) == 0 {
+		if dataset.Traces == nil || len(dataset.Traces.Spans) == 0 {
 			rt.Fatal("dataset drew no spans")
 		}
 
 		spanIDsByTrace := make(map[string]map[string]struct{})
-		for _, span := range dataset.Metrics.Series {
-			traceID := span.Labels["__traceID__"]
-			spanID := span.Labels["__spanID__"]
+		for _, span := range dataset.Traces.Spans {
+			traceID := span.TraceID
+			spanID := span.SpanID
 			if traceID == "" || spanID == "" {
 				rt.Fatalf("generated span has empty identity: trace=%q span=%q", traceID, spanID)
 			}
@@ -33,16 +33,16 @@ func TestTraceQLDatasetParentChainsAreRooted(t *testing.T) {
 		}
 
 		rootCounts := make(map[string]int)
-		for _, span := range dataset.Metrics.Series {
-			traceID := span.Labels["__traceID__"]
-			parentID := span.Labels["__parentSpanID__"]
+		for _, span := range dataset.Traces.Spans {
+			traceID := span.TraceID
+			parentID := span.ParentSpanID
 			if parentID == "" {
 				rootCounts[traceID]++
 				continue
 			}
 			if _, ok := spanIDsByTrace[traceID][parentID]; !ok {
 				rt.Fatalf("trace %q span %q references missing parent %q",
-					traceID, span.Labels["__spanID__"], parentID)
+					traceID, span.SpanID, parentID)
 			}
 		}
 

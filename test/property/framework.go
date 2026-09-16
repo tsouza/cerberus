@@ -12,14 +12,14 @@ import (
 // Dataset is the random data shape every property iteration starts with.
 //
 // The DDL is a multi-statement script (CREATE TABLE + INSERTs) the chDB
-// helpers will replay against an ephemeral session. The Metrics / Logs
-// mirrors are the same data in the in-memory shape the oracle reads —
+// helpers will replay against an ephemeral session. The Metrics / Logs /
+// Traces mirrors are the same data in the in-memory shape the oracle reads —
 // keeping them in sync with the DDL is the generator's responsibility.
 //
-// A generator populates exactly one of the typed mirrors: Metrics for
-// the PromQL property test, Logs for the LogQL property test. The
-// other stays nil. The Run / RunLogs entry points pivot on which
-// mirror is non-nil.
+// A generator populates exactly one of the typed mirrors: Metrics for the
+// PromQL property test, Logs for the LogQL property test, Traces for the
+// TraceQL property test. The other two stay nil. Run pivots on whichever of
+// Metrics / Traces is populated; RunLogs always expects Logs.
 type Dataset struct {
 	// DDL is the multi-statement seed: `CREATE OR REPLACE TABLE …;
 	// INSERT … VALUES …;`. The runner splits on top-level semicolons
@@ -31,6 +31,9 @@ type Dataset struct {
 	// Logs is the in-memory mirror of a logs dataset (otel_logs).
 	// Generator owns the invariant `Logs ⇔ DDL`.
 	Logs *LogsModel
+	// Traces is the in-memory mirror of a traces dataset (otel_traces).
+	// Generator owns the invariant `Traces ⇔ DDL`.
+	Traces *TracesModel
 }
 
 // MetricsModel is the in-memory metrics mirror. It's intentionally tiny
@@ -100,6 +103,59 @@ type LogRecord struct {
 	ResourceAttributes map[string]string
 	LogAttributes      map[string]string
 	TimestampNanos     int64
+}
+
+// TracesModel is the in-memory traces mirror. It holds the rows the
+// generator inserted into otel_traces; the oracle reads each span's
+// identity, attributes, timing, and status directly, while cerberus
+// re-reads the same rows via SQL.
+type TracesModel struct {
+	Spans []SpanRecord
+}
+
+// SpanRecord is one row in a TracesModel: one span, expressed as typed
+// fields rather than folded into a MetricsModel.SeriesData under reserved
+// string label keys. ParentSpanID is empty for a trace root and otherwise
+// names another SpanRecord's SpanID within the same TraceID — see
+// [ValidateTracesDataset] for the linkage invariant this must satisfy.
+type SpanRecord struct {
+	TraceID      string
+	SpanID       string
+	ParentSpanID string
+	Name         string
+	// ResourceAttributes carries resource-scope attributes (service.name,
+	// cluster, …), matching the OTel-CH ResourceAttributes column.
+	ResourceAttributes map[string]string
+	// SpanAttributes carries span-scope attributes (http.method, …),
+	// matching the OTel-CH SpanAttributes column.
+	SpanAttributes map[string]string
+	// TimestampMs is the span's start time, unix milliseconds (matching
+	// Point.TimestampMs's convention).
+	TimestampMs int64
+	// DurationNs is the span's duration in nanoseconds, matching the
+	// OTel-CH Duration column's unit.
+	DurationNs int64
+	// StatusCode is the CH-stored status literal (Ok / Error / Unset).
+	StatusCode string
+}
+
+// NamesPresent returns the distinct span names in the dataset, sorted for
+// determinism. The TraceQL query generator uses this so a `{ name = "…" }`
+// filter can target a name the dataset actually carries.
+func (m *TracesModel) NamesPresent() []string {
+	if m == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, s := range m.Spans {
+		seen[s.Name] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // StreamLabelsPresent returns the union of all label names that appear
@@ -434,19 +490,115 @@ func ValidateLogsDataset(dataset Dataset) string {
 	return ""
 }
 
-// ValidateGeneratedDataset selects the one model family a deterministic
-// example carries. Multiple populated models would make it ambiguous which
-// oracle contract the example is proving.
+// ValidateTracesDataset keeps a TraceQL generator defect from consuming a
+// randomized check without executing either side of the fence. Beyond the
+// DDL and non-empty checks its PromQL/LogQL siblings run, it validates the
+// structural invariant every consumer (the oracle's structural-relation
+// walk, the dataset-parent-chain generator test) depends on: every span has
+// a trace/span identity, every non-root's ParentSpanID resolves to another
+// span in the same trace, and every trace has exactly one root.
+func ValidateTracesDataset(dataset Dataset) string {
+	if dataset.Traces == nil {
+		return "missing traces model"
+	}
+	if len(dataset.Traces.Spans) == 0 {
+		return "empty traces spans"
+	}
+	for _, span := range dataset.Traces.Spans {
+		if strings.TrimSpace(span.TraceID) == "" || strings.TrimSpace(span.SpanID) == "" {
+			return fmt.Sprintf("span has a missing trace or span identity: trace=%q span=%q", span.TraceID, span.SpanID)
+		}
+	}
+	if invalid := validateSpanParentLinkage(dataset.Traces.Spans); invalid != "" {
+		return invalid
+	}
+	if strings.TrimSpace(dataset.DDL) == "" {
+		return "empty seed DDL"
+	}
+	return ""
+}
+
+// validateSpanParentLinkage checks the structural precondition TraceQL's
+// generator and the oracle's ancestor/descendant walk both depend on: an
+// empty ParentSpanID marks a trace root, and any other value must name
+// another span's SpanID within the SAME trace. A ParentSpanID that resolves
+// nowhere, or a trace with zero or more than one root, is a generator bug —
+// it produces structural queries the oracle cannot evaluate soundly.
+func validateSpanParentLinkage(spans []SpanRecord) string {
+	knownByTrace := make(map[string]map[string]struct{}, len(spans))
+	for _, span := range spans {
+		if knownByTrace[span.TraceID] == nil {
+			knownByTrace[span.TraceID] = map[string]struct{}{}
+		}
+		knownByTrace[span.TraceID][span.SpanID] = struct{}{}
+	}
+	rootCounts := map[string]int{}
+	for _, span := range spans {
+		if span.ParentSpanID == "" {
+			rootCounts[span.TraceID]++
+			continue
+		}
+		if _, ok := knownByTrace[span.TraceID][span.ParentSpanID]; !ok {
+			return fmt.Sprintf("span %q in trace %q references parent %q, which is not a span in the same trace",
+				span.SpanID, span.TraceID, span.ParentSpanID)
+		}
+	}
+	// Range over every trace ID that has a span at all, not just the ones
+	// that show up in rootCounts: a trace whose spans form a pure cycle
+	// (every ParentSpanID resolves within the trace, but none is empty)
+	// has zero roots and would never earn a rootCounts entry, silently
+	// passing a check that only inspected that map's keys.
+	for traceID := range knownByTrace {
+		if count := rootCounts[traceID]; count != 1 {
+			return fmt.Sprintf("trace %q has %d roots (empty-ParentSpanID spans), want exactly one", traceID, count)
+		}
+	}
+	return ""
+}
+
+// datasetModelFamily is one named, independently validatable model a
+// Dataset may carry. ValidateGeneratedDataset enumerates these rather than
+// hand-writing one pairwise check per combination, so a third (and now
+// fourth) family only adds one entry here instead of a new branch for every
+// existing family it can collide with.
+type datasetModelFamily struct {
+	name     string
+	present  bool
+	validate func() string
+}
+
+func datasetModelFamilies(dataset Dataset) []datasetModelFamily {
+	return []datasetModelFamily{
+		{name: "metrics", present: dataset.Metrics != nil, validate: func() string { return ValidateMetricsDataset(dataset) }},
+		{name: "logs", present: dataset.Logs != nil, validate: func() string { return ValidateLogsDataset(dataset) }},
+		{name: "traces", present: dataset.Traces != nil, validate: func() string { return ValidateTracesDataset(dataset) }},
+	}
+}
+
+// ValidateGeneratedDataset selects the one model family a generated example
+// carries — metrics XOR logs XOR traces, never more than one and never
+// zero. Multiple populated models would make it ambiguous which oracle
+// contract the example is proving; this is the shared seam [Run],
+// [RunShapeCases], and [RunShapeExamples] all validate through, so every
+// family (present or future) gets the same fail-closed exactly-one check.
 func ValidateGeneratedDataset(dataset Dataset) string {
-	switch {
-	case dataset.Metrics != nil && dataset.Logs != nil:
-		return "dataset contains both metrics and logs models"
-	case dataset.Metrics != nil:
-		return ValidateMetricsDataset(dataset)
-	case dataset.Logs != nil:
-		return ValidateLogsDataset(dataset)
+	var active []datasetModelFamily
+	for _, family := range datasetModelFamilies(dataset) {
+		if family.present {
+			active = append(active, family)
+		}
+	}
+	switch len(active) {
+	case 0:
+		return "missing metrics, logs, or traces model"
+	case 1:
+		return active[0].validate()
 	default:
-		return "missing metrics or logs model"
+		names := make([]string, 0, len(active))
+		for _, family := range active {
+			names = append(names, family.name)
+		}
+		return fmt.Sprintf("dataset contains more than one model family: %s", strings.Join(names, ", "))
 	}
 }
 
@@ -609,6 +761,10 @@ func runShapeExamples[S ~string](
 // reproduce. Shrinking is implicit (rapid will minimise the failing
 // generators before this function returns).
 //
+// Run is shared by every non-log differential (PromQL's Metrics family and
+// TraceQL's Traces family): ValidateGeneratedDataset accepts either, and
+// rejects a draw that populates both or neither.
+//
 // The caller is responsible for closing over chDB / handler lifetime
 // inside `ch` — the runner has no chDB knowledge of its own. This
 // keeps the package free of chdb tags except in chdb.go.
@@ -628,7 +784,7 @@ func Run(
 
 	rapid.Check(t, func(rt *rapid.T) {
 		ds := dgen(rt)
-		if invalid := ValidateMetricsDataset(ds); invalid != "" {
+		if invalid := ValidateGeneratedDataset(ds); invalid != "" {
 			rt.Fatalf("invalid generated dataset: %s", invalid)
 		}
 		q := qgen(rt, ds)
@@ -942,6 +1098,15 @@ func dumpDataset(d Dataset) string {
 		for _, r := range d.Logs.Records {
 			fmt.Fprintf(&b, "  ts=%d %s severity=%q body=%q\n",
 				r.TimestampNanos, labelKey(r.ResourceAttributes), r.SeverityText, r.Body)
+		}
+		return b.String()
+	}
+	if d.Traces != nil {
+		fmt.Fprintf(&b, "spans=%d\n", len(d.Traces.Spans))
+		for _, s := range d.Traces.Spans {
+			fmt.Fprintf(&b, "  trace=%s span=%s parent=%q %s resource=%s span_attrs=%s status=%s duration=%dns ts=%d\n",
+				s.TraceID, s.SpanID, s.ParentSpanID, s.Name,
+				labelKey(s.ResourceAttributes), labelKey(s.SpanAttributes), s.StatusCode, s.DurationNs, s.TimestampMs)
 		}
 		return b.String()
 	}

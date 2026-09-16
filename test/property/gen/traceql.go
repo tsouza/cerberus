@@ -121,22 +121,13 @@ const (
 //
 // The returned Dataset's DDL is a multi-statement script
 // (`CREATE OR REPLACE TABLE otel_traces (...); INSERT ...;`) the chDB
-// runner replays before each query. The MetricsModel mirror carries
-// the same data in a shape the oracle reads — it stores spans as
-// SeriesData entries with MetricName=SpanName, Labels carrying the
-// span-level + resource attributes via reserved key prefixes:
-//
-//   - "resource.<key>"  → ResourceAttributes[<key>] (service.name, cluster)
-//   - "span.<key>"      → SpanAttributes[<key>] (http.method)
-//   - "__name__"        → SpanName (mirrors the PromQL convention; the
-//     oracle's labels-minus-__name__ identity rule reuses it)
-//   - "__traceID__"     → TraceID (shared by every span in a trace's chain)
-//   - "__spanID__"      → SpanID (unique 16-hex per span)
-//   - "__parentSpanID__" → ParentSpanId (unique per chain: the
-//     preceding span's SpanID, or traceQLRootParentID for the chain root)
-//   - "__duration_ns__" → string-formatted Duration (so the oracle
-//     can read it without changing SeriesData's float64 Point shape)
-//   - "__status__"      → the CH-stored status literal (Ok/Error/Unset)
+// runner replays before each query. The TracesModel mirror carries the
+// same data in the shape the oracle reads — one property.SpanRecord per
+// generated span, with explicit TraceID / SpanID / ParentSpanID identity
+// fields, ResourceAttributes (service.name, cluster), SpanAttributes
+// (http.method), Name, DurationNs, StatusCode, and TimestampMs. Unlike the
+// PromQL/LogQL mirrors, no reserved-label-key encoding is involved — see
+// [property.SpanRecord]'s doc.
 //
 // MergeTree is the chosen engine (matches PromQL property test
 // rationale: Memory engine refuses PREWHERE the chsql emitter emits).
@@ -178,17 +169,19 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 				spanOrdinal++
 			}
 		}
-		series := traceQLSpansToSeries(spans)
+		records := traceQLSpansToRecords(spans)
 		return property.Dataset{
-			DDL:     renderTraceQLDDL(spans),
-			Metrics: &property.MetricsModel{Series: series},
+			DDL:    renderTraceQLDDL(spans),
+			Traces: &property.TracesModel{Spans: records},
 		}
 	})
 }
 
 // traceQLSpan is the in-memory mirror of one row of otel_traces the
-// generator emits. The Dataset.Metrics mirror stores spans as
-// SeriesData entries; this struct is the bridge.
+// generator emits. The Dataset.Traces mirror stores spans as
+// property.SpanRecord entries; this struct is the bridge (and also
+// feeds renderTraceQLRow's DDL rendering, which reads its time.Time
+// startTime directly).
 type traceQLSpan struct {
 	traceID    string // 32-hex, shared by every span in a trace's chain
 	spanID     string // 16-hex
@@ -202,34 +195,29 @@ type traceQLSpan struct {
 	statusCode string
 }
 
-// traceQLSpansToSeries pivots the generator's spans into the
-// property.SeriesData shape the framework persists on the Dataset.
-// Each span becomes one SeriesData with a single Point at the span's
-// StartTime carrying its Duration as the float value.
-//
-// The Labels map intentionally folds span-level metadata under
-// reserved keys (see TraceQLDataset's doc) so the oracle can recover
-// the original schema without needing a new framework type.
-func traceQLSpansToSeries(spans []traceQLSpan) []property.SeriesData {
-	out := make([]property.SeriesData, 0, len(spans))
+// traceQLSpansToRecords pivots the generator's spans into the
+// property.SpanRecord shape the framework persists on the Dataset — one
+// record per span, with explicit identity, attribute, timing, and status
+// fields (see [property.SpanRecord]'s doc), rather than a MetricsModel
+// series carrying the same data under reserved string label keys.
+func traceQLSpansToRecords(spans []traceQLSpan) []property.SpanRecord {
+	out := make([]property.SpanRecord, 0, len(spans))
 	for _, s := range spans {
-		labels := map[string]string{
-			"resource.service.name": s.service,
-			"resource.cluster":      s.cluster,
-			"span.http.method":      s.httpMethod,
-			"__name__":              s.name,
-			"__traceID__":           s.traceID,
-			"__spanID__":            s.spanID,
-			"__parentSpanID__":      s.parentID,
-			"__status__":            s.statusCode,
-			"__duration_ns__":       fmt.Sprintf("%d", s.durationNs),
-		}
-		out = append(out, property.SeriesData{
-			MetricName: s.name,
-			Labels:     labels,
-			Points: []property.Point{
-				{TimestampMs: s.startTime.UnixMilli(), Value: float64(s.durationNs)},
+		out = append(out, property.SpanRecord{
+			TraceID:      s.traceID,
+			SpanID:       s.spanID,
+			ParentSpanID: s.parentID,
+			Name:         s.name,
+			ResourceAttributes: map[string]string{
+				"service.name": s.service,
+				"cluster":      s.cluster,
 			},
+			SpanAttributes: map[string]string{
+				"http.method": s.httpMethod,
+			},
+			TimestampMs: s.startTime.UnixMilli(),
+			DurationNs:  s.durationNs,
+			StatusCode:  s.statusCode,
 		})
 	}
 	return out
@@ -549,7 +537,7 @@ func drawTraceQLCountQuery(t *rapid.T, d property.Dataset) string {
 	op := rapid.SampledFrom(traceQLComparisonOps).Draw(t, "countOp")
 	// Bound N at [0, len(spans)+1] so the threshold is sometimes
 	// satisfied and sometimes not, including the "above ceiling" case.
-	n := rapid.IntRange(0, len(d.Metrics.Series)+1).Draw(t, "countN")
+	n := rapid.IntRange(0, len(d.Traces.Spans)+1).Draw(t, "countN")
 	return fmt.Sprintf("%s | count() %s %d", query, op, n)
 }
 
@@ -571,7 +559,7 @@ func drawTraceQLMetricQuery(t *rapid.T, fn string) string {
 // pick a value that's guaranteed absent, exercising the empty-result
 // path deliberately rather than by accident.
 func drawTraceQLNameValue(t *rapid.T, d property.Dataset) string {
-	names := d.Metrics.NamesPresent()
+	names := d.Traces.NamesPresent()
 	if len(names) > 0 && rapid.Bool().Draw(t, "nameExists") {
 		return rapid.SampledFrom(names).Draw(t, "existingName")
 	}
