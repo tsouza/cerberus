@@ -25,9 +25,9 @@ test("runCorpus: every real committed record is attempted, in sorted id order", 
     },
   });
 
-  assert.equal(total, 11);
+  assert.equal(total, 13);
   assert.equal(failures.length, 0);
-  assert.equal(calls.length, 11);
+  assert.equal(calls.length, 13);
   assert.deepEqual(calls, [...calls].sort(), "ids must be attempted in sorted order");
 });
 
@@ -39,7 +39,7 @@ test("runCorpus: collects every failing id rather than stopping at the first", (
     spawnFn: (bin, args) => ({ status: args[1].includes("KILLED") ? 1 : 0 }),
   });
 
-  assert.equal(total, 11);
+  assert.equal(total, 13);
   assert.deepEqual(failures, ["MUTANT-SYNTH-KILLED-INVERT"]);
 });
 
