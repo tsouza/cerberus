@@ -72,6 +72,132 @@
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     },
     {
+      "id": "EXEC-LOGQL-LINE-FILTER-REGEX-SPEC-20260916",
+      "binding": "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY-20260916",
+      "binding": "BINDING-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY-20260916",
+      "binding": "BINDING-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE-20260916",
+      "binding": "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT-20260916",
+      "binding": "BINDING-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-LABEL-FORMAT-SPEC-FIXTURE-20260916",
+      "binding": "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY-20260916",
+      "binding": "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-LABEL-MATCHER-ANCHORING-SPEC-20260916",
+      "binding": "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT-20260916",
+      "binding": "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW-20260916",
+      "binding": "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW-20260916",
+      "binding": "BINDING-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW-20260916",
+      "binding": "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL-20260916",
+      "binding": "BINDING-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-STATUS-CODE-DIFFERENTIAL-20260916",
+      "binding": "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-STRUCTURED-EXTRACTION-FIXTURE-20260916",
+      "binding": "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-UNWRAP-FIXTURE-20260916",
+      "binding": "BINDING-LOGQL-UNWRAP-FIXTURE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-RANGE-AGGREGATION-REFERENCE-20260916",
+      "binding": "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW-20260916",
+      "binding": "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
       "id": "EXEC-ARCH-NO-CACHING-STATIC-20260910",
       "binding": "BINDING-ARCH-NO-CACHING-STATIC",
       "observed_at": "2026-09-10T04:05:00Z",

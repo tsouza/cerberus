@@ -326,6 +326,168 @@
       "status": "active"
     },
     {
+      "id": "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
+      "contract": "LOGQL-LINE-FILTER-REGEX-SEMANTICS",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "parser-lowering",
+      "test_ref": "test/spec/logql/line_filter_regex_case_insensitive_multicase.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY",
+      "contract": "LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "logql-random-property-oracle",
+      "test_ref": "test/property/gen#logql.stream.selector",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY",
+      "contract": "LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "logql-shape-roster-property-oracle",
+      "test_ref": "test/property/gen#logql.stream.label-format",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
+      "contract": "LOGQL-PIPELINE-STAGE-ORDER",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "multistage-fixture-ordering",
+      "test_ref": "test/spec/logql/edge_label_filter_and_then_line_filter.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT",
+      "contract": "LOGQL-PIPELINE-STAGE-ORDER",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "multistage-fixture-ordering",
+      "test_ref": "test/spec/logql/edge_multistage_filter_unpack_format.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
+      "contract": "LOGQL-LABEL-FORMAT-RENAME-SEMANTICS",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "label-format-spec-fixture",
+      "test_ref": "test/spec/logql/label_format.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY",
+      "contract": "LOGQL-LABEL-FORMAT-RENAME-SEMANTICS",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "label-format-shape-property-oracle",
+      "test_ref": "test/property/gen#logql.stream.label-format",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
+      "contract": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "spec-fixture-roundtrip",
+      "test_ref": "test/spec/logql/stream_regex_no_overmatch.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT",
+      "contract": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "reference-differential",
+      "test_ref": "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
+      "contract": "LOGQL-ORACLE-PARSER-LEAF-HELPER-BOUNDARY",
+      "verifier": "VERIFIER-DOCUMENTED-PROVENANCE-REVIEW",
+      "evidence_class": "manual-review",
+      "independence_group": "oracle-package-doc-review",
+      "test_ref": "test/property/oracle/logql/doc.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW",
+      "contract": "LOGQL-ORACLE-PARSER-LEAF-HELPER-BOUNDARY",
+      "verifier": "VERIFIER-DOCUMENTED-PROVENANCE-REVIEW",
+      "evidence_class": "manual-review",
+      "independence_group": "oracle-package-doc-review",
+      "test_ref": "test/property/oracle/logql/line_filters.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW",
+      "contract": "LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY",
+      "verifier": "VERIFIER-DOCUMENTED-PROVENANCE-REVIEW",
+      "evidence_class": "manual-review",
+      "independence_group": "stream-row-parity-exemption-review",
+      "test_ref": "test/spec/logql/label_format.txtar#parity_exempt",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL",
+      "contract": "LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "reference-stream-row-differential",
+      "test_ref": "compatibility/loki",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
+      "contract": "LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY",
+      "verifier": "VERIFIER-REFERENCE-STATUS-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "status-code-differential",
+      "test_ref": "compatibility/loki/cmd/loki-compliance-tester/status_parity.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
+      "contract": "LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "structured-extraction-fixture-roundtrip",
+      "test_ref": "test/spec/logql/parser_logfmt.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-UNWRAP-FIXTURE",
+      "contract": "LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "structured-extraction-fixture-roundtrip",
+      "test_ref": "test/spec/logql/unwrap_sum_over_time.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE",
+      "contract": "LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "range-aggregation-reference-differential",
+      "test_ref": "test/spec/logql/range_agg_without_grouping_unwrap.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW",
+      "contract": "LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE",
+      "verifier": "VERIFIER-DOCUMENTED-PROVENANCE-REVIEW",
+      "evidence_class": "manual-review",
+      "independence_group": "upstream-skip-baseline-review",
+      "test_ref": "compatibility/loki/upstream-skip-baseline.txt",
+      "status": "active"
+    },
+    {
       "id": "BINDING-ARCH-NO-CACHING-STATIC",
       "contract": "ARCH-NO-QUERY-RESULT-CACHING",
       "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",

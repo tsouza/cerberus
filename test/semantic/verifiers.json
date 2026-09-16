@@ -122,6 +122,25 @@
       "replaced_by": null
     },
     {
+      "id": "VERIFIER-REFERENCE-STATUS-DIFFERENTIAL",
+      "name": "Reference status-code differential",
+      "description": "Fetches both cerberus and the real reference backend's raw HTTP response to a fixed, known-invalid request without the 200-only success fold every other differential pass applies, and asserts the two backends' status codes agree. The Loki and Tempo sibling passes (status_parity.go, compatibility/tempo/driver's `-- expect_status --` axis) express \"both backends must REJECT this request the same way,\" which a body-diffing pass that folds every non-200 response into an UnexpectedFailure cannot express.",
+      "detects": [
+        "one backend accepting a request class the other rejects, or vice versa",
+        "a shared rejection boundary silently drifting to a different status code on one side"
+      ],
+      "cannot_detect": [
+        "any answer-level drift for a request both backends accept — that is VERIFIER-REFERENCE-DIFFERENTIAL's job",
+        "a rejection-reason mismatch when both sides already return the same status code for different reasons"
+      ],
+      "complemented_by": ["VERIFIER-REFERENCE-DIFFERENTIAL"],
+      "substrate": "reference-stack",
+      "relative_cost": "high",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
       "id": "VERIFIER-LEDGER-ENROLLMENT-CHECK",
       "name": "Ledger enrollment check",
       "description": "coverage-package-floor.mjs, the cheap structural half of the coverage gate: it shells out to `go list` and `go tool cover` only (no chDB, no containers, no real test run) to find every package that carries statements in the full build, and fails if any such package has no committed floor file under test/coverage-floor/.",
