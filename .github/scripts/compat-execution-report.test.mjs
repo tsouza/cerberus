@@ -13,7 +13,13 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { isGrpcBinding, parseCorpusPath, selectBindings } from "./compat-execution-report.mjs";
+import {
+  guardCorpusFileAttribution,
+  isCorpusFileScopedBinding,
+  isGrpcBinding,
+  parseCorpusPath,
+  selectBindings,
+} from "./compat-execution-report.mjs";
 
 const SCRIPT_DIR = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = process.cwd();
@@ -33,6 +39,55 @@ test("isGrpcBinding: matches a test_ref naming a gRPC driver file, case-insensit
 test("isGrpcBinding: does not match the HTTP transport or the live-reference oracle", () => {
   assert.equal(isGrpcBinding("compatibility/tempo/driver/diff.go"), false);
   assert.equal(isGrpcBinding("compatibility/tempo/driver/differ.go"), false);
+});
+
+// --- isCorpusFileScopedBinding / guardCorpusFileAttribution (issue #3508) ------
+
+test("isCorpusFileScopedBinding: a corpus data file (.yml/.yaml) is file-scoped", () => {
+  assert.equal(isCorpusFileScopedBinding("compatibility/prometheus/query-corpus/header.yml"), true);
+  assert.equal(isCorpusFileScopedBinding("compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml"), true);
+  assert.equal(isCorpusFileScopedBinding("compatibility/prometheus/QUERY-CORPUS/Header.YML"), true);
+});
+
+test("isCorpusFileScopedBinding: the bare head directory or a driver source file (.go) is whole-invocation-scoped", () => {
+  assert.equal(isCorpusFileScopedBinding("compatibility/prometheus"), false);
+  assert.equal(isCorpusFileScopedBinding("compatibility/loki"), false);
+  assert.equal(isCorpusFileScopedBinding("compatibility/tempo/driver/diff.go"), false);
+  assert.equal(isCorpusFileScopedBinding("compatibility/tempo/driver/grpc_diff.go"), false);
+  assert.equal(isCorpusFileScopedBinding("compatibility/loki/cmd/loki-compliance-tester/status_parity.go"), false);
+});
+
+test("guardCorpusFileAttribution: a file-scoped binding's executed/fail record degrades to unavailable non-evidence", () => {
+  const rec = guardCorpusFileAttribution(
+    { selection: "executed", result: "fail", selection_reason: null, binding: "BINDING-X" },
+    "compatibility/prometheus/query-corpus/header.yml",
+  );
+  assert.equal(rec.selection, "unavailable");
+  assert.equal(rec.result, "error");
+  assert.match(rec.selection_reason, /#3508/);
+  // Every other field survives the override untouched.
+  assert.equal(rec.binding, "BINDING-X");
+});
+
+test("guardCorpusFileAttribution: a file-scoped binding's executed/pass record is left completely alone", () => {
+  const rec = guardCorpusFileAttribution(
+    { selection: "executed", result: "pass", selection_reason: null },
+    "compatibility/prometheus/query-corpus/header.yml",
+  );
+  assert.deepEqual(rec, { selection: "executed", result: "pass", selection_reason: null });
+});
+
+test("guardCorpusFileAttribution: a driver-scoped (whole-invocation) binding's fail is never touched", () => {
+  const rec = guardCorpusFileAttribution({ selection: "executed", result: "fail", selection_reason: null }, "compatibility/prometheus");
+  assert.deepEqual(rec, { selection: "executed", result: "fail", selection_reason: null });
+});
+
+test("guardCorpusFileAttribution: a non-executed record (e.g. already unavailable/stale) is never re-stamped", () => {
+  const rec = guardCorpusFileAttribution(
+    { selection: "stale", result: "error", selection_reason: "corpus drifted" },
+    "compatibility/prometheus/query-corpus/header.yml",
+  );
+  assert.deepEqual(rec, { selection: "stale", result: "error", selection_reason: "corpus drifted" });
 });
 
 // --- parseCorpusPath -----------------------------------------------------------
@@ -77,6 +132,17 @@ test("selectBindings: an empty result when nothing matches the head prefix", () 
     { id: "BINDING-A", status: "active", evidence_class: "reference", test_ref: "compatibility/loki" },
   ]);
   assert.deepEqual(selectBindings(model, "tempo"), []);
+});
+
+test("selectBindings: the head prefix match is anchored at a path segment boundary (issue #3511 item 3)", () => {
+  const model = modelWith([
+    { id: "BINDING-LOKI", status: "active", evidence_class: "reference", test_ref: "compatibility/loki" },
+    // A hypothetical future compatibility/loki-foo binding must NOT be
+    // pulled into HEAD=loki's fan-out merely because "compatibility/loki-foo"
+    // starts with the string "compatibility/loki".
+    { id: "BINDING-LOKI-FOO", status: "active", evidence_class: "reference", test_ref: "compatibility/loki-foo/driver.go" },
+  ]);
+  assert.deepEqual(selectBindings(model, "loki").map((b) => b.id), ["BINDING-LOKI"]);
 });
 
 // --- End-to-end: the real CLI ---------------------------------------------------
@@ -230,6 +296,131 @@ test("CLI: tempo-shaped model — a gRPC-named binding routes to CASES_PATH_GRPC
     assert.equal(http.result, "pass");
     assert.equal(grpc.selection, "executed");
     assert.equal(grpc.result, "fail");
+  } finally {
+    rmSync(modelDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI (issue #3508): an UNRELATED case failing does not stamp a corpus-file-scoped binding as fail, but the whole-run binding still is", () => {
+  const modelDir = tempDir("compat-exec-cli-model-");
+  const dataDir = tempDir("compat-exec-cli-data-");
+  try {
+    writeMinimalModel(modelDir, [
+      { id: "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT", evidence_class: "reference", test_ref: "compatibility/prometheus", status: "active" },
+      { id: "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT", evidence_class: "reference", test_ref: "compatibility/prometheus/query-corpus/header.yml", status: "active" },
+    ]);
+    const casesPath = join(dataDir, "compat-cases.json");
+    // Only "native-histogram-query" fails; "unrelated-query" — reproduced
+    // from issue #3508's own confirmation — passes. Neither the whole-run
+    // binding nor the file-scoped one is actually about the SAME case, but
+    // only the whole-run binding is sound to fail on it.
+    writeFileSync(
+      casesPath,
+      JSON.stringify({
+        head: "prometheus",
+        cases: [
+          { id: "unrelated-query", passed: true },
+          { id: "native-histogram-query", passed: false },
+        ],
+      }),
+    );
+    const result = runCli({
+      HEAD: "prometheus",
+      MODEL_DIR: modelDir,
+      CASES_PATH: casesPath,
+      CANDIDATE_SHA: "abc1234",
+      RUN_REF: "https://example.invalid/run/1",
+      OBSERVED_AT: "2026-09-16T00:00:00Z",
+      GITHUB_SHA: "",
+      GITHUB_EVENT_NAME: "",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const records = JSON.parse(result.stdout);
+    const whole = records.find((r) => r.binding === "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT");
+    const fileScoped = records.find((r) => r.binding === "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT");
+    // Sound: the whole-driver-invocation binding really is evidenced by the
+    // full case set's aggregate, so its "fail" stands.
+    assert.equal(whole.selection, "executed");
+    assert.equal(whole.result, "fail");
+    // Unsound before the fix: this binding's own test_ref names ONE corpus
+    // file, and the only failing case cannot be attributed to it, so it
+    // must NOT be reported as executed/fail.
+    assert.equal(fileScoped.selection, "unavailable");
+    assert.equal(fileScoped.result, "error");
+    assert.match(fileScoped.selection_reason, /#3508/);
+  } finally {
+    rmSync(modelDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI (issue #3509): a missing/malformed gRPC case set degrades only its own binding — the HTTP-arm record still lands", () => {
+  const modelDir = tempDir("compat-exec-cli-model-");
+  const dataDir = tempDir("compat-exec-cli-data-");
+  try {
+    writeMinimalModel(modelDir, [
+      { id: "BINDING-TRACEQL-TRANSPORT-ARM-HTTP", evidence_class: "reference", test_ref: "compatibility/tempo/driver/diff.go", status: "active" },
+      { id: "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE", evidence_class: "reference", test_ref: "compatibility/tempo/driver/differ.go", status: "active" },
+      { id: "BINDING-TRACEQL-TRANSPORT-ARM-GRPC", evidence_class: "reference", test_ref: "compatibility/tempo/driver/grpc_diff.go", status: "active" },
+    ]);
+    const casesPath = join(dataDir, "compat-cases.json");
+    const casesPathGrpc = join(dataDir, "compat-cases-grpc.json");
+    writeFileSync(casesPath, JSON.stringify({ head: "tempo", cases: [{ id: "q1", passed: true }] }));
+    writeFileSync(casesPathGrpc, "{ not valid json"); // the harness step exited 0 but produced garbage
+    const result = runCli({
+      HEAD: "tempo",
+      MODEL_DIR: modelDir,
+      CASES_PATH: casesPath,
+      CASES_PATH_GRPC: casesPathGrpc,
+      CANDIDATE_SHA: "abc1234",
+      RUN_REF: "https://example.invalid/run/1",
+      OBSERVED_AT: "2026-09-16T00:00:00Z",
+      GITHUB_SHA: "",
+      GITHUB_EVENT_NAME: "",
+    });
+    // The whole report must still be produced — a bad gRPC artifact must
+    // never abort the HTTP-arm and live-reference-oracle records too.
+    assert.equal(result.status, 0, result.stderr);
+    const records = JSON.parse(result.stdout);
+    assert.equal(records.length, 3);
+    const http = records.find((r) => r.binding === "BINDING-TRACEQL-TRANSPORT-ARM-HTTP");
+    const oracle = records.find((r) => r.binding === "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE");
+    const grpc = records.find((r) => r.binding === "BINDING-TRACEQL-TRANSPORT-ARM-GRPC");
+    assert.equal(http.selection, "executed");
+    assert.equal(http.result, "pass");
+    assert.equal(oracle.selection, "executed");
+    assert.equal(oracle.result, "pass");
+    assert.equal(grpc.selection, "unavailable");
+    assert.equal(grpc.result, "error");
+    assert.match(grpc.selection_reason, /could not be loaded/);
+  } finally {
+    rmSync(modelDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI (issue #3509): a missing/malformed CASES_PATH (the non-gRPC arm) degrades only the binding(s) that depend on it too", () => {
+  const modelDir = tempDir("compat-exec-cli-model-");
+  const dataDir = tempDir("compat-exec-cli-data-");
+  try {
+    writeMinimalModel(modelDir, [
+      { id: "BINDING-LOGQL-A", evidence_class: "reference", test_ref: "compatibility/loki", status: "active" },
+    ]);
+    const casesPath = join(dataDir, "compat-cases.json"); // never written — genuinely missing
+    const result = runCli({
+      HEAD: "loki",
+      MODEL_DIR: modelDir,
+      CASES_PATH: casesPath,
+      CANDIDATE_SHA: "abc1234",
+      GITHUB_SHA: "",
+      GITHUB_EVENT_NAME: "",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const [record] = JSON.parse(result.stdout);
+    assert.equal(record.selection, "unavailable");
+    assert.equal(record.result, "error");
+    assert.match(record.selection_reason, /could not be loaded/);
   } finally {
     rmSync(modelDir, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });

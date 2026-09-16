@@ -273,6 +273,20 @@ test('legToGoTestJSON degrades to an empty string rather than throwing when the 
   assert.equal(legToGoTestJSON('anything', '/no/such/go-binary'), '');
 });
 
-test('the property tests step sets GOTEST_JSON_OUT so the fan-out captures real go-test-json evidence', () => {
-  assert.match(workflow, /GOTEST_JSON_OUT:/);
+test('the property tests step sets GOTEST_JSON_OUT to the SAME path the later step reads as GOTEST_JSON_PATH', () => {
+  // A substring match on GOTEST_JSON_OUT: alone only proves the literal
+  // token appears somewhere in the workflow — it never links the write
+  // side to the read side, so a rename or path drift on either step would
+  // leave this green while the real wiring silently breaks. Extract both
+  // values and assert they are the identical path.
+  const out = workflow.match(/GOTEST_JSON_OUT:\s*(\S+)/);
+  const path_ = workflow.match(/GOTEST_JSON_PATH:\s*(\S+)/);
+  assert.ok(out, 'property.yml has no GOTEST_JSON_OUT: step output');
+  assert.ok(path_, 'property.yml has no GOTEST_JSON_PATH: step input');
+  assert.equal(
+    out[1],
+    path_[1],
+    'the "Run property tests" step\'s GOTEST_JSON_OUT must name the same file the ' +
+      '"Generate semantic execution observations" step reads as GOTEST_JSON_PATH',
+  );
 });

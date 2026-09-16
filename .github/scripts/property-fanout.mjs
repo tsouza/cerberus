@@ -97,9 +97,8 @@
 // node: builtins only — no npm deps, no setup-node needed.
 
 import process from 'node:process';
-import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { error, notice, log, group, warning } from './lib/gh.mjs';
+import { capture, error, notice, log, group, warning } from './lib/gh.mjs';
 import { runLegBuffered } from './lib/spawn-tagged.mjs';
 
 /** The randomized native-histogram sweep, fanned out across HISTOGRAM_FANOUT processes. */
@@ -316,13 +315,9 @@ export function findTruncatedRapidRuns(output, expectRapidChecks) {
  * reviewer, never the gate this run itself already provides via `results`.
  */
 export function legToGoTestJSON(text, go = 'go') {
-  const res = spawnSync(go, ['tool', 'test2json', '-p', 'test/property'], {
-    input: text,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-  });
-  if (res.error || res.status !== 0) return '';
-  return res.stdout ?? '';
+  const res = capture(go, ['tool', 'test2json', '-p', 'test/property'], { input: text });
+  if (res.status !== 0) return '';
+  return res.stdout;
 }
 
 async function main() {
