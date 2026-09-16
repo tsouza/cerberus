@@ -646,6 +646,19 @@ jobs:
         run: |
           node --test .github/scripts/semantic-lane-adapter.test.mjs
           node .github/scripts/semantic-lane-adapter.mjs
+      # semantic-evidence-adapter.mjs (#3428) resolves a semantic binding's
+      # test_ref against the property-shape rosters, the TXTAR spec corpus,
+      # the surface-parity/rejection-parity ledgers and the QL feature
+      # inventory. Self-test only here, the same posture
+      # verify-just-invocations.mjs uses above: the live CLI's target state
+      # is real (three "active" bindings in the committed example set from
+      # #3426 reference TXTAR fixtures that do not exist — tracked by
+      # #3475), so running it as a standing gate today would red every
+      # unrelated PR on a pre-existing gap rather than one it introduced.
+      # Wire `node .github/scripts/semantic-evidence-adapter.mjs` in here
+      # once #3475 lands.
+      - name: Self-test the semantic evidence adapter CLI
+        run: node --test .github/scripts/semantic-evidence-adapter.test.mjs
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
           tool: just
