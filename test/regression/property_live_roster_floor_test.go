@@ -69,7 +69,7 @@ var propertyLiveRosterFloor = []propertyLiveRosterBinding{
 		Test:       "TestTraceQL_PropertyShapeRoster",
 		Constraint: "chdb",
 		RosterCall: "gen.TraceQLShapeIDs",
-		RunnerCall: "property.RunShapeExamples",
+		RunnerCall: "property.RunShapeExamplesWithComparator",
 	},
 }
 
@@ -253,7 +253,7 @@ func discoverPropertyLiveRosterBindings(root string) ([]propertyLiveRosterBindin
 					return true
 				}
 				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if ok && (selector.Sel.Name == "RunShapeExamples" || selector.Sel.Name == "RunShapeCases") {
+				if ok && (selector.Sel.Name == "RunShapeExamples" || selector.Sel.Name == "RunShapeExamplesWithComparator" || selector.Sel.Name == "RunShapeCases") {
 					runnerCalls = append(runnerCalls, call)
 				}
 				return true

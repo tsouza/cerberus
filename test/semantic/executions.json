@@ -1328,6 +1328,23 @@
       "dataset_fingerprint": null
     },
     {
+      "id": "EXEC-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP-20260916",
+      "binding": "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
+      "observed_at": "2026-09-16T12:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
+      "selection": "executed",
+      "selection_reason": null,
+      "source_sha": null,
+      "run_id": null,
+      "run_attempt": null,
+      "job": null,
+      "event": null,
+      "substrate": null,
+      "reference_version": null,
+      "dataset_fingerprint": null
+    },
+    {
       "id": "EXEC-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY-20260916",
       "binding": "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
       "observed_at": "2026-09-16T00:00:00Z",

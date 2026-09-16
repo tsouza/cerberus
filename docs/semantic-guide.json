@@ -631,13 +631,13 @@
       }
     },
     {
-      "id": "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY",
+      "id": "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY",
       "status": "active",
       "scope_label": "HEAD-TRACEQL",
-      "authority": "operational-invariant",
+      "authority": "reference-implementation",
       "assured": true,
       "execution": {
-        "binding_id": "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+        "binding_id": "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
         "lane_id": "ci.forbid-skip",
         "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
         "merge_required": true,

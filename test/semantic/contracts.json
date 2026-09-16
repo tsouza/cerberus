@@ -464,10 +464,10 @@
       "required_evidence_classes": ["property", "execution"],
       "required_independence_groups": ["count-pipeline-property-oracle", "duration-aggregate-pipeline-property-oracle"],
       "blind_spots": [
-        "The property oracle's own outcome shape (test/property/oracle/traceql/evaluator.go's Evaluate doc) emits one EMPTY-LABEL row per matching trace; it proves the ROW COUNT is trace-scoped, not that any individual trace's identity was the right one — see TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY for that distinction.",
+        "The property oracle's outcome rows carry the matching trace's TraceID (test/property/oracle/traceql/evaluator.go's Evaluate doc) and the comparator multiset-compares TraceIDs (TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY) — but only a per-trace SET for this pipeline shape, since /api/search's aggregate-shape summaries carry no SpanSet/Matched count to compare a multiplicity against.",
         "gen.TraceQLDataset draws at most 3 traces per iteration (traceQLMaxTraces); a dataset with many more traces sharing the same threshold-crossing aggregate value is not exercised by the property sweep."
       ],
-      "related_contracts": ["TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY"],
+      "related_contracts": ["TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY"],
       "inherits_from": null,
       "status": "active",
       "deficit_reason": null,
@@ -485,10 +485,10 @@
       "required_evidence_classes": ["property", "execution"],
       "required_independence_groups": ["select-pipeline-property-oracle"],
       "blind_spots": [
-        "The property oracle folds select() into the SAME row-count code path as a bare selector (test/property/oracle/traceql/evaluator.go's Evaluate: pipelineNone and pipelineSelect share one branch) — the property evidence proves row-count invariance, not that the PROJECTED COLUMN VALUES themselves are correct; that is the txtar fixtures' (select_attrs.txtar / select_one_attr.txtar / select_intrinsics.txtar) expected_rows job, not the property sweep's.",
+        "The property oracle folds select() into the SAME per-span TraceID-multiset code path as a bare selector (test/property/oracle/traceql/evaluator.go's Evaluate: pipelineNone and pipelineSelect share one branch) — the property evidence proves TraceID-multiset invariance (TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY), not that the PROJECTED COLUMN VALUES themselves are correct; that is the txtar fixtures' (select_attrs.txtar / select_one_attr.txtar / select_intrinsics.txtar) expected_rows job, not the property sweep's.",
         "The generator draws only a single select() attribute (traceQLSelectShape always selects span.http.method); a multi-attribute select() list is exercised only by the txtar fixtures, never swept."
       ],
-      "related_contracts": [],
+      "related_contracts": ["TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY"],
       "inherits_from": null,
       "status": "active",
       "deficit_reason": null,
@@ -532,15 +532,37 @@
       ],
       "related_contracts": ["TRACEQL-ORACLE-AUTHORITY-SEPARATION", "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE"],
       "inherits_from": null,
-      "status": "active",
+      "status": "superseded",
       "deficit_reason": null,
       "owner": "cerberus-core",
       "replaces": null,
+      "replaced_by": "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY"
+    },
+    {
+      "id": "TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY",
+      "statement": "The randomized TraceQL property sweep's /api/search comparator (test/property/traceql_test.go, test/property/oracle/traceql/evaluator.go, test/property/framework.go's CompareTraceIdentityOutcomes) expresses every outcome as a per-TraceID multiset comparison against Tempo's /api/search wire contract — TraceSummary.TraceID plus, for a selector/structural/select() shape, SpanSet.Matched (the trace's true matched-span count) — rather than a bare row count. A run that matched the wrong traces at the same total row count, a missing or duplicated trace identity, or a scope-swapped match is caught. A trace-scoped aggregate pipeline shape (count()/avg|min|max|sum(duration)) compares only the SET of satisfying TraceIDs, since /api/search collapses an aggregate's matching rows to one summary per trace with no SpanSet at all (see TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE). Neither shape infers per-SPAN identity — SpanID is never compared — because /api/search only exposes a capped spanSet as a diagnostic sample, not the true matched-span roster.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-TRACEQL"],
+      "applicable_capabilities": [],
+      "authority": "reference-implementation",
+      "required_evidence_classes": ["property"],
+      "required_independence_groups": ["random-property-sweep"],
+      "blind_spots": [
+        "SpanID identity within a matched trace is never verified — only the trace-level TraceID multiset and the wire's own SpanSet.Matched count are compared; a system that matched the wrong SPAN inside the right trace, holding that trace's total matched-span count constant, is indistinguishable from a correct match to this property lane.",
+        "The trace-scoped aggregate shapes (count()/avg|min|max|sum(duration)) compare only the SET of satisfying TraceIDs, never a per-trace multiplicity — /api/search's aggregate-shape summaries carry no SpanSet at all (the Aggregate collapses to one row per trace before the wire shaper ever sees it), so there is no wire-observable per-trace count beyond presence/absence for these shapes; see TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE.",
+        "The 17-shape roster (test/property/gen/shapes.go's traceQLShapeRoster) still fixes which query shapes are drawn; a shape combination outside the roster carries no property evidence of any kind, identity-aware or otherwise."
+      ],
+      "related_contracts": ["TRACEQL-ORACLE-AUTHORITY-SEPARATION", "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE", "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY",
       "replaced_by": null
     },
     {
       "id": "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
-      "statement": "TraceQL has three structurally distinct sources of automated evidence, and none stands in for another. (1) The LOCAL property oracle (test/property/oracle/traceql/evaluator.go) is a from-scratch, in-tree spec implementation with zero dependency on Tempo's own code, whose evidence is row-count-only (TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY). (2) The IN-PROCESS reference evaluator (test/spec/parityoracle/traceql/oracle.go) runs the REAL upstream tempotraceql engine against a real vparquet4.Span built through a documented fork accessor, so it is identity-aware (TraceID/SpanID) and exercises Tempo's actual structural-operator code, but it never starts a live Tempo server and never crosses any wire/HTTP boundary. (3) The LIVE reference-runtime differential (compatibility/tempo) runs a real, separately-started reference Tempo binary end-to-end over both HTTP and gRPC (TRACEQL-TRANSPORT-ARM-INDEPENDENCE) and diffs the actual wire responses, TraceID-keyed. A pass from any one source is never reported, or treated internally, as corroborating another source's claim.",
+      "statement": "TraceQL has three structurally distinct sources of automated evidence, and none stands in for another. (1) The LOCAL property oracle (test/property/oracle/traceql/evaluator.go) is a from-scratch, in-tree spec implementation with zero dependency on Tempo's own code, whose /api/search evidence is TraceID-identity-aware at the trace level (TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY). (2) The IN-PROCESS reference evaluator (test/spec/parityoracle/traceql/oracle.go) runs the REAL upstream tempotraceql engine against a real vparquet4.Span built through a documented fork accessor, so it is identity-aware (TraceID/SpanID) and exercises Tempo's actual structural-operator code, but it never starts a live Tempo server and never crosses any wire/HTTP boundary. (3) The LIVE reference-runtime differential (compatibility/tempo) runs a real, separately-started reference Tempo binary end-to-end over both HTTP and gRPC (TRACEQL-TRANSPORT-ARM-INDEPENDENCE) and diffs the actual wire responses, TraceID-keyed. A pass from any one source is never reported, or treated internally, as corroborating another source's claim.",
       "scope": "head",
       "applicable_heads": ["HEAD-TRACEQL"],
       "applicable_capabilities": [],
@@ -551,7 +573,7 @@
         "The in-process reference evaluator restricts every span to at most one Event and one Link (validateChildRecords, test/spec/parityoracle/traceql/oracle.go) because it flattens per-child attributes into one shared scope; a fixture needing two events sharing an attribute key on one span has no evidence from source (2) at all, only from source (3).",
         "The live reference-runtime differential is itself not infallible: cerberus issue #2039 (open) documents an unresolved case (`{ duration > <dynamic attribute> }`) where the live reference Tempo binary's actual output contradicts Tempo's own documented, unit-tested evaluator semantics for the identical shape — a genuine reference-implementation defect upstream has not yet resolved, not a defect in cerberus's coercion. This contract records #2039 as an explicit, still-open conflict between authority sources (2) and (3); it is not permission to make cerberus emulate the (3)-side defect, and cerberus's own answer for that shape is checked against the specification and source (2) instead until #2039 resolves."
       ],
-      "related_contracts": ["TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY", "TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY", "TRACEQL-TRANSPORT-ARM-INDEPENDENCE"],
+      "related_contracts": ["TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY", "TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY", "TRACEQL-TRANSPORT-ARM-INDEPENDENCE"],
       "inherits_from": null,
       "status": "active",
       "deficit_reason": null,

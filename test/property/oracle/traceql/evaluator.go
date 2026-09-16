@@ -23,29 +23,36 @@ const nsPerMillisecond = 1_000_000
 //
 // Returns property.Outcome carrying:
 //
-//   - one row per matching span (labels: empty map) for a plain
-//     filter, a structural (`>`/`>>`) filter, or a filter followed by
-//     `| select(...)` — Tempo's /api/search inspected-span count
-//     tracks the query's result row count regardless of shape (see
-//     internal/api/tempo/search_metrics.go's SearchMetricsFor), and
+//   - one row per matching span, TraceID set to that span's trace, for a
+//     plain filter, a structural (`>`/`>>`) filter, or a filter followed
+//     by `| select(...)` — /api/search groups a trace's matched spans into
+//     one TraceSummary but reports the true per-trace matched-span count
+//     via SpanSet.Matched (see internal/api/tempo/handler.go's
+//     observeSpan), so a multiset of one row per matching span, keyed by
+//     TraceID, is the projection that lines up with the wire contract;
 //     select() only adds projected columns, never changes which spans
-//     survive;
+//     survive, so it shares this branch rather than getting its own;
 //   - one row per matching trace whose per-trace `count()` /
-//     `avg|min|max|sum(duration)` aggregate satisfies the scalar
-//     filter (labels: empty map). TraceQL's pipeline aggregates are
-//     trace-scoped per the spec — `{ ... } | count() > 0` returns one
-//     row per matching trace, not a single corpus-wide aggregate;
+//     `avg|min|max|sum(duration)` aggregate satisfies the scalar filter,
+//     TraceID set to that trace. TraceQL's pipeline aggregates are
+//     trace-scoped per the spec — `{ ... } | count() > 0` returns one row
+//     per matching trace, not a single corpus-wide aggregate — and
+//     /api/search's aggregate-shape summaries carry no SpanSet at all (the
+//     Aggregate collapses to one row per trace before the wire shaper ever
+//     sees it: internal/api/tempo/handler.go's isSpansetAggregateShape +
+//     spansetAggregateSampleProjections branch), so this branch's
+//     projection is a plain per-trace SET rather than a multiset;
 //   - zero rows when no trace's aggregate satisfies the predicate;
 //   - an Err otherwise (parse failure / unsupported shape).
 //
-// The per-trace row shape mirrors Tempo's /api/search wire shape after
-// cerberus PR #536: the inner Aggregate groups by TraceId and emits
-// one chclient.Sample per matching trace (see
-// internal/api/tempo/handler.go's isSpansetAggregateShape +
-// spansetAggregateSampleProjections branch). The framework's
-// comparator counts rows-per-empty-label-key, so emitting one
-// empty-label row per matching trace lines up with the cerberus side's
-// `inspectedTraces == len(res.Samples)`.
+// property.CompareTraceIdentityOutcomes is the comparator these two
+// distinct row shapes are built for: it multiset-compares rows by TraceID,
+// so a selector/select() shape's per-span multiplicity and a pipeline
+// shape's per-trace uniqueness both get exactly the identity check their
+// own wire projection supports — see runCerberusTraceQL in
+// test/property/traceql_test.go for the cerberus-side mirror of both
+// shapes off the same TraceSummary array cerberus's /api/search actually
+// returns.
 func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	parsed, err := parseQuery(q.String)
 	if err != nil {
@@ -60,16 +67,15 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	switch parsed.pipeline.kind {
 	case pipelineNone, pipelineSelect:
 		// Selector-only (or selector + select()): one row per matching
-		// span. Labels stay empty so the framework's labelKey() groups
-		// all rows under "{}", and the comparator's per-group row-count
-		// check is exactly the span-count check we want. Timestamp +
-		// Value are stamped at zero so the per-group multiset diff
-		// doesn't drift on per-span metadata the comparator isn't
-		// designed to inspect (the search response shape collapses span
-		// identity into `inspectedSpans`, not per-span timestamps).
+		// span, TraceID set to that span's trace — CompareTraceIdentityOutcomes
+		// multiset-counts rows per TraceID, so a trace contributing N
+		// matching spans produces N rows here, matching the cerberus side's
+		// per-trace SpanSet.Matched count. Labels stay empty (this family
+		// never uses the default label-keyed comparator); Timestamp + Value
+		// stay zero so nothing beyond TraceID drives the comparison.
 		rows := make([]property.OutcomeRow, 0, len(matched))
-		for range matched {
-			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}})
+		for _, sv := range matched {
+			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: sv.traceID})
 		}
 		return property.Outcome{Rows: rows}
 	case pipelineCount:
@@ -579,9 +585,9 @@ func groupByTraceID(spans []spanView) map[string]int64 {
 	return out
 }
 
-// countPipelineOutcome implements `| count() OP N`: one outcome row
-// per trace whose per-trace count of matched spans satisfies the
-// predicate.
+// countPipelineOutcome implements `| count() OP N`: one outcome row,
+// TraceID set to that trace, per trace whose per-trace count of matched
+// spans satisfies the predicate.
 func countPipelineOutcome(spans []spanView, pl pipeline) property.Outcome {
 	cmp, err := int64Comparator(pl.op)
 	if err != nil {
@@ -589,9 +595,9 @@ func countPipelineOutcome(spans []spanView, pl pipeline) property.Outcome {
 	}
 	perTrace := groupByTraceID(spans)
 	rows := make([]property.OutcomeRow, 0, len(perTrace))
-	for _, count := range perTrace {
+	for traceID, count := range perTrace {
 		if cmp(count, pl.n) {
-			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}})
+			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: traceID})
 		}
 	}
 	return property.Outcome{Rows: rows}
@@ -639,8 +645,8 @@ func aggregateDurations(fn string, durations []int64) (float64, error) {
 }
 
 // metricPipelineOutcome implements `| avg|min|max|sum(duration) OP
-// Nms`: one outcome row per trace whose per-trace duration aggregate
-// satisfies the predicate.
+// Nms`: one outcome row, TraceID set to that trace, per trace whose
+// per-trace duration aggregate satisfies the predicate.
 func metricPipelineOutcome(spans []spanView, pl pipeline) property.Outcome {
 	perTrace := map[string][]int64{}
 	for _, sv := range spans {
@@ -651,13 +657,13 @@ func metricPipelineOutcome(spans []spanView, pl pipeline) property.Outcome {
 		return property.Outcome{Err: err}
 	}
 	rows := make([]property.OutcomeRow, 0, len(perTrace))
-	for _, durations := range perTrace {
+	for traceID, durations := range perTrace {
 		value, err := aggregateDurations(pl.fn, durations)
 		if err != nil {
 			return property.Outcome{Err: err}
 		}
 		if cmp(value, float64(pl.thresholdNs)) {
-			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}})
+			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: traceID})
 		}
 	}
 	return property.Outcome{Rows: rows}

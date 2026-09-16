@@ -25,8 +25,8 @@
 //     httptest.Server in front of the chDB-backed tempo.Handler. The
 //     handler runs the full parse → lower → optimize → emit → execute
 //     pipeline.
-//  6. The framework's CompareOutcomes diffs the two result sets and
-//     fails the property if they drift.
+//  6. The framework's CompareTraceIdentityOutcomes diffs the two result
+//     sets by TraceID multiset and fails the property if they drift.
 //
 // rapid's shrinker minimises the failing dataset + query before this
 // test reports — the failure log shows the smallest reproducer.
@@ -40,11 +40,21 @@
 //	  "metrics": {"inspectedTraces": <N>}
 //	}
 //
-// `inspectedTraces` is populated as `len(res.Samples)`. For both
-// selector and aggregate shapes the comparator uses that count
-// directly — the oracle emits one outcome row per matching span (or
-// one row when `| count() OP N` is satisfied, zero when it isn't),
-// and we compare row counts.
+// Each TraceSummary carries a real TraceID (internal/api/tempo/handler.go's
+// toTraceSummaries) plus, for a selector/structural/select() shape, a
+// SpanSet whose Matched field is the trace's TRUE matched-span count
+// (uncapped by the spss display limit). runCerberusTraceQL reshapes the
+// response into one property.OutcomeRow per matched span — TraceID
+// repeated Matched times per trace — mirroring the oracle's own per-span
+// row shape (oracle/traceql.Evaluate's doc). A trace-scoped aggregate
+// pipeline (count()/avg|min|max|sum(duration)) collapses to one summary
+// row per trace with no SpanSet at all, so those traces contribute exactly
+// one row each — again mirroring the oracle's per-trace SET projection for
+// that shape. property.CompareTraceIdentityOutcomes then multiset-compares
+// rows by TraceID: a substituted, missing, duplicated, or scope-swapped
+// trace identity is caught even when the total row count agrees, which
+// the previous inspected-span-count-only comparison could not
+// distinguish.
 //
 // The TraceSummary collapse rule (Tempo keys by SpanName+Timestamp,
 // merging spans that share that tuple) is avoided by the generator:
@@ -132,7 +142,7 @@ func TestTraceQL_Property(t *testing.T) {
 		return oracletraceql.Evaluate(d, q)
 	}
 
-	property.Run(t, property.Config{}, dgen, qgen, oracleFn, cerberusFn)
+	property.Run(t, property.Config{Compare: property.CompareTraceIdentityOutcomes}, dgen, qgen, oracleFn, cerberusFn)
 }
 
 // TestTraceQLDescendantPropertyMatch is the stable two-span form of the
@@ -190,7 +200,7 @@ func TestTraceQL_PropertyShapeRoster(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	property.RunShapeExamples(
+	property.RunShapeExamplesWithComparator(
 		t,
 		gen.TraceQLShapeIDs(),
 		func(shapeID gen.ShapeID, seed int) (property.Dataset, property.Query) {
@@ -204,6 +214,7 @@ func TestTraceQL_PropertyShapeRoster(t *testing.T) {
 			cli.Seed(t, dataset.DDL)
 			return runCerberusTraceQL(t.Context(), srv.URL, query)
 		},
+		property.CompareTraceIdentityOutcomes,
 	)
 }
 
@@ -217,18 +228,21 @@ func TestTraceQL_PropertyShapeRoster(t *testing.T) {
 //	  "metrics": {"inspectedTraces": N, ...}
 //	}
 //
-// `inspectedSpans` equals `len(res.Samples)` from cerberus's handler
-// (reported on the X-Cerberus-Inspected-Spans response header). The
-// oracle emits one row per matching span / one row for a satisfied
-// `count() OP N`, so the row-count comparison is exact when we
-// reshape the cerberus response into "inspectedSpans empty-label
-// rows".
+// traceIdentityRows reshapes parsed.Traces into one OutcomeRow per matched
+// span (TraceID repeated by that trace's SpanSet.Matched count) for a
+// selector/structural/select() shape, or exactly one row per trace for a
+// trace-scoped aggregate shape whose summaries carry no SpanSet at all —
+// see its own doc for the full projection this mirrors on the oracle
+// side (oracle/traceql.Evaluate's doc).
 //
-// We use the span count rather than len(traces) because the Tempo
-// search response collapses TraceSummary entries that share
-// (SpanName, Timestamp) — the generator already avoids that collapse
-// by stamping unique suffixes, but reading the drained-row count makes
-// the comparator robust against a future generator widening.
+// The X-Cerberus-Inspected-Spans header — the drained span-ROW count,
+// independent of how toTraceSummaries grouped them — is cross-checked
+// against the reshaped rows' own total below as a secondary, complementary
+// signal: for the selector/structural/select() shapes (the only shapes
+// whose summaries carry a SpanSet, so the only shapes this check applies
+// to) the two must agree, or the wire reply is internally inconsistent
+// (a malformed-reply case that must stay red rather than silently produce
+// a green row-count coincidence).
 // propertyWindowMarginSec brackets the dataset anchor by ~a year on each
 // side — wide enough that the /api/search window can never clip a generated
 // span, while still being a real (non-windowless) request that skips the
@@ -278,13 +292,6 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 		}
 	}
 
-	// Reshape the inspected-SPAN count (== len(res.Samples)) into that
-	// many empty-label OutcomeRows. The framework's CompareOutcomes
-	// counts rows per label-key, so this gives the per-iteration
-	// row-count equality check the oracle is set up to support.
-	// SearchMetrics.InspectedTraces is a distinct-TRACE count and would
-	// undercount whenever a trace contributes more than one matching
-	// span, so the span count rides the header instead.
 	inspectedSpans, err := strconv.Atoi(resp.Header.Get(tempo.HeaderInspectedSpans))
 	if err != nil {
 		return property.Outcome{
@@ -292,13 +299,48 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 				resp.Header.Get(tempo.HeaderInspectedSpans), err),
 		}
 	}
-	rows := make([]property.OutcomeRow, 0, inspectedSpans)
-	for i := 0; i < inspectedSpans; i++ {
-		rows = append(rows, property.OutcomeRow{
-			Labels:      map[string]string{},
-			TimestampMs: 0,
-			Value:       0,
-		})
+
+	rows, matchedTotal, anySpanSet := traceIdentityRows(parsed.Traces)
+	if anySpanSet && matchedTotal != inspectedSpans {
+		return property.Outcome{
+			Err: fmt.Errorf("property: trace summaries' matched-span total=%d disagrees with %s header=%d",
+				matchedTotal, tempo.HeaderInspectedSpans, inspectedSpans),
+		}
 	}
 	return property.Outcome{Rows: rows}
+}
+
+// traceIdentityRows reshapes a /api/search response's TraceSummary array
+// into the OutcomeRow shape property.CompareTraceIdentityOutcomes expects:
+// one row per matched SPAN (TraceID repeated by SpanSet.Matched — the
+// trace's true matched-span count, uncapped by the spss display limit;
+// see internal/api/tempo/handler.go's observeSpan) for a
+// selector/structural/select() shape, or exactly one row per trace for a
+// trace-scoped aggregate (count()/avg|min|max|sum(duration)) shape, whose
+// collapsed-to-one-row-per-trace summaries carry no SpanSet at all
+// (isSpansetAggregateShape's branch never populates the reserved
+// __cerberus_spanID slot, so buildSpanSet returns nil). Distinguishing the
+// two shapes from the wire response alone — rather than from the query
+// text — means this helper never needs to duplicate the oracle's own
+// parser: a summary's SpanSet presence already tells us which projection
+// its endpoint promises.
+//
+// Returns the rows, the summed per-trace matched-span count (0 when no
+// summary carried a SpanSet), and whether any summary carried one at all
+// (so the caller's inspected-span cross-check can skip the aggregate shape,
+// which has no wire-observable per-trace count to check it against).
+func traceIdentityRows(traces []tempo.TraceSummary) (rows []property.OutcomeRow, matchedTotal int, anySpanSet bool) {
+	for _, tr := range traces {
+		if len(tr.SpanSets) == 0 {
+			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: tr.TraceID})
+			continue
+		}
+		anySpanSet = true
+		matched := tr.SpanSets[0].Matched
+		matchedTotal += matched
+		for i := 0; i < matched; i++ {
+			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: tr.TraceID})
+		}
+	}
+	return rows, matchedTotal, anySpanSet
 }

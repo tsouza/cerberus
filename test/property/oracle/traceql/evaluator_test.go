@@ -213,6 +213,100 @@ func TestEvaluate_RegexIsFullyAnchored(t *testing.T) {
 	}
 }
 
+// traceIDMultiset counts rows by TraceID, mirroring
+// property.CompareTraceIdentityOutcomes's own counting so a test here can
+// assert the exact projection the comparator will see.
+func traceIDMultiset(rows []property.OutcomeRow) map[string]int {
+	out := map[string]int{}
+	for _, r := range rows {
+		out[r.TraceID]++
+	}
+	return out
+}
+
+// TestEvaluate_RowsCarryTraceIdentity pins the two distinct row shapes
+// Evaluate's doc describes: a selector shape emits one row per matching
+// SPAN (so a trace contributing two matching spans counts twice), and a
+// trace-scoped aggregate pipeline emits exactly one row per matching
+// TRACE. Every row's TraceID must also be non-empty — an empty one would
+// fail property.CompareTraceIdentityOutcomes closed as a comparator-usage
+// bug (see CompareTraceIdentityOutcomes's doc), so a regression here would
+// have broken the property test in a much less legible way than this
+// direct assertion does.
+func TestEvaluate_RowsCarryTraceIdentity(t *testing.T) {
+	// fixtureDataset: t1 has r1(api,east)->c1(web,east)->g1(batch,west);
+	// t2 has r2(api,west) alone. Both east-cluster spans (r1, c1) live on
+	// t1, so a selector on cluster=east must emit TWO t1 rows, not one.
+	t.Run("selector shape multiset-counts one row per matching span", func(t *testing.T) {
+		out := evalQ(t, `{ resource.cluster = "east" }`)
+		if out.Err != nil {
+			t.Fatalf("unexpected error: %v", out.Err)
+		}
+		want := map[string]int{"t1": 2}
+		if got := traceIDMultiset(out.Rows); !mapsEqual(got, want) {
+			t.Fatalf("TraceID multiset = %v, want %v", got, want)
+		}
+	})
+
+	// select() shares the selector branch, so it must carry the identical
+	// per-span TraceID multiset — never its own, weaker projection.
+	t.Run("select() carries the same multiset as its bare selector", func(t *testing.T) {
+		out := evalQ(t, `{ resource.cluster = "east" } | select(span.http.method)`)
+		if out.Err != nil {
+			t.Fatalf("unexpected error: %v", out.Err)
+		}
+		want := map[string]int{"t1": 2}
+		if got := traceIDMultiset(out.Rows); !mapsEqual(got, want) {
+			t.Fatalf("TraceID multiset = %v, want %v", got, want)
+		}
+	})
+
+	// count() is trace-scoped: t1's 2 east-cluster spans satisfy
+	// `count() = 2`, so the pipeline contributes exactly ONE t1 row, never
+	// two — a set, not the selector shape's per-span multiset.
+	t.Run("aggregate pipeline emits exactly one row per satisfying trace", func(t *testing.T) {
+		out := evalQ(t, `{ resource.cluster = "east" } | count() = 2`)
+		if out.Err != nil {
+			t.Fatalf("unexpected error: %v", out.Err)
+		}
+		want := map[string]int{"t1": 1}
+		if got := traceIDMultiset(out.Rows); !mapsEqual(got, want) {
+			t.Fatalf("TraceID multiset = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("no row ever carries an empty TraceID", func(t *testing.T) {
+		for _, q := range []string{
+			`{ resource.service.name = "api" }`,
+			`{ resource.service.name = "api" } | count() >= 1`,
+			`{ resource.service.name = "api" } | avg(duration) > 0ms`,
+			`{ resource.service.name = "api" } | select(span.http.method)`,
+		} {
+			out := evalQ(t, q)
+			if out.Err != nil {
+				t.Fatalf("query %q: unexpected error: %v", q, out.Err)
+			}
+			for i, row := range out.Rows {
+				if row.TraceID == "" {
+					t.Fatalf("query %q: row[%d] has an empty TraceID", q, i)
+				}
+			}
+		}
+	})
+}
+
+func mapsEqual(a, b map[string]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // TestEvaluate_ParseErrors asserts the recognizer rejects shapes
 // outside the generator's accept-set rather than silently
 // misevaluating them.
