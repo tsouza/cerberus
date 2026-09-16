@@ -190,76 +190,111 @@ const (
 	// doc comment is the retained record.
 	maxRangeLWRFanoutRows = 40_000_000
 
-	// maxRangeBucketFanoutGroupRows bounds a SECOND, independent axis from
-	// maxRangeBucketFanoutRows above: not the raw pre-collapse sample-side
-	// fanout (rows x (Lookback/Step + 1), constant in the anchor grid width
-	// per this file's header doc), but the COLLAPSE's own OUTPUT row count —
-	// one row per (series, anchor) group the collapse GROUP BY produces —
-	// which for a groupArray-accumulating collapse (classicBucketWindowAggs,
-	// [histogram_quantile_window.go], and its native/exponential-histogram
-	// sibling expHistogramWindowAggs, [histogram_quantile_native_window.go])
-	// drives a SEPARATE, downstream, per-group cost this file's own bound
-	// never sees: the array-valued fold (bucket-ladder merge for classic,
-	// the S x W x (S+W) window fold for native — exp_histogram_window_sample_bound.go)
-	// that consumes every one of those groups. That guard bounds each
-	// GROUP's own cost individually; it does not bound how many such groups
-	// the query evaluates in one statement, and ClickHouse's vectorized
-	// execution does not process one group, release its memory, then move
-	// to the next — it batches many groups' worth of that array-fold work
-	// together, so a query whose PER-GROUP cost individually passes that
-	// guard can still exhaust CERBERUS_CH_QUERY_MAX_MEMORY once the group
-	// count itself grows with a wide range at a fine step, even though the
-	// underlying raw-row scan and the sample-side fanout above both stay
-	// far under their own ceilings (cerberus issue #3468: the k3d/compose
-	// self-observability dashboard's own P95-by-language panel — a bare
-	// `histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_
-	// duration_exp_hist[5m])))` — OOMs ClickHouse directly, with NEITHER
-	// this file's own fanout guard NOR exp_histogram_window_sample_bound.go's
-	// per-group guard ever firing, once the query's anchor grid (range/step)
-	// grows while the underlying data stays the same).
+	// maxRangeBucketFanoutFoldCostUnits bounds a SECOND, independent axis
+	// from maxRangeBucketFanoutRows above: not the raw pre-collapse
+	// sample-side fanout (rows x (Lookback/Step + 1), constant in the anchor
+	// grid width per this file's header doc), but what the COLLAPSE's whole
+	// OUTPUT costs the stage above it — which for a groupArray-accumulating
+	// collapse (classicBucketWindowAggs, [histogram_quantile_window.go], and
+	// its native/exponential-histogram sibling expHistogramWindowAggs,
+	// [histogram_quantile_native_window.go]) is a SEPARATE, downstream,
+	// per-group cost this file's own fanout bound never sees: the
+	// array-valued fold (bucket-ladder merge for classic, the window fold
+	// for native — exp_histogram_window_sample_bound.go) that consumes every
+	// one of those groups. That guard bounds each GROUP's own cost
+	// individually; it does not bound what all of them together cost, and
+	// ClickHouse's vectorized execution does not process one group, release
+	// its memory, then move to the next — it batches many groups' worth of
+	// that array-fold work together, so a query whose PER-GROUP cost
+	// individually passes that guard can still exhaust
+	// CERBERUS_CH_QUERY_MAX_MEMORY once the group count itself grows with a
+	// wide range at a fine step, even though the underlying raw-row scan and
+	// the sample-side fanout above both stay far under their own ceilings
+	// (cerberus issue #3468: the k3d/compose self-observability dashboard's
+	// own P95-by-language panel — a bare `histogram_quantile(0.95, sum by
+	// (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))` — OOMs
+	// ClickHouse directly, with NEITHER this file's own fanout guard NOR
+	// exp_histogram_window_sample_bound.go's per-group guard ever firing,
+	// once the query's anchor grid (range/step) grows while the underlying
+	// data stays the same).
 	//
-	// Calibration (real docker-compose ClickHouse 26.6, 1 GiB cap — the
-	// CERBERUS_CH_QUERY_MAX_MEMORY default), two sweeps against
-	// otel_metrics_exponential_histogram, `histogram_quantile(0.95, sum by
-	// (series) (rate(<metric>[5m])))` over a query_range grid at step=15s,
-	// each group holding one real sample per anchor (S tracks anchor count,
-	// capped by the 5m/15s lookback the same way production traffic is):
+	// # Why this counts a COST and not the groups
 	//
-	//	shape                                    groups   peak memory
-	//	10 series, uniform Scale/Offset, W~150      2,500    998 MiB (97.5%)
-	//	10 series, uniform Scale/Offset, W~150      2,990   REJECTED (real ClickHouse
-	//	                                                     code 241 MEMORY_LIMIT_EXCEEDED)
-	//	18 series, varied Scale/Offset, W~130-170   1,980    996 MiB (97.3%)
-	//	18 series, varied Scale/Offset, W~130-170   2,340   REJECTED (same)
+	// #3468's first fix bounded the collapse's OUTPUT ROW COUNT — the plain
+	// number of (series, anchor) groups — at 800. A flat group count is not
+	// a usable proxy for that fold's memory, and cerberus issue #3514 is
+	// what it cost: 26 ordinary compat-corpus queries (1h window, 10s step,
+	// three demo series over `demo_shifting_latency_exp_hist`) were rejected
+	// at 1,070-1,444 groups while peaking at 7-78 MB — under 8% of the 1 GiB
+	// cap. The measurement below says why: at a FIXED group count, peak
+	// memory moves by more than an order of magnitude with the bucket-ladder
+	// WIDTH the flat count cannot see, and again with the group's in-window
+	// SAMPLE count. A group-count ceiling high enough to admit those 26
+	// queries with any margin sits above the count at which a wide-ladder
+	// metric genuinely OOMs, so no value of it is both safe and usable.
 	//
-	// The varied-scale sweep (18 series — matching this repo's own compose
-	// stack's real cerberus_queries_duration_exp_hist route x result
-	// cardinality) is the more realistic reference: differing Scale/Offset
-	// per series forces the cross-series merge to re-align to a wider
-	// common ladder, which uniform-scale synthetic data cannot exercise.
-	// Organic self-observability traffic against the SAME live stack (18
-	// real series, genuinely varied bucket layouts) OOM'd at a materially
-	// LOWER nominal anchor x series count than either controlled sweep —
-	// sparse per-series window coverage makes the real reduced-group count
-	// at that failure hard to pin exactly, but it corroborates that real,
-	// heterogeneous traffic costs MORE per group than either synthetic
-	// sweep, not less. 800 sits with real margin below the closest-to-cap
-	// SAFE measured point (1,980 groups at 97.3%) precisely because of that
-	// gap between controlled and organic evidence — recalibrate by binary
-	// search against a real ClickHouse (docker compose up --wait from the
-	// repo root; see CLAUDE.md invariant 5) if this drifts, preferring the
-	// organic-traffic methodology (generate real self-traffic against a
-	// live cerberus, not only synthetic seed rows) over the synthetic one
-	// alone.
+	// The cost this counts instead, per group, is
+	//
+	//	E + W^2      E = the group's accumulated payload in bucket-ladder
+	//	             elements (byteSize of its accumulators / 8)
+	//	             W = E / S, the ladder width, recovered from E and the
+	//	             group's in-window sample count S
+	//
+	// and the bound is that cost SUMMED over every group the collapse
+	// produced (rangeBucketFanoutFoldCostProbe, range_bucket_fanout.go).
+	// Both terms are real: E = S x W is the payload the fold reads, and the
+	// W^2 term is the dense per-group reshape the fold builds from it, which
+	// the measurement shows is charged once per group INDEPENDENTLY of S.
+	//
+	// # Calibration
+	//
+	// Real docker-compose ClickHouse 26.5, 1 GiB cap (the
+	// CERBERUS_CH_QUERY_MAX_MEMORY default), against
+	// otel_metrics_exponential_histogram: `histogram_quantile(0.95, sum by
+	// (route) (rate(<metric>[<range>])))` over a query_range grid at
+	// step=15s, 18 series at varied Scale/Offset seeded at a 15s cadence.
+	// The metric is seeded twice, at two bucket-ladder widths, so the width
+	// axis a group count cannot see is measured rather than assumed. Peak
+	// memory read from system.query_log; cost units computed from the same
+	// probe SQL this bound emits:
+	//
+	//	W    S     groups   cost units   peak memory
+	//	150   21    1,080    2.81e7        494 MB (46%)
+	//	150   21    2,160    5.61e7        979 MB (91%)
+	//	150   21    2,520    6.55e7      1,048 MB (97.6%)
+	//	150   21    2,880    7.48e7      REJECTED: real ClickHouse code 241
+	//	                                 MEMORY_LIMIT_EXCEEDED
+	//	150   81    1,080    3.98e7        494 MB (46%)
+	//	 40   21    2,160    6.70e6         83 MB (8%)
+	//	 40  321    1,080    1.89e7        566 MB (53%)
+	//
+	// Across those points the cost tracks peak memory at 12.4-30.0 bytes per
+	// unit — a 2.4x spread, and MONOTONE: every safe point sits below the
+	// one that aborted. The same query_log-derived count over the 26 issue
+	// #3514 queries tops out at 5.0e5 units, two orders of magnitude below.
+	// A flat group count separates the same points by 34x in the wrong
+	// direction (1,080 groups is 27 MB on the compat corpus and 494 MB at
+	// W=150), which is the whole reason for the change.
+	//
+	// 15,000,000 is the ceiling that leaves the WORST measured rate
+	// (30.0 bytes/unit, the wide-S point) landing at ~450 MB — under half
+	// the cap — while clearing every #3514 query by 30x or more. It admits
+	// ~578 groups of the W=150 shape (~264 MB), ~859 of the S=321 shape
+	// (~450 MB) and ~4,800 of the cheap W=40 shape (~185 MB): the number of
+	// groups now moves with what a group actually costs, which is the point.
+	// Recalibrate by binary search against a real ClickHouse (docker compose
+	// up --wait from the repo root; see CLAUDE.md invariant 5) if this
+	// drifts, sweeping BOTH width and samples-per-group — a sweep that moves
+	// only the group count is what produced the bound this replaces.
 	//
 	// Issue #3468: operator-overridable via
-	// CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_ROWS, mirroring
+	// CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS, mirroring
 	// maxRangeBucketFanoutRows / maxRangeLWRFanoutRows exactly (see their
 	// own "Operator override" reasoning above) — this calibration is newer
 	// and narrower than theirs (one measured shape family, not a
 	// multi-metric production sweep), so the escape hatch matters more
 	// here, not less.
-	maxRangeBucketFanoutGroupRows = 800
+	maxRangeBucketFanoutFoldCostUnits = 15_000_000
 )
 
 // rangeBucketFanoutMaxRowsKey / rangeLWRFanoutMaxRowsKey are the unexported
@@ -271,11 +306,11 @@ type rangeBucketFanoutMaxRowsKey struct{}
 
 type rangeLWRFanoutMaxRowsKey struct{}
 
-// rangeBucketFanoutGroupMaxRowsKey is the unexported context key carrying an
-// operator-configured override for maxRangeBucketFanoutGroupRows (issue
-// #3468) — see WithRangeBucketFanoutGroupMaxRows /
-// rangeBucketFanoutGroupMaxRowsFromCtx below.
-type rangeBucketFanoutGroupMaxRowsKey struct{}
+// rangeBucketFanoutFoldCostMaxUnitsKey is the unexported context key carrying
+// an operator-configured override for maxRangeBucketFanoutFoldCostUnits
+// (issue #3468) — see WithRangeBucketFanoutFoldCostMaxUnits /
+// rangeBucketFanoutFoldCostMaxUnitsFromCtx below.
+type rangeBucketFanoutFoldCostMaxUnitsKey struct{}
 
 // WithRangeBucketFanoutMaxRows returns ctx carrying n as the operator
 // override for RangeBucketFanout's own fanout-row bound (otherwise
@@ -317,21 +352,23 @@ func rangeLWRFanoutMaxRowsFromCtx(ctx context.Context) int64 {
 	return maxRangeLWRFanoutRows
 }
 
-// WithRangeBucketFanoutGroupMaxRows / rangeBucketFanoutGroupMaxRowsFromCtx
-// mirror WithRangeBucketFanoutMaxRows / rangeBucketFanoutMaxRowsFromCtx
-// exactly, for RangeBucketFanout's COLLAPSE OUTPUT row bound (otherwise
-// maxRangeBucketFanoutGroupRows; CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_ROWS)
-// — a different axis from RangeBucketFanoutMaxRows' own pre-collapse sample
-// fanout, see maxRangeBucketFanoutGroupRows' own doc.
-func WithRangeBucketFanoutGroupMaxRows(ctx context.Context, n int64) context.Context {
-	return context.WithValue(ctx, rangeBucketFanoutGroupMaxRowsKey{}, n)
+// WithRangeBucketFanoutFoldCostMaxUnits /
+// rangeBucketFanoutFoldCostMaxUnitsFromCtx mirror
+// WithRangeBucketFanoutMaxRows / rangeBucketFanoutMaxRowsFromCtx exactly, for
+// RangeBucketFanout's COLLAPSE OUTPUT fold-cost bound (otherwise
+// maxRangeBucketFanoutFoldCostUnits;
+// CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS) — a different axis
+// from RangeBucketFanoutMaxRows' own pre-collapse sample fanout, see
+// maxRangeBucketFanoutFoldCostUnits' own doc.
+func WithRangeBucketFanoutFoldCostMaxUnits(ctx context.Context, n int64) context.Context {
+	return context.WithValue(ctx, rangeBucketFanoutFoldCostMaxUnitsKey{}, n)
 }
 
-func rangeBucketFanoutGroupMaxRowsFromCtx(ctx context.Context) int64 {
-	if n, ok := ctx.Value(rangeBucketFanoutGroupMaxRowsKey{}).(int64); ok {
+func rangeBucketFanoutFoldCostMaxUnitsFromCtx(ctx context.Context) int64 {
+	if n, ok := ctx.Value(rangeBucketFanoutFoldCostMaxUnitsKey{}).(int64); ok {
 		return n
 	}
-	return maxRangeBucketFanoutGroupRows
+	return maxRangeBucketFanoutFoldCostUnits
 }
 
 // rangeBucketFanoutRowBound / rangeLWRFanoutRowBound return e's own resolved
@@ -356,13 +393,14 @@ func (e *emitter) rangeBucketFanoutRowBound() int64 {
 	return maxRangeBucketFanoutRows
 }
 
-// rangeBucketFanoutGroupRowBound mirrors rangeBucketFanoutRowBound exactly,
-// for e.rangeBucketFanoutGroupMaxRows / maxRangeBucketFanoutGroupRows.
-func (e *emitter) rangeBucketFanoutGroupRowBound() int64 {
-	if e.rangeBucketFanoutGroupMaxRows > 0 {
-		return e.rangeBucketFanoutGroupMaxRows
+// rangeBucketFanoutFoldCostBound mirrors rangeBucketFanoutRowBound exactly,
+// for e.rangeBucketFanoutFoldCostMaxUnits /
+// maxRangeBucketFanoutFoldCostUnits.
+func (e *emitter) rangeBucketFanoutFoldCostBound() int64 {
+	if e.rangeBucketFanoutFoldCostMaxUnits > 0 {
+		return e.rangeBucketFanoutFoldCostMaxUnits
 	}
-	return maxRangeBucketFanoutGroupRows
+	return maxRangeBucketFanoutFoldCostUnits
 }
 
 func (e *emitter) rangeLWRFanoutRowBound() int64 {
@@ -388,8 +426,8 @@ const RangeLWRFanoutBudgetMessage = "range LWR sample fanout exceeds the series-
 // #3468) — distinct text from RangeBucketFanoutBudgetMessage so a
 // rejection's error message alone says which of the two axes fired: the
 // pre-collapse sample fanout (RangeBucketFanoutBudgetMessage) or the
-// post-collapse group count this constant names.
-const RangeBucketFanoutGroupBudgetMessage = "histogram window fold exceeds the anchors-times-series group-count resource bound"
+// post-collapse fold cost this constant names.
+const RangeBucketFanoutGroupBudgetMessage = "histogram window fold exceeds the collapsed-payload resource bound"
 
 // lwrFanoutBoundedSourceFrag wraps fanoutSource — the sample-side
 // LWR-style anchor fan-out SELECT shared by RangeBucketFanout and

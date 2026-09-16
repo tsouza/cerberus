@@ -840,9 +840,9 @@ func newPromHandler(
 		RangeLWRFanoutMaxRows:    resourceBounds.RangeLWRFanoutMaxRows,
 		RateWindowFanoutMaxRows:  resourceBounds.RateWindowFanoutMaxRows,
 		// PromQL-only, same reasoning as RangeBucketFanoutMaxRows above —
-		// see engine.Engine.RangeBucketFanoutGroupMaxRows' own doc (issue
-		// #3468).
-		RangeBucketFanoutGroupMaxRows: resourceBounds.RangeBucketFanoutGroupMaxRows,
+		// see engine.Engine.RangeBucketFanoutFoldCostMaxUnits' own doc (issues
+		// #3468, #3514).
+		RangeBucketFanoutFoldCostMaxUnits: resourceBounds.RangeBucketFanoutFoldCostMaxUnits,
 		// Head-AGNOSTIC, unlike the three above: every head emits statements,
 		// so issue #2733's emitted-SQL size bound is wired onto all three
 		// engines — see engine.Engine.MaxEmittedSQLBytes' own doc.

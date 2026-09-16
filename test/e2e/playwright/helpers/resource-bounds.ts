@@ -44,11 +44,12 @@ export const MEMORY_LIMIT_MESSAGE = `query processing would use too much memory 
 // internal/chplan.ExpHistogramWindowSampleBudgetMessage (the
 // samples-per-series-per-window pre-rejection, issue #3252), and
 // internal/chsql.RangeBucketFanoutGroupBudgetMessage (the
-// RangeBucketFanout collapse's own group-count bound, issue #3468).
+// RangeBucketFanout collapse output's own fold-cost bound, issues #3468
+// and #3514).
 export const RESOURCE_BOUND_GUARD_MESSAGES = [
   'native histogram merge exceeds the series-per-group or merged-bucket-width resource bound',
   'exponential-histogram window exceeds the samples-per-series-per-window resource bound',
-  'histogram window fold exceeds the anchors-times-series group-count resource bound',
+  'histogram window fold exceeds the collapsed-payload resource bound',
 ];
 
 type PinnedErrorEnvelope = {
