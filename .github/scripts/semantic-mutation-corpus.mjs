@@ -18,8 +18,11 @@
 // loadMutants()) and shells out to `just semantic-mutate <id>` for each, so
 // this checks the exact command a developer runs by hand — never a
 // duplicated raw invocation of semantic-mutation.mjs that could drift from
-// the just recipe. Runner-scale cost: the currently-committed corpus is
-// seven synthetic, untagged, chdb-free records; each completes in low
+// the just recipe. Runner-scale cost: the currently-committed corpus is 13
+// records (7 synthetic + 6 real, four of them chdb-tagged — issue #3449's
+// counter-reset mutant and both #3451 TraceQL mutants need a live
+// ClickHouse via libchdb.so, which ci.yml's "Install libchdb.so" step
+// installs immediately before this script runs); each completes in low
 // single-digit seconds (the slowest, MUTANT-SYNTH-TIMEOUT-LOOP, is bounded
 // by its own declared timeout_seconds), well under a minute total.
 //
