@@ -2048,6 +2048,41 @@
       "accountable_owner": "query-quality"
     },
     {
+      "id": "quality.semantic-mutation-pilot",
+      "description": "Scheduled, informational re-run of the real (non-synthetic) domain-semantic mutation pilot cohort — issue #3452, distinct from both the required ci.check corpus step and the traditional quality.mutation (gremlins) lane.",
+      "owner": {
+        "workflow": ".github/workflows/semantic-mutation-pilot.yml",
+        "jobs": ["pilot"],
+        "producer_jobs": [],
+        "context_job": "pilot"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "pilot", "protected": false },
+      "purpose": "quality",
+      "layers": ["2b", "3", "5"],
+      "oracle_class": "mutation",
+      "recipes": [],
+      "command": "node .github/scripts/semantic-mutation-pilot-report.mjs",
+      "build_tags": ["chdb"],
+      "package_globs": [
+        ".github/scripts/lib/semantic-mutation.mjs",
+        ".github/scripts/semantic-mutation-pilot-report.mjs",
+        ".github/workflows/semantic-mutation-pilot.yml",
+        "test/semantic/mutant-executions.json",
+        "test/semantic/mutants/*.json"
+      ],
+      "substrate": "chdb",
+      "risk_domains": ["logql", "mutation", "promql", "traceql"],
+      "merge_posture": "never",
+      "main_posture": "never",
+      "release_posture": "advisory",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 20,
+      "slo_minutes": 20,
+      "accountable_owner": "query-quality"
+    },
+    {
       "id": "release.brew-verify",
       "description": "Published Homebrew cask installation and binary smoke on macOS and Linux.",
       "owner": {

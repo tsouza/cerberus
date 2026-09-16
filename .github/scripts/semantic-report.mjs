@@ -35,6 +35,12 @@ import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
 import { loadRegistry } from "./ci-lane-contract.mjs";
 import { lintFixMarkdown } from "./lib/markdown-lintfix.mjs";
 import {
+  DEFAULT_MUTANT_EXECUTIONS_PATH,
+  DEFAULT_MUTANTS_DIR,
+  loadMutantExecutions,
+  loadMutants,
+} from "./lib/semantic-mutation.mjs";
+import {
   DEFAULT_REPORT_JSON_PATH,
   DEFAULT_REPORT_MD_PATH,
   buildReport,
@@ -46,6 +52,9 @@ const MODEL_DIR = process.env.SEMANTIC_MODEL_DIR || DEFAULT_SEMANTIC_MODEL_DIR;
 const REGISTRY_PATH = process.env.SEMANTIC_LANE_REGISTRY_PATH ?? ".github/ci-lanes.json";
 const SNAPSHOT_PATH =
   process.env.SEMANTIC_LANE_POLICY_SNAPSHOT ?? "test/semantic/policy-snapshot.json";
+const MUTANTS_DIR = process.env.SEMANTIC_MUTANTS_DIR || DEFAULT_MUTANTS_DIR;
+const MUTANT_EXECUTIONS_PATH =
+  process.env.SEMANTIC_MUTANT_EXECUTIONS_PATH ?? DEFAULT_MUTANT_EXECUTIONS_PATH;
 
 function appendSummary(body) {
   const path = process.env.GITHUB_STEP_SUMMARY;
@@ -79,7 +88,12 @@ export function generate(root = process.cwd()) {
   const model = loadSemanticModel(MODEL_DIR, { root });
   const registry = loadRegistry(REGISTRY_PATH);
   const snapshot = validatePolicySnapshot(JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")));
-  const report = buildReport(model, { registry, snapshot });
+  const mutants = loadMutants(MUTANTS_DIR, { root, contractIds: new Set(model.contracts.keys()) });
+  const mutantExecutions = loadMutantExecutions(MUTANT_EXECUTIONS_PATH, {
+    root,
+    mutantIds: new Set(mutants.keys()),
+  });
+  const report = buildReport(model, { registry, snapshot, mutants, mutantExecutions });
   const markdown = lintFixMarkdown(renderMarkdown(report), root);
   return { report, markdown, json: renderJSON(report) };
 }
@@ -119,7 +133,10 @@ function main() {
     `## Semantic conformance report\n\n` +
     `- contracts: **${report.counts.contracts.total}** (assured: ${report.assurance_summary.assured_count})\n` +
     `- active bindings: **${report.counts.bindings.active}**\n` +
-    `- executions on record: **${report.counts.executions.total}**\n`;
+    `- executions on record: **${report.counts.executions.total}**\n` +
+    `- semantic mutation pilot: **${report.mutation_cohort.semantic_cohort.rates.total}** real records ` +
+    `(kill rate ${report.mutation_cohort.semantic_cohort.rates.kill_rate ?? "n/a"}, denominator ` +
+    `${report.mutation_cohort.semantic_cohort.rates.denominator}${report.mutation_cohort.semantic_cohort.rates.small_sample ? ", small sample" : ""})\n`;
   appendSummary(summary);
   process.stdout.write(
     `semantic-report: wrote ${DEFAULT_REPORT_MD_PATH} and ${DEFAULT_REPORT_JSON_PATH} ` +

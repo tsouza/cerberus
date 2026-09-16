@@ -29,5 +29,6 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": "source_fingerprint above is deliberately wrong (64 zero characters \u2014 well-formed SHA-256 hex, simulating a stale-but-plausible fingerprint rather than a malformed one) \u2014 this record's entire purpose is to prove the mismatch is caught before git apply or any detector ever runs."
+  "notes": "source_fingerprint above is deliberately wrong (64 zero characters \u2014 well-formed SHA-256 hex, simulating a stale-but-plausible fingerprint rather than a malformed one) \u2014 this record's entire purpose is to prove the mismatch is caught before git apply or any detector ever runs.",
+  "linked_issue": null
 }

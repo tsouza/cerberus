@@ -55,6 +55,7 @@
 import { classifyTestRef, EVIDENCE_SYSTEMS } from "./semantic-evidence-adapter.mjs";
 import { classifyLaneRequiredness, resolveBindingLanes } from "./semantic-lane-adapter.mjs";
 import { matchesGlob } from "../ci-lane-contract.mjs";
+import { buildMutationCohortReport, renderMutationCohortMarkdown } from "./semantic-mutation-report.mjs";
 
 export const REPORT_SCHEMA_VERSION = 1;
 export const DEFAULT_REPORT_MD_PATH = "docs/semantic-conformance.md";
@@ -374,7 +375,7 @@ function statusCounts(map, statuses) {
  * source both renderMarkdown and renderJSON draw from, so the two output
  * formats can never disagree with each other about a fact.
  */
-export function buildReport(model, { registry, snapshot }) {
+export function buildReport(model, { registry, snapshot, mutants = new Map(), mutantExecutions = new Map() } = {}) {
   const counts = {
     contracts: statusCounts(model.contracts, ["draft", "active", "superseded", "explicit_deficit"]),
     verifiers: statusCounts(model.verifiers, ["draft", "active", "superseded"]),
@@ -460,6 +461,7 @@ export function buildReport(model, { registry, snapshot }) {
     heads: headContractIndex(model),
     cross_head: crossHeadContracts(model),
     contracts,
+    mutation_cohort: buildMutationCohortReport(mutants, { contracts: model.contracts, executions: mutantExecutions }),
   };
 }
 
@@ -771,6 +773,8 @@ export function renderMarkdown(report) {
     `- explicit deficit: ${report.assurance_summary.excluded.explicit_deficit.map((i) => `\`${i}\``).join(", ") || "(none)"}`,
   );
   parts.push("");
+
+  parts.push(renderMutationCohortMarkdown(report.mutation_cohort));
 
   return `${parts.join("\n")}\n`;
 }

@@ -29,5 +29,6 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": "Documents a genuine detector weakness (headroom is unchecked), not a runner defect. A future strengthened detector should assert the exact capacity, at which point this record's expected_detection becomes killed."
+  "notes": "Documents a genuine detector weakness (headroom is unchecked), not a runner defect. A future strengthened detector should assert the exact capacity, at which point this record's expected_detection becomes killed.",
+  "linked_issue": null
 }

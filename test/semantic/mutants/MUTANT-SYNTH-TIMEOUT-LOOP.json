@@ -29,5 +29,6 @@
     "memory_max": "256MiB",
     "memory_hold": "1s"
   },
-  "notes": "timeout_seconds is deliberately short (3s, not the usual 15s) so this record's own control case runs quickly; the mutated loop never allocates, so it cannot trip the memory bound before the wall-clock ceiling does."
+  "notes": "timeout_seconds is deliberately short (3s, not the usual 15s) so this record's own control case runs quickly; the mutated loop never allocates, so it cannot trip the memory bound before the wall-clock ceiling does.",
+  "linked_issue": null
 }

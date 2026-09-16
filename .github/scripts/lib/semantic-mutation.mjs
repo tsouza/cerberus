@@ -86,6 +86,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -149,6 +150,7 @@ const MUTANT_KEYS = new Set([
   "equivalence_review",
   "isolation",
   "notes",
+  "linked_issue",
 ]);
 
 const TRANSFORMATION_KEYS = new Set([
@@ -361,6 +363,36 @@ export function validateMutantRecord(raw, at, problems, opts = {}) {
 
   nullableStringValue(raw.notes, `${at}.notes`, problems);
 
+  // linked_issue is the traceability seam issue #3452's own acceptance
+  // criteria requires: a REAL (non-synthetic) mutant whose expected_detection
+  // is "survived" is a domain-semantic gap nothing caught, and it must name
+  // the open defect/evidence issue tracking it BEFORE the record can be
+  // authored at all — this is a schema-level fail-closed gate, not a
+  // reporting-time reminder, mirroring the equivalence_review conditional-
+  // nullability immediately above. A synthetic survivor (the runner's own
+  // pedagogical MUTANT-SYNTH-SURVIVED-CAPACITY fixture, which demonstrates a
+  // real test gap on purpose) is never asked for one: it is not a per-head
+  // query mutation and has nothing to link. Never required for any other
+  // expected_detection, including "equivalent-reviewed" — a genuinely
+  // equivalent mutant is not a defect to track.
+  const requiresLinkedIssue = synthetic === false && raw.expected_detection === "survived";
+  if (requiresLinkedIssue && raw.linked_issue === null) {
+    fail(
+      problems,
+      "schema",
+      `${at}.linked_issue is required (non-null) when a non-synthetic record's expected_detection is "survived" ` +
+        "— a real escape must name the open defect/evidence issue tracking it",
+    );
+  } else if (!requiresLinkedIssue && raw.linked_issue !== null) {
+    fail(
+      problems,
+      "schema",
+      `${at}.linked_issue must be null unless expected_detection is "survived" on a non-synthetic record`,
+    );
+  } else if (raw.linked_issue !== null) {
+    positiveIntegerValue(raw.linked_issue, `${at}.linked_issue`, problems);
+  }
+
   return id;
 }
 
@@ -414,6 +446,138 @@ export function renderMutantsSummary(records) {
     (c) => `${c}: ${byExpectation[c]}`,
   );
   return [`- mutants: **${records.size}** (${parts.join(", ")})`].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Execution ledger (test/semantic/mutant-executions.json)
+// ---------------------------------------------------------------------------
+//
+// A mutant record's `expected_detection` (above) is a DECLARATION, authored
+// once and re-verified by every CI run of `semantic-mutation-corpus.mjs`
+// (required, `ci.check`) — but a declaration is not itself an observation,
+// exactly the distinction lib/semantic-report.mjs already draws between a
+// contract's BOUND evidence and its OBSERVED evidence (executions.json).
+// This ledger is that same split applied to the mutation pilot: one
+// revision-bound, hand-reviewed record of what a REAL `runMutant` execution
+// actually reported, independent of what the record declares. Hand-authored
+// and reviewed like executions.json itself (see semantic-execution-
+// adapter.mjs's own header) — this module never writes it.
+//
+// WHY THIS MATTERS FOR STALENESS: an `equivalent-reviewed` mutant's audited
+// review is tied to a source fingerprint (validateEquivalenceReview above)
+// and runMutant() already falls back to a bare `survived` the moment that
+// fingerprint drifts from the live target file — but a report built only
+// from the STATIC record would never see that fallback happen; it would
+// keep reading the record's own unchanged `expected_detection:
+// "equivalent-reviewed"` forever. A ledger entry whose own `status` reports
+// the ACTUAL post-fallback classification (e.g. "survived") is what lets a
+// report built from this ledger reflect that expiry rather than silently
+// keep crediting a stale adjudication.
+
+export const DEFAULT_MUTANT_EXECUTIONS_PATH = "test/semantic/mutant-executions.json";
+export const MUTANT_EXECUTION_SCHEMA_VERSION = 1;
+
+const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
+const MUTANT_EXECUTION_ID_RE = /^MUTEXEC-[A-Z][A-Z0-9-]*$/;
+
+const MUTANT_EXECUTION_KEYS = new Set([
+  "id",
+  "mutant",
+  "observed_at",
+  "status",
+  "run_ref",
+  "source_sha",
+  "detectors",
+]);
+
+const MUTANT_EXECUTION_DETECTOR_KEYS = new Set(["id", "classification"]);
+
+function validateMutantExecutionDetector(raw, at, problems) {
+  if (!exactObject(raw, MUTANT_EXECUTION_DETECTOR_KEYS, at, problems)) return;
+  stringValue(raw.id, `${at}.id`, problems);
+  enumValue(raw.classification, CLASSIFICATION_SET, `${at}.classification`, problems);
+}
+
+function validateMutantExecution(raw, at, problems, { mutantIds } = {}) {
+  if (!exactObject(raw, MUTANT_EXECUTION_KEYS, at, problems)) return null;
+  let id = null;
+  if (stringValue(raw.id, `${at}.id`, problems, { pattern: MUTANT_EXECUTION_ID_RE })) id = raw.id;
+  if (stringValue(raw.mutant, `${at}.mutant`, problems, { pattern: MUTANT_ID_RE })) {
+    if (mutantIds && !mutantIds.has(raw.mutant)) {
+      fail(problems, "reference", `${at}.mutant references unknown mutant record ${raw.mutant}`);
+    }
+  }
+  stringValue(raw.observed_at, `${at}.observed_at`, problems, { pattern: OBSERVED_AT_RE });
+  enumValue(raw.status, CLASSIFICATION_SET, `${at}.status`, problems);
+  stringValue(raw.run_ref, `${at}.run_ref`, problems);
+  nullableStringValue(raw.source_sha, `${at}.source_sha`, problems, { pattern: COMMIT_SHA_RE });
+  if (Array.isArray(raw.detectors)) {
+    raw.detectors.forEach((d, i) =>
+      validateMutantExecutionDetector(d, `${at}.detectors[${i}]`, problems),
+    );
+  } else {
+    fail(problems, "schema", `${at}.detectors must be an array (possibly empty)`);
+  }
+  return id;
+}
+
+// loadMutantExecutions reads test/semantic/mutant-executions.json (default
+// path), the hand-authored, revision-bound observation ledger for the
+// mutation pilot — never generated, exactly like test/semantic/
+// executions.json. Missing file is NOT an error: it returns an empty Map,
+// so a report built from it falls back to each record's own declared
+// expected_detection (the same "absent observation reports unknown, never
+// an assumed pass" discipline lib/semantic-report.mjs already applies to
+// contract bindings) rather than refusing to run at all.
+export function loadMutantExecutions(
+  path = DEFAULT_MUTANT_EXECUTIONS_PATH,
+  { root = process.cwd(), mutantIds } = {},
+) {
+  const absolute = resolve(root, path);
+  if (!existsSync(absolute)) return new Map();
+  const raw = parseJSONFile(absolute, path);
+
+  const problems = [];
+  if (raw?.schema_version !== MUTANT_EXECUTION_SCHEMA_VERSION) {
+    fail(
+      problems,
+      "schema",
+      `${path}.schema_version must be ${MUTANT_EXECUTION_SCHEMA_VERSION}; got ${JSON.stringify(raw?.schema_version)}`,
+    );
+  }
+  if (!Array.isArray(raw?.executions)) {
+    fail(problems, "schema", `${path}.executions must be an array`);
+  }
+  if (problems.length > 0) throw new SemanticModelError("invalid mutant execution ledger", problems);
+
+  const seenIds = new Set();
+  const records = [];
+  raw.executions.forEach((entry, i) => {
+    const at = `${path}.executions[${i}]`;
+    const id = validateMutantExecution(entry, at, problems, { mutantIds });
+    if (id !== null) {
+      if (seenIds.has(id)) fail(problems, "schema", `${at}.id is a duplicate across execution records: ${id}`);
+      seenIds.add(id);
+    }
+    records.push(entry);
+  });
+  if (problems.length > 0) throw new SemanticModelError("invalid mutant execution ledger", problems);
+
+  // Most-recent-observed-first per mutant: ties on observed_at break on id
+  // descending, mirroring lib/semantic-report.mjs's latestExecution() — an
+  // arbitrary but deterministic tiebreak, since real data never collides.
+  const byMutant = new Map();
+  for (const record of records) {
+    const current = byMutant.get(record.mutant);
+    if (
+      !current ||
+      record.observed_at > current.observed_at ||
+      (record.observed_at === current.observed_at && record.id > current.id)
+    ) {
+      byMutant.set(record.mutant, record);
+    }
+  }
+  return byMutant;
 }
 
 // ---------------------------------------------------------------------------

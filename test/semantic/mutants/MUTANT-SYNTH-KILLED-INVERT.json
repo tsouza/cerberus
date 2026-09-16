@@ -29,5 +29,6 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": null
+  "notes": null,
+  "linked_issue": null
 }
