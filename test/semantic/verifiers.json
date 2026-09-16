@@ -86,6 +86,42 @@
       "replaced_by": null
     },
     {
+      "id": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "name": "Property-based oracle differential",
+      "description": "A pgregory.net/rapid property test that draws a randomized or deterministically engineered dataset and query, evaluates the query against both cerberus's real HTTP handler (chDB-backed, full parse/lower/optimize/emit/execute pipeline) and an in-tree oracle, and shrinks any disagreement to a minimal reproducer.",
+      "detects": [
+        "value-level divergence across a wide generated input space",
+        "a regression reintroduced into a previously-fixed bug class the generator's dataset specifically engineers for"
+      ],
+      "cannot_detect": [
+        "divergence in a shape the generator's grammar or dataset pool never draws — each gen/*.go file documents its own deliberate exclusions",
+        "drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)"
+      ],
+      "complemented_by": ["VERIFIER-REFERENCE-DIFFERENTIAL"],
+      "substrate": "chdb",
+      "relative_cost": "medium",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-DOCUMENTED-PROVENANCE-REVIEW",
+      "name": "Documented provenance review",
+      "description": "A hand-maintained provenance record — a doc comment or header file enumerating, entry by entry, which lines of a mixed corpus are copied from a third-party source and which are this repository's own additions — checked by a person reading the corpus against that record, not asserted by any script.",
+      "detects": [
+        "a corpus entry's authorship being misattributed to the wrong source, when a reviewer actually cross-checks the documented list against the corpus file"
+      ],
+      "cannot_detect": [
+        "a new corpus entry added without updating the documented list — nothing scans for that drift automatically"
+      ],
+      "complemented_by": [],
+      "substrate": "static",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
       "id": "VERIFIER-LEDGER-ENROLLMENT-CHECK",
       "name": "Ledger enrollment check",
       "description": "coverage-package-floor.mjs, the cheap structural half of the coverage gate: it shells out to `go list` and `go tool cover` only (no chDB, no containers, no real test run) to find every package that carries statements in the full build, and fails if any such package has no committed floor file under test/coverage-floor/.",

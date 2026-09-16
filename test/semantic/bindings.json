@@ -38,6 +38,114 @@
       "status": "active"
     },
     {
+      "id": "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
+      "contract": "PROMQL-COUNTER-RESET-EXTRAPOLATION",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "instant-random-property-oracle",
+      "test_ref": "test/property/gen#promql.instant.rate",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY",
+      "contract": "PROMQL-COUNTER-RESET-EXTRAPOLATION",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "instant-window-engineered-property-oracle",
+      "test_ref": "test/property/gen#promql.instant-window.monotonic-running-total.rate",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-RANGE-ALIGNMENT-RANGE-PROPERTY",
+      "contract": "PROMQL-RANGE-VECTOR-ALIGNMENT",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "range-query-grid-property-oracle",
+      "test_ref": "test/property/gen#promql.range.rate",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-NATIVE-HISTOGRAM-PROPERTY",
+      "contract": "PROMQL-NATIVE-HISTOGRAM-PAYLOAD-BEHAVIOR",
+      "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+      "evidence_class": "property",
+      "independence_group": "exp-histogram-property-oracle",
+      "test_ref": "test/property/gen#promql.native-histogram.quantile-sum-rate",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT",
+      "contract": "PROMQL-NATIVE-HISTOGRAM-PAYLOAD-BEHAVIOR",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "reference-differential",
+      "test_ref": "compatibility/prometheus/query-corpus/header.yml",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
+      "contract": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "spec-fixture-roundtrip",
+      "test_ref": "test/spec/promql/regex_unanchored_no_overmatch.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT",
+      "contract": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "reference-differential",
+      "test_ref": "compatibility/prometheus/query-corpus/header.yml",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN",
+      "contract": "PROMQL-ORACLE-PARSER-SHARING-BOUNDARY",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "parser-single-source-scan",
+      "test_ref": "test/regression/promql_parser_options_single_source_test.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN",
+      "contract": "PROMQL-ORACLE-ENGINE-ANSWER-FLAG-PARITY",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "oracle-engine-flag-parity-scan",
+      "test_ref": "test/regression/promql_oracle_engine_parity_test.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
+      "contract": "PROMQL-REFERENCE-VERSION-PIN-CORRESPONDENCE",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "fork-version-skew-scan",
+      "test_ref": "test/regression/fork_version_skew_test.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-THIRD-PARTY-CORPUS-PROVENANCE-REVIEW",
+      "contract": "PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE",
+      "verifier": "VERIFIER-DOCUMENTED-PROVENANCE-REVIEW",
+      "evidence_class": "manual-review",
+      "independence_group": "corpus-provenance-documentation-review",
+      "test_ref": "compatibility/prometheus/query-corpus/header.yml",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
+      "contract": "PROMQL-LABEL-REPLACE-CAPTURE-GROUP-PARTICIPATION",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "label-replace-rejection-boundary",
+      "test_ref": "internal/promql/label_fns.go:labelReplaceAttributesBuilder#d11e3df4",
+      "status": "active"
+    },
+    {
       "id": "BINDING-ARCH-NO-CACHING-STATIC",
       "contract": "ARCH-NO-QUERY-RESULT-CACHING",
       "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
