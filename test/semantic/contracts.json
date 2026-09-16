@@ -924,5 +924,204 @@
       "replaces": null,
       "replaced_by": null
     }
+,
+    {
+      "id": "ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001",
+      "statement": "A handler holding a streaming ClickHouse cursor owns closing it through chclient.CloseCursor before cancelling that query's own context — never the reverse — and that close completes within chclient.CursorDrainBudget regardless of how much of the result set went unread. Closing before cancelling is what lets clickhouse-go release the pooled connection back to the idle pool instead of destroying the socket outright; bounding the drain is what stops a client that walks away mid-stream from pinning a pool slot for as long as ClickHouse takes to finish streaming an abandoned result set.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["prom-seam-close-before-cancel-order", "prom-seam-bounded-drain", "real-network-connection-recovery"],
+      "blind_spots": [
+        "Only the prom /api/v1/query_range seam has a dedicated deterministic ordering/bound regression today; loki and tempo compose the identical chclient.CloseCursor mechanism through their own handlers but carry no seam-specific regression test of their own — docs/test-strategy.md's own Layer 6f row names this exact gap ('which callers use the contract').",
+        "The deterministic ordering and drain-bound tests (test/regression/cursor_teardown_order_test.go) run against a fake cursor; they prove the HANDLER's own call order and timeout, never whether a real pooled connection is actually returned or destroyed by that order — only conn_teardown_integration_test.go's real-server evidence proves that consequence, and it proves it directly at the chclient API boundary, not through any HTTP seam, so it says nothing about which CALLERS get the order right.",
+        "The real-network evidence pins max_block_size so the result streams past the driver's block-buffer depth; with a single block the driver's own teardown branch is a coin flip and the two arms stop diverging (docs/test-strategy.md, Layer 6f) — a future change to that pinned setting could silently make the differential vacuous without failing outright."
+      ],
+      "related_contracts": ["SIGNAL-ADMISSION-001"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001",
+      "statement": "Every goroutine a request's own handling spawns terminates by the time that request finishes — on the happy path, an error return, a concurrent-request burst, a route-memo retry, and a handler panic alike — and a handler panic still runs its deferred cleanup (releasing an already-acquired admission slot) rather than crashing the process. Proven deterministically, in-process, against a stubbed querier by injecting exactly these fault shapes and asserting goleak.VerifyNone finds no leaked goroutine and no admission slot is left held.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["goroutine-leak-normal-request", "goroutine-leak-error-path", "goroutine-leak-concurrent-path", "goroutine-leak-route-memo-retry", "panic-recovery-releases-admission-slot"],
+      "blind_spots": [
+        "goleak's own ignore-list (opts, test/regression/goleak_test.go) excludes known persistent runtime goroutines such as Go's HTTP idle-connection cleaner; a leak that happens to match one of those signatures is not caught.",
+        "This contract proves absence of a LEAKED GOROUTINE, never absence of a leaked non-goroutine resource — a held ClickHouse connection is ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001's claim, not this one's.",
+        "All evidence here runs against a stubbed querier, deterministic and in-process; Layer 13's live-stack chaos only passively corroborates process-level recovery after a real fault storm (all three heads 200, no lingering 5xx) as an end-of-run health gate, never as a dedicated per-goroutine scenario — docs/test-strategy.md's own Layer 13 'Handler panic' bullet says so explicitly."
+      ],
+      "related_contracts": ["ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001", "SIGNAL-ADMISSION-001"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-CH-DATA-SHARD-FANOUT-BOUND-001",
+      "statement": "internal/chclient's data-shard fan-out gate bounds how many concurrent ClickHouse dispatches one query may hold open at once, sized once from Config.DataShardCount (or an explicit multiplier override) and shared by every dispatch path — QueryCursor, QueryStrings, QueryOpen — that composes it. DataShardCount<=1, the value of every deployment that predates this field, allocates no semaphore at all; a cancelled dispatch issues KILL QUERY before releasing its slot so the abandoned query actually stops consuming server resources instead of merely freeing local bookkeeping; that release is idempotent; and a gate denial is breaker-neutral, never itself tripping the CH circuit breaker.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["gate-allocation-floor", "gate-concurrency-cap", "gate-cancel-kill-ordering", "gate-denial-breaker-neutral"],
+      "blind_spots": [
+        "Every assertion here runs against a fake driver.Conn; whether a REAL ClickHouse server actually honors the issued KILL QUERY and frees its own resources promptly is unproven — no real-clickhouse-substrate binding exists for this specific claim today (tracked as cerberus issue #3489, filed rather than silently widened into an existing binding's claim).",
+        "This is a DIFFERENT fan-out axis from Layer 12's SQL-plan compute fan-out (peak intermediate rows versus leaf scan rows inside one dispatch, ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001's own claim): this contract bounds concurrent DISPATCH COUNT to ClickHouse, Layer 12 bounds ROW CARDINALITY inside one dispatch. A deployment can satisfy one while violating the other.",
+        "DataShardCount>1 with a custom multiplier is a configuration surface no deployment currently ships in production (cerberus issue #3081/#3128's own 'zero behavior change' framing); the concurrency-cap and multiplier-scaling evidence is exercised only synthetically, never against a real multi-shard ClickHouse cluster."
+      ],
+      "related_contracts": ["ARCH-CH-CIRCUIT-BREAKER-RESILIENCE-001", "ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001",
+      "statement": "After a migration-scenario ingest, cerberus answers the SAME logical telemetry read back over its OWN wire (the Prometheus/Loki/Tempo HTTP APIs) that the pinned reference backends answer read back over THEIR OWN wire for the identical seeded window — each side checked independently against an oracle rebuilt in-process from the archetype's data declaration and the seeder's manifest, never one side diffed directly against the other. A negative control deliberately perturbs one side and asserts the harness reports the disagreement, so a silently broken comparator cannot read as perfect parity. Tier 2 extends this to alert FIRING: a real Grafana-managed external ruler pointed at cerberus must fire the same alert to the same dead-end receiver that query-level parity alone cannot see.",
+      "scope": "signal",
+      "applicable_heads": ["HEAD-PROMQL", "HEAD-LOGQL", "HEAD-TRACEQL"],
+      "applicable_capabilities": [],
+      "authority": "reference-implementation",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["tier1-substrate-mechanism", "tier1-query-parity", "tier2-firing-parity"],
+      "blind_spots": [
+        "Layer 14 is a WORKFLOW lane, not a code lane: a lowering or emitter bug only surfaces here if one of the eight seeded archetypes happens to shape a query into it, and it surfaces as an opaque parity diff rather than a located defect — Layers 1-13 own locating it, not this contract.",
+        "Customer topologies beyond the eight seeded archetypes, and the scope limits docs/migration-testing.md section 6.4 records, are out of scope by construction.",
+        "This lane carries no pull_request: trigger and no entry in the live main-branch ruleset (main_posture is not required on an ordinary PR) — but it IS a required RELEASE gate: release.yml's RELEASE_REQUIRED_CHECKS names migration-e2e, so nothing publishes until it posts green on the shipping commit. The two postures are genuinely different authorities (test/semantic's own lane adapter exists specifically to keep them from being conflated); this contract's evidence is release-gated, never PR-merge-gated, and calling the lane flatly 'informational' without that qualification understates its actual release-blocking weight."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-CH-STRICT-SCAN-DIFFERENTIAL-001",
+      "statement": "Every type/schema-coercion, offline-corpus write+read, and query_log/enum-reconciliation seam chDB's looser decode cannot exercise is re-verified against a REAL ClickHouse server through the production clickhouse-go strict-scan client path: an emit-type mismatch chDB coerces silently but production strict-scans and 502s on, a system.query_log.type predicate ClickHouse would otherwise silently coerce to String and match nothing, and a deployed exit_status Enum8 narrower than the member set the binary writes, which a no-op CREATE TABLE IF NOT EXISTS leaves invisible until a real insert rejects it.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["corpus-decode-differential", "query-log-exit-status-enum-reconciliation"],
+      "blind_spots": [
+        "Tempo search-row decoders have no strict-scan recipe of their own yet (cerberus issue #1635, which has a hidden pipeline stage to reproduce) — this contract's coverage of the Tempo head is narrower than its universal applicable_heads scope might suggest.",
+        "This contract catches TYPE/SCHEMA coercion divergence only; a row that scans successfully but carries the WRONG value is Layer 6a-c's (chDB roundtrip) job, never this one's — a green strict-scan result says nothing about row-level correctness.",
+        "strict-scan's real-CH evidence rides the required strict-scan CI lane exclusively; it needs testcontainers and Docker, so — per CLAUDE.md invariant 5 — a red result is reproduced by reading the CI log for the exact rule/assertion, never chased with a local speculative pre-flight run."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "SIGNAL-CONSUMER-CORPUS-WIRE-REPLAY-001",
+      "statement": "A captured, REAL Grafana request shape, replayed against cerberus's in-process HTTP handlers, decodes on the consumer's own terms — strict gogo/protobuf unmarshal into tempopb types for Tempo, bare logproto-shaped JSON for Loki, Prom API envelopes for Prometheus — and a request that survives a route-memo retry decodes identically to one that does not. The corpus is a growing, never-shrinking snapshot (test/consumer-corpus/grafana-<version>/*.json) of shapes actually observed from Grafana, not a hypothetical or synthetic contract.",
+      "scope": "signal",
+      "applicable_heads": ["HEAD-PROMQL", "HEAD-LOGQL", "HEAD-TRACEQL"],
+      "applicable_capabilities": [],
+      "authority": "reference-implementation",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["wire-shape-stub-replay", "route-memo-retry-preserves-decode-contract"],
+      "blind_spots": [
+        "The corpus only ever contains shapes already captured; Layer 9's e2e crawler and drilldown specs are the corpus MINERS, so a Grafana request shape never observed live has no evidence here regardless of how plausible it looks.",
+        "The stub-backed default lane pins wire shape and status only, with canned rows; the chdb-tagged lane additionally evaluates data predicates over small seeds, but neither lane exercises production-scale cardinality — that is Layer 12's and ARCH-CH-DATA-SHARD-FANOUT-BOUND-001's job, not this one's.",
+        "A known-unfixed consumer-contract bug stays enrolled as a failing entry, never tolerated or allow-listed (docs/test-strategy.md, Layer 7b) — so a red corpus entry in this contract's own evidence trail is the layer correctly doing its job, not a flake to explain away."
+      ],
+      "related_contracts": ["ARCH-CH-DATA-SHARD-FANOUT-BOUND-001"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-CH-CIRCUIT-BREAKER-RESILIENCE-001",
+      "statement": "The shared CH circuit breaker shields every head from amplifying a transient ClickHouse outage into a request storm: it opens after N consecutive failures inside its window, fast-fails while open, probes exactly once during HALF-OPEN even under concurrent callers, and closes again on a successful probe. This state-machine logic is proven deterministically against a fault-injecting fake driver.Conn; the SAME contract is proven again against a REAL ClickHouse outage (a genuine k3d pod-kill) end to end, including the documented 502-then-503 rejection ordering and /readyz reporting circuit in its body while /healthz stays unaffected.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["breaker-deterministic-state-machine", "breaker-live-fault-corroboration"],
+      "blind_spots": [
+        "The deterministic evidence exercises the breaker's Client surface directly against a fake driver.Conn; it proves the state machine's own transition logic, never whether a real deployment's actual failure timing (dial latency, TCP RST versus timeout) trips the SAME thresholds the same way.",
+        "The live-stack evidence gates the network-partition scenario on a runtime kube-router-enforcement probe: when the pinned k3d image is not actually enforcing NetworkPolicy, that scenario records not-applicable rather than a vacuous pass, and the breaker contract is covered by the pod-kill scenario instead for that run — a single green run does not by itself distinguish a genuinely-not-applicable precondition from one that has permanently stopped materialising; only the separate weekly chaos-not-applicable-rate audit resolves that ambiguity.",
+        "Live-stack chaos is informational only (push-to-main + nightly + manual dispatch, never a PR gate, never in release.yml's RELEASE_REQUIRED_CHECKS) — a red run here never blocks a merge or a release, even though a red run is a real failure to fix, never a tolerated one (docs/test-strategy.md's own 'informational does not mean tolerated' framing)."
+      ],
+      "related_contracts": ["ARCH-CH-DATA-SHARD-FANOUT-BOUND-001"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-PERF-BASELINE-MEASURED-EVIDENCE-001",
+      "statement": "test/perf/nightly's real-ClickHouse nightly gate measures each pinned sentinel's max-of-5 peak memory (and its expected HTTP outcome) against a committed baseline plus an absolute cap-relative ceiling, for the EXACT sentinel shapes and the EXACT ClickHouse/cerberus version combination pinned at measurement time. A green result is MEASURED evidence that this specific combination did not regress past the committed threshold; it is never a semantic proof that the underlying mechanism is bounded for a sentinel shape, data volume, or ClickHouse version the baseline has not itself measured — a new shape needs its own sentinel, and a version bump needs its own re-measurement, before either can claim this contract's coverage. The baseline's own two-prong (calibration vs absolute-ceiling) scheme is kept from silently going slack by a separate, deterministic structural pin: prong B (the absolute ceiling) is asserted to never be looser than prong A (the calibrated baseline) for the same measurement.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["nightly-real-ch-memory-gate", "baseline-prong-ordering-invariant"],
+      "blind_spots": [
+        "Wall-clock regressions are explicitly out of scope for this contract: those are performance.benchmark's (benchstat, manual dispatch) job, and that lane's release_posture is advisory even at release — release.yml's RELEASE_REQUIRED_CHECKS does not name it, unlike perf-nightly.",
+        "perf-nightly carries no pull_request: trigger and no live main-ruleset entry — but release.yml's RELEASE_REQUIRED_CHECKS DOES name perf-nightly, so, like migration-e2e, its actual release-blocking weight is stronger than a flat 'nightly-only' description would suggest; this contract's evidence is release-gated, not PR-merge-gated.",
+        "A sentinel's calibrated bound is only as good as the calibration measurement that produced it; TestNightlyBaseline_CalibrationMeasurementPassesBothProngs pins that the calibration run itself clears both prongs, but neither prong test detects a calibration measurement taken against a since-drifted production sample shape."
+      ],
+      "related_contracts": ["SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001",
+      "statement": "Cerberus holds its compute fan-factor — peak intermediate rows over leaf scan rows — flat as the query corpus grows: a static lint rejects a structurally-unbounded shape (an unbounded CrossJoin, an arrayJoin feeding a JOIN, an uncapped WITH RECURSIVE, a correlated subquery) on every corpus fixture's lowered plan and emitted SQL with no chDB execution at all, and a chDB-executed ratchet separately pins each fixture's measured fan factor, structural flags, and recursion depth against a committed baseline (test/perf/cardinality-baseline/<head>/<name>.json, scale-wall-baseline.json), raise-only.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "operational-invariant",
+      "required_evidence_classes": ["static-analysis", "execution"],
+      "required_independence_groups": ["static-fanout-lint", "cardinality-scale-wall-ratchet"],
+      "blind_spots": [
+        "The static lint and the ratchet each cover only their OWN corpus/fixture set; a construct with no lint rule and no recorded baseline fixture is invisible to both — the corpus-wide nightly test/perf/profile profiler is the wide net for that residual class, and it is release-required (release.yml's RELEASE_REQUIRED_CHECKS names `profile`) but absent from the live main-branch PR ruleset, so an ordinary PR can merge without it having run even once.",
+        "test/perf/scale_wall_pin_chdb_test.go and test/perf/solver_decision_ratchet_test.go pin two adjacent but DISTINCT claims riding the same perf-guards job — recursion-depth/structural-flag equality and route A/B classification stability respectively — a pass on the cardinality ratchet alone is not evidence for either.",
+        "This bounds ROW CARDINALITY inside one dispatch; it is a different axis from ARCH-CH-DATA-SHARD-FANOUT-BOUND-001's concurrent-DISPATCH-COUNT bound at the ClickHouse-driver level — a fixture can satisfy one while violating the other."
+      ],
+      "related_contracts": ["ARCH-CH-DATA-SHARD-FANOUT-BOUND-001"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    }
   ]
 }
