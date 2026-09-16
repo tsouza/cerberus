@@ -412,13 +412,19 @@ jobs:
       # `always()` + steps.compat.outcome=='success': runs whenever the
       # harness itself produced a real case set, regardless of whether the
       # ratchet step above found (and failed on) a regression — a real fail
-      # is still valid evidence, not non-evidence. `continue-on-error:
-      # true`: this surfaces evidence for a human to later fold into
-      # test/semantic/executions.json (which stays hand-authored/reviewed)
-      # — it is never a gate.
+      # is still valid evidence, not non-evidence. This surfaces evidence
+      # for a human to later fold into test/semantic/executions.json (which
+      # stays hand-authored/reviewed) — it is never a gate.
+      # `compatibility/prometheus` is a release-required lane, and a
+      # protected/release-required lane's job may not declare
+      # `continue-on-error: true` on ANY step
+      # (test/regression/ci_lane_registry_test.go bans it with no
+      # exceptions — the flag makes a real failure of this required check
+      # indistinguishable from a masked one). SOFT_FAIL=1 gets the same
+      # "never fails the job" guarantee from inside the script itself
+      # instead — see its own header.
       - name: Generate semantic execution observations (compat/prometheus)
         if: always() && steps.compat.outcome == 'success'
-        continue-on-error: true
         env:
           HEAD: prometheus
           CASES_PATH: compatibility/prometheus/compat-cases.json
@@ -428,11 +434,11 @@ jobs:
           # this run's differential actually ran against.
           REFERENCE_VERSION: "prom/prometheus:v3.11.3"
           OUT: compat-executions-prometheus.json
+          SOFT_FAIL: "1"
         run: node .github/scripts/compat-execution-report.mjs
 
       - name: Upload semantic execution observations (compat/prometheus)
         if: always() && steps.compat.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: semantic-executions-compat-prometheus
@@ -994,12 +1000,18 @@ jobs:
       # == 'success': runs whenever the harness itself produced real case
       # sets, regardless of whether a ratchet step above found a
       # regression — a real fail is still valid evidence, not non-evidence.
-      # `continue-on-error: true`: this surfaces evidence for a human to
-      # later fold into test/semantic/executions.json (hand-authored/
-      # reviewed) — it is never a gate.
+      # This surfaces evidence for a human to later fold into
+      # test/semantic/executions.json (hand-authored/reviewed) — it is
+      # never a gate. `compatibility/tempo` is a release-required lane, and
+      # a protected/release-required lane's job may not declare
+      # `continue-on-error: true` on ANY step
+      # (test/regression/ci_lane_registry_test.go bans it with no
+      # exceptions — the flag makes a real failure of this required check
+      # indistinguishable from a masked one). SOFT_FAIL=1 gets the same
+      # "never fails the job" guarantee from inside the script itself
+      # instead — see its own header.
       - name: Generate semantic execution observations (compat/tempo)
         if: always() && steps.harness.outcome == 'success'
-        continue-on-error: true
         env:
           HEAD: tempo
           CASES_PATH: compatibility/tempo/reports/compat-cases.json
@@ -1010,11 +1022,11 @@ jobs:
           # run's differential actually ran against, for both transports.
           REFERENCE_VERSION: "grafana/tempo:main-2f74ea8"
           OUT: compat-executions-tempo.json
+          SOFT_FAIL: "1"
         run: node .github/scripts/compat-execution-report.mjs
 
       - name: Upload semantic execution observations (compat/tempo)
         if: always() && steps.harness.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: semantic-executions-compat-tempo
@@ -1149,13 +1161,18 @@ jobs:
       # `always()` + steps.harness.outcome == 'success': runs whenever the
       # harness itself produced a real case set, regardless of whether the
       # ratchet step above found (and failed on) a regression — a real fail
-      # is still valid evidence, not non-evidence. `continue-on-error:
-      # true`: this surfaces evidence for a human to later fold into
-      # test/semantic/executions.json (hand-authored/reviewed) — it is
-      # never a gate.
+      # is still valid evidence, not non-evidence. This surfaces evidence
+      # for a human to later fold into test/semantic/executions.json
+      # (hand-authored/reviewed) — it is never a gate. `compatibility/loki`
+      # is a release-required lane, and a protected/release-required
+      # lane's job may not declare `continue-on-error: true` on ANY step
+      # (test/regression/ci_lane_registry_test.go bans it with no
+      # exceptions — the flag makes a real failure of this required check
+      # indistinguishable from a masked one). SOFT_FAIL=1 gets the same
+      # "never fails the job" guarantee from inside the script itself
+      # instead — see its own header.
       - name: Generate semantic execution observations (compat/loki)
         if: always() && steps.harness.outcome == 'success'
-        continue-on-error: true
         env:
           HEAD: loki
           CASES_PATH: compatibility/loki/reports/compat-cases.json
@@ -1170,11 +1187,11 @@ jobs:
           # run's differential actually ran against.
           REFERENCE_VERSION: "grafana/loki:3.7.0"
           OUT: compat-executions-loki.json
+          SOFT_FAIL: "1"
         run: node .github/scripts/compat-execution-report.mjs
 
       - name: Upload semantic execution observations (compat/loki)
         if: always() && steps.harness.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: semantic-executions-compat-loki

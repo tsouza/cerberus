@@ -689,3 +689,48 @@ test("CLI: MODE is required and validated", () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /MODE must be one of property, compat, verify/);
 });
+
+// --- SOFT_FAIL (issue #3499's CI wiring: a protected/release-required lane
+// cannot use `continue-on-error: true`, so the CLI itself has to guarantee
+// it never fails the job when this is set) ------------------------------
+
+test("CLI: SOFT_FAIL=1 turns an error that would exit 1 into a ::warning:: and exit 0", () => {
+  const result = runCli({ MODE: "", SOFT_FAIL: "1", GITHUB_SHA: "", GITHUB_EVENT_NAME: "" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /::warning title=Semantic execution adapter \(soft-fail\)::/);
+  assert.match(result.stdout, /MODE must be one of property, compat, verify/);
+  assert.doesNotMatch(result.stderr, /::error/);
+});
+
+test("CLI: SOFT_FAIL unset (or anything other than \"1\") keeps the default hard-fail behavior", () => {
+  const result = runCli({ MODE: "", SOFT_FAIL: "true", GITHUB_SHA: "", GITHUB_EVENT_NAME: "" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /::error title=Semantic execution adapter::/);
+});
+
+test("CLI: SOFT_FAIL=1 never masks a genuinely successful run — the real records still print", () => {
+  const modelDir = tempDir("semantic-exec-cli-model-");
+  const dataDir = tempDir("semantic-exec-cli-data-");
+  try {
+    writeMinimalModel(modelDir);
+    const gotestPath = join(dataDir, "gotest.json");
+    writeFileSync(gotestPath, goTestJSONFixture());
+    const result = runCli({
+      MODE: "property",
+      SOFT_FAIL: "1",
+      MODEL_DIR: modelDir,
+      GOTEST_JSON_PATH: gotestPath,
+      CANDIDATE_SHA: "abc1234",
+      RUN_REF: "https://example.invalid/run/1",
+      OBSERVED_AT: "2026-09-16T00:00:00Z",
+      GITHUB_SHA: "",
+      GITHUB_EVENT_NAME: "",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const records = JSON.parse(result.stdout);
+    assert.equal(records[0].selection, "executed");
+  } finally {
+    rmSync(modelDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

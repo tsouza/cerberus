@@ -541,10 +541,19 @@ behind `GOTEST_JSON_OUT` so a bare local run is unaffected), then its
 `semantic-executions-property` build artifact. `compatibility.yml`'s three
 per-head jobs (`prometheus`, `tempo`, `loki`) run `compat-execution-report.mjs`
 — see its own entry below — over their already-produced `compat-cases.json`
-and upload `semantic-executions-compat-<head>`. Both are
-`continue-on-error: true`, so neither can redden its required check, but
-each gates on a DIFFERENT condition matching what evidence it can actually
-produce: the property step runs whenever `run_heavy` was true regardless of
+and upload `semantic-executions-compat-<head>`. Neither can redden its
+required check — but NOT via a workflow-level `continue-on-error: true`:
+`property (…)` and the three `compatibility/*` heads are protected/
+release-required lanes, and `test/regression/ci_lane_registry_test.go`
+bans `continue-on-error: true` on ANY step of a job backing one, with no
+exceptions (a real failure there would be indistinguishable from a masked
+one). Both `semantic-execution-adapter.mjs` and `compat-execution-report.mjs`
+instead honour `SOFT_FAIL=1` — set on these steps only — which catches any
+error the script would otherwise exit 1 on, annotates it with `::warning::`,
+and exits 0; a developer running either script by hand leaves it unset and
+keeps the immediate hard-fail feedback every other error path already has.
+Each gates on a DIFFERENT `if:` condition matching what evidence it can
+actually produce: the property step runs whenever `run_heavy` was true regardless of
 whether the property tests themselves passed (`always()` — a captured
 go-test-json stream still carries real FAIL evidence even on a failing
 run), while each compat step gates on that head's own harness step outcome
@@ -2338,10 +2347,15 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `hashCorpus`'s array form — loki's harness draws from two separate
     roots), `REFERENCE_VERSION` / `EXPECT_REFERENCE_VERSION`
     (optional), `CANDIDATE_SHA` / `RUN_REF` / `OBSERVED_AT` / `MODEL_DIR` /
-    `OUT` (same defaults as the CLI's own `sharedContext`).
-  - Exit: `0` printing/writing one record per selected binding; `1` when
-    `HEAD`/`CASES_PATH` is missing or no active `"reference"` binding
-    matches the head prefix.
+    `OUT` (same defaults as the CLI's own `sharedContext`), `SOFT_FAIL`
+    (optional — `"1"` turns an error that would exit `1` into a
+    `::warning::` and exit `0`; set by `compatibility.yml`'s three steps,
+    since a protected/release-required lane's job may not declare
+    `continue-on-error: true` on any step).
+  - Exit: `0` printing/writing one record per selected binding, or (with
+    `SOFT_FAIL=1`) on any error; `1` on error otherwise — `HEAD`/
+    `CASES_PATH` missing, or no active `"reference"` binding matches the
+    head prefix.
   - Tests: `compat-execution-report.test.mjs` (run in `ci.yml`), covering
     the gRPC-arm routing, the manual-review exclusion, the multi-binding
     fan-out against a prometheus-shaped model, and end-to-end CLI runs.

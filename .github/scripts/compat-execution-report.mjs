@@ -54,13 +54,27 @@
 //   CANDIDATE_SHA / RUN_REF / OBSERVED_AT / MODEL_DIR / OUT — see
 //                      semantic-execution-adapter.mjs's own header; same
 //                      defaults, resolved through the same sharedContext().
+//   SOFT_FAIL          when "1", an error that would otherwise exit 1 (a
+//                      missing HEAD/CASES_PATH, no matching active
+//                      binding, an unreadable case set, …) is instead
+//                      annotated with ::warning:: and this process exits
+//                      0 — same mechanism and rationale as
+//                      semantic-execution-adapter.mjs's own SOFT_FAIL (see
+//                      its header): a protected/release-required CI lane
+//                      cannot use `continue-on-error: true`
+//                      (test/regression/ci_lane_registry_test.go bans it
+//                      with no exceptions), so the script itself has to be
+//                      the thing that never fails the job. compatibility.yml
+//                      sets this; a developer running the script by hand
+//                      leaves it unset and keeps the immediate, hard-fail
+//                      feedback.
 
 import process from "node:process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-import { error } from "./lib/gh.mjs";
+import { error, warning } from "./lib/gh.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import {
   SemanticExecutionAdapterError,
@@ -190,6 +204,10 @@ if (invokedDirectly) {
     main();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (process.env.SOFT_FAIL === "1") {
+      warning(`compat-execution-report: ${message}`, { title: "Compat execution report (soft-fail)" });
+      process.exit(0);
+    }
     error(message, { title: "compat execution report" });
     process.exit(1);
   }

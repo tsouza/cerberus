@@ -299,6 +299,51 @@ test("CLI: HEAD and CASES_PATH are required", () => {
   assert.match(result2.stdout + result2.stderr, /CASES_PATH is required/);
 });
 
+// --- SOFT_FAIL (issue #3499's CI wiring: a protected/release-required lane
+// cannot use `continue-on-error: true`, so this script has to guarantee it
+// never fails the job when this is set) -----------------------------------
+
+test("CLI: SOFT_FAIL=1 turns an error that would exit 1 into a ::warning:: and exit 0", () => {
+  const result = runCli({ HEAD: "", CASES_PATH: "", SOFT_FAIL: "1", GITHUB_SHA: "", GITHUB_EVENT_NAME: "" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /::warning title=Compat execution report \(soft-fail\)::/);
+  assert.match(result.stdout, /HEAD is required/);
+  assert.doesNotMatch(result.stdout, /::error/);
+});
+
+test("CLI: SOFT_FAIL unset (or anything other than \"1\") keeps the default hard-fail behavior", () => {
+  const result = runCli({ HEAD: "", CASES_PATH: "", SOFT_FAIL: "yes", GITHUB_SHA: "", GITHUB_EVENT_NAME: "" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /::error title=compat execution report::/);
+});
+
+test("CLI: SOFT_FAIL=1 never masks a genuinely successful run — the real records still print", () => {
+  const modelDir = tempDir("compat-exec-cli-model-");
+  const dataDir = tempDir("compat-exec-cli-data-");
+  try {
+    writeMinimalModel(modelDir, [
+      { id: "BINDING-LOGQL-A", evidence_class: "reference", test_ref: "compatibility/loki", status: "active" },
+    ]);
+    const casesPath = join(dataDir, "compat-cases.json");
+    writeFileSync(casesPath, JSON.stringify({ head: "loki", cases: [{ id: "q1", passed: true }] }));
+    const result = runCli({
+      HEAD: "loki",
+      SOFT_FAIL: "1",
+      MODEL_DIR: modelDir,
+      CASES_PATH: casesPath,
+      CANDIDATE_SHA: "abc1234",
+      GITHUB_SHA: "",
+      GITHUB_EVENT_NAME: "",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const records = JSON.parse(result.stdout);
+    assert.equal(records[0].selection, "executed");
+  } finally {
+    rmSync(modelDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("CLI: writes to OUT when given, with a confirmation line on stdout instead of the raw JSON", () => {
   const modelDir = tempDir("compat-exec-cli-model-");
   const dataDir = tempDir("compat-exec-cli-data-");
