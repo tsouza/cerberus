@@ -19,32 +19,32 @@ A verifier's `substrate` is never collapsed into one meaning. `chdb` and `real-c
 
 | status           | count  |
 | ---------------- | ------ |
-| active           | 40     |
+| active           | 41     |
 | draft            | 0      |
 | superseded       | 1      |
 | explicit_deficit | 1      |
-| **total**        | **42** |
+| **total**        | **43** |
 
-Of the 40 active contracts, **40** are structurally assured (bound evidence covers every required class and independence group).
+Of the 41 active contracts, **41** are structurally assured (bound evidence covers every required class and independence group).
 
 ### Verifiers
 
 | status     | count  |
 | ---------- | ------ |
-| active     | 15     |
+| active     | 16     |
 | draft      | 0      |
 | superseded | 0      |
-| **total**  | **15** |
+| **total**  | **16** |
 
 ### Bindings
 
 | status    | count  |
 | --------- | ------ |
-| active    | 88     |
+| active    | 92     |
 | draft     | 0      |
-| **total** | **88** |
+| **total** | **92** |
 
-Executions on record: **82**.
+Executions on record: **86**.
 
 ## Evidence system inventory
 
@@ -57,16 +57,16 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | surface-parity-symbol | 0               |
 | rejection-parity-site | 1               |
 | oracle-inventory-case | 0               |
-| unclassified          | 41              |
+| unclassified          | 45              |
 
 ## Lane inventory (merge / release obligations)
 
 | CI lane                               | merge-required | release-required | active bindings bound |
 | ------------------------------------- | -------------- | ---------------- | --------------------- |
-| ci.forbid-skip                        | true           | true             | 61                    |
-| ci.lint                               | true           | true             | 88                    |
-| compatibility.gate                    | false          | false            | 75                    |
-| governance.forbid-deferral            | true           | true             | 88                    |
+| ci.forbid-skip                        | true           | true             | 65                    |
+| ci.lint                               | true           | true             | 92                    |
+| compatibility.gate                    | false          | false            | 79                    |
+| governance.forbid-deferral            | true           | true             | 92                    |
 | governance.pr-body                    | true           | true             | 5                     |
 | security.codeql                       | true           | true             | 22                    |
 | chdb.perf-guards                      | false          | true             | 47                    |
@@ -74,7 +74,7 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | chdb.strict-scan                      | true           | true             | 47                    |
 | ci.check                              | true           | true             | 52                    |
 | performance.profile                   | false          | true             | 47                    |
-| quality.coverage-measured             | true           | true             | 70                    |
+| quality.coverage-measured             | true           | true             | 74                    |
 | quality.post-merge-drift              | false          | false            | 33                    |
 | chdb.roundtrip-logql                  | false          | true             | 13                    |
 | chdb.roundtrip-traceql                | false          | true             | 10                    |
@@ -992,6 +992,42 @@ A label matcher's equality and regex semantics behave identically across every h
 **Complement gaps** (informational — does not change assurance above):
 
 - verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+
+### SIGNAL-RESOURCE-001
+
+One deterministic OTel resource — a simple undotted resource-attribute key (\`team\`) and a dotted OTel-style key (\`k8s.namespace.name\`), written into each signal's own ResourceAttributes map under a per-head custom table-name override — is independently queryable through each head's own documented resource-attribute projection. PromQL and LogQL both sanitize the dotted key to the identical underscored wire label (\`k8s\_namespace\_name\`, internal/api/format.OTelToPromLabel) and reverse it via each head's own dotted-fallback candidate chain when resolving a matcher; TraceQL addresses the identical attribute dotted and resource-scoped (\`resource.k8s.namespace.name\`), never underscored. Each head's own native timestamp precision is preserved rather than rounded into one universal model: PromQL's instant-query response reports its evaluation timestamp at Prometheus's millisecond wire resolution, while LogQL's log-entry timestamp and TraceQL's span start time both carry the full nanosecond value the row was seeded with. This is a claim about preserving configured resource MEANING across heads, never about byte-identical wire labels — a contract this issue's own grounding (PromQL sanitizes/selects labels and stays Map-based; LogQL/TraceQL carry different scoped-attribute strategies) shows would be false if stated as literal equality.
+
+- scope: `signal` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
+- authority: `design-decision` · status: `active` · owner: `cerberus-core`
+- related contracts: `SIGNAL-LABEL-MATCHER-CONSISTENCY`, `TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `promql-resource-fixture, logql-resource-fixture, traceql-resource-fixture, resource-config-projection`.
+
+**Observed evidence** (from executions.json, revision-scoped): overall **pass**.
+
+- class `execution`: **pass** (BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION, BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE, BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE, BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE)
+- group `promql-resource-fixture`: **pass** (BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE)
+- group `logql-resource-fixture`: **pass** (BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE)
+- group `traceql-resource-fixture`: **pass** (BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE)
+- group `resource-config-projection`: **pass** (BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION)
+
+| binding                                   | verifier                        | evidence class | independence group         | test_ref                                                                                           | observed | CI lane obligations                                                                                                                                                                                                                                |
+| ----------------------------------------- | ------------------------------- | -------------- | -------------------------- | -------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION | VERIFIER-GO-UNIT-TEST           | execution      | resource-config-projection | `test/semantic/resourcefixture/resource_config_test.go:TestResourceFixture_DottedKeyNormalization` | pass     | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE     | VERIFIER-CHDB-HANDLER-ROUNDTRIP | execution      | logql-resource-fixture     | `test/semantic/resourcefixture/logql_resource_chdb_test.go:TestSignalResource_LogQL_ChDB`          | pass     | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE    | VERIFIER-CHDB-HANDLER-ROUNDTRIP | execution      | promql-resource-fixture    | `test/semantic/resourcefixture/promql_resource_chdb_test.go:TestSignalResource_PromQL_ChDB`        | pass     | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+| BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE   | VERIFIER-CHDB-HANDLER-ROUNDTRIP | execution      | traceql-resource-fixture   | `test/semantic/resourcefixture/traceql_resource_chdb_test.go:TestSignalResource_TraceQL_ChDB`      | pass     | ci.forbid-skip (merge-required) (release-required); ci.lint (merge-required) (release-required); compatibility.gate; governance.forbid-deferral (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required) |
+
+**Blind spots:**
+
+- The fixture pins ONE resource (two attribute keys, one timestamp) seeded independently into three separately-typed tables; it is not a combinatorial sweep of every OTel resource-attribute shape or custom-schema layout, and passing it certifies only the one table/column override each head's own test exercises, not an arbitrary custom schema.
+- This contract covers RESOURCE-scoped attribute projection specifically (each signal's ResourceAttributes map); PromQL's own per-datapoint Attributes map, LogQL's per-line LogAttributes/structured-metadata scope, and TraceQL's span-attribute scope are each a distinct, already-covered surface (see TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION) — this contract makes no claim about them.
+- PromQL's millisecond-resolution wire timestamp is asserted as PromQL's own correct native behavior, not as evidence that cerberus preserves sub-millisecond precision anywhere on the PromQL read path — Prometheus's instant-vector wire format has no slot to carry it in, by the upstream wire contract this gateway reproduces, not by a cerberus shortfall.
+- Seeding the same resource into three independently-built tables inside one test package is a fixture convenience, not evidence that per-head query oracles are otherwise coupled or share state; this contract explicitly does NOT claim a shared 'TelemetryWorld' abstraction exists (a deliberate NO-GO for this issue) or that cerberus reads or isolates by any tenant header — no head reads one (docs/operations.md 'Security posture').
+
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-CHDB-HANDLER-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-INTEGRATION`
 
 ### ARCH-AGPL-BINARY-REACHABILITY
 

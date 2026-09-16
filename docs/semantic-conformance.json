@@ -5,28 +5,28 @@
   "counts": {
     "contracts": {
       "draft": 0,
-      "active": 40,
+      "active": 41,
       "superseded": 1,
       "explicit_deficit": 1,
-      "total": 42
+      "total": 43
     },
     "verifiers": {
       "draft": 0,
-      "active": 15,
+      "active": 16,
       "superseded": 0,
-      "total": 15
+      "total": 16
     },
     "bindings": {
       "draft": 0,
-      "active": 88,
-      "total": 88
+      "active": 92,
+      "total": 92
     },
     "executions": {
-      "total": 82
+      "total": 86
     }
   },
   "assurance_summary": {
-    "assured_count": 40,
+    "assured_count": 41,
     "excluded": {
       "draft": [],
       "superseded": [
@@ -43,7 +43,7 @@
     "surface-parity-symbol": 0,
     "rejection-parity-site": 1,
     "oracle-inventory-case": 0,
-    "unclassified": 41
+    "unclassified": 45
   },
   "lane_inventory": {
     "lanes": [
@@ -97,6 +97,10 @@
           "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+          "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
@@ -191,6 +195,10 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+          "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
@@ -278,6 +286,10 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+          "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
@@ -372,6 +384,10 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+          "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
@@ -745,6 +761,10 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+          "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+          "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
@@ -1247,7 +1267,8 @@
   "cross_head": {
     "signal": [
       "SIGNAL-ADMISSION-001",
-      "SIGNAL-LABEL-MATCHER-CONSISTENCY"
+      "SIGNAL-LABEL-MATCHER-CONSISTENCY",
+      "SIGNAL-RESOURCE-001"
     ],
     "architecture": [
       "ARCH-AGPL-BINARY-REACHABILITY",
@@ -10004,6 +10025,357 @@
           "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
           "missing_complements": [
             "VERIFIER-REFERENCE-DIFFERENTIAL"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SIGNAL-RESOURCE-001",
+      "statement": "One deterministic OTel resource — a simple undotted resource-attribute key (`team`) and a dotted OTel-style key (`k8s.namespace.name`), written into each signal's own ResourceAttributes map under a per-head custom table-name override — is independently queryable through each head's own documented resource-attribute projection. PromQL and LogQL both sanitize the dotted key to the identical underscored wire label (`k8s_namespace_name`, internal/api/format.OTelToPromLabel) and reverse it via each head's own dotted-fallback candidate chain when resolving a matcher; TraceQL addresses the identical attribute dotted and resource-scoped (`resource.k8s.namespace.name`), never underscored. Each head's own native timestamp precision is preserved rather than rounded into one universal model: PromQL's instant-query response reports its evaluation timestamp at Prometheus's millisecond wire resolution, while LogQL's log-entry timestamp and TraceQL's span start time both carry the full nanosecond value the row was seeded with. This is a claim about preserving configured resource MEANING across heads, never about byte-identical wire labels — a contract this issue's own grounding (PromQL sanitizes/selects labels and stays Map-based; LogQL/TraceQL carry different scoped-attribute strategies) shows would be false if stated as literal equality.",
+      "scope": "signal",
+      "applicable_heads": [
+        "HEAD-LOGQL",
+        "HEAD-PROMQL",
+        "HEAD-TRACEQL"
+      ],
+      "applicable_capabilities": [],
+      "authority": "design-decision",
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "inherits_from": null,
+      "related_contracts": [
+        "SIGNAL-LABEL-MATCHER-CONSISTENCY",
+        "TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION"
+      ],
+      "replaces": null,
+      "replaced_by": null,
+      "blind_spots": [
+        "The fixture pins ONE resource (two attribute keys, one timestamp) seeded independently into three separately-typed tables; it is not a combinatorial sweep of every OTel resource-attribute shape or custom-schema layout, and passing it certifies only the one table/column override each head's own test exercises, not an arbitrary custom schema.",
+        "This contract covers RESOURCE-scoped attribute projection specifically (each signal's ResourceAttributes map); PromQL's own per-datapoint Attributes map, LogQL's per-line LogAttributes/structured-metadata scope, and TraceQL's span-attribute scope are each a distinct, already-covered surface (see TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION) — this contract makes no claim about them.",
+        "PromQL's millisecond-resolution wire timestamp is asserted as PromQL's own correct native behavior, not as evidence that cerberus preserves sub-millisecond precision anywhere on the PromQL read path — Prometheus's instant-vector wire format has no slot to carry it in, by the upstream wire contract this gateway reproduces, not by a cerberus shortfall.",
+        "Seeding the same resource into three independently-built tables inside one test package is a fixture convenience, not evidence that per-head query oracles are otherwise coupled or share state; this contract explicitly does NOT claim a shared 'TelemetryWorld' abstraction exists (a deliberate NO-GO for this issue) or that cerberus reads or isolates by any tenant header — no head reads one (docs/operations.md 'Security posture')."
+      ],
+      "required_evidence_classes": [
+        "execution"
+      ],
+      "required_independence_groups": [
+        "promql-resource-fixture",
+        "logql-resource-fixture",
+        "traceql-resource-fixture",
+        "resource-config-projection"
+      ],
+      "bound_evidence": {
+        "covered_evidence_classes": [
+          "execution"
+        ],
+        "covered_independence_groups": [
+          "logql-resource-fixture",
+          "promql-resource-fixture",
+          "resource-config-projection",
+          "traceql-resource-fixture"
+        ],
+        "missing_evidence_classes": [],
+        "missing_independence_groups": [],
+        "assured": true
+      },
+      "observed_evidence": {
+        "byEvidenceClass": {
+          "execution": {
+            "status": "pass",
+            "binding_ids": [
+              "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+              "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+              "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+              "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE"
+            ]
+          }
+        },
+        "byIndependenceGroup": {
+          "promql-resource-fixture": {
+            "status": "pass",
+            "binding_ids": [
+              "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE"
+            ]
+          },
+          "logql-resource-fixture": {
+            "status": "pass",
+            "binding_ids": [
+              "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE"
+            ]
+          },
+          "traceql-resource-fixture": {
+            "status": "pass",
+            "binding_ids": [
+              "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE"
+            ]
+          },
+          "resource-config-projection": {
+            "status": "pass",
+            "binding_ids": [
+              "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION"
+            ]
+          }
+        },
+        "overall": "pass"
+      },
+      "bindings": [
+        {
+          "id": "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+          "verifier": {
+            "id": "VERIFIER-GO-UNIT-TEST",
+            "name": "Go unit test",
+            "substrate": "runner",
+            "relative_cost": "low",
+            "detects": [
+              "logic errors in the function under test",
+              "boundary/edge-case regressions pinned by table-driven cases"
+            ],
+            "cannot_detect": [
+              "drift against ClickHouse's actual runtime behavior",
+              "drift against a reference backend's behavior"
+            ],
+            "complemented_by": []
+          },
+          "evidence_class": "execution",
+          "independence_group": "resource-config-projection",
+          "test_ref": "test/semantic/resourcefixture/resource_config_test.go:TestResourceFixture_DottedKeyNormalization",
+          "evidence_system": null,
+          "observed": {
+            "status": "pass",
+            "observed_at": "2026-09-16T00:00:00Z",
+            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
+            "execution_id": "EXEC-SIGNAL-RESOURCE-CONFIG-PROJECTION-20260916",
+            "execution_count": 1
+          },
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            }
+          ]
+        },
+        {
+          "id": "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+          "verifier": {
+            "id": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+            "name": "chDB handler roundtrip",
+            "substrate": "chdb",
+            "relative_cost": "low",
+            "detects": [
+              "wrong resource- or attribute-scope projection reaching the real wire response",
+              "a schema override (a custom table or column name) the handler fails to honor end to end"
+            ],
+            "cannot_detect": [
+              "semantic drift against the reference backend's own engine — chDB is cerberus's own embedded ClickHouse, not a reference implementation (see VERIFIER-REFERENCE-DIFFERENTIAL)",
+              "production-cluster-only behavior (a real clickhouse-go connection, cluster-specific settings) — see VERIFIER-REAL-CLICKHOUSE-INTEGRATION"
+            ],
+            "complemented_by": [
+              "VERIFIER-REAL-CLICKHOUSE-INTEGRATION"
+            ]
+          },
+          "evidence_class": "execution",
+          "independence_group": "logql-resource-fixture",
+          "test_ref": "test/semantic/resourcefixture/logql_resource_chdb_test.go:TestSignalResource_LogQL_ChDB",
+          "evidence_system": null,
+          "observed": {
+            "status": "pass",
+            "observed_at": "2026-09-16T00:00:00Z",
+            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
+            "execution_id": "EXEC-SIGNAL-RESOURCE-LOGQL-FIXTURE-20260916",
+            "execution_count": 1
+          },
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            }
+          ]
+        },
+        {
+          "id": "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+          "verifier": {
+            "id": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+            "name": "chDB handler roundtrip",
+            "substrate": "chdb",
+            "relative_cost": "low",
+            "detects": [
+              "wrong resource- or attribute-scope projection reaching the real wire response",
+              "a schema override (a custom table or column name) the handler fails to honor end to end"
+            ],
+            "cannot_detect": [
+              "semantic drift against the reference backend's own engine — chDB is cerberus's own embedded ClickHouse, not a reference implementation (see VERIFIER-REFERENCE-DIFFERENTIAL)",
+              "production-cluster-only behavior (a real clickhouse-go connection, cluster-specific settings) — see VERIFIER-REAL-CLICKHOUSE-INTEGRATION"
+            ],
+            "complemented_by": [
+              "VERIFIER-REAL-CLICKHOUSE-INTEGRATION"
+            ]
+          },
+          "evidence_class": "execution",
+          "independence_group": "promql-resource-fixture",
+          "test_ref": "test/semantic/resourcefixture/promql_resource_chdb_test.go:TestSignalResource_PromQL_ChDB",
+          "evidence_system": null,
+          "observed": {
+            "status": "pass",
+            "observed_at": "2026-09-16T00:00:00Z",
+            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
+            "execution_id": "EXEC-SIGNAL-RESOURCE-PROMQL-FIXTURE-20260916",
+            "execution_count": 1
+          },
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            }
+          ]
+        },
+        {
+          "id": "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
+          "verifier": {
+            "id": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+            "name": "chDB handler roundtrip",
+            "substrate": "chdb",
+            "relative_cost": "low",
+            "detects": [
+              "wrong resource- or attribute-scope projection reaching the real wire response",
+              "a schema override (a custom table or column name) the handler fails to honor end to end"
+            ],
+            "cannot_detect": [
+              "semantic drift against the reference backend's own engine — chDB is cerberus's own embedded ClickHouse, not a reference implementation (see VERIFIER-REFERENCE-DIFFERENTIAL)",
+              "production-cluster-only behavior (a real clickhouse-go connection, cluster-specific settings) — see VERIFIER-REAL-CLICKHOUSE-INTEGRATION"
+            ],
+            "complemented_by": [
+              "VERIFIER-REAL-CLICKHOUSE-INTEGRATION"
+            ]
+          },
+          "evidence_class": "execution",
+          "independence_group": "traceql-resource-fixture",
+          "test_ref": "test/semantic/resourcefixture/traceql_resource_chdb_test.go:TestSignalResource_TraceQL_ChDB",
+          "evidence_system": null,
+          "observed": {
+            "status": "pass",
+            "observed_at": "2026-09-16T00:00:00Z",
+            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
+            "execution_id": "EXEC-SIGNAL-RESOURCE-TRACEQL-FIXTURE-20260916",
+            "execution_count": 1
+          },
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            }
+          ]
+        }
+      ],
+      "complement_gaps": [
+        {
+          "verifier": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+          "missing_complements": [
+            "VERIFIER-REAL-CLICKHOUSE-INTEGRATION"
           ]
         }
       ]
