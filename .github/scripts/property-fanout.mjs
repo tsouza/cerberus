@@ -97,7 +97,9 @@
 // node: builtins only — no npm deps, no setup-node needed.
 
 import process from 'node:process';
-import { error, notice, log, group } from './lib/gh.mjs';
+import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { error, notice, log, group, warning } from './lib/gh.mjs';
 import { runLegBuffered } from './lib/spawn-tagged.mjs';
 
 /** The randomized native-histogram sweep, fanned out across HISTOGRAM_FANOUT processes. */
@@ -294,6 +296,35 @@ export function findTruncatedRapidRuns(output, expectRapidChecks) {
   return findings;
 }
 
+/**
+ * Converts one leg's buffered `-v` output into a `go test -json`-equivalent
+ * NDJSON event stream, via the Go toolchain's OWN `go tool test2json` — the
+ * same converter `go test -json` itself is built on — rather than re-running
+ * the leg with `-json` (cerberus issue #3499, wiring this lane's real
+ * evidence into semantic-execution-adapter.mjs). Re-running with `-json`
+ * would degrade this job's human-readable failure dumps: `-json` wraps
+ * every verbose line, including a multi-line assertion diff or goroutine
+ * dump, inside a per-line JSON `Output` string — measurably harder for a
+ * human to scan than the plain `-v` text these legs already buffer for
+ * exactly that reason (see this file's own header). `-p` sets only the
+ * informational `Package` field; semantic-execution-adapter.mjs's
+ * parseGoTestJSONShapeResults reads `Test`/`Action` only, so its value is
+ * cosmetic. Never throws: a `test2json` failure (an unrecognised Go
+ * toolchain, say) degrades to an empty, harmlessly-skippable stream rather
+ * than failing the whole property run over an ancillary, non-gating
+ * conversion — GOTEST_JSON_OUT feeds an uploaded CI artifact for a human
+ * reviewer, never the gate this run itself already provides via `results`.
+ */
+export function legToGoTestJSON(text, go = 'go') {
+  const res = spawnSync(go, ['tool', 'test2json', '-p', 'test/property'], {
+    input: text,
+    encoding: 'utf8',
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (res.error || res.status !== 0) return '';
+  return res.stdout ?? '';
+}
+
 async function main() {
   const tags = process.env.TAGS ?? '';
   if (tags === '') {
@@ -314,6 +345,27 @@ async function main() {
 
   for (const r of results) {
     group(`${r.leg.name} (exit ${r.code})`, () => log(r.out.trimEnd()));
+  }
+
+  // GOTEST_JSON_OUT is opt-in (unset in a bare local run: zero footprint,
+  // same behavior as before this existed) — property.yml sets it so the
+  // downstream semantic-execution-adapter.mjs step (issue #3499) has a real
+  // go-test-json stream to classify, covering every leg regardless of
+  // pass/fail (a real fail is still "executed" evidence of failure, not
+  // non-evidence — see that adapter's own classifyRevisionBinding).
+  const jsonOut = process.env.GOTEST_JSON_OUT;
+  if (jsonOut) {
+    const combined = results.map((r) => legToGoTestJSON(r.out, go)).join('');
+    try {
+      writeFileSync(jsonOut, combined);
+      notice(`property: wrote go-test-json events for the semantic execution adapter to ${jsonOut}`);
+    } catch (err) {
+      // Best-effort: a write failure here must never fail the property lane
+      // itself over this ancillary, non-gating conversion — warning(), not
+      // error(), so this required check never shows a red ::error:: over a
+      // condition its own comment says must never fail the lane.
+      warning(`property: failed to write GOTEST_JSON_OUT (${jsonOut}): ${err.message}`);
+    }
   }
 
   const failed = results.filter((r) => r.code !== 0);

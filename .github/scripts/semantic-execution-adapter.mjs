@@ -5,8 +5,10 @@
 // stdout (or to OUT). Never writes test/semantic/executions.json itself —
 // that file stays hand-authored/reviewed like every other file under
 // test/semantic/ (see .github/scripts/README.md's "Semantic contract
-// model" section); a human or a future CI step (issue #3462, which this
-// issue blocks) decides whether/where to append the printed record.
+// model" section); a human decides whether/where to append the printed
+// record. property.yml and compatibility.yml (issue #3499) run this CLI
+// against real go-test-json / compat-cases artifacts in CI and upload the
+// printed records as a build artifact for that review.
 //
 // Three modes, selected by MODE:
 //
@@ -54,54 +56,48 @@
 //   EXPECT_REFERENCE_VERSION (compat, verify) asserts a candidate
 //                         reference-version expectation; a mismatch
 //                         against REFERENCE_VERSION flags non-evidence
+//   SOFT_FAIL              when "1", an error that would otherwise exit 1
+//                         (a bad MODE, a missing/unreadable artifact, a
+//                         misconfigured BINDING, …) is instead annotated
+//                         with ::warning:: and this process exits 0. This
+//                         CLI's job is to surface evidence for a human to
+//                         review, never to gate anything itself (see the
+//                         header above) — but a CI step that WOULD exit
+//                         non-zero on a real error still needs a way to
+//                         guarantee it never fails the job it runs inside,
+//                         and `continue-on-error: true` cannot be that way
+//                         inside a protected/release-required lane
+//                         (test/regression/ci_lane_registry_test.go bans it
+//                         there with no exceptions: the flag makes a real
+//                         failure indistinguishable from a masked one).
+//                         property.yml/compatibility.yml (issue #3499) set
+//                         this; a developer running the CLI by hand leaves
+//                         it unset and keeps the immediate, hard-fail
+//                         feedback every other mode/error path already has.
 
 import process from "node:process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
+import { warning } from "./lib/gh.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import { classifyTestRef } from "./lib/semantic-evidence-adapter.mjs";
 import {
   SemanticExecutionAdapterError,
   classifyRevisionBinding,
-  githubRunContext,
+  execIdFor,
   hashCorpus,
   parseCaseSet,
   parseGoTestJSONShapeResults,
   propertyShapeObservation,
+  sharedContext,
   toExecutionRecord,
 } from "./lib/semantic-execution-adapter.mjs";
 
 function errorAnnotation(message) {
   const oneLine = message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
   process.stderr.write(`::error title=Semantic execution adapter::${oneLine}\n`);
-}
-
-function defaultRunRef(env) {
-  if (!env.GITHUB_SERVER_URL || !env.GITHUB_REPOSITORY || !env.GITHUB_RUN_ID) return null;
-  return `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
-}
-
-function sharedContext(env = process.env) {
-  const run = githubRunContext(env);
-  const candidateSha = env.CANDIDATE_SHA || run.sourceSha;
-  if (!candidateSha) {
-    throw new SemanticExecutionAdapterError([
-      "CANDIDATE_SHA is required (or GITHUB_SHA, when run as a workflow step)",
-    ]);
-  }
-  return {
-    candidateSha,
-    runRef: env.RUN_REF || defaultRunRef(env) || "(no run_ref available)",
-    observedAt: env.OBSERVED_AT || new Date().toISOString(),
-    run,
-  };
-}
-
-function execIdFor(bindingId, observedAt) {
-  const stamp = observedAt.replaceAll(/[-:]/g, "").slice(0, 15); // YYYYMMDDTHHMMSS
-  return `EXEC-${bindingId.replace(/^BINDING-/, "")}-${stamp}`;
 }
 
 function runProperty(env, root) {
@@ -253,7 +249,12 @@ if (invokedDirectly) {
   try {
     main();
   } catch (error) {
-    errorAnnotation(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (process.env.SOFT_FAIL === "1") {
+      warning(`semantic-execution-adapter: ${message}`, { title: "Semantic execution adapter (soft-fail)" });
+      process.exit(0);
+    }
+    errorAnnotation(message);
     process.exit(1);
   }
 }

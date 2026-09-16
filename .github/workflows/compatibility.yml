@@ -405,6 +405,47 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # compat-execution-report.mjs (issue #3499) fans this run's
+      # compat-cases.json out over every active "reference" binding the
+      # semantic model scopes to compatibility/prometheus, via
+      # semantic-execution-adapter.mjs's own classify/normalize logic.
+      # `always()` + steps.compat.outcome=='success': runs whenever the
+      # harness itself produced a real case set, regardless of whether the
+      # ratchet step above found (and failed on) a regression — a real fail
+      # is still valid evidence, not non-evidence. This surfaces evidence
+      # for a human to later fold into test/semantic/executions.json (which
+      # stays hand-authored/reviewed) — it is never a gate.
+      # `compatibility/prometheus` is a release-required lane, and a
+      # protected/release-required lane's job may not declare
+      # `continue-on-error: true` on ANY step
+      # (test/regression/ci_lane_registry_test.go bans it with no
+      # exceptions — the flag makes a real failure of this required check
+      # indistinguishable from a masked one). SOFT_FAIL=1 gets the same
+      # "never fails the job" guarantee from inside the script itself
+      # instead — see its own header.
+      - name: Generate semantic execution observations (compat/prometheus)
+        if: always() && steps.compat.outcome == 'success'
+        env:
+          HEAD: prometheus
+          CASES_PATH: compatibility/prometheus/compat-cases.json
+          CORPUS_PATH: compatibility/prometheus/query-corpus
+          # Matches docker-compose.yml's own pinned reference image
+          # (and lib/mirror.mjs's mirror-pull list) — the exact version
+          # this run's differential actually ran against.
+          REFERENCE_VERSION: "prom/prometheus:v3.11.3"
+          OUT: compat-executions-prometheus.json
+          SOFT_FAIL: "1"
+        run: node .github/scripts/compat-execution-report.mjs
+
+      - name: Upload semantic execution observations (compat/prometheus)
+        if: always() && steps.compat.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-executions-compat-prometheus
+          path: compat-executions-prometheus.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Publish score to compat-scores branch
         # Only push: main triggers the publish; pull_request / schedule /
         # workflow_dispatch all short-circuit at the `if:` gate. The
@@ -948,6 +989,51 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # compat-execution-report.mjs (issue #3499) fans this run's TWO case
+      # sets out over every active "reference" binding the semantic model
+      # scopes to compatibility/tempo, via semantic-execution-adapter.mjs's
+      # own classify/normalize logic. A binding whose test_ref names a gRPC
+      # driver file (BINDING-TRACEQL-TRANSPORT-ARM-GRPC) is classified
+      # against CASES_PATH_GRPC; every other active binding (the HTTP
+      # transport and the shared live-reference oracle) against CASES_PATH
+      # — see that script's own header. `always()` + steps.harness.outcome
+      # == 'success': runs whenever the harness itself produced real case
+      # sets, regardless of whether a ratchet step above found a
+      # regression — a real fail is still valid evidence, not non-evidence.
+      # This surfaces evidence for a human to later fold into
+      # test/semantic/executions.json (hand-authored/reviewed) — it is
+      # never a gate. `compatibility/tempo` is a release-required lane, and
+      # a protected/release-required lane's job may not declare
+      # `continue-on-error: true` on ANY step
+      # (test/regression/ci_lane_registry_test.go bans it with no
+      # exceptions — the flag makes a real failure of this required check
+      # indistinguishable from a masked one). SOFT_FAIL=1 gets the same
+      # "never fails the job" guarantee from inside the script itself
+      # instead — see its own header.
+      - name: Generate semantic execution observations (compat/tempo)
+        if: always() && steps.harness.outcome == 'success'
+        env:
+          HEAD: tempo
+          CASES_PATH: compatibility/tempo/reports/compat-cases.json
+          CASES_PATH_GRPC: compatibility/tempo/reports/compat-cases-grpc.json
+          CORPUS_PATH: compatibility/tempo/driver/corpus/smoke.txtar
+          # Matches docker-compose.yml's own pinned reference image (and
+          # lib/mirror.mjs's mirror-pull list) — the exact version this
+          # run's differential actually ran against, for both transports.
+          REFERENCE_VERSION: "grafana/tempo:main-2f74ea8"
+          OUT: compat-executions-tempo.json
+          SOFT_FAIL: "1"
+        run: node .github/scripts/compat-execution-report.mjs
+
+      - name: Upload semantic execution observations (compat/tempo)
+        if: always() && steps.harness.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-executions-compat-tempo
+          path: compat-executions-tempo.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Publish score to compat-scores branch
         # See the prometheus job for the orphan-branch contract. Only
         # push: main reaches this step; other event types short-circuit.
@@ -1065,6 +1151,51 @@ jobs:
         with:
           name: compatibility-loki-report
           path: compatibility/loki/reports/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # compat-execution-report.mjs (issue #3499) fans this run's
+      # compat-cases.json out over every active "reference" binding the
+      # semantic model scopes to compatibility/loki, via
+      # semantic-execution-adapter.mjs's own classify/normalize logic.
+      # `always()` + steps.harness.outcome == 'success': runs whenever the
+      # harness itself produced a real case set, regardless of whether the
+      # ratchet step above found (and failed on) a regression — a real fail
+      # is still valid evidence, not non-evidence. This surfaces evidence
+      # for a human to later fold into test/semantic/executions.json
+      # (hand-authored/reviewed) — it is never a gate. `compatibility/loki`
+      # is a release-required lane, and a protected/release-required
+      # lane's job may not declare `continue-on-error: true` on ANY step
+      # (test/regression/ci_lane_registry_test.go bans it with no
+      # exceptions — the flag makes a real failure of this required check
+      # indistinguishable from a masked one). SOFT_FAIL=1 gets the same
+      # "never fails the job" guarantee from inside the script itself
+      # instead — see its own header.
+      - name: Generate semantic execution observations (compat/loki)
+        if: always() && steps.harness.outcome == 'success'
+        env:
+          HEAD: loki
+          CASES_PATH: compatibility/loki/reports/compat-cases.json
+          # Both corpus roots run-loki-compatibility.mjs's `-corpus` and
+          # `-cerberus-queries` flags draw from — see that script. Hashing
+          # only one leaves the fingerprint blind to drift in the other,
+          # notably BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT's own
+          # test_ref, which lives under cerberus-queries/.
+          CORPUS_PATH: "compatibility/loki/upstream/loki-bench/queries:compatibility/loki/cerberus-queries"
+          # Matches docker-compose.yml's own pinned reference image (and
+          # lib/mirror.mjs's mirror-pull list) — the exact version this
+          # run's differential actually ran against.
+          REFERENCE_VERSION: "grafana/loki:3.7.0"
+          OUT: compat-executions-loki.json
+          SOFT_FAIL: "1"
+        run: node .github/scripts/compat-execution-report.mjs
+
+      - name: Upload semantic execution observations (compat/loki)
+        if: always() && steps.harness.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-executions-compat-loki
+          path: compat-executions-loki.json
           if-no-files-found: warn
           retention-days: 30
 

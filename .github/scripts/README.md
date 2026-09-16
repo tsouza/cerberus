@@ -526,15 +526,46 @@ for the full table). It only ever PRINTS a normalized
 `executions.json`-shaped record (or, for `verify`, a re-classification
 verdict against an already-recorded one) — it never writes
 `test/semantic/executions.json` itself, which stays hand-authored/reviewed
-like every other file under `test/semantic/`; a human or a future CI step
-(issue #3462, which #3459 blocks) decides whether/where to append the
-printed record. Not yet wired into any workflow as a routine step — same
-posture `semantic-evidence-adapter.mjs` holds today (see above): only its
-`node --test` suite runs in CI, pending the pipeline issue #3462 owns.
-`semantic-execution-adapter.test.mjs` pairs every one of the five
-acceptance-criterion non-evidence classes with a real-shaped report sample
-and a positive "executed" control, plus end-to-end CLI runs over all three
-modes.
+like every other file under `test/semantic/`; a human decides whether/where
+to append a printed record. `semantic-execution-adapter.test.mjs` pairs
+every one of the five acceptance-criterion non-evidence classes with a
+real-shaped report sample and a positive "executed" control, plus end-to-end
+CLI runs over all three modes.
+
+Wired for real (issue #3499): `property.yml`'s property job converts each
+leg's own buffered `-v` output into a `go test -json`-equivalent stream via
+`go tool test2json` (`property-fanout.mjs`'s `legToGoTestJSON`, opt-in
+behind `GOTEST_JSON_OUT` so a bare local run is unaffected), then its
+"Generate semantic execution observations (property)" step runs
+`MODE=property` over the result and uploads the normalized records as the
+`semantic-executions-property` build artifact. `compatibility.yml`'s three
+per-head jobs (`prometheus`, `tempo`, `loki`) run `compat-execution-report.mjs`
+— see its own entry below — over their already-produced `compat-cases.json`
+and upload `semantic-executions-compat-<head>`. Neither can redden its
+required check — but NOT via a workflow-level `continue-on-error: true`:
+`property (…)` and the three `compatibility/*` heads are protected/
+release-required lanes, and `test/regression/ci_lane_registry_test.go`
+bans `continue-on-error: true` on ANY step of a job backing one, with no
+exceptions (a real failure there would be indistinguishable from a masked
+one). Both `semantic-execution-adapter.mjs` and `compat-execution-report.mjs`
+instead honour `SOFT_FAIL=1` — set on these steps only — which catches any
+error the script would otherwise exit 1 on, annotates it with `::warning::`,
+and exits 0; a developer running either script by hand leaves it unset and
+keeps the immediate hard-fail feedback every other error path already has.
+Each gates on a DIFFERENT `if:` condition matching what evidence it can
+actually produce: the property step runs whenever `run_heavy` was true regardless of
+whether the property tests themselves passed (`always()` — a captured
+go-test-json stream still carries real FAIL evidence even on a failing
+run), while each compat step gates on that head's own harness step outcome
+being `success`, never on a downstream ratchet (a harness that never
+produced a `compat-cases.json` has nothing to classify, but a ratchet that
+failed AFTER the harness succeeded still has real evidence to report). In
+both lanes a real FAIL result is still valid evidence a human should see,
+never something to suppress. `ci.yml`'s "forbid-skip" job still
+only self-tests both scripts — there is no committed artifact for THAT job
+to run the live CLIs against, the way the semantic-model/lane-adapter/
+evidence-adapter/report steps above it run against the real committed
+`test/semantic/` model.
 
 ## Semantic report
 
@@ -2288,6 +2319,46 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     publishes against a real bare-repo remote in a temp dir and asserts on
     every scenario that the checkout came out on its original branch with
     its files and scratch-worktree count unchanged.
+- **`compat-execution-report.mjs`** — `compatibility.yml`, the three
+  `Generate semantic execution observations (compat/<head>)` steps (issue
+  #3499). `lib/semantic-execution-adapter.mjs`'s own CLI (`MODE=compat`)
+  classifies exactly ONE caller-named `BINDING` per invocation by design — a
+  compat binding is scoped to the whole driver invocation, and tempo's HTTP/
+  gRPC transports are two bindings/two case sets for exactly that reason.
+  `compatibility/prometheus` and `compatibility/loki` each bind SEVERAL
+  active `"reference"` contracts to the SAME one case set their job
+  produces, so this script fans that one run out over every such binding
+  instead — filtering the semantic model to `status: "active"`,
+  `evidence_class: "reference"`, `test_ref` prefixed `compatibility/<head>`
+  (a `"manual-review"` binding under the same prefix, e.g. a corpus-
+  provenance sign-off, is never selected — no automated run is evidence for
+  it). It calls no adapter logic of its own: every record comes from
+  `lib/semantic-execution-adapter.mjs`'s own `classifyRevisionBinding` /
+  `toExecutionRecord` / `parseCaseSet` / `sharedContext` / `execIdFor`. A
+  binding whose `test_ref` names a gRPC driver file (case-insensitive
+  `"grpc"` substring) is classified against `CASES_PATH_GRPC` when given;
+  every other selected binding against `CASES_PATH` — heads with only one
+  arm (prometheus, loki) never set `CASES_PATH_GRPC`, so every binding
+  resolves to the one path. Never writes `test/semantic/executions.json`
+  itself — same posture as the CLI it wraps.
+  - Env: `HEAD` (required), `CASES_PATH` (required), `CASES_PATH_GRPC`
+    (optional, tempo's gRPC arm), `CORPUS_PATH` (optional, one path or
+    several `:`-joined paths folded into one `dataset_fingerprint` via
+    `hashCorpus`'s array form — loki's harness draws from two separate
+    roots), `REFERENCE_VERSION` / `EXPECT_REFERENCE_VERSION`
+    (optional), `CANDIDATE_SHA` / `RUN_REF` / `OBSERVED_AT` / `MODEL_DIR` /
+    `OUT` (same defaults as the CLI's own `sharedContext`), `SOFT_FAIL`
+    (optional — `"1"` turns an error that would exit `1` into a
+    `::warning::` and exit `0`; set by `compatibility.yml`'s three steps,
+    since a protected/release-required lane's job may not declare
+    `continue-on-error: true` on any step).
+  - Exit: `0` printing/writing one record per selected binding, or (with
+    `SOFT_FAIL=1`) on any error; `1` on error otherwise — `HEAD`/
+    `CASES_PATH` missing, or no active `"reference"` binding matches the
+    head prefix.
+  - Tests: `compat-execution-report.test.mjs` (run in `ci.yml`), covering
+    the gRPC-arm routing, the manual-review exclusion, the multi-binding
+    fan-out against a prometheus-shaped model, and end-to-end CLI runs.
 - **`resolve-bench-refs.mjs`** — `perf-benchmark.yml`, the
   `resolve baseline + ref SHAs` step.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,

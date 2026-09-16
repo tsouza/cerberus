@@ -231,6 +231,54 @@ test("hashCorpus over a directory is independent of directory-listing order", ()
   }
 });
 
+test("hashCorpus (array form): folds several corpus roots into one digest, independent of argument order", () => {
+  const dirA = tempDir("semantic-exec-corpus-multi-a-");
+  const dirB = tempDir("semantic-exec-corpus-multi-b-");
+  try {
+    writeFileSync(join(dirA, "a.yaml"), "1\n");
+    writeFileSync(join(dirB, "b.yaml"), "2\n");
+    assert.equal(hashCorpus([dirA, dirB]), hashCorpus([dirB, dirA]));
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test("hashCorpus (array form): drift in EITHER root changes the combined digest", () => {
+  const dirA = tempDir("semantic-exec-corpus-multi-a-");
+  const dirB = tempDir("semantic-exec-corpus-multi-b-");
+  try {
+    writeFileSync(join(dirA, "a.yaml"), "1\n");
+    writeFileSync(join(dirB, "b.yaml"), "2\n");
+    const before = hashCorpus([dirA, dirB]);
+    writeFileSync(join(dirB, "b.yaml"), "3\n"); // only the SECOND root changes
+    const after = hashCorpus([dirA, dirB]);
+    assert.notEqual(before, after, "a single-root fingerprint over dirA alone would have missed this");
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test("hashCorpus (array form): a single-element array does NOT collide with the plain single-path form", () => {
+  const dir = tempDir("semantic-exec-corpus-single-");
+  try {
+    writeFileSync(join(dir, "a.yaml"), "1\n");
+    // The array form always folds in the path string alongside each root's
+    // digest, so it is a DIFFERENT algorithm from the plain single-path
+    // call even with one element — callers (compat-execution-report.mjs)
+    // use the plain string form for a single root to keep that digest
+    // byte-identical to before the array form existed.
+    assert.notEqual(hashCorpus([dir]), hashCorpus(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("hashCorpus (array form): an empty array is rejected rather than hashing nothing", () => {
+  assert.throws(() => hashCorpus([]), SemanticExecutionAdapterError);
+});
+
 // --- githubRunContext --------------------------------------------------------
 
 test("githubRunContext reads the standard Actions env vars with no explicit wiring", () => {
@@ -640,4 +688,49 @@ test("CLI: MODE is required and validated", () => {
   const result = runCli({ MODE: "", GITHUB_SHA: "", GITHUB_EVENT_NAME: "" });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /MODE must be one of property, compat, verify/);
+});
+
+// --- SOFT_FAIL (issue #3499's CI wiring: a protected/release-required lane
+// cannot use `continue-on-error: true`, so the CLI itself has to guarantee
+// it never fails the job when this is set) ------------------------------
+
+test("CLI: SOFT_FAIL=1 turns an error that would exit 1 into a ::warning:: and exit 0", () => {
+  const result = runCli({ MODE: "", SOFT_FAIL: "1", GITHUB_SHA: "", GITHUB_EVENT_NAME: "" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /::warning title=Semantic execution adapter \(soft-fail\)::/);
+  assert.match(result.stdout, /MODE must be one of property, compat, verify/);
+  assert.doesNotMatch(result.stderr, /::error/);
+});
+
+test("CLI: SOFT_FAIL unset (or anything other than \"1\") keeps the default hard-fail behavior", () => {
+  const result = runCli({ MODE: "", SOFT_FAIL: "true", GITHUB_SHA: "", GITHUB_EVENT_NAME: "" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /::error title=Semantic execution adapter::/);
+});
+
+test("CLI: SOFT_FAIL=1 never masks a genuinely successful run — the real records still print", () => {
+  const modelDir = tempDir("semantic-exec-cli-model-");
+  const dataDir = tempDir("semantic-exec-cli-data-");
+  try {
+    writeMinimalModel(modelDir);
+    const gotestPath = join(dataDir, "gotest.json");
+    writeFileSync(gotestPath, goTestJSONFixture());
+    const result = runCli({
+      MODE: "property",
+      SOFT_FAIL: "1",
+      MODEL_DIR: modelDir,
+      GOTEST_JSON_PATH: gotestPath,
+      CANDIDATE_SHA: "abc1234",
+      RUN_REF: "https://example.invalid/run/1",
+      OBSERVED_AT: "2026-09-16T00:00:00Z",
+      GITHUB_SHA: "",
+      GITHUB_EVENT_NAME: "",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const records = JSON.parse(result.stdout);
+    assert.equal(records[0].selection, "executed");
+  } finally {
+    rmSync(modelDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
