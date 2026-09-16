@@ -767,6 +767,15 @@ jobs:
         run: |
           node --test .github/scripts/semantic-mutation.test.mjs
           node --test .github/scripts/semantic-mutation-corpus.test.mjs
+      # semantic-mutation-report.mjs (#3452) builds the versioned cohort
+      # report over test/semantic/mutants/; semantic-mutation-pilot-report.mjs
+      # is the scheduled, informational pilot lane's own orchestration. Same
+      # discipline as the step above: pure/injected-fake tests only, no real
+      # `go test -overlay`, no Go toolchain needed.
+      - name: Self-test the semantic mutation report and pilot orchestration
+        run: |
+          node --test .github/scripts/semantic-mutation-report.test.mjs
+          node --test .github/scripts/semantic-mutation-pilot-report.test.mjs
       # verify-just-invocations.mjs (#3093) dry-runs every `just <recipe>
       # [args...]` found inside a workflow run: step, catching a missing
       # recipe AND an arity mismatch a plain `just --show` existence check

@@ -1697,3 +1697,130 @@ Excluded from the assured count above by design — a draft is not yet load-bear
 - draft: (none)
 - superseded: `PROMQL-INSTANT-VECTOR-LOOKBACK-LEGACY`, `TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY`
 - explicit deficit: `PROMQL-LABEL-REPLACE-CAPTURE-GROUP-PARTICIPATION`
+
+## Semantic mutation pilot
+
+A bounded, hand-authored cohort of contract-linked domain-semantic mutations (issues #3448-#3452), isolated from the developer checkout via `go test -overlay` (lib/semantic-mutation.mjs) — distinct from, and never a substitute for, the required traditional `mutation` (gremlins) lane. Cohort revision (content fingerprint over every record's id/synthetic/disposition/violated_contracts, so a classification change is visible even when a published rate's own digits do not move): `5b2c6ba05cee06f2686bd42a52188c7415010ba24dbeb3df17a3073e98aee56d`.
+
+Escape/kill rate is computed ONLY over records in the `denominator` bucket (`killed` + `survived` — a real detector ran, against a validly-applied, non-equivalent mutation, with a passing clean control). `equivalent` (an audited exemption), `invalid` (the mutation never validly applied), and `incomplete` (build-failed/timeout/infrastructure-error — the measurement itself never finished) are each reported separately and never folded into either side of the rate — an incomplete run is neither a kill nor a clean escape.
+
+### Semantic cohort (real per-head domain mutations)
+
+Real, per-head domain-semantic mutations (issues #3449-#3451) — the ONLY cohort escape_rate/kill_rate below is computed over.
+
+| status               | count |
+| -------------------- | ----- |
+| killed               | 6     |
+| survived             | 0     |
+| equivalent-reviewed  | 0     |
+| invalid-transform    | 0     |
+| build-failed         | 0     |
+| timeout              | 0     |
+| infrastructure-error | 0     |
+| **total**            | **6** |
+
+denominator (killed+survived): **6** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+
+- kill rate: **100.0%** (6/6)
+- escape rate: **0.0%** (0/6)
+- excluded: equivalent **0**, invalid **0**, incomplete **0**
+
+#### HEAD-LOGQL
+
+| id                                         | disposition | bucket      | source                                          | detector(s)                                                                           | target                      |
+| ------------------------------------------ | ----------- | ----------- | ----------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------- |
+| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741 | killed      | denominator | observed (2026-09-16T15:50:15Z, `e5c87585bef0`) | `logql-stream-regex-no-overmatch, promql-regex-unanchored-no-overmatch-supplementary` | `internal/chsql/builder.go` |
+| MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED | killed      | denominator | observed (2026-09-16T15:50:17Z, `e5c87585bef0`) | `logql-logfmt-then-numeric-filter-order`                                              | `internal/logql/lower.go`   |
+
+| status               | count |
+| -------------------- | ----- |
+| killed               | 2     |
+| survived             | 0     |
+| equivalent-reviewed  | 0     |
+| invalid-transform    | 0     |
+| build-failed         | 0     |
+| timeout              | 0     |
+| infrastructure-error | 0     |
+| **total**            | **2** |
+
+denominator (killed+survived): **2** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+
+- kill rate: **100.0%** (2/2)
+- escape rate: **0.0%** (0/2)
+- excluded: equivalent **0**, invalid **0**, incomplete **0**
+
+#### HEAD-PROMQL
+
+| id                                              | disposition | bucket      | source                                          | detector(s)                                                                           | target                           |
+| ----------------------------------------------- | ----------- | ----------- | ----------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------- |
+| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741      | killed      | denominator | observed (2026-09-16T15:50:15Z, `e5c87585bef0`) | `logql-stream-regex-no-overmatch, promql-regex-unanchored-no-overmatch-supplementary` | `internal/chsql/builder.go`      |
+| MUTANT-PROMQL-COUNTER-RESET-COMPENSATION        | killed      | denominator | observed (2026-09-16T15:50:26Z, `e5c87585bef0`) | `counter-reset-mid-window-compensation`                                               | `internal/chsql/builder.go`      |
+| MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT | killed      | denominator | observed (2026-09-16T15:50:29Z, `e5c87585bef0`) | `range-window-boundary-exact-sample`                                                  | `internal/chsql/range_window.go` |
+
+| status               | count |
+| -------------------- | ----- |
+| killed               | 3     |
+| survived             | 0     |
+| equivalent-reviewed  | 0     |
+| invalid-transform    | 0     |
+| build-failed         | 0     |
+| timeout              | 0     |
+| infrastructure-error | 0     |
+| **total**            | **3** |
+
+denominator (killed+survived): **3** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+
+- kill rate: **100.0%** (3/3)
+- escape rate: **0.0%** (0/3)
+- excluded: equivalent **0**, invalid **0**, incomplete **0**
+
+#### HEAD-TRACEQL
+
+| id                                 | disposition | bucket      | source                                          | detector(s)                                                          | target                      |
+| ---------------------------------- | ----------- | ----------- | ----------------------------------------------- | -------------------------------------------------------------------- | --------------------------- |
+| MUTANT-TRACEQL-DESCENDANT-AS-CHILD | killed      | denominator | observed (2026-09-16T15:50:39Z, `e5c87585bef0`) | `structural-branching-http, structural-branching-grpc`               | `internal/traceql/lower.go` |
+| MUTANT-TRACEQL-SCOPE-SWAP          | killed      | denominator | observed (2026-09-16T15:50:51Z, `e5c87585bef0`) | `scope-collision-conjunction-http, scope-collision-conjunction-grpc` | `internal/traceql/lower.go` |
+
+| status               | count |
+| -------------------- | ----- |
+| killed               | 2     |
+| survived             | 0     |
+| equivalent-reviewed  | 0     |
+| invalid-transform    | 0     |
+| build-failed         | 0     |
+| timeout              | 0     |
+| infrastructure-error | 0     |
+| **total**            | **2** |
+
+denominator (killed+survived): **2** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+
+- kill rate: **100.0%** (2/2)
+- escape rate: **0.0%** (0/2)
+- excluded: equivalent **0**, invalid **0**, incomplete **0**
+
+**Cross-head mutations** (counted under every head their violated contracts apply to, never double-hidden): `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`.
+
+### Survivors requiring a linked issue
+
+None on record. A non-synthetic mutant whose disposition is `survived` cannot be committed without a `linked_issue` (schema-enforced, lib/semantic-mutation.mjs) — this list is never populated by a record silently passing review.
+
+### Synthetic self-test cohort
+
+The synthetic cohort exists only to exercise the runner's own seven classification paths (one record is DESIGNED to survive, one to time out, …) — it is never a per-head query mutation and its rate below is never blended with the semantic cohort's.
+
+| status               | count |
+| -------------------- | ----- |
+| killed               | 1     |
+| survived             | 1     |
+| equivalent-reviewed  | 1     |
+| invalid-transform    | 1     |
+| build-failed         | 1     |
+| timeout              | 1     |
+| infrastructure-error | 1     |
+| **total**            | **7** |
+
+denominator (killed+survived): **2** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+
+- kill rate: **50.0%** (1/2)
+- escape rate: **50.0%** (1/2)
+- excluded: equivalent **1**, invalid **1**, incomplete **3**

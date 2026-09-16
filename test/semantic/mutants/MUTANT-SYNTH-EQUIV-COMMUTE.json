@@ -34,5 +34,6 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": "The equivalence_review.source_fingerprint must equal transformation.source_fingerprint; if arith.go changes, this review goes stale and the runner falls back to reporting a bare survived until re-reviewed."
+  "notes": "The equivalence_review.source_fingerprint must equal transformation.source_fingerprint; if arith.go changes, this review goes stale and the runner falls back to reporting a bare survived until re-reviewed.",
+  "linked_issue": null
 }

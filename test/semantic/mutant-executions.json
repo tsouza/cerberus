@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "executions": [
+    {
+      "id": "MUTEXEC-LOGQL-LABEL-MATCHER-UNANCHORED-1741-20260916",
+      "mutant": "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+      "observed_at": "2026-09-16T15:50:15Z",
+      "status": "killed",
+      "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741 (issue #3452)",
+      "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
+      "detectors": [
+        { "id": "logql-stream-regex-no-overmatch", "classification": "killed" },
+        { "id": "promql-regex-unanchored-no-overmatch-supplementary", "classification": "killed" }
+      ]
+    },
+    {
+      "id": "MUTEXEC-LOGQL-PIPELINE-STAGE-ORDER-REVERSED-20260916",
+      "mutant": "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED",
+      "observed_at": "2026-09-16T15:50:17Z",
+      "status": "killed",
+      "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED (issue #3452)",
+      "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
+      "detectors": [
+        { "id": "logql-logfmt-then-numeric-filter-order", "classification": "killed" }
+      ]
+    },
+    {
+      "id": "MUTEXEC-PROMQL-COUNTER-RESET-COMPENSATION-20260916",
+      "mutant": "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
+      "observed_at": "2026-09-16T15:50:26Z",
+      "status": "killed",
+      "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-PROMQL-COUNTER-RESET-COMPENSATION (issue #3452)",
+      "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
+      "detectors": [
+        { "id": "counter-reset-mid-window-compensation", "classification": "killed" }
+      ]
+    },
+    {
+      "id": "MUTEXEC-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT-20260916",
+      "mutant": "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
+      "observed_at": "2026-09-16T15:50:29Z",
+      "status": "killed",
+      "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT (issue #3452)",
+      "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
+      "detectors": [
+        { "id": "range-window-boundary-exact-sample", "classification": "killed" }
+      ]
+    },
+    {
+      "id": "MUTEXEC-TRACEQL-DESCENDANT-AS-CHILD-20260916",
+      "mutant": "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
+      "observed_at": "2026-09-16T15:50:39Z",
+      "status": "killed",
+      "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-TRACEQL-DESCENDANT-AS-CHILD (issue #3452)",
+      "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
+      "detectors": [
+        { "id": "structural-branching-http", "classification": "killed" },
+        { "id": "structural-branching-grpc", "classification": "killed" }
+      ]
+    },
+    {
+      "id": "MUTEXEC-TRACEQL-SCOPE-SWAP-20260916",
+      "mutant": "MUTANT-TRACEQL-SCOPE-SWAP",
+      "observed_at": "2026-09-16T15:50:51Z",
+      "status": "killed",
+      "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-TRACEQL-SCOPE-SWAP (issue #3452)",
+      "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
+      "detectors": [
+        { "id": "scope-collision-conjunction-http", "classification": "killed" },
+        { "id": "scope-collision-conjunction-grpc", "classification": "killed" }
+      ]
+    }
+  ]
+}

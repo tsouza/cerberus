@@ -30,6 +30,7 @@ import {
   applyTransformation,
   classifyGoTestOutput,
   createScratchDir,
+  loadMutantExecutions,
   loadMutants,
   renderMutantsSummary,
   runGoTest,
@@ -99,6 +100,7 @@ function exampleMutantRecord(overrides = {}) {
     equivalence_review: null,
     isolation: { requires_chdb: false, memory_max: "1GiB", memory_hold: "150s" },
     notes: null,
+    linked_issue: null,
     ...overrides,
   };
 }
@@ -784,4 +786,150 @@ test("runGoTest: a spawn error resolves (never rejects) with an infrastructure-e
 
   assert.equal(result.exitCode, null);
   assert.equal(classifyGoTestOutput(result), "infrastructure-error");
+});
+
+// --- loadMutantExecutions (test/semantic/mutant-executions.json) -----------
+
+function writeLedger(dir, doc) {
+  const path = join(dir, "mutant-executions.json");
+  writeFileSync(path, JSON.stringify(doc));
+  return path;
+}
+
+test("loadMutantExecutions: a missing ledger file returns an empty Map, not an error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
+  try {
+    const result = loadMutantExecutions("does-not-exist.json", { root: dir });
+    assert.equal(result.size, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadMutantExecutions: loads a valid ledger and cross-checks mutant references", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
+  try {
+    const doc = {
+      schema_version: 1,
+      executions: [
+        {
+          id: "MUTEXEC-EXAMPLE-20260916",
+          mutant: "MUTANT-SYNTH-EXAMPLE",
+          observed_at: "2026-09-16T00:00:00Z",
+          status: "killed",
+          run_ref: "local",
+          source_sha: null,
+          detectors: [{ id: "d1", classification: "killed" }],
+        },
+      ],
+    };
+    const path = writeLedger(dir, doc);
+    const result = loadMutantExecutions(path, {
+      root: dir,
+      mutantIds: new Set(["MUTANT-SYNTH-EXAMPLE"]),
+    });
+    assert.equal(result.size, 1);
+    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").status, "killed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadMutantExecutions: rejects a reference to an unknown mutant when mutantIds is given", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
+  try {
+    const doc = {
+      schema_version: 1,
+      executions: [
+        {
+          id: "MUTEXEC-EXAMPLE-20260916",
+          mutant: "MUTANT-DOES-NOT-EXIST",
+          observed_at: "2026-09-16T00:00:00Z",
+          status: "killed",
+          run_ref: "local",
+          source_sha: null,
+          detectors: [],
+        },
+      ],
+    };
+    const path = writeLedger(dir, doc);
+    assert.throws(
+      () => loadMutantExecutions(path, { root: dir, mutantIds: new Set(["MUTANT-SYNTH-EXAMPLE"]) }),
+      SemanticModelError,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadMutantExecutions: rejects an unknown status (only the seven CLASSIFICATIONS are valid)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
+  try {
+    const doc = {
+      schema_version: 1,
+      executions: [
+        {
+          id: "MUTEXEC-EXAMPLE-20260916",
+          mutant: "MUTANT-SYNTH-EXAMPLE",
+          observed_at: "2026-09-16T00:00:00Z",
+          status: "passed",
+          run_ref: "local",
+          source_sha: null,
+          detectors: [],
+        },
+      ],
+    };
+    const path = writeLedger(dir, doc);
+    assert.throws(() => loadMutantExecutions(path, { root: dir }), SemanticModelError);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadMutantExecutions: the most recently observed_at record wins per mutant", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
+  try {
+    const doc = {
+      schema_version: 1,
+      executions: [
+        {
+          id: "MUTEXEC-EXAMPLE-A",
+          mutant: "MUTANT-SYNTH-EXAMPLE",
+          observed_at: "2026-09-01T00:00:00Z",
+          status: "survived",
+          run_ref: "local",
+          source_sha: null,
+          detectors: [],
+        },
+        {
+          id: "MUTEXEC-EXAMPLE-B",
+          mutant: "MUTANT-SYNTH-EXAMPLE",
+          observed_at: "2026-09-16T00:00:00Z",
+          status: "killed",
+          run_ref: "local",
+          source_sha: null,
+          detectors: [],
+        },
+      ],
+    };
+    const path = writeLedger(dir, doc);
+    const result = loadMutantExecutions(path, { root: dir });
+    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").status, "killed");
+    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").id, "MUTEXEC-EXAMPLE-B");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadMutantExecutions: the real committed ledger (if present) loads and cross-checks against the real corpus", () => {
+  const records = loadMutants();
+  const result = loadMutantExecutions(undefined, { mutantIds: new Set(records.keys()) });
+  // Every execution in the committed ledger must resolve to a real mutant
+  // and report one of the seven closed classifications — loadMutantExecutions
+  // itself already enforces this; this is an end-to-end confirmation over
+  // the real file, not a re-statement of the schema.
+  for (const [mutantId, execution] of result) {
+    assert.ok(records.has(mutantId));
+    assert.ok(CLASSIFICATIONS.includes(execution.status));
+  }
 });

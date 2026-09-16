@@ -1,0 +1,74 @@
+name: semantic-mutation-pilot
+
+# Issue #3452's scheduled, INFORMATIONAL run of the real (non-synthetic)
+# domain-semantic mutation pilot (test/semantic/mutants/*.json,
+# lib/semantic-mutation.mjs). Two things already gate this corpus, and this
+# workflow is neither of them:
+#
+#   - `ci.check`'s "Execute the semantic-mutation runner's corpus" step
+#     (.github/workflows/ci.yml) runs EVERY committed mutant record — real
+#     and synthetic — for real, on EVERY pull request, and is a REQUIRED
+#     status check.
+#   - `mutation` (.github/workflows/mutation.yml) is the separate,
+#     traditional gremlins syntax-level mutation gate.
+#
+# This workflow exists only to surface a periodic, revision-bound
+# observation of the real cohort's own runtime/cost shape (duration, which
+# detector actually fired) OUTSIDE a PR's own moment-in-time run, as a
+# printed job-summary suggestion for test/semantic/mutant-executions.json —
+# never written automatically (see semantic-mutation-pilot-report.mjs's own
+# header: the ledger stays hand-authored/reviewed, like
+# test/semantic/executions.json itself).
+#
+# NOT a merge or release gate — no `pull_request:`, no `push:`, and its own
+# .github/ci-lanes.json entry (quality.semantic-mutation-pilot) declares
+# merge_posture "never" / main_posture "never" / release_posture "advisory",
+# so it can never become a required status check and can never make a red
+# `mutation` or `ci.check` lane look green by association. A mismatch
+# between an observed and declared classification here is logged but never
+# fails the job — see semantic-mutation-pilot-report.mjs.
+
+on:
+  schedule:
+    # Wednesdays at 07:00 UTC — clear of this repo's other nightly/weekly
+    # crons (chdb/compatibility 04:00, perf-profile 05:00, perf-nightly
+    # 05:17, coverage 05:30, perf-nightly-selfcheck Sundays 06:00).
+    - cron: '0 7 * * 3'
+  workflow_dispatch:
+
+concurrency:
+  # No push trigger to coalesce against — this only stops a manual dispatch
+  # from racing an in-flight scheduled run. Never cancelled: an in-flight
+  # pilot run is evidence, not disposable work (mirrors
+  # perf-nightly-selfcheck.yml's own group).
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    name: pilot
+    runs-on: ubuntu-latest
+    # Six real records, each a low-single-digit-second `go test -overlay`
+    # run plus its clean control (see each record's own committed JSON for
+    # the measured shape) — generous headroom over that for toolchain setup.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go
+
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+        with:
+          tool: just
+
+      # Four of the six real records are chdb-tagged (PROMQL-COUNTER-RESET-
+      # COMPENSATION and both TRACEQL records) — same requirement as
+      # ci.yml's check-build job's own corpus step.
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run the real semantic-mutation pilot cohort
+        run: node .github/scripts/semantic-mutation-pilot-report.mjs
