@@ -135,6 +135,132 @@
       "independence_group": "coverage-floor-enrollment",
       "test_ref": ".github/scripts/coverage-package-floor.mjs",
       "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-LOWER-PROMQL",
+      "contract": "ARCH-HEAD-LOWER-001",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "promql-lowering-roundtrip",
+      "test_ref": "test/spec/promql/absent_aggregate_with_series.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-LOWER-LOGQL",
+      "contract": "ARCH-HEAD-LOWER-001",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "logql-lowering-roundtrip",
+      "test_ref": "test/spec/logql/absent_over_time_instant.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-LOWER-TRACEQL",
+      "contract": "ARCH-HEAD-LOWER-001",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "traceql-lowering-roundtrip",
+      "test_ref": "test/spec/traceql/and_two_attrs.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
+      "contract": "ARCH-HEAD-OPTIMIZE-001",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "optimizer-termination",
+      "test_ref": "internal/optimizer/termination_test.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR",
+      "contract": "ARCH-HEAD-OPTIMIZE-001",
+      "verifier": "VERIFIER-OPTIMIZER-SNAPSHOT-PAIR",
+      "evidence_class": "execution",
+      "independence_group": "optimizer-snapshot-pair",
+      "test_ref": "test/spec/optimizer/filter_fusion.txtar#optimized",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
+      "contract": "ARCH-HEAD-OPTIMIZE-001",
+      "verifier": "VERIFIER-OPTIMIZER-PROPERTY-EQUIVALENCE",
+      "evidence_class": "property",
+      "independence_group": "optimizer-property-equivalence",
+      "test_ref": "internal/optimizer/property_test.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-EMIT-STRUCTURAL",
+      "contract": "ARCH-HEAD-EMIT-001",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "chsql-emit-structural",
+      "test_ref": "test/spec/chsql/filter_line_contains.txtar#sql",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
+      "contract": "ARCH-HEAD-EMIT-001",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "chsql-emit-roundtrip",
+      "test_ref": "test/spec/promql/absent_aggregate_with_series.txtar#sql_optimized",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-WIRE-PROMQL",
+      "contract": "ARCH-HEAD-WIRE-001",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "promql-wire-parity",
+      "test_ref": "test/spec/promql/absent_aggregate_with_series.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-WIRE-LOGQL",
+      "contract": "ARCH-HEAD-WIRE-001",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "logql-wire-parity",
+      "test_ref": "test/spec/logql/absent_over_time_instant.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-WIRE-TRACEQL",
+      "contract": "ARCH-HEAD-WIRE-001",
+      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
+      "evidence_class": "reference",
+      "independence_group": "traceql-wire-parity",
+      "test_ref": "test/spec/traceql/and_two_attrs.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CAP-FILTER-LABEL-MATCHER",
+      "contract": "ARCH-CAP-FILTER-001",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "label-matcher-filter-semantics",
+      "test_ref": "test/spec/promql/signal_label_matcher_consistency.txtar#expected_rows",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CAP-FILTER-LINE",
+      "contract": "ARCH-CAP-FILTER-001",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "line-filter-semantics",
+      "test_ref": "test/spec/logql/sum_count_over_time_line_filter.txtar#sql_optimized",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CAP-FILTER-SPAN-ATTR",
+      "contract": "ARCH-CAP-FILTER-001",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "span-attribute-filter-semantics",
+      "test_ref": "test/spec/traceql/attr_not_nil.txtar#expected_rows",
+      "status": "active"
     }
   ]
 }

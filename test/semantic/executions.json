@@ -84,6 +84,104 @@
       "observed_at": "2026-09-16T00:00:00Z",
       "result": "pass",
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-LOWER-PROMQL-20260916",
+      "binding": "BINDING-ARCH-HEAD-LOWER-PROMQL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-LOWER-LOGQL-20260916",
+      "binding": "BINDING-ARCH-HEAD-LOWER-LOGQL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-LOWER-TRACEQL-20260916",
+      "binding": "BINDING-ARCH-HEAD-LOWER-TRACEQL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-OPTIMIZE-TERMINATION-20260916",
+      "binding": "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR-20260916",
+      "binding": "BINDING-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-OPTIMIZE-PROPERTY-20260916",
+      "binding": "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-EMIT-STRUCTURAL-20260916",
+      "binding": "BINDING-ARCH-HEAD-EMIT-STRUCTURAL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-EMIT-ROUNDTRIP-20260916",
+      "binding": "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-WIRE-PROMQL-20260916",
+      "binding": "BINDING-ARCH-HEAD-WIRE-PROMQL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-WIRE-LOGQL-20260916",
+      "binding": "BINDING-ARCH-HEAD-WIRE-LOGQL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-HEAD-WIRE-TRACEQL-20260916",
+      "binding": "BINDING-ARCH-HEAD-WIRE-TRACEQL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CAP-FILTER-LABEL-MATCHER-20260916",
+      "binding": "BINDING-ARCH-CAP-FILTER-LABEL-MATCHER",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CAP-FILTER-LINE-20260916",
+      "binding": "BINDING-ARCH-CAP-FILTER-LINE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CAP-FILTER-SPAN-ATTR-20260916",
+      "binding": "BINDING-ARCH-CAP-FILTER-SPAN-ATTR",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     }
   ]
 }
