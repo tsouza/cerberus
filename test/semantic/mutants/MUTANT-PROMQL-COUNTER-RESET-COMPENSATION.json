@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
+  "title": "chsql.CounterDelta's reset-detection comparison is neutered so it never fires",
+  "synthetic": false,
+  "synthetic_rationale": null,
+  "violated_contracts": [
+    "PROMQL-COUNTER-RESET-EXTRAPOLATION"
+  ],
+  "transformation": {
+    "target_path": "internal/chsql/builder.go",
+    "patch_path": "test/semantic/mutants/patches/counter-reset-compensation.patch",
+    "source_fingerprint": "7a3e52ada0ef6d6062a85942075a653ef25c37e5409e6659ac47bd7ed595ef7d",
+    "expected_mutated_fingerprint": "c682ae488705ad80b0a42b68caf82bb28a815174f12c38bb78e06e49906b194c"
+  },
+  "detectors": [
+    {
+      "id": "counter-reset-mid-window-compensation",
+      "package": "./test/property",
+      "test_run": "^TestPromQL_CounterResetMidWindowCompensation$",
+      "build_tags": ["chdb"],
+      "timeout_seconds": 90
+    }
+  ],
+  "expected_detection": "killed",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": true,
+    "memory_max": "2GiB",
+    "memory_hold": "2s"
+  },
+  "notes": "Real production seam, not a textual stand-in: chsql.CounterDelta (internal/chsql/builder.go, the typed compound-idiom behind counterDeltaFrag in internal/chsql/range_window.go ~2690-2707) renders `arrayMap((p, c) -> if(c < p, c, c - p), ...)` -- the counter-reset-aware pairwise delta rate()/increase() reduce over. The patch changes the comparison's second operand from `p` to `c` (`Lt(BareIdent(\"c\"), BareIdent(\"p\"))` -> `Lt(BareIdent(\"c\"), BareIdent(\"c\"))`), which is always false, so the emitted SQL always takes the `c - p` branch and the reset-compensation arm never fires: this is a disable, not merely an inversion. gen.CounterResetCase (test/property/gen/counter_reset.go) seeds a genuine mid-window reset (20 -> 5 between adjacent samples, not a duplicate timestamp -- see that file's header on why test/property/rate_dup_timestamp_test.go's duplicate-timestamp dataset does not exercise this). Locally reproduced end to end: the unmutated code returns the Prometheus-correct increase() = 33.333... (100/3); with this patch applied to a scratch copy the same query returns 6.666... (20/3, i.e. last-first with no reset added back), and TestPromQL_CounterResetMidWindowCompensation fails with exactly that drift. TestPromQL_RangeWindowBoundaryExactSample (the sibling MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT's own detector) was re-run against this same patch and still passes, confirming the two mutants are independently attributable."
+}

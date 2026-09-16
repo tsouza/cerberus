@@ -1,0 +1,13 @@
+diff --git a/internal/chsql/range_window.go b/internal/chsql/range_window.go
+index c5b5496c9..dcb55693a 100644
+--- a/internal/chsql/range_window.go
++++ b/internal/chsql/range_window.go
+@@ -3404,7 +3404,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, ag
+ 	}
+ 	winStart := Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
+ 	sb.Where(
+-		Gt(Col(rangeWindowInputTimestampColumn(r)), winStart),
++		Gte(Col(rangeWindowInputTimestampColumn(r)), winStart),
+ 		Lte(Col(rangeWindowInputTimestampColumn(r)), end),
+ 	)
+ 	sb.GroupBy(groupFrags...)
