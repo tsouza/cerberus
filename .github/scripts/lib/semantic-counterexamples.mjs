@@ -51,7 +51,7 @@
 // re-implemented) on any schema/reference/provenance violation, tagged the
 // same way lib/semantic-model.mjs tags its own problems.
 
-import { existsSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import {
@@ -62,6 +62,7 @@ import {
   SemanticModelError,
   enumValue,
   exactObject,
+  existingPathValue,
   fail,
   isObject,
   nullableStringValue,
@@ -133,20 +134,6 @@ const CONTRACT_ENTRY_KEYS = new Set([
 function positiveIntegerValue(value, path, problems) {
   if (!Number.isInteger(value) || value <= 0) {
     fail(problems, "schema", `${path} must be a positive integer; got ${JSON.stringify(value)}`);
-    return false;
-  }
-  return true;
-}
-
-// A path field is real evidence only if it resolves on disk TODAY — the
-// acceptance criterion this enforces ("no record depends solely on an
-// expiring CI URL / missing artifacts are explicit") is exactly what makes a
-// dangling `locator_path`/`replay_test_path` a validation failure rather than
-// a silently stale string.
-function existingPathValue(value, path, problems, { root }) {
-  if (!stringValue(value, path, problems)) return false;
-  if (!existsSync(resolve(root, value))) {
-    fail(problems, "reference", `${path} does not exist on disk: ${value}`);
     return false;
   }
   return true;

@@ -1,7 +1,7 @@
-diff --git a/test/semantic/mutants/fixtures/arith.go b/test/semantic/mutants/fixtures/arith.go
-index 96732dbd7..ae772bb72 100644
---- a/test/semantic/mutants/fixtures/arith.go
-+++ b/test/semantic/mutants/fixtures/arith.go
+diff --git a/test/semantic/mutants/testdata/fixtures/arith.go b/test/semantic/mutants/testdata/fixtures/arith.go
+index 494329d23..3fb18a191 100644
+--- a/test/semantic/mutants/testdata/fixtures/arith.go
++++ b/test/semantic/mutants/testdata/fixtures/arith.go
 @@ -8,6 +8,8 @@
  // production behaviour.
  package fixtures

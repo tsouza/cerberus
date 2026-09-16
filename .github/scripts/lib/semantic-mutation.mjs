@@ -46,7 +46,13 @@
 //                         own `[build failed]` signature, distinct from a
 //                         real assertion failure.
 //   timeout                the detector did not finish inside its declared
-//                         timeout_seconds; the runner kills it itself.
+//                         timeout_seconds. Go's own `-timeout` flag is the
+//                         PRIMARY mechanism (it dumps every goroutine's
+//                         stack before the process exits on its own,
+//                         printing `panic: test timed out after ...`); this
+//                         runner's own wall-clock SIGKILL is only a
+//                         BACKSTOP, a few seconds later, for the case where
+//                         Go's own watchdog somehow does not fire.
 //   infrastructure-error   anything else that leaves no well-formed PASS/FAIL
 //                         to read: a clean CONTROL run that itself failed
 //                         (the harness could not establish a baseline, so
@@ -55,9 +61,18 @@
 //                         process killed by an external signal, or a mutated
 //                         process that exits without go test's own harness
 //                         ever reporting PASS or FAIL (e.g. a direct
-//                         os.Exit() bypassing it). A CRASH IS NEVER A KILL:
-//                         only an interpretable, well-formed FAIL from the
-//                         detector's own reporting counts as `killed`.
+//                         os.Exit() bypassing it, or a panic on a goroutine
+//                         the testing package is not supervising, which
+//                         tears the whole process down without ever
+//                         printing a per-test `--- FAIL:` line). ONLY AN
+//                         OUTCOME THE DETECTOR'S OWN HARNESS ADJUDICATED
+//                         COUNTS AS A KILL: a panic testing's own harness
+//                         CAUGHT and reported via a `--- FAIL:` line is a
+//                         real adjudication and IS `killed` (see the
+//                         `killed` bullet above and classifyGoTestOutput's
+//                         own header) — it is specifically an unadjudicated
+//                         process death, one no test harness ever got a
+//                         chance to report on, that can never be a kill.
 //
 // Isolation: every write lands under a per-invocation mkdtemp() scratch
 // directory (RUNNER_TEMP when set, the OS temp dir otherwise), which is
@@ -71,7 +86,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -88,6 +102,7 @@ import {
   SemanticModelError,
   enumValue,
   exactObject,
+  existingPathValue,
   fail,
   isObject,
   nullableStringValue,
@@ -172,20 +187,6 @@ function booleanValue(value, path, problems) {
 function positiveIntegerValue(value, path, problems) {
   if (!Number.isInteger(value) || value <= 0) {
     fail(problems, "schema", `${path} must be a positive integer; got ${JSON.stringify(value)}`);
-    return false;
-  }
-  return true;
-}
-
-// A path field is real evidence only if it resolves on disk today — the same
-// discipline lib/semantic-counterexamples.mjs applies to locator_path /
-// replay_test_path, reimplemented here (not imported) because that helper is
-// not exported: a sibling record kind gets the same discipline, not a shared
-// dependency on a module that does not export it for reuse.
-function existingPathValue(value, path, problems, { root }) {
-  if (!stringValue(value, path, problems)) return false;
-  if (!existsSync(resolve(root, value))) {
-    fail(problems, "reference", `${path} does not exist on disk: ${value}`);
     return false;
   }
   return true;
@@ -424,6 +425,15 @@ export function sha256Hex(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
+// GO_TEST_TIMEOUT_PANIC_RE matches the exact signature Go's own `-timeout`
+// watchdog prints when it fires: `panic: test timed out after <duration>`,
+// immediately followed by every goroutine's stack — the signature
+// mutant-memory-guard.mjs's own header already documents for the sibling
+// gremlins lane. runGoTest always passes `-timeout` (see below), so this is
+// the FIRST mechanism a stuck detector should ever trip, ahead of this
+// runner's own wall-clock backstop.
+const GO_TEST_TIMEOUT_PANIC_RE = /^panic: test timed out after /m;
+
 // classifyGoTestOutput is the pure verdict reader: given exactly what a `go
 // test` child produced, it returns one of killed/survived/build-failed/
 // timeout/infrastructure-error — never invalid-transform or
@@ -431,20 +441,38 @@ export function sha256Hex(buffer) {
 // entirely (before it, and as a post-processing override, respectively).
 //
 // Ordering is deliberate and load-bearing:
-//   1. timedOut (the runner's own wall-clock kill) is checked first, since a
-//      killed-by-us child's exit code/signal say nothing about the mutation.
-//   2. an external signal (OOM, SIGSEGV — anything this runner did not
-//      itself send) is infrastructure-error: no test harness ever reported.
-//   3. `[build failed]` is checked before either PASS or FAIL, because a
+//   1. timedOut (this runner's own wall-clock SIGKILL, the backstop — see
+//      runGoTest) is checked first, since a killed-by-us child's exit
+//      code/signal say nothing about the mutation.
+//   2. Go's own `-timeout` panic signature is checked next: this is the
+//      mechanism that should normally catch a hang, since (unlike this
+//      runner's SIGKILL) it dumps every goroutine's stack before the
+//      process exits on its own.
+//   3. an external signal (OOM, SIGSEGV — anything neither this runner nor
+//      Go's own watchdog sent) is infrastructure-error: no test harness
+//      ever reported.
+//   4. `[build failed]` is checked before either PASS or FAIL, because a
 //      failed compile always exits non-zero and its FAIL line would
-//      otherwise be misread as a real assertion failure.
-//   4. exit 0 with a bare `PASS` is survived; exit 0 with anything else
+//      otherwise be misread as a real assertion failure. (Go's compiler
+//      diagnostics themselves land on stderr, not stdout — this check
+//      deliberately reads only the `[build failed]` trailer `go test`'s own
+//      driver writes to stdout, never a heuristic prefix match that could
+//      false-positive on a passing test's own printed output.)
+//   5. exit 0 with a bare `PASS` is survived; exit 0 with anything else
 //      (should not happen for a well-behaved go test, but is not assumed) is
 //      infrastructure-error rather than guessed at.
-//   5. non-zero exit with at least one well-formed `--- FAIL: TestName` line
-//      is killed — a panic go test's own harness caught and reported this
-//      way counts (the spike's own finding: a caught panic reports
-//      explicitly, just like an assertion failure). The package-level
+//   6. non-zero exit with at least one well-formed `--- FAIL: TestName` line
+//      is killed — a panic Go's OWN test harness caught (inside the failing
+//      test's own goroutine) and reported this way counts (the spike's own
+//      finding: a caught panic reports explicitly, just like an assertion
+//      failure). A panic on a goroutine the testing package is NOT
+//      supervising never produces a `--- FAIL:` line at all — the Go
+//      runtime tears the whole process down instead — so that shape
+//      classifies as infrastructure-error, a known limitation stated
+//      plainly in this file's header rather than a silent wrong answer — it
+//      fails loudly today, just under a different bucket than `killed`, if
+//      a real mutation from #3449-#3451 ever takes that exact shape. The
+//      package-level
 //      `FAIL\t<pkg>\t<duration>` trailer is NOT sufficient on its own: `go
 //      test`'s driver prints that whenever the test BINARY exits non-zero
 //      for any reason, including a direct os.Exit() call that bypasses the
@@ -455,9 +483,10 @@ export function sha256Hex(buffer) {
 //      ever adjudicated, and a crash is never a semantic kill.
 export function classifyGoTestOutput({ exitCode, signal, stdout, timedOut }) {
   if (timedOut) return "timeout";
-  if (signal !== null && signal !== undefined) return "infrastructure-error";
   const text = stdout ?? "";
-  if (/\[build failed\]/.test(text) || /^# /m.test(text)) return "build-failed";
+  if (GO_TEST_TIMEOUT_PANIC_RE.test(text)) return "timeout";
+  if (signal !== null && signal !== undefined) return "infrastructure-error";
+  if (/\[build failed\]/.test(text)) return "build-failed";
   if (exitCode === 0) {
     return /^PASS$/m.test(text) ? "survived" : "infrastructure-error";
   }
@@ -570,18 +599,50 @@ export function buildOverlay(targetAbsPath, mutatedAbsPath) {
   return { Replace: { [targetAbsPath]: mutatedAbsPath } };
 }
 
+// readMemoryBreaches reads mutant-memory-guard.mjs's own ledger (one JSON
+// object per line, appended on every breach — see that script's header) and
+// returns the parsed breach records, or [] when the file was never written
+// (the common case: no breach occurred). This MUST run before the scratch
+// directory is removed — runMutant calls it immediately after each detector
+// run, while the CLI still owns cleanup for later — because a memory breach
+// is otherwise real evidence that gets collapsed into a bare `timeout`
+// (this runner's own wall-clock kill reaping the whole tree) with no trace
+// of WHY the detector actually hung.
+export function readMemoryBreaches(ledgerPath) {
+  let text;
+  try {
+    text = readFileSync(ledgerPath, "utf8");
+  } catch {
+    return [];
+  }
+  return text
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line));
+}
+
 // runGoTestPollIntervalMs is how often the wall-clock timeout enforcer polls
 // elapsed time before SIGKILLing a stuck detector. Coarse on purpose —
 // nothing observes it but the deadline itself.
 const runGoTestPollIntervalMs = 100;
 
+// outerTimeoutBackstopSeconds is the headroom this runner's own wall-clock
+// kill adds ON TOP of a detector's declared timeout_seconds, which is passed
+// to Go's own `-timeout` flag. Go's watchdog is meant to fire FIRST — it
+// dumps every goroutine's stack before the process exits on its own, which a
+// runner-level SIGKILL cannot produce (this repo's own documented timeout
+// doctrine: just/test.just's own comment, pinned by
+// test/regression/go_test_timeout_budget_test.go). This runner's SIGKILL
+// exists only as a backstop for the case where Go's watchdog somehow does
+// not fire — it is deliberately never the first mechanism to act.
+const outerTimeoutBackstopSeconds = 5;
+
 // runGoTest spawns exactly one `go test` invocation — a clean control when
 // `overlayPath` is null, a mutant run when it names an overlay JSON file —
 // wrapped by mutant-memory-guard.mjs via `-exec` exactly as its own header
-// documents, and enforces `timeoutSeconds` itself by SIGKILLing the child.
-// `spawnFn` defaults to node:child_process's real spawn and is injectable so
-// callers can test the orchestration above this function without compiling
-// or running any Go code.
+// documents. `spawnFn` defaults to node:child_process's real spawn and is
+// injectable so callers can test the orchestration above this function
+// without compiling or running any Go code.
 export function runGoTest({
   root,
   pkg,
@@ -601,16 +662,34 @@ export function runGoTest({
   // classifyGoTestOutput's PASS check would misread every real pass as
   // infrastructure-error (no interpretable success marker) — verbose output
   // is what makes PASS and FAIL symmetric enough to classify from text alone.
-  const args = ["test", "-v", `-run=${testRun}`];
+  //
+  // -timeout is Go's OWN watchdog (see outerTimeoutBackstopSeconds above) —
+  // set to the detector's declared bound exactly, so it is what normally
+  // ends a hang; this runner's SIGKILL below is only the backstop.
+  //
+  // -exec's value is double-quoted because go test -exec is whitespace-split
+  // with no shell involved, so an unquoted path containing a space (a
+  // worktree directory name, say) would silently truncate at the first one
+  // — confirmed empirically: unquoted, `node` receives only the text before
+  // the space as its entry script and fails with MODULE_NOT_FOUND; quoted,
+  // go's own splitter keeps the quoted text as one field.
+  const args = ["test", "-v", `-run=${testRun}`, `-timeout=${timeoutSeconds}s`];
   if (buildTags.length > 0) args.push(`-tags=${buildTags.join(",")}`);
-  args.push(`-exec=node ${memoryGuardPath}`);
+  args.push(`-exec=node "${memoryGuardPath}"`);
   if (overlayPath) args.push(`-overlay=${overlayPath}`);
   args.push(pkg);
 
   const startedAt = Date.now();
   return new Promise((resolvePromise) => {
+    // detached so the child becomes its own process-group leader: `go test`
+    // spawns the test binary as a descendant via `-exec`, and killing only
+    // the top-level `go` PID (the default, non-detached shape) leaves that
+    // descendant — and mutant-memory-guard.mjs's own hold loop, should it be
+    // mid-breach — running orphaned for up to Go's own timeout. Killing the
+    // whole group (the negative-pid form below) reaps all of it at once.
     const child = spawnFn("go", args, {
       cwd: root,
+      detached: true,
       env: {
         ...process.env,
         MUTANT_MEMORY_MAX: memoryMax,
@@ -629,13 +708,35 @@ export function runGoTest({
       stderr += chunk;
     });
 
-    const deadline = startedAt + timeoutSeconds * 1000;
+    const deadline = startedAt + (timeoutSeconds + outerTimeoutBackstopSeconds) * 1000;
     const poller = setInterval(() => {
-      if (Date.now() < deadline) return;
+      // child.exitCode is set (non-null) the instant the child has already
+      // exited on its own — Go's own -timeout watchdog firing first is
+      // exactly that case. Without this guard a poll landing in the ~100ms
+      // window right after a clean exit could still flag a healthy run as
+      // timedOut.
+      if (Date.now() < deadline || child.exitCode !== null) return;
       timedOut = true;
       clearInterval(poller);
-      child.kill("SIGKILL");
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // The group may already be gone (a race with a natural exit right at
+        // the deadline) — nothing left to kill is not a failure here.
+      }
     }, runGoTestPollIntervalMs);
+
+    child.on("error", (cause) => {
+      clearInterval(poller);
+      resolvePromise({
+        exitCode: null,
+        signal: null,
+        stdout,
+        stderr: `${stderr}\ncannot execute go: ${cause.message}`,
+        timedOut: false,
+        durationMs: Date.now() - startedAt,
+      });
+    });
 
     child.on("close", (exitCode, signal) => {
       clearInterval(poller);
@@ -691,7 +792,8 @@ export async function runMutant({
       memoryGuardPath,
     });
     const classification = classifyGoTestOutput(result);
-    cleanControls.push({ detector: detector.id, ...result, classification });
+    const memoryBreaches = readMemoryBreaches(join(scratchDir, `${detector.id}-clean-memory-ledger.jsonl`));
+    cleanControls.push({ detector: detector.id, ...result, classification, memory_breaches: memoryBreaches });
     if (classification !== "survived") {
       return {
         mutant_id: record.id,
@@ -756,7 +858,8 @@ export async function runMutant({
       memoryGuardPath,
     });
     const classification = classifyGoTestOutput(result);
-    mutantRuns.push({ detector: detector.id, ...result, classification });
+    const memoryBreaches = readMemoryBreaches(join(scratchDir, `${detector.id}-mutant-memory-ledger.jsonl`));
+    mutantRuns.push({ detector: detector.id, ...result, classification, memory_breaches: memoryBreaches });
   }
 
   let status = aggregateClassifications(mutantRuns.map((r) => r.classification));

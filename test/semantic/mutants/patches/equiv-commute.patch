@@ -1,7 +1,7 @@
-diff --git a/test/semantic/mutants/fixtures/arith.go b/test/semantic/mutants/fixtures/arith.go
-index 96732dbd7..8f37382eb 100644
---- a/test/semantic/mutants/fixtures/arith.go
-+++ b/test/semantic/mutants/fixtures/arith.go
+diff --git a/test/semantic/mutants/testdata/fixtures/arith.go b/test/semantic/mutants/testdata/fixtures/arith.go
+index 494329d23..8e53f87ca 100644
+--- a/test/semantic/mutants/testdata/fixtures/arith.go
++++ b/test/semantic/mutants/testdata/fixtures/arith.go
 @@ -34,7 +34,7 @@ func PreallocCapacity(n int) int {
  // byte-for-byte identical for every pair of inputs — see that record's
  // equivalence_review.

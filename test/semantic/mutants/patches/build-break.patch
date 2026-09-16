@@ -1,7 +1,7 @@
-diff --git a/test/semantic/mutants/fixtures/arith.go b/test/semantic/mutants/fixtures/arith.go
-index 96732dbd7..4e473af25 100644
---- a/test/semantic/mutants/fixtures/arith.go
-+++ b/test/semantic/mutants/fixtures/arith.go
+diff --git a/test/semantic/mutants/testdata/fixtures/arith.go b/test/semantic/mutants/testdata/fixtures/arith.go
+index 494329d23..abe0d0806 100644
+--- a/test/semantic/mutants/testdata/fixtures/arith.go
++++ b/test/semantic/mutants/testdata/fixtures/arith.go
 @@ -16,7 +16,7 @@ func ClampUpper(v, hi int) int {
  	if v > hi {
  		return hi

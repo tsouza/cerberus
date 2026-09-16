@@ -3,12 +3,17 @@
 // lib/semantic-mutation.mjs's execution engine (issue #3448). Pairs every
 // "must FAIL"/"must abort" acceptance criterion with a positive control that
 // stays green, against small in-memory fixtures, plus an end-to-end pass
-// over the real committed test/semantic/mutants/ directory and — for the
-// killed/survived/equivalent-reviewed/invalid-transform/build-failed paths —
-// the real git/filesystem operations applyTransformation performs (never a
-// real Go compile: those pure-orchestration tests inject a fake
-// runGoTestFn, exactly so they run without a Go toolchain or network
-// access).
+// over the real committed test/semantic/mutants/ directory and real
+// git/filesystem operations (applyTransformation's own `git apply`
+// integration tests, and runGoTest's exact argv construction against an
+// injected spawnFn) — but never a real `go` invocation: every runMutant()
+// orchestration test injects a fake runGoTestFn, exactly so this suite runs
+// without a Go toolchain (confirmed by running it with `go` removed from
+// PATH). The one place a real `go test -overlay` actually runs, against the
+// real committed corpus, is .github/scripts/semantic-mutation-corpus.mjs —
+// a Go-equipped CI job runs that script, not this file (see its own header
+// for why: an ineffective -overlay argument and a genuine survived mutant
+// are otherwise indistinguishable to anything this pure suite alone runs).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -16,6 +21,7 @@ import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 
 import {
   CLASSIFICATIONS,
@@ -26,6 +32,7 @@ import {
   createScratchDir,
   loadMutants,
   renderMutantsSummary,
+  runGoTest,
   runMutant,
   scratchRootFor,
   selectDetectors,
@@ -37,7 +44,7 @@ import { SemanticModelError } from "./lib/semantic-model.mjs";
 const REPO_ROOT = process.cwd();
 // Real, committed, always-present files — the same discipline
 // semantic-counterexamples.test.mjs uses for its own path fixtures.
-const REAL_TARGET_PATH = "test/semantic/mutants/fixtures/arith.go";
+const REAL_TARGET_PATH = "test/semantic/mutants/testdata/fixtures/arith.go";
 const REAL_PATCH_PATH = "test/semantic/mutants/patches/killed-invert.patch";
 const REAL_SOURCE_FINGERPRINT = sha256Hex(readFileSync(join(REPO_ROOT, REAL_TARGET_PATH)));
 
@@ -51,7 +58,7 @@ function computeMutatedFingerprint(patchPath) {
   const probe = mkdtempSync(join(tmpdir(), "semantic-mutation-probe-"));
   try {
     const scratchTarget = join(probe, REAL_TARGET_PATH);
-    mkdirSync(join(probe, "test/semantic/mutants/fixtures"), { recursive: true });
+    mkdirSync(join(probe, "test/semantic/mutants/testdata/fixtures"), { recursive: true });
     copyFileSync(join(REPO_ROOT, REAL_TARGET_PATH), scratchTarget);
     const applied = spawnSync(
       "git",
@@ -82,7 +89,7 @@ function exampleMutantRecord(overrides = {}) {
     detectors: [
       {
         id: "example-detector",
-        package: "./test/semantic/mutants/fixtures",
+        package: "./test/semantic/mutants/testdata/fixtures",
         test_run: "^TestExample$",
         build_tags: [],
         timeout_seconds: 15,
@@ -166,7 +173,7 @@ test("rejects a non-existent target_path/patch_path", () => {
     exampleMutantRecord({
       transformation: {
         ...exampleMutantRecord().transformation,
-        target_path: "test/semantic/mutants/fixtures/does-not-exist.go",
+        target_path: "test/semantic/mutants/testdata/fixtures/does-not-exist.go",
       },
     }),
   );
@@ -599,4 +606,127 @@ test("createScratchDir: two calls under the same root never collide", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// --- runGoTest: exact argv construction (injected spawnFn, no real `go`) --
+
+// fakeChild builds a minimal stand-in for node:child_process's
+// ChildProcess: an EventEmitter with the handful of members runGoTest
+// actually touches (stdout/stderr streams, pid, exitCode, and a close event
+// this helper fires on the next tick so the promise's own listeners are
+// already attached).
+function fakeChild({ exitCode = 0, signal = null } = {}) {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.pid = 4242;
+  child.exitCode = null;
+  queueMicrotask(() => {
+    child.exitCode = exitCode;
+    child.emit("close", exitCode, signal);
+  });
+  return child;
+}
+
+test("runGoTest: constructs the exact argv — -v, -run, -timeout, -tags, quoted -exec, -overlay, package last", async () => {
+  const calls = [];
+  const child = fakeChild({ exitCode: 0 });
+  const spawnFn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return child;
+  };
+
+  const result = await runGoTest({
+    root: "/repo",
+    pkg: "./test/semantic/mutants/testdata/fixtures",
+    testRun: "^TestExample$",
+    buildTags: ["chdb"],
+    overlayPath: "/scratch/overlay.json",
+    timeoutSeconds: 15,
+    memoryMax: "1GiB",
+    memoryHold: "1s",
+    memoryLedgerPath: "/scratch/ledger.jsonl",
+    memoryGuardPath: "/repo/.github/scripts/mutant-memory-guard.mjs",
+    spawnFn,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "go");
+  assert.deepEqual(calls[0].args, [
+    "test",
+    "-v",
+    "-run=^TestExample$",
+    "-timeout=15s",
+    "-tags=chdb",
+    '-exec=node "/repo/.github/scripts/mutant-memory-guard.mjs"',
+    "-overlay=/scratch/overlay.json",
+    "./test/semantic/mutants/testdata/fixtures",
+  ]);
+  assert.equal(calls[0].opts.cwd, "/repo");
+  assert.equal(calls[0].opts.detached, true);
+  assert.equal(calls[0].opts.env.MUTANT_MEMORY_MAX, "1GiB");
+  assert.equal(calls[0].opts.env.MUTANT_MEMORY_HOLD, "1s");
+  assert.equal(calls[0].opts.env.MUTANT_MEMORY_LEDGER, "/scratch/ledger.jsonl");
+  assert.equal(result.exitCode, 0);
+});
+
+test("runGoTest: omits -tags when build_tags is empty and -overlay when overlayPath is null (the clean-control shape)", async () => {
+  const calls = [];
+  const child = fakeChild({ exitCode: 0 });
+  const spawnFn = (cmd, args) => {
+    calls.push(args);
+    return child;
+  };
+
+  await runGoTest({
+    root: "/repo",
+    pkg: "./pkg",
+    testRun: "^TestX$",
+    buildTags: [],
+    overlayPath: null,
+    timeoutSeconds: 5,
+    memoryMax: "1GiB",
+    memoryHold: "1s",
+    memoryLedgerPath: "/scratch/ledger.jsonl",
+    memoryGuardPath: "/repo/guard.mjs",
+    spawnFn,
+  });
+
+  assert.deepEqual(calls[0], [
+    "test",
+    "-v",
+    "-run=^TestX$",
+    "-timeout=5s",
+    '-exec=node "/repo/guard.mjs"',
+    "./pkg",
+  ]);
+});
+
+test("runGoTest: a spawn error resolves (never rejects) with an infrastructure-error-shaped result", async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.pid = undefined;
+  child.exitCode = null;
+  const spawnFn = () => {
+    queueMicrotask(() => child.emit("error", new Error("ENOENT: go not found")));
+    return child;
+  };
+
+  const result = await runGoTest({
+    root: "/repo",
+    pkg: "./pkg",
+    testRun: "^TestX$",
+    buildTags: [],
+    overlayPath: null,
+    timeoutSeconds: 5,
+    memoryMax: "1GiB",
+    memoryHold: "1s",
+    memoryLedgerPath: "/scratch/ledger.jsonl",
+    memoryGuardPath: "/repo/guard.mjs",
+    spawnFn,
+  });
+
+  assert.equal(result.exitCode, null);
+  assert.equal(classifyGoTestOutput(result), "infrastructure-error");
 });

@@ -8,15 +8,15 @@
     "SYNTHETIC-LOOP-TERMINATION"
   ],
   "transformation": {
-    "target_path": "test/semantic/mutants/fixtures/arith.go",
+    "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/timeout-loop.patch",
-    "source_fingerprint": "32ceda8eb16574aebd2eafd1b719984e83dec5c95cb4fa9947f56e61143c2556",
-    "expected_mutated_fingerprint": "b636cb247cedb7f2319b87e11bfda6ed7375c86763f5cafb7dec0657291e172f"
+    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
+    "expected_mutated_fingerprint": "def140c7484472860d8ab2962423c493b9a39ad91aab4c89faa413817ac74314"
   },
   "detectors": [
     {
       "id": "spin-until-terminates",
-      "package": "./test/semantic/mutants/fixtures",
+      "package": "./test/semantic/mutants/testdata/fixtures",
       "test_run": "^TestSpinUntilTerminates$",
       "build_tags": [],
       "timeout_seconds": 3
@@ -27,7 +27,7 @@
   "isolation": {
     "requires_chdb": false,
     "memory_max": "256MiB",
-    "memory_hold": "5s"
+    "memory_hold": "1s"
   },
   "notes": "timeout_seconds is deliberately short (3s, not the usual 15s) so this record's own control case runs quickly; the mutated loop never allocates, so it cannot trip the memory bound before the wall-clock ceiling does."
 }

@@ -20,7 +20,7 @@ func ClampUpper(v, hi int) int {
 }
 
 // PreallocCapacity is the slice capacity a caller would pre-allocate for n
-// buckets: n elements plus one slot of growth headroom.
+// buckets: two slots per bucket plus one slot of growth headroom.
 // MUTANT-SYNTH-SURVIVED-CAPACITY drops the "+1" headroom term. The fixture's
 // own detector only asserts the capacity is at least n (enough to hold n
 // elements without a reallocation), never the exact headroom, so it cannot

@@ -4,17 +4,19 @@
   "title": "Declared source fingerprint deliberately disagrees with the live target file",
   "synthetic": true,
   "synthetic_rationale": "Exercises the runner's fail-closed path: a mutant record whose declared source_fingerprint does not match the live target file (simulating drift since authoring time). The runner must refuse to test the unmodified candidate and report invalid-transform, never silently proceed. Not a per-head query mutation.",
-  "violated_contracts": ["SYNTHETIC-CLAMP-UPPER-BOUND"],
+  "violated_contracts": [
+    "SYNTHETIC-CLAMP-UPPER-BOUND"
+  ],
   "transformation": {
-    "target_path": "test/semantic/mutants/fixtures/arith.go",
+    "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/killed-invert.patch",
     "source_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
-    "expected_mutated_fingerprint": "d704056d00f7a5b3a5cf4c7f2720378bd5580274fe51897a2cf2b5f1373d6efe"
+    "expected_mutated_fingerprint": "8f2155010033f16f00e0a9d48821ec4f049e5ea33064c250bb947ee4f9eada01"
   },
   "detectors": [
     {
       "id": "clamp-upper-inversion",
-      "package": "./test/semantic/mutants/fixtures",
+      "package": "./test/semantic/mutants/testdata/fixtures",
       "test_run": "^TestClampUpperCatchesInversion$",
       "build_tags": [],
       "timeout_seconds": 15
@@ -25,7 +27,7 @@
   "isolation": {
     "requires_chdb": false,
     "memory_max": "1GiB",
-    "memory_hold": "150s"
+    "memory_hold": "1s"
   },
-  "notes": "source_fingerprint above is deliberately wrong (68 zero characters, also the wrong length) — this record's entire purpose is to prove the mismatch is caught before git apply or any detector ever runs."
+  "notes": "source_fingerprint above is deliberately wrong (64 zero characters \u2014 well-formed SHA-256 hex, simulating a stale-but-plausible fingerprint rather than a malformed one) \u2014 this record's entire purpose is to prove the mismatch is caught before git apply or any detector ever runs."
 }
