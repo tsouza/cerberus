@@ -161,6 +161,13 @@ jobs:
           just build
           just vet-tagged
 
+      # Real, non-synthetic records (#3449/#3450/#3451) exercise chdb-tagged
+      # detectors — libchdb.so must be present before semantic-mutate below
+      # runs, or every chdb-tagged detector's clean control fails closed as
+      # infrastructure-error before the mutant is ever attempted.
+      - name: Install libchdb.so
+        run: just chdb-install
+
       # semantic-mutation-corpus.mjs (#3448) runs `just semantic-mutate <id>`
       # for real, for every record under test/semantic/mutants/, against a
       # real `go test -overlay`. This is the ONE place that happens: the
@@ -168,10 +175,10 @@ jobs:
       # a fake runGoTestFn deliberately, so it needs no Go toolchain and that
       # job installs none — without this step, the `-overlay` argv line
       # itself had zero CI execution (see semantic-mutation-corpus.mjs's own
-      # header for how that was found). The currently-committed corpus is
-      # seven synthetic, untagged, chdb-free records; this settles in low
-      # single-digit seconds per record.
-      - name: Execute the semantic-mutation runner's synthetic corpus
+      # header for how that was found). The corpus now mixes synthetic and
+      # real records, some chdb-tagged; this settles in low single-digit
+      # seconds per record regardless.
+      - name: Execute the semantic-mutation runner's corpus
         run: node .github/scripts/semantic-mutation-corpus.mjs
 
       # The test/oracle nested module quarantines cerberus's test-only
