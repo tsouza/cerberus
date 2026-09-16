@@ -169,11 +169,23 @@ func TestApplyQueryTimeout_Unparseable(t *testing.T) {
 
 // TestApplyQueryTimeout_Negative pins the branch a table lumping both
 // rejection reasons together cannot see: format.ParseDuration accepts
-// "-1s" and returns a nil error, so the negative value is rejected on
+// "-1" and returns a nil error, so the negative value is rejected on
 // its own merits and must carry its own message.
+//
+// The input is a bare negative NUMBER, not "-1s": format.ParseDuration
+// tries strconv.ParseFloat first (which "-1" satisfies, yielding a clean
+// negative time.Duration with a nil error) and falls back to
+// model.ParseDuration only when that fails. A unit-suffixed negative
+// string ("-1s") used to take the same fallback path with the same
+// nil-error outcome, but model.ParseDuration now rejects a negative
+// duration string outright — it returns a non-nil error instead, so
+// "-1s" silently stopped exercising this branch (both branches produce
+// an error mentioning "-1s", so the assertion below could not tell them
+// apart). "-1" still reaches ApplyQueryTimeout's `case reqTimeout < 0`
+// via the float branch, which is what this test exists to pin.
 func TestApplyQueryTimeout_Negative(t *testing.T) {
-	msg := rejectTimeout(t, "-1s")
-	if !strings.Contains(msg, "-1s") {
+	msg := rejectTimeout(t, "-1")
+	if !strings.Contains(msg, "-1") {
 		t.Fatalf("message %q does not name the offending value", msg)
 	}
 }
