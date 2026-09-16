@@ -478,6 +478,26 @@ function mdEscape(text) {
   return String(text).replaceAll("|", "\\|");
 }
 
+// Contract statements, blind spots and verifier detects/cannot_detect are
+// free-text data from test/semantic/*.json, never markdown source. Rendered
+// bare, a substring like "__name__" (Prometheus's real reserved label,
+// appearing unquoted in more than one contract statement) parses as GFM
+// strong-emphasis and a lint autofixer then "corrects" it to `**name**` —
+// silently losing the double underscore, not a formatting nit. Escaping
+// every emphasis/link/code-span trigger before it reaches the page is what
+// keeps the rendered text equal to the source string. Never applied to text
+// already inside a backtick code span (there these characters are already
+// inert, and escaping them would print the backslashes literally).
+function mdEscapeProse(text) {
+  return String(text)
+    .replaceAll("\\", "\\\\")
+    .replaceAll("`", "\\`")
+    .replaceAll("*", "\\*")
+    .replaceAll("_", "\\_")
+    .replaceAll("[", "\\[")
+    .replaceAll("]", "\\]");
+}
+
 function renderCountsTable(counts, columns) {
   const header = `| status | count |\n| --- | --- |\n`;
   const rows = columns.map((c) => `| ${c} | ${counts[c]} |`).join("\n");
@@ -521,13 +541,13 @@ jq '.contracts[] | select(.id == "${WORKED_EXAMPLE_CONTRACT_ID}")' ${DEFAULT_REP
 That query returns, for **${contract.id}**:
 
 - **Its tests** — ${contract.bindings.length} active binding(s):
-${contract.bindings.map((b) => `  - \`${b.id}\` (\`${b.test_ref}\`, verifier \`${b.verifier?.id}\`)`).join("\n")}
+${contract.bindings.map((b) => `- \`${b.id}\` (\`${b.test_ref}\`, verifier \`${b.verifier?.id}\`)`).join("\n")}
 - **Its dependency on the reference implementation** — authority
   \`${contract.authority}\`; the statement itself names the reference system
   the contract's semantics are defined against.
 - **Its count-only limitation** — the property-based verifier(s) bound here
   report only what their own \`cannot_detect\` documents:
-${[...new Set(contract.bindings.map((b) => b.verifier?.cannot_detect?.join(" / ")).filter(Boolean))].map((c) => `  - ${c}`).join("\n")}
+${[...new Set(contract.bindings.map((b) => b.verifier?.cannot_detect?.join(" / ")).filter(Boolean))].map((c) => `- ${mdEscapeProse(c)}`).join("\n")}
 - **Its required complements** — ${gapsText}.
 
 This is the general shape the whole report follows: every contract card below
@@ -540,13 +560,13 @@ function renderContractCard(contract) {
   const lines = [];
   lines.push(`### ${contract.id}`);
   lines.push("");
-  lines.push(contract.statement);
+  lines.push(mdEscapeProse(contract.statement));
   lines.push("");
   lines.push(
     `- scope: \`${contract.scope}\` · applicable heads: ${contract.applicable_heads.map((h) => `\`${h}\``).join(", ") || "(none)"}`,
   );
   lines.push(`- authority: \`${contract.authority}\` · status: \`${contract.status}\` · owner: \`${contract.owner}\``);
-  if (contract.status === "explicit_deficit") lines.push(`- deficit reason: ${contract.deficit_reason}`);
+  if (contract.status === "explicit_deficit") lines.push(`- deficit reason: ${mdEscapeProse(contract.deficit_reason)}`);
   if (contract.status === "superseded") lines.push(`- replaced by: \`${contract.replaced_by}\``);
   if (contract.inherits_from) lines.push(`- inherits from: \`${contract.inherits_from}\``);
   if (contract.related_contracts.length) {
@@ -568,11 +588,12 @@ function renderContractCard(contract) {
   lines.push("");
 
   lines.push(`**Observed evidence** (from executions.json, revision-scoped): overall **${contract.observed_evidence.overall}**.`);
+  lines.push("");
   for (const [cls, v] of Object.entries(contract.observed_evidence.byEvidenceClass)) {
-    lines.push(`  - class \`${cls}\`: **${v.status}** (${v.binding_ids.join(", ") || "no active binding"})`);
+    lines.push(`- class \`${cls}\`: **${v.status}** (${v.binding_ids.join(", ") || "no active binding"})`);
   }
   for (const [group, v] of Object.entries(contract.observed_evidence.byIndependenceGroup)) {
-    lines.push(`  - group \`${group}\`: **${v.status}** (${v.binding_ids.join(", ") || "no active binding"})`);
+    lines.push(`- group \`${group}\`: **${v.status}** (${v.binding_ids.join(", ") || "no active binding"})`);
   }
   lines.push("");
 
@@ -585,12 +606,14 @@ function renderContractCard(contract) {
 
   if (contract.blind_spots.length > 0) {
     lines.push("**Blind spots:**");
-    for (const b of contract.blind_spots) lines.push(`- ${b}`);
+    lines.push("");
+    for (const b of contract.blind_spots) lines.push(`- ${mdEscapeProse(b)}`);
     lines.push("");
   }
 
   if (contract.complement_gaps.length > 0) {
     lines.push("**Complement gaps** (informational — does not change assurance above):");
+    lines.push("");
     for (const g of contract.complement_gaps) {
       lines.push(`- verifier \`${g.verifier}\` documents complement(s) not in active use here: \`${g.missing_complements.join("`, `")}\``);
     }

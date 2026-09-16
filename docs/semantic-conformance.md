@@ -114,17 +114,17 @@ jq '.contracts[] | select(.id == "TRACEQL-STRUCTURAL-RELATION-SEMANTICS")' docs/
 That query returns, for **TRACEQL-STRUCTURAL-RELATION-SEMANTICS**:
 
 - **Its tests** — 4 active binding(s):
-  - `BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY` (`test/property/gen#traceql.structural.child`, verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL`)
-  - `BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC` (`test/spec/traceql/edge_chain_child_5.txtar`, verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP`)
-  - `BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY` (`test/property/gen#traceql.structural.descendant`, verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL`)
-  - `BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC` (`test/spec/traceql/recursive_descendant.txtar`, verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP`)
+- `BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY` (`test/property/gen#traceql.structural.child`, verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL`)
+- `BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC` (`test/spec/traceql/edge_chain_child_5.txtar`, verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP`)
+- `BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY` (`test/property/gen#traceql.structural.descendant`, verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL`)
+- `BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC` (`test/spec/traceql/recursive_descendant.txtar`, verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP`)
 - **Its dependency on the reference implementation** — authority
   `reference-implementation`; the statement itself names the reference system
   the contract's semantics are defined against.
 - **Its count-only limitation** — the property-based verifier(s) bound here
   report only what their own `cannot_detect` documents:
-  - divergence in a shape the generator's grammar or dataset pool never draws — each gen/*.go file documents its own deliberate exclusions / drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)
-  - semantic drift against the reference backend's own engine
+- divergence in a shape the generator's grammar or dataset pool never draws — each gen/\*.go file documents its own deliberate exclusions / drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)
+- semantic drift against the reference backend's own engine
 - **Its required complements** — verifier `VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL` documents required complement(s) `VERIFIER-REFERENCE-DIFFERENTIAL` that no active binding on this contract supplies; verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents required complement(s) `VERIFIER-REFERENCE-DIFFERENTIAL` that no active binding on this contract supplies.
 
 This is the general shape the whole report follows: every contract card below
@@ -137,7 +137,7 @@ complement-gaps structure, not a one-off treatment for this example.
 
 ### PROMQL-COUNTER-RESET-EXTRAPOLATION
 
-rate()/increase()/delta() and the *_over_time family extrapolate a counter's samples across its selected window using Prometheus's own boundary-extrapolation rule, and treat a value decrease between consecutive samples as a counter reset (adding the pre-reset value back in) rather than as a negative rate, for both a randomly generated dataset and an engineered counter profile that resets mid-window.
+rate()/increase()/delta() and the \*\_over\_time family extrapolate a counter's samples across its selected window using Prometheus's own boundary-extrapolation rule, and treat a value decrease between consecutive samples as a counter reset (adding the pre-reset value back in) rather than as a negative rate, for both a randomly generated dataset and an engineered counter profile that resets mid-window.
 
 - scope: `head` · applicable heads: `HEAD-PROMQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
@@ -158,7 +158,7 @@ rate()/increase()/delta() and the *_over_time family extrapolate a counter's sam
 **Blind spots:**
 
 - test/property/gen's random MetricsDataset generator draws series with a bounded value range and sample count; it is not an exhaustive sweep of every possible counter-reset timing relative to the query window.
-- The deterministic cross-path proof in test/property/rate_dup_timestamp_test.go (gen.CounterDup*) pins one specific duplicate-timestamp reset shape; it is a fixed regression fixture, not a property, and is not counted as one of this contract's two required independence groups.
+- The deterministic cross-path proof in test/property/rate\_dup\_timestamp\_test.go (gen.CounterDup\*) pins one specific duplicate-timestamp reset shape; it is a fixed regression fixture, not a property, and is not counted as one of this contract's two required independence groups.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -181,7 +181,7 @@ Missing: classes `execution`, groups `none`.
 
 ### PROMQL-LABEL-MATCHER-REGEX-ANCHORING
 
-A PromQL regex label matcher (=~ / !~), including one on **name**, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~"ap" matches job="ap" and rejects job="api"/job="apiserver", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics.
+A PromQL regex label matcher (=~ / !~), including one on \_\_name\_\_, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~"ap" matches job="ap" and rejects job="api"/job="apiserver", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics.
 
 - scope: `head` · applicable heads: `HEAD-PROMQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
@@ -208,11 +208,11 @@ A PromQL regex label matcher (=~ / !~), including one on **name**, matches only 
 
 ### PROMQL-LABEL-REPLACE-CAPTURE-GROUP-PARTICIPATION
 
-label_replace's regex substitution resolves a $name reference shared by multiple capture groups to whichever group actually took part in the match, matching Go's Regexp.expand (and Prometheus's) leftmost-participation semantics, for every shape ClickHouse's extractGroups can express; a shape this repository cannot yet express through extractGroups is rejected outright rather than silently answered wrong.
+label\_replace's regex substitution resolves a $name reference shared by multiple capture groups to whichever group actually took part in the match, matching Go's Regexp.expand (and Prometheus's) leftmost-participation semantics, for every shape ClickHouse's extractGroups can express; a shape this repository cannot yet express through extractGroups is rejected outright rather than silently answered wrong.
 
 - scope: `head` · applicable heads: `HEAD-PROMQL`
 - authority: `reference-implementation` · status: `explicit_deficit` · owner: `cerberus-core`
-- deficit reason: cerberus issue #1956 (open): a nullable capture group sharing a name with another inside a REPEATED alternation branch, or under a quantifier with no non-nullable ancestor to probe, is not yet distinguished from a participating one via ClickHouse's extractGroups. The two currently-known trigger shapes are rejected (test/rejection-parity/catalogue's labelReplaceAttributesBuilder#d11e3df4 entry, tracking_issue 1956), but the guard's exhaustiveness over every such shape is unproven, so this contract stays an explicit deficit rather than active until #1956 closes.
+- deficit reason: cerberus issue #1956 (open): a nullable capture group sharing a name with another inside a REPEATED alternation branch, or under a quantifier with no non-nullable ancestor to probe, is not yet distinguished from a participating one via ClickHouse's extractGroups. The two currently-known trigger shapes are rejected (test/rejection-parity/catalogue's labelReplaceAttributesBuilder#d11e3df4 entry, tracking\_issue 1956), but the guard's exhaustiveness over every such shape is unproven, so this contract stays an explicit deficit rather than active until #1956 closes.
 
 **Bound evidence** (structural — assured: **false**): required classes `execution`, required independence groups `label-replace-rejection-boundary`.
 
@@ -227,12 +227,12 @@ label_replace's regex substitution resolves a $name reference shared by multiple
 
 **Blind spots:**
 
-- The rejection-parity catalogue entry this contract's binding cites (internal/promql/label_fns.go:labelReplaceAttributesBuilder#d11e3df4) pins that exactly ONE worked trigger query is rejected; it is not an exhaustive proof over every nullable-shared-capture-group regex shape.
+- The rejection-parity catalogue entry this contract's binding cites (internal/promql/label\_fns.go:labelReplaceAttributesBuilder#d11e3df4) pins that exactly ONE worked trigger query is rejected; it is not an exhaustive proof over every nullable-shared-capture-group regex shape.
 - See cerberus issue #1956 for the two identified-but-unbuilt mechanisms that would close this gap, and ClickHouse/ClickHouse#114733 for the upstream fix that would let the guard (and this deficit) be deleted outright rather than narrowed further.
 
 ### PROMQL-NATIVE-HISTOGRAM-PAYLOAD-BEHAVIOR
 
-The native-histogram value functions (histogram_count, histogram_sum, histogram_avg, histogram_stddev, histogram_stdvar, histogram_fraction) and histogram_quantile over a native exponential-histogram selector, sum, rate, or increase compute the same payload Prometheus's own engine would from the identical exponential-histogram buckets, for both a randomly generated bucket layout and the real reference server.
+The native-histogram value functions (histogram\_count, histogram\_sum, histogram\_avg, histogram\_stddev, histogram\_stdvar, histogram\_fraction) and histogram\_quantile over a native exponential-histogram selector, sum, rate, or increase compute the same payload Prometheus's own engine would from the identical exponential-histogram buckets, for both a randomly generated bucket layout and the real reference server.
 
 - scope: `head` · applicable heads: `HEAD-PROMQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
@@ -253,8 +253,8 @@ The native-histogram value functions (histogram_count, histogram_sum, histogram_
 
 **Blind spots:**
 
-- compatibility/prometheus/query-corpus/header.yml documents its native-histogram compat cases as a CERBERUS-OWNED replacement for upstream's float-only histogram_* cases (upstream's own demo fixture seeds no native histogram) — this contract's reference evidence is real reference-server evidence, but it is not third-party-provenanced; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE.
-- gen.ExpHistogramShapeIDs's bucket layouts are drawn from the generator's own scale/bound pool (test/property/gen/exp_histogram.go); a bucket layout outside that pool (an extreme scale, a fully empty bucket run at a boundary) is not exercised by this contract's property evidence.
+- compatibility/prometheus/query-corpus/header.yml documents its native-histogram compat cases as a CERBERUS-OWNED replacement for upstream's float-only histogram\_\* cases (upstream's own demo fixture seeds no native histogram) — this contract's reference evidence is real reference-server evidence, but it is not third-party-provenanced; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE.
+- gen.ExpHistogramShapeIDs's bucket layouts are drawn from the generator's own scale/bound pool (test/property/gen/exp\_histogram.go); a bucket layout outside that pool (an extreme scale, a fully empty bucket run at a boundary) is not exercised by this contract's property evidence.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -281,7 +281,7 @@ The spec-lane parity oracle's in-process promql.Engine (test/spec/parityoracle/p
 
 **Blind spots:**
 
-- test/regression/promql_oracle_engine_parity_test.go mechanically pins exactly ONE flag (EnableDelayedNameRemoval) by matching a fixed regex against the compose file's --enable-feature line and the oracle's own constant; a future answer-affecting promql.EngineOpts field introduced to either side without a matching addition to this test is not caught.
+- test/regression/promql\_oracle\_engine\_parity\_test.go mechanically pins exactly ONE flag (EnableDelayedNameRemoval) by matching a fixed regex against the compose file's --enable-feature line and the oracle's own constant; a future answer-affecting promql.EngineOpts field introduced to either side without a matching addition to this test is not caught.
 - This contract only proves the two sides are CONFIGURED the same way; it is not itself evidence the configuration they share is correct — that is what the compat lane's own per-query diffs (invariant 7) and PROMQL-RANGE-VECTOR-ALIGNMENT's reference-differential binding are for.
 
 ### PROMQL-ORACLE-PARSER-SHARING-BOUNDARY
@@ -305,12 +305,12 @@ Cerberus's PromQL lowering and its from-scratch property oracle (test/property/o
 
 **Blind spots:**
 
-- test/regression/promql_parser_options_single_source_test.go (TestPromQLParserOptionsHaveASingleSource) walks non-test Go files for a second direct upstream-parser construction by AST shape; a construction it does not recognize as one (an indirect wrapper, a build-tagged file the walk's skippedDirs excludes) would not be caught.
+- test/regression/promql\_parser\_options\_single\_source\_test.go (TestPromQLParserOptionsHaveASingleSource) walks non-test Go files for a second direct upstream-parser construction by AST shape; a construction it does not recognize as one (an indirect wrapper, a build-tagged file the walk's skippedDirs excludes) would not be caught.
 - This contract records an evidence-SCOPE limitation, not a grammar-correctness proof: it says nothing about whether promparse.New's configuration itself matches Prometheus's grammar — that is the compat lane's job (invariant 7), not this contract's.
 
 ### PROMQL-RANGE-VECTOR-ALIGNMENT
 
-A range vector selector's window is anchored to the evaluation timestamp, not to the request's [start,end), and every sample it returns falls strictly inside (evalTs-range, evalTs].
+A range vector selector's window is anchored to the evaluation timestamp, not to the request's \[start,end), and every sample it returns falls strictly inside (evalTs-range, evalTs\].
 
 - scope: `head` · applicable heads: `HEAD-PROMQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
@@ -354,7 +354,7 @@ The upstream Prometheus version cerberus's PromQL parser fork is based on (go.mo
 
 **Blind spots:**
 
-- test/regression/fork_version_skew_test.go checks MAJOR.MINOR only, by design (patch releases don't move the grammar) — a semantics-affecting patch release on either side, if one ever shipped, would not be caught.
+- test/regression/fork\_version\_skew\_test.go checks MAJOR.MINOR only, by design (patch releases don't move the grammar) — a semantics-affecting patch release on either side, if one ever shipped, would not be caught.
 - The test reads go.mod's require line, not the replace line's own pseudo-version tag; a replace directive pointing at a fork commit that silently diverges from the require line's declared upstream base is a scenario this scan does not model (docs/upstream-forks.md's zero-patch policy is what keeps that scenario from arising in practice, not this test).
 
 ### PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE
@@ -387,7 +387,7 @@ Third-party provenance for a PromQL compatibility test case attaches only to the
 
 ### LOGQL-LABEL-FORMAT-RENAME-SEMANTICS
 
-`| label_format <new>=<src>` copies the value of an existing label <src> to <new> and drops <src> when <new> differs from it (a same-name rename is a no-op); when a record's label set does not carry <src> at all, the rename is silently skipped and <new> is never set, matching Loki's LabelsFormatter early-return. A stream's identity afterward is keyed by its resulting, post-rename label set, so two records that rename to the same <new> value collapse into one stream even if their pre-rename label sets differed.
+\`| label\_format <new>=<src>\` copies the value of an existing label <src> to <new> and drops <src> when <new> differs from it (a same-name rename is a no-op); when a record's label set does not carry <src> at all, the rename is silently skipped and <new> is never set, matching Loki's LabelsFormatter early-return. A stream's identity afterward is keyed by its resulting, post-rename label set, so two records that rename to the same <new> value collapse into one stream even if their pre-rename label sets differed.
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
@@ -409,8 +409,8 @@ Third-party provenance for a PromQL compatibility test case attaches only to the
 
 **Blind spots:**
 
-- The property generator only renames a label every matched record actually carries (test/property/oracle/logql/doc.go's own documented critical-decision #3), so the missing-source silent-skip path is exercised by neither the property sweep nor either TXTAR fixture cited here (label_format.txtar, edge_label_format_rename_and_template.txtar) — it is implemented (applyLabelFmt's `if v, ok := ...; ok` guard) but unverified by any binding in this repository today.
-- `| label_format`'s TEMPLATE mode (e.g. `lvl="{{.severity}}"`) is out of scope for both the property oracle (applyLabelFmt's `if !f.Rename { continue }` no-op) and this contract — only the rename form is claimed here.
+- The property generator only renames a label every matched record actually carries (test/property/oracle/logql/doc.go's own documented critical-decision #3), so the missing-source silent-skip path is exercised by neither the property sweep nor either TXTAR fixture cited here (label\_format.txtar, edge\_label\_format\_rename\_and\_template.txtar) — it is implemented (applyLabelFmt's \`if v, ok := ...; ok\` guard) but unverified by any binding in this repository today.
+- \`| label\_format\`'s TEMPLATE mode (e.g. \`lvl="{{.severity}}"\`) is out of scope for both the property oracle (applyLabelFmt's \`if !f.Rename { continue }\` no-op) and this contract — only the rename form is claimed here.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -419,7 +419,7 @@ Third-party provenance for a PromQL compatibility test case attaches only to the
 
 ### LOGQL-LABEL-MATCHER-REGEX-ANCHORING
 
-A LogQL stream-selector matcher and a `| label=~"..."` label-filter matcher (=~ / !~) match a label's value only when the FULL pattern matches, never merely a substring it contains — `service_name=~"auth"` matches a stream only when service_name is exactly "auth", rejecting service_name="auth-service" even though "auth-service" contains "auth" as a prefix. This is the same anchoredRegexPattern mechanism internal/chsql/builder.go applies for every head sharing chplan.OpMatch/OpNotMatch (issue #1741).
+A LogQL stream-selector matcher and a \`| label=~"..."\` label-filter matcher (=~ / !~) match a label's value only when the FULL pattern matches, never merely a substring it contains — \`service\_name=~"auth"\` matches a stream only when service\_name is exactly "auth", rejecting service\_name="auth-service" even though "auth-service" contains "auth" as a prefix. This is the same anchoredRegexPattern mechanism internal/chsql/builder.go applies for every head sharing chplan.OpMatch/OpNotMatch (issue #1741).
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
@@ -472,7 +472,7 @@ A LogQL regex line filter (|~) matches using RE2 semantics identical to Loki's, 
 
 ### LOGQL-ORACLE-PARSER-LEAF-HELPER-BOUNDARY
 
-The from-scratch LogQL property oracle (test/property/oracle/logql.Evaluate, gated behind agpl_oracle) parses every generated query through Loki's own syntax.ParseExpr and, for stream-selector and leaf line-filter dispatch, keys directly off Loki's own loglib.LineMatchType constants and prometheus/model/labels.Matcher.Matches — so the oracle's agreement with cerberus on whether a query PARSES, and on which leaf match type a filter resolves to, is not independent evidence of either. What genuinely is independent, hand-written evaluation logic — never delegating to Loki's own pkg/logql/log pipeline engine or its NewFilter/LabelsFormatter implementations — is the oracle's own composition and execution: applyExpr/applyStages/applyLineFilter/applyLabelFmt walk the shared AST and apply matcher/filter/rename semantics against an in-memory record set directly, and the ip()/pattern-filter predicates in line_filters.go are hand-derived from Loki's documented reference semantics (pkg/logql/log/ip.go, pkg/logql/log/pattern) rather than calling those packages.
+The from-scratch LogQL property oracle (test/property/oracle/logql.Evaluate, gated behind agpl\_oracle) parses every generated query through Loki's own syntax.ParseExpr and, for stream-selector and leaf line-filter dispatch, keys directly off Loki's own loglib.LineMatchType constants and prometheus/model/labels.Matcher.Matches — so the oracle's agreement with cerberus on whether a query PARSES, and on which leaf match type a filter resolves to, is not independent evidence of either. What genuinely is independent, hand-written evaluation logic — never delegating to Loki's own pkg/logql/log pipeline engine or its NewFilter/LabelsFormatter implementations — is the oracle's own composition and execution: applyExpr/applyStages/applyLineFilter/applyLabelFmt walk the shared AST and apply matcher/filter/rename semantics against an in-memory record set directly, and the ip()/pattern-filter predicates in line\_filters.go are hand-derived from Loki's documented reference semantics (pkg/logql/log/ip.go, pkg/logql/log/pattern) rather than calling those packages.
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -492,12 +492,12 @@ The from-scratch LogQL property oracle (test/property/oracle/logql.Evaluate, gat
 
 **Blind spots:**
 
-- No automated import-boundary scan exists for this package, unlike test/spec/parityoracle's forbiddenOracleDeps scan (test/regression/parity_oracle_imports_test.go), which covers the separate in-process reference-differential oracle, not this from-scratch property oracle — the sharing/independence boundary this contract describes is asserted by the package's own doc comments and reviewed by a person reading them against the actual import list, not mechanically enforced.
+- No automated import-boundary scan exists for this package, unlike test/spec/parityoracle's forbiddenOracleDeps scan (test/regression/parity\_oracle\_imports\_test.go), which covers the separate in-process reference-differential oracle, not this from-scratch property oracle — the sharing/independence boundary this contract describes is asserted by the package's own doc comments and reviewed by a person reading them against the actual import list, not mechanically enforced.
 - This contract says nothing about whether the shared parser/leaf-type boundary itself is CORRECT — that is the compat lane's job (CLAUDE.md invariant 7), not this contract's; it only scopes what counts as independent evidence.
 
 ### LOGQL-PIPELINE-STAGE-ORDER
 
-A LogQL pipeline evaluates its stream-selector matchers first, then its MultiStages entries strictly left-to-right in source order: each stage that only tests rows (a line filter, an ordinary label filter) drops non-matching rows without mutating the label set, and each stage that only mutates rows (`label_format`) rewrites the label set without dropping rows — never the reverse for either kind. This matches both cerberus's own lowering (internal/logql/lower.go's lowerPipelineWithLabels, which ANDs each stage's SQL predicate onto the growing filter left-to-right) and the from-scratch property oracle's applyStages loop (test/property/oracle/logql/evaluator.go).
+A LogQL pipeline evaluates its stream-selector matchers first, then its MultiStages entries strictly left-to-right in source order: each stage that only tests rows (a line filter, an ordinary label filter) drops non-matching rows without mutating the label set, and each stage that only mutates rows (\`label\_format\`) rewrites the label set without dropping rows — never the reverse for either kind. This matches both cerberus's own lowering (internal/logql/lower.go's lowerPipelineWithLabels, which ANDs each stage's SQL predicate onto the growing filter left-to-right) and the from-scratch property oracle's applyStages loop (test/property/oracle/logql/evaluator.go).
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
@@ -518,7 +518,7 @@ A LogQL pipeline evaluates its stream-selector matchers first, then its MultiSta
 **Blind spots:**
 
 - The property oracle's random generator draws at most one pipeline stage per query (test/property/gen/logql.go's drawLogQLShape single-shapeID switch), so it never exercises a genuine multi-stage composition; this contract's ordering claim rests entirely on the fixed TXTAR fixture set cited below, not on a property sweep.
-- Cerberus's real lowering (lowerPipelineWithLabels) carries per-stage rules materially richer than what this contract or the from-scratch oracle model: the `| pattern` dynamic-label gate and its **error**/**error_details** skip-ahead special case, and post-fetch-only stages (`| line_format`, `| decolorize`) that return a nil SQL predicate and apply in Go after fetch. Neither the property oracle's two-stage-kind dispatch (LineFilterExpr, LabelFmtExpr) nor this contract's cited fixtures exercise that richer rule set as a swept property — only as fixed, pinned cases.
+- Cerberus's real lowering (lowerPipelineWithLabels) carries per-stage rules materially richer than what this contract or the from-scratch oracle model: the \`| pattern\` dynamic-label gate and its \_\_error\_\_/\_\_error\_details\_\_ skip-ahead special case, and post-fetch-only stages (\`| line\_format\`, \`| decolorize\`) that return a nil SQL predicate and apply in Go after fetch. Neither the property oracle's two-stage-kind dispatch (LineFilterExpr, LabelFmtExpr) nor this contract's cited fixtures exercise that richer rule set as a swept property — only as fixed, pinned cases.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -526,7 +526,7 @@ A LogQL pipeline evaluates its stream-selector matchers first, then its MultiSta
 
 ### LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE
 
-Cerberus's real Loki HTTP handler (the full parse->lower->optimize->emit->execute->post-process pipeline, chDB-backed) and the from-scratch property oracle (test/property/oracle/logql.Evaluate) are differentially compared over the log-stream MVP surface the oracle implements: stream selectors with all four matcher kinds, `|=`/`!=` substring line filters, `ip(...)` line filters, `|>`/`!>` pattern line filters (contains/excludes, plain/prefix/suffix forms), and `| label_format` rename — the 12 shape IDs gen.LogQLShapeIDs() enrolls. The verifier runs in two distinct ways that are both real, separate tests of the same mechanism rather than duplicate evidence of one: TestLogQL_Property draws a random dataset and query every iteration (rapid's default 100 iterations locally, 500 in the nightly `property` workflow), and TestLogQL_PropertyShapeRoster deterministically replays exactly one example per enrolled shape ID.
+Cerberus's real Loki HTTP handler (the full parse->lower->optimize->emit->execute->post-process pipeline, chDB-backed) and the from-scratch property oracle (test/property/oracle/logql.Evaluate) are differentially compared over the log-stream MVP surface the oracle implements: stream selectors with all four matcher kinds, \`|=\`/\`!=\` substring line filters, \`ip(...)\` line filters, \`|>\`/\`!>\` pattern line filters (contains/excludes, plain/prefix/suffix forms), and \`| label\_format\` rename — the 12 shape IDs gen.LogQLShapeIDs() enrolls. The verifier runs in two distinct ways that are both real, separate tests of the same mechanism rather than duplicate evidence of one: TestLogQL\_Property draws a random dataset and query every iteration (rapid's default 100 iterations locally, 500 in the nightly \`property\` workflow), and TestLogQL\_PropertyShapeRoster deterministically replays exactly one example per enrolled shape ID.
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -547,8 +547,8 @@ Cerberus's real Loki HTTP handler (the full parse->lower->optimize->emit->execut
 
 **Blind spots:**
 
-- This contract's evidence says nothing about metric-form LogQL (range/vector aggregation, `| unwrap`) — Evaluate's top-level switch rejects any expression that is not a bare *syntax.MatchersExpr or*syntax.PipelineExpr outright ("metric-form queries are out of scope for the MVP"); see LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE for that surface's own, non-property evidence.
-- TestLogQL_Property's random generator (logQLRandomShapeFamilies, test/property/gen/logql.go's drawLogQLShape) draws exactly one shape per iteration from the 12-shape roster and never composes two stages into one pipeline — so the random and roster runners together still never exercise genuine multi-stage ordering; see LOGQL-PIPELINE-STAGE-ORDER, whose evidence is TXTAR-only for exactly this reason.
+- This contract's evidence says nothing about metric-form LogQL (range/vector aggregation, \`| unwrap\`) — Evaluate's top-level switch rejects any expression that is not a bare \*syntax.MatchersExpr or \*syntax.PipelineExpr outright ("metric-form queries are out of scope for the MVP"); see LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE for that surface's own, non-property evidence.
+- TestLogQL\_Property's random generator (logQLRandomShapeFamilies, test/property/gen/logql.go's drawLogQLShape) draws exactly one shape per iteration from the 12-shape roster and never composes two stages into one pipeline — so the random and roster runners together still never exercise genuine multi-stage ordering; see LOGQL-PIPELINE-STAGE-ORDER, whose evidence is TXTAR-only for exactly this reason.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -556,7 +556,7 @@ Cerberus's real Loki HTTP handler (the full parse->lower->optimize->emit->execut
 
 ### LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY
 
-For a log-stream (non-metric) LogQL query, cerberus's own in-process reference-differential oracle (test/spec/parityoracle/logql, ARCH-HEAD-WIRE-001's wire-parity binding) is structurally exempted from every log-kind spec fixture (`parity_exempt: reason: log-query-answer`) because Loki's logqlmodel.Streams response has no element-wise correspondence with the row-shaped SELECT * output cerberus's own fixtures assert against — so passing wire-parity evidence for a log-stream query never comes from that in-process oracle. Genuine stream-row-body authority for a log-stream query instead comes only from the real external reference-Loki differential the compatibility/loki harness runs (the vendored loki-bench corpus, the cerberus-owned additive corpus, and the wrong-rejection burndown pass) or from the from-scratch property oracle (LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE). The harness's separate status-parity pass (status_parity.go) is narrower still — it asserts only that both backends agree on an HTTP REJECTION's status code for a fixed, uncontroversial set of invalid requests, never on a passing stream-row body, and must never be read as evidence of the latter.
+For a log-stream (non-metric) LogQL query, cerberus's own in-process reference-differential oracle (test/spec/parityoracle/logql, ARCH-HEAD-WIRE-001's wire-parity binding) is structurally exempted from every log-kind spec fixture (\`parity\_exempt: reason: log-query-answer\`) because Loki's logqlmodel.Streams response has no element-wise correspondence with the row-shaped SELECT \* output cerberus's own fixtures assert against — so passing wire-parity evidence for a log-stream query never comes from that in-process oracle. Genuine stream-row-body authority for a log-stream query instead comes only from the real external reference-Loki differential the compatibility/loki harness runs (the vendored loki-bench corpus, the cerberus-owned additive corpus, and the wrong-rejection burndown pass) or from the from-scratch property oracle (LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE). The harness's separate status-parity pass (status\_parity.go) is narrower still — it asserts only that both backends agree on an HTTP REJECTION's status code for a fixed, uncontroversial set of invalid requests, never on a passing stream-row body, and must never be read as evidence of the latter.
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -580,7 +580,7 @@ For a log-stream (non-metric) LogQL query, cerberus's own in-process reference-d
 
 **Blind spots:**
 
-- The parity_exempt reason is hand-authored prose per fixture; nothing mechanically proves EVERY log-kind fixture that should carry this exemption actually does — a newly added log-kind fixture that omits `-- parity_exempt --` would attempt the in-process comparison and presumably fail loudly rather than silently, but that failure mode is not itself independently pinned by a binding here.
+- The parity\_exempt reason is hand-authored prose per fixture; nothing mechanically proves EVERY log-kind fixture that should carry this exemption actually does — a newly added log-kind fixture that omits \`-- parity\_exempt --\` would attempt the in-process comparison and presumably fail loudly rather than silently, but that failure mode is not itself independently pinned by a binding here.
 - compatibility/loki's real reference-Loki differential is the actual body-level authority for stream-row correctness, but it runs only in the compat-logql CI lane (needs a live Docker reference stack — CLAUDE.md invariant 5's own real-substrate carve-out) and is scored, not chDB-executed; a wrong answer confined to a query shape neither the vendored nor the cerberus-owned corpus happens to draw carries no evidence here.
 
 **Complement gaps** (informational — does not change assurance above):
@@ -589,7 +589,7 @@ For a log-stream (non-metric) LogQL query, cerberus's own in-process reference-d
 
 ### LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE
 
-LogQL's structured-extraction stages (`| json`, `| logfmt`, `| unpack`, `| pattern` as a parser) and its metric-form surface (`| unwrap` and every range/vector aggregation) are evidenced by TXTAR chDB round-trip execution across the full spec corpus and, for the subset of fixtures that are not parity_exempt, the in-process reference-differential oracle — but carry NO property-oracle evidence at all. The from-scratch property oracle's top-level Evaluate rejects every expression that is not a bare *syntax.MatchersExpr or*syntax.PipelineExpr outright, and even within a PipelineExpr its applyStage switch recognizes only *syntax.LineFilterExpr and*syntax.LabelFmtExpr — every parser stage, `| unwrap`, `| drop`, and `| keep` fails closed as an unsupported oracle shape rather than being silently accepted.
+LogQL's structured-extraction stages (\`| json\`, \`| logfmt\`, \`| unpack\`, \`| pattern\` as a parser) and its metric-form surface (\`| unwrap\` and every range/vector aggregation) are evidenced by TXTAR chDB round-trip execution across the full spec corpus and, for the subset of fixtures that are not parity\_exempt, the in-process reference-differential oracle — but carry NO property-oracle evidence at all. The from-scratch property oracle's top-level Evaluate rejects every expression that is not a bare \*syntax.MatchersExpr or \*syntax.PipelineExpr outright, and even within a PipelineExpr its applyStage switch recognizes only \*syntax.LineFilterExpr and \*syntax.LabelFmtExpr — every parser stage, \`| unwrap\`, \`| drop\`, and \`| keep\` fails closed as an unsupported oracle shape rather than being silently accepted.
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
@@ -612,8 +612,8 @@ LogQL's structured-extraction stages (`| json`, `| logfmt`, `| unpack`, `| patte
 
 **Blind spots:**
 
-- Zero property-oracle evidence exists for this entire surface — see this contract's own required_evidence_classes, deliberately excluding "property"; LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE's own blind_spots names the exact two-kind (LineFilterExpr/LabelFmtExpr) ceiling this scope sits below.
-- Most structured-extraction and metric-aggregation TXTAR fixtures are parity_exempt for the same log-query-answer reason LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY documents; range_agg_without_grouping_unwrap.txtar (a metric-form, non-log-answer query) is one of the few unwrap fixtures with a real `-- parity --` section, so this contract's reference evidence is real but narrow — it does not generalize to every unwrap/range-aggregation shape the spec corpus otherwise pins only via chDB execution.
+- Zero property-oracle evidence exists for this entire surface — see this contract's own required\_evidence\_classes, deliberately excluding "property"; LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE's own blind\_spots names the exact two-kind (LineFilterExpr/LabelFmtExpr) ceiling this scope sits below.
+- Most structured-extraction and metric-aggregation TXTAR fixtures are parity\_exempt for the same log-query-answer reason LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY documents; range\_agg\_without\_grouping\_unwrap.txtar (a metric-form, non-log-answer query) is one of the few unwrap fixtures with a real \`-- parity --\` section, so this contract's reference evidence is real but narrow — it does not generalize to every unwrap/range-aggregation shape the spec corpus otherwise pins only via chDB execution.
 
 ### LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE
 
@@ -637,7 +637,7 @@ compatibility/loki/upstream-skip-baseline.txt pins the exact set of <suite>/<fil
 **Blind spots:**
 
 - The trip-wire only catches drift relative to this pinned file; if a corpus re-snapshot both changes an entry's skip: true status and is manually re-pinned via -regen-baseline in the same change without genuine triage, this contract's evidence would show the baseline as internally consistent while a real upstream regression or newly-available query went unexamined — the README's own regen procedure calls this out as a reviewer-discipline step, not something the trip-wire itself enforces.
-- This is distinct from CLAUDE.md invariant 7's blanket "no allow-lists, no tolerance files" rule: the file records what upstream's OWN corpus declines to run (a fact about the vendored snapshot), never a cerberus-side exemption for a query cerberus and Loki both attempt — cerberus-test-queries.yml's complete absence of a should_skip: consumer, and the forbid-deferral-adjacent CI gate rejecting any non-empty should_skip: block, is the mechanism that keeps the two concepts from being conflated in practice.
+- This is distinct from CLAUDE.md invariant 7's blanket "no allow-lists, no tolerance files" rule: the file records what upstream's OWN corpus declines to run (a fact about the vendored snapshot), never a cerberus-side exemption for a query cerberus and Loki both attempt — cerberus-test-queries.yml's complete absence of a should\_skip: consumer, and the forbid-deferral-adjacent CI gate rejecting any non-empty should\_skip: block, is the mechanism that keeps the two concepts from being conflated in practice.
 
 ## TraceQL (`HEAD-TRACEQL`)
 
@@ -645,7 +645,7 @@ compatibility/loki/upstream-skip-baseline.txt pins the exact set of <suite>/<fil
 
 ### TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION
 
-A scoped attribute reference (`resource.<key>` / `span.<key>`) reads only its own named map (ResourceAttributes / SpanAttributes respectively); an unscoped reference (`.<key>`) resolves span-first, falling back to the resource map only when the span map does not carry the key — matching reference Tempo's categorizeConditions plus span-then-resource AttributeFor precedence. Resolution is a coalesce, never an OR of the two maps: a key present with different values on each side resolves to the span's value alone.
+A scoped attribute reference (\`resource.<key>\` / \`span.<key>\`) reads only its own named map (ResourceAttributes / SpanAttributes respectively); an unscoped reference (\`.<key>\`) resolves span-first, falling back to the resource map only when the span map does not carry the key — matching reference Tempo's categorizeConditions plus span-then-resource AttributeFor precedence. Resolution is a coalesce, never an OR of the two maps: a key present with different values on each side resolves to the span's value alone.
 
 - scope: `head` · applicable heads: `HEAD-TRACEQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
@@ -669,7 +669,7 @@ A scoped attribute reference (`resource.<key>` / `span.<key>`) reads only its ow
 **Blind spots:**
 
 - The property generator's pools (TraceQLClusterPool, TraceQLHTTPMethodPool — test/property/gen/traceql.go) are small and fixed; the random sweep never exercises a resource+span key COLLISION (the same key name present in both maps with different values). Only the two unscoped-coalesce txtar fixtures exercise that shape, and they are fixed examples rather than a swept property.
-- Event, link, and instrumentation scopes (`event.<key>` / `link.<key>` / `instrumentation.<key>`) are lowered by a related but separate code path (childScopeAttrs / the ScopeAttributesColumn branch in internal/traceql/lower.go's lowerAttribute) that this contract does not cover.
+- Event, link, and instrumentation scopes (\`event.<key>\` / \`link.<key>\` / \`instrumentation.<key>\`) are lowered by a related but separate code path (childScopeAttrs / the ScopeAttributesColumn branch in internal/traceql/lower.go's lowerAttribute) that this contract does not cover.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -704,7 +704,7 @@ TraceQL has three structurally distinct sources of automated evidence, and none 
 **Blind spots:**
 
 - The in-process reference evaluator restricts every span to at most one Event and one Link (validateChildRecords, test/spec/parityoracle/traceql/oracle.go) because it flattens per-child attributes into one shared scope; a fixture needing two events sharing an attribute key on one span has no evidence from source (2) at all, only from source (3).
-- The live reference-runtime differential is itself not infallible: cerberus issue #2039 (open) documents an unresolved case (`{ duration > <dynamic attribute> }`) where the live reference Tempo binary's actual output contradicts Tempo's own documented, unit-tested evaluator semantics for the identical shape — a genuine reference-implementation defect upstream has not yet resolved, not a defect in cerberus's coercion. This contract records #2039 as an explicit, still-open conflict between authority sources (2) and (3); it is not permission to make cerberus emulate the (3)-side defect, and cerberus's own answer for that shape is checked against the specification and source (2) instead until #2039 resolves.
+- The live reference-runtime differential is itself not infallible: cerberus issue #2039 (open) documents an unresolved case (\`{ duration > <dynamic attribute> }\`) where the live reference Tempo binary's actual output contradicts Tempo's own documented, unit-tested evaluator semantics for the identical shape — a genuine reference-implementation defect upstream has not yet resolved, not a defect in cerberus's coercion. This contract records #2039 as an explicit, still-open conflict between authority sources (2) and (3); it is not permission to make cerberus emulate the (3)-side defect, and cerberus's own answer for that shape is checked against the specification and source (2) instead until #2039 resolves.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -712,7 +712,7 @@ TraceQL has three structurally distinct sources of automated evidence, and none 
 
 ### TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY
 
-The randomized TraceQL property sweep (test/property/traceql_test.go, test/property/oracle/traceql/evaluator.go) and its cerberus-side comparator express every outcome as ROW-COUNT equality over empty-label rows — never TraceID/SpanID identity, and never a full spanset or graph-structural comparison. Agreement on a property iteration is evidence that cerberus and the from-scratch oracle counted the same number of matching spans or trace-level aggregate results, never evidence that they identified the SAME spans/traces or preserved the same structural relationships between them. This evidence is explicitly partial and is complemented, never substituted, by the identity-aware in-process reference evaluator and the TraceID-keyed live reference-runtime differential (see TRACEQL-ORACLE-AUTHORITY-SEPARATION).
+The randomized TraceQL property sweep (test/property/traceql\_test.go, test/property/oracle/traceql/evaluator.go) and its cerberus-side comparator express every outcome as ROW-COUNT equality over empty-label rows — never TraceID/SpanID identity, and never a full spanset or graph-structural comparison. Agreement on a property iteration is evidence that cerberus and the from-scratch oracle counted the same number of matching spans or trace-level aggregate results, never evidence that they identified the SAME spans/traces or preserved the same structural relationships between them. This evidence is explicitly partial and is complemented, never substituted, by the identity-aware in-process reference evaluator and the TraceID-keyed live reference-runtime differential (see TRACEQL-ORACLE-AUTHORITY-SEPARATION).
 
 - scope: `head` · applicable heads: `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -731,7 +731,7 @@ The randomized TraceQL property sweep (test/property/traceql_test.go, test/prope
 
 **Blind spots:**
 
-- Because every OutcomeRow carries an empty label map by construction (both oracleFn and cerberusFn in test/property/traceql_test.go), the framework's CompareOutcomes groups every row under one label key "{}" — two runs that matched a DIFFERENT set of spans but the SAME COUNT are indistinguishable to this property lane; TRACEQL-ORACLE-AUTHORITY-SEPARATION's identity-aware sources are what close that gap, not this one.
+- Because every OutcomeRow carries an empty label map by construction (both oracleFn and cerberusFn in test/property/traceql\_test.go), the framework's CompareOutcomes groups every row under one label key "{}" — two runs that matched a DIFFERENT set of spans but the SAME COUNT are indistinguishable to this property lane; TRACEQL-ORACLE-AUTHORITY-SEPARATION's identity-aware sources are what close that gap, not this one.
 - The 17-shape roster (test/property/gen/shapes.go's traceQLShapeRoster) fixes which query shapes are drawn; a shape combination outside the roster (e.g. select() chained after a structural operator, or a nested aggregate) carries no property evidence of any kind, count-only or otherwise.
 
 **Complement gaps** (informational — does not change assurance above):
@@ -740,7 +740,7 @@ The randomized TraceQL property sweep (test/property/traceql_test.go, test/prope
 
 ### TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET
 
-`| select(<attr>, ...)` adds the named attributes as extra projected columns on an already-matched spanset; it never changes which spans or traces satisfy the preceding filter/structural/aggregate pipeline stage — a query's result row count (and TraceID/SpanID set) is identical with or without a trailing select().
+\`| select(<attr>, ...)\` adds the named attributes as extra projected columns on an already-matched spanset; it never changes which spans or traces satisfy the preceding filter/structural/aggregate pipeline stage — a query's result row count (and TraceID/SpanID set) is identical with or without a trailing select().
 
 - scope: `head` · applicable heads: `HEAD-TRACEQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
@@ -760,7 +760,7 @@ The randomized TraceQL property sweep (test/property/traceql_test.go, test/prope
 
 **Blind spots:**
 
-- The property oracle folds select() into the SAME row-count code path as a bare selector (test/property/oracle/traceql/evaluator.go's Evaluate: pipelineNone and pipelineSelect share one branch) — the property evidence proves row-count invariance, not that the PROJECTED COLUMN VALUES themselves are correct; that is the txtar fixtures' (select_attrs.txtar / select_one_attr.txtar / select_intrinsics.txtar) expected_rows job, not the property sweep's.
+- The property oracle folds select() into the SAME row-count code path as a bare selector (test/property/oracle/traceql/evaluator.go's Evaluate: pipelineNone and pipelineSelect share one branch) — the property evidence proves row-count invariance, not that the PROJECTED COLUMN VALUES themselves are correct; that is the txtar fixtures' (select\_attrs.txtar / select\_one\_attr.txtar / select\_intrinsics.txtar) expected\_rows job, not the property sweep's.
 - The generator draws only a single select() attribute (traceQLSelectShape always selects span.http.method); a multi-attribute select() list is exercised only by the txtar fixtures, never swept.
 
 **Complement gaps** (informational — does not change assurance above):
@@ -790,7 +790,7 @@ A TraceQL attribute comparison against a typed literal (boolean, duration, numbe
 **Blind spots:**
 
 - Coercion of array-valued attributes is entirely unexercised — Map(String, String) cannot represent an array-typed OTel attribute at all in this schema.
-- The differential evidence (bool_attr.txtar, unscoped_bool_attr.txtar, unscoped_bool_attr_false.txtar) exercises Boolean coercion only; an Int/Float/Duration attribute compared against a typed literal has property evidence (TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE's duration comparisons) but no dedicated LIVE differential fixture of its own — see TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY for the coercion mechanism itself, which this contract's own evidence corroborates only for the boolean case.
+- The differential evidence (bool\_attr.txtar, unscoped\_bool\_attr.txtar, unscoped\_bool\_attr\_false.txtar) exercises Boolean coercion only; an Int/Float/Duration attribute compared against a typed literal has property evidence (TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE's duration comparisons) but no dedicated LIVE differential fixture of its own — see TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY for the coercion mechanism itself, which this contract's own evidence corroborates only for the boolean case.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -798,7 +798,7 @@ A TraceQL attribute comparison against a typed literal (boolean, duration, numbe
 
 ### TRACEQL-STRUCTURAL-RELATION-SEMANTICS
 
-TraceQL's child relation (`A > B`) matches only a B span whose immediate ParentSpanId names an A-matching span; the descendant relation (`A >> B`) matches any B span reachable from an A-matching span through one or more parent edges, via Tempo's nested-set left/right containment test — never mere trace co-membership. The two relations are never conflated: a query written with one never silently behaves as the other.
+TraceQL's child relation (\`A > B\`) matches only a B span whose immediate ParentSpanId names an A-matching span; the descendant relation (\`A >> B\`) matches any B span reachable from an A-matching span through one or more parent edges, via Tempo's nested-set left/right containment test — never mere trace co-membership. The two relations are never conflated: a query written with one never silently behaves as the other.
 
 - scope: `head` · applicable heads: `HEAD-TRACEQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
@@ -822,7 +822,7 @@ TraceQL's child relation (`A > B`) matches only a B span whose immediate ParentS
 **Blind spots:**
 
 - gen.TraceQLDataset (test/property/gen/traceql.go) draws only a LINEAR parent→child chain per trace (traceQLMaxChainDepth=3, no branching tree) by its own documented design; a branching ancestor/descendant shape (two children of one parent, a diamond) is not exercised by this contract's property evidence.
-- Cerberus issue #2241 (closed) is the deterministic, non-random regression this same family once caught: TestTraceQLDescendantPropertyMatch in test/property/traceql_test.go pins that exact two-span descendant shape as a fixed reproducer. It is cited here for provenance only and is not counted as one of this contract's two required independence groups, because it exercises one fixed case rather than a swept property.
+- Cerberus issue #2241 (closed) is the deterministic, non-random regression this same family once caught: TestTraceQLDescendantPropertyMatch in test/property/traceql\_test.go pins that exact two-span descendant shape as a fixed reproducer. It is cited here for provenance only and is not counted as one of this contract's two required independence groups, because it exercises one fixed case rather than a swept property.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -831,7 +831,7 @@ TraceQL's child relation (`A > B`) matches only a B span whose immediate ParentS
 
 ### TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE
 
-count() and avg|min|max|sum(duration) in a TraceQL pipeline (`{ ... } | count() OP N`) are TRACE-scoped aggregates: each matching trace contributes independently, and the pipeline emits one result row per trace whose own aggregate satisfies the scalar filter — never a single corpus-wide aggregate across every matched span regardless of trace, and never a per-span aggregate.
+count() and avg|min|max|sum(duration) in a TraceQL pipeline (\`{ ... } | count() OP N\`) are TRACE-scoped aggregates: each matching trace contributes independently, and the pipeline emits one result row per trace whose own aggregate satisfies the scalar filter — never a single corpus-wide aggregate across every matched span regardless of trace, and never a per-span aggregate.
 
 - scope: `head` · applicable heads: `HEAD-TRACEQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
@@ -864,7 +864,7 @@ count() and avg|min|max|sum(duration) in a TraceQL pipeline (`{ ... } | count() 
 
 ### TRACEQL-TRANSPORT-ARM-INDEPENDENCE
 
-TraceQL's compatibility harness measures two independently-addressable transport arms against reference Tempo — HTTP (/api/search plus the tag/tag-values/metrics endpoints) and gRPC/h2c StreamingQuerier — with separate parity-ratchet head identities (`tempo` vs `tempo-grpc`) and separate score/report artifacts. A corpus case with no StreamingQuerier RPC counterpart (trace-by-id, search/recent — the service exposes exactly 7 RPCs) is excluded from the gRPC score's denominator and reported by name as skipped; it is never silently dropped and never credited toward gRPC coverage by running it over HTTP instead.
+TraceQL's compatibility harness measures two independently-addressable transport arms against reference Tempo — HTTP (/api/search plus the tag/tag-values/metrics endpoints) and gRPC/h2c StreamingQuerier — with separate parity-ratchet head identities (\`tempo\` vs \`tempo-grpc\`) and separate score/report artifacts. A corpus case with no StreamingQuerier RPC counterpart (trace-by-id, search/recent — the service exposes exactly 7 RPCs) is excluded from the gRPC score's denominator and reported by name as skipped; it is never silently dropped and never credited toward gRPC coverage by running it over HTTP instead.
 
 - scope: `head` · applicable heads: `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -884,8 +884,8 @@ TraceQL's compatibility harness measures two independently-addressable transport
 
 **Blind spots:**
 
-- grpcSupportsEndpoint's 7-RPC boundary (compatibility/tempo/driver/grpc_diff.go) is read off tempopb.StreamingQuerierService's CURRENT proto surface; a future Tempo release adding a trace-by-id RPC would not automatically re-enroll the traces/traces_v2 corpus cases for the gRPC arm — that needs a matching code change, not just a proto bump.
-- A case whose -- expect_status -- has no -- expect_grpc_code -- sibling (#1714) is ALSO excluded from the gRPC denominator, for a different reason (no canonical HTTP-status-to-gRPC-code mapping exists). Both exclusion classes land in the same 'skipped' report section, so a reader must check WHICH reason applies per case rather than assume every skip is the RPC-surface boundary.
+- grpcSupportsEndpoint's 7-RPC boundary (compatibility/tempo/driver/grpc\_diff.go) is read off tempopb.StreamingQuerierService's CURRENT proto surface; a future Tempo release adding a trace-by-id RPC would not automatically re-enroll the traces/traces\_v2 corpus cases for the gRPC arm — that needs a matching code change, not just a proto bump.
+- A case whose -- expect\_status -- has no -- expect\_grpc\_code -- sibling (#1714) is ALSO excluded from the gRPC denominator, for a different reason (no canonical HTTP-status-to-gRPC-code mapping exists). Both exclusion classes land in the same 'skipped' report section, so a reader must check WHICH reason applies per case rather than assume every skip is the RPC-surface boundary.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -913,7 +913,7 @@ OTel-ClickHouse stores every ordinary span/resource attribute as Map(String, Str
 **Blind spots:**
 
 - attrTypeHints only recovers a type from a comparison shape collectAttrTypeHints's AST walk reaches (a BinaryOperation or UnaryOperation inside a SpansetFilter's own Expression); an attribute compared only inside a pipeline stage the walk does not traverse still reaches the reference engine as a plain string, which could understate what cerberus's own lowering actually does there.
-- Coercion never runs when the ONLY comparison in a fixture is against a String literal, by design (isCoercibleHintType excludes TypeString) — so a fixture wanting to prove "a String-typed literal never coerces" needs a positive assertion in its own expected_rows, not just the absence of a hint.
+- Coercion never runs when the ONLY comparison in a fixture is against a String literal, by design (isCoercibleHintType excludes TypeString) — so a fixture wanting to prove "a String-typed literal never coerces" needs a positive assertion in its own expected\_rows, not just the absence of a hint.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -925,7 +925,7 @@ Contracts scoped to a signal spanning more than one head, or to the shared archi
 
 ### SIGNAL-ADMISSION-001
 
-Each API head owns its own admission budget, drawn from its own semaphore, wired into that head's own serving surface: HEAD-PROMQL's CERBERUS_ADMIT_PROM, HEAD-LOGQL's CERBERUS_ADMIT_LOKI, and HEAD-TRACEQL's CERBERUS_ADMIT_TEMPO each cap that head's own admit.New(BudgetRequest) semaphore, and HEAD-LOGQL additionally owns a fourth, fully independent budget — CERBERUS_ADMIT_TAIL, admit.NewTail(BudgetTail) — scoped only to the long-lived /tail WebSocket and drawn from a separate semaphore than HEAD-LOGQL's own request budget. Saturating any one of these four budgets rejects only a caller drawing on that budget: it consumes no capacity from, and triggers no rejection against, any of the other three. Rejection surfaces in the shape native to its caller's transport — an HTTP caller gets 503 Service Unavailable with a Retry-After header (admit.Limiter.Middleware), a gRPC stream gets codes.ResourceExhausted (admit.Limiter.StreamInterceptor), and an already-upgraded /tail WebSocket gets a 1013 (Try Again Later) close frame instead of either — and in every case, releasing a held slot returns its capacity regardless of whether the request completed, returned an error, or its handler panicked, so a subsequent caller on that same budget is admitted. This capacity-recovery guarantee is proven only at the in-process admission-semaphore layer; recovery of the separate ClickHouse connection a request's handler may have held is a distinct claim, owned by internal/chclient's own connection-teardown behavior and provable only against a real server, never by this contract's deterministic, no-network evidence.
+Each API head owns its own admission budget, drawn from its own semaphore, wired into that head's own serving surface: HEAD-PROMQL's CERBERUS\_ADMIT\_PROM, HEAD-LOGQL's CERBERUS\_ADMIT\_LOKI, and HEAD-TRACEQL's CERBERUS\_ADMIT\_TEMPO each cap that head's own admit.New(BudgetRequest) semaphore, and HEAD-LOGQL additionally owns a fourth, fully independent budget — CERBERUS\_ADMIT\_TAIL, admit.NewTail(BudgetTail) — scoped only to the long-lived /tail WebSocket and drawn from a separate semaphore than HEAD-LOGQL's own request budget. Saturating any one of these four budgets rejects only a caller drawing on that budget: it consumes no capacity from, and triggers no rejection against, any of the other three. Rejection surfaces in the shape native to its caller's transport — an HTTP caller gets 503 Service Unavailable with a Retry-After header (admit.Limiter.Middleware), a gRPC stream gets codes.ResourceExhausted (admit.Limiter.StreamInterceptor), and an already-upgraded /tail WebSocket gets a 1013 (Try Again Later) close frame instead of either — and in every case, releasing a held slot returns its capacity regardless of whether the request completed, returned an error, or its handler panicked, so a subsequent caller on that same budget is admitted. This capacity-recovery guarantee is proven only at the in-process admission-semaphore layer; recovery of the separate ClickHouse connection a request's handler may have held is a distinct claim, owned by internal/chclient's own connection-teardown behavior and provable only against a real server, never by this contract's deterministic, no-network evidence.
 
 - scope: `signal` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `design-decision` · status: `active` · owner: `cerberus-core`
@@ -958,10 +958,10 @@ Each API head owns its own admission budget, drawn from its own semaphore, wired
 
 **Blind spots:**
 
-- HEAD-TRACEQL's admission is exposed over both HTTP and gRPC (internal/api/tempo/grpc.NewServer's grpc.ChainStreamInterceptor(service.Limiter.StreamInterceptor(), ...)); the traceql-admission-wiring group's binding covers the HTTP surface only, and grpc-transport-rejection's binding proves admit.Limiter.StreamInterceptor()'s own behavior against a fake grpc.ServerStream, not that NewServer's real *grpc.Server actually invokes it end to end for a dialed client — that specific wiring gap is tracked as cerberus issue #3485, filed rather than silently widened into an existing binding's claim.
-- cross-head-budget-isolation is proven at the generic admit.Limiter level (internal/api/admit/chaos_test.go constructs two Limiter values directly and shows one's saturation does not touch the other); it does not itself prove cerberus's own process wiring never passes the SAME *admit.Limiter pointer to two heads — that risk is guarded by cmd/cerberus/main.go's admitLimiters struct (its own doc comment names the exact bug a positional 4-tuple of same-typed pointers would let compile and silently mount /tail on the query budget), not by an executable binding in this contract.
-- tail-budget-isolation's evidence proves the direction 'a saturated tail budget leaves the request budget fully admitting' (TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted) and the tail budget's own rejection shape (TestConformance_LokiTailRejectedAtTailCap); the symmetric direction — a saturated request budget still admits a fresh /tail upgrade — is internal/api/loki/conformance_test.go's TestConformance_LokiFullQueryBudgetLeavesTailAdmitted, cited here for completeness but not separately required, since it exercises the same underlying semaphore-independence claim this group already covers.
-- The semaphore-capacity-recovery group and the real-network-connection-teardown-boundary group prove two DIFFERENT resources' recovery on two DIFFERENT substrates, and neither implies the other: the admit package's own semaphore is an in-process integer counter released by a Go defer with no I/O at all (chaos_test.go's evidence, substrate runner, no chDB and no real ClickHouse), while the pooled ClickHouse connection a request's handler may have held is released — or destroyed — by clickhouse-go's real driver internals against a live TCP session, provable only against a genuine server (conn_teardown_integration_test.go's evidence, substrate real-clickhouse, gated behind the `integration` build tag and Docker, run via `just chclient-integration`). A request whose admission slot is proven to recover here can still have destroyed its underlying ClickHouse connection, and vice versa; this contract does not claim the two recover together.
+- HEAD-TRACEQL's admission is exposed over both HTTP and gRPC (internal/api/tempo/grpc.NewServer's grpc.ChainStreamInterceptor(service.Limiter.StreamInterceptor(), ...)); the traceql-admission-wiring group's binding covers the HTTP surface only, and grpc-transport-rejection's binding proves admit.Limiter.StreamInterceptor()'s own behavior against a fake grpc.ServerStream, not that NewServer's real \*grpc.Server actually invokes it end to end for a dialed client — that specific wiring gap is tracked as cerberus issue #3485, filed rather than silently widened into an existing binding's claim.
+- cross-head-budget-isolation is proven at the generic admit.Limiter level (internal/api/admit/chaos\_test.go constructs two Limiter values directly and shows one's saturation does not touch the other); it does not itself prove cerberus's own process wiring never passes the SAME \*admit.Limiter pointer to two heads — that risk is guarded by cmd/cerberus/main.go's admitLimiters struct (its own doc comment names the exact bug a positional 4-tuple of same-typed pointers would let compile and silently mount /tail on the query budget), not by an executable binding in this contract.
+- tail-budget-isolation's evidence proves the direction 'a saturated tail budget leaves the request budget fully admitting' (TestConformance\_LokiFullTailBudgetLeavesQueriesAdmitted) and the tail budget's own rejection shape (TestConformance\_LokiTailRejectedAtTailCap); the symmetric direction — a saturated request budget still admits a fresh /tail upgrade — is internal/api/loki/conformance\_test.go's TestConformance\_LokiFullQueryBudgetLeavesTailAdmitted, cited here for completeness but not separately required, since it exercises the same underlying semaphore-independence claim this group already covers.
+- The semaphore-capacity-recovery group and the real-network-connection-teardown-boundary group prove two DIFFERENT resources' recovery on two DIFFERENT substrates, and neither implies the other: the admit package's own semaphore is an in-process integer counter released by a Go defer with no I/O at all (chaos\_test.go's evidence, substrate runner, no chDB and no real ClickHouse), while the pooled ClickHouse connection a request's handler may have held is released — or destroyed — by clickhouse-go's real driver internals against a live TCP session, provable only against a genuine server (conn\_teardown\_integration\_test.go's evidence, substrate real-clickhouse, gated behind the \`integration\` build tag and Docker, run via \`just chclient-integration\`). A request whose admission slot is proven to recover here can still have destroyed its underlying ClickHouse connection, and vice versa; this contract does not claim the two recover together.
 - Admission control caps aggregate concurrency per process per head; it is not tenant fairness. Cerberus reads no tenant header on any serving path and ships no tenant isolation (docs/operations.md 'Security posture': 'Cerberus ships no authentication, no authorization, and no tenant isolation... No tenant header is read'), so a budget exhausted by one caller rejects every other caller on that same head indiscriminately, by design — this contract's per-head/per-budget separation is a concurrency-and-blast-radius boundary between HEADS and TRANSPORTS, never a fairness or isolation boundary between tenants or callers sharing one head.
 
 ### SIGNAL-LABEL-MATCHER-CONSISTENCY
@@ -995,7 +995,7 @@ A label matcher's equality and regex semantics behave identically across every h
 
 ### ARCH-AGPL-BINARY-REACHABILITY
 
-No AGPLv3 package is reachable from ./cmd/cerberus: `go list -deps ./cmd/cerberus`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.
+No AGPLv3 package is reachable from ./cmd/cerberus: \`go list -deps ./cmd/cerberus\`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl\_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1013,7 +1013,7 @@ No AGPLv3 package is reachable from ./cmd/cerberus: `go list -deps ./cmd/cerberu
 
 **Blind spots:**
 
-- agpl-clean.mjs checks build deps only (`go list -deps`, which excludes test imports by construction) of exactly one target, ./cmd/cerberus (AGPL_CLEAN_PACKAGE). A second binary entrypoint added anywhere else in the tree is not checked unless AGPL_CLEAN_PACKAGE is pointed at it or a second gate invocation is added — a new cmd/* package needing its own check is reviewer discipline to catch.
+- agpl-clean.mjs checks build deps only (\`go list -deps\`, which excludes test imports by construction) of exactly one target, ./cmd/cerberus (AGPL\_CLEAN\_PACKAGE). A second binary entrypoint added anywhere else in the tree is not checked unless AGPL\_CLEAN\_PACKAGE is pointed at it or a second gate invocation is added — a new cmd/\* package needing its own check is reviewer discipline to catch.
 - The gate matches on import PATH PREFIX (github.com/grafana/loki/, github.com/grafana/tempo/ minus pkg/tempopb); it cannot detect AGPL logic vendored under a different import path or copied directly into an Apache-licensed file — that is a licence-review judgment, not something a dependency-graph scan can see.
 - The wire-compatibility error strings this repo deliberately matches to grafana/loki / grafana/tempo (documented at each call site per this gate's own header) are verbatim text, not code reachability, and sit outside what this contract or its binding evaluates at all.
 
@@ -1044,7 +1044,7 @@ Predicate-evaluation authority belongs to the head that parsed it: a PromQL/LogQ
 
 - This contract's three required independence groups are deliberately per-predicate-kind and never satisfiable by one shared binding — a change that lets one kind's evaluation silently take on another's semantics (e.g. a line filter behaving like a label matcher's anchored equality) shows as one group losing its binding, never as a single global 'filtering is fine' pass.
 - It pins WHERE-authority (the plan-level chplan.Filter boundary and the optimizer's pushdown/transpose rules never changing a predicate's value), not each predicate kind's own external-spec fidelity — SIGNAL-LABEL-MATCHER-CONSISTENCY, LOGQL-LINE-FILTER-REGEX-SEMANTICS and TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION own that narrower, kind-specific claim.
-- The transpose rules' idempotence is proven by internal/optimizer/termination_test.go, shared evidence with ARCH-HEAD-OPTIMIZE-001; no binding here independently re-verifies that a TRANSPOSED Filter's predicate value survives the move for every one of the three predicate kinds — it inherits that proof rather than re-establishing it.
+- The transpose rules' idempotence is proven by internal/optimizer/termination\_test.go, shared evidence with ARCH-HEAD-OPTIMIZE-001; no binding here independently re-verifies that a TRANSPOSED Filter's predicate value survives the move for every one of the three predicate kinds — it inherits that proof rather than re-establishing it.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -1052,7 +1052,7 @@ Predicate-evaluation authority belongs to the head that parsed it: a PromQL/LogQ
 
 ### ARCH-HEAD-EMIT-001
 
-internal/chsql's typed-Frag emission (CLAUDE.md invariant 10) preserves the optimized plan's meaning: chsql.Emit's rendered clauses and ?-bound arguments correspond to the plan's own Expr tree, per internal/chsql's own TestEmit structural golden suite (test/spec/chsql, test/spec/codegen), and — per fixture — the emitted sql_optimized statement, executed against chDB, returns the plan's known-correct rows (each head's lower_test.go RunRoundTripSQL call).
+internal/chsql's typed-Frag emission (CLAUDE.md invariant 10) preserves the optimized plan's meaning: chsql.Emit's rendered clauses and ?-bound arguments correspond to the plan's own Expr tree, per internal/chsql's own TestEmit structural golden suite (test/spec/chsql, test/spec/codegen), and — per fixture — the emitted sql\_optimized statement, executed against chDB, returns the plan's known-correct rows (each head's lower\_test.go RunRoundTripSQL call).
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `design-decision` · status: `active` · owner: `cerberus-core`
@@ -1073,7 +1073,7 @@ internal/chsql's typed-Frag emission (CLAUDE.md invariant 10) preserves the opti
 **Blind spots:**
 
 - internal/chsql is ONE shared emitter package used identically by all three heads, not three separate implementations, so this contract's assurance is deliberately two independent verification approaches (a structural golden suite and a chDB-executed round trip) rather than three per-head independence groups — test/spec/chsql's own fixture corpus already draws from PromQL-, LogQL-, and TraceQL-originated plan shapes, so head coverage is real but not tracked as a separate group per head here.
-- The chDB round-trip binding (chsql-emit-roundtrip) reuses the SAME fixture execution ARCH-HEAD-LOWER-001 and ARCH-HEAD-OPTIMIZE-001 also draw evidence from: a failure there does not by itself say whether lowering, optimizing, or emitting was the wrong stage — bisecting requires reading the fixture's own pre-optimizer chplan/sql sections alongside sql_optimized, which is reviewer work this binding does not automate.
+- The chDB round-trip binding (chsql-emit-roundtrip) reuses the SAME fixture execution ARCH-HEAD-LOWER-001 and ARCH-HEAD-OPTIMIZE-001 also draw evidence from: a failure there does not by itself say whether lowering, optimizing, or emitting was the wrong stage — bisecting requires reading the fixture's own pre-optimizer chplan/sql sections alongside sql\_optimized, which is reviewer work this binding does not automate.
 - TestEmit's structural golden suite has no chDB tag (per .github/scripts/lib/golden-shards.mjs's chsql shard entry) — it proves the rendered SQL TEXT matches the golden, never that the golden itself executes to the right rows; that proof is exactly what the roundtrip binding supplies, and neither binding alone is sufficient.
 
 **Complement gaps** (informational — does not change assurance above):
@@ -1082,7 +1082,7 @@ internal/chsql's typed-Frag emission (CLAUDE.md invariant 10) preserves the opti
 
 ### ARCH-HEAD-LOWER-001
 
-Each head's lowering step — internal/promql/lower.go, internal/logql/lower.go, internal/traceql/lower.go, invoked inside that head's own Lang.Parse — preserves the accepted query's declared semantics into the shared chplan IR: the pre-optimizer plan's emitted SQL, executed against the fixture's seeded chDB data, returns the same rows the query's own language declares (test/spec/roundtrip.go's expected_rows, the pre-optimizer ground truth).
+Each head's lowering step — internal/promql/lower.go, internal/logql/lower.go, internal/traceql/lower.go, invoked inside that head's own Lang.Parse — preserves the accepted query's declared semantics into the shared chplan IR: the pre-optimizer plan's emitted SQL, executed against the fixture's seeded chDB data, returns the same rows the query's own language declares (test/spec/roundtrip.go's expected\_rows, the pre-optimizer ground truth).
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `design-decision` · status: `active` · owner: `cerberus-core`
@@ -1106,7 +1106,7 @@ Each head's lowering step — internal/promql/lower.go, internal/logql/lower.go,
 
 - The chDB round trip proves the fixture corpus's own cases only — it is not exhaustive over PromQL's, LogQL's, or TraceQL's full grammar, and a query shape no fixture exercises carries no evidence here.
 - It executes the PRE-optimizer SQL (chsql.Emit of the lowered, not-yet-optimized plan, per CLAUDE.md's own note that the promql spec lane runs pre-optimizer); it says nothing about whether a later optimizer rewrite preserves that same semantics — that is ARCH-HEAD-OPTIMIZE-001's job, not this contract's.
-- A lowering bug that produces the wrong plan but happens to still satisfy the fixture's own expected_rows (because that fixture's seed/predicate combination cannot discriminate it) would not be caught here; ARCH-HEAD-WIRE-001's live reference-engine differential is the independent backstop for exactly that failure mode.
+- A lowering bug that produces the wrong plan but happens to still satisfy the fixture's own expected\_rows (because that fixture's seed/predicate combination cannot discriminate it) would not be caught here; ARCH-HEAD-WIRE-001's live reference-engine differential is the independent backstop for exactly that failure mode.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -1114,7 +1114,7 @@ Each head's lowering step — internal/promql/lower.go, internal/logql/lower.go,
 
 ### ARCH-HEAD-OPTIMIZE-001
 
-internal/optimizer's rewrites never change a query's observable outcome: every rule is proven idempotent and the driver is proven convergent under its iteration cap (internal/optimizer/termination_test.go), each fixture's pinned pre/post-optimizer SQL and chplan snapshots (the optimized/unoptimized and chplan_optimized/chplan_unoptimized sections cerberus issue #3335 added) show the two stages diverge only in reviewed, expected ways, and internal/optimizer/property_test.go's chDB-executed property test confirms randomly generated plans return identical row sets before and after Default().Run, over the roster internal/optimizer/property_coverage_test.go maintains.
+internal/optimizer's rewrites never change a query's observable outcome: every rule is proven idempotent and the driver is proven convergent under its iteration cap (internal/optimizer/termination\_test.go), each fixture's pinned pre/post-optimizer SQL and chplan snapshots (the optimized/unoptimized and chplan\_optimized/chplan\_unoptimized sections cerberus issue #3335 added) show the two stages diverge only in reviewed, expected ways, and internal/optimizer/property\_test.go's chDB-executed property test confirms randomly generated plans return identical row sets before and after Default().Run, over the roster internal/optimizer/property\_coverage\_test.go maintains.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `design-decision` · status: `active` · owner: `cerberus-core`
@@ -1137,13 +1137,13 @@ internal/optimizer's rewrites never change a query's observable outcome: every r
 
 **Blind spots:**
 
-- internal/optimizer/termination_test.go pins idempotence and convergence PER RULE; it does not itself assert that a rewrite preserves the query's answer, only that repeated application stabilizes — a rule could converge to a stable but wrong rewrite and this binding alone would not catch it.
-- The optimized/unoptimized SQL and chplan pairs (test/spec/optimizer, and the sql_optimized/chplan sections every promql/logql/traceql fixture also carries) are TEXT-EQUALITY snapshots: they pin the exact rewrite shape for the fixtures that exist, but two SQL strings that differ yet are semantically equivalent under ClickHouse's real execution would show as an unrelated-looking diff here, not a false pass — and a byte-identical pair alone proves nothing about the two statements' actual result rows without chDB execution.
-- internal/optimizer/property_test.go's generator grammar is narrow (Scan/Filter/Project plus a small predicate language over one seed table) per its own doc comment; internal/optimizer/property_coverage_test.go's uncoveredOptimizerKinds ledger names exactly which chplan node kinds (NestedSetAnnotate, StructuralJoin, TopK, VectorJoin at last count) the property never round-trips and why — those kinds' optimizer treatment relies on the TXTAR structural pair and reviewer discipline alone, not property-based semantic proof.
+- internal/optimizer/termination\_test.go pins idempotence and convergence PER RULE; it does not itself assert that a rewrite preserves the query's answer, only that repeated application stabilizes — a rule could converge to a stable but wrong rewrite and this binding alone would not catch it.
+- The optimized/unoptimized SQL and chplan pairs (test/spec/optimizer, and the sql\_optimized/chplan sections every promql/logql/traceql fixture also carries) are TEXT-EQUALITY snapshots: they pin the exact rewrite shape for the fixtures that exist, but two SQL strings that differ yet are semantically equivalent under ClickHouse's real execution would show as an unrelated-looking diff here, not a false pass — and a byte-identical pair alone proves nothing about the two statements' actual result rows without chDB execution.
+- internal/optimizer/property\_test.go's generator grammar is narrow (Scan/Filter/Project plus a small predicate language over one seed table) per its own doc comment; internal/optimizer/property\_coverage\_test.go's uncoveredOptimizerKinds ledger names exactly which chplan node kinds (NestedSetAnnotate, StructuralJoin, TopK, VectorJoin at last count) the property never round-trips and why — those kinds' optimizer treatment relies on the TXTAR structural pair and reviewer discipline alone, not property-based semantic proof.
 
 ### ARCH-HEAD-WIRE-001
 
-Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower_test.go) over the same seeded data, and the two answers are compared.
+Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower\_test.go) over the same seeded data, and the two answers are compared.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
@@ -1166,7 +1166,7 @@ Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/te
 **Blind spots:**
 
 - test/spec's parity section evaluates the answer the reference engine's IN-PROCESS evaluator computes for the same query; it is complementary to, and does not imply, the separate compatibility/{prometheus,loki,tempo} differential harness's own corpus (just compat-promql / compat-logql / compat-traceql) — neither mechanism's coverage stands in for the other.
-- Tempo's parity evidence requires the chdb_agpl_oracle build tag combination (parity_tempo_chdb_agpl_oracle.go); a plain chdb-tagged run compiles in parity_tempo_absent.go instead, which fails loudly rather than silently skipping (per that file's own doc) — so Tempo assurance for this contract is only real when the tagged lane actually runs, not merely when a fixture carries a parity section. LogQL's loki oracle carries the identical AGPL gating.
+- Tempo's parity evidence requires the chdb\_agpl\_oracle build tag combination (parity\_tempo\_chdb\_agpl\_oracle.go); a plain chdb-tagged run compiles in parity\_tempo\_absent.go instead, which fails loudly rather than silently skipping (per that file's own doc) — so Tempo assurance for this contract is only real when the tagged lane actually runs, not merely when a fixture carries a parity section. LogQL's loki oracle carries the identical AGPL gating.
 - A fixture's parity section may declare scope: full or the single named ScopeExceptZeroBucket exclusion (test/spec/parity.go) — an excluded axis is a documented, machine-checked carve-out, not a hidden gap, but it means 'wire contract preserved' is proven up to that fixture's own declared scope, not unconditionally for every fixture.
 
 **Complement gaps** (informational — does not change assurance above):
@@ -1175,7 +1175,7 @@ Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/te
 
 ### ARCH-NO-QUERY-RESULT-CACHING
 
-No head ever caches a query's result; the only carve-out is ClickHouse's own result_cache, stamped solely on closed, now()-free windows, per CLAUDE.md invariant 12.
+No head ever caches a query's result; the only carve-out is ClickHouse's own result\_cache, stamped solely on closed, now()-free windows, per CLAUDE.md invariant 12.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1197,12 +1197,12 @@ No head ever caches a query's result; the only carve-out is ClickHouse's own res
 **Blind spots:**
 
 - This contract pins the absence of a forbidden pattern; it cannot prove no equivalent caching effect is achieved through some other undetected mechanism.
-- eligibleForResultCache (internal/engine/query_settings_rules.go) and its table-driven tests in internal/engine/result_cache_test.go and internal/engine/result_cache_data_window_test.go pin the three real constraints this carve-out depends on: every evaluated window's DATA edge must sit strictly before now-minus-CERBERUS_RESULT_CACHE_INGEST_LAG (TestEligibleForResultCache_ClosedWindow_Eligible / LiveEdgeWindow_NotEligible / BoundaryIsExclusive / TestApply_ResultCache_NotStampedWithoutIngestLagMargin), a zero-time Start/End sentinel — which resolves to a bare now()/now64() at emit time — is never eligible (TestEligibleForResultCache_ZeroTimeSentinel_NotEligible), and a plan carrying a literal now()/now64() FuncCall anywhere in its Expr tree is rejected outright as a second, independent leg (TestEligibleForResultCache_NowExprPresent_NotEligible, TestPlanHasNowExpr) even where the window-closed check alone would have passed.
-- The window-closed judgment reads each chplan.GridCarrier's DATA window end (offset-adjusted), not the request grid's End — a selector's negative offset can shift evaluation forward past the request window (see eligibleForResultCache's own doc comment and cerberus issue #2895, where judging End alone stamped the cache on a window ClickHouse's own cache veto then rejected for a different query shape, tripping the chclient circuit breaker). This carve-out's evidence is exhaustive over every GridCarrier and every now()/now64() FuncCall reachable from the plan by construction (chplan.WalkDeep + InspectNodeExprs), but only over what the plan IR can express — a ClickHouse setting that could independently reintroduce non-determinism is ClickHouse's own responsibility, covered by the co-stamped query_cache_nondeterministic_function_handling=ignore setting, not by this contract.
+- eligibleForResultCache (internal/engine/query\_settings\_rules.go) and its table-driven tests in internal/engine/result\_cache\_test.go and internal/engine/result\_cache\_data\_window\_test.go pin the three real constraints this carve-out depends on: every evaluated window's DATA edge must sit strictly before now-minus-CERBERUS\_RESULT\_CACHE\_INGEST\_LAG (TestEligibleForResultCache\_ClosedWindow\_Eligible / LiveEdgeWindow\_NotEligible / BoundaryIsExclusive / TestApply\_ResultCache\_NotStampedWithoutIngestLagMargin), a zero-time Start/End sentinel — which resolves to a bare now()/now64() at emit time — is never eligible (TestEligibleForResultCache\_ZeroTimeSentinel\_NotEligible), and a plan carrying a literal now()/now64() FuncCall anywhere in its Expr tree is rejected outright as a second, independent leg (TestEligibleForResultCache\_NowExprPresent\_NotEligible, TestPlanHasNowExpr) even where the window-closed check alone would have passed.
+- The window-closed judgment reads each chplan.GridCarrier's DATA window end (offset-adjusted), not the request grid's End — a selector's negative offset can shift evaluation forward past the request window (see eligibleForResultCache's own doc comment and cerberus issue #2895, where judging End alone stamped the cache on a window ClickHouse's own cache veto then rejected for a different query shape, tripping the chclient circuit breaker). This carve-out's evidence is exhaustive over every GridCarrier and every now()/now64() FuncCall reachable from the plan by construction (chplan.WalkDeep + InspectNodeExprs), but only over what the plan IR can express — a ClickHouse setting that could independently reintroduce non-determinism is ClickHouse's own responsibility, covered by the co-stamped query\_cache\_nondeterministic\_function\_handling=ignore setting, not by this contract.
 
 ### ARCH-NO-SILENT-SKIP-OR-TOLERANCE
 
-No test suite silently skips, soft-asserts, silently recovers, or tolerates an expected failure: a Go test never calls t.Skip / t.Skipf / t.SkipNow, never soft-asserts via assert.Contains(x, "") or assert.ElementsMatch(x, []T{}), and never wraps a panic in defer recover() to swallow it; a compatibility overlay never carries a non-empty should_skip: block; no test escape-hatch token (EXPECTED_TOLERATED, isKnownTolerated, skipReason, and siblings) exists outside its own documented origin; a Playwright spec never calls test.skip / test.fixme / test.only; and a Gherkin scenario never carries one of forbid-skip.mjs's scenario-suppressing tags (its own 'feature-discipline' CHECK names the closed set) nor routes through godog.ErrSkip / ErrPending.
+No test suite silently skips, soft-asserts, silently recovers, or tolerates an expected failure: a Go test never calls t.Skip / t.Skipf / t.SkipNow, never soft-asserts via assert.Contains(x, "") or assert.ElementsMatch(x, \[\]T{}), and never wraps a panic in defer recover() to swallow it; a compatibility overlay never carries a non-empty should\_skip: block; no test escape-hatch token (EXPECTED\_TOLERATED, isKnownTolerated, skipReason, and siblings) exists outside its own documented origin; a Playwright spec never calls test.skip / test.fixme / test.only; and a Gherkin scenario never carries one of forbid-skip.mjs's scenario-suppressing tags (its own 'feature-discipline' CHECK names the closed set) nor routes through godog.ErrSkip / ErrPending.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1221,12 +1221,12 @@ No test suite silently skips, soft-asserts, silently recovers, or tolerates an e
 **Blind spots:**
 
 - forbid-skip.mjs is a fixed regex/perl pattern set (documented in docs/forbid-skip.md, pinned byte-identical by scripts/test-forbid-skip.sh) — it recognizes exactly the CANONICAL spellings of each pattern it was written against. A functionally equivalent skip dressed in an unrecognized shape (a helper function wrapping t.Skip, a differently-named escape-hatch constant, a soft assertion built from a different matcher) is not detected.
-- The 'escape-hatch' scan's token list (EXPECTED_EMPTY, EXPECTED_TOLERATED, isKnownTolerated, tolerated404, expect.soft, should_tolerate, skipReason, SkipReason, and two named dashboard-noise constants) is the CURRENT enumerated vocabulary, not a closed grammar — a new escape-hatch idiom under a name not on this list ships clean until the list is extended.
+- The 'escape-hatch' scan's token list (EXPECTED\_EMPTY, EXPECTED\_TOLERATED, isKnownTolerated, tolerated404, expect.soft, should\_tolerate, skipReason, SkipReason, and two named dashboard-noise constants) is the CURRENT enumerated vocabulary, not a closed grammar — a new escape-hatch idiom under a name not on this list ships clean until the list is extended.
 - The one legitimate pinned exception this repo carries — compatibility/loki/upstream-skip-baseline.txt, the corpus entries upstream itself marks skip: true — sits outside this scan's pathspecs by design (CLAUDE.md invariant 7); this contract does not itself distinguish a new, illegitimate tolerance file from that one sanctioned exception.
 
 ### ARCH-PACKAGE-DEPENDENCY-DECLARATION
 
-Every internal/**package is declared in exactly one component of .go-arch-lint.yml (or as a commonComponent, importable from every layer), and every internal/** package that carries statements is enrolled with a floor in test/coverage-floor/. Both registrations are required for a new package; go-arch-lint enforces the first, coverage-package-floor.mjs the second, and both gates run in CI.
+Every internal/\*\* package is declared in exactly one component of .go-arch-lint.yml (or as a commonComponent, importable from every layer), and every internal/\*\* package that carries statements is enrolled with a floor in test/coverage-floor/. Both registrations are required for a new package; go-arch-lint enforces the first, coverage-package-floor.mjs the second, and both gates run in CI.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1247,12 +1247,12 @@ Every internal/**package is declared in exactly one component of .go-arch-lint.y
 **Blind spots:**
 
 - go-arch-lint's layering check and coverage-package-floor.mjs's ledger check are two SEPARATE registrations for one new package; a package declared in .go-arch-lint.yml but never enrolled in test/coverage-floor/ (or the reverse) is only half-caught — each binding here proves its own half, and neither proves the other.
-- go-arch-lint's CI job run is the only reliable evidence for the layering half: this repo's own operating record shows a local golangci-lint or go-arch-lint invocation from an agent worktree can report clean without having genuinely analysed. coverage-package-floor.mjs's ledger-enrollment half is different — it shells out only to `go list` and `go tool cover` (no chDB, no containers, no real test run), so it is genuinely runnable and trustworthy locally; only the go-arch-lint half needs a real CI `lint` job run to count as evidence.
-- test/coverage-floor/ is a RATCHET, not a correctness proof: coverage-package-floor.mjs enforces that every package with statements has SOME committed floor and that a PR cannot lower it, but the floor VALUE itself is whatever `just update-coverage-floor` last measured — a low floor for a genuinely under-tested package is a reviewable line in a diff, not something this gate can flag as insufficient on its own.
+- go-arch-lint's CI job run is the only reliable evidence for the layering half: this repo's own operating record shows a local golangci-lint or go-arch-lint invocation from an agent worktree can report clean without having genuinely analysed. coverage-package-floor.mjs's ledger-enrollment half is different — it shells out only to \`go list\` and \`go tool cover\` (no chDB, no containers, no real test run), so it is genuinely runnable and trustworthy locally; only the go-arch-lint half needs a real CI \`lint\` job run to count as evidence.
+- test/coverage-floor/ is a RATCHET, not a correctness proof: coverage-package-floor.mjs enforces that every package with statements has SOME committed floor and that a PR cannot lower it, but the floor VALUE itself is whatever \`just update-coverage-floor\` last measured — a low floor for a genuinely under-tested package is a reviewable line in a diff, not something this gate can flag as insufficient on its own.
 
 ### ARCH-PARSER-ACCESSOR-DISCIPLINE
 
-No package under internal/**uses unsafe.Pointer or reflect.Value.FieldByName against an upstream parser's internals; when cerberus needs a field or method a parser does not export, the accessor is added to the relevant tsouza/* upstream fork (docs/upstream-forks.md), the go.mod replace directive is bumped, and internal/** consumes the typed accessor instead.
+No package under internal/\*\* uses unsafe.Pointer or reflect.Value.FieldByName against an upstream parser's internals; when cerberus needs a field or method a parser does not export, the accessor is added to the relevant tsouza/\* upstream fork (docs/upstream-forks.md), the go.mod replace directive is bumped, and internal/\*\* consumes the typed accessor instead.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1271,12 +1271,12 @@ No package under internal/**uses unsafe.Pointer or reflect.Value.FieldByName aga
 **Blind spots:**
 
 - The golangci-lint forbidigo rule resolves identifiers through Go's type checker (analyze-types: true), so it catches unsafe.Pointer and reflect.Value.FieldByName under an aliased import, but only those two exact symbols — a different reflect entry point that reaches the same field (reflect.Value.Field(i) by numeric index, for instance) is not named in .golangci.yml's forbid list and is not caught.
-- This repo's own operating record shows a plain golangci-lint invocation from an agent worktree can report "No issues found" WITHOUT actually analysing (a poisoned or cross-worktree-polluted cache, or a run against the wrong build-tag set) — a local green run is not evidence this contract holds; only a real CI `lint` job run is, per CLAUDE.md invariant 5's own three CI-only lanes.
-- The rule fires only inside internal/**, inverted via `path-except` in .golangci.yml's exclusions; a package genuinely needing one of these patterns outside internal/** (there is none today) would ship unreviewed by this gate.
+- This repo's own operating record shows a plain golangci-lint invocation from an agent worktree can report "No issues found" WITHOUT actually analysing (a poisoned or cross-worktree-polluted cache, or a run against the wrong build-tag set) — a local green run is not evidence this contract holds; only a real CI \`lint\` job run is, per CLAUDE.md invariant 5's own three CI-only lanes.
+- The rule fires only inside internal/\*\*, inverted via \`path-except\` in .golangci.yml's exclusions; a package genuinely needing one of these patterns outside internal/\*\* (there is none today) would ship unreviewed by this gate.
 
 ### ARCH-REGENERATED-ARTIFACTS-ONLY
 
-Every generated artefact family (the test/spec/ TXTAR goldens, the solver decision baseline, the parity ledgers, the cardinality baseline, the coverage-floor ledger, and their siblings) is rewritten only by its `just update-golden <shard>` recipe (or, for the coverage floor, `just update-coverage-floor`), never hand-edited. `just update-golden` refuses to run against a shard set narrower than the current diff implies, and every generated path is marked `-merge` in .gitattributes so a three-way line merge conflicts loudly instead of silently blending records.
+Every generated artefact family (the test/spec/ TXTAR goldens, the solver decision baseline, the parity ledgers, the cardinality baseline, the coverage-floor ledger, and their siblings) is rewritten only by its \`just update-golden <shard>\` recipe (or, for the coverage floor, \`just update-coverage-floor\`), never hand-edited. \`just update-golden\` refuses to run against a shard set narrower than the current diff implies, and every generated path is marked \`-merge\` in .gitattributes so a three-way line merge conflicts loudly instead of silently blending records.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1296,14 +1296,14 @@ Every generated artefact family (the test/spec/ TXTAR goldens, the solver decisi
 
 **Blind spots:**
 
-- TestUpdateGoldenRefusesAnUncoveredShardSet and its siblings in test/regression/golden_shard_coverage_test.go pin that the recipe REFUSES an under-covering shard argument; they do not prove a committed golden's bytes are byte-identical to a fresh regeneration — a contributor who runs the right shard, then hand-edits the result afterward, is not caught by this binding.
-- TestNoGeneratedArtifactEscapesTheMergeGate and TestGeneratedArtifactsRefuseLineMerge (test/regression/generated_artifact_merge_gate_test.go) pin that every glob under generated territory carries -merge or a documented handAuthoredMarker exemption; they detect a MISSING -merge marking, not a hand-edited value that still parses and still carries a plausible shape — exactly the PR #1422 failure mode: JSON that blended cleanly, parsed, and was silently wrong.
+- TestUpdateGoldenRefusesAnUncoveredShardSet and its siblings in test/regression/golden\_shard\_coverage\_test.go pin that the recipe REFUSES an under-covering shard argument; they do not prove a committed golden's bytes are byte-identical to a fresh regeneration — a contributor who runs the right shard, then hand-edits the result afterward, is not caught by this binding.
+- TestNoGeneratedArtifactEscapesTheMergeGate and TestGeneratedArtifactsRefuseLineMerge (test/regression/generated\_artifact\_merge\_gate\_test.go) pin that every glob under generated territory carries -merge or a documented handAuthoredMarker exemption; they detect a MISSING -merge marking, not a hand-edited value that still parses and still carries a plausible shape — exactly the PR #1422 failure mode: JSON that blended cleanly, parsed, and was silently wrong.
 - post-merge-drift.yml re-regenerates and diffs the tree-wide-derived artefacts (the parity ledgers, the cardinality baseline, the solver decision baseline) against what landed on main, but only AFTER a merge — it is deliberately not a required, PR-blocking check (there is no PR left to block by the time it runs), so any drift it catches has already reached main.
 - A new generated artefact family that forgets to add its glob to .gitattributes' -merge list, or forgets to register its regeneration in golden-shards.mjs's coverage derivation, is not caught by any binding here — that registration is reviewer discipline at the time the new family is introduced.
 
 ### ARCH-TYPED-SQL-ONLY
 
-internal/chsql/**composes ClickHouse SQL exclusively through typed chsql Frags (QueryBuilder slots, and expression constructors such as Call / Eq / And / Cast / Lambda1 / Subquery / InlineLit); no file outside internal/chsql/builder.go and the two KNOWN_GOOD sites in internal/chsql/emit_node.go and internal/chsql/emit.go writes a raw SQL token via strings.Builder, writeSQL(...), or sb.Write*, and no verbatim(...) call anywhere in internal/chsql/** builds an expression shape via string concatenation.
+internal/chsql/\*\* composes ClickHouse SQL exclusively through typed chsql Frags (QueryBuilder slots, and expression constructors such as Call / Eq / And / Cast / Lambda1 / Subquery / InlineLit); no file outside internal/chsql/builder.go and the two KNOWN\_GOOD sites in internal/chsql/emit\_node.go and internal/chsql/emit.go writes a raw SQL token via strings.Builder, writeSQL(...), or sb.Write\*, and no verbatim(...) call anywhere in internal/chsql/\*\* builds an expression shape via string concatenation.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1323,9 +1323,9 @@ internal/chsql/**composes ClickHouse SQL exclusively through typed chsql Frags (
 
 **Blind spots:**
 
-- forbid-sql-raw.mjs and forbid-verbatim-concat.mjs together enforce only the mechanically detectable half of CLAUDE.md invariant 10: raw-write primitives (strings.Builder / writeSQL / sb.Write*) and verbatim() calls built via string concatenation, both scoped to internal/chsql/**. Neither scanner catches fmt.Sprintf-built SQL, +-concatenation of a SQL fragment outside internal/chsql, or the semantic question of whether an existing typed Frag could replace a given raw write — a reviewer must judge those.
-- The KNOWN_GOOD exemption sets (forbid-sql-raw.mjs's two files, forbid-verbatim-concat.mjs's three content-keyed entries) are a narrow, reviewed inventory of pre-approved sites, not a blanket exemption for their files: forbid-verbatim-concat.mjs's own staleness check fails the moment an exempted argument text no longer appears verbatim, so a new raw write or shape-building call in an exempted file still trips the scan wherever it does not match an existing entry exactly.
-- Neither scanner runs outside internal/chsql/**; CLAUDE.md invariant 10 states the underlying rule 'everywhere', so a raw-SQL string assembled inside, say, internal/engine or internal/api is not caught by either binding here at all.
+- forbid-sql-raw.mjs and forbid-verbatim-concat.mjs together enforce only the mechanically detectable half of CLAUDE.md invariant 10: raw-write primitives (strings.Builder / writeSQL / sb.Write\*) and verbatim() calls built via string concatenation, both scoped to internal/chsql/\*\*. Neither scanner catches fmt.Sprintf-built SQL, +-concatenation of a SQL fragment outside internal/chsql, or the semantic question of whether an existing typed Frag could replace a given raw write — a reviewer must judge those.
+- The KNOWN\_GOOD exemption sets (forbid-sql-raw.mjs's two files, forbid-verbatim-concat.mjs's three content-keyed entries) are a narrow, reviewed inventory of pre-approved sites, not a blanket exemption for their files: forbid-verbatim-concat.mjs's own staleness check fails the moment an exempted argument text no longer appears verbatim, so a new raw write or shape-building call in an exempted file still trips the scan wherever it does not match an existing entry exactly.
+- Neither scanner runs outside internal/chsql/\*\*; CLAUDE.md invariant 10 states the underlying rule 'everywhere', so a raw-SQL string assembled inside, say, internal/engine or internal/api is not caught by either binding here at all.
 
 ## Deficits, drafts and superseded contracts
 

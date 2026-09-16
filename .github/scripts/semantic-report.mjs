@@ -26,9 +26,11 @@
 //   GITHUB_STEP_SUMMARY             optional summary destination
 
 import process from "node:process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
@@ -65,12 +67,53 @@ function readIfExists(path) {
   }
 }
 
+// renderMarkdown's own output is plain, unformatted Markdown: simple
+// `| --- | --- |` table separators, and no attempt at the repo's own house
+// style (MD032 blank-line-around-list, MD049/MD050 emphasis-marker choice,
+// MD060 table-column alignment, …). Rather than re-implementing every one of
+// those rules a second time inside the generator — the exact duplication
+// CLAUDE.md invariant "DRY" warns about — this runs the SAME two fixers
+// lefthook's own pre-commit hooks run on staged Markdown, in the same order
+// (`md-table-align` before `markdownlint`, since MD060 has no fixer inside
+// markdownlint itself and must be resolved first): `scripts/align-md-
+// tables.py`, then `.github/scripts/markdownlint-run.mjs --staged`. Both run
+// against a throwaway temp copy, never the real target, so `--check` stays
+// read-only and safe inside a CI job that must not touch the working tree.
+function lintFixMarkdown(markdown, root) {
+  const dir = mkdtempSync(join(tmpdir(), "semantic-report-lintfix-"));
+  const tmpPath = join(dir, "report.md");
+  try {
+    writeFileSync(tmpPath, markdown);
+    const align = spawnSync("python3", ["scripts/align-md-tables.py", tmpPath], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    if (align.status !== 0) {
+      throw new Error(`align-md-tables.py exited ${align.status}: ${align.stderr || align.error}`);
+    }
+    const fix = spawnSync(
+      "node",
+      [join(root, ".github/scripts/markdownlint-run.mjs"), "--staged", tmpPath],
+      { cwd: root, encoding: "utf8" },
+    );
+    if (fix.status !== 0) {
+      throw new Error(
+        `markdownlint-run.mjs --staged left unfixed findings on the generated report:\n${fix.stdout}${fix.stderr}`,
+      );
+    }
+    return readFileSync(tmpPath, "utf8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export function generate(root = process.cwd()) {
   const model = loadSemanticModel(MODEL_DIR, { root });
   const registry = loadRegistry(REGISTRY_PATH);
   const snapshot = validatePolicySnapshot(JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")));
   const report = buildReport(model, { registry, snapshot });
-  return { report, markdown: renderMarkdown(report), json: renderJSON(report) };
+  const markdown = lintFixMarkdown(renderMarkdown(report), root);
+  return { report, markdown, json: renderJSON(report) };
 }
 
 function main() {
