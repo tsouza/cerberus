@@ -422,6 +422,66 @@ no live check on every PR). `semantic-lane-adapter.test.mjs` pairs each
 acceptance criterion with a fixture, including a regression pin over the
 real registry and the real snapshot together.
 
+## Semantic execution adapter
+
+`lib/semantic-execution-adapter.mjs` (issue #3459) is what an EXISTING
+`test/semantic/executions.json` record still cannot say: WHICH candidate
+revision a verifier's pass/fail was actually about. The original five
+fields (`id`/`binding`/`observed_at`/`result`/`run_ref`) say a verifier ran
+SOMETIME; `EXECUTION_KEYS`' ten new fields
+(`source_sha`/`run_id`/`run_attempt`/`job`/`event`/`substrate`/
+`reference_version`/`dataset_fingerprint`/`selection`/`selection_reason`,
+all nullable — see `lib/semantic-model.mjs`'s own comment above
+`EXECUTION_EVENTS`) let a record say WHICH one, and `selection` names one
+of five states instead of silently omitting a bad observation:
+`"executed"` (a real recorded pass/fail) or one of four non-evidence
+classes the schema itself forces to carry `result: "error"`
+(`"selected_not_run"`, `"no_op"`, `"stale"`, `"unavailable"`) — so the
+report's existing `classifyExecutionObservation`/`classifyObservedEvidence`
+rule (only pass/fail counts as observed evidence) already treats every one
+of them as non-evidence with zero changes to that rule.
+
+`classifyRevisionBinding(candidate, observation)` is the one join: given
+what THIS classification asserts the evidence must be about (a required
+`sourceSha`, an optional asserted `referenceVersion`/`datasetFingerprint`)
+and the raw facts read off an existing artifact, it returns exactly one of
+the five selections above, checked in priority order — an aggregate no-op
+first (even a matching SHA on a short-circuited run is still no evidence),
+then a SHA mismatch, an asserted-but-mismatched reference version, an
+asserted-but-mismatched dataset fingerprint, a zero-count selection, a
+selected-but-never-ran case, and finally a non-pass/fail result. Two
+format-specific readers feed it from artifacts that already exist with no
+source change: `parseGoTestJSONShapeResults`/`propertyShapeObservation`
+read Go's own `go test -json` stream (property-shape bindings' `test_ref`
+already IS the exact ShapeID `test/property/framework.go`'s
+`RunShapeExamples`/`RunShapeCases` pass to `t.Run`, so the join needs no
+translation table), and `parseCaseSet` reads
+`compatibility/internal/score.CaseSet`'s JSON shape (`compat-cases.json`),
+the one report format all three compat drivers already funnel through.
+`hashCorpus` computes a dataset/corpus fingerprint directly from the
+checked-out working tree (sha256 over each file's repo-relative path and
+content, sorted) — no corpus/dataset content hash exists anywhere else in
+this repository, and no Go driver needed changing to get one.
+`githubRunContext` reads the run-identity env vars GitHub Actions already
+sets on every step (`GITHUB_SHA`/`GITHUB_RUN_ID`/`GITHUB_RUN_ATTEMPT`/
+`GITHUB_JOB`/`GITHUB_EVENT_NAME`) with no explicit workflow `env:` wiring.
+
+`semantic-execution-adapter.mjs` is the CLI, `MODE=property|compat|verify`
+selected (env-driven, per this file's own convention — see its own header
+for the full table). It only ever PRINTS a normalized
+`executions.json`-shaped record (or, for `verify`, a re-classification
+verdict against an already-recorded one) — it never writes
+`test/semantic/executions.json` itself, which stays hand-authored/reviewed
+like every other file under `test/semantic/`; a human or a future CI step
+(issue #3462, which #3459 blocks) decides whether/where to append the
+printed record. Not yet wired into any workflow as a routine step — same
+posture `semantic-evidence-adapter.mjs` holds today (see above): only its
+`node --test` suite runs in CI, pending the pipeline issue #3462 owns.
+`semantic-execution-adapter.test.mjs` pairs every one of the five
+acceptance-criterion non-evidence classes with a real-shaped report sample
+and a positive "executed" control, plus end-to-end CLI runs over all three
+modes.
+
 ## Modules
 
 - **`verify-just-invocations.mjs`** — the CI-safety gate for the Justfile

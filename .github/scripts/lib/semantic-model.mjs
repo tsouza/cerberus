@@ -51,7 +51,17 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export const SEMANTIC_MODEL_SCHEMA_VERSION = 1;
+// Bumped 1 -> 2 by issue #3459: executions.json's EXECUTION_KEYS gained ten
+// new revision-binding fields (source_sha and friends, see their own
+// comment below). exactObject() requires every declared key on every
+// record — optionality here is expressed as an explicit `null` value,
+// never by omitting the key (see exactObject's own comment) — so every
+// existing execution record needed the ten keys added (nulled out except
+// `selection: "executed"`, since every one of them already recorded a
+// real observed pass). The other five documents carry no new keys; their
+// schema_version bumped in lock-step only because loadSemanticModel reads
+// one shared constant, not because their own shape changed.
+export const SEMANTIC_MODEL_SCHEMA_VERSION = 2;
 export const DEFAULT_SEMANTIC_MODEL_DIR = "test/semantic";
 
 // The three peer heads are a closed set: the whole point of this model is
@@ -120,6 +130,75 @@ const VERIFIER_SUBSTRATES = new Set([
 const RELATIVE_COSTS = new Set(["low", "medium", "high"]);
 const EXECUTION_RESULTS = new Set(["pass", "fail", "error"]);
 
+// Revision-binding fields (cerberus issue #3459). An execution record's
+// core five fields (id/binding/observed_at/result/run_ref) say THAT a
+// verifier produced SOME verdict SOMETIME; they say nothing about WHICH
+// candidate revision it was produced against, so a stale or mismatched
+// report can silently masquerade as fresh evidence for today's commit. The
+// fields below close that gap — every one of them nullable, since a
+// pre-#3459 or hand-authored record legitimately cannot state what an
+// automated adapter would have captured live.
+//
+//   source_sha           the commit the verifier actually ran against
+//   run_id/run_attempt/job  GitHub Actions run identity, together
+//                         sufficient to tell two RERUNS of the same
+//                         workflow apart (a bare source_sha cannot: a
+//                         re-triggered rerun keeps the same commit)
+//   event                the triggering GitHub event (push/pull_request/…)
+//   substrate             which execution path actually ran (reuses the
+//                         verifier substrate vocabulary, so a chdb-only
+//                         run can never silently stand in for a
+//                         reference-stack claim)
+//   reference_version     the reference backend's version/build, when the
+//                         verifier's authority is reference-implementation
+//   dataset_fingerprint   a content hash of the corpus/dataset actually
+//                         exercised — lets a later reader detect the
+//                         corpus has since changed under the pinned record
+//   selection             classifies whether this record is real executed
+//                         evidence at all: "executed" (the normal case —
+//                         result carries a real pass/fail/error verdict)
+//                         or one of four NON-EVIDENCE classes an adapter
+//                         emits instead of silently omitting the
+//                         observation: "selected_not_run" (the test
+//                         selection matched zero cases), "no_op" (the
+//                         job itself short-circuited, e.g. a non-release
+//                         PR's no-op branch), "stale" (a dataset/reference
+//                         mismatch against the candidate this record
+//                         claims to be about), "unavailable" (the report
+//                         this record would summarize could not be
+//                         produced or resolved at all — including a
+//                         source_sha mismatch). A non-"executed" selection
+//                         must carry result "error" (schema-enforced
+//                         below) and a non-null selection_reason — the
+//                         existing classifyExecutionObservation /
+//                         classifyObservedEvidence rule (only "pass"/"fail"
+//                         count as observed evidence) therefore already
+//                         treats every one of these four classes as
+//                         non-evidence with ZERO changes to that rule.
+// Exported (not just module-local) so lib/semantic-execution-adapter.mjs —
+// the producer of these fields — validates against the SAME vocabulary the
+// loader enforces, rather than a second hand-copied list that could drift.
+export const EXECUTION_EVENTS = Object.freeze([
+  "push",
+  "pull_request",
+  "merge_group",
+  "schedule",
+  "workflow_dispatch",
+]);
+export const EXECUTION_SELECTIONS = Object.freeze([
+  "executed",
+  "selected_not_run",
+  "no_op",
+  "stale",
+  "unavailable",
+]);
+export const SOURCE_SHA_PATTERN = /^[0-9a-f]{7,40}$/;
+export const RUN_IDENTITY_PATTERN = /^\d+$/;
+export const DATASET_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
+
+const EXECUTION_EVENTS_SET = new Set(EXECUTION_EVENTS);
+const EXECUTION_SELECTIONS_SET = new Set(EXECUTION_SELECTIONS);
+
 export class SemanticModelError extends Error {
   constructor(label, problems) {
     super(`${label}:\n${problems.map((p) => `- ${p}`).join("\n")}`);
@@ -184,6 +263,11 @@ function enumValue(value, allowed, path, problems) {
     return false;
   }
   return true;
+}
+
+function nullableEnumValue(value, allowed, path, problems) {
+  if (value === null) return true;
+  return enumValue(value, allowed, path, problems);
 }
 
 function stringArray(value, path, problems, { allowEmpty = true, pattern } = {}) {
@@ -558,7 +642,23 @@ function validateBindings(raw, contractIds, verifierIds, problems) {
   return bindings;
 }
 
-const EXECUTION_KEYS = new Set(["id", "binding", "observed_at", "result", "run_ref"]);
+const EXECUTION_KEYS = new Set([
+  "id",
+  "binding",
+  "observed_at",
+  "result",
+  "run_ref",
+  "selection",
+  "selection_reason",
+  "source_sha",
+  "run_id",
+  "run_attempt",
+  "job",
+  "event",
+  "substrate",
+  "reference_version",
+  "dataset_fingerprint",
+]);
 
 function validateExecutions(raw, bindingIds, problems) {
   const records = requireDocument(raw, "executions", "executions.json", problems);
@@ -575,6 +675,43 @@ function validateExecutions(raw, bindingIds, problems) {
     stringValue(record.observed_at, `${at}.observed_at`, problems, { pattern: OBSERVED_AT_RE });
     enumValue(record.result, EXECUTION_RESULTS, `${at}.result`, problems);
     stringValue(record.run_ref, `${at}.run_ref`, problems);
+
+    const selectionOk = enumValue(record.selection, EXECUTION_SELECTIONS_SET, `${at}.selection`, problems);
+    nullableStringValue(record.selection_reason, `${at}.selection_reason`, problems);
+    // A non-"executed" selection is, by definition, NOT a real observed
+    // pass/fail — result must say so explicitly (never silently disagree),
+    // and selection_reason must say WHY, so a reader is never left to
+    // guess between five distinct non-evidence causes (acceptance
+    // criterion: wrong SHA/reference, stale corpus, zero selected, and
+    // aggregate no-op all yield non-evidence, each nameable).
+    if (selectionOk && record.selection !== "executed") {
+      if (record.result !== "error") {
+        fail(
+          problems,
+          "schema",
+          `${at}.result must be "error" when selection is ${JSON.stringify(record.selection)} (a non-executed selection cannot claim a real pass/fail verdict)`,
+        );
+      }
+      if (record.selection_reason === null) {
+        fail(
+          problems,
+          "schema",
+          `${at}.selection_reason is required (non-null) when selection is ${JSON.stringify(record.selection)}`,
+        );
+      }
+    }
+
+    nullableStringValue(record.source_sha, `${at}.source_sha`, problems, { pattern: SOURCE_SHA_PATTERN });
+    nullableStringValue(record.run_id, `${at}.run_id`, problems, { pattern: RUN_IDENTITY_PATTERN });
+    nullableStringValue(record.run_attempt, `${at}.run_attempt`, problems, { pattern: RUN_IDENTITY_PATTERN });
+    nullableStringValue(record.job, `${at}.job`, problems);
+    nullableEnumValue(record.event, EXECUTION_EVENTS_SET, `${at}.event`, problems);
+    nullableEnumValue(record.substrate, VERIFIER_SUBSTRATES, `${at}.substrate`, problems);
+    nullableStringValue(record.reference_version, `${at}.reference_version`, problems);
+    nullableStringValue(record.dataset_fingerprint, `${at}.dataset_fingerprint`, problems, {
+      pattern: DATASET_FINGERPRINT_PATTERN,
+    });
+
     if (executions.has(record.id))
       fail(problems, "schema", `${at}.id is a duplicate: ${record.id}`);
     executions.set(record.id, { ...record, kind: "execution", at });
