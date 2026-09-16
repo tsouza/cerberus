@@ -1,0 +1,13 @@
+diff --git a/internal/chsql/builder.go b/internal/chsql/builder.go
+index f87944c62..37feeb80b 100644
+--- a/internal/chsql/builder.go
++++ b/internal/chsql/builder.go
+@@ -2509,7 +2509,7 @@ func CounterDelta(seriesArr Frag) Frag {
+ 		)
+ 	}
+ 	lambdaBody := If(
+-		Lt(BareIdent("c"), BareIdent("p")),
++		Lt(BareIdent("c"), BareIdent("c")),
+ 		BareIdent("c"),
+ 		Sub(BareIdent("c"), BareIdent("p")),
+ 	)
