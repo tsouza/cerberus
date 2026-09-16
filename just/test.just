@@ -170,6 +170,19 @@ semantic-guide-check:
 semantic-impact base head:
     node .github/scripts/semantic-impact.mjs {{base}} {{head}}
 
+# Replays a test/semantic/counterexamples/*.json record's contract entries
+# against their real target test/harness (issue #3446). Structural routing
+# and the source-fingerprint check live in
+# .github/scripts/lib/semantic-replay.mjs; see that file's header and
+# .github/scripts/README.md's "Semantic replay" section for the routing
+# kinds, the fingerprint mechanism, and the exit-code convention. A routing/
+# reporting layer run by hand, like semantic-lane-policy-snapshot — never a
+# merge gate.
+
+# Replay a counterexample record's contract entries: `just semantic-replay CTREX-1741`.
+semantic-replay id:
+    node .github/scripts/semantic-replay.mjs {{id}}
+
 # SIGNAL-RESOURCE-001's (issue #3457) end-to-end evidence: seeds ONE
 # deterministic OTel resource independently into each head's own
 # custom-named table and proves it is queryable through that head's own
