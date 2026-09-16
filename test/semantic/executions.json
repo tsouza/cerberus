@@ -245,6 +245,69 @@
       "observed_at": "2026-09-16T00:00:00Z",
       "result": "pass",
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-PROMQL-WIRING-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-LOGQL-WIRING-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-TRACEQL-WIRING-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-TAIL-INDEPENDENCE-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-GRPC-TRANSPORT-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-GRPC-TRANSPORT",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-CAPACITY-RECOVERY-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY-20260916",
+      "binding": "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     }
   ]
 }

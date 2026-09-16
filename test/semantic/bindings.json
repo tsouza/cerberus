@@ -369,6 +369,87 @@
       "independence_group": "span-attribute-filter-semantics",
       "test_ref": "test/spec/traceql/attr_not_nil.txtar#expected_rows",
       "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-ADMISSION-WIRING-TEST",
+      "evidence_class": "execution",
+      "independence_group": "promql-admission-wiring",
+      "test_ref": "internal/api/prom/conformance_test.go:TestConformance_PromAdmitRejectsAtCap",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-ADMISSION-WIRING-TEST",
+      "evidence_class": "execution",
+      "independence_group": "logql-admission-wiring",
+      "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiAdmitRejectsAtCap",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-ADMISSION-WIRING-TEST",
+      "evidence_class": "execution",
+      "independence_group": "traceql-admission-wiring",
+      "test_ref": "internal/api/tempo/conformance_test.go:TestConformance_TempoAdmitRejectsAtCap",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "cross-head-budget-isolation",
+      "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_PerHandlerCaps_Independent",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-ADMISSION-WIRING-TEST",
+      "evidence_class": "execution",
+      "independence_group": "tail-budget-isolation",
+      "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-ADMISSION-WIRING-TEST",
+      "evidence_class": "execution",
+      "independence_group": "tail-budget-isolation",
+      "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiTailRejectedAtTailCap",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-GRPC-TRANSPORT",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "grpc-transport-rejection",
+      "test_ref": "internal/api/admit/admit_test.go:TestStreamInterceptorRejectsAtCap",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "semaphore-capacity-recovery",
+      "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_MiddlewareUnderHandlerPanic_ReleasesSlot",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-REAL-CLICKHOUSE-INTEGRATION",
+      "evidence_class": "execution",
+      "independence_group": "real-network-connection-teardown-boundary",
+      "test_ref": "internal/chclient/conn_teardown_integration_test.go:TestCursorTeardown_ReturnsConnectionToPool",
+      "status": "active"
     }
   ]
 }
