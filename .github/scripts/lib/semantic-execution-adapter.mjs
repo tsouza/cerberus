@@ -150,6 +150,53 @@ export function githubRunContext(env = process.env) {
   };
 }
 
+// --- Run/context helpers shared by the CLI and CI orchestration scripts ----
+//
+// A candidate/run-identity resolution a caller reaches for regardless of
+// which artifact it is normalizing: the CLI's three MODEs need it, and so
+// does a script that fans ONE CI run's evidence out over SEVERAL bindings
+// (compat-execution-report.mjs, issue #3499) instead of the CLI's one
+// caller-named BINDING. Shared here so CANDIDATE_SHA/RUN_REF/OBSERVED_AT
+// resolution and the executions.json id scheme can never drift between the
+// CLI and an orchestrator built on top of it.
+
+/**
+ * The run_ref a record should carry when RUN_REF is not set explicitly: a
+ * constructed Actions run URL when the three GITHUB_* run-identity vars are
+ * present, else null (never a placeholder string — sharedContext below is
+ * the one caller that turns a null run_ref into a readable fallback for a
+ * human).
+ */
+export function defaultRunRef(env) {
+  if (!env.GITHUB_SERVER_URL || !env.GITHUB_REPOSITORY || !env.GITHUB_RUN_ID) return null;
+  return `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
+}
+
+/**
+ * Resolves the candidate SHA, run_ref, and observed_at every mode needs,
+ * plus the raw githubRunContext() fields. `env.CANDIDATE_SHA` wins over
+ * `GITHUB_SHA` when both are set (a developer overriding a local run).
+ */
+export function sharedContext(env = process.env) {
+  const run = githubRunContext(env);
+  const candidateSha = env.CANDIDATE_SHA || run.sourceSha;
+  if (!candidateSha) {
+    fail(["CANDIDATE_SHA is required (or GITHUB_SHA, when run as a workflow step)"]);
+  }
+  return {
+    candidateSha,
+    runRef: env.RUN_REF || defaultRunRef(env) || "(no run_ref available)",
+    observedAt: env.OBSERVED_AT || new Date().toISOString(),
+    run,
+  };
+}
+
+/** Deterministic execution id: EXEC-<binding, BINDING- prefix stripped>-<YYYYMMDDTHHMMSS>. */
+export function execIdFor(bindingId, observedAt) {
+  const stamp = observedAt.replaceAll(/[-:]/g, "").slice(0, 15); // YYYYMMDDTHHMMSS
+  return `EXEC-${bindingId.replace(/^BINDING-/, "")}-${stamp}`;
+}
+
 // --- Revision-binding classification (acceptance criterion 1) --------------
 
 /**

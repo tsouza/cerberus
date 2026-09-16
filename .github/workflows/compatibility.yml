@@ -405,6 +405,37 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # compat-execution-report.mjs (issue #3499) fans this run's
+      # compat-cases.json out over every active "reference" binding the
+      # semantic model scopes to compatibility/prometheus, via
+      # semantic-execution-adapter.mjs's own classify/normalize logic.
+      # `always()` + steps.compat.outcome=='success': runs whenever the
+      # harness itself produced a real case set, regardless of whether the
+      # ratchet step above found (and failed on) a regression — a real fail
+      # is still valid evidence, not non-evidence. `continue-on-error:
+      # true`: this surfaces evidence for a human to later fold into
+      # test/semantic/executions.json (which stays hand-authored/reviewed)
+      # — it is never a gate.
+      - name: Generate semantic execution observations (compat/prometheus)
+        if: always() && steps.compat.outcome == 'success'
+        continue-on-error: true
+        env:
+          HEAD: prometheus
+          CASES_PATH: compatibility/prometheus/compat-cases.json
+          CORPUS_PATH: compatibility/prometheus/query-corpus
+          OUT: compat-executions-prometheus.json
+        run: node .github/scripts/compat-execution-report.mjs
+
+      - name: Upload semantic execution observations (compat/prometheus)
+        if: always() && steps.compat.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-executions-compat-prometheus
+          path: compat-executions-prometheus.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Publish score to compat-scores branch
         # Only push: main triggers the publish; pull_request / schedule /
         # workflow_dispatch all short-circuit at the `if:` gate. The
@@ -948,6 +979,41 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # compat-execution-report.mjs (issue #3499) fans this run's TWO case
+      # sets out over every active "reference" binding the semantic model
+      # scopes to compatibility/tempo, via semantic-execution-adapter.mjs's
+      # own classify/normalize logic. A binding whose test_ref names a gRPC
+      # driver file (BINDING-TRACEQL-TRANSPORT-ARM-GRPC) is classified
+      # against CASES_PATH_GRPC; every other active binding (the HTTP
+      # transport and the shared live-reference oracle) against CASES_PATH
+      # — see that script's own header. `always()` + steps.harness.outcome
+      # == 'success': runs whenever the harness itself produced real case
+      # sets, regardless of whether a ratchet step above found a
+      # regression — a real fail is still valid evidence, not non-evidence.
+      # `continue-on-error: true`: this surfaces evidence for a human to
+      # later fold into test/semantic/executions.json (hand-authored/
+      # reviewed) — it is never a gate.
+      - name: Generate semantic execution observations (compat/tempo)
+        if: always() && steps.harness.outcome == 'success'
+        continue-on-error: true
+        env:
+          HEAD: tempo
+          CASES_PATH: compatibility/tempo/reports/compat-cases.json
+          CASES_PATH_GRPC: compatibility/tempo/reports/compat-cases-grpc.json
+          CORPUS_PATH: compatibility/tempo/driver/corpus/smoke.txtar
+          OUT: compat-executions-tempo.json
+        run: node .github/scripts/compat-execution-report.mjs
+
+      - name: Upload semantic execution observations (compat/tempo)
+        if: always() && steps.harness.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-executions-compat-tempo
+          path: compat-executions-tempo.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Publish score to compat-scores branch
         # See the prometheus job for the orphan-branch contract. Only
         # push: main reaches this step; other event types short-circuit.
@@ -1066,6 +1132,37 @@ jobs:
           name: compatibility-loki-report
           path: compatibility/loki/reports/
           if-no-files-found: warn
+          retention-days: 30
+
+      # compat-execution-report.mjs (issue #3499) fans this run's
+      # compat-cases.json out over every active "reference" binding the
+      # semantic model scopes to compatibility/loki, via
+      # semantic-execution-adapter.mjs's own classify/normalize logic.
+      # `always()` + steps.harness.outcome == 'success': runs whenever the
+      # harness itself produced a real case set, regardless of whether the
+      # ratchet step above found (and failed on) a regression — a real fail
+      # is still valid evidence, not non-evidence. `continue-on-error:
+      # true`: this surfaces evidence for a human to later fold into
+      # test/semantic/executions.json (hand-authored/reviewed) — it is
+      # never a gate.
+      - name: Generate semantic execution observations (compat/loki)
+        if: always() && steps.harness.outcome == 'success'
+        continue-on-error: true
+        env:
+          HEAD: loki
+          CASES_PATH: compatibility/loki/reports/compat-cases.json
+          CORPUS_PATH: compatibility/loki/upstream/loki-bench/queries
+          OUT: compat-executions-loki.json
+        run: node .github/scripts/compat-execution-report.mjs
+
+      - name: Upload semantic execution observations (compat/loki)
+        if: always() && steps.harness.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-executions-compat-loki
+          path: compat-executions-loki.json
+          if-no-files-found: ignore
           retention-days: 30
 
       - name: Publish score to compat-scores branch

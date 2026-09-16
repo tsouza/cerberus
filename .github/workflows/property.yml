@@ -210,7 +210,45 @@ jobs:
         # safe here either (chdb-go's session-level global).
         env:
           TAGS: chdb,agpl_oracle,chdb_agpl_oracle
+          # Opt-in path (cerberus issue #3499): when set, property-fanout.mjs
+          # converts every leg's own buffered -v output into a go-test-json
+          # event stream via `go tool test2json`, and writes the
+          # concatenation here — see that script's legToGoTestJSON for why
+          # this reuses the SAME -v run instead of re-invoking
+          # `go test -json` (log readability). Consumed by the "Generate
+          # semantic execution observations" step below.
+          GOTEST_JSON_OUT: property-gotest-events.ndjson
         run: node .github/scripts/property-fanout.mjs
+
+      # semantic-execution-adapter.mjs (#3459) normalizes the go-test-json
+      # stream the step above produced into revision-bound execution
+      # observations for test/semantic/executions.json's property-shape
+      # bindings (issue #3499). `always()` so this still runs — and still
+      # captures real FAIL evidence, which is valid evidence, not
+      # non-evidence — when a property test itself failed; `run_heavy` is
+      # still required, since a non-release PR's no-op leaves no events file
+      # to classify. `continue-on-error: true`: this step surfaces evidence
+      # for a human to later fold into executions.json (which stays
+      # hand-authored/reviewed, per #3459's own design) — it is never a gate,
+      # so a classification hiccup must never redden this required check.
+      - name: Generate semantic execution observations (property)
+        if: always() && steps.run_heavy.outputs.run_heavy == 'true'
+        continue-on-error: true
+        env:
+          MODE: property
+          GOTEST_JSON_PATH: property-gotest-events.ndjson
+          OUT: property-executions.json
+        run: node .github/scripts/semantic-execution-adapter.mjs
+
+      - name: Upload semantic execution observations (property)
+        if: always() && steps.run_heavy.outputs.run_heavy == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-executions-property
+          path: property-executions.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Upload rapid failure artifacts
         if: failure()

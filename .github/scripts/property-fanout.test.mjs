@@ -29,6 +29,7 @@ import {
   splitRapidChecks,
   legCommands,
   findTruncatedRapidRuns,
+  legToGoTestJSON,
 } from './property-fanout.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -218,4 +219,60 @@ test('findTruncatedRapidRuns: multiple rapid tests in one leg are each checked i
 test('findTruncatedRapidRuns: passing MORE than expected (should not happen, but must not false-positive) is not flagged', () => {
   const out = '[rapid] OK, passed 501 tests (10s)';
   assert.deepEqual(findTruncatedRapidRuns(out, 500), []);
+});
+
+// --- legToGoTestJSON (issue #3499: feeding this lane's real evidence to
+// semantic-execution-adapter.mjs) ------------------------------------------
+
+test('legToGoTestJSON converts a leg\'s buffered -v output into go-test-json terminal events', () => {
+  // A real `go test -v` stream always ends in a newline; test2json needs a
+  // complete final line to recognize the terminating "FAIL"/"PASS" marker.
+  const v =
+    [
+      '=== RUN   TestPromQL_Property_FromScratch/promql.instant.selector',
+      '--- PASS: TestPromQL_Property_FromScratch/promql.instant.selector (0.40s)',
+      '=== RUN   TestPromQL_Property_FromScratch/promql.instant.sum',
+      '--- FAIL: TestPromQL_Property_FromScratch/promql.instant.sum (0.60s)',
+      'FAIL',
+    ].join('\n') + '\n';
+  const jsonStream = legToGoTestJSON(v);
+  const events = jsonStream
+    .split('\n')
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l));
+  const terminal = events.filter((e) => e.Action === 'pass' || e.Action === 'fail');
+  assert.deepEqual(
+    terminal.map((e) => [e.Test, e.Action]).filter(([t]) => t),
+    [
+      ['TestPromQL_Property_FromScratch/promql.instant.selector', 'pass'],
+      ['TestPromQL_Property_FromScratch/promql.instant.sum', 'fail'],
+    ],
+  );
+});
+
+test('legToGoTestJSON tolerates noise interleaved with -v output (e.g. stderr merged into the buffered leg)', () => {
+  const v =
+    [
+      'go: downloading some/module v1.2.3',
+      '=== RUN   TestPromQL_Property_FromScratch/promql.instant.selector',
+      '--- PASS: TestPromQL_Property_FromScratch/promql.instant.selector (0.40s)',
+      'PASS',
+    ].join('\n') + '\n';
+  const jsonStream = legToGoTestJSON(v);
+  const events = jsonStream
+    .split('\n')
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l));
+  assert.ok(
+    events.some((e) => e.Test === 'TestPromQL_Property_FromScratch/promql.instant.selector' && e.Action === 'pass'),
+    'the real terminal event must still be recovered from noisy input',
+  );
+});
+
+test('legToGoTestJSON degrades to an empty string rather than throwing when the Go toolchain is unavailable', () => {
+  assert.equal(legToGoTestJSON('anything', '/no/such/go-binary'), '');
+});
+
+test('the property tests step sets GOTEST_JSON_OUT so the fan-out captures real go-test-json evidence', () => {
+  assert.match(workflow, /GOTEST_JSON_OUT:/);
 });

@@ -65,43 +65,18 @@ import { classifyTestRef } from "./lib/semantic-evidence-adapter.mjs";
 import {
   SemanticExecutionAdapterError,
   classifyRevisionBinding,
-  githubRunContext,
+  execIdFor,
   hashCorpus,
   parseCaseSet,
   parseGoTestJSONShapeResults,
   propertyShapeObservation,
+  sharedContext,
   toExecutionRecord,
 } from "./lib/semantic-execution-adapter.mjs";
 
 function errorAnnotation(message) {
   const oneLine = message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
   process.stderr.write(`::error title=Semantic execution adapter::${oneLine}\n`);
-}
-
-function defaultRunRef(env) {
-  if (!env.GITHUB_SERVER_URL || !env.GITHUB_REPOSITORY || !env.GITHUB_RUN_ID) return null;
-  return `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
-}
-
-function sharedContext(env = process.env) {
-  const run = githubRunContext(env);
-  const candidateSha = env.CANDIDATE_SHA || run.sourceSha;
-  if (!candidateSha) {
-    throw new SemanticExecutionAdapterError([
-      "CANDIDATE_SHA is required (or GITHUB_SHA, when run as a workflow step)",
-    ]);
-  }
-  return {
-    candidateSha,
-    runRef: env.RUN_REF || defaultRunRef(env) || "(no run_ref available)",
-    observedAt: env.OBSERVED_AT || new Date().toISOString(),
-    run,
-  };
-}
-
-function execIdFor(bindingId, observedAt) {
-  const stamp = observedAt.replaceAll(/[-:]/g, "").slice(0, 15); // YYYYMMDDTHHMMSS
-  return `EXEC-${bindingId.replace(/^BINDING-/, "")}-${stamp}`;
 }
 
 function runProperty(env, root) {
