@@ -231,6 +231,54 @@ test("hashCorpus over a directory is independent of directory-listing order", ()
   }
 });
 
+test("hashCorpus (array form): folds several corpus roots into one digest, independent of argument order", () => {
+  const dirA = tempDir("semantic-exec-corpus-multi-a-");
+  const dirB = tempDir("semantic-exec-corpus-multi-b-");
+  try {
+    writeFileSync(join(dirA, "a.yaml"), "1\n");
+    writeFileSync(join(dirB, "b.yaml"), "2\n");
+    assert.equal(hashCorpus([dirA, dirB]), hashCorpus([dirB, dirA]));
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test("hashCorpus (array form): drift in EITHER root changes the combined digest", () => {
+  const dirA = tempDir("semantic-exec-corpus-multi-a-");
+  const dirB = tempDir("semantic-exec-corpus-multi-b-");
+  try {
+    writeFileSync(join(dirA, "a.yaml"), "1\n");
+    writeFileSync(join(dirB, "b.yaml"), "2\n");
+    const before = hashCorpus([dirA, dirB]);
+    writeFileSync(join(dirB, "b.yaml"), "3\n"); // only the SECOND root changes
+    const after = hashCorpus([dirA, dirB]);
+    assert.notEqual(before, after, "a single-root fingerprint over dirA alone would have missed this");
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test("hashCorpus (array form): a single-element array does NOT collide with the plain single-path form", () => {
+  const dir = tempDir("semantic-exec-corpus-single-");
+  try {
+    writeFileSync(join(dir, "a.yaml"), "1\n");
+    // The array form always folds in the path string alongside each root's
+    // digest, so it is a DIFFERENT algorithm from the plain single-path
+    // call even with one element — callers (compat-execution-report.mjs)
+    // use the plain string form for a single root to keep that digest
+    // byte-identical to before the array form existed.
+    assert.notEqual(hashCorpus([dir]), hashCorpus(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("hashCorpus (array form): an empty array is rejected rather than hashing nothing", () => {
+  assert.throws(() => hashCorpus([]), SemanticExecutionAdapterError);
+});
+
 // --- githubRunContext --------------------------------------------------------
 
 test("githubRunContext reads the standard Actions env vars with no explicit wiring", () => {

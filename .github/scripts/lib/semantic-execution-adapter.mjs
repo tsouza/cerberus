@@ -13,9 +13,12 @@
 // gap — it never writes test/semantic/executions.json itself (the file
 // stays hand-authored/reviewed, like every other file under
 // test/semantic/, per .github/scripts/README.md's own "Semantic contract
-// model" section); it prints normalized observation records a human or a
-// future CI step (issue #3462, which this issue BLOCKS, owns that wiring)
-// can review and append.
+// model" section); it prints normalized observation records a human
+// reviews and appends. property.yml and compatibility.yml (issue #3499)
+// are the CI steps that run this against real go-test-json / compat-cases
+// artifacts and upload the printed records as a build artifact for that
+// review — see .github/scripts/README.md's "Semantic execution adapter"
+// section for the wiring.
 //
 // THE CORE JOIN: classifyRevisionBinding(candidate, observation).
 // `candidate` is what THIS classification run asserts the evidence must
@@ -94,15 +97,14 @@ export function hashFile(path) {
 }
 
 /**
- * sha256 hex digest of a corpus that may be one file or a whole directory
- * (loki's `-corpus`/`-cerberus-queries` flags both name directories). A
- * directory is walked recursively, and every file's repo-relative path is
- * hashed ALONGSIDE its content — not content alone — so adding, removing,
- * or renaming a query file changes the fingerprint even when every
- * surviving file's bytes are untouched. Entries are sorted by relative
- * path first, so the result is independent of directory-listing order.
+ * sha256 hex digest of ONE corpus path — a single file, or a whole
+ * directory walked recursively with every file's repo-relative path hashed
+ * ALONGSIDE its content (not content alone), so adding, removing, or
+ * renaming a query file changes the fingerprint even when every surviving
+ * file's bytes are untouched. Entries are sorted by relative path first, so
+ * the result is independent of directory-listing order.
  */
-export function hashCorpus(path) {
+function hashOneCorpusPath(path) {
   const st = statSync(path);
   if (st.isFile()) return hashFile(path);
   if (!st.isDirectory()) {
@@ -122,6 +124,35 @@ export function hashCorpus(path) {
     hash.update(relative(path, abs).replaceAll("\\", "/"));
     hash.update("\0");
     hash.update(readFileSync(abs));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * sha256 hex digest of a corpus (`hashOneCorpusPath`, single file/directory
+ * form — unchanged, byte-identical to before this array form existed) OR of
+ * SEVERAL corpus roots folded into one digest (an array), for the case a
+ * single harness run draws its queries from more than one root — loki's
+ * `-corpus`/`-cerberus-queries` flags each name a DIFFERENT directory
+ * (`upstream/loki-bench/queries` and `cerberus-queries`), and hashing only
+ * one of them leaves the fingerprint blind to drift in the other. Each
+ * root's own digest is combined with that root's own path string (so two
+ * corpora can never collide into the same combined digest merely by having
+ * matching content), sorted by path first so the result is independent of
+ * argument order — the same order-independence guarantee a single
+ * directory's own file listing already gets.
+ */
+export function hashCorpus(path) {
+  if (!Array.isArray(path)) return hashOneCorpusPath(path);
+  if (path.length === 0) {
+    fail(["hashCorpus: an array of corpus paths must not be empty"]);
+  }
+  const hash = createHash("sha256");
+  for (const p of [...path].sort()) {
+    hash.update(p);
+    hash.update("\0");
+    hash.update(hashOneCorpusPath(p));
     hash.update("\0");
   }
   return hash.digest("hex");

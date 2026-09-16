@@ -40,9 +40,13 @@
 //                      JSON document (the non-gRPC / only arm)
 //   CASES_PATH_GRPC    optional — a second CaseSet document for a
 //                      gRPC-named binding (tempo only)
-//   CORPUS_PATH        optional — file or directory hashed once for
-//                      dataset_fingerprint, shared by every record this run
-//                      emits
+//   CORPUS_PATH        optional — one file/directory, or several ":"-joined
+//                      file/directory paths (loki's harness draws queries
+//                      from TWO separate roots — upstream/loki-bench/queries
+//                      AND cerberus-queries — and a fingerprint over only
+//                      one of them is blind to drift in the other), folded
+//                      into one dataset_fingerprint shared by every record
+//                      this run emits
 //   REFERENCE_VERSION           optional — stamped on every record's
 //                      reference_version
 //   EXPECT_REFERENCE_VERSION    optional — asserted; a mismatch against
@@ -71,6 +75,18 @@ import {
 /** True for a binding whose test_ref names a gRPC driver (tempo's second transport arm). */
 export function isGrpcBinding(testRef) {
   return testRef.toLowerCase().includes("grpc");
+}
+
+/**
+ * Parses CORPUS_PATH into what hashCorpus() expects: a single string for
+ * one root (byte-identical fingerprint to before this multi-root form
+ * existed), or an array for several ":"-joined roots (loki's two corpus
+ * directories). Empty segments (a stray leading/trailing/doubled ":") are
+ * dropped rather than handed to hashCorpus as an empty path.
+ */
+export function parseCorpusPath(raw) {
+  const parts = raw.split(":").filter((p) => p.length > 0);
+  return parts.length <= 1 ? (parts[0] ?? raw) : parts;
 }
 
 /**
@@ -114,7 +130,7 @@ function main() {
     return caseSetCache.get(path);
   };
 
-  const datasetFingerprint = env.CORPUS_PATH ? hashCorpus(env.CORPUS_PATH) : null;
+  const datasetFingerprint = env.CORPUS_PATH ? hashCorpus(parseCorpusPath(env.CORPUS_PATH)) : null;
   const referenceVersion = env.REFERENCE_VERSION || null;
 
   const candidate = { sourceSha: candidateSha };

@@ -706,9 +706,10 @@ jobs:
       # three per-head "Generate semantic execution observations
       # (compat/<head>)" steps (issue #3499 — #3462 built the compact
       # developer/agent guide over the model this adapter feeds, but never
-      # wired a live run through it; #3499 is the actual pipeline-wiring
-      # follow-up filed from that issue's own work), each uploading the
-      # normalized records as a build artifact for a human to review and
+      # wired a live run through it; #3499, filed from #3462's own
+      # implementation work, is the issue that actually wired the
+      # pipeline), each uploading the normalized records as a build
+      # artifact for a human to review and
       # fold into executions.json by hand — that file stays hand-authored/
       # reviewed, never auto-written by CI. There is still no committed
       # artifact for THIS job to run the live CLI against the way the four

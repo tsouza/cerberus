@@ -423,6 +423,10 @@ jobs:
           HEAD: prometheus
           CASES_PATH: compatibility/prometheus/compat-cases.json
           CORPUS_PATH: compatibility/prometheus/query-corpus
+          # Matches docker-compose.yml's own pinned reference image
+          # (and lib/mirror.mjs's mirror-pull list) — the exact version
+          # this run's differential actually ran against.
+          REFERENCE_VERSION: "prom/prometheus:v3.11.3"
           OUT: compat-executions-prometheus.json
         run: node .github/scripts/compat-execution-report.mjs
 
@@ -433,7 +437,7 @@ jobs:
         with:
           name: semantic-executions-compat-prometheus
           path: compat-executions-prometheus.json
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Publish score to compat-scores branch
@@ -1001,6 +1005,10 @@ jobs:
           CASES_PATH: compatibility/tempo/reports/compat-cases.json
           CASES_PATH_GRPC: compatibility/tempo/reports/compat-cases-grpc.json
           CORPUS_PATH: compatibility/tempo/driver/corpus/smoke.txtar
+          # Matches docker-compose.yml's own pinned reference image (and
+          # lib/mirror.mjs's mirror-pull list) — the exact version this
+          # run's differential actually ran against, for both transports.
+          REFERENCE_VERSION: "grafana/tempo:main-2f74ea8"
           OUT: compat-executions-tempo.json
         run: node .github/scripts/compat-execution-report.mjs
 
@@ -1011,7 +1019,7 @@ jobs:
         with:
           name: semantic-executions-compat-tempo
           path: compat-executions-tempo.json
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Publish score to compat-scores branch
@@ -1151,7 +1159,16 @@ jobs:
         env:
           HEAD: loki
           CASES_PATH: compatibility/loki/reports/compat-cases.json
-          CORPUS_PATH: compatibility/loki/upstream/loki-bench/queries
+          # Both corpus roots run-loki-compatibility.mjs's `-corpus` and
+          # `-cerberus-queries` flags draw from — see that script. Hashing
+          # only one leaves the fingerprint blind to drift in the other,
+          # notably BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT's own
+          # test_ref, which lives under cerberus-queries/.
+          CORPUS_PATH: "compatibility/loki/upstream/loki-bench/queries:compatibility/loki/cerberus-queries"
+          # Matches docker-compose.yml's own pinned reference image (and
+          # lib/mirror.mjs's mirror-pull list) — the exact version this
+          # run's differential actually ran against.
+          REFERENCE_VERSION: "grafana/loki:3.7.0"
           OUT: compat-executions-loki.json
         run: node .github/scripts/compat-execution-report.mjs
 
@@ -1162,7 +1179,7 @@ jobs:
         with:
           name: semantic-executions-compat-loki
           path: compat-executions-loki.json
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Publish score to compat-scores branch

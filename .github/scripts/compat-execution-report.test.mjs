@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { isGrpcBinding, selectBindings } from "./compat-execution-report.mjs";
+import { isGrpcBinding, parseCorpusPath, selectBindings } from "./compat-execution-report.mjs";
 
 const SCRIPT_DIR = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = process.cwd();
@@ -33,6 +33,24 @@ test("isGrpcBinding: matches a test_ref naming a gRPC driver file, case-insensit
 test("isGrpcBinding: does not match the HTTP transport or the live-reference oracle", () => {
   assert.equal(isGrpcBinding("compatibility/tempo/driver/diff.go"), false);
   assert.equal(isGrpcBinding("compatibility/tempo/driver/differ.go"), false);
+});
+
+// --- parseCorpusPath -----------------------------------------------------------
+
+test("parseCorpusPath: a single path (no colon) passes through as a plain string", () => {
+  assert.equal(parseCorpusPath("compatibility/prometheus/query-corpus"), "compatibility/prometheus/query-corpus");
+});
+
+test("parseCorpusPath: colon-joined paths become an array", () => {
+  assert.deepEqual(
+    parseCorpusPath("compatibility/loki/upstream/loki-bench/queries:compatibility/loki/cerberus-queries"),
+    ["compatibility/loki/upstream/loki-bench/queries", "compatibility/loki/cerberus-queries"],
+  );
+});
+
+test("parseCorpusPath: a stray leading/trailing/doubled colon never produces an empty path segment", () => {
+  assert.deepEqual(parseCorpusPath(":a:b:"), ["a", "b"]);
+  assert.deepEqual(parseCorpusPath("a::b"), ["a", "b"]);
 });
 
 // --- selectBindings ------------------------------------------------------------
@@ -308,5 +326,49 @@ test("CLI: writes to OUT when given, with a confirmation line on stdout instead 
   } finally {
     rmSync(modelDir, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI: a loki-shaped two-root CORPUS_PATH detects drift in EITHER root, not just the first", () => {
+  const modelDir = tempDir("compat-exec-cli-model-");
+  const dataDir = tempDir("compat-exec-cli-data-");
+  const rootA = tempDir("compat-exec-cli-corpus-a-");
+  const rootB = tempDir("compat-exec-cli-corpus-b-");
+  try {
+    writeMinimalModel(modelDir, [
+      { id: "BINDING-LOGQL-A", evidence_class: "reference", test_ref: "compatibility/loki", status: "active" },
+    ]);
+    writeFileSync(join(rootA, "a.yaml"), "query: 1\n");
+    writeFileSync(join(rootB, "b.yaml"), "query: 2\n");
+    const casesPath = join(dataDir, "compat-cases.json");
+    writeFileSync(casesPath, JSON.stringify({ head: "loki", cases: [{ id: "q1", passed: true }] }));
+
+    const runWithCorpus = () => {
+      const r = runCli({
+        HEAD: "loki",
+        MODEL_DIR: modelDir,
+        CASES_PATH: casesPath,
+        CORPUS_PATH: `${rootA}:${rootB}`,
+        CANDIDATE_SHA: "abc1234",
+        GITHUB_SHA: "",
+        GITHUB_EVENT_NAME: "",
+      });
+      assert.equal(r.status, 0, r.stderr);
+      return JSON.parse(r.stdout)[0].dataset_fingerprint;
+    };
+
+    const before = runWithCorpus();
+    writeFileSync(join(rootB, "b.yaml"), "query: 3\n"); // only the SECOND root (cerberus-queries analogue) changes
+    const after = runWithCorpus();
+    assert.notEqual(
+      before,
+      after,
+      "a fingerprint over only the first corpus root would have missed drift confined to the second",
+    );
+  } finally {
+    rmSync(modelDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(rootA, { recursive: true, force: true });
+    rmSync(rootB, { recursive: true, force: true });
   }
 });

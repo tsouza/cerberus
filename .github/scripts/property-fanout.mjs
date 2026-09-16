@@ -99,7 +99,7 @@
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { error, notice, log, group } from './lib/gh.mjs';
+import { error, notice, log, group, warning } from './lib/gh.mjs';
 import { runLegBuffered } from './lib/spawn-tagged.mjs';
 
 /** The randomized native-histogram sweep, fanned out across HISTOGRAM_FANOUT processes. */
@@ -361,8 +361,10 @@ async function main() {
       notice(`property: wrote go-test-json events for the semantic execution adapter to ${jsonOut}`);
     } catch (err) {
       // Best-effort: a write failure here must never fail the property lane
-      // itself over this ancillary, non-gating conversion.
-      error(`property: failed to write GOTEST_JSON_OUT (${jsonOut}): ${err.message}`);
+      // itself over this ancillary, non-gating conversion — warning(), not
+      // error(), so this required check never shows a red ::error:: over a
+      // condition its own comment says must never fail the lane.
+      warning(`property: failed to write GOTEST_JSON_OUT (${jsonOut}): ${err.message}`);
     }
   }
 

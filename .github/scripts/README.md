@@ -542,10 +542,17 @@ behind `GOTEST_JSON_OUT` so a bare local run is unaffected), then its
 per-head jobs (`prometheus`, `tempo`, `loki`) run `compat-execution-report.mjs`
 — see its own entry below — over their already-produced `compat-cases.json`
 and upload `semantic-executions-compat-<head>`. Both are
-`continue-on-error: true` and gated on the harness step's own
-`success` outcome, never on a downstream ratchet: they are non-gating
-evidence surfaces, and a real FAIL result is still valid evidence a human
-should see, not something to suppress. `ci.yml`'s "forbid-skip" job still
+`continue-on-error: true`, so neither can redden its required check, but
+each gates on a DIFFERENT condition matching what evidence it can actually
+produce: the property step runs whenever `run_heavy` was true regardless of
+whether the property tests themselves passed (`always()` — a captured
+go-test-json stream still carries real FAIL evidence even on a failing
+run), while each compat step gates on that head's own harness step outcome
+being `success`, never on a downstream ratchet (a harness that never
+produced a `compat-cases.json` has nothing to classify, but a ratchet that
+failed AFTER the harness succeeded still has real evidence to report). In
+both lanes a real FAIL result is still valid evidence a human should see,
+never something to suppress. `ci.yml`'s "forbid-skip" job still
 only self-tests both scripts — there is no committed artifact for THAT job
 to run the live CLIs against, the way the semantic-model/lane-adapter/
 evidence-adapter/report steps above it run against the real committed
@@ -2326,8 +2333,10 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   resolves to the one path. Never writes `test/semantic/executions.json`
   itself — same posture as the CLI it wraps.
   - Env: `HEAD` (required), `CASES_PATH` (required), `CASES_PATH_GRPC`
-    (optional, tempo's gRPC arm), `CORPUS_PATH` (optional, hashed for
-    `dataset_fingerprint`), `REFERENCE_VERSION` / `EXPECT_REFERENCE_VERSION`
+    (optional, tempo's gRPC arm), `CORPUS_PATH` (optional, one path or
+    several `:`-joined paths folded into one `dataset_fingerprint` via
+    `hashCorpus`'s array form — loki's harness draws from two separate
+    roots), `REFERENCE_VERSION` / `EXPECT_REFERENCE_VERSION`
     (optional), `CANDIDATE_SHA` / `RUN_REF` / `OBSERVED_AT` / `MODEL_DIR` /
     `OUT` (same defaults as the CLI's own `sharedContext`).
   - Exit: `0` printing/writing one record per selected binding; `1` when

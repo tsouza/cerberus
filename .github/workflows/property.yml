@@ -247,7 +247,7 @@ jobs:
         with:
           name: semantic-executions-property
           path: property-executions.json
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Upload rapid failure artifacts

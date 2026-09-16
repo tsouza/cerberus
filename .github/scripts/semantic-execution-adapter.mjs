@@ -5,8 +5,10 @@
 // stdout (or to OUT). Never writes test/semantic/executions.json itself —
 // that file stays hand-authored/reviewed like every other file under
 // test/semantic/ (see .github/scripts/README.md's "Semantic contract
-// model" section); a human or a future CI step (issue #3462, which this
-// issue blocks) decides whether/where to append the printed record.
+// model" section); a human decides whether/where to append the printed
+// record. property.yml and compatibility.yml (issue #3499) run this CLI
+// against real go-test-json / compat-cases artifacts in CI and upload the
+// printed records as a build artifact for that review.
 //
 // Three modes, selected by MODE:
 //
