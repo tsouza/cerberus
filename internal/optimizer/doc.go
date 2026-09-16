@@ -5,8 +5,10 @@
 // sharing a Strategy. Three strategies ship today:
 //
 //   - Once — run every rule in the batch exactly once, in declared
-//     order. Suits genuinely-idempotent passes that are not part of
-//     the language contract (e.g. ConstantFoldHeuristic).
+//     order. Suits a genuinely-idempotent pass that is not part of the
+//     language contract AND that no sibling rule can re-arm: a rule
+//     whose match shape another rule can reconstruct needs the batch to
+//     iterate, or the reconstructed shape survives to emit.
 //   - Analyzer — run every AnalyzerRule once, then verify idempotence
 //     on a second pass. Panics on contract violation. Suits **semantic
 //     / must-run** passes that produce a canonical form downstream
@@ -38,17 +40,22 @@
 //
 // Today the conflated rule is split into ConstantFoldSemantic
 // (AnalyzerRule, lives in the analyzer batch) and ConstantFoldHeuristic
-// (OptimizerRule, lives in a Once batch right after the analyzer).
+// (OptimizerRule, opens the predicate-pushdown FixedPoint batch, where
+// it iterates alongside the FilterFusion that can hand it a fresh
+// `p AND true` to collapse).
 //
 // # Default pipeline
 //
 // Default() returns the project's seed batch sequence:
 //
-//  1. analyzer.constant-fold-semantic (Analyzer)
-//  2. optimizer.constant-fold-heuristic (Once)
-//  3. optimizer.predicate-pushdown (FixedPoint) — FilterFusion +
-//     FilterAggregateTranspose + FilterRangeWindowTranspose
+//  1. analyzer.constant-fold-semantic (Analyzer) — ConstantFoldSemantic
+//  2. analyzer.scan-time-bound (Analyzer) — NormalizeScanTimeBound +
+//     RequireScanTimeBound + RequireScanResourceBound
+//  3. optimizer.predicate-pushdown (FixedPoint) — ConstantFoldHeuristic
+//     + FilterFusion + FilterAggregateTranspose +
+//     FilterRangeWindowTranspose
 //  4. optimizer.projection (FixedPoint) — ProjectionPushdown
+//  5. optimizer.set-op-linearize (FixedPoint) — FlattenVectorSetOp
 //
 // Each batch's name is prefixed `analyzer.` or `optimizer.` to make
 // the contract obvious in trace logs.
@@ -62,10 +69,10 @@
 //
 //   - ConstantFoldSemantic (Analyzer) — canonical-form invariant;
 //     fires whenever a lowering emits literal-only arithmetic.
-//   - ConstantFoldHeuristic (Once) — fires (e.g. the TraceQL
-//     `rate() by(kind)` drilldown whose predicate carries
-//     `(... AND true) AND true` above a MetricsAggregate, reachable
-//     only since #812's total walk).
+//   - ConstantFoldHeuristic — fires (e.g. the TraceQL `rate() by(kind)`
+//     drilldown whose predicate carries `(... AND true) AND true` above
+//     a MetricsAggregate, reachable only since #812's total walk), and
+//     again on any `p AND true` FilterFusion builds in the same batch.
 //   - FilterFusion — fires on adjacent-filter shapes the lowerings
 //     emit (histogram-bucket label filters, matrix-selector chains).
 //   - FilterRangeWindowTranspose — fires (e.g. `topk(0, up)[5m:1m]`,

@@ -88,28 +88,40 @@ func NewWithBatches(batches ...Batch) *Driver {
 //     pass is a semantic invariant rather than a heuristic improvement.
 //     Idempotent by construction; the Analyzer strategy enforces that
 //     contract via a verification pass and panics on violation.
-//   - "optimizer.constant-fold-heuristic" (Once) —
+//
+//   - "optimizer.predicate-pushdown" (FixedPoint) —
+//     ConstantFoldHeuristic + FilterFusion + the transpose rules can
+//     unlock each other: fold `true AND X → X`, fuse adjacent filters,
+//     transpose the fused filter through Aggregate / RangeWindow, then
+//     possibly fuse — or fold — again as new neighbours appear.
+//     Iteration is load-bearing here. See doc.go for which transpose
+//     rules fire on the current corpus versus which are speculative
+//     correctness insurance.
+//
 //     ConstantFoldHeuristic applies boolean algebraic identities
 //     (`true AND X → X`, `false OR X → X`, `false AND X → false`,
-//     `true OR X → true`). Single bottom-up sweep reaches its fixpoint;
-//     the identities are ergonomic — they shrink emitted SQL but the
-//     result is correct either way. Fires on the real corpus (e.g. the
-//     TraceQL `rate() by(kind)` drilldown whose lowering emits a
-//     `(... AND true) AND true` predicate above a MetricsAggregate);
-//     reachable since #812 made the optimizer walk total across all 26
-//     chplan node types.
-//   - "optimizer.predicate-pushdown" (FixedPoint) — FilterFusion + the
-//     transpose rules can unlock each other: fuse adjacent filters,
-//     transpose the fused filter through Aggregate / RangeWindow, then
-//     possibly fuse again as new neighbours appear. Iteration is
-//     load-bearing here. See doc.go for which transpose rules fire on
-//     the current corpus versus which are speculative correctness
-//     insurance.
+//     `true OR X → true`). The identities are ergonomic — they shrink
+//     emitted SQL but the result is correct either way. It fires on the
+//     real corpus (e.g. the TraceQL `rate() by(kind)` drilldown whose
+//     lowering emits a `(... AND true) AND true` predicate above a
+//     MetricsAggregate); reachable since #812 made the optimizer walk
+//     total across all 26 chplan node types. It is declared FIRST in
+//     the batch so the first iteration still canonicalises bool
+//     literals before FilterFusion and the transposes see the tree, and
+//     it shares their fixpoint because FilterFusion is the one rule in
+//     Default() that CONSTRUCTS a new Binary: fusing
+//     `Filter(Filter(X, p1), true)` yields `p1 AND true`, a foldable
+//     shape that did not exist when the batch started. A fold pass that
+//     ran only before pushdown could never see it, and nothing
+//     downstream of Default() re-simplifies — each HTTP handler
+//     optimizes a plan exactly once.
+//
 //   - "optimizer.projection" (FixedPoint) — ProjectionPushdown may
 //     iterate as pushdown unused-column elimination cascades through
 //     nested Projects. Only one pass changes anything in the current
 //     rule set, but the FixedPoint strategy lets additional rules join
 //     the batch without changing wiring.
+//
 //   - "optimizer.set-op-linearize" (FixedPoint) — FlattenVectorSetOp
 //     collapses a left-assoc chain of the SAME associative vector
 //     set-op (`a or b or c …` / `a and b and c …`) into one N-ary
@@ -122,9 +134,13 @@ func NewWithBatches(batches ...Batch) *Driver {
 //     not results; `unless` is skipped (not associative).
 //
 // Order matters across batches: the analyzer batch runs first
-// (must-run); the heuristic constant fold then canonicalises bool
-// literals so that predicate pushdown sees a tree where filters whose
-// predicates contained `true AND ...` have already collapsed.
+// (must-run), so the heuristic fold that opens the predicate-pushdown
+// batch already sees pure-literal subtrees collapsed to a single Lit.
+// Nothing after the predicate-pushdown batch constructs a Binary —
+// ProjectionPushdown rewrites a Scan's column list and
+// FlattenVectorSetOp merges set-op arms — so that batch's fixpoint is
+// also the point past which no new foldable shape can appear, which is
+// what makes Default()'s output a joint fixpoint of its own rules.
 func Default() *Driver {
 	return NewWithBatches(
 		AnalyzerBatch("analyzer.constant-fold-semantic", ConstantFoldSemantic{}),
@@ -150,14 +166,10 @@ func Default() *Driver {
 			RequireScanResourceBound{},
 		),
 		Batch{
-			Name:     "optimizer.constant-fold-heuristic",
-			Strategy: Once(),
-			Rules:    []Rule{ConstantFoldHeuristic{}},
-		},
-		Batch{
 			Name:     "optimizer.predicate-pushdown",
 			Strategy: FixedPoint(defaultMaxIterations),
 			Rules: []Rule{
+				ConstantFoldHeuristic{},
 				FilterFusion{},
 				FilterAggregateTranspose(),
 				FilterRangeWindowTranspose(),

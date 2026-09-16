@@ -8,7 +8,11 @@ package optimizer
 //   - Once — run every rule in the batch exactly once, in declared
 //     order. Use for genuinely-idempotent passes where re-running adds
 //     work without changing the tree, but the rule is **not** a
-//     semantic invariant.
+//     semantic invariant. Idempotence on the rule's OWN output is not
+//     sufficient: if a rule in a later batch can construct the shape
+//     this one matches, a Once batch that has already run can never
+//     collapse it, and the shape reaches the emitter. Such a rule
+//     belongs in the FixedPoint batch of whatever re-arms it.
 //   - Analyzer — run every rule in the batch exactly once and verify
 //     idempotence on a second pass; a non-idempotent rule triggers a
 //     panic naming the offender. Use for **semantic / must-run** rules
