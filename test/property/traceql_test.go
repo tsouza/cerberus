@@ -5,7 +5,7 @@
 // On every iteration:
 //
 //  1. The dataset generator (gen.TraceQLDataset) draws a random
-//     in-memory MetricsModel of OTel-CH span rows plus a parallel
+//     in-memory TracesModel of OTel-CH span rows plus a parallel
 //     DDL script.
 //  2. The framework seeds the DDL into an ephemeral chDB session
 //     (shared across iterations; each iteration's

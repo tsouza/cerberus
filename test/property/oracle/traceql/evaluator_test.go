@@ -1,7 +1,6 @@
 package traceql
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/tsouza/cerberus/test/property"
@@ -20,28 +19,27 @@ type testSpan struct {
 }
 
 // buildDataset pivots testSpans into the property.Dataset shape
-// gen/traceql.go's traceQLSpansToSeries produces, using the same
-// reserved-label-key convention (see evaluator.go's spanViews).
+// gen/traceql.go's traceQLSpansToRecords produces: one typed
+// property.SpanRecord per span (see evaluator.go's spanViews).
 func buildDataset(spans ...testSpan) property.Dataset {
-	series := make([]property.SeriesData, 0, len(spans))
+	records := make([]property.SpanRecord, 0, len(spans))
 	for i, s := range spans {
-		series = append(series, property.SeriesData{
-			MetricName: s.name,
-			Labels: map[string]string{
-				"resource.service.name": s.service,
-				"resource.cluster":      s.cluster,
-				"span.http.method":      s.method,
-				"__name__":              s.name,
-				"__traceID__":           s.trace,
-				"__spanID__":            s.id,
-				"__parentSpanID__":      s.parent,
-				"__status__":            s.status,
-				"__duration_ns__":       fmt.Sprintf("%d", s.durationMs*nsPerMillisecond),
+		records = append(records, property.SpanRecord{
+			TraceID:      s.trace,
+			SpanID:       s.id,
+			ParentSpanID: s.parent,
+			Name:         s.name,
+			ResourceAttributes: map[string]string{
+				"service.name": s.service,
+				"cluster":      s.cluster,
 			},
-			Points: []property.Point{{TimestampMs: int64(i), Value: float64(s.durationMs * nsPerMillisecond)}},
+			SpanAttributes: map[string]string{"http.method": s.method},
+			StatusCode:     s.status,
+			DurationNs:     s.durationMs * nsPerMillisecond,
+			TimestampMs:    int64(i),
 		})
 	}
-	return property.Dataset{Metrics: &property.MetricsModel{Series: series}}
+	return property.Dataset{Traces: &property.TracesModel{Spans: records}}
 }
 
 // fixtureDataset is the shared trace shape every shape test below

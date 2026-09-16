@@ -32,7 +32,7 @@ type spanSeed struct {
 // parent chains. Its service, cluster, method, duration, and status spread
 // gives selectors and per-trace aggregations non-trivial positive, negative,
 // and boundary answers; the chains make child and descendant differ.
-func RichSeed() (string, *property.MetricsModel) {
+func RichSeed() (string, *property.TracesModel) {
 	spans := []spanSeed{
 		span(0, "11111111111111111111111111111111", "1111111111111111", rootParentID, "api", "east", "GET", "GET /checkout/0", 10, "Ok"),
 		span(1, "11111111111111111111111111111111", "1111111111111112", "1111111111111111", "web", "east", "POST", "POST /checkout/1", 120, "Error"),
@@ -55,26 +55,25 @@ func span(step int, traceID, spanID, parentID, service, cluster, method, name st
 	}
 }
 
-func spansModel(spans []spanSeed) *property.MetricsModel {
-	series := make([]property.SeriesData, 0, len(spans))
+func spansModel(spans []spanSeed) *property.TracesModel {
+	records := make([]property.SpanRecord, 0, len(spans))
 	for _, item := range spans {
-		series = append(series, property.SeriesData{
-			MetricName: item.name,
-			Labels: map[string]string{
-				"resource.service.name": item.service,
-				"resource.cluster":      item.cluster,
-				"span.http.method":      item.httpMethod,
-				"__name__":              item.name,
-				"__traceID__":           item.traceID,
-				"__spanID__":            item.spanID,
-				"__parentSpanID__":      item.parentID,
-				"__duration_ns__":       fmt.Sprintf("%d", item.durationNs),
-				"__status__":            item.statusCode,
+		records = append(records, property.SpanRecord{
+			TraceID:      item.traceID,
+			SpanID:       item.spanID,
+			ParentSpanID: item.parentID,
+			Name:         item.name,
+			ResourceAttributes: map[string]string{
+				"service.name": item.service,
+				"cluster":      item.cluster,
 			},
-			Points: []property.Point{{TimestampMs: item.startTime.UnixMilli(), Value: float64(item.durationNs)}},
+			SpanAttributes: map[string]string{"http.method": item.httpMethod},
+			TimestampMs:    item.startTime.UnixMilli(),
+			DurationNs:     item.durationNs,
+			StatusCode:     item.statusCode,
 		})
 	}
-	return &property.MetricsModel{Series: series}
+	return &property.TracesModel{Spans: records}
 }
 
 func renderDDL(spans []spanSeed) string {

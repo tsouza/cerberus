@@ -45,7 +45,7 @@ func TestExoticTraceQL(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	dataset := property.Dataset{DDL: ddl, Metrics: model}
+	dataset := property.Dataset{DDL: ddl, Traces: model}
 	for _, tc := range ExoticMatrix {
 		t.Run(tc.name, func(t *testing.T) {
 			query := property.Query{String: tc.traceql, EvalTs: seedAnchor.Add(searchWindowMargin).Unix()}

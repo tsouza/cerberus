@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"pgregory.net/rapid"
 )
 
 func TestValidateOutcomesFailsClosed(t *testing.T) {
@@ -101,16 +103,129 @@ func TestGeneratedDatasetValidationFailsClosed(t *testing.T) {
 	if got := ValidateGeneratedDataset(validMetrics); got != "" {
 		t.Fatalf("ValidateGeneratedDataset(valid metrics) = %q", got)
 	}
-	if got := ValidateGeneratedDataset(Dataset{}); got != "missing metrics or logs model" {
+	if got := ValidateGeneratedDataset(Dataset{}); got != "missing metrics, logs, or traces model" {
 		t.Fatalf("ValidateGeneratedDataset(empty) = %q", got)
 	}
 	if got := ValidateGeneratedDataset(Dataset{
 		DDL:     "seed",
 		Metrics: validMetrics.Metrics,
 		Logs:    &LogsModel{Records: []LogRecord{{Body: "line"}}},
-	}); got != "dataset contains both metrics and logs models" {
+	}); got != "dataset contains more than one model family: metrics, logs" {
 		t.Fatalf("ValidateGeneratedDataset(ambiguous) = %q", got)
 	}
+	if got := ValidateGeneratedDataset(Dataset{
+		DDL:     "seed",
+		Metrics: validMetrics.Metrics,
+		Logs:    &LogsModel{Records: []LogRecord{{Body: "line"}}},
+		Traces: &TracesModel{Spans: []SpanRecord{
+			{TraceID: "t1", SpanID: "s1", Name: "root"},
+		}},
+	}); got != "dataset contains more than one model family: metrics, logs, traces" {
+		t.Fatalf("ValidateGeneratedDataset(triple ambiguous) = %q", got)
+	}
+}
+
+// TestValidateTracesDatasetFailsClosed pins the TraceQL-family diagnostics:
+// a missing model, an empty span list, a missing trace/span identity, a
+// parent reference that resolves to nothing in the same trace, and a trace
+// with the wrong root count must all fail before either side of the
+// differential executes.
+func TestValidateTracesDatasetFailsClosed(t *testing.T) {
+	rootedPair := []SpanRecord{
+		{TraceID: "t1", SpanID: "root", ParentSpanID: "", Name: "root"},
+		{TraceID: "t1", SpanID: "child", ParentSpanID: "root", Name: "child"},
+	}
+	valid := Dataset{DDL: "CREATE TABLE otel_traces", Traces: &TracesModel{Spans: rootedPair}}
+
+	if got := ValidateTracesDataset(Dataset{}); got != "missing traces model" {
+		t.Fatalf("ValidateTracesDataset(nil) = %q", got)
+	}
+	if got := ValidateTracesDataset(Dataset{Traces: &TracesModel{}}); got != "empty traces spans" {
+		t.Fatalf("ValidateTracesDataset(empty) = %q", got)
+	}
+	if got := ValidateTracesDataset(Dataset{
+		DDL:    "seed",
+		Traces: &TracesModel{Spans: []SpanRecord{{TraceID: "", SpanID: "s1"}}},
+	}); got != `span has a missing trace or span identity: trace="" span="s1"` {
+		t.Fatalf("ValidateTracesDataset(missing trace id) = %q", got)
+	}
+	if got := ValidateTracesDataset(Dataset{
+		DDL: "seed",
+		Traces: &TracesModel{Spans: []SpanRecord{
+			{TraceID: "t1", SpanID: "orphan", ParentSpanID: "does-not-exist"},
+		}},
+	}); got != `span "orphan" in trace "t1" references parent "does-not-exist", which is not a span in the same trace` {
+		t.Fatalf("ValidateTracesDataset(dangling parent) = %q", got)
+	}
+	if got := ValidateTracesDataset(Dataset{
+		DDL: "seed",
+		Traces: &TracesModel{Spans: []SpanRecord{
+			{TraceID: "t1", SpanID: "s1", ParentSpanID: ""},
+			{TraceID: "t1", SpanID: "s2", ParentSpanID: ""},
+		}},
+	}); got != `trace "t1" has 2 roots (empty-ParentSpanID spans), want exactly one` {
+		t.Fatalf("ValidateTracesDataset(two roots) = %q", got)
+	}
+	// A pure cycle (every ParentSpanID resolves within the trace, but none
+	// is empty) has zero roots. Every span in it individually passes the
+	// dangling-parent check, so this only fails if the root count is
+	// checked for every trace ID, not just the ones with at least one root.
+	if got := ValidateTracesDataset(Dataset{
+		DDL: "seed",
+		Traces: &TracesModel{Spans: []SpanRecord{
+			{TraceID: "t1", SpanID: "s1", ParentSpanID: "s2"},
+			{TraceID: "t1", SpanID: "s2", ParentSpanID: "s1"},
+		}},
+	}); got != `trace "t1" has 0 roots (empty-ParentSpanID spans), want exactly one` {
+		t.Fatalf("ValidateTracesDataset(zero-root cycle) = %q", got)
+	}
+	if got := ValidateTracesDataset(Dataset{Traces: &TracesModel{Spans: rootedPair}}); got != "empty seed DDL" {
+		t.Fatalf("ValidateTracesDataset(no DDL) = %q", got)
+	}
+	if got := ValidateTracesDataset(valid); got != "" {
+		t.Fatalf("ValidateTracesDataset(valid) = %q, want success", got)
+	}
+	if got := ValidateGeneratedDataset(valid); got != "" {
+		t.Fatalf("ValidateGeneratedDataset(valid traces) = %q, want success", got)
+	}
+}
+
+// TestRunAcceptsEitherMetricsOrTracesFamily pins the seam TraceQL's move off
+// MetricsModel depends on: Run is shared by the PromQL and TraceQL
+// randomized differentials (both call property.Run — see
+// test/regression/property_live_roster_floor_test.go's propertyRandomRunnerFloor),
+// so it must accept a pure-Metrics draw and a pure-Traces draw alike,
+// without either family needing to populate the other's model.
+func TestRunAcceptsEitherMetricsOrTracesFamily(t *testing.T) {
+	agree := func(_ Dataset, _ Query) Outcome {
+		return Outcome{Rows: []OutcomeRow{{Value: 1}}}
+	}
+
+	t.Run("metrics family", func(t *testing.T) {
+		dgen := func(_ *rapid.T) Dataset {
+			return Dataset{
+				DDL:     "CREATE TABLE metrics",
+				Metrics: &MetricsModel{Series: []SeriesData{{MetricName: "up", Points: []Point{{Value: 1}}}}},
+			}
+		}
+		qgen := func(_ *rapid.T, _ Dataset) Query { return Query{ShapeID: "test.shape.metrics", String: "up"} }
+		Run(t, Config{}, dgen, qgen, agree, agree)
+	})
+
+	t.Run("traces family", func(t *testing.T) {
+		dgen := func(_ *rapid.T) Dataset {
+			return Dataset{
+				DDL: "CREATE TABLE otel_traces",
+				Traces: &TracesModel{Spans: []SpanRecord{
+					{TraceID: "t1", SpanID: "s1", Name: "root"},
+				}},
+			}
+		}
+		qgen := func(_ *rapid.T, _ Dataset) Query {
+			return Query{ShapeID: "test.shape.traces", String: `{ resource.service.name = "api" }`}
+		}
+		Run(t, Config{}, dgen, qgen, agree, agree)
+	})
 }
 
 func TestShapeExampleSeedIsStableAndPositionIndependent(t *testing.T) {
@@ -219,7 +334,7 @@ func TestRunShapeCasesRejectsMixedModelDatasetBeforeExecution(t *testing.T) {
 			runCalls++
 		},
 	)
-	want := `shape "test.shape.mixed-model" generated an invalid dataset: dataset contains both metrics and logs models`
+	want := `shape "test.shape.mixed-model" generated an invalid dataset: dataset contains more than one model family: metrics, logs`
 	if got != want {
 		t.Fatalf("runShapeCases() = %q, want %q", got, want)
 	}
