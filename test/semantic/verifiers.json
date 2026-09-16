@@ -235,7 +235,7 @@
         "a semantic drift confined to a chplan node kind the generator's narrow grammar never draws — internal/optimizer/property_coverage_test.go's uncoveredOptimizerKinds ledger names the current gaps",
         "chDB-vs-real-ClickHouse execution drift: chDB is a coercive, not a strict, oracle for type mismatches production ClickHouse would reject"
       ],
-      "complemented_by": ["VERIFIER-OPTIMIZER-SNAPSHOT-PAIR"],
+      "complemented_by": ["VERIFIER-OPTIMIZER-SNAPSHOT-PAIR", "VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN"],
       "substrate": "chdb",
       "relative_cost": "high",
       "status": "active",
@@ -257,6 +257,191 @@
       "complemented_by": ["VERIFIER-REAL-CLICKHOUSE-INTEGRATION"],
       "substrate": "chdb",
       "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN",
+      "name": "Real ClickHouse strict-scan differential",
+      "description": "An integration-tagged (`//go:build integration`) Go test that runs the pinned golden SQL corpus, the router-corpus write+read seams, the optcorpus query_log-predicate and exit_status-enum reconciliation arms, the non-matrix Loki/Prometheus metadata endpoints, the histogram real-exporter-schema differential, the route-A/route-B same-query differential, and the perf-smoke sentinel differential against a real ClickHouse (testcontainers) through the production strict-scan client path, run via the required `strict-scan` CI lane's named recipes (e.g. `just strict-scan-test`, `just router-corpus-integration`).",
+      "detects": [
+        "an emit-type mismatch chDB coerces silently (UInt8/UInt64 -> *float64) but production clickhouse-go strict-scans and 502s on",
+        "a system.query_log.type predicate naming a non-member that ClickHouse coerces to String and silently matches nothing",
+        "a deployed exit_status Enum8 narrower than the member set the binary writes, which a no-op CREATE TABLE IF NOT EXISTS leaves undetected until a real batch insert rejects it",
+        "a metadata/label-values endpoint decoder bug that bypasses engine.QueryPlan entirely and so has no chDB-backed fixture corpus of its own",
+        "a native exp-histogram quantile/columnar-decode/classic-bucket-discovery regression against the REAL upstream clickhouseexporter table shapes"
+      ],
+      "cannot_detect": [
+        "Tempo search-row decoder bugs (cerberus issue #1635, which needs a hidden pipeline stage to reproduce and is not yet covered by any strict-scan recipe)",
+        "rows that scan successfully but return the WRONG value — that is Layer 6a-c's (chDB roundtrip) job, not strict-scan's"
+      ],
+      "complemented_by": ["VERIFIER-SPEC-FIXTURE-ROUNDTRIP", "VERIFIER-OPTIMIZER-PROPERTY-EQUIVALENCE", "VERIFIER-REFERENCE-DIFFERENTIAL"],
+      "substrate": "real-clickhouse",
+      "relative_cost": "high",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-DETERMINISTIC-TEARDOWN-ORDER-TEST",
+      "name": "Deterministic cursor-teardown-order test",
+      "description": "A plain (untagged) Go test that drives a real HTTP handler seam through httptest with a fake streaming cursor recording ordering/timing, pinning that the handler closes the cursor before cancelling its query context and that the close completes within a bounded drain budget — deterministic, in-process, no chDB and no real ClickHouse, runs in the required `check` lane.",
+      "detects": [
+        "a refactor that hoists a context cancel ahead of the streaming cursor's Close (the ordering the handler must never reverse)",
+        "a teardown that never returns once its context has died, silently pinning a pool slot for as long as ClickHouse takes to finish streaming an abandoned result set"
+      ],
+      "cannot_detect": [
+        "whether a real pooled ClickHouse connection actually survives or is destroyed by a given ordering — the fake cursor here cannot model clickhouse-go's two terminal branches (drain-to-EndOfStream on a live context releases the connection; cancel-then-close destroys the socket outright); only a real driver against a real server can, which is VERIFIER-REAL-CLICKHOUSE-INTEGRATION's job"
+      ],
+      "complemented_by": ["VERIFIER-REAL-CLICKHOUSE-INTEGRATION"],
+      "substrate": "runner",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-DETERMINISTIC-CHAOS-INJECTION",
+      "name": "Deterministic stubbed-querier chaos injection",
+      "description": "A Go test that injects a fault — a stubbed ClickHouse connection drop, a mid-stream cursor fault, a panic mid-handler, or a goroutine-leak assertion via goleak.VerifyNone after driving requests through a real httptest.Server — against a STUBBED querier rather than a real ClickHouse. Deterministic, in-process, runs in the required `check` lane. Proves the LOGIC of a resilience contract; VERIFIER-LIVE-STACK-CHAOS-INJECTION proves the same contract holds against a real deployment under real faults.",
+      "detects": [
+        "a circuit-breaker state-machine defect (CLOSED->OPEN threshold, OPEN backoff, HALF-OPEN probe outcome, concurrent-probe admission)",
+        "a leaked goroutine on the happy path, an error path, a concurrent-request burst, or a route-memo retry",
+        "a handler panic that fails to release an already-acquired admission slot or otherwise crashes the process instead of recovering"
+      ],
+      "cannot_detect": [
+        "whether the SAME contract holds against a real ClickHouse outage, a real network partition, or real pod-kill timing — those failure MECHANISMS cannot be manufactured against a stub; only VERIFIER-LIVE-STACK-CHAOS-INJECTION exercises them",
+        "goleak's own ignore-list excludes known persistent runtime goroutines (e.g. Go's HTTP idle-connection cleaner); a leak that happens to match one of those signatures is not caught"
+      ],
+      "complemented_by": ["VERIFIER-LIVE-STACK-CHAOS-INJECTION"],
+      "substrate": "runner",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-LIVE-STACK-CHAOS-INJECTION",
+      "name": "Live k3d-stack chaos injection",
+      "description": "kubectl- and HTTP-driven fault injection (`.github/scripts/chaos-run.mjs`) against a real k3d cluster (cerberus + ClickHouse + Grafana + OTel collector, `just e2e-up`) with real NetworkPolicy/pod-kill manifests under `test/e2e/chaos/manifests/`, asserting the landed resilience contracts hold under REAL faults rather than a stubbed querier. Runs as the `chaos` job in `.github/workflows/e2e.yml`, informational: push-to-main + nightly + manual dispatch only, never a PR gate and never in release.yml's RELEASE_REQUIRED_CHECKS.",
+      "detects": [
+        "the circuit breaker actually opening/closing end to end under a real CH pod-kill, with the documented 502-then-503 ordering and /readyz behavior",
+        "a per-query wall-clock timeout actually returning a breaker-neutral 503 under a real slow query",
+        "replica failover actually keeping the Service serving from a survivor",
+        "a real NetworkPolicy partition driving the same breaker-OPEN end state (gated on a runtime kube-router enforcement probe; recorded not-applicable rather than a vacuous pass when the probe fails)",
+        "admission+pool saturation shedding cleanly under real burst concurrency",
+        "the route-memo route-B retry actually firing against a real ClickHouse MEMORY_LIMIT_EXCEEDED"
+      ],
+      "cannot_detect": [
+        "a single green run cannot by itself distinguish a scenario whose precondition genuinely didn't materialise this run from one whose precondition has permanently stopped materialising — that requires the separate weekly chaos-not-applicable-rate.mjs audit across MULTIPLE runs, not this verifier's own per-run evidence",
+        "handler-panic recovery is only a passive end-of-run health gate here (all three heads 200 after the fault storm), not a dedicated scenario — VERIFIER-DETERMINISTIC-CHAOS-INJECTION is what actually pins that contract"
+      ],
+      "complemented_by": ["VERIFIER-DETERMINISTIC-CHAOS-INJECTION"],
+      "substrate": "reference-stack",
+      "relative_cost": "high",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-CONSUMER-CORPUS-REPLAY",
+      "name": "Consumer-corpus request replay",
+      "description": "Replays a captured REAL Grafana request shape (test/consumer-corpus/grafana-<version>/*.json, with provenance and per-entry expectations) against cerberus's in-process HTTP handlers and decodes the response EXACTLY as the consumer decodes it — strict gogo/protobuf unmarshal into tempopb types for Tempo, bare logproto-shaped JSON for Loki, Prom API envelopes for Prometheus. Two lanes share one corpus: the default-tag lane (runs in the required `check` lane) backs handlers with canned-row stubs and pins routing/status/decodability; the `chdb`-tagged lane (runs in the chdb workflow's `probe` job via `just test-chdb`) executes the full parse->lower->optimize->emit->chDB pipeline over small seeds and additionally evaluates each entry's data predicates.",
+      "detects": [
+        "a wire-envelope-shape regression of exactly the incident class the 2026-06 week found only through the e2e browser stack (a bare Trace served where Grafana strict-decodes a TraceByIDResponse envelope, an enveloped detected_fields where Grafana reads top-level fields, a missing spanSets, a drilldown 422 on a nil groupBy)",
+        "a data-bearing predicate regression across the full pipeline for a real consumer request shape (chdb-tagged lane only)",
+        "a route-memo retry that silently changes the wire shape a consumer decodes, even though the retry succeeds"
+      ],
+      "cannot_detect": [
+        "a consumer request shape Grafana has never been observed to send — the corpus is a snapshot, and Layer 9's e2e crawler and drilldown specs are the corpus MINERS; this verifier only replays what has already been captured",
+        "large-cardinality, production-scale data volumes — corpus seeds are small by design, so a cardinality/fan-out regression that only manifests at scale is VERIFIER-RESOURCE-FANOUT-BOUND-TEST's or Layer 12's job, not this one's"
+      ],
+      "complemented_by": [],
+      "substrate": "runner",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-RESOURCE-FANOUT-BOUND-TEST",
+      "name": "Concurrent-dispatch resource/fan-out bound test",
+      "description": "A plain Go test exercising internal/chclient's data-shard fan-out gate (a semaphore bounding how many concurrent ClickHouse dispatches one query may hold open at once) against a fake driver, asserting the allocation floor (DataShardCount<=1 never allocates), the concurrency cap under real goroutine racing, the cancel-then-kill-before-release ordering, and idempotent release. Deterministic, in-process, runs in the required `check` lane.",
+      "detects": [
+        "a change that makes the gate allocate for DataShardCount<=1 (the documented zero-behavior-change guarantee for every deployment that predates the field, cerberus issue #3081/#3128)",
+        "concurrent dispatch exceeding the configured cap under real goroutine racing",
+        "a cancelled dispatch releasing its slot WITHOUT first issuing KILL QUERY, which would leave an abandoned query still consuming server resources",
+        "a double-release double-killing the same query"
+      ],
+      "cannot_detect": [
+        "whether a REAL ClickHouse server actually honors the KILL QUERY this gate issues on a cancelled dispatch and frees its own resources promptly — proven only against a fake driver.Conn here, and no real-clickhouse-substrate binding for this specific claim exists today (tracked as cerberus issue #3489, filed rather than silently widened into an existing binding's claim)",
+        "SQL-plan-level compute fan-out — peak intermediate rows versus leaf scan rows inside ONE dispatch (Layer 12's cardinality/scale-wall ratchets, test/perf/cardinality_ratchet_test.go and scale_wall_pin_chdb_test.go) is a completely different axis from this gate's concurrent-DISPATCH-COUNT bound; a deployment can satisfy one while violating the other"
+      ],
+      "complemented_by": [],
+      "substrate": "runner",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-MIGRATION-TIER-SCENARIO",
+      "name": "Migration-tier substrate and parity scenario",
+      "description": "A build-tagged (`migration_tier1` / `migration_tier2`) Go test driving a real docker-compose tier stack (pinned reference Prometheus/Loki/Tempo beside ClickHouse + an OTel collector + cerberus, or that stack plus a query-only external ruler for Tier 2) with a deterministic all-signal fixture, asserting `cerberus migrate verify` reports zero diverge-count against an INDEPENDENTLY REBUILT oracle on each side (never one side against the other), and, for Tier 2, that a real fired alert reaches a dead-end webhook receiver. Runs via `.github/workflows/migration-e2e.yml`'s `migration.e2e` lane, gated behind the `migration_tier1`/`migration_tier2` build tags so the required `check` lane's untagged `go test ./...` never reaches for Docker.",
+      "detects": [
+        "ingest-bridge type-reconstruction bugs (what the OTel collector writes versus what the reference backend itself stored)",
+        "schema/label/histogram fidelity loss across the write seam",
+        "a migrate-verify comparator bug, via the negative control that deliberately perturbs one side and asserts the harness reports the disagreement",
+        "alert-firing divergence that query-level parity alone cannot see (Tier 2 only)"
+      ],
+      "cannot_detect": [
+        "a lowering or emitter bug that the eight seeded archetypes never happen to shape a query into — it surfaces here, if at all, as an opaque parity diff rather than a located defect; Layers 1-13 own actually pinpointing it",
+        "any customer topology beyond the eight seeded archetypes, or anything docs/migration-testing.md section 6.4 records as a declared scope limit"
+      ],
+      "complemented_by": [],
+      "substrate": "reference-stack",
+      "relative_cost": "high",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-PERF-BASELINE-REGRESSION",
+      "name": "Real-ClickHouse performance-baseline regression gate",
+      "description": "An integration-tagged Go test that loads a real, trimmed production data sample into a real ClickHouse and asserts each pinned sentinel's max-of-5 peak memory (and expected HTTP outcome) against a committed baseline plus an absolute cap-relative ceiling, run via the `perf-nightly` lane (`go test -tags=integration -run TestPerfNightlyRealCH ./test/perf/nightly/...`).",
+      "detects": [
+        "a peak-memory regression, for the EXACT pinned sentinel shapes, past the committed baseline or the absolute ceiling",
+        "an HTTP outcome (success/rejection) changing for a pinned sentinel at its calibrated scale"
+      ],
+      "cannot_detect": [
+        "general algorithmic correctness or asymptotic boundedness for a query shape, data volume, or ClickHouse/cerberus version combination the committed baseline never measured — a green result is MEASURED evidence for the exact pinned sentinel/version combination, not a semantic proof of general correctness; a new shape needs its own sentinel and a version bump needs its own re-measurement",
+        "wall-clock regressions — those are performance.benchmark's (benchstat, manual dispatch, advisory even at release) job, not this gate's"
+      ],
+      "complemented_by": [],
+      "substrate": "real-clickhouse",
+      "relative_cost": "high",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-CARDINALITY-FANOUT-RATCHET",
+      "name": "SQL-plan cardinality / fan-out ratchet",
+      "description": "A chdb-tagged Go test in the `perf-guards` job (chdb.perf-guards lane, substrate chdb, required on the release gate) that pins a fixture's PEAK INTERMEDIATE CARDINALITY, structural fan-out flags (an unbounded CrossJoin, an arrayJoin feeding a JOIN, an uncapped WITH RECURSIVE, a correlated subquery), and recursion depth against a committed baseline (test/perf/cardinality-baseline/<head>/<name>.json, scale-wall-baseline.json), failing on an upward regression, a newly-tripped structural flag, or deeper recursion; a decrease never blocks, and the ceiling only tightens on a deliberate `just update-golden cardinality`. Complements the static internal/perf/fanout lint, which flags a structurally-unbounded shape on every corpus fixture's lowered plan and emitted SQL with no chDB execution at all.",
+      "detects": [
+        "an upward fan-factor regression (peak intermediate rows / leaf scan rows) against the committed per-fixture baseline",
+        "super-linear wall-time scaling against a swept parameter for a known-hot construct",
+        "a deeper recursion depth than the committed baseline records",
+        "a fixture whose fan-out shard was never recorded, closing the 'unrecorded fixture -> red perf-guards on main' failure mode"
+      ],
+      "cannot_detect": [
+        "a fan-out in a construct nobody wrote a static rule or a baseline fixture for — the corpus-wide nightly profiler (test/perf/profile, the perf-profile workflow / performance.profile lane) is the wide net for that residual class: it is release-required (release.yml's RELEASE_REQUIRED_CHECKS names `profile`) but absent from the live main-branch PR ruleset, so an ordinary PR can merge without it having run even once",
+        "the concurrent-DISPATCH-COUNT bound internal/chclient's data-shard fan-out gate enforces — this verifier bounds ROW CARDINALITY inside one dispatch, a different axis than VERIFIER-RESOURCE-FANOUT-BOUND-TEST's concurrent-dispatch cap; a fixture can satisfy one while violating the other"
+      ],
+      "complemented_by": ["VERIFIER-STATIC-INVARIANT-SCAN"],
+      "substrate": "chdb",
+      "relative_cost": "medium",
       "status": "active",
       "replaces": null,
       "replaced_by": null
