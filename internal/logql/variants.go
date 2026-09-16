@@ -370,7 +370,15 @@ func fuseVariantArms(arms []chplan.Node) (*chplan.RangeWindow, bool) {
 	shared = append(shared, base.Projections[valueIdx+1:]...)
 
 	fused := *windows[0]
-	fused.Input = &chplan.Project{Roles: logSampleRoles(), Input: base.Input, Projections: shared}
+	// base.Roles (not the canonical logSampleRoles() aliases) declares the
+	// column names this Project's Projections actually use — the shared
+	// subtree's real ResourceAttributes/Timestamp columns from
+	// [rangeAggregation]'s own Roles: logRoles(s), not the Sample-shape
+	// names a later wrapper (variantSampleArm / variantFusedSampleShape)
+	// re-aliases them to. A RangeWindow's Input schema must resolve its
+	// RoleTimestamp column by the names actually present, or emission
+	// rejects it as an open/undriven schema.
+	fused.Input = &chplan.Project{Roles: base.Roles, Input: base.Input, Projections: shared}
 	// Func / ValueColumn describe no single arm now: each arm names its own
 	// pair, and ValueColumn becomes the OUTPUT alias the unpivot writes.
 	fused.Func = ""
