@@ -656,6 +656,17 @@ jobs:
         run: |
           node --test .github/scripts/semantic-evidence-adapter.test.mjs
           node .github/scripts/semantic-evidence-adapter.mjs
+      # semantic-report.mjs (#3435) joins the model to its verifier owners,
+      # bound vs observed evidence, and merge/release obligations, and
+      # generates docs/semantic-conformance.{md,json}. Both are committed,
+      # generated files with no `-merge` .gitattributes entry (see that
+      # file's own "already has a CI drift gate" family) — this freshness
+      # check is what makes omitting `-merge` safe, mirroring config-docs.yml's
+      # regenerate-then-diff gate for docs/configuration.md.
+      - name: Validate the generated semantic conformance report is fresh
+        run: |
+          node --test .github/scripts/semantic-report.test.mjs
+          node .github/scripts/semantic-report.mjs --check
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
           tool: just
