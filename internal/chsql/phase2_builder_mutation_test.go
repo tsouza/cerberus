@@ -61,3 +61,18 @@ func TestMutation_Spliced_AccumulatesOntoNonzeroCount(t *testing.T) {
 		t.Fatalf("PhysicalScans = %d, want 2 (1 prior + 1 spliced)", got)
 	}
 }
+
+// TestMutation_Subquery_AccumulatesOntoNonzeroCount kills the
+// REMOVE_SELF_ASSIGNMENTS mutant on builder.go:Subquery:
+// `b.physicalScans += s.physicalScans()` rewritten to `b.physicalScans =
+// s.physicalScans()`. The primed outer count is the observable distinction,
+// matching Spliced's sibling guard below.
+func TestMutation_Subquery_AccumulatesOntoNonzeroCount(t *testing.T) {
+	t.Parallel()
+
+	b := &Builder{physicalScans: 1}
+	Subquery(PreRenderedSQL{SQL: "SELECT 1", PhysicalScans: 1})(b)
+	if got := b.PhysicalScans(); got != 2 {
+		t.Fatalf("PhysicalScans = %d, want 2 (1 prior + 1 subquery)", got)
+	}
+}
