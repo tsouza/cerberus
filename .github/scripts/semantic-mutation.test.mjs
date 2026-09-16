@@ -247,7 +247,7 @@ test("rejects a malformed isolation.memory_max", () => {
 
 test("loadMutants: the real committed test/semantic/mutants/ corpus is valid", () => {
   const records = loadMutants(DEFAULT_MUTANTS_DIR, { root: REPO_ROOT });
-  assert.equal(records.size, 7);
+  assert.equal(records.size, 9);
   for (const c of CLASSIFICATIONS) {
     assert.ok(
       [...records.values()].some((r) => r.expected_detection === c),
@@ -271,7 +271,7 @@ test("loadMutants: a duplicate id across two files is rejected", () => {
 test("renderMutantsSummary counts by expected_detection", () => {
   const records = loadMutants(DEFAULT_MUTANTS_DIR, { root: REPO_ROOT });
   const summary = renderMutantsSummary(records);
-  assert.match(summary, /mutants: \*\*7\*\*/);
+  assert.match(summary, /mutants: \*\*9\*\*/);
 });
 
 // --- classifyGoTestOutput (pure) -----------------------------------------

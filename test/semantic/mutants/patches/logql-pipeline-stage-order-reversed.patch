@@ -1,0 +1,14 @@
+diff --git a/internal/logql/lower.go b/internal/logql/lower.go
+index 49b85f8c1..8b02ee62a 100644
+--- a/internal/logql/lower.go
++++ b/internal/logql/lower.go
+@@ -470,7 +470,8 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
+ 	// dynamic stage's transform has actually computed the row's true
+ 	// `__error__` / `__error_details__` labels.
+ 	dynamicLabels := false
+-	for _, stage := range e.MultiStages {
++	for i := len(e.MultiStages) - 1; i >= 0; i-- {
++		stage := e.MultiStages[i]
+ 		if lf, ok := stage.(*syntax.LabelFilterExpr); ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer) {
+ 			continue
+ 		}

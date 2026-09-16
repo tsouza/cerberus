@@ -1,0 +1,15 @@
+diff --git a/internal/chsql/builder.go b/internal/chsql/builder.go
+index f87944c62..de4c78bef 100644
+--- a/internal/chsql/builder.go
++++ b/internal/chsql/builder.go
+@@ -844,8 +844,8 @@ func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
+ // bare ColumnRef/MapAccess resolved per span at query time. Pinned by
+ // builder_test.go's "binary_match_dynamic_pattern" case.
+ func anchoredRegexPattern(v chplan.Expr) chplan.Expr {
+-	const anchorPrefix = "^(?:"
+-	const anchorSuffix = ")$"
++	const anchorPrefix = ""
++	const anchorSuffix = ""
+ 	if lit, ok := v.(*chplan.LitString); ok {
+ 		return &chplan.LitString{V: anchorPrefix + lit.V + anchorSuffix}
+ 	}
