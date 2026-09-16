@@ -20,7 +20,7 @@ func TestResourceBoundsFromEnv_DefaultsToZeroUnset(t *testing.T) {
 	t.Setenv(EnvRangeLWRFanoutMaxRows, "")
 	t.Setenv(EnvRateWindowFanoutMaxRows, "")
 	t.Setenv(EnvMaxEmittedSQLBytes, "")
-	t.Setenv(EnvRangeBucketFanoutGroupMaxRows, "")
+	t.Setenv(EnvRangeBucketFanoutFoldCostMaxUnits, "")
 
 	got, err := ResourceBoundsFromEnv()
 	if err != nil {
@@ -42,18 +42,18 @@ func TestResourceBoundsFromEnv_OverridesEachIndependently(t *testing.T) {
 	t.Setenv(EnvRangeLWRFanoutMaxRows, "456")
 	t.Setenv(EnvRateWindowFanoutMaxRows, "789")
 	t.Setenv(EnvMaxEmittedSQLBytes, "1048576")
-	t.Setenv(EnvRangeBucketFanoutGroupMaxRows, "321")
+	t.Setenv(EnvRangeBucketFanoutFoldCostMaxUnits, "321")
 
 	got, err := ResourceBoundsFromEnv()
 	if err != nil {
 		t.Fatalf("ResourceBoundsFromEnv() error = %v", err)
 	}
 	want := ResourceBoundOverrides{
-		RangeBucketFanoutMaxRows:      123,
-		RangeLWRFanoutMaxRows:         456,
-		RateWindowFanoutMaxRows:       789,
-		MaxEmittedSQLBytes:            1048576,
-		RangeBucketFanoutGroupMaxRows: 321,
+		RangeBucketFanoutMaxRows:          123,
+		RangeLWRFanoutMaxRows:             456,
+		RateWindowFanoutMaxRows:           789,
+		MaxEmittedSQLBytes:                1048576,
+		RangeBucketFanoutFoldCostMaxUnits: 321,
 	}
 	if got != want {
 		t.Fatalf("ResourceBoundsFromEnv() = %+v, want %+v", got, want)
@@ -67,14 +67,14 @@ func TestResourceBoundsFromEnv_OverridesEachIndependently(t *testing.T) {
 func TestResourceBoundsFromEnv_RejectsMalformedValue(t *testing.T) {
 	for _, key := range []string{
 		EnvRangeBucketFanoutMaxRows, EnvRangeLWRFanoutMaxRows, EnvRateWindowFanoutMaxRows, EnvMaxEmittedSQLBytes,
-		EnvRangeBucketFanoutGroupMaxRows,
+		EnvRangeBucketFanoutFoldCostMaxUnits,
 	} {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv(EnvRangeBucketFanoutMaxRows, "")
 			t.Setenv(EnvRangeLWRFanoutMaxRows, "")
 			t.Setenv(EnvRateWindowFanoutMaxRows, "")
 			t.Setenv(EnvMaxEmittedSQLBytes, "")
-			t.Setenv(EnvRangeBucketFanoutGroupMaxRows, "")
+			t.Setenv(EnvRangeBucketFanoutFoldCostMaxUnits, "")
 			t.Setenv(key, "not-a-number")
 
 			_, err := ResourceBoundsFromEnv()
@@ -94,14 +94,14 @@ func TestResourceBoundsFromEnv_RejectsMalformedValue(t *testing.T) {
 // bound) that low would reject every query outright, which is never a
 // legitimate operator intent (see ResourceBoundOverrides' own doc).
 func TestResourceBoundsFromEnv_RejectsNonPositiveValue(t *testing.T) {
-	for _, key := range []string{EnvRangeBucketFanoutMaxRows, EnvMaxEmittedSQLBytes, EnvRangeBucketFanoutGroupMaxRows} {
+	for _, key := range []string{EnvRangeBucketFanoutMaxRows, EnvMaxEmittedSQLBytes, EnvRangeBucketFanoutFoldCostMaxUnits} {
 		for _, v := range []string{"0", "-1", "-1000000"} {
 			t.Run(key+"="+v, func(t *testing.T) {
 				t.Setenv(EnvRangeBucketFanoutMaxRows, "")
 				t.Setenv(EnvRangeLWRFanoutMaxRows, "")
 				t.Setenv(EnvRateWindowFanoutMaxRows, "")
 				t.Setenv(EnvMaxEmittedSQLBytes, "")
-				t.Setenv(EnvRangeBucketFanoutGroupMaxRows, "")
+				t.Setenv(EnvRangeBucketFanoutFoldCostMaxUnits, "")
 				t.Setenv(key, v)
 
 				_, err := ResourceBoundsFromEnv()
@@ -119,19 +119,19 @@ func TestResourceBoundsFromEnv_RejectsNonPositiveValue(t *testing.T) {
 // show up here rather than only via an end-to-end chDB query.
 func TestEngine_ResourceBoundOverrides(t *testing.T) {
 	e := &Engine{
-		RangeBucketFanoutMaxRows:      111,
-		RangeLWRFanoutMaxRows:         222,
-		RateWindowFanoutMaxRows:       333,
-		MaxEmittedSQLBytes:            444,
-		RangeBucketFanoutGroupMaxRows: 555,
+		RangeBucketFanoutMaxRows:          111,
+		RangeLWRFanoutMaxRows:             222,
+		RateWindowFanoutMaxRows:           333,
+		MaxEmittedSQLBytes:                444,
+		RangeBucketFanoutFoldCostMaxUnits: 555,
 	}
 	got := e.resourceBoundOverrides()
 	want := ResourceBoundOverrides{
-		RangeBucketFanoutMaxRows:      111,
-		RangeLWRFanoutMaxRows:         222,
-		RateWindowFanoutMaxRows:       333,
-		MaxEmittedSQLBytes:            444,
-		RangeBucketFanoutGroupMaxRows: 555,
+		RangeBucketFanoutMaxRows:          111,
+		RangeLWRFanoutMaxRows:             222,
+		RateWindowFanoutMaxRows:           333,
+		MaxEmittedSQLBytes:                444,
+		RangeBucketFanoutFoldCostMaxUnits: 555,
 	}
 	if got != want {
 		t.Fatalf("resourceBoundOverrides() = %+v, want %+v", got, want)

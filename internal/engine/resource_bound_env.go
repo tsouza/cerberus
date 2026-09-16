@@ -26,11 +26,12 @@ import (
 //     max_query_size default rather than a cerberus calibration: an operator
 //     who raises max_query_size on the server raises this alongside it, and
 //     nobody else needs to touch it. Issue #2733.
-//   - CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_ROWS — RangeBucketFanout's
-//     collapse OUTPUT row count (internal/chsql/lwr_fanout_bound.go,
-//     maxRangeBucketFanoutGroupRows, default 800) — a second, independent
-//     axis from CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS' own pre-collapse
-//     sample fanout. Issue #3468.
+//   - CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS — the fold cost
+//     of RangeBucketFanout's whole collapse OUTPUT
+//     (internal/chsql/lwr_fanout_bound.go,
+//     maxRangeBucketFanoutFoldCostUnits, default 15,000,000) — a second,
+//     independent axis from CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS' own
+//     pre-collapse sample fanout. Issues #3468, #3514.
 //
 // Each constant is a compile-time resource-bound safety ceiling gating
 // query execution/plan shape that has already cost this repo two real
@@ -66,11 +67,11 @@ const (
 	EnvRateWindowFanoutMaxRows = "CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS"
 	// EnvMaxEmittedSQLBytes overrides maxEmittedSQLBytes.
 	EnvMaxEmittedSQLBytes = "CERBERUS_CH_MAX_EMITTED_SQL_BYTES"
-	// EnvRangeBucketFanoutGroupMaxRows overrides maxRangeBucketFanoutGroupRows
-	// (issue #3468) — RangeBucketFanout's collapse OUTPUT row count, a
-	// second, independent axis from EnvRangeBucketFanoutMaxRows' own
-	// pre-collapse sample fanout.
-	EnvRangeBucketFanoutGroupMaxRows = "CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_ROWS"
+	// EnvRangeBucketFanoutFoldCostMaxUnits overrides
+	// maxRangeBucketFanoutFoldCostUnits (issues #3468, #3514) — the fold cost
+	// of RangeBucketFanout's whole collapse OUTPUT, a second, independent
+	// axis from EnvRangeBucketFanoutMaxRows' own pre-collapse sample fanout.
+	EnvRangeBucketFanoutFoldCostMaxUnits = "CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS"
 )
 
 // ResourceBoundOverrides is the resolved operator override for the four
@@ -85,11 +86,11 @@ const (
 // ResourceBoundsFromEnv rejects an explicit 0 or negative override as a
 // startup error instead of silently accepting it.
 type ResourceBoundOverrides struct {
-	RangeBucketFanoutMaxRows      int64
-	RangeLWRFanoutMaxRows         int64
-	RateWindowFanoutMaxRows       int64
-	MaxEmittedSQLBytes            int64
-	RangeBucketFanoutGroupMaxRows int64
+	RangeBucketFanoutMaxRows          int64
+	RangeLWRFanoutMaxRows             int64
+	RateWindowFanoutMaxRows           int64
+	MaxEmittedSQLBytes                int64
+	RangeBucketFanoutFoldCostMaxUnits int64
 }
 
 // ResourceBoundsFromEnv reads the four CERBERUS_CH_* knobs above.
@@ -114,7 +115,7 @@ func ResourceBoundsFromEnv() (ResourceBoundOverrides, error) {
 	if overrides.MaxEmittedSQLBytes, err = envPositiveInt64(EnvMaxEmittedSQLBytes); err != nil {
 		return ResourceBoundOverrides{}, err
 	}
-	if overrides.RangeBucketFanoutGroupMaxRows, err = envPositiveInt64(EnvRangeBucketFanoutGroupMaxRows); err != nil {
+	if overrides.RangeBucketFanoutFoldCostMaxUnits, err = envPositiveInt64(EnvRangeBucketFanoutFoldCostMaxUnits); err != nil {
 		return ResourceBoundOverrides{}, err
 	}
 	return overrides, nil

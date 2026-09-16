@@ -205,22 +205,26 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		collapse.Having(Gte(Call("uniqExact", Col(inputTimestamp)), InlineLit(int64(r.MinSamples))))
 	}
 
-	// Issue #3468: a SECOND, independent bound — this one on the collapse's
-	// own OUTPUT row count (one row per (series, anchor) group), not the
-	// pre-collapse sample fanout `fanoutSource` above already caps. Scoped
-	// to collapses whose AggFuncs include a groupArray-family accumulator
-	// (classicBucketWindowAggs, expHistogramWindowAggs — see
-	// maxRangeBucketFanoutGroupRows' own doc for why): an argMax/sumForEach
-	// collapse reduces every group to a FIXED-size row regardless of group
-	// count, the same already-accepted risk class as any ordinary
-	// Aggregate, so gating this guard on the accumulator shape (rather than
-	// applying it unconditionally to every RangeBucketFanout) keeps a wide,
-	// cheap, legitimately safe dashboard query — thousands of anchors x
-	// series, fixed-size per-group state — from a false-positive rejection
-	// this bound was never calibrated to police.
+	// Issue #3468: a SECOND, independent bound — this one on the collapse
+	// OUTPUT's total fold cost, not the pre-collapse sample fanout
+	// `fanoutSource` above already caps. Scoped to collapses whose AggFuncs
+	// include a groupArray-family accumulator (classicBucketWindowAggs,
+	// expHistogramWindowAggs — see maxRangeBucketFanoutFoldCostUnits' own
+	// doc for why): an argMax/sumForEach collapse reduces every group to a
+	// FIXED-size row regardless of group count, the same already-accepted
+	// risk class as any ordinary Aggregate, so gating this guard on the
+	// accumulator shape (rather than applying it unconditionally to every
+	// RangeBucketFanout) keeps a wide, cheap, legitimately safe dashboard
+	// query — thousands of anchors x series, fixed-size per-group state —
+	// from a false-positive rejection this bound was never calibrated to
+	// police.
 	if rangeBucketFanoutHasGrowingAccumulator(r.AggFuncs) {
+		payload, samples, err := rangeBucketFanoutFoldCostAliases(r.AggFuncs)
+		if err != nil {
+			return err
+		}
 		return e.emitSelect(rangeBucketFanoutGroupGuardedQuery(
-			e, collapse, r.AnchorAlias, e.rangeBucketFanoutGroupRowBound(), RangeBucketFanoutGroupBudgetMessage,
+			e, collapse, payload, samples, e.rangeBucketFanoutFoldCostBound(), RangeBucketFanoutGroupBudgetMessage,
 		))
 	}
 
@@ -249,7 +253,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 //
 // QueryBuilder.With's own doc names exactly this trade: "buys emitted-TEXT
 // linearity and never fewer reads" — collapse's SQL is registered ONCE as a
-// CTE and referenced by name from both the bounded read and the probe's
+// CTE and referenced by name from both the guarded read and the probe's
 // inner read, so ClickHouse still evaluates it twice (the identical
 // execution-cost profile every sibling fanout guard already accepts) while
 // the RENDERED TEXT carries it only once. This is deliberately NOT applied
@@ -259,27 +263,138 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 // way this second, later-added guard does, and widening the change risks
 // unrelated golden churn for a problem that has not been shown to exist
 // there.
+//
+// Unlike lwrFanoutBoundedSourceFrag the guarded read carries NO `LIMIT`.
+// That helper's LIMIT is a real short-circuit: nothing blocking sits between
+// it and the scan, so ClickHouse stops pulling once it is satisfied. Here it
+// never could be — `collapse` is a GROUP BY, a blocking operator whose whole
+// input is consumed before it emits its first row, so a LIMIT above it saves
+// nothing and only adds a truncation the probe then has to rule out. The
+// probe (rangeBucketFanoutFoldCostProbe) reads the same already-computed
+// aggregate result exactly, as a scalar subquery ClickHouse evaluates BEFORE
+// the guarded read streams, so the fold downstream of this node still never
+// sees a single row of an over-budget collapse.
 func rangeBucketFanoutGroupGuardedQuery(
-	e *emitter, collapse *QueryBuilder, probeColumn string, maxRows int64, message string,
+	e *emitter, collapse *QueryBuilder, payloadAliases []string, samplesAlias string, maxCostUnits int64, message string,
 ) *QueryBuilder {
 	cteName := "_rbf_group_" + strconv.Itoa(e.nextCTESeq())
 	cteRef := func() Frag { return verbatim(cteName) }
 
-	bounded := NewQuery().From(cteRef())
-	bounded.Select(Star())
-	bounded.Limit(maxRows + 1)
-
-	probe := NewQuery().From(cteRef())
-	probe.Select(Col(probeColumn))
-	probe.Limit(maxRows + 1)
-	probeCount := NewQuery().From(probe.Frag())
-	probeCount.Select(As(Call("count"), "n"))
-
 	guarded := NewQuery().With(cteName, collapse.Frag())
-	guarded.From(bounded.Frag())
+	guarded.From(cteRef())
 	guarded.Select(Star())
-	guarded.Where(lwrFanoutGuardFrag(probeCount, maxRows, message))
+	guarded.Where(lwrFanoutGuardFrag(
+		rangeBucketFanoutFoldCostProbe(cteRef, payloadAliases, samplesAlias), maxCostUnits, message,
+	))
 	return guarded
+}
+
+// foldCostElemsAlias / foldCostSamplesAlias name the two per-group
+// quantities [rangeBucketFanoutFoldCostProbe]'s inner SELECT derives before
+// its outer SELECT sums them into one cost. They are emitter-chosen
+// synthetic names in the same `_rbf_`-prefixed family as the CTE above, so
+// they cannot collide with a collapse output alias any lowering produces.
+const (
+	foldCostElemsAlias   = "_rbf_elems"
+	foldCostSamplesAlias = "_rbf_samples"
+)
+
+// foldCostBytesPerElement is the stored width of one bucket-ladder element —
+// `Array(UInt64)` / `Array(Float64)` on every histogram payload column in
+// internal/schema's OTel layout — which is what turns ClickHouse's
+// `byteSize` (a BYTE count over whatever the accumulators happen to hold)
+// into the ELEMENT count maxRangeBucketFanoutFoldCostUnits is calibrated in.
+const foldCostBytesPerElement int64 = 8
+
+// foldCostMinSamples floors the per-group sample count the width estimate
+// divides by. A collapse group exists only because at least one row fanned
+// into it, so `length(<a groupArray>)` is already >= 1 in every group
+// ClickHouse can produce; the clamp exists so the emitted arithmetic cannot
+// divide by zero even if a future accumulator shape made an empty array
+// reachable.
+const foldCostMinSamples int64 = 1
+
+// rangeBucketFanoutFoldCostProbe renders the scalar subquery
+// [lwrFanoutGuardFrag] compares against the fold-cost ceiling: the sum, over
+// every group the collapse produced, of that group's own fold cost in the
+// `E + W^2` units maxRangeBucketFanoutFoldCostUnits is calibrated in.
+//
+//	SELECT sum(`_rbf_elems` + intDiv(`_rbf_elems`, `_rbf_samples`)
+//	                       * intDiv(`_rbf_elems`, `_rbf_samples`)) AS `n`
+//	FROM (SELECT intDiv(byteSize(<payload aliases…>), 8) AS `_rbf_elems`,
+//	             greatest(length(<samples alias>), 1)    AS `_rbf_samples`
+//	      FROM <cte>)
+//
+// E — `_rbf_elems` — is the group's accumulated payload in bucket-ladder
+// elements, read straight off the materialised accumulators with `byteSize`
+// rather than modelled from the plan. That keeps this bound TYPE-AGNOSTIC:
+// it needs no knowledge of which accumulator holds the bucket arrays, which
+// is exactly the knowledge chsql does not have and internal/promql would
+// have had to thread down to give it.
+//
+// W — `intDiv(E, S)` with S = `_rbf_samples`, the group's in-window row
+// count — recovers the group's bucket-ladder WIDTH from the same two
+// numbers, because the accumulators hold one W-wide ladder per in-window
+// sample. `length()` over ANY groupArray answers S regardless of what that
+// array's elements are, which is why the samples alias may be any one of
+// them.
+//
+// The two-level shape (a per-group projection, then one aggregate over it)
+// is what keeps `byteSize` rendered ONCE while the cost expression above it
+// reads E three times and S twice.
+func rangeBucketFanoutFoldCostProbe(cteRef func() Frag, payloadAliases []string, samplesAlias string) *QueryBuilder {
+	payload := make([]Frag, 0, len(payloadAliases))
+	for _, alias := range payloadAliases {
+		payload = append(payload, Col(alias))
+	}
+
+	perGroup := NewQuery().From(cteRef())
+	perGroup.Select(As(
+		Call("intDiv", Call("byteSize", payload...), InlineLit(foldCostBytesPerElement)),
+		foldCostElemsAlias,
+	))
+	perGroup.Select(As(
+		Call("greatest", Call("length", Col(samplesAlias)), InlineLit(foldCostMinSamples)),
+		foldCostSamplesAlias,
+	))
+
+	width := func() Frag { return Call("intDiv", Col(foldCostElemsAlias), Col(foldCostSamplesAlias)) }
+	total := NewQuery().From(perGroup.Frag())
+	total.Select(As(Call("sum", Add(Col(foldCostElemsAlias), Mul(width(), width()))), "n"))
+	return total
+}
+
+// rangeBucketFanoutFoldCostAliases picks the two collapse output aliases
+// [rangeBucketFanoutFoldCostProbe] reads: every accumulator's alias, whose
+// combined `byteSize` is the group's payload, and one groupArray alias whose
+// `length` is the group's in-window row count.
+//
+// Either alias being unavailable is a hard emit error rather than a
+// silently unguarded query: this is a resource bound, and "the plan was
+// shaped unusually, so nothing was enforced" is the failure mode a guard
+// exists to prevent. Every lowering in this tree already aliases every
+// aggregate it puts in a RangeBucketFanout collapse — the downstream reshape
+// Projects reference them all by name — so neither branch is reachable from
+// a production plan, and returning an error is what pins that.
+func rangeBucketFanoutFoldCostAliases(aggFuncs []chplan.AggFunc) (payload []string, samples string, err error) {
+	payload = make([]string, 0, len(aggFuncs))
+	for _, af := range aggFuncs {
+		if af.Alias == "" {
+			return nil, "", fmt.Errorf(
+				"%w: RangeBucketFanout collapse with a groupArray accumulator requires every AggFunc to carry an Alias", ErrUnsupported,
+			)
+		}
+		payload = append(payload, af.Alias)
+		if samples == "" && af.Fn == chplan.FnGroupArray {
+			samples = af.Alias
+		}
+	}
+	if samples == "" {
+		return nil, "", fmt.Errorf(
+			"%w: RangeBucketFanout fold-cost bound requires a groupArray AggFunc to read the group's sample count from", ErrUnsupported,
+		)
+	}
+	return payload, samples, nil
 }
 
 // rangeBucketFanoutHasGrowingAccumulator reports whether aggFuncs includes a
@@ -288,8 +403,8 @@ func rangeBucketFanoutGroupGuardedQuery(
 // TimeUnix trio, expHistogramWindowAggs' bucket-array + timestamp groupArrays
 // — see histogram_quantile_window.go / histogram_quantile_native_window.go),
 // as opposed to a FIXED-size accumulator (argMax, sumForEach, sum, count,
-// …). See maxRangeBucketFanoutGroupRows' own doc for why only the former
-// needs a bound on the collapse's own output row count.
+// …). See maxRangeBucketFanoutFoldCostUnits' own doc for why only the former
+// needs a bound on what the collapse's whole output costs to fold.
 func rangeBucketFanoutHasGrowingAccumulator(aggFuncs []chplan.AggFunc) bool {
 	for _, af := range aggFuncs {
 		if af.Fn == chplan.FnGroupArray {

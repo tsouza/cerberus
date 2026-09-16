@@ -333,16 +333,16 @@ type emitter struct {
 	rangeLWRFanoutMaxRows    int64
 	rateWindowFanoutMaxRows  int64
 
-	// rangeBucketFanoutGroupMaxRows resolves RangeBucketFanout's collapse
-	// OUTPUT row bound (issue #3468, lwr_fanout_bound.go's
-	// maxRangeBucketFanoutGroupRows) — a second, independent axis from
+	// rangeBucketFanoutFoldCostMaxUnits resolves RangeBucketFanout's collapse
+	// OUTPUT fold-cost bound (issue #3468, lwr_fanout_bound.go's
+	// maxRangeBucketFanoutFoldCostUnits) — a second, independent axis from
 	// rangeBucketFanoutMaxRows above (that one bounds the PRE-collapse
 	// sample fanout). Seeded and read the identical way: once here from
-	// rangeBucketFanoutGroupMaxRowsFromCtx, accessed only through
-	// rangeBucketFanoutGroupRowBound() so a direct &emitter{} in an
+	// rangeBucketFanoutFoldCostMaxUnitsFromCtx, accessed only through
+	// rangeBucketFanoutFoldCostBound() so a direct &emitter{} in an
 	// internal round-trip test falls back to the compiled-in default
 	// rather than reading a literal zero.
-	rangeBucketFanoutGroupMaxRows int64
+	rangeBucketFanoutFoldCostMaxUnits int64
 
 	// rangeBucketGridNativeMaxRows / rangeBucketGridNativeMaxDensityUnits
 	// are RangeBucketGridNative's own two resource-bound ceilings (axis1 /
@@ -437,10 +437,10 @@ func newEmitter(ctx context.Context) *emitter {
 		deltaPrefixLookbackNS:  deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
 		deltaPrefixReadEnabled: deltaPrefixReadEnabledFromCtx(ctx),
 
-		rangeBucketFanoutMaxRows:      rangeBucketFanoutMaxRowsFromCtx(ctx),
-		rangeLWRFanoutMaxRows:         rangeLWRFanoutMaxRowsFromCtx(ctx),
-		rateWindowFanoutMaxRows:       rateWindowFanoutMaxRowsFromCtx(ctx),
-		rangeBucketFanoutGroupMaxRows: rangeBucketFanoutGroupMaxRowsFromCtx(ctx),
+		rangeBucketFanoutMaxRows:          rangeBucketFanoutMaxRowsFromCtx(ctx),
+		rangeLWRFanoutMaxRows:             rangeLWRFanoutMaxRowsFromCtx(ctx),
+		rateWindowFanoutMaxRows:           rateWindowFanoutMaxRowsFromCtx(ctx),
+		rangeBucketFanoutFoldCostMaxUnits: rangeBucketFanoutFoldCostMaxUnitsFromCtx(ctx),
 
 		rangeBucketGridNativeMaxRows:         rangeBucketGridNativeMaxRowsFromCtx(ctx),
 		rangeBucketGridNativeMaxDensityUnits: rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx),
@@ -479,10 +479,10 @@ func (e *emitter) sub() *emitter {
 		deltaPrefixLookbackNS:  e.deltaPrefixLookbackNS,
 		deltaPrefixReadEnabled: e.deltaPrefixReadEnabled,
 
-		rangeBucketFanoutMaxRows:      e.rangeBucketFanoutMaxRows,
-		rangeLWRFanoutMaxRows:         e.rangeLWRFanoutMaxRows,
-		rateWindowFanoutMaxRows:       e.rateWindowFanoutMaxRows,
-		rangeBucketFanoutGroupMaxRows: e.rangeBucketFanoutGroupMaxRows,
+		rangeBucketFanoutMaxRows:          e.rangeBucketFanoutMaxRows,
+		rangeLWRFanoutMaxRows:             e.rangeLWRFanoutMaxRows,
+		rateWindowFanoutMaxRows:           e.rateWindowFanoutMaxRows,
+		rangeBucketFanoutFoldCostMaxUnits: e.rangeBucketFanoutFoldCostMaxUnits,
 
 		rangeBucketGridNativeMaxRows:         e.rangeBucketGridNativeMaxRows,
 		rangeBucketGridNativeMaxDensityUnits: e.rangeBucketGridNativeMaxDensityUnits,
