@@ -245,6 +245,116 @@
       "owner": "cerberus-core",
       "replaces": null,
       "replaced_by": null
+    },
+    {
+      "id": "ARCH-HEAD-LOWER-001",
+      "statement": "Each head's lowering step — internal/promql/lower.go, internal/logql/lower.go, internal/traceql/lower.go, invoked inside that head's own Lang.Parse — preserves the accepted query's declared semantics into the shared chplan IR: the pre-optimizer plan's emitted SQL, executed against the fixture's seeded chDB data, returns the same rows the query's own language declares (test/spec/roundtrip.go's expected_rows, the pre-optimizer ground truth).",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "design-decision",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["promql-lowering-roundtrip", "logql-lowering-roundtrip", "traceql-lowering-roundtrip"],
+      "blind_spots": [
+        "The chDB round trip proves the fixture corpus's own cases only — it is not exhaustive over PromQL's, LogQL's, or TraceQL's full grammar, and a query shape no fixture exercises carries no evidence here.",
+        "It executes the PRE-optimizer SQL (chsql.Emit of the lowered, not-yet-optimized plan, per CLAUDE.md's own note that the promql spec lane runs pre-optimizer); it says nothing about whether a later optimizer rewrite preserves that same semantics — that is ARCH-HEAD-OPTIMIZE-001's job, not this contract's.",
+        "A lowering bug that produces the wrong plan but happens to still satisfy the fixture's own expected_rows (because that fixture's seed/predicate combination cannot discriminate it) would not be caught here; ARCH-HEAD-WIRE-001's live reference-engine differential is the independent backstop for exactly that failure mode."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-HEAD-OPTIMIZE-001",
+      "statement": "internal/optimizer's rewrites never change a query's observable outcome: every rule is proven idempotent and the driver is proven convergent under its iteration cap (internal/optimizer/termination_test.go), each fixture's pinned pre/post-optimizer SQL and chplan snapshots (the optimized/unoptimized and chplan_optimized/chplan_unoptimized sections cerberus issue #3335 added) show the two stages diverge only in reviewed, expected ways, and internal/optimizer/property_test.go's chDB-executed property test confirms randomly generated plans return identical row sets before and after Default().Run, over the roster internal/optimizer/property_coverage_test.go maintains.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "design-decision",
+      "required_evidence_classes": ["execution", "property"],
+      "required_independence_groups": ["optimizer-termination", "optimizer-snapshot-pair", "optimizer-property-equivalence"],
+      "blind_spots": [
+        "internal/optimizer/termination_test.go pins idempotence and convergence PER RULE; it does not itself assert that a rewrite preserves the query's answer, only that repeated application stabilizes — a rule could converge to a stable but wrong rewrite and this binding alone would not catch it.",
+        "The optimized/unoptimized SQL and chplan pairs (test/spec/optimizer, and the sql_optimized/chplan sections every promql/logql/traceql fixture also carries) are TEXT-EQUALITY snapshots: they pin the exact rewrite shape for the fixtures that exist, but two SQL strings that differ yet are semantically equivalent under ClickHouse's real execution would show as an unrelated-looking diff here, not a false pass — and a byte-identical pair alone proves nothing about the two statements' actual result rows without chDB execution.",
+        "internal/optimizer/property_test.go's generator grammar is narrow (Scan/Filter/Project plus a small predicate language over one seed table) per its own doc comment; internal/optimizer/property_coverage_test.go's uncoveredOptimizerKinds ledger names exactly which chplan node kinds (NestedSetAnnotate, StructuralJoin, TopK, VectorJoin at last count) the property never round-trips and why — those kinds' optimizer treatment relies on the TXTAR structural pair and reviewer discipline alone, not property-based semantic proof."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-HEAD-EMIT-001",
+      "statement": "internal/chsql's typed-Frag emission (CLAUDE.md invariant 10) preserves the optimized plan's meaning: chsql.Emit's rendered clauses and ?-bound arguments correspond to the plan's own Expr tree, per internal/chsql's own TestEmit structural golden suite (test/spec/chsql, test/spec/codegen), and — per fixture — the emitted sql_optimized statement, executed against chDB, returns the plan's known-correct rows (each head's lower_test.go RunRoundTripSQL call).",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "design-decision",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["chsql-emit-structural", "chsql-emit-roundtrip"],
+      "blind_spots": [
+        "internal/chsql is ONE shared emitter package used identically by all three heads, not three separate implementations, so this contract's assurance is deliberately two independent verification approaches (a structural golden suite and a chDB-executed round trip) rather than three per-head independence groups — test/spec/chsql's own fixture corpus already draws from PromQL-, LogQL-, and TraceQL-originated plan shapes, so head coverage is real but not tracked as a separate group per head here.",
+        "The chDB round-trip binding (chsql-emit-roundtrip) reuses the SAME fixture execution ARCH-HEAD-LOWER-001 and ARCH-HEAD-OPTIMIZE-001 also draw evidence from: a failure there does not by itself say whether lowering, optimizing, or emitting was the wrong stage — bisecting requires reading the fixture's own pre-optimizer chplan/sql sections alongside sql_optimized, which is reviewer work this binding does not automate.",
+        "TestEmit's structural golden suite has no chDB tag (per .github/scripts/lib/golden-shards.mjs's chsql shard entry) — it proves the rendered SQL TEXT matches the golden, never that the golden itself executes to the right rows; that proof is exactly what the roundtrip binding supplies, and neither binding alone is sufficient."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-HEAD-WIRE-001",
+      "statement": "Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower_test.go) over the same seeded data, and the two answers are compared.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": [],
+      "authority": "reference-implementation",
+      "required_evidence_classes": ["reference"],
+      "required_independence_groups": ["promql-wire-parity", "logql-wire-parity", "traceql-wire-parity"],
+      "blind_spots": [
+        "test/spec's parity section evaluates the answer the reference engine's IN-PROCESS evaluator computes for the same query; it is complementary to, and does not imply, the separate compatibility/{prometheus,loki,tempo} differential harness's own corpus (just compat-promql / compat-logql / compat-traceql) — neither mechanism's coverage stands in for the other.",
+        "Tempo's parity evidence requires the chdb_agpl_oracle build tag combination (parity_tempo_chdb_agpl_oracle.go); a plain chdb-tagged run compiles in parity_tempo_absent.go instead, which fails loudly rather than silently skipping (per that file's own doc) — so Tempo assurance for this contract is only real when the tagged lane actually runs, not merely when a fixture carries a parity section. LogQL's loki oracle carries the identical AGPL gating.",
+        "A fixture's parity section may declare scope: full or the single named ScopeExceptZeroBucket exclusion (test/spec/parity.go) — an excluded axis is a documented, machine-checked carve-out, not a hidden gap, but it means 'wire contract preserved' is proven up to that fixture's own declared scope, not unconditionally for every fixture."
+      ],
+      "related_contracts": [],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "ARCH-CAP-FILTER-001",
+      "statement": "Predicate-evaluation authority belongs to the head that parsed it: a PromQL/LogQL label matcher (CAP-LABEL-MATCHER-EXPRESSION), a LogQL line filter (CAP-LINE-FILTER-EXPRESSION), and a TraceQL scoped span-attribute predicate (CAP-SPAN-ATTRIBUTE-FILTER) each lower to their own chplan.Filter expression and are evaluated per that head's own matching semantics. The shared chplan.Filter node and the optimizer's pushdown/transpose rules (PREWHERE promotion, FilterAggregateTranspose, FilterRangeWindowTranspose) may relocate WHERE a predicate is evaluated but never change WHAT it means, and the three predicate kinds are never treated as interchangeable with one another.",
+      "scope": "architecture",
+      "applicable_heads": "universal",
+      "applicable_capabilities": ["CAP-LABEL-MATCHER-EXPRESSION", "CAP-LINE-FILTER-EXPRESSION", "CAP-SPAN-ATTRIBUTE-FILTER"],
+      "authority": "design-decision",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["label-matcher-filter-semantics", "line-filter-semantics", "span-attribute-filter-semantics"],
+      "blind_spots": [
+        "This contract's three required independence groups are deliberately per-predicate-kind and never satisfiable by one shared binding — a change that lets one kind's evaluation silently take on another's semantics (e.g. a line filter behaving like a label matcher's anchored equality) shows as one group losing its binding, never as a single global 'filtering is fine' pass.",
+        "It pins WHERE-authority (the plan-level chplan.Filter boundary and the optimizer's pushdown/transpose rules never changing a predicate's value), not each predicate kind's own external-spec fidelity — SIGNAL-LABEL-MATCHER-CONSISTENCY, LOGQL-LINE-FILTER-REGEX-SEMANTICS and TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION own that narrower, kind-specific claim.",
+        "The transpose rules' idempotence is proven by internal/optimizer/termination_test.go, shared evidence with ARCH-HEAD-OPTIMIZE-001; no binding here independently re-verifies that a TRANSPOSED Filter's predicate value survives the move for every one of the three predicate kinds — it inherits that proof rather than re-establishing it."
+      ],
+      "related_contracts": ["SIGNAL-LABEL-MATCHER-CONSISTENCY", "LOGQL-LINE-FILTER-REGEX-SEMANTICS", "TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
     }
   ]
 }
