@@ -241,6 +241,25 @@
       "status": "active",
       "replaces": null,
       "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+      "name": "chDB handler roundtrip",
+      "description": "A Go test that seeds a deterministic fixture into a real embedded ClickHouse (chDB) session, mounts a head's real HTTP handler (Mount) onto httptest.Server, issues a genuine HTTP request, and asserts on the DECODED WIRE RESPONSE — the full parse/lower/optimize/emit/execute/render pipeline, not a hand-built comparison string, a stubbed querier, or an internal plan/SQL snapshot.",
+      "detects": [
+        "wrong resource- or attribute-scope projection reaching the real wire response",
+        "a schema override (a custom table or column name) the handler fails to honor end to end"
+      ],
+      "cannot_detect": [
+        "semantic drift against the reference backend's own engine — chDB is cerberus's own embedded ClickHouse, not a reference implementation (see VERIFIER-REFERENCE-DIFFERENTIAL)",
+        "production-cluster-only behavior (a real clickhouse-go connection, cluster-specific settings) — see VERIFIER-REAL-CLICKHOUSE-INTEGRATION"
+      ],
+      "complemented_by": ["VERIFIER-REAL-CLICKHOUSE-INTEGRATION"],
+      "substrate": "chdb",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
     }
   ]
 }

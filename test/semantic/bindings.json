@@ -792,6 +792,42 @@
       "independence_group": "real-network-connection-teardown-boundary",
       "test_ref": "internal/chclient/conn_teardown_integration_test.go:TestCursorTeardown_ReturnsConnectionToPool",
       "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+      "contract": "SIGNAL-RESOURCE-001",
+      "verifier": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "promql-resource-fixture",
+      "test_ref": "test/semantic/resourcefixture/promql_resource_chdb_test.go:TestSignalResource_PromQL_ChDB",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+      "contract": "SIGNAL-RESOURCE-001",
+      "verifier": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "logql-resource-fixture",
+      "test_ref": "test/semantic/resourcefixture/logql_resource_chdb_test.go:TestSignalResource_LogQL_ChDB",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
+      "contract": "SIGNAL-RESOURCE-001",
+      "verifier": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "traceql-resource-fixture",
+      "test_ref": "test/semantic/resourcefixture/traceql_resource_chdb_test.go:TestSignalResource_TraceQL_ChDB",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+      "contract": "SIGNAL-RESOURCE-001",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "resource-config-projection",
+      "test_ref": "test/semantic/resourcefixture/resource_config_test.go:TestResourceFixture_DottedKeyNormalization",
+      "status": "active"
     }
   ]
 }

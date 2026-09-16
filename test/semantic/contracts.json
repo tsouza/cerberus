@@ -895,6 +895,34 @@
       "owner": "cerberus-core",
       "replaces": null,
       "replaced_by": null
+    },
+    {
+      "id": "SIGNAL-RESOURCE-001",
+      "statement": "One deterministic OTel resource — a simple undotted resource-attribute key (`team`) and a dotted OTel-style key (`k8s.namespace.name`), written into each signal's own ResourceAttributes map under a per-head custom table-name override — is independently queryable through each head's own documented resource-attribute projection. PromQL and LogQL both sanitize the dotted key to the identical underscored wire label (`k8s_namespace_name`, internal/api/format.OTelToPromLabel) and reverse it via each head's own dotted-fallback candidate chain when resolving a matcher; TraceQL addresses the identical attribute dotted and resource-scoped (`resource.k8s.namespace.name`), never underscored. Each head's own native timestamp precision is preserved rather than rounded into one universal model: PromQL's instant-query response reports its evaluation timestamp at Prometheus's millisecond wire resolution, while LogQL's log-entry timestamp and TraceQL's span start time both carry the full nanosecond value the row was seeded with. This is a claim about preserving configured resource MEANING across heads, never about byte-identical wire labels — a contract this issue's own grounding (PromQL sanitizes/selects labels and stays Map-based; LogQL/TraceQL carry different scoped-attribute strategies) shows would be false if stated as literal equality.",
+      "scope": "signal",
+      "applicable_heads": ["HEAD-PROMQL", "HEAD-LOGQL", "HEAD-TRACEQL"],
+      "applicable_capabilities": [],
+      "authority": "design-decision",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": [
+        "promql-resource-fixture",
+        "logql-resource-fixture",
+        "traceql-resource-fixture",
+        "resource-config-projection"
+      ],
+      "blind_spots": [
+        "The fixture pins ONE resource (two attribute keys, one timestamp) seeded independently into three separately-typed tables; it is not a combinatorial sweep of every OTel resource-attribute shape or custom-schema layout, and passing it certifies only the one table/column override each head's own test exercises, not an arbitrary custom schema.",
+        "This contract covers RESOURCE-scoped attribute projection specifically (each signal's ResourceAttributes map); PromQL's own per-datapoint Attributes map, LogQL's per-line LogAttributes/structured-metadata scope, and TraceQL's span-attribute scope are each a distinct, already-covered surface (see TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION) — this contract makes no claim about them.",
+        "PromQL's millisecond-resolution wire timestamp is asserted as PromQL's own correct native behavior, not as evidence that cerberus preserves sub-millisecond precision anywhere on the PromQL read path — Prometheus's instant-vector wire format has no slot to carry it in, by the upstream wire contract this gateway reproduces, not by a cerberus shortfall.",
+        "Seeding the same resource into three independently-built tables inside one test package is a fixture convenience, not evidence that per-head query oracles are otherwise coupled or share state; this contract explicitly does NOT claim a shared 'TelemetryWorld' abstraction exists (a deliberate NO-GO for this issue) or that cerberus reads or isolates by any tenant header — no head reads one (docs/operations.md 'Security posture')."
+      ],
+      "related_contracts": ["TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION", "SIGNAL-LABEL-MATCHER-CONSISTENCY"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
     }
   ]
 }
