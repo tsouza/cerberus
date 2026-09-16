@@ -233,6 +233,7 @@ data:
               },
               "editorMode": "code",
               "expr": "histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))",
+              "interval": "1m",
               "legendFormat": "p95 {{cerberus_ql}}",
               "range": true,
               "refId": "A"
