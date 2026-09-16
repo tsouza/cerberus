@@ -14,6 +14,76 @@
       "observed_at": "2026-09-10T04:05:00Z",
       "result": "pass",
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-NO-CACHING-WINDOW-TESTS-20260916",
+      "binding": "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-TYPED-SQL-RAW-SCAN-20260916",
+      "binding": "BINDING-ARCH-TYPED-SQL-RAW-SCAN",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-TYPED-SQL-VERBATIM-SCAN-20260916",
+      "binding": "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-GOLDEN-SHARD-COVERAGE-20260916",
+      "binding": "BINDING-ARCH-GOLDEN-SHARD-COVERAGE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-GOLDEN-MERGE-GATE-20260916",
+      "binding": "BINDING-ARCH-GOLDEN-MERGE-GATE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-NO-SKIP-SCAN-20260916",
+      "binding": "BINDING-ARCH-NO-SKIP-SCAN",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-AGPL-REACHABILITY-SCAN-20260916",
+      "binding": "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-PARSER-ACCESSOR-FORBIDIGO-20260916",
+      "binding": "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-DEPENDENCY-GO-ARCH-LINT-20260916",
+      "binding": "BINDING-ARCH-DEPENDENCY-GO-ARCH-LINT",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-DEPENDENCY-COVERAGE-FLOOR-20260916",
+      "binding": "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     }
   ]
 }

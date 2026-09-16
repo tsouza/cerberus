@@ -45,6 +45,96 @@
       "independence_group": "static-scan",
       "test_ref": "internal/engine",
       "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
+      "contract": "ARCH-NO-QUERY-RESULT-CACHING",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "result-cache-window-tests",
+      "test_ref": "internal/engine/result_cache_test.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-TYPED-SQL-RAW-SCAN",
+      "contract": "ARCH-TYPED-SQL-ONLY",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "raw-write-scan",
+      "test_ref": ".github/scripts/forbid-sql-raw.mjs",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN",
+      "contract": "ARCH-TYPED-SQL-ONLY",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "verbatim-concat-scan",
+      "test_ref": ".github/scripts/forbid-verbatim-concat.mjs",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-GOLDEN-SHARD-COVERAGE",
+      "contract": "ARCH-REGENERATED-ARTIFACTS-ONLY",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "shard-coverage-derivation",
+      "test_ref": "test/regression/golden_shard_coverage_test.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-GOLDEN-MERGE-GATE",
+      "contract": "ARCH-REGENERATED-ARTIFACTS-ONLY",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "merge-driver-gate",
+      "test_ref": "test/regression/generated_artifact_merge_gate_test.go",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-NO-SKIP-SCAN",
+      "contract": "ARCH-NO-SILENT-SKIP-OR-TOLERANCE",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "forbid-skip-scan",
+      "test_ref": ".github/scripts/forbid-skip.mjs",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
+      "contract": "ARCH-AGPL-BINARY-REACHABILITY",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "agpl-reachability-scan",
+      "test_ref": ".github/scripts/agpl-clean.mjs",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO",
+      "contract": "ARCH-PARSER-ACCESSOR-DISCIPLINE",
+      "verifier": "VERIFIER-TYPE-CHECKED-LINT-RULE",
+      "evidence_class": "static-analysis",
+      "independence_group": "forbidigo-type-checked-scan",
+      "test_ref": ".golangci.yml",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-DEPENDENCY-GO-ARCH-LINT",
+      "contract": "ARCH-PACKAGE-DEPENDENCY-DECLARATION",
+      "verifier": "VERIFIER-DEPENDENCY-GRAPH-LINT",
+      "evidence_class": "static-analysis",
+      "independence_group": "go-arch-lint-declaration",
+      "test_ref": ".go-arch-lint.yml",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
+      "contract": "ARCH-PACKAGE-DEPENDENCY-DECLARATION",
+      "verifier": "VERIFIER-LEDGER-ENROLLMENT-CHECK",
+      "evidence_class": "static-analysis",
+      "independence_group": "coverage-floor-enrollment",
+      "test_ref": ".github/scripts/coverage-package-floor.mjs",
+      "status": "active"
     }
   ]
 }
