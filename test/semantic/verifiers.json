@@ -39,6 +39,64 @@
       "status": "active",
       "replaces": null,
       "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-GO-UNIT-TEST",
+      "name": "Go unit test",
+      "description": "A table-driven `go test` asserting a pure Go function's behavior directly (no chDB, no reference stack), run via `just test-unit` (go test -race ./...).",
+      "detects": ["logic errors in the function under test", "boundary/edge-case regressions pinned by table-driven cases"],
+      "cannot_detect": ["drift against ClickHouse's actual runtime behavior", "drift against a reference backend's behavior"],
+      "complemented_by": [],
+      "substrate": "runner",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-TYPE-CHECKED-LINT-RULE",
+      "name": "Type-checked lint rule",
+      "description": "A golangci-lint rule (forbidigo, analyze-types: true) that resolves identifiers through Go's type checker rather than matching source text, run as part of the `lint` CI job.",
+      "detects": ["a forbidden symbol used anywhere in the scanned path set, including under an aliased import"],
+      "cannot_detect": [
+        "a differently-named accessor that reaches the same forbidden effect through a symbol not on the forbid list",
+        "a false-clean result from a local agent-worktree run, which this repo's own record shows can report \"No issues found\" without genuinely analysing — only a real CI `lint` job run counts as evidence"
+      ],
+      "complemented_by": [],
+      "substrate": "runner",
+      "relative_cost": "medium",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-DEPENDENCY-GRAPH-LINT",
+      "name": "Dependency graph lint",
+      "description": "The go-arch-lint tool, which parses .go-arch-lint.yml's declared component/layer graph and fails if an internal/** package is undeclared or imports across a layer boundary the graph forbids, run as part of the `lint` CI job.",
+      "detects": ["an internal/** package missing its component declaration", "an import that crosses a forbidden layer boundary"],
+      "cannot_detect": [
+        "whether a package's declared layer is the RIGHT layer for what it does — that placement judgment is reviewer discipline",
+        "a false-clean result from a local agent-worktree run — only a real CI `lint` job run counts as evidence, per this repo's own operating record"
+      ],
+      "complemented_by": [],
+      "substrate": "runner",
+      "relative_cost": "medium",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-LEDGER-ENROLLMENT-CHECK",
+      "name": "Ledger enrollment check",
+      "description": "coverage-package-floor.mjs, the cheap structural half of the coverage gate: it shells out to `go list` and `go tool cover` only (no chDB, no containers, no real test run) to find every package that carries statements in the full build, and fails if any such package has no committed floor file under test/coverage-floor/.",
+      "detects": ["a package with statements missing a coverage-floor ledger entry", "a PR that lowers an existing committed floor"],
+      "cannot_detect": ["whether a committed floor value is itself high enough to catch a real regression — the floor is a ratchet on the measured value, not an absolute correctness bar"],
+      "complemented_by": [],
+      "substrate": "static",
+      "relative_cost": "medium",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
     }
   ]
 }
