@@ -574,6 +574,34 @@
       "observed_at": "2026-09-16T00:00:00Z",
       "result": "pass",
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-RESOURCE-PROMQL-FIXTURE-20260916",
+      "binding": "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-RESOURCE-LOGQL-FIXTURE-20260916",
+      "binding": "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-RESOURCE-TRACEQL-FIXTURE-20260916",
+      "binding": "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-RESOURCE-CONFIG-PROJECTION-20260916",
+      "binding": "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     }
   ]
 }
