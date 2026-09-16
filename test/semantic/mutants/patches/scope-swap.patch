@@ -1,0 +1,16 @@
+diff --git a/internal/traceql/lower.go b/internal/traceql/lower.go
+index 5394cacc9..17d793fe4 100644
+--- a/internal/traceql/lower.go
++++ b/internal/traceql/lower.go
+@@ -3215,9 +3215,9 @@ func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
+ 		// match there, and must not here.
+ 		return unscopedAttributeExpr(a.Name, s), nil
+ 	case traceql.AttributeScopeResource:
+-		carrier = s.ResourceAttributesColumn
+-	case traceql.AttributeScopeSpan:
+ 		carrier = s.AttributesColumn
++	case traceql.AttributeScopeSpan:
++		carrier = s.ResourceAttributesColumn
+ 	case traceql.AttributeScopeInstrumentation:
+ 		// The upstream OTel-CH traces schema materialises ScopeName /
+ 		// ScopeVersion but no scope-attributes map; a custom

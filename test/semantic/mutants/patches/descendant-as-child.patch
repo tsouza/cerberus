@@ -1,0 +1,18 @@
+diff --git a/internal/traceql/lower.go b/internal/traceql/lower.go
+index 5394cacc9..b6bc35847 100644
+--- a/internal/traceql/lower.go
++++ b/internal/traceql/lower.go
+@@ -795,11 +795,11 @@ func lowerSpansetOperand(p traceql.Pipeline, s schema.Traces) (chplan.Node, erro
+ func mapStructuralOp(op traceql.Operator) (chplan.StructuralOp, error) {
+ 	switch op {
+ 	case traceql.OpSpansetChild:
+-		return chplan.StructuralChild, nil
++		return chplan.StructuralDescendant, nil
+ 	case traceql.OpSpansetParent:
+ 		return chplan.StructuralParent, nil
+ 	case traceql.OpSpansetDescendant:
+-		return chplan.StructuralDescendant, nil
++		return chplan.StructuralChild, nil
+ 	case traceql.OpSpansetAncestor:
+ 		return chplan.StructuralAncestor, nil
+ 	case traceql.OpSpansetSibling:
