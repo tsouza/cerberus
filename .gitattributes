@@ -341,5 +341,10 @@ test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
 #     docs/benchmarks.md, CHANGELOG.md — generated from code, but each already
 #     has a CI drift gate that re-renders and diffs, so staleness cannot survive
 #     a merge unnoticed.
+#   - docs/semantic-conformance.md and docs/semantic-conformance.json —
+#     generated from test/semantic/*.json by `just semantic-report`; the
+#     `forbid-skip` CI job's own freshness step (`semantic-report --check`)
+#     regenerates in memory and compares, so a stale or hand-edited copy
+#     fails the same way a hand-edit to docs/configuration.md does.
 test/perf/smoke/testdata/samples/*.parquet filter=lfs diff=lfs merge=lfs -text
 test/perf/nightly/testdata/samples/*.parquet filter=lfs diff=lfs merge=lfs -text

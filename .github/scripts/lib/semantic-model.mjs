@@ -716,6 +716,15 @@ function checkContractReferences(contracts, problems) {
 // Several bindings sharing one independence group satisfy that group once,
 // never more — which is exactly what stops correlated tests from
 // masquerading as independent evidence (issue #3426 acceptance criterion).
+//
+// `perContract` carries the same coverage computation this function already
+// does for its own pass/fail verdict, keyed by contract ID, for every
+// contract regardless of status — not just the active ones `assured`/
+// `excluded` summarize. It exists so a consumer that needs the DETAIL (which
+// classes/groups are covered, by which active bindings) — semantic-
+// report.mjs (issue #3435) is the first one — reads it from here instead of
+// re-walking model.bindings itself, which would drift the moment this
+// function's own coverage rule changed and the second copy did not.
 export function computeAssurance(model, problems) {
   const bindingsByContract = new Map();
   for (const [, binding] of model.bindings) {
@@ -727,12 +736,9 @@ export function computeAssurance(model, problems) {
 
   const assured = [];
   const excluded = { draft: [], superseded: [], explicit_deficit: [] };
+  const perContract = new Map();
 
   for (const [id, contract] of model.contracts) {
-    if (contract.status !== "active") {
-      if (contract.status in excluded) excluded[contract.status].push(id);
-      continue;
-    }
     const bindings = bindingsByContract.get(id) ?? [];
     const coveredClasses = new Set(bindings.map((b) => b.evidence_class));
     const coveredGroups = new Set(bindings.map((b) => b.independence_group));
@@ -742,6 +748,18 @@ export function computeAssurance(model, problems) {
     const missingGroups = (contract.required_independence_groups ?? []).filter(
       (group) => !coveredGroups.has(group),
     );
+    perContract.set(id, {
+      activeBindings: bindings,
+      coveredClasses,
+      coveredGroups,
+      missingClasses,
+      missingGroups,
+    });
+
+    if (contract.status !== "active") {
+      if (contract.status in excluded) excluded[contract.status].push(id);
+      continue;
+    }
     if (missingClasses.length > 0) {
       fail(
         problems,
@@ -759,7 +777,7 @@ export function computeAssurance(model, problems) {
     if (missingClasses.length === 0 && missingGroups.length === 0) assured.push(id);
   }
 
-  return { assured, excluded };
+  return { assured, excluded, perContract };
 }
 
 // --- Top-level entry points -------------------------------------------

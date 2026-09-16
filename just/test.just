@@ -92,6 +92,34 @@ semantic-lane-check:
 semantic-evidence-check:
     node .github/scripts/semantic-evidence-adapter.mjs
 
+# Builds docs/semantic-conformance.{md,json} from the validated semantic
+# contract model (test/semantic/), the CI lane registry and its captured
+# policy snapshot (issue #3435): contract x verifier/test binding, per-head
+# and cross-head scope, bound (structural) evidence versus evidence actually
+# observed passing on some recorded revision, blind spots, verifier
+# complement gaps, and merge/release obligations per binding. Both outputs
+# are pure functions of their inputs — no timestamp, no unsorted iteration —
+# so two regenerations from the same source are byte-identical
+# (.github/scripts/lib/semantic-report.mjs's own header has the full
+# rationale). GENERATED — do not hand-edit either file; the `forbid-skip`
+# CI job's own freshness step (mirroring semantic-model.mjs's wiring) fails
+# the build on drift, which is also why neither file needs a `-merge`
+# .gitattributes entry (see .gitattributes' "already has a CI drift gate"
+# family).
+
+# Regenerate docs/semantic-conformance.{md,json} from the semantic contract model.
+semantic-report:
+    node .github/scripts/semantic-report.mjs
+    @node .github/scripts/lib/regen-diff.mjs --label "semantic conformance report" docs/semantic-conformance.md docs/semantic-conformance.json
+
+# Fails if docs/semantic-conformance.{md,json} disagree with what the current
+# model would regenerate, without writing anything — the CI-safe half of
+# `semantic-report` above.
+
+# Check docs/semantic-conformance.{md,json} for drift against the semantic contract model.
+semantic-report-check:
+    node .github/scripts/semantic-report.mjs --check
+
 # SIGNAL-RESOURCE-001's (issue #3457) end-to-end evidence: seeds ONE
 # deterministic OTel resource independently into each head's own
 # custom-named table and proves it is queryable through that head's own
