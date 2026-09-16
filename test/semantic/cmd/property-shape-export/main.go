@@ -50,6 +50,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/tsouza/cerberus/test/property/gen"
@@ -72,7 +73,7 @@ func main() {
 	}
 }
 
-func run(out *os.File) error {
+func run(out io.Writer) error {
 	rosters := map[string][]string{
 		"gen.PromQLShapeIDs":        shapeIDStrings(gen.PromQLShapeIDs()),
 		"gen.PromQLRangeShapeIDs":   shapeIDStrings(gen.PromQLRangeShapeIDs()),
