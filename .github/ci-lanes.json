@@ -657,17 +657,21 @@
       "recipes": [
         "semantic-check",
         "semantic-evidence-check",
+        "semantic-guide-check",
         "semantic-lane-check",
         "semantic-report-check"
       ],
-      "command": "just semantic-check, semantic-lane-check, semantic-evidence-check, and semantic-report-check",
+      "command": "just semantic-check, semantic-lane-check, semantic-evidence-check, semantic-report-check, and semantic-guide-check",
       "build_tags": [],
       "package_globs": [
         ".github/ci-lanes.json",
         ".github/scripts/lib/semantic-*.mjs",
+        ".github/scripts/lib/markdown-lintfix.mjs",
         ".github/scripts/semantic-*.mjs",
         "docs/semantic-conformance.json",
         "docs/semantic-conformance.md",
+        "docs/semantic-guide.json",
+        "docs/semantic-guide.md",
         "test/semantic/*.json",
         "test/semantic/counterexamples/*.json"
       ],

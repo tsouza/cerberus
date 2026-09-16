@@ -683,6 +683,17 @@ jobs:
         run: |
           node --test .github/scripts/semantic-report.test.mjs
           just semantic-report-check
+      # semantic-guide.mjs (#3462) builds docs/semantic-guide.{md,json}, a
+      # COMPACT contract index and selected architectural-rule block over
+      # the exact same buildReport() output semantic-report.mjs renders in
+      # full above — never a second, independently-derived model. Self-test
+      # first, then the live CLI through the same `just semantic-guide-check`
+      # a developer runs by hand, mirroring the semantic-report step just
+      # above it.
+      - name: Validate the generated semantic guide is fresh
+        run: |
+          node --test .github/scripts/semantic-guide.test.mjs
+          just semantic-guide-check
       # semantic-execution-adapter.mjs (#3459) normalizes existing Go
       # test/report artifacts (go test -json, compatibility/internal/
       # score.CaseSet's JSON shape) and GitHub Actions run identity into
@@ -690,7 +701,10 @@ jobs:
       # executions.json. Self-test only here, same rationale as
       # verify-just-invocations/compose-grafana-smoke/e2e-up below — a real
       # go-test-json stream or compat-cases.json is what a real property/
-      # compat CI run exercises this against, once #3462 wires the pipeline;
+      # compat CI run exercises this against, once #3499 wires the pipeline
+      # (#3462 built the compact developer/agent guide over the model this
+      # adapter feeds, but never wired a live run through it — #3499 is the
+      # actual pipeline-wiring follow-up filed from that issue's own work);
       # there is no committed artifact for a live CLI run here to check
       # against the way the four semantic-* steps above run their CLIs
       # against the real committed test/semantic/ model. No `just` recipe

@@ -1114,7 +1114,7 @@ One deterministic OTel resource — a simple undotted resource-attribute key (\`
 
 ### ARCH-AGPL-BINARY-REACHABILITY
 
-No AGPLv3 package is reachable from ./cmd/cerberus: \`go list -deps ./cmd/cerberus\`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl\_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.
+No AGPLv3 package is reachable from ./cmd/cerberus (CLAUDE.md invariant 14): \`go list -deps ./cmd/cerberus\`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl\_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1470,7 +1470,7 @@ No head ever caches a query's result; the only carve-out is ClickHouse's own res
 
 ### ARCH-NO-SILENT-SKIP-OR-TOLERANCE
 
-No test suite silently skips, soft-asserts, silently recovers, or tolerates an expected failure: a Go test never calls t.Skip / t.Skipf / t.SkipNow, never soft-asserts via assert.Contains(x, "") or assert.ElementsMatch(x, \[\]T{}), and never wraps a panic in defer recover() to swallow it; a compatibility overlay never carries a non-empty should\_skip: block; no test escape-hatch token (EXPECTED\_TOLERATED, isKnownTolerated, skipReason, and siblings) exists outside its own documented origin; a Playwright spec never calls test.skip / test.fixme / test.only; and a Gherkin scenario never carries one of forbid-skip.mjs's scenario-suppressing tags (its own 'feature-discipline' CHECK names the closed set) nor routes through godog.ErrSkip / ErrPending.
+No test suite silently skips, soft-asserts, silently recovers, or tolerates an expected failure (CLAUDE.md invariant 6): a Go test never calls t.Skip / t.Skipf / t.SkipNow, never soft-asserts via assert.Contains(x, "") or assert.ElementsMatch(x, \[\]T{}), and never wraps a panic in defer recover() to swallow it; a compatibility overlay never carries a non-empty should\_skip: block; no test escape-hatch token (EXPECTED\_TOLERATED, isKnownTolerated, skipReason, and siblings) exists outside its own documented origin; a Playwright spec never calls test.skip / test.fixme / test.only; and a Gherkin scenario never carries one of forbid-skip.mjs's scenario-suppressing tags (its own 'feature-discipline' CHECK names the closed set) nor routes through godog.ErrSkip / ErrPending.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1494,7 +1494,7 @@ No test suite silently skips, soft-asserts, silently recovers, or tolerates an e
 
 ### ARCH-PACKAGE-DEPENDENCY-DECLARATION
 
-Every internal/\*\* package is declared in exactly one component of .go-arch-lint.yml (or as a commonComponent, importable from every layer), and every internal/\*\* package that carries statements is enrolled with a floor in test/coverage-floor/. Both registrations are required for a new package; go-arch-lint enforces the first, coverage-package-floor.mjs the second, and both gates run in CI.
+Every internal/\*\* package is declared in exactly one component of .go-arch-lint.yml (or as a commonComponent, importable from every layer), and every internal/\*\* package that carries statements is enrolled with a floor in test/coverage-floor/ (CLAUDE.md invariant 16). Both registrations are required for a new package; go-arch-lint enforces the first, coverage-package-floor.mjs the second, and both gates run in CI.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1520,7 +1520,7 @@ Every internal/\*\* package is declared in exactly one component of .go-arch-lin
 
 ### ARCH-PARSER-ACCESSOR-DISCIPLINE
 
-No package under internal/\*\* uses unsafe.Pointer or reflect.Value.FieldByName against an upstream parser's internals; when cerberus needs a field or method a parser does not export, the accessor is added to the relevant tsouza/\* upstream fork (docs/upstream-forks.md), the go.mod replace directive is bumped, and internal/\*\* consumes the typed accessor instead.
+No package under internal/\*\* uses unsafe.Pointer or reflect.Value.FieldByName against an upstream parser's internals (CLAUDE.md invariant 11); when cerberus needs a field or method a parser does not export, the accessor is added to the relevant tsouza/\* upstream fork (docs/upstream-forks.md), the go.mod replace directive is bumped, and internal/\*\* consumes the typed accessor instead.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1571,7 +1571,7 @@ test/perf/nightly's real-ClickHouse nightly gate measures each pinned sentinel's
 
 ### ARCH-REGENERATED-ARTIFACTS-ONLY
 
-Every generated artefact family (the test/spec/ TXTAR goldens, the solver decision baseline, the parity ledgers, the cardinality baseline, the coverage-floor ledger, and their siblings) is rewritten only by its \`just update-golden <shard>\` recipe (or, for the coverage floor, \`just update-coverage-floor\`), never hand-edited. \`just update-golden\` refuses to run against a shard set narrower than the current diff implies, and every generated path is marked \`-merge\` in .gitattributes so a three-way line merge conflicts loudly instead of silently blending records.
+Every generated artefact family (the test/spec/ TXTAR goldens, the solver decision baseline, the parity ledgers, the cardinality baseline, the coverage-floor ledger, and their siblings) is rewritten only by its \`just update-golden <shard>\` recipe (or, for the coverage floor, \`just update-coverage-floor\`), never hand-edited (CLAUDE.md invariant 9). \`just update-golden\` refuses to run against a shard set narrower than the current diff implies, and every generated path is marked \`-merge\` in .gitattributes so a three-way line merge conflicts loudly instead of silently blending records.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1635,7 +1635,7 @@ Every goroutine a request's own handling spawns terminates by the time that requ
 
 ### ARCH-TYPED-SQL-ONLY
 
-internal/chsql/\*\* composes ClickHouse SQL exclusively through typed chsql Frags (QueryBuilder slots, and expression constructors such as Call / Eq / And / Cast / Lambda1 / Subquery / InlineLit); no file outside internal/chsql/builder.go and the two KNOWN\_GOOD sites in internal/chsql/emit\_node.go and internal/chsql/emit.go writes a raw SQL token via strings.Builder, writeSQL(...), or sb.Write\*, and no verbatim(...) call anywhere in internal/chsql/\*\* builds an expression shape via string concatenation.
+internal/chsql/\*\* composes ClickHouse SQL exclusively through typed chsql Frags (QueryBuilder slots, and expression constructors such as Call / Eq / And / Cast / Lambda1 / Subquery / InlineLit; CLAUDE.md invariant 10); no file outside internal/chsql/builder.go and the two KNOWN\_GOOD sites in internal/chsql/emit\_node.go and internal/chsql/emit.go writes a raw SQL token via strings.Builder, writeSQL(...), or sb.Write\*, and no verbatim(...) call anywhere in internal/chsql/\*\* builds an expression shape via string concatenation.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`

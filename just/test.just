@@ -125,6 +125,33 @@ semantic-report:
 semantic-report-check:
     node .github/scripts/semantic-report.mjs --check
 
+# Builds docs/semantic-guide.{md,json} (issue #3462): a COMPACT contract
+# index and a selected architectural-rule block, both a VIEW over the same
+# semantic-report.mjs buildReport() output the full conformance report
+# renders from — one editable source (test/semantic/*.json), one shared
+# computation, two reproducible projections. Documents the task -> affected
+# contracts -> canonical execution -> counterexample search -> optional
+# adversarial probes -> required reference/release evidence flow, links the
+# full report and `just semantic-impact` for the rest, and is explicit that
+# it is never itself a merge gate: a metadata weakening in test/semantic/
+# stays exactly as review-visible as a production code change (see the
+# generated doc's own "Metadata integrity" section). GENERATED — do not
+# hand-edit either output; `semantic-guide-check` is wired into the
+# `forbid-skip` job the same way `semantic-report-check` already is.
+
+# Regenerate docs/semantic-guide.{md,json} from the semantic contract model.
+semantic-guide:
+    node .github/scripts/semantic-guide.mjs
+    @node .github/scripts/lib/regen-diff.mjs --label "semantic guide" docs/semantic-guide.md docs/semantic-guide.json
+
+# Fails if docs/semantic-guide.{md,json} disagree with what the current
+# model would regenerate, without writing anything — the CI-safe half of
+# `semantic-guide` above.
+
+# Check docs/semantic-guide.{md,json} for drift against the semantic contract model.
+semantic-guide-check:
+    node .github/scripts/semantic-guide.mjs --check
+
 # Explains a git range's impact on the semantic contract model (issue #3460):
 # which enrolled contracts it affects, why (the exact files and CI-lane
 # dependency closure that triggered it — lib/lane-closure.mjs's derived

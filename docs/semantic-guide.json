@@ -1,0 +1,1791 @@
+{
+  "schema_version": 1,
+  "generator": "node .github/scripts/semantic-guide.mjs",
+  "source": "the semantic-report.mjs buildReport() output over test/semantic/*.json",
+  "how_to_use": [
+    {
+      "title": "Identify the affected contracts",
+      "body": "`just semantic-impact <base> <head>` names every enrolled contract a git range touches, and why (the exact file and the CI-lane dependency closure that triggered it — never a second, hand-maintained dependency graph). Input it cannot resolve, or an import graph it cannot load, never reports \"nothing affected\" — both widen conservatively to every lane carrying active semantic evidence instead, the one behavior this step's own acceptance criterion requires (issue #3460)."
+    },
+    {
+      "title": "Run the canonical execution",
+      "body": "Each affected contract's active binding(s) name an exact `test_ref` and resolve to an exact CI-lane recipe — the Contract index below, or the same lookup live: `jq '.contracts[] | select(.id == \"<ID>\")' docs/semantic-conformance.json`."
+    },
+    {
+      "title": "Search for counterexamples",
+      "body": "Where a contract binds a property-based or oracle-differential verifier (`just property`), run it — a randomized counterexample search is a materially different claim from one fixed golden input, and the Evidence-system column below (or the full report) names which contracts have it bound."
+    },
+    {
+      "title": "Optional adversarial probes",
+      "body": "no mutation/adversarial evidence class exists yet in the semantic model (EVIDENCE_CLASSES, lib/semantic-model.mjs) — shown explicitly as none rather than omitted, per this command's own scope: it must work before the M2 mutation-pilot bindings land. A contract with no adversarial evidence bound is not a gap this guide asks a reader to fill before the four steps around it are usable — mutation testing (`just mutate-pkg <path>`) is available and worth running for extra confidence, never required to complete the flow."
+    },
+    {
+      "title": "Required reference/release evidence",
+      "body": "Not every canonical execution is a merge or release OBLIGATION — the Contract index's merge-required/release-required columns (sourced from the captured CI policy snapshot, the same join semantic-impact.mjs and semantic-report.mjs already make) say which. A green run of the recipe(s) named above is evidence for that binding's own verifier only. It is never, by itself, a claim that the owning lane's merge or release obligation is satisfied — that requires the lane's own full, canonically-tagged run (see each binding's merge_required/release_required below), not a narrowed local reproduction of one test."
+    }
+  ],
+  "metadata_integrity_note": "test/semantic/*.json is hand-authored, reviewed source, not a self-service approval surface. A pull request that adds, weakens, or removes a contract statement, a required evidence class or independence group, or a binding is an ordinary diff line like any other production change — visible in `git diff`, reviewed under the same merge gate (docs/agent-workflow.md), and carried into this guide and the full report the moment `just semantic-report` / `just semantic-guide` regenerate them. Neither generator can mask a weakening: both only ever project the checked-in model faithfully, and their own `--check` mode fails the build the instant the committed projection stops matching it (invariant 9) — so a metadata change that widens what counts as assured is exactly as loud in review as a change to production code, never quieter for being JSON.",
+  "adversarial_note": "no mutation/adversarial evidence class exists yet in the semantic model (EVIDENCE_CLASSES, lib/semantic-model.mjs) — shown explicitly as none rather than omitted, per this command's own scope: it must work before the M2 mutation-pilot bindings land.",
+  "merge_release_caveat": "A green run of the recipe(s) named above is evidence for that binding's own verifier only. It is never, by itself, a claim that the owning lane's merge or release obligation is satisfied — that requires the lane's own full, canonically-tagged run (see each binding's merge_required/release_required below), not a narrowed local reproduction of one test.",
+  "contract_index": [
+    {
+      "id": "ARCH-AGPL-BINARY-REACHABILITY",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-CAP-FILTER-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-CAP-FILTER-LABEL-MATCHER",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-CH-CIRCUIT-BREAKER-RESILIENCE-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-CH-DATA-SHARD-FANOUT-BOUND-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-CH-STRICT-SCAN-DIFFERENTIAL-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-HEAD-EMIT-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-HEAD-LOWER-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-HEAD-LOWER-LOGQL",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-HEAD-OPTIMIZE-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-HEAD-WIRE-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-HEAD-WIRE-LOGQL",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-NO-QUERY-RESULT-CACHING",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-NO-CACHING-STATIC",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-NO-SILENT-SKIP-OR-TOLERANCE",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-NO-SKIP-SCAN",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-PACKAGE-DEPENDENCY-DECLARATION",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-PARSER-ACCESSOR-DISCIPLINE",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-PERF-BASELINE-MEASURED-EVIDENCE-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "ARCH-REGENERATED-ARTIFACTS-ONLY",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-GOLDEN-MERGE-GATE",
+        "lane_id": "agpl.oracle",
+        "command": "just test-agpl-oracle",
+        "merge_required": false,
+        "release_required": false
+      }
+    },
+    {
+      "id": "ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT",
+        "lane_id": "agpl.oracle",
+        "command": "just test-agpl-oracle",
+        "merge_required": false,
+        "release_required": false
+      }
+    },
+    {
+      "id": "ARCH-TYPED-SQL-ONLY",
+      "status": "active",
+      "scope_label": "architecture (universal)",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-ARCH-TYPED-SQL-RAW-SCAN",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "LOGQL-LABEL-FORMAT-RENAME-SEMANTICS",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "specification",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "LOGQL-LINE-FILTER-REGEX-SEMANTICS",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "LOGQL-ORACLE-PARSER-LEAF-HELPER-BOUNDARY",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
+        "lane_id": "agpl.oracle",
+        "command": "just test-agpl-oracle",
+        "merge_required": false,
+        "release_required": false
+      }
+    },
+    {
+      "id": "LOGQL-PIPELINE-STAGE-ORDER",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "specification",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE",
+      "status": "active",
+      "scope_label": "HEAD-LOGQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "PROMQL-COUNTER-RESET-EXTRAPOLATION",
+      "status": "active",
+      "scope_label": "HEAD-PROMQL",
+      "authority": "specification",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "status": "active",
+      "scope_label": "HEAD-PROMQL",
+      "authority": "specification",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "PROMQL-NATIVE-HISTOGRAM-PAYLOAD-BEHAVIOR",
+      "status": "active",
+      "scope_label": "HEAD-PROMQL",
+      "authority": "specification",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "PROMQL-ORACLE-ENGINE-ANSWER-FLAG-PARITY",
+      "status": "active",
+      "scope_label": "HEAD-PROMQL",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN",
+        "lane_id": "agpl.oracle",
+        "command": "just test-agpl-oracle",
+        "merge_required": false,
+        "release_required": false
+      }
+    },
+    {
+      "id": "PROMQL-ORACLE-PARSER-SHARING-BOUNDARY",
+      "status": "active",
+      "scope_label": "HEAD-PROMQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN",
+        "lane_id": "agpl.oracle",
+        "command": "just test-agpl-oracle",
+        "merge_required": false,
+        "release_required": false
+      }
+    },
+    {
+      "id": "PROMQL-RANGE-VECTOR-ALIGNMENT",
+      "status": "active",
+      "scope_label": "HEAD-PROMQL",
+      "authority": "specification",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "PROMQL-REFERENCE-VERSION-PIN-CORRESPONDENCE",
+      "status": "active",
+      "scope_label": "HEAD-PROMQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
+        "lane_id": "agpl.oracle",
+        "command": "just test-agpl-oracle",
+        "merge_required": false,
+        "release_required": false
+      }
+    },
+    {
+      "id": "PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE",
+      "status": "active",
+      "scope_label": "HEAD-PROMQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-PROMQL-THIRD-PARTY-CORPUS-PROVENANCE-REVIEW",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "SIGNAL-ADMISSION-001",
+      "status": "active",
+      "scope_label": "signal (HEAD-LOGQL, HEAD-PROMQL, HEAD-TRACEQL)",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "SIGNAL-CONSUMER-CORPUS-WIRE-REPLAY-001",
+      "status": "active",
+      "scope_label": "signal (HEAD-LOGQL, HEAD-PROMQL, HEAD-TRACEQL)",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "SIGNAL-LABEL-MATCHER-CONSISTENCY",
+      "status": "active",
+      "scope_label": "signal (HEAD-LOGQL, HEAD-PROMQL)",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001",
+      "status": "active",
+      "scope_label": "signal (HEAD-LOGQL, HEAD-PROMQL, HEAD-TRACEQL)",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "SIGNAL-RESOURCE-001",
+      "status": "active",
+      "scope_label": "signal (HEAD-LOGQL, HEAD-PROMQL, HEAD-TRACEQL)",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-ORACLE-AUTHORITY-SEPARATION",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
+        "lane_id": "agpl.oracle",
+        "command": "just test-agpl-oracle",
+        "merge_required": false,
+        "release_required": false
+      }
+    },
+    {
+      "id": "TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "reference-implementation",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY",
+        "lane_id": "ci.forbid-skip",
+        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-TRANSPORT-ARM-INDEPENDENCE",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
+        "lane_id": "ci.lint",
+        "command": "just lint && just lint-actions && just lint-md",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "operational-invariant",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC",
+        "lane_id": "chdb.perf-guards",
+        "command": "just perf-chdb",
+        "merge_required": false,
+        "release_required": true
+      }
+    }
+  ],
+  "architectural_rules": [
+    {
+      "id": "ARCH-AGPL-BINARY-REACHABILITY",
+      "statement": "No AGPLv3 package is reachable from ./cmd/cerberus (CLAUDE.md invariant 14): `go list -deps ./cmd/cerberus`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": 14,
+      "anchor": "arch-agpl-binary-reachability"
+    },
+    {
+      "id": "ARCH-CAP-FILTER-001",
+      "statement": "Predicate-evaluation authority belongs to the head that parsed it: a PromQL/LogQL label matcher (CAP-LABEL-MATCHER-EXPRESSION), a LogQL line filter (CAP-LINE-FILTER-EXPRESSION), and a TraceQL scoped span-attribute predicate (CAP-SPAN-ATTRIBUTE-FILTER) each lower to their own chplan.Filter expression and are evaluated per that head's own matching semantics. The shared chplan.Filter node and the optimizer's pushdown/transpose rules (PREWHERE promotion, FilterAggregateTranspose, FilterRangeWindowTranspose) may relocate WHERE a predicate is evaluated but never change WHAT it means, and the three predicate kinds are never treated as interchangeable with one another.",
+      "authority": "design-decision",
+      "claude_md_invariant": null,
+      "anchor": "arch-cap-filter-001"
+    },
+    {
+      "id": "ARCH-CH-CIRCUIT-BREAKER-RESILIENCE-001",
+      "statement": "The shared CH circuit breaker shields every head from amplifying a transient ClickHouse outage into a request storm: it opens after N consecutive failures inside its window, fast-fails while open, probes exactly once during HALF-OPEN even under concurrent callers, and closes again on a successful probe. This state-machine logic is proven deterministically against a fault-injecting fake driver.Conn; the SAME contract is proven again against a REAL ClickHouse outage (a genuine k3d pod-kill) end to end, including the documented 502-then-503 rejection ordering and /readyz reporting circuit in its body while /healthz stays unaffected.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": null,
+      "anchor": "arch-ch-circuit-breaker-resilience-001"
+    },
+    {
+      "id": "ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001",
+      "statement": "A handler holding a streaming ClickHouse cursor owns closing it through chclient.CloseCursor before cancelling that query's own context — never the reverse — and that close completes within chclient.CursorDrainBudget regardless of how much of the result set went unread. Closing before cancelling is what lets clickhouse-go release the pooled connection back to the idle pool instead of destroying the socket outright; bounding the drain is what stops a client that walks away mid-stream from pinning a pool slot for as long as ClickHouse takes to finish streaming an abandoned result set.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": null,
+      "anchor": "arch-ch-cursor-teardown-ownership-001"
+    },
+    {
+      "id": "ARCH-CH-DATA-SHARD-FANOUT-BOUND-001",
+      "statement": "internal/chclient's data-shard fan-out gate bounds how many concurrent ClickHouse dispatches one query may hold open at once, sized once from Config.DataShardCount (or an explicit multiplier override) and shared by every dispatch path — QueryCursor, QueryStrings, QueryOpen — that composes it. DataShardCount<=1, the value of every deployment that predates this field, allocates no semaphore at all; a cancelled dispatch issues KILL QUERY before releasing its slot so the abandoned query actually stops consuming server resources instead of merely freeing local bookkeeping; that release is idempotent; and a gate denial is breaker-neutral, never itself tripping the CH circuit breaker.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": null,
+      "anchor": "arch-ch-data-shard-fanout-bound-001"
+    },
+    {
+      "id": "ARCH-CH-STRICT-SCAN-DIFFERENTIAL-001",
+      "statement": "Every type/schema-coercion, offline-corpus write+read, and query_log/enum-reconciliation seam chDB's looser decode cannot exercise is re-verified against a REAL ClickHouse server through the production clickhouse-go strict-scan client path: an emit-type mismatch chDB coerces silently but production strict-scans and 502s on, a system.query_log.type predicate ClickHouse would otherwise silently coerce to String and match nothing, and a deployed exit_status Enum8 narrower than the member set the binary writes, which a no-op CREATE TABLE IF NOT EXISTS leaves invisible until a real insert rejects it.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": null,
+      "anchor": "arch-ch-strict-scan-differential-001"
+    },
+    {
+      "id": "ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001",
+      "statement": "Cerberus holds its compute fan-factor — peak intermediate rows over leaf scan rows — flat as the query corpus grows: a static lint rejects a structurally-unbounded shape (an unbounded CrossJoin, an arrayJoin feeding a JOIN, an uncapped WITH RECURSIVE, a correlated subquery) on every corpus fixture's lowered plan and emitted SQL with no chDB execution at all, and a chDB-executed ratchet separately pins each fixture's measured fan factor, structural flags, and recursion depth against a committed baseline (test/perf/cardinality-baseline/<head>/<name>.json, scale-wall-baseline.json), raise-only.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": null,
+      "anchor": "arch-compute-fanout-cardinality-bound-001"
+    },
+    {
+      "id": "ARCH-HEAD-EMIT-001",
+      "statement": "internal/chsql's typed-Frag emission (CLAUDE.md invariant 10) preserves the optimized plan's meaning: chsql.Emit's rendered clauses and ?-bound arguments correspond to the plan's own Expr tree, per internal/chsql's own TestEmit structural golden suite (test/spec/chsql, test/spec/codegen), and — per fixture — the emitted sql_optimized statement, executed against chDB, returns the plan's known-correct rows (each head's lower_test.go RunRoundTripSQL call).",
+      "authority": "design-decision",
+      "claude_md_invariant": 10,
+      "anchor": "arch-head-emit-001"
+    },
+    {
+      "id": "ARCH-HEAD-LOWER-001",
+      "statement": "Each head's lowering step — internal/promql/lower.go, internal/logql/lower.go, internal/traceql/lower.go, invoked inside that head's own Lang.Parse — preserves the accepted query's declared semantics into the shared chplan IR: the pre-optimizer plan's emitted SQL, executed against the fixture's seeded chDB data, returns the same rows the query's own language declares (test/spec/roundtrip.go's expected_rows, the pre-optimizer ground truth).",
+      "authority": "design-decision",
+      "claude_md_invariant": null,
+      "anchor": "arch-head-lower-001"
+    },
+    {
+      "id": "ARCH-HEAD-OPTIMIZE-001",
+      "statement": "internal/optimizer's rewrites never change a query's observable outcome: every rule is proven idempotent and the driver is proven convergent under its iteration cap (internal/optimizer/termination_test.go), each fixture's pinned pre/post-optimizer SQL and chplan snapshots (the optimized/unoptimized and chplan_optimized/chplan_unoptimized sections cerberus issue #3335 added) show the two stages diverge only in reviewed, expected ways, and internal/optimizer/property_test.go's chDB-executed property test confirms randomly generated plans return identical row sets before and after Default().Run, over the roster internal/optimizer/property_coverage_test.go maintains.",
+      "authority": "design-decision",
+      "claude_md_invariant": null,
+      "anchor": "arch-head-optimize-001"
+    },
+    {
+      "id": "ARCH-HEAD-WIRE-001",
+      "statement": "Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower_test.go) over the same seeded data, and the two answers are compared.",
+      "authority": "reference-implementation",
+      "claude_md_invariant": null,
+      "anchor": "arch-head-wire-001"
+    },
+    {
+      "id": "ARCH-NO-QUERY-RESULT-CACHING",
+      "statement": "No head ever caches a query's result; the only carve-out is ClickHouse's own result_cache, stamped solely on closed, now()-free windows, per CLAUDE.md invariant 12.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": 12,
+      "anchor": "arch-no-query-result-caching"
+    },
+    {
+      "id": "ARCH-NO-SILENT-SKIP-OR-TOLERANCE",
+      "statement": "No test suite silently skips, soft-asserts, silently recovers, or tolerates an expected failure (CLAUDE.md invariant 6): a Go test never calls t.Skip / t.Skipf / t.SkipNow, never soft-asserts via assert.Contains(x, \"\") or assert.ElementsMatch(x, []T{}), and never wraps a panic in defer recover() to swallow it; a compatibility overlay never carries a non-empty should_skip: block; no test escape-hatch token (EXPECTED_TOLERATED, isKnownTolerated, skipReason, and siblings) exists outside its own documented origin; a Playwright spec never calls test.skip / test.fixme / test.only; and a Gherkin scenario never carries one of forbid-skip.mjs's scenario-suppressing tags (its own 'feature-discipline' CHECK names the closed set) nor routes through godog.ErrSkip / ErrPending.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": 6,
+      "anchor": "arch-no-silent-skip-or-tolerance"
+    },
+    {
+      "id": "ARCH-PACKAGE-DEPENDENCY-DECLARATION",
+      "statement": "Every internal/** package is declared in exactly one component of .go-arch-lint.yml (or as a commonComponent, importable from every layer), and every internal/** package that carries statements is enrolled with a floor in test/coverage-floor/ (CLAUDE.md invariant 16). Both registrations are required for a new package; go-arch-lint enforces the first, coverage-package-floor.mjs the second, and both gates run in CI.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": 16,
+      "anchor": "arch-package-dependency-declaration"
+    },
+    {
+      "id": "ARCH-PARSER-ACCESSOR-DISCIPLINE",
+      "statement": "No package under internal/** uses unsafe.Pointer or reflect.Value.FieldByName against an upstream parser's internals (CLAUDE.md invariant 11); when cerberus needs a field or method a parser does not export, the accessor is added to the relevant tsouza/* upstream fork (docs/upstream-forks.md), the go.mod replace directive is bumped, and internal/** consumes the typed accessor instead.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": 11,
+      "anchor": "arch-parser-accessor-discipline"
+    },
+    {
+      "id": "ARCH-PERF-BASELINE-MEASURED-EVIDENCE-001",
+      "statement": "test/perf/nightly's real-ClickHouse nightly gate measures each pinned sentinel's max-of-5 peak memory (and its expected HTTP outcome) against a committed baseline plus an absolute cap-relative ceiling, for the EXACT sentinel shapes and the EXACT ClickHouse/cerberus version combination pinned at measurement time. A green result is MEASURED evidence that this specific combination did not regress past the committed threshold; it is never a semantic proof that the underlying mechanism is bounded for a sentinel shape, data volume, or ClickHouse version the baseline has not itself measured — a new shape needs its own sentinel, and a version bump needs its own re-measurement, before either can claim this contract's coverage. The baseline's own two-prong (calibration vs absolute-ceiling) scheme is kept from silently going slack by a separate, deterministic structural pin: prong B (the absolute ceiling) is asserted to never be looser than prong A (the calibrated baseline) for the same measurement.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": null,
+      "anchor": "arch-perf-baseline-measured-evidence-001"
+    },
+    {
+      "id": "ARCH-REGENERATED-ARTIFACTS-ONLY",
+      "statement": "Every generated artefact family (the test/spec/ TXTAR goldens, the solver decision baseline, the parity ledgers, the cardinality baseline, the coverage-floor ledger, and their siblings) is rewritten only by its `just update-golden <shard>` recipe (or, for the coverage floor, `just update-coverage-floor`), never hand-edited (CLAUDE.md invariant 9). `just update-golden` refuses to run against a shard set narrower than the current diff implies, and every generated path is marked `-merge` in .gitattributes so a three-way line merge conflicts loudly instead of silently blending records.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": 9,
+      "anchor": "arch-regenerated-artifacts-only"
+    },
+    {
+      "id": "ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001",
+      "statement": "Every goroutine a request's own handling spawns terminates by the time that request finishes — on the happy path, an error return, a concurrent-request burst, a route-memo retry, and a handler panic alike — and a handler panic still runs its deferred cleanup (releasing an already-acquired admission slot) rather than crashing the process. Proven deterministically, in-process, against a stubbed querier by injecting exactly these fault shapes and asserting goleak.VerifyNone finds no leaked goroutine and no admission slot is left held.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": null,
+      "anchor": "arch-serving-path-cancellation-cleanup-001"
+    },
+    {
+      "id": "ARCH-TYPED-SQL-ONLY",
+      "statement": "internal/chsql/** composes ClickHouse SQL exclusively through typed chsql Frags (QueryBuilder slots, and expression constructors such as Call / Eq / And / Cast / Lambda1 / Subquery / InlineLit; CLAUDE.md invariant 10); no file outside internal/chsql/builder.go and the two KNOWN_GOOD sites in internal/chsql/emit_node.go and internal/chsql/emit.go writes a raw SQL token via strings.Builder, writeSQL(...), or sb.Write*, and no verbatim(...) call anywhere in internal/chsql/** builds an expression shape via string concatenation.",
+      "authority": "operational-invariant",
+      "claude_md_invariant": 10,
+      "anchor": "arch-typed-sql-only"
+    }
+  ],
+  "worked_examples": [
+    {
+      "key": "HEAD-PROMQL",
+      "contract": {
+        "id": "PROMQL-COUNTER-RESET-EXTRAPOLATION",
+        "statement": "rate()/increase()/delta() and the *_over_time family extrapolate a counter's samples across its selected window using Prometheus's own boundary-extrapolation rule, and treat a value decrease between consecutive samples as a counter reset (adding the pre-reset value back in) rather than as a negative rate, for both a randomly generated dataset and an engineered counter profile that resets mid-window.",
+        "authority": "specification",
+        "scope": "head",
+        "applicable_heads": [
+          "HEAD-PROMQL"
+        ],
+        "blind_spots": [
+          "test/property/gen's random MetricsDataset generator draws series with a bounded value range and sample count; it is not an exhaustive sweep of every possible counter-reset timing relative to the query window.",
+          "The deterministic cross-path proof in test/property/rate_dup_timestamp_test.go (gen.CounterDup*) pins one specific duplicate-timestamp reset shape; it is a fixed regression fixture, not a property, and is not counted as one of this contract's two required independence groups."
+        ],
+        "anchor": "promql-counter-reset-extrapolation"
+      },
+      "bindings": [
+        {
+          "id": "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
+          "test_ref": "test/property/gen#promql.instant.rate",
+          "evidence_class": "property",
+          "evidence_system": "property-shape",
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.property",
+              "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
+              "merge_required": true,
+              "release_required": true
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+            "substrate": "chdb",
+            "detects": [
+              "value-level divergence across a wide generated input space",
+              "a regression reintroduced into a previously-fixed bug class the generator's dataset specifically engineers for"
+            ],
+            "cannot_detect": [
+              "divergence in a shape the generator's grammar or dataset pool never draws — each gen/*.go file documents its own deliberate exclusions",
+              "drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)"
+            ]
+          }
+        },
+        {
+          "id": "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY",
+          "test_ref": "test/property/gen#promql.instant-window.monotonic-running-total.rate",
+          "evidence_class": "property",
+          "evidence_system": "property-shape",
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.property",
+              "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
+              "merge_required": true,
+              "release_required": true
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+            "substrate": "chdb",
+            "detects": [
+              "value-level divergence across a wide generated input space",
+              "a regression reintroduced into a previously-fixed bug class the generator's dataset specifically engineers for"
+            ],
+            "cannot_detect": [
+              "divergence in a shape the generator's grammar or dataset pool never draws — each gen/*.go file documents its own deliberate exclusions",
+              "drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)"
+            ]
+          }
+        }
+      ],
+      "complement_gaps": [
+        {
+          "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+          "missing_complements": [
+            "VERIFIER-REFERENCE-DIFFERENTIAL"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "HEAD-LOGQL",
+      "contract": {
+        "id": "LOGQL-LINE-FILTER-REGEX-SEMANTICS",
+        "statement": "A LogQL regex line filter (|~) matches using RE2 semantics identical to Loki's, including case-insensitive (?i) and multiline anchors.",
+        "authority": "reference-implementation",
+        "scope": "head",
+        "applicable_heads": [
+          "HEAD-LOGQL"
+        ],
+        "blind_spots": [
+          "Backreferences are rejected identically to Loki, but that rejection path is not yet covered by this contract."
+        ],
+        "anchor": "logql-line-filter-regex-semantics"
+      },
+      "bindings": [
+        {
+          "id": "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
+          "test_ref": "test/spec/logql/line_filter_regex_case_insensitive_multicase.txtar#expected_rows",
+          "evidence_class": "execution",
+          "evidence_system": "txtar-fixture",
+          "obligations": [
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.roundtrip-logql",
+              "context_name": "roundtrip (logql)",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.post-merge-drift",
+              "context_name": "drift",
+              "merge_required": false,
+              "release_required": false
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+            "substrate": "chdb",
+            "detects": [
+              "wrong SQL lowering",
+              "wrong result rows against a known seed"
+            ],
+            "cannot_detect": [
+              "semantic drift against the reference backend's own engine",
+              "an emit-type mismatch chDB coerces silently (e.g. UInt8/UInt64 -> *float64) but production clickhouse-go's real strict positional scan rejects with a 502 -- chDB is a coercive, not a strict, oracle for this class, so a green roundtrip here says nothing about whether the identical query strict-scans cleanly; only VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN's real-server evidence can show that"
+            ]
+          }
+        }
+      ],
+      "complement_gaps": [
+        {
+          "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+          "missing_complements": [
+            "VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN",
+            "VERIFIER-REFERENCE-DIFFERENTIAL"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "HEAD-TRACEQL",
+      "contract": {
+        "id": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
+        "statement": "TraceQL's child relation (`A > B`) matches only a B span whose immediate ParentSpanId names an A-matching span; the descendant relation (`A >> B`) matches any B span reachable from an A-matching span through one or more parent edges, via Tempo's nested-set left/right containment test — never mere trace co-membership. The two relations are never conflated: a query written with one never silently behaves as the other.",
+        "authority": "reference-implementation",
+        "scope": "head",
+        "applicable_heads": [
+          "HEAD-TRACEQL"
+        ],
+        "blind_spots": [
+          "gen.TraceQLDataset (test/property/gen/traceql.go) draws only a LINEAR parent→child chain per trace (traceQLMaxChainDepth=3, no branching tree) by its own documented design; a branching ancestor/descendant shape (two children of one parent, a diamond) is not exercised by this contract's property evidence.",
+          "Cerberus issue #2241 (closed) is the deterministic, non-random regression this same family once caught: TestTraceQLDescendantPropertyMatch in test/property/traceql_test.go pins that exact two-span descendant shape as a fixed reproducer. It is cited here for provenance only and is not counted as one of this contract's two required independence groups, because it exercises one fixed case rather than a swept property."
+        ],
+        "anchor": "traceql-structural-relation-semantics"
+      },
+      "bindings": [
+        {
+          "id": "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
+          "test_ref": "test/property/gen#traceql.structural.child",
+          "evidence_class": "property",
+          "evidence_system": "property-shape",
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.property",
+              "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
+              "merge_required": true,
+              "release_required": true
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+            "substrate": "chdb",
+            "detects": [
+              "value-level divergence across a wide generated input space",
+              "a regression reintroduced into a previously-fixed bug class the generator's dataset specifically engineers for"
+            ],
+            "cannot_detect": [
+              "divergence in a shape the generator's grammar or dataset pool never draws — each gen/*.go file documents its own deliberate exclusions",
+              "drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)"
+            ]
+          }
+        },
+        {
+          "id": "BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC",
+          "test_ref": "test/spec/traceql/edge_chain_child_5.txtar",
+          "evidence_class": "execution",
+          "evidence_system": "txtar-fixture",
+          "obligations": [
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.roundtrip-traceql",
+              "context_name": "roundtrip (traceql)",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.post-merge-drift",
+              "context_name": "drift",
+              "merge_required": false,
+              "release_required": false
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+            "substrate": "chdb",
+            "detects": [
+              "wrong SQL lowering",
+              "wrong result rows against a known seed"
+            ],
+            "cannot_detect": [
+              "semantic drift against the reference backend's own engine",
+              "an emit-type mismatch chDB coerces silently (e.g. UInt8/UInt64 -> *float64) but production clickhouse-go's real strict positional scan rejects with a 502 -- chDB is a coercive, not a strict, oracle for this class, so a green roundtrip here says nothing about whether the identical query strict-scans cleanly; only VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN's real-server evidence can show that"
+            ]
+          }
+        },
+        {
+          "id": "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY",
+          "test_ref": "test/property/gen#traceql.structural.descendant",
+          "evidence_class": "property",
+          "evidence_system": "property-shape",
+          "obligations": [
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.property",
+              "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
+              "merge_required": true,
+              "release_required": true
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+            "substrate": "chdb",
+            "detects": [
+              "value-level divergence across a wide generated input space",
+              "a regression reintroduced into a previously-fixed bug class the generator's dataset specifically engineers for"
+            ],
+            "cannot_detect": [
+              "divergence in a shape the generator's grammar or dataset pool never draws — each gen/*.go file documents its own deliberate exclusions",
+              "drift against a real, separately-started reference server; the oracle here is in-process or hand-written, not the real backend (see VERIFIER-REFERENCE-DIFFERENTIAL for that)"
+            ]
+          }
+        },
+        {
+          "id": "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC",
+          "test_ref": "test/spec/traceql/recursive_descendant.txtar",
+          "evidence_class": "execution",
+          "evidence_system": "txtar-fixture",
+          "obligations": [
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.roundtrip-traceql",
+              "context_name": "roundtrip (traceql)",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.post-merge-drift",
+              "context_name": "drift",
+              "merge_required": false,
+              "release_required": false
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+            "substrate": "chdb",
+            "detects": [
+              "wrong SQL lowering",
+              "wrong result rows against a known seed"
+            ],
+            "cannot_detect": [
+              "semantic drift against the reference backend's own engine",
+              "an emit-type mismatch chDB coerces silently (e.g. UInt8/UInt64 -> *float64) but production clickhouse-go's real strict positional scan rejects with a 502 -- chDB is a coercive, not a strict, oracle for this class, so a green roundtrip here says nothing about whether the identical query strict-scans cleanly; only VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN's real-server evidence can show that"
+            ]
+          }
+        }
+      ],
+      "complement_gaps": [
+        {
+          "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
+          "missing_complements": [
+            "VERIFIER-REFERENCE-DIFFERENTIAL"
+          ]
+        },
+        {
+          "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+          "missing_complements": [
+            "VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN",
+            "VERIFIER-REFERENCE-DIFFERENTIAL"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "ARCHITECTURE",
+      "contract": {
+        "id": "ARCH-HEAD-OPTIMIZE-001",
+        "statement": "internal/optimizer's rewrites never change a query's observable outcome: every rule is proven idempotent and the driver is proven convergent under its iteration cap (internal/optimizer/termination_test.go), each fixture's pinned pre/post-optimizer SQL and chplan snapshots (the optimized/unoptimized and chplan_optimized/chplan_unoptimized sections cerberus issue #3335 added) show the two stages diverge only in reviewed, expected ways, and internal/optimizer/property_test.go's chDB-executed property test confirms randomly generated plans return identical row sets before and after Default().Run, over the roster internal/optimizer/property_coverage_test.go maintains.",
+        "authority": "design-decision",
+        "scope": "architecture",
+        "applicable_heads": [
+          "HEAD-LOGQL",
+          "HEAD-PROMQL",
+          "HEAD-TRACEQL"
+        ],
+        "blind_spots": [
+          "internal/optimizer/termination_test.go pins idempotence and convergence PER RULE; it does not itself assert that a rewrite preserves the query's answer, only that repeated application stabilizes — a rule could converge to a stable but wrong rewrite and this binding alone would not catch it.",
+          "The optimized/unoptimized SQL and chplan pairs (test/spec/optimizer, and the sql_optimized/chplan sections every promql/logql/traceql fixture also carries) are TEXT-EQUALITY snapshots: they pin the exact rewrite shape for the fixtures that exist, but two SQL strings that differ yet are semantically equivalent under ClickHouse's real execution would show as an unrelated-looking diff here, not a false pass — and a byte-identical pair alone proves nothing about the two statements' actual result rows without chDB execution.",
+          "internal/optimizer/property_test.go's generator grammar is narrow (Scan/Filter/Project plus a small predicate language over one seed table) per its own doc comment; internal/optimizer/property_coverage_test.go's uncoveredOptimizerKinds ledger names exactly which chplan node kinds (NestedSetAnnotate, StructuralJoin, TopK, VectorJoin at last count) the property never round-trips and why — those kinds' optimizer treatment relies on the TXTAR structural pair and reviewer discipline alone, not property-based semantic proof."
+        ],
+        "anchor": "arch-head-optimize-001"
+      },
+      "bindings": [
+        {
+          "id": "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
+          "test_ref": "internal/optimizer/property_test.go",
+          "evidence_class": "property",
+          "evidence_system": null,
+          "obligations": [
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.probe",
+              "context_name": "probe",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.chaos",
+              "context_name": "chaos",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.quickstart",
+              "context_name": "quickstart",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.startup-bench",
+              "context_name": "startup-bench",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.benchmark",
+              "context_name": "benchstat diff (baseline vs ref)",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.mutation",
+              "context_name": "mutation",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "security.codeql",
+              "context_name": "CodeQL",
+              "merge_required": true,
+              "release_required": true
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-OPTIMIZER-PROPERTY-EQUIVALENCE",
+            "substrate": "chdb",
+            "detects": [
+              "an optimizer rewrite that changes a query's real result rows for a plan shape the generator can draw"
+            ],
+            "cannot_detect": [
+              "a semantic drift confined to a chplan node kind the generator's narrow grammar never draws — internal/optimizer/property_coverage_test.go's uncoveredOptimizerKinds ledger names the current gaps",
+              "chDB-vs-real-ClickHouse execution drift: chDB is a coercive, not a strict, oracle for type mismatches production ClickHouse would reject"
+            ]
+          }
+        },
+        {
+          "id": "BINDING-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR",
+          "test_ref": "test/spec/optimizer/filter_fusion.txtar#optimized",
+          "evidence_class": "execution",
+          "evidence_system": "txtar-fixture",
+          "obligations": [
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.post-merge-drift",
+              "context_name": "drift",
+              "merge_required": false,
+              "release_required": false
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-OPTIMIZER-SNAPSHOT-PAIR",
+            "substrate": "runner",
+            "detects": [
+              "an optimizer rewrite changing the emitted SQL or plan shape in an unreviewed way for the fixture's own case"
+            ],
+            "cannot_detect": [
+              "two structurally different SQL/chplan pairs that are nonetheless semantically equivalent under ClickHouse's real execution",
+              "whether the optimized SQL actually executes to the same result rows as the unoptimized SQL — that is VERIFIER-OPTIMIZER-PROPERTY-EQUIVALENCE's job"
+            ]
+          }
+        },
+        {
+          "id": "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
+          "test_ref": "internal/optimizer/termination_test.go",
+          "evidence_class": "execution",
+          "evidence_system": null,
+          "obligations": [
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.probe",
+              "context_name": "probe",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.lint",
+              "context_name": "lint",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.chaos",
+              "context_name": "chaos",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.quickstart",
+              "context_name": "quickstart",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.startup-bench",
+              "context_name": "startup-bench",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "governance.forbid-deferral",
+              "context_name": "forbid-deferral",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.benchmark",
+              "context_name": "benchstat diff (baseline vs ref)",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.mutation",
+              "context_name": "mutation",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "security.codeql",
+              "context_name": "CodeQL",
+              "merge_required": true,
+              "release_required": true
+            }
+          ],
+          "verifier": {
+            "id": "VERIFIER-GO-UNIT-TEST",
+            "substrate": "runner",
+            "detects": [
+              "logic errors in the function under test",
+              "boundary/edge-case regressions pinned by table-driven cases"
+            ],
+            "cannot_detect": [
+              "drift against ClickHouse's actual runtime behavior",
+              "drift against a reference backend's behavior"
+            ]
+          }
+        }
+      ],
+      "complement_gaps": [
+        {
+          "verifier": "VERIFIER-OPTIMIZER-PROPERTY-EQUIVALENCE",
+          "missing_complements": [
+            "VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN"
+          ]
+        }
+      ]
+    }
+  ]
+}
