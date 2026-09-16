@@ -1,4 +1,6 @@
-// update-golden-guard.mjs — the required PR check that closes issue #2350.
+// update-golden-guard.mjs — the PR check that closes issue #2350 (Info-only
+// today, not yet in `main`'s required_status_checks ruleset — see
+// docs/test-strategy.md's CI-gate inventory).
 //
 // # The race it closes
 //
@@ -16,32 +18,40 @@
 // only on whether it is still touching the branch. A run that finished
 // (however it concluded) is no longer a race hazard; a golden that came out
 // stale is a job for the ordinary golden-drift checks that run on the
-// resulting push, not this one. It runs in two triggers, both required to
-// close the race fully:
+// resulting push, not this one. It runs in three triggers:
 //
-//   - `pull_request` (opened/synchronize/reopened/ready_for_review): the
-//     original poll-and-block path. main() blocks for exactly as long as an
-//     update-golden.yml run against the PR's own branch is queued or in
-//     progress, polling from inside the one job run so the SAME check run
-//     clears itself the moment the hazard is gone (see "why this polls"
-//     below).
+//   - `pull_request` (opened/synchronize/reopened/ready_for_review): takes
+//     ONE snapshot of the update-golden.yml runs currently requested,
+//     in_progress or queued against the PR's own branch. Clear → the check
+//     passes. A match → the check FAILS immediately rather than waiting
+//     (see "why this fails fast instead of blocking" below); it relies on
+//     the `workflow_run` trigger to flip the SAME check back to green once
+//     that dispatch finishes, with no new push needed.
 //   - `workflow_run` (requested/completed, for the `update-golden` workflow
-//     itself): closes the gap the `pull_request` trigger alone leaves open.
-//     A dispatch against an ALREADY-open PR's branch, made after that PR's
-//     last push, never fires a new `pull_request` event — GitHub does not
-//     re-poll an already-green required check on its own. This trigger
-//     reacts to the dispatch directly: `requested` sets the guard context to
+//     itself): closes the gap the `pull_request` trigger alone leaves open,
+//     in both directions. A dispatch against an ALREADY-open PR's branch,
+//     made after that PR's last push, never fires a new `pull_request`
+//     event — GitHub does not re-poll an already-green required check on
+//     its own, and a `pull_request` run that already failed fast has no
+//     later event of its own to re-evaluate on. This trigger reacts to the
+//     dispatch directly instead: `requested` sets the guard context to
 //     `pending` on every open PR whose head branch the dispatch targets
 //     (found via the Pulls API, since a `workflow_run` job runs in the
 //     default branch's context, not the PR's — the check has to be pushed
 //     onto the PR's head SHA explicitly via the Statuses API), and
 //     `completed` re-checks and flips it to `success` once no run remains
 //     in flight against that branch (handling a second, serialised dispatch
-//     via the same in-flight query the poll path uses).
-//   - `merge_group`: the merge queue's own copy of the poll. See the section
-//     below.
+//     via the same in-flight query the snapshot path uses). Because this
+//     status is pushed under the exact same `STATUS_CONTEXT` the
+//     `pull_request`-triggered check-run uses, branch protection's combined
+//     status for that SHA takes whichever of the two reported LAST — the
+//     same mechanism the "dispatch starts after check went green" case
+//     already depended on, now doing double duty for "check failed fast,
+//     dispatch later completes" too.
+//   - `merge_group`: the merge queue's own copy of the snapshot, with one
+//     asymmetry from the `pull_request` path. See the section below.
 //
-// # Why the merge queue needs its own poll rather than a free pass
+// # Why the merge queue needs its own check rather than a free pass
 //
 // A merge queue moves the MERGE out of the pull request and onto a projected
 // trunk: GitHub builds a `gh-readonly-queue/<base>/pr-<n>-<sha>` branch,
@@ -59,11 +69,9 @@
 // close: a pull request now sits between "last green on its own head" and
 // "merged" for the whole duration of merge-group CI, and a dispatch started
 // anywhere in that window strands its regenerated diff the same way #2350's
-// did. The `workflow_run` path cannot cover it either — that path pushes a
-// commit status onto the PULL REQUEST'S head SHA, which is no longer what
-// branch protection is evaluating once the entry is in the queue. So the
-// merge-group run re-runs the SAME poll, against the branch the queued pull
-// request would delete.
+// did. So the merge-group run takes the SAME single snapshot the
+// `pull_request` path does, against the branch the queued pull request would
+// delete.
 //
 // Resolving that branch is exact rather than heuristic: GitHub creates one
 // `gh-readonly-queue` branch PER QUEUED PULL REQUEST, not one per batch, so a
@@ -76,11 +84,42 @@
 // script cannot parse FAILS the check rather than passing it: an unresolved
 // merge group is precisely the state in which the guard has verified nothing.
 //
+// Unlike the `pull_request` path, a fast-failed `merge_group` snapshot does
+// NOT self-heal in place: `workflow_run`'s `completed` handler pushes its
+// status onto the pull request's own head SHA (see above), never onto the
+// queue's own ephemeral `gh-readonly-queue/…` commit — GitHub tears that
+// branch down once the group resolves, and by `completed` time there is no
+// stable API handle from a branch name back to "the projected commit some
+// now-possibly-gone queue attempt built for it." So a `merge_group` snapshot
+// that finds an in-flight dispatch reports a REAL failure (not the spurious,
+// cancellation-triggered kind `cancel-in-progress: false` below already
+// guards against), and GitHub dequeues that entry the same way it would for
+// any other genuinely failing required check. The pull request itself is not
+// left red, though: `workflow_run`'s `completed` handler still flips the
+// SAME context back to `success` on the PR's own head SHA the moment the
+// dispatch clears, exactly as in the `pull_request` case — what does not
+// happen automatically is the PR re-entering the merge queue, which needs a
+// fresh "add to merge queue" the same as any other dequeue. This is judged an
+// acceptable trade rather than a gap needing its own mechanism: the
+// concurrency block below already tolerates a real-failure dequeue as
+// non-spurious, the overlap it requires (a `merge_group` snapshot landing
+// while a dispatch against that exact branch is in flight) is far rarer than
+// the `pull_request` path's own trigger frequency (every push, and every
+// update-golden.yml dispatch made during active iteration on an open PR —
+// the actual source of the sustained-poll cost this snapshot replaces), and
+// building a second status-push target for an ephemeral queue commit would
+// be new machinery for a narrow, self-recovering window, not a closure of
+// #2350's own race. (As of this writing this check is Info-only — not in
+// `main`'s required_status_checks ruleset — so a merge_group failure has no
+// effect on the queue in practice today; the reasoning above targets the
+// check's intended eventual role once it is required. See the CI-gate
+// inventory in docs/test-strategy.md for the current status.)
+//
 // The residual window is the irreducible one the `pull_request` path already
-// has: a dispatch created in the seconds between this poll's last clear read
-// and the queue's merge. Nothing in-band can close that — the merge is
-// GitHub's to make and there is no transactional handle on it — and it is the
-// same exposure every branch-protection check carries.
+// has: a dispatch created in the seconds between this snapshot's read and the
+// queue's merge. Nothing in-band can close that — the merge is GitHub's to
+// make and there is no transactional handle on it — and it is the same
+// exposure every branch-protection check carries.
 //
 // # How it finds "targets this branch" at all
 //
@@ -93,19 +132,32 @@
 // are the one place that shape is parsed; keep them in sync with that
 // `run-name:` line.
 //
-// # Why the pull_request path polls instead of failing once and asking for a re-run
+// # Why the pull_request (and merge_group) path fails fast instead of blocking
 //
-// A required check only ever gates the PR's CURRENT head SHA. If it failed
-// once while a run was in flight and never re-evaluated, the PR would stay
-// red after the run finished until some unrelated event (a new push)
-// happened to re-trigger it — exactly the friction a human would route
-// around. Polling from inside the one job run instead means the SAME check
-// run clears itself the moment the hazard is gone, with no second event
-// needed. MAX_WAIT_MS bounds that loop so a stuck dispatch fails loudly
-// rather than hanging the job (and this check) forever. The workflow_run
-// path needs no such loop: GitHub itself re-invokes this script at
-// `requested` and again at `completed`, so each invocation only has to take
-// one snapshot of the in-flight list.
+// This check used to poll from inside the one job run, sleeping in a loop
+// for up to an hour so the SAME check run could clear itself the moment the
+// hazard was gone, with no second event needed. That held a runner busy
+// doing nothing but re-polling for the whole wait — and in this repo, an
+// update-golden.yml dispatch against an open PR's own branch is a routine
+// part of active iteration (a regen after every fix during a multi-round PR),
+// so the busy-poll recurred often and each occurrence could burn up to the
+// full hour. A required check only ever gates the PR's CURRENT head SHA, so
+// the one thing a non-blocking check genuinely needs is some OTHER mechanism
+// to re-evaluate that same SHA once the hazard clears — and one already
+// existed: the `workflow_run` trigger's `completed` handler, which was
+// already relied on to flip this same check from green to pending on a
+// dispatch that starts AFTER the PR's last push (see above). That handler
+// does not care which event last reported to `STATUS_CONTEXT`, only what the
+// CURRENT in-flight state is — so it is equally able to flip a check that
+// failed fast back to `success` once the dispatch it flagged finishes,
+// closing the loop this file used to close by blocking. The `pull_request`
+// (and `merge_group`) step therefore takes exactly ONE snapshot of the
+// in-flight list and reports on it immediately: clear now → pass now; not
+// clear now → fail now, and rely on `workflow_run`'s `completed` event (which
+// GitHub raises independently, without this job's help) to reflect the branch
+// clearing later. The `workflow_run` path itself needs no such change: it was
+// already snapshot-based, since GitHub re-invokes this script at `requested`
+// and again at `completed`.
 //
 // Env contract (GITHUB_EVENT_NAME selects the branch — set by the runner):
 //   pull_request:
@@ -113,18 +165,13 @@
 //     REPO             (required) `owner/repo`.
 //     BRANCH           (required) the PR's head branch (github.head_ref).
 //     API_URL          (optional) GitHub REST API base. Default public API.
-//     POLL_INTERVAL_MS (optional) delay between polls. Default 30s.
-//     MAX_WAIT_MS      (optional) total time budget before failing loudly.
-//                       Default 60 minutes — update-golden.yml's own
-//                       regenerate legs are capped at 45, plus plan/publish
-//                       overhead.
 //   merge_group:
 //     GH_TOKEN              (required) a token with `actions: read` and
 //                            `pull-requests: read` on this repo.
 //     REPO                  (required) `owner/repo`.
 //     MERGE_GROUP_HEAD_REF  (required) github.event.merge_group.head_ref.
 //     MERGE_GROUP_BASE_REF  (required) github.event.merge_group.base_ref.
-//     API_URL / POLL_INTERVAL_MS / MAX_WAIT_MS as for pull_request.
+//     API_URL as for pull_request.
 //   workflow_run:
 //     GH_TOKEN                   (required) a token with `actions: read`,
 //                                 `pull-requests: read` and `statuses: write`.
@@ -135,12 +182,19 @@
 //     API_URL                     (optional) GitHub REST API base.
 //
 // Exit codes:
-//   0  no update-golden.yml run is queued or in_progress against the guarded
-//      branch (pull_request, merge_group), or the workflow_run event was
-//      handled (whatever state it resulted in — the Statuses API call failing
-//      is the only workflow_run failure mode).
-//   1  one still is after MAX_WAIT_MS, the merge group's head ref could not be
-//      resolved to a pull request, or the API calls themselves failed.
+//   0  no update-golden.yml run is queued, requested or in_progress against
+//      the guarded branch (pull_request, merge_group) at the moment of this
+//      check's one snapshot, or the workflow_run event was handled (whatever
+//      state it resulted in — the Statuses API call failing is the only
+//      workflow_run failure mode).
+//   1  one was in flight at snapshot time, the merge group's head ref could
+//      not be resolved to a pull request, or the API calls themselves
+//      failed. On `pull_request`, this check will flip back to success on
+//      its own once `workflow_run`'s `completed` handler sees the dispatch
+//      finish — no new push needed (see the file header). On `merge_group`
+//      it dequeues the entry; the pull request itself still flips back to a
+//      green required check the same way, but re-entering the merge queue
+//      is not automatic (see "Why the merge queue needs its own check").
 
 import process from 'node:process';
 
@@ -148,17 +202,16 @@ import { error, log, notice } from './lib/gh.mjs';
 
 const DEFAULT_API_URL = 'https://api.github.com';
 const WORKFLOW_FILE = 'update-golden.yml';
-const DEFAULT_POLL_INTERVAL_MS = 30_000;
-const DEFAULT_MAX_WAIT_MS = 60 * 60 * 1000;
 
 // The Actions API run states that mean "still touching the branch". A
 // `completed` run — success, failure, or cancelled — is no longer a hazard,
 // whatever its conclusion: see the file header on why this check does not
 // read conclusion at all. `requested` is included alongside `in_progress`
 // and `queued`: it is the transient status a workflow_dispatch run briefly
-// reports between being created and being picked up by a runner, and a poll
-// (or a workflow_run "requested" snapshot, see below) landing in that window
-// must still see the run as in flight rather than reporting a false-clear.
+// reports between being created and being picked up by a runner, and a
+// snapshot (whether from the pull_request/merge_group path or a workflow_run
+// one) landing in that window must still see the run as in flight rather
+// than reporting a false-clear.
 const IN_FLIGHT_STATUSES = ['requested', 'in_progress', 'queued'];
 
 // The context name this script publishes to when it sets a commit status
@@ -169,7 +222,7 @@ const IN_FLIGHT_STATUSES = ['requested', 'in_progress', 'queued'];
 const STATUS_CONTEXT = 'update-golden-guard';
 
 // The two non-default `GITHUB_EVENT_NAME` values main() branches on. The
-// default — anything else — is the original pull_request poll path.
+// default — anything else — is the pull_request snapshot path.
 const WORKFLOW_RUN_EVENT = 'workflow_run';
 const MERGE_GROUP_EVENT = 'merge_group';
 
@@ -344,43 +397,19 @@ export async function listInFlightRuns({ api, repo, token, fetchJSON = ghJSON })
   return runs;
 }
 
-/** node:timers/promises' setTimeout, imported lazily so tests can stub it. */
-function defaultSleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 /**
- * The core poll loop: block until no update-golden.yml run is in_progress or
- * queued against `branch`, or until `maxWaitMs` has elapsed.
+ * A single snapshot: is any update-golden.yml run currently requested,
+ * in_progress or queued against `branch`? Does not wait or retry — see the
+ * file header ("why this fails fast instead of blocking") for why one
+ * snapshot per check run is now enough.
  *
- * `listRuns` is injected so tests drive it from a scripted sequence instead
- * of the network; `sleep` and `now` are injected so a test never actually
- * waits.
+ * `listRuns` is injected so tests drive it from a scripted response instead
+ * of the network.
  */
-export async function waitForBranchClear({
-  listRuns,
-  branch,
-  pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
-  maxWaitMs = DEFAULT_MAX_WAIT_MS,
-  sleep = defaultSleep,
-  now = Date.now,
-  onWaiting,
-}) {
-  const deadline = now() + maxWaitMs;
-  for (;;) {
-    const runs = await listRuns();
-    const matching = runs.filter((r) => runTargetsBranch(r.display_title, branch));
-    if (matching.length === 0) {
-      return { clear: true, waitedMs: 0, runs: [] };
-    }
-    if (now() >= deadline) {
-      return { clear: false, timedOut: true, runs: matching };
-    }
-    onWaiting?.(matching);
-    await sleep(Math.min(pollIntervalMs, Math.max(deadline - now(), 0)));
-  }
+export async function checkBranchClear({ listRuns, branch }) {
+  const runs = await listRuns();
+  const matching = runs.filter((r) => runTargetsBranch(r.display_title, branch));
+  return matching.length === 0 ? { clear: true, runs: [] } : { clear: false, runs: matching };
 }
 
 /**
@@ -495,21 +524,9 @@ export async function main(env = process.env) {
     throw e;
   }
 
-  const pollIntervalMs = numberEnv(env, 'POLL_INTERVAL_MS', DEFAULT_POLL_INTERVAL_MS);
-  const maxWaitMs = numberEnv(env, 'MAX_WAIT_MS', DEFAULT_MAX_WAIT_MS);
-
-  const result = await waitForBranchClear({
+  const result = await checkBranchClear({
     listRuns: () => listInFlightRuns({ api, repo, token }),
     branch,
-    pollIntervalMs,
-    maxWaitMs,
-    onWaiting: (runs) => {
-      for (const r of runs) log(`  in flight: ${r.html_url} (${r.status})`);
-      notice(
-        `update-golden-guard: an update-golden.yml dispatch against ${branch} is still running; ` +
-          'waiting for it to finish before this check can pass.',
-      );
-    },
   });
 
   if (result.clear) {
@@ -517,11 +534,19 @@ export async function main(env = process.env) {
     return;
   }
 
+  for (const r of result.runs) log(`  in flight: ${r.html_url} (${r.status})`);
   const urls = result.runs.map((r) => r.html_url).join(', ');
+  const recovery =
+    eventName === MERGE_GROUP_EVENT
+      ? 'This dequeues the entry; the pull request itself will flip back to a green ' +
+        `${STATUS_CONTEXT} check automatically once the dispatch finishes (the workflow_run trigger ` +
+        're-checks and reports on its head SHA), but it will need to be re-added to the merge queue.'
+      : 'This check will flip back to success on its own, with no new push needed, once the ' +
+        `workflow_run trigger sees that dispatch finish (see the file header's "why this fails fast ` +
+        'instead of blocking").';
   error(
-    `update-golden-guard: timed out after ${maxWaitMs}ms waiting for an update-golden.yml ` +
-      `dispatch against ${branch} to finish: ${urls}. Wait for it, or cancel it, then re-run ` +
-      'this check (or push a new commit) once it is no longer queued or in progress.',
+    `update-golden-guard: an update-golden.yml dispatch against ${branch} is in flight: ${urls}. ` +
+      recovery,
     { title: 'update-golden-guard' },
   );
   process.exitCode = 1;
@@ -534,17 +559,6 @@ function required(env, name) {
     process.exit(1);
   }
   return value;
-}
-
-function numberEnv(env, name, fallback) {
-  const raw = env[name];
-  if (raw === undefined || raw === '') return fallback;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    error(`${name} must be a positive number, got ${JSON.stringify(raw)}`, { title: 'update-golden-guard' });
-    process.exit(1);
-  }
-  return parsed;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

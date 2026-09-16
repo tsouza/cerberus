@@ -11,17 +11,22 @@ name: update-golden-guard
 # existed. The already-computed, correct regenerated diff was simply lost,
 # and the PR's own code — which needed it — landed on `main` with stale
 # goldens. Nothing in the merge path saw the in-flight dispatch coming; this
-# is the thing that does. Required in branch protection, it makes that race
-# structurally impossible rather than merely loud: the PR cannot merge until
-# the dispatch (if any) against its branch has finished, whatever it
-# concludes.
+# is the thing that does: reporting, on every PR and merge-group entry,
+# whether the dispatch (if any) against that branch has finished. It is
+# Info-only today — not in `main`'s required_status_checks ruleset (see the
+# CI-gate inventory in docs/test-strategy.md) — so it does not yet itself
+# block a merge; the design below targets its intended eventual role as a
+# required check, where it makes the race structurally impossible rather
+# than merely loud.
 #
-# See .github/scripts/update-golden-guard.mjs for the polling mechanism, why
-# it does not read the dispatch's own conclusion, and why there are three
-# triggers below (the workflow_run one closes issue #2350's race for a
-# dispatch made AFTER the PR's required check already went green, which the
-# pull_request trigger alone cannot re-poll on its own; the merge_group one
-# re-runs the poll where a merge queue actually performs the merge).
+# See .github/scripts/update-golden-guard.mjs for the single-snapshot
+# mechanism, why it does not read the dispatch's own conclusion, and why
+# there are three triggers below (the pull_request and merge_group ones each
+# take one snapshot of the in-flight update-golden.yml runs and fail fast
+# rather than block when one targets their branch; the workflow_run one
+# closes issue #2350's race for a dispatch made AFTER the PR's required check
+# already went green — or already failed fast — which the pull_request
+# trigger alone cannot re-evaluate on its own since nothing re-runs it).
 #
 # merge_group is not a formality. A required context that never posts on the
 # queue's projected trunk never resolves and the entry waits forever, so the
@@ -29,14 +34,16 @@ name: update-golden-guard
 # rather than being conservative about it: a queued pull request sits between
 # "last green on its own head" and "merged" for the whole duration of
 # merge-group CI, which is the widest instance of exactly the window this
-# guard closes. The merge-group run therefore repeats the poll against the
-# head branch of the pull request the group would merge, resolved from the
-# group's own `gh-readonly-queue/<base>/pr-<n>-<sha>` ref (GitHub builds one
-# such branch per queued pull request, so that resolution is complete, not a
-# sample of a batch). An unparseable ref fails the check rather than passing
-# it. The mjs header carries the full argument and names the one residual
-# window — a dispatch created between the last clear poll and the merge —
-# which no in-band mechanism can close.
+# guard closes. The merge-group run therefore takes the SAME single snapshot
+# against the head branch of the pull request the group would merge, resolved
+# from the group's own `gh-readonly-queue/<base>/pr-<n>-<sha>` ref (GitHub
+# builds one such branch per queued pull request, so that resolution is
+# complete, not a sample of a batch). An unparseable ref fails the check
+# rather than passing it. The mjs header carries the full argument, including
+# why a merge_group snapshot that fails does not self-heal in place the way
+# the pull_request one does, and names the one residual window — a dispatch
+# created between the snapshot and the merge — which no in-band mechanism can
+# close.
 on:
   pull_request:
     branches: [main]
@@ -58,14 +65,15 @@ permissions:
   statuses: write
 
 concurrency:
-  # A poll against a superseded head SHA can never gate the CURRENT one, which
-  # is all branch protection ever evaluates — so the newest push should win
-  # outright rather than share the runner with a stale poll. workflow_run
-  # events group by the triggering run's own id instead: requested/completed
-  # are two events for the SAME run, and only the later one's status snapshot
-  # is worth keeping — an in-between cancellation is fine to drop. merge_group
-  # events group by the projected trunk's own head SHA, so two queue entries
-  # never share a group and never serialise behind one another.
+  # A check run against a superseded head SHA can never gate the CURRENT one,
+  # which is all branch protection ever evaluates — so the newest push should
+  # win outright rather than share the runner with a stale, now-pointless
+  # snapshot. workflow_run events group by the triggering run's own id
+  # instead: requested/completed are two events for the SAME run, and only
+  # the later one's status snapshot is worth keeping — an in-between
+  # cancellation is fine to drop. merge_group events group by the projected
+  # trunk's own head SHA, so two queue entries never share a group and never
+  # serialise behind one another.
   group: update-golden-guard-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.workflow_run.id || github.event.merge_group.head_sha }}
   # GitHub reads a CANCELLED check-run as a failed one, so a merge-group run
   # cancelled by this group would dequeue the pull request it was validating.
@@ -78,10 +86,13 @@ jobs:
   update-golden-guard:
     name: update-golden-guard
     runs-on: ubuntu-latest
-    # A little over the 60-minute ceiling update-golden-guard.mjs itself polls
-    # to, so a stuck dispatch is reported by the script's own clear message
-    # rather than by the job runner's generic timeout.
-    timeout-minutes: 65
+    # No longer needs to be anywhere near the old ~65-minute ceiling: every
+    # path here is a self-test plus a handful of fast API calls (a single
+    # in-flight-runs snapshot, or — on workflow_run — a PR lookup and a
+    # status push), matching the other pull_request-triggered required
+    # checks' own timeouts (pr-hygiene.yml: 5). Generous margin over the
+    # normal sub-minute run for a slow GitHub API response.
+    timeout-minutes: 5
     steps:
       # Plain checkout, matching every other `pull_request`-triggered required
       # check in this repo (forbid-deferral.yml, pr-hygiene.yml): it runs
@@ -101,7 +112,7 @@ jobs:
       - name: update-golden-guard self-test
         run: node --test .github/scripts/update-golden-guard.test.mjs
 
-      - name: Wait for any in-flight update-golden.yml dispatch against this branch
+      - name: Check for any in-flight update-golden.yml dispatch against this branch
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -109,13 +120,15 @@ jobs:
           BRANCH: ${{ github.head_ref }}
         run: node .github/scripts/update-golden-guard.mjs
 
-      # The merge queue's copy of the poll above. `github.head_ref` is empty on
-      # a merge_group event — the projected trunk has no pull request of its
-      # own — so the script resolves the queued pull request from the group's
-      # refs and polls against ITS head branch instead. Same poll, same bound,
-      # same loud failure; see this workflow's `on:` comment and the mjs
-      # header for why a free pass here would re-open #2350.
-      - name: Wait for any in-flight update-golden.yml dispatch against the queued PR's branch
+      # The merge queue's copy of the snapshot above. `github.head_ref` is
+      # empty on a merge_group event — the projected trunk has no pull
+      # request of its own — so the script resolves the queued pull request
+      # from the group's refs and checks ITS head branch instead. Same
+      # snapshot, same loud failure; see this workflow's `on:` comment and
+      # the mjs header for why a free pass here would re-open #2350, and for
+      # why a failure here does not self-heal in place the way the
+      # pull_request one does.
+      - name: Check for any in-flight update-golden.yml dispatch against the queued PR's branch
         if: github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
