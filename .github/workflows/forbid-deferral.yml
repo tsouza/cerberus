@@ -172,6 +172,13 @@ jobs:
         run: node --test .github/scripts/lib/lane-closure.test.mjs
       - name: Assert the merge-risk scanner matches, and does not over-match
         run: node --test .github/scripts/merge-risk.test.mjs
+      # `just semantic-impact`'s derivation (issue #3460) reuses this same
+      # setup-go + fetch-depth:0 checkout to replay its own real-registry
+      # acceptance case (PR #2824's file set against the real `go list`
+      # import graph) — riding this job rather than a new one, exactly as
+      # merge-risk.test.mjs already does above for the same reason.
+      - name: Assert the semantic-impact derivation matches, and does not over-match
+        run: node --test .github/scripts/lib/semantic-impact.test.mjs
       - name: Reject a golden shard regenerated against a base main has moved past
         run: node .github/scripts/merge-risk.mjs
         env:

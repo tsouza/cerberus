@@ -120,6 +120,24 @@ semantic-report:
 semantic-report-check:
     node .github/scripts/semantic-report.mjs --check
 
+# Explains a git range's impact on the semantic contract model (issue #3460):
+# which enrolled contracts it affects, why (the exact files and CI-lane
+# dependency closure that triggered it — lib/lane-closure.mjs's derived
+# closure, #2902, the same machinery merge-risk.mjs already runs, never a
+# second hand-maintained dependency graph), the evidence classes/
+# independence groups each requires, the exact existing verifier recipe to
+# run per binding, and that binding's current merge/release obligation
+# (lib/semantic-lane-adapter.mjs / lib/semantic-report.mjs's own join).
+# Unknown or uncomputable input (an unresolvable ref, a `go list` failure)
+# widens to every lane carrying active semantic evidence rather than ever
+# reporting "nothing affected". Advisory only — a targeted local green from
+# a recipe this prints is never, by itself, a merge/release qualification
+# claim. Pass `--json` (after head) for machine-readable output.
+
+# Explain a git range's impact on the semantic contract model: `just semantic-impact origin/main HEAD`.
+semantic-impact base head:
+    node .github/scripts/semantic-impact.mjs {{base}} {{head}}
+
 # SIGNAL-RESOURCE-001's (issue #3457) end-to-end evidence: seeds ONE
 # deterministic OTel resource independently into each head's own
 # custom-named table and proves it is queryable through that head's own
