@@ -365,6 +365,60 @@ fixtures that were never created (tracked by #3475) — only its `node --test`
 suite runs in CI today, the same posture `verify-just-invocations.mjs` uses
 below for the same reason.
 
+## Semantic counterexamples
+
+`test/semantic/counterexamples/*.json` (issue #3445) is a bounded,
+hand-curated cohort of real historical bugs, each joining a source GitHub
+issue, its fix, the semantic contract(s) it violated, how it was originally
+FOUND, and which test currently replays it — a triple the six-file model
+above never records, since nothing in `contracts.json`/`bindings.json`
+points a fixed bug back at the evidence that once missed it. A record never
+copies a bug's minimized input into the JSON; it only points at the
+fixture/test that already carries it. `seed_provenance` distinguishes three
+situations a historical repro can be in today: `"verified"` (the cited
+locator/replay files are real and current), `"reconstructed"` (the original
+repro has since expired, so the record binds to a permanent regression test
+reproducing the same minimal shape instead), and `"not-replayed"` (no
+committed artifact reproduces the original discovery method at all). A
+record's own `mutation_class` is this module's small, closed taxonomy of
+defect shapes (`boundary-condition` / `constant-substitution` /
+`configuration-divergence`) — deliberately not gremlins' eleven mutator
+operator IDs (`.gremlins.yaml`), since none of those arithmetic/conditional/
+bitwise/loop-control operators can express a call-omission or two
+independently-declared config values silently disagreeing, and two of the
+three seed bugs' root causes sit in test-only code gremlins never mutates in
+the first place.
+
+`lib/semantic-counterexamples.mjs` is the Node-builtins-only loader and
+validator — `loadCounterexamples()` reads every `*.json` file directly under
+the counterexamples directory (default `test/semantic/counterexamples`,
+overridable via `SEMANTIC_COUNTEREXAMPLES_DIR`) as one record each and
+validates it against the already-validated model, reusing
+`lib/semantic-model.mjs`'s own `SemanticModelError` and low-level field
+validators rather than reimplementing them. `validateCounterexampleRecord()`
+checks schema shape, that `id` matches `CTREX-<source_issue>`, that a
+`source_issue_url`/`fix_pr_url` embedded number agrees with its sibling
+integer field, that every `contracts[].contract_id` and
+`related_bindings[]` entry resolves against the live model (and that a
+related binding actually binds the entry's own contract), and that every
+`locator_path`/`replay_test_path` resolves on disk today — a dangling path
+is a validation failure, not a silently stale string. `renderCounterexamplesSummary()`
+produces the one-line `GITHUB_STEP_SUMMARY` rollup by `seed_provenance`. A
+counterexample record is explicitly **not** a seventh evidence class:
+pointing a `related_bindings` entry at an existing active `BINDING-*` only
+cites standing evidence that already counts toward `computeAssurance()`
+elsewhere, and this module never touches that computation.
+
+There is no separate CLI or `just` recipe for this module — its records are
+validated as part of the SAME command that validates the six-file model:
+`semantic-model.mjs`'s CLI (`just semantic-check`) loads and validates both
+in one pass, so a developer never needs to know the counterexamples exist as
+a distinct step. `semantic-counterexamples.test.mjs` (root, `node --test`)
+pairs every acceptance criterion with a fixture and an end-to-end run
+against the real committed `test/semantic/counterexamples/` directory and
+the real CLI; it runs in `ci.yml` alongside `semantic-model.test.mjs` in the
+same "Validate the semantic contract metadata model" step.
+
 ## Semantic lane adapter
 
 `lib/semantic-lane-adapter.mjs` binds the semantic contract model above to
@@ -481,6 +535,122 @@ posture `semantic-evidence-adapter.mjs` holds today (see above): only its
 acceptance-criterion non-evidence classes with a real-shaped report sample
 and a positive "executed" control, plus end-to-end CLI runs over all three
 modes.
+
+## Semantic report
+
+`lib/semantic-report.mjs` (issue #3435) builds
+`docs/semantic-conformance.{md,json}` — the deterministic report joining the
+validated semantic contract model above, the CI lane registry
+(`ci-lane-contract.mjs`), and its captured policy snapshot
+(`lib/semantic-lane-adapter.mjs`). It answers three questions a raw test
+count cannot, each pulling from a different existing seam rather than
+re-deriving or hand-copying its answer:
+
+- **Bound vs observed.** "Bound executable evidence" is a structural fact
+  from the model alone (reused from `model.assurance.perContract`, never
+  re-walked); "observed passing on revision X" is a separate fact read from
+  `executions.json` — a binding with bound evidence but zero recorded
+  executions reports observed status `"unknown"`, never an assumed `"pass"`.
+- **Correlation-safe rollup.** `rollupObserved()` collapses multiple
+  executions of one binding, or multiple bindings sharing one independence
+  group, to ONE pass/fail/unknown verdict per required evidence class and
+  independence group — a boolean OR over the set, so N correlated passes
+  report exactly the same as one. `contractObservedRollup()` then combines
+  those per-requirement verdicts conjunctively into the contract's overall
+  status: any `"fail"` or `"unknown"` anywhere holds the whole contract back.
+- **Contract-to-lane.** `resolveBindingObligations()` calls
+  `resolveBindingLanes()`/`classifyLaneRequiredness()` (both
+  `lib/semantic-lane-adapter.mjs`) rather than re-declaring which lane owns
+  which binding or which check is required.
+
+`bindingObservedStatus()` additionally surfaces the revision-binding fields
+issue #3459 added to `executions.json` (`selection`/`source_sha`) as a
+`revision_bound` boolean — true only when the latest execution's own
+selection reads `"executed"` and names a `source_sha` — without ever
+upgrading or downgrading the `status` verdict itself: a non-revision-bound
+pass is still a real pass. `verifierComplementGaps()` flags, informationally
+only, when an active binding's verifier names a documented complement
+(`complemented_by`) that no active binding on the same contract actually
+supplies. `buildReport()` assembles all of the above into one plain object —
+the single source `renderMarkdown()` and `renderJSON()` both draw from, so
+the two output formats can never disagree with each other. Both render
+functions are pure: no `Date.now()`, no unsorted iteration, no environment
+read, so two regenerations from the same source `test/semantic/*.json` +
+`ci-lanes.json` + `policy-snapshot.json` are byte-identical. The report
+deliberately never computes a global correctness percentage or score, never
+claims a declared test "ran" beyond a real recorded pass/fail, and never
+selects or recommends a CI workflow — it reports facts already true of the
+model, it does not grade them into one number.
+
+`semantic-report.mjs` is the CLI: `node .github/scripts/semantic-report.mjs`
+writes `docs/semantic-conformance.md` and `.json` (default), and `--check`
+re-renders in memory and fails on drift without touching the working tree,
+safe inside a read-only CI job — the same "regenerate, then diff" shape
+`config-docs.yml` uses for `docs/configuration.md`. Since `renderMarkdown()`
+emits plain, unformatted Markdown, the CLI runs the same two fixers
+lefthook's pre-commit hooks run on staged Markdown, in the same order
+(`scripts/align-md-tables.py`, then `markdownlint-run.mjs --staged`), against
+a throwaway temp copy so `--check` stays read-only. `just semantic-report`
+runs the CLI and prints a `regen-diff.mjs` summary of what changed; `just
+semantic-report-check` runs `--check` as the CI gate. Both generated files
+carry a `DO NOT EDIT` header and need no `-merge` `.gitattributes` entry,
+since CI gates drift directly rather than relying on a merge driver.
+Env: `SEMANTIC_MODEL_DIR`, `SEMANTIC_LANE_REGISTRY_PATH`,
+`SEMANTIC_LANE_POLICY_SNAPSHOT`, `GITHUB_STEP_SUMMARY` (all optional, same
+defaults as the modules above). Unlike `semantic-evidence-adapter.mjs` and
+`semantic-execution-adapter.mjs` above, this CLI **is** wired into `ci.yml`
+as a standing gate ("Validate the generated semantic conformance report is
+fresh": `semantic-report.test.mjs`'s `node --test` suite, then `just
+semantic-report-check`) — the assurance gap those two document (dangling
+fixtures, no pipeline to append executions yet) does not apply here, since a
+stale generated doc is a plain diff CI can catch on every PR.
+
+## Semantic impact
+
+`lib/semantic-impact.mjs` (issue #3460) is `just semantic-impact <base>
+<head>`'s derivation: which semantic contracts a git range affects, why,
+what evidence they require, the exact existing verifier recipe to run per
+binding, and the current merge/release obligations — assembled entirely from
+machinery that already exists rather than a second, hand-maintained
+dependency graph. It reuses the validated contract model,
+`lib/lane-closure.mjs`'s dependency-closure derivation of what a lane's
+declared globs actually reach (the same one `merge-risk.mjs` consumes), the binding-to-lane
+join and requiredness classification from `lib/semantic-lane-adapter.mjs`,
+and `classifyBindingEvidenceSystem()`/`resolveBindingObligations()`
+re-imported directly from `lib/semantic-report.mjs` above. The one join this
+module adds on top of those: which of a diff's changed files fall inside the
+derived affected-path set of a lane that owns at least one active semantic
+binding (`touchedLanes()`, `impactedContracts()`).
+
+The module is deliberately conservative on unknown input: a base/head ref
+the checkout cannot resolve, or an import graph `go list` cannot load, never
+collapses to "nothing affected" (indistinguishable from a genuinely clean
+diff) — both failure modes instead widen to every lane the model has active
+evidence on, with the reason naming exactly what could not be computed
+(`resolveLaneClosures()`, `buildImpactReport()`). Every impacted contract
+always reports an explicit (for now, always empty) `adversarial_bindings`
+list rather than omitting the field, since issue #3426's evidence-class
+vocabulary has no mutation/adversarial member yet — "no such evidence
+exists" is a stated fact here, not a silently absent one. The module is
+advisory only: it never selects, skips, or approves a CI workflow, and a
+targeted local green from a recipe it prints is never, by itself, a claim
+that the owning lane's merge or release obligation is satisfied (the
+`MERGE_RELEASE_CAVEAT` constant, printed with every report, says so
+explicitly). `renderText()`/`renderJSON()` render the same `buildImpactReport()`
+result the CLI's `--json` flag switches between.
+
+`semantic-impact.mjs` is the CLI (`node .github/scripts/semantic-impact.mjs
+<base> <head> [--json]`, `just semantic-impact base head`), built on
+`lib/gh.mjs`'s `assertSafeArg()` and `merge-risk.mjs`'s own
+`changedFiles()`/`revExists()` rather than reimplementing either. Env:
+`SEMANTIC_MODEL_DIR`, `SEMANTIC_LANE_REGISTRY_PATH`,
+`SEMANTIC_LANE_POLICY_SNAPSHOT` (same defaults as `semantic-report.mjs`
+above). Unlike that module, this CLI is not itself CI-gated — being
+advisory-only, there is nothing for a gate to enforce — but
+`lib/semantic-impact.test.mjs`'s self-test still runs directly via `node
+--test` in `forbid-deferral.yml` (no `just` recipe wraps it, the same
+posture `semantic-execution-adapter.mjs` holds above) to assert the
+derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
 
 ## Modules
 
