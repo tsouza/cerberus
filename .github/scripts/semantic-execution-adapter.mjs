@@ -86,6 +86,7 @@ import { classifyTestRef } from "./lib/semantic-evidence-adapter.mjs";
 import {
   SemanticExecutionAdapterError,
   classifyRevisionBinding,
+  compatExecutionRecord,
   execIdFor,
   hashCorpus,
   parseCaseSet,
@@ -160,33 +161,16 @@ function runCompat(env, root) {
   const candidate = { sourceSha: candidateSha };
   if (env.EXPECT_REFERENCE_VERSION) candidate.referenceVersion = env.EXPECT_REFERENCE_VERSION;
 
-  const classification = classifyRevisionBinding(candidate, {
-    sourceSha: candidateSha,
-    referenceVersion,
-    datasetFingerprint,
-    selectedCount: caseSet.selectedCount,
-    ranCount: caseSet.ranCount,
-    aggregateNoOp: false,
-    result: caseSet.result,
-  });
-
   return [
-    toExecutionRecord({
-      id: execIdFor(binding.id, observedAt),
-      binding: binding.id,
+    compatExecutionRecord({
+      binding,
+      candidate,
+      caseSet,
       observedAt,
       runRef,
-      classification,
-      context: {
-        sourceSha: candidateSha,
-        runId: run.runId,
-        runAttempt: run.runAttempt,
-        job: run.job,
-        event: run.event,
-        substrate: "reference-stack",
-        referenceVersion,
-        datasetFingerprint,
-      },
+      run,
+      referenceVersion,
+      datasetFingerprint,
     }),
   ];
 }

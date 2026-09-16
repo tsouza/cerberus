@@ -2465,18 +2465,35 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   active `"reference"` contracts to the SAME one case set their job
   produces, so this script fans that one run out over every such binding
   instead — filtering the semantic model to `status: "active"`,
-  `evidence_class: "reference"`, `test_ref` prefixed `compatibility/<head>`
-  (a `"manual-review"` binding under the same prefix, e.g. a corpus-
-  provenance sign-off, is never selected — no automated run is evidence for
-  it). It calls no adapter logic of its own: every record comes from
-  `lib/semantic-execution-adapter.mjs`'s own `classifyRevisionBinding` /
-  `toExecutionRecord` / `parseCaseSet` / `sharedContext` / `execIdFor`. A
-  binding whose `test_ref` names a gRPC driver file (case-insensitive
-  `"grpc"` substring) is classified against `CASES_PATH_GRPC` when given;
-  every other selected binding against `CASES_PATH` — heads with only one
-  arm (prometheus, loki) never set `CASES_PATH_GRPC`, so every binding
-  resolves to the one path. Never writes `test/semantic/executions.json`
-  itself — same posture as the CLI it wraps.
+  `evidence_class: "reference"`, `test_ref` matching `compatibility/<head>`
+  at a path-segment boundary (`compatibility/<head>` itself, or
+  `compatibility/<head>/...` — never merely prefixed, so a hypothetical
+  future `compatibility/<head>-foo` binding is not pulled in; a
+  `"manual-review"` binding under the same prefix, e.g. a corpus-provenance
+  sign-off, is also never selected — no automated run is evidence for it).
+  It calls no CLASSIFICATION logic of its own: every record's
+  classification comes from `lib/semantic-execution-adapter.mjs`'s shared
+  `compatExecutionRecord` (which itself composes `classifyRevisionBinding` /
+  `toExecutionRecord` / `execIdFor` — the same composition
+  `semantic-execution-adapter.mjs`'s own `runCompat` calls, so the two
+  callers cannot drift apart on it, issue #3510). A binding whose `test_ref`
+  names a gRPC driver file (case-insensitive `"grpc"` substring) is
+  classified against `CASES_PATH_GRPC` when given; every other selected
+  binding against `CASES_PATH` — heads with only one arm (prometheus, loki)
+  never set `CASES_PATH_GRPC`, so every binding resolves to the one path. A
+  case-set path that cannot be read/parsed never aborts the whole report
+  (issue #3509): it degrades only the binding(s) resolving to that one path
+  to `selection: "unavailable"`, with the read/parse error as the reason,
+  on stderr — every other binding's record is still produced. A binding
+  whose `test_ref` names one corpus DATA file (`.yml`/`.yaml`) rather than
+  the whole driver invocation never has an aggregate `"fail"` attributed to
+  it specifically: `score.Case` carries no field joining a case back to the
+  corpus file it came from, so a failure elsewhere in the shared case set
+  degrades that binding's record to non-evidence (`"unavailable"`) instead
+  of a false `"fail"` (issue #3508) — a `"pass"` verdict is never touched,
+  since every case agreeing IS real evidence every behavior agreed. Never
+  writes `test/semantic/executions.json` itself — same posture as the CLI
+  it wraps.
   - Env: `HEAD` (required), `CASES_PATH` (required), `CASES_PATH_GRPC`
     (optional, tempo's gRPC arm), `CORPUS_PATH` (optional, one path or
     several `:`-joined paths folded into one `dataset_fingerprint` via
@@ -2488,13 +2505,17 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `::warning::` and exit `0`; set by `compatibility.yml`'s three steps,
     since a protected/release-required lane's job may not declare
     `continue-on-error: true` on any step).
-  - Exit: `0` printing/writing one record per selected binding, or (with
-    `SOFT_FAIL=1`) on any error; `1` on error otherwise — `HEAD`/
-    `CASES_PATH` missing, or no active `"reference"` binding matches the
-    head prefix.
+  - Exit: `0` printing/writing one record per selected binding — a
+    per-binding case-set read/parse failure degrades that binding's own
+    record rather than exiting non-zero — or (with `SOFT_FAIL=1`) on any
+    other error; `1` on error otherwise — `HEAD`/`CASES_PATH` missing, or no
+    active `"reference"` binding matches the head.
   - Tests: `compat-execution-report.test.mjs` (run in `ci.yml`), covering
     the gRPC-arm routing, the manual-review exclusion, the multi-binding
-    fan-out against a prometheus-shaped model, and end-to-end CLI runs.
+    fan-out against a prometheus-shaped model, the head-prefix segment-
+    boundary anchor, the corpus-file-scoped `"fail"`-attribution guard
+    (#3508), the per-path graceful degrade on an unreadable case set
+    (#3509), and end-to-end CLI runs.
 - **`resolve-bench-refs.mjs`** — `perf-benchmark.yml`, the
   `resolve baseline + ref SHAs` step.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,

@@ -458,3 +458,59 @@ export function parseCaseSet(raw) {
     result: selectedCount > 0 ? (allPassed ? "pass" : "fail") : "error",
   };
 }
+
+// --- Shared compat record composition (CLI MODE=compat + compat-execution-report.mjs) ---
+//
+// Both callers classify ONE binding against ONE already-parsed CaseSet and
+// render it as an executions.json-shaped record — the same
+// classifyRevisionBinding + toExecutionRecord composition, with the same
+// literal aggregateNoOp: false (a compat CaseSet, unlike a go-test-json
+// stream, never represents a short-circuited no-op run — see parseCaseSet's
+// own header) and substrate: "reference-stack". Extracted so the two
+// callers (semantic-execution-adapter.mjs's runCompat and
+// compat-execution-report.mjs's per-binding fan-out) can never drift apart
+// on this composition again (cerberus issue #3510).
+
+/**
+ * Classifies `binding` against `caseSet` for `candidate` and renders the
+ * executions.json-shaped record. `candidate` is classifyRevisionBinding's
+ * own candidate shape ({sourceSha, referenceVersion?}); `run` is
+ * githubRunContext()'s shape (runId/runAttempt/job/event).
+ */
+export function compatExecutionRecord({
+  binding,
+  candidate,
+  caseSet,
+  observedAt,
+  runRef,
+  run,
+  referenceVersion = null,
+  datasetFingerprint = null,
+}) {
+  const classification = classifyRevisionBinding(candidate, {
+    sourceSha: candidate.sourceSha,
+    referenceVersion,
+    datasetFingerprint,
+    selectedCount: caseSet.selectedCount,
+    ranCount: caseSet.ranCount,
+    aggregateNoOp: false,
+    result: caseSet.result,
+  });
+  return toExecutionRecord({
+    id: execIdFor(binding.id, observedAt),
+    binding: binding.id,
+    observedAt,
+    runRef,
+    classification,
+    context: {
+      sourceSha: candidate.sourceSha,
+      runId: run.runId,
+      runAttempt: run.runAttempt,
+      job: run.job,
+      event: run.event,
+      substrate: "reference-stack",
+      referenceVersion,
+      datasetFingerprint,
+    },
+  });
+}

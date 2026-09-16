@@ -16,6 +16,8 @@ import { fileURLToPath } from "node:url";
 import {
   SemanticExecutionAdapterError,
   classifyRevisionBinding,
+  compatExecutionRecord,
+  defaultRunRef,
   githubRunContext,
   hashBytes,
   hashCorpus,
@@ -279,6 +281,24 @@ test("hashCorpus (array form): an empty array is rejected rather than hashing no
   assert.throws(() => hashCorpus([]), SemanticExecutionAdapterError);
 });
 
+// --- defaultRunRef -------------------------------------------------------------
+
+test("defaultRunRef: constructs the Actions run URL when all three GITHUB_* vars are present", () => {
+  const ref = defaultRunRef({
+    GITHUB_SERVER_URL: "https://github.com",
+    GITHUB_REPOSITORY: "tsouza/cerberus",
+    GITHUB_RUN_ID: "424242",
+  });
+  assert.equal(ref, "https://github.com/tsouza/cerberus/actions/runs/424242");
+});
+
+test("defaultRunRef: null when any of the three GITHUB_* vars is missing, never a partial URL", () => {
+  assert.equal(defaultRunRef({ GITHUB_REPOSITORY: "tsouza/cerberus", GITHUB_RUN_ID: "1" }), null);
+  assert.equal(defaultRunRef({ GITHUB_SERVER_URL: "https://github.com", GITHUB_RUN_ID: "1" }), null);
+  assert.equal(defaultRunRef({ GITHUB_SERVER_URL: "https://github.com", GITHUB_REPOSITORY: "tsouza/cerberus" }), null);
+  assert.equal(defaultRunRef({}), null);
+});
+
 // --- githubRunContext --------------------------------------------------------
 
 test("githubRunContext reads the standard Actions env vars with no explicit wiring", () => {
@@ -381,6 +401,80 @@ test("parseCaseSet: a malformed document (no head) throws rather than guessing",
   assert.throws(() => parseCaseSet({ cases: [] }), SemanticExecutionAdapterError);
   assert.throws(() => parseCaseSet({ head: "tempo" }), SemanticExecutionAdapterError);
   assert.throws(() => parseCaseSet(null), SemanticExecutionAdapterError);
+});
+
+// --- compatExecutionRecord (shared by runCompat and compat-execution-report.mjs, #3510) ---
+
+const COMPAT_RUN = { runId: "42", runAttempt: "1", job: "prometheus", event: "push" };
+
+test("compatExecutionRecord: a fully-passing case set renders an executed/pass record", () => {
+  const rec = compatExecutionRecord({
+    binding: { id: "BINDING-X" },
+    candidate: { sourceSha: "abc1234" },
+    caseSet: parseCaseSet({ head: "prometheus", cases: [{ id: "q1", passed: true }] }),
+    observedAt: "2026-09-16T00:00:00Z",
+    runRef: "https://example.invalid/run/1",
+    run: COMPAT_RUN,
+    referenceVersion: "prometheus-2.53.0",
+    datasetFingerprint: "f".repeat(64),
+  });
+  assert.equal(rec.binding, "BINDING-X");
+  assert.equal(rec.selection, "executed");
+  assert.equal(rec.result, "pass");
+  assert.equal(rec.source_sha, "abc1234");
+  assert.equal(rec.substrate, "reference-stack");
+  assert.equal(rec.reference_version, "prometheus-2.53.0");
+  assert.equal(rec.dataset_fingerprint, "f".repeat(64));
+  assert.equal(rec.run_id, "42");
+});
+
+test("compatExecutionRecord: a disagreeing case renders executed/fail with the classifier's own reason cleared", () => {
+  const rec = compatExecutionRecord({
+    binding: { id: "BINDING-X" },
+    candidate: { sourceSha: "abc1234" },
+    caseSet: parseCaseSet({ head: "prometheus", cases: [{ id: "q1", passed: false }] }),
+    observedAt: "2026-09-16T00:00:00Z",
+    runRef: "https://example.invalid/run/1",
+    run: COMPAT_RUN,
+  });
+  assert.equal(rec.selection, "executed");
+  assert.equal(rec.result, "fail");
+  assert.equal(rec.selection_reason, null);
+});
+
+test("compatExecutionRecord: a compat CaseSet carries no sourceSha of its own, so the candidate's own sourceSha is stamped onto both the classification input and the record context", () => {
+  // parseCaseSet's shape has no sourceSha field — a compat run is scoped to
+  // whatever commit produced it, not to a per-case identity — so
+  // compatExecutionRecord (like runCompat / compat-execution-report.mjs
+  // before this extraction) always classifies the observation AS the
+  // candidate's own sourceSha. This pins that self-consistent behavior so a
+  // future edit can't quietly start comparing against something else.
+  const rec = compatExecutionRecord({
+    binding: { id: "BINDING-X" },
+    candidate: { sourceSha: "some-sha" },
+    caseSet: parseCaseSet({ head: "prometheus", cases: [{ id: "q1", passed: true }] }),
+    observedAt: "2026-09-16T00:00:00Z",
+    runRef: "https://example.invalid/run/1",
+    run: COMPAT_RUN,
+  });
+  assert.equal(rec.selection, "executed");
+  assert.equal(rec.result, "pass");
+  assert.equal(rec.source_sha, "some-sha");
+});
+
+test("compatExecutionRecord: a wrong REFERENCE_VERSION assertion (when the candidate asserts one) is non-evidence", () => {
+  const rec = compatExecutionRecord({
+    binding: { id: "BINDING-X" },
+    candidate: { sourceSha: "abc1234", referenceVersion: "tempo-2.5.0" },
+    caseSet: parseCaseSet({ head: "tempo", cases: [{ id: "q1", passed: true }] }),
+    observedAt: "2026-09-16T00:00:00Z",
+    runRef: "https://example.invalid/run/1",
+    run: COMPAT_RUN,
+    referenceVersion: "tempo-2.4.0",
+  });
+  assert.equal(rec.selection, "unavailable");
+  assert.equal(rec.result, "error");
+  assert.match(rec.selection_reason, /reference_version/);
 });
 
 // --- End-to-end: the real CLI -------------------------------------------------

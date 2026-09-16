@@ -14,10 +14,18 @@
 // the SAME one case set their job produces — the corpus-wide differential
 // is one run, evidencing several distinct behaviors at once. This script is
 // the multi-binding orchestration the CLI's own comments point a caller at
-// for that case: it calls no adapter logic of its own — every record comes
-// from the SAME classifyRevisionBinding/toExecutionRecord/parseCaseSet/
-// sharedContext/execIdFor functions the CLI uses, just looped over the
-// model's own binding roster instead of one caller-named BINDING id.
+// for that case: it calls no CLASSIFICATION logic of its own — every
+// record's classification comes from the SAME compatExecutionRecord (which
+// itself composes classifyRevisionBinding/toExecutionRecord/execIdFor) the
+// CLI's own runCompat uses, just looped over the model's own binding roster
+// instead of one caller-named BINDING id. This script's own logic is
+// exactly the fan-out itself: resolving each binding to the right case set
+// (the transport-arm split below), degrading a binding gracefully instead
+// of losing the whole report when ITS case set can't be read (issue #3509),
+// and correcting one fan-out-specific unsoundness a single-binding CLI call
+// never hits — a binding whose test_ref names one corpus file within a
+// shared case set cannot have an aggregate "fail" attributed to it
+// specifically (issue #3508; see isCorpusFileScopedBinding below).
 //
 // Never writes test/semantic/executions.json — see the CLI's own header;
 // prints/writes normalized records for a human (or a later promotion step)
@@ -32,6 +40,11 @@
 // binding under the head is classified against CASES_PATH. Heads with only
 // one arm (prometheus, loki) simply never set CASES_PATH_GRPC, so every
 // selected binding resolves to the one CASES_PATH.
+//
+// A case-set path that cannot be read/parsed NEVER aborts the whole report
+// (issue #3509) — it degrades only the binding(s) that resolve to that one
+// path to selection "unavailable", with a reason naming the path and the
+// underlying error; every other binding's record is produced normally.
 //
 // Env:
 //   HEAD               required — selects the active "reference" bindings
@@ -55,10 +68,11 @@
 //                      semantic-execution-adapter.mjs's own header; same
 //                      defaults, resolved through the same sharedContext().
 //   SOFT_FAIL          when "1", an error that would otherwise exit 1 (a
-//                      missing HEAD/CASES_PATH, no matching active
-//                      binding, an unreadable case set, …) is instead
-//                      annotated with ::warning:: and this process exits
-//                      0 — same mechanism and rationale as
+//                      missing HEAD/CASES_PATH, or no matching active
+//                      binding — an unreadable per-binding case set no
+//                      longer reaches this path, see #3509 above) is
+//                      instead annotated with ::warning:: and this process
+//                      exits 0 — same mechanism and rationale as
 //                      semantic-execution-adapter.mjs's own SOFT_FAIL (see
 //                      its header): a protected/release-required CI lane
 //                      cannot use `continue-on-error: true`
@@ -78,7 +92,7 @@ import { error, warning } from "./lib/gh.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import {
   SemanticExecutionAdapterError,
-  classifyRevisionBinding,
+  compatExecutionRecord,
   execIdFor,
   hashCorpus,
   parseCaseSet,
@@ -89,6 +103,54 @@ import {
 /** True for a binding whose test_ref names a gRPC driver (tempo's second transport arm). */
 export function isGrpcBinding(testRef) {
   return testRef.toLowerCase().includes("grpc");
+}
+
+/**
+ * True for a binding whose test_ref names ONE corpus DATA file (a `.yml` /
+ * `.yaml` query-corpus fixture) rather than the whole driver invocation. A
+ * driver source file (`.go`) or the bare `compatibility/<head>` directory
+ * names the WHOLE run a case set already aggregates over — sound in both
+ * directions, exactly the granularity tempo's per-transport bindings and
+ * the corpus-wide bindings already rely on. A corpus data file names only
+ * a SUBSET of the cases the shared run's case set carries, and
+ * score.Case today has no field attributing a case back to the corpus
+ * file it came from (cerberus issue #3508) — so an aggregate "fail" driven
+ * by a case outside this file is not evidence THIS binding's own behavior
+ * regressed, only that reading this predicate false is unsafe to skip.
+ */
+export function isCorpusFileScopedBinding(testRef) {
+  return /\.ya?ml$/i.test(testRef);
+}
+
+/**
+ * The reason stamped on a corpus-file-scoped binding's record when the
+ * shared case set's aggregate result is "fail" — see
+ * isCorpusFileScopedBinding above and issue #3508's own analysis. A pass
+ * verdict is never touched: every case in the set agreeing IS real
+ * evidence every behavior agreed, corpus-file-scoped bindings included.
+ */
+const CORPUS_FILE_ATTRIBUTION_REASON =
+  "the shared compat run's case set has a failing case, but this binding's test_ref names one corpus " +
+  "file within that larger run and score.Case carries no per-case corpus-file attribution today — the " +
+  "failure cannot be confirmed to belong to this binding's own file rather than an unrelated case in " +
+  "the same run (cerberus issue #3508)";
+
+/**
+ * Degrades a corpus-file-scoped binding's "executed"/"fail" record to
+ * non-evidence ("unavailable") — the one correction compat-execution-
+ * report.mjs's fan-out needs beyond the shared compatExecutionRecord()
+ * composition (issue #3508). Every other record (a pass, or a
+ * driver-scoped binding) passes through unchanged.
+ */
+export function guardCorpusFileAttribution(record, testRef) {
+  if (!isCorpusFileScopedBinding(testRef)) return record;
+  if (record.selection !== "executed" || record.result !== "fail") return record;
+  return {
+    ...record,
+    selection: "unavailable",
+    result: "error",
+    selection_reason: CORPUS_FILE_ATTRIBUTION_REASON,
+  };
 }
 
 /**
@@ -112,8 +174,9 @@ export function parseCorpusPath(raw) {
  */
 export function selectBindings(model, head) {
   const prefix = `compatibility/${head}`;
+  const matchesHead = (testRef) => testRef === prefix || testRef.startsWith(`${prefix}/`);
   return [...model.bindings.values()].filter(
-    (b) => b.status === "active" && b.evidence_class === "reference" && b.test_ref.startsWith(prefix),
+    (b) => b.status === "active" && b.evidence_class === "reference" && matchesHead(b.test_ref),
   );
 }
 
@@ -136,12 +199,32 @@ function main() {
     ]);
   }
 
+  // Resolved once per distinct path (a Map, not a re-read per binding), and
+  // a read/parse failure NEVER throws out of this — it degrades only the
+  // binding(s) that resolve to that path (issue #3509). Losing the whole
+  // report to one bad case-set artifact would also lose every OTHER
+  // binding's perfectly good evidence, which is exactly the failure this
+  // script exists to avoid.
   const caseSetCache = new Map();
   const loadCaseSet = (path) => {
-    if (!caseSetCache.has(path)) {
-      caseSetCache.set(path, parseCaseSet(JSON.parse(readFileSync(path, "utf8"))));
+    if (caseSetCache.has(path)) return caseSetCache.get(path);
+    let outcome;
+    try {
+      outcome = { ok: true, caseSet: parseCaseSet(JSON.parse(readFileSync(path, "utf8"))) };
+    } catch (err) {
+      // stderr, not the warning()/::warning:: workflow-command helper: this
+      // runs mid-report, with a real JSON payload for the successfully
+      // resolved bindings still to be printed on stdout afterward (see
+      // main()'s own OUT-unset branch below) — an annotation on stdout
+      // would interleave with and corrupt that JSON, exactly the failure
+      // mode issue #3509 exists to avoid for the RECORDS themselves.
+      const message = err instanceof Error ? err.message : String(err);
+      const reason = `case set at ${JSON.stringify(path)} could not be loaded: ${message}`;
+      process.stderr.write(`compat-execution-report: ${reason}\n`);
+      outcome = { ok: false, reason };
     }
-    return caseSetCache.get(path);
+    caseSetCache.set(path, outcome);
+    return outcome;
   };
 
   const datasetFingerprint = env.CORPUS_PATH ? hashCorpus(parseCorpusPath(env.CORPUS_PATH)) : null;
@@ -152,33 +235,37 @@ function main() {
 
   const records = bindings.map((binding) => {
     const path = casesPathGrpc && isGrpcBinding(binding.test_ref) ? casesPathGrpc : casesPath;
-    const caseSet = loadCaseSet(path);
-    const classification = classifyRevisionBinding(candidate, {
-      sourceSha: candidateSha,
-      referenceVersion,
-      datasetFingerprint,
-      selectedCount: caseSet.selectedCount,
-      ranCount: caseSet.ranCount,
-      aggregateNoOp: false,
-      result: caseSet.result,
-    });
-    return toExecutionRecord({
-      id: execIdFor(binding.id, observedAt),
-      binding: binding.id,
+    const outcome = loadCaseSet(path);
+    if (!outcome.ok) {
+      return toExecutionRecord({
+        id: execIdFor(binding.id, observedAt),
+        binding: binding.id,
+        observedAt,
+        runRef,
+        classification: { selection: "unavailable", evidence: false, result: "error", reason: outcome.reason },
+        context: {
+          sourceSha: candidateSha,
+          runId: run.runId,
+          runAttempt: run.runAttempt,
+          job: run.job,
+          event: run.event,
+          substrate: "reference-stack",
+          referenceVersion,
+          datasetFingerprint,
+        },
+      });
+    }
+    const record = compatExecutionRecord({
+      binding,
+      candidate,
+      caseSet: outcome.caseSet,
       observedAt,
       runRef,
-      classification,
-      context: {
-        sourceSha: candidateSha,
-        runId: run.runId,
-        runAttempt: run.runAttempt,
-        job: run.job,
-        event: run.event,
-        substrate: "reference-stack",
-        referenceVersion,
-        datasetFingerprint,
-      },
+      run,
+      referenceVersion,
+      datasetFingerprint,
     });
+    return guardCorpusFileAttribution(record, binding.test_ref);
   });
 
   const json = `${JSON.stringify(records, null, 2)}\n`;
