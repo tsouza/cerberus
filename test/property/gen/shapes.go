@@ -67,6 +67,10 @@ const (
 	traceQLDurationAggregateSumShape ShapeID = "traceql.pipeline.duration-aggregate-sum"
 	traceQLSelectShape               ShapeID = "traceql.pipeline.select"
 
+	traceQLScopeCollisionResourceShape    ShapeID = "traceql.selector.scope-collision-resource"
+	traceQLScopeCollisionSpanShape        ShapeID = "traceql.selector.scope-collision-span"
+	traceQLScopeCollisionConjunctionShape ShapeID = "traceql.selector.scope-collision-conjunction"
+
 	instantWindowWaveSumShape                       ShapeID = "promql.instant-window.wave.sum-over-time"
 	instantWindowWaveCountShape                     ShapeID = "promql.instant-window.wave.count-over-time"
 	instantWindowWaveAverageShape                   ShapeID = "promql.instant-window.wave.avg-over-time"
@@ -205,6 +209,9 @@ var traceQLShapeRoster = [...]ShapeID{
 	traceQLDurationAggregateMaxShape,
 	traceQLDurationAggregateSumShape,
 	traceQLSelectShape,
+	traceQLScopeCollisionResourceShape,
+	traceQLScopeCollisionSpanShape,
+	traceQLScopeCollisionConjunctionShape,
 }
 
 var traceQLRandomShapeFamilies = [][]ShapeID{
@@ -227,6 +234,9 @@ var traceQLRandomShapeFamilies = [][]ShapeID{
 		traceQLDurationAggregateSumShape,
 	},
 	{traceQLSelectShape},
+	{traceQLScopeCollisionResourceShape},
+	{traceQLScopeCollisionSpanShape},
+	{traceQLScopeCollisionConjunctionShape},
 }
 
 type instantWindowShapeSpec struct {

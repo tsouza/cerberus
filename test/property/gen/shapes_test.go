@@ -104,6 +104,9 @@ func TestShapeRostersAreExact(t *testing.T) {
 				"traceql.pipeline.duration-aggregate-max",
 				"traceql.pipeline.duration-aggregate-sum",
 				"traceql.pipeline.select",
+				"traceql.selector.scope-collision-resource",
+				"traceql.selector.scope-collision-span",
+				"traceql.selector.scope-collision-conjunction",
 			},
 		},
 		{
@@ -207,6 +210,9 @@ func TestRandomShapeFamiliesPartitionCanonicalRosters(t *testing.T) {
 					traceQLDurationAggregateSumShape,
 				},
 				{traceQLSelectShape},
+				{traceQLScopeCollisionResourceShape},
+				{traceQLScopeCollisionSpanShape},
+				{traceQLScopeCollisionConjunctionShape},
 			},
 		},
 	}
@@ -580,6 +586,15 @@ func classifyTraceQL(query string) ShapeID {
 		return traceQLDurationAggregateSumShape
 	case strings.Contains(query, " | avg("):
 		return traceQLDurationAggregateShape
+	// The two scope-collision attribute checks must precede the generic
+	// " && " check below: the conjunction variant's query also contains
+	// " && ", so the more specific match needs to win first.
+	case strings.Contains(query, "resource.environment") && strings.Contains(query, "span.environment"):
+		return traceQLScopeCollisionConjunctionShape
+	case strings.Contains(query, "resource.environment"):
+		return traceQLScopeCollisionResourceShape
+	case strings.Contains(query, "span.environment"):
+		return traceQLScopeCollisionSpanShape
 	case strings.Contains(query, " && "):
 		return traceQLConjunctionShape
 	case strings.Contains(query, "resource.service.name =~"):

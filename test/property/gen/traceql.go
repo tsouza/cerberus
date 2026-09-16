@@ -40,6 +40,27 @@ var TraceQLStatusPool = []string{"Ok", "Error", "Unset"}
 // discriminate on, rather than every span sharing one fixed value.
 var TraceQLDurationPoolNs = []int64{10_000_000, 50_000_000, 120_000_000, 300_000_000}
 
+// TraceQLScopeCollisionAttributeKey is an attribute name deliberately
+// stamped at BOTH the resource scope and the span scope of every
+// generated span, with an independently-drawn value at each scope (see
+// the two pools below). TraceQL addresses the two through distinct paths
+// — `resource.environment` and `span.environment` — so a query
+// engine that silently reads the wrong scope's map (or merges the two)
+// produces an observably wrong answer rather than a coincidental match:
+// the two pools below share no string, so "resource.environment" and
+// "span.environment" can never agree on the same span by accident.
+const TraceQLScopeCollisionAttributeKey = "environment"
+
+// TraceQLScopeCollisionResourceValuePool / TraceQLScopeCollisionSpanValuePool
+// are the disjoint value pools TraceQLScopeCollisionAttributeKey draws
+// from at each scope. Disjoint is load-bearing, not incidental: it is
+// what makes a scope mix-up a distinguishable test failure rather than an
+// occasional silent pass (see TraceQLScopeCollisionAttributeKey's doc).
+var (
+	TraceQLScopeCollisionResourceValuePool = []string{"prod", "staging"}
+	TraceQLScopeCollisionSpanValuePool     = []string{"canary", "shadow"}
+)
+
 // TraceQLDurationThresholdPoolMs is the pool of millisecond thresholds
 // the query generator draws for duration comparisons (`duration OP
 // Nms`, `avg(duration) OP Nms`, …). Includes values that land exactly
@@ -97,17 +118,52 @@ const (
 	traceQLMaxChainDepth = 3
 )
 
+// traceQLBranchingTreeSpanCount is the fixed span count of the bounded
+// branching-tree trace shape: one root, two of its direct children
+// (siblings of each other), and one grandchild descending from the
+// first child. Fixed rather than randomly sized — it is already the
+// smallest topology that puts a sibling pair, a direct-child edge, and a
+// two-hop descendant edge in front of the same query, and a fixed shape
+// leaves rapid's shrinker nothing further to reduce within the topology
+// itself (see drawTraceQLBranchingTree's doc for exactly which
+// structural claims this shape is built to discriminate).
+//
+// Blind spot, stated rather than silently assumed away: this is ONE
+// fixed 4-span shape, not a sweep over branching factor or tree depth —
+// it says nothing about a tree with three-or-more children per node, two
+// grandchildren, or depth beyond two hops. A future widening of the
+// structural-operator surface needs its own bounded shape, not an
+// unbounded generalization of this one.
+const traceQLBranchingTreeSpanCount = 4
+
+// traceQLBranchingTreeRoles names the four fixed positions in the
+// bounded branching-tree shape, in generation order: the root, its two
+// children (childA and its sibling childB), and childA's own child (the
+// grandchild, two hops from root). Used only to key rapid's per-span
+// draw labels — see drawTraceQLBranchingSpan.
+var traceQLBranchingTreeRoles = [traceQLBranchingTreeSpanCount]string{"root", "childA", "childB", "grandchild"}
+
 // TraceQLDataset returns a rapid generator that draws a random
 // property.Dataset of OTel-CH traces rows.
 //
-//   - 1–3 traces, each a linear parent→child chain of 1–3 spans (root
-//     first). The chain lets structural-operator queries (`>`, `>>`)
+//   - 1–3 traces. Each independently draws one of two shapes:
+//   - a linear parent→child chain of 1–3 spans (root first) — the
+//     original shape, letting structural-operator queries (`>`, `>>`)
 //     exercise a real ancestor/descendant relationship instead of
-//     every span being trace-root.
+//     every span being trace-root;
+//   - the bounded branching tree (traceQLBranchingTreeSpanCount spans:
+//     root, two children, one grandchild — see
+//     drawTraceQLBranchingTree's doc), which additionally puts a real
+//     sibling pair and a coexisting `>` + `>>` edge from one root in
+//     front of the same query, evidence a chain alone cannot supply.
 //   - Each span carries a resource.service.name (TraceQLServicePool),
 //     a second resource attribute resource.cluster (TraceQLClusterPool),
-//     and a span attribute span.http.method (TraceQLHTTPMethodPool) —
-//     the pool beyond service.name attribute matchers exercise.
+//     a span attribute span.http.method (TraceQLHTTPMethodPool), and the
+//     scope-collision pair resource.environment / span.environment
+//     (TraceQLScopeCollisionAttributeKey) — the same attribute name at
+//     two different scopes with independently-drawn, disjoint-pool
+//     values, so a scope-resolution bug is observable rather than
+//     accidentally masked.
 //   - Span names draw from TraceQLSpanNamePool plus a per-span ordinal
 //     suffix so (SpanName, Timestamp) pairs are unique across the
 //     dataset — Tempo's /api/search collapses traces by name+ts, and
@@ -119,15 +175,21 @@ const (
 //     duration/status intrinsic filters have real spread to
 //     discriminate on.
 //
+// Blind spot, stated rather than silently assumed away: two shapes per
+// trace (linear chain, bounded branching tree) is not a proof over every
+// possible graph shape — see traceQLBranchingTreeSpanCount's doc for what
+// the branching shape itself leaves unswept (branching factor, depth).
+//
 // The returned Dataset's DDL is a multi-statement script
 // (`CREATE OR REPLACE TABLE otel_traces (...); INSERT ...;`) the chDB
 // runner replays before each query. The TracesModel mirror carries the
 // same data in the shape the oracle reads — one property.SpanRecord per
 // generated span, with explicit TraceID / SpanID / ParentSpanID identity
-// fields, ResourceAttributes (service.name, cluster), SpanAttributes
-// (http.method), Name, DurationNs, StatusCode, and TimestampMs. Unlike the
-// PromQL/LogQL mirrors, no reserved-label-key encoding is involved — see
-// [property.SpanRecord]'s doc.
+// fields, ResourceAttributes (service.name, cluster, environment),
+// SpanAttributes (http.method, environment), Name, DurationNs,
+// StatusCode, and TimestampMs. Unlike the PromQL/LogQL mirrors, no
+// reserved-label-key encoding is involved — see [property.SpanRecord]'s
+// doc.
 //
 // MergeTree is the chosen engine (matches PromQL property test
 // rationale: Memory engine refuses PREWHERE the chsql emitter emits).
@@ -138,6 +200,10 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 		spanOrdinal := 0
 		for ti := 0; ti < numTraces; ti++ {
 			traceID := deterministicTraceID(ti, 0xa1)
+			if rapid.Bool().Draw(t, fmt.Sprintf("branchingTree_%d", ti)) {
+				spans = append(spans, drawTraceQLBranchingTree(t, ti, traceID, &spanOrdinal)...)
+				continue
+			}
 			chainDepth := rapid.IntRange(1, traceQLMaxChainDepth).Draw(t, fmt.Sprintf("chainDepth_%d", ti))
 			parentID := traceQLRootParentID
 			for ci := 0; ci < chainDepth; ci++ {
@@ -147,6 +213,11 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 				baseName := rapid.SampledFrom(TraceQLSpanNamePool).Draw(t, fmt.Sprintf("spanName_%d_%d", ti, ci))
 				status := rapid.SampledFrom(TraceQLStatusPool).Draw(t, fmt.Sprintf("status_%d_%d", ti, ci))
 				durationNs := rapid.SampledFrom(TraceQLDurationPoolNs).Draw(t, fmt.Sprintf("duration_%d_%d", ti, ci))
+				// Additive on top of the six draws above (unchanged in
+				// order or label): the scope-collision resource/span pair
+				// every span — linear or branching — now carries.
+				scopeResourceValue := rapid.SampledFrom(TraceQLScopeCollisionResourceValuePool).Draw(t, fmt.Sprintf("scopeResource_%d_%d", ti, ci))
+				scopeSpanValue := rapid.SampledFrom(TraceQLScopeCollisionSpanValuePool).Draw(t, fmt.Sprintf("scopeSpan_%d_%d", ti, ci))
 				// Unique suffix → unique (SpanName, Timestamp) across spans:
 				// Tempo's toTraceSummaries() keys by name+timestamp and collapses
 				// duplicates. Suffixing the global span ordinal is the cheapest way
@@ -154,16 +225,18 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 				name := fmt.Sprintf("%s /api/%d", baseName, spanOrdinal)
 				spanID := deterministicSpanID(spanOrdinal, 0xb2)
 				spans = append(spans, traceQLSpan{
-					traceID:    traceID,
-					spanID:     spanID,
-					parentID:   parentID,
-					service:    service,
-					cluster:    cluster,
-					httpMethod: httpMethod,
-					name:       name,
-					startTime:  traceQLAnchor.Add(time.Duration(spanOrdinal) * time.Second),
-					durationNs: durationNs,
-					statusCode: status,
+					traceID:            traceID,
+					spanID:             spanID,
+					parentID:           parentID,
+					service:            service,
+					cluster:            cluster,
+					httpMethod:         httpMethod,
+					name:               name,
+					startTime:          traceQLAnchor.Add(time.Duration(spanOrdinal) * time.Second),
+					durationNs:         durationNs,
+					statusCode:         status,
+					scopeResourceValue: scopeResourceValue,
+					scopeSpanValue:     scopeSpanValue,
 				})
 				parentID = spanID
 				spanOrdinal++
@@ -175,6 +248,79 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 			Traces: &property.TracesModel{Spans: records},
 		}
 	})
+}
+
+// drawTraceQLBranchingTree draws one bounded branching-tree trace:
+//
+//	root
+//	├── childA (direct child of root)
+//	│   └── grandchild (direct child of childA, grandchild of root)
+//	└── childB (direct child of root — childA's sibling)
+//
+// Fixed topology (traceQLBranchingTreeSpanCount spans), not randomly
+// sized. It exists to put four structural claims a linear chain alone
+// can never simultaneously exercise in front of the same trace:
+//
+//   - `root > childA` and `root > childB` both hold — two independent
+//     direct-child edges from one parent (a chain has at most one);
+//   - `root >> grandchild` holds but `root > grandchild` does NOT — the
+//     discriminator a mutant collapsing `>` into `>>` (a "direct-child
+//     mutant") would get wrong;
+//   - `childA > root` does NOT hold — the discriminator a mutant with
+//     parent/child swapped ("a reversed relation") would get wrong;
+//   - neither `>` nor `>>` ever relates childA and childB — siblings
+//     share a parent, not an ancestor/descendant edge.
+//
+// TestEvaluate_BranchingTree (oracle package) and
+// TestTraceQLBranchingTreeStructuralRelations (this package) pin all
+// four claims deterministically: the first against the from-scratch
+// oracle, the second against the real cerberus HTTP pipeline.
+//
+// spanOrdinal is threaded by pointer so the caller's running counter —
+// the same one the linear-chain branch advances — stays one global
+// sequence across every trace (see TraceQLDataset's (SpanName,
+// Timestamp) uniqueness doc).
+func drawTraceQLBranchingTree(t *rapid.T, ti int, traceID string, spanOrdinal *int) []traceQLSpan {
+	root := drawTraceQLBranchingSpan(t, ti, traceQLBranchingTreeRoles[0], traceID, traceQLRootParentID, spanOrdinal)
+	childA := drawTraceQLBranchingSpan(t, ti, traceQLBranchingTreeRoles[1], traceID, root.spanID, spanOrdinal)
+	childB := drawTraceQLBranchingSpan(t, ti, traceQLBranchingTreeRoles[2], traceID, root.spanID, spanOrdinal)
+	grandchild := drawTraceQLBranchingSpan(t, ti, traceQLBranchingTreeRoles[3], traceID, childA.spanID, spanOrdinal)
+	return []traceQLSpan{root, childA, childB, grandchild}
+}
+
+// drawTraceQLBranchingSpan draws one span's attribute values for the
+// branching-tree shape — the same pools and fields the linear-chain
+// branch draws (service/cluster/httpMethod/name/status/duration) plus
+// the scope-collision resource/span attribute pair, keyed by trace index
+// and role rather than chain position so the two topologies' rapid
+// labels never collide.
+func drawTraceQLBranchingSpan(t *rapid.T, ti int, role, traceID, parentID string, spanOrdinal *int) traceQLSpan {
+	service := rapid.SampledFrom(TraceQLServicePool).Draw(t, fmt.Sprintf("branchService_%d_%s", ti, role))
+	cluster := rapid.SampledFrom(TraceQLClusterPool).Draw(t, fmt.Sprintf("branchCluster_%d_%s", ti, role))
+	httpMethod := rapid.SampledFrom(TraceQLHTTPMethodPool).Draw(t, fmt.Sprintf("branchHTTPMethod_%d_%s", ti, role))
+	baseName := rapid.SampledFrom(TraceQLSpanNamePool).Draw(t, fmt.Sprintf("branchSpanName_%d_%s", ti, role))
+	status := rapid.SampledFrom(TraceQLStatusPool).Draw(t, fmt.Sprintf("branchStatus_%d_%s", ti, role))
+	durationNs := rapid.SampledFrom(TraceQLDurationPoolNs).Draw(t, fmt.Sprintf("branchDuration_%d_%s", ti, role))
+	scopeResourceValue := rapid.SampledFrom(TraceQLScopeCollisionResourceValuePool).Draw(t, fmt.Sprintf("branchScopeResource_%d_%s", ti, role))
+	scopeSpanValue := rapid.SampledFrom(TraceQLScopeCollisionSpanValuePool).Draw(t, fmt.Sprintf("branchScopeSpan_%d_%s", ti, role))
+	name := fmt.Sprintf("%s /api/%d", baseName, *spanOrdinal)
+	spanID := deterministicSpanID(*spanOrdinal, 0xb2)
+	span := traceQLSpan{
+		traceID:            traceID,
+		spanID:             spanID,
+		parentID:           parentID,
+		service:            service,
+		cluster:            cluster,
+		httpMethod:         httpMethod,
+		name:               name,
+		startTime:          traceQLAnchor.Add(time.Duration(*spanOrdinal) * time.Second),
+		durationNs:         durationNs,
+		statusCode:         status,
+		scopeResourceValue: scopeResourceValue,
+		scopeSpanValue:     scopeSpanValue,
+	}
+	(*spanOrdinal)++
+	return span
 }
 
 // traceQLSpan is the in-memory mirror of one row of otel_traces the
@@ -193,6 +339,11 @@ type traceQLSpan struct {
 	startTime  time.Time
 	durationNs int64
 	statusCode string
+	// scopeResourceValue / scopeSpanValue carry TraceQLScopeCollisionAttributeKey
+	// at the resource and span scopes respectively — see that const's doc for
+	// why the two pools they draw from are disjoint.
+	scopeResourceValue string
+	scopeSpanValue     string
 }
 
 // traceQLSpansToRecords pivots the generator's spans into the
@@ -209,11 +360,13 @@ func traceQLSpansToRecords(spans []traceQLSpan) []property.SpanRecord {
 			ParentSpanID: s.parentID,
 			Name:         s.name,
 			ResourceAttributes: map[string]string{
-				"service.name": s.service,
-				"cluster":      s.cluster,
+				"service.name":                    s.service,
+				"cluster":                         s.cluster,
+				TraceQLScopeCollisionAttributeKey: s.scopeResourceValue,
 			},
 			SpanAttributes: map[string]string{
-				"http.method": s.httpMethod,
+				"http.method":                     s.httpMethod,
+				TraceQLScopeCollisionAttributeKey: s.scopeSpanValue,
 			},
 			TimestampMs: s.startTime.UnixMilli(),
 			DurationNs:  s.durationNs,
@@ -302,12 +455,16 @@ func renderTraceQLRow(s traceQLSpan) string {
 	b.WriteString(", ")
 	// ResourceAttributes
 	b.WriteString(renderTraceQLMap(map[string]string{
-		"service.name": s.service,
-		"cluster":      s.cluster,
+		"service.name":                    s.service,
+		"cluster":                         s.cluster,
+		TraceQLScopeCollisionAttributeKey: s.scopeResourceValue,
 	}))
 	b.WriteString(", ")
 	// SpanAttributes
-	b.WriteString(renderTraceQLMap(map[string]string{"http.method": s.httpMethod}))
+	b.WriteString(renderTraceQLMap(map[string]string{
+		"http.method":                     s.httpMethod,
+		TraceQLScopeCollisionAttributeKey: s.scopeSpanValue,
+	}))
 	b.WriteString(", ")
 	// Duration
 	fmt.Fprintf(&b, "%d", s.durationNs)
@@ -409,14 +566,24 @@ func statusQueryLiteral(chStatus string) string {
 // TraceQLQuery returns a rapid generator that draws a property.Query
 // targeted at dataset d. The accept-set, widened from the first sweep's
 // single selector shape (issue #1471) to a breadth comparable to the
-// PromQL leg's drawExpr (test/property/gen/promql.go), spans 17 stable
-// semantic IDs across 14 equally weighted random families:
+// PromQL leg's drawExpr (test/property/gen/promql.go), spans 20 stable
+// semantic IDs across 17 equally weighted random families:
 //
 //   - traceql.selector.service / resource-attribute / span-attribute /
-//     regex / negated-attribute / conjunction
+//     regex / negated-attribute / conjunction / scope-collision-resource /
+//     scope-collision-span / scope-collision-conjunction
 //   - traceql.intrinsic.duration / status / name
 //   - traceql.structural.child / descendant
 //   - traceql.pipeline.count / duration-aggregate (avg/min/max/sum) / select
+//
+// The three scope-collision shapes target TraceQLScopeCollisionAttributeKey
+// (`resource.environment` / `span.environment`), stamped on every generated
+// span from two disjoint value pools — see that const's doc for why a
+// scope mix-up cannot coincidentally pass. The structural shapes now also
+// draw against the bounded branching-tree trace shape (see
+// drawTraceQLBranchingTree) whenever a dataset draw includes one, giving
+// `>`/`>>` a real sibling pair to discriminate against in addition to the
+// original linear-chain depth.
 //
 // Every shape's oracle counterpart lives in test/property/oracle/traceql
 // — see that package's parseQuery/Evaluate for the independent
@@ -523,6 +690,17 @@ func drawTraceQLQueryString(t *rapid.T, d property.Dataset, shapeID ShapeID) str
 	case traceQLSelectShape:
 		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
 		return fmt.Sprintf(`{ resource.service.name = "%s" } | select(span.http.method)`, service)
+	case traceQLScopeCollisionResourceShape:
+		value := rapid.SampledFrom(TraceQLScopeCollisionResourceValuePool).Draw(t, "scopeResourceValue")
+		return fmt.Sprintf(`{ resource.%s = "%s" }`, TraceQLScopeCollisionAttributeKey, value)
+	case traceQLScopeCollisionSpanShape:
+		value := rapid.SampledFrom(TraceQLScopeCollisionSpanValuePool).Draw(t, "scopeSpanValue")
+		return fmt.Sprintf(`{ span.%s = "%s" }`, TraceQLScopeCollisionAttributeKey, value)
+	case traceQLScopeCollisionConjunctionShape:
+		resourceValue := rapid.SampledFrom(TraceQLScopeCollisionResourceValuePool).Draw(t, "scopeResourceValueConjunction")
+		spanValue := rapid.SampledFrom(TraceQLScopeCollisionSpanValuePool).Draw(t, "scopeSpanValueConjunction")
+		return fmt.Sprintf(`{ resource.%s = "%s" && span.%s = "%s" }`,
+			TraceQLScopeCollisionAttributeKey, resourceValue, TraceQLScopeCollisionAttributeKey, spanValue)
 	}
 	panic("gen/traceql: unhandled query shape " + string(shapeID))
 }
