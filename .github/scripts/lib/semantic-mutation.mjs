@@ -136,6 +136,19 @@ export const CLASSIFICATIONS = Object.freeze([
 ]);
 const CLASSIFICATION_SET = new Set(CLASSIFICATIONS);
 
+// A non-synthetic record's expected_detection is restricted to this subset:
+// "killed" (the detector caught the mutation) or "equivalent-reviewed" (a
+// survivor with an audited, fingerprint-pinned equivalence_review — see
+// validateEquivalenceReview). Every other outcome in CLASSIFICATIONS either
+// reports a real live detector gap ("survived") or a harness condition that
+// means the record cannot make its claim yet ("invalid-transform",
+// "build-failed", "timeout", "infrastructure-error") — declaring one of
+// those on real (non-synthetic) evidence would be an expected-failure/
+// tolerance-list entry with a JSON file for a face, exactly what repo
+// invariant 7 forbids. A synthetic record is exempt: its entire purpose is
+// exercising every runner outcome, including the non-"killed" ones.
+const NON_SYNTHETIC_CLASSIFICATIONS = new Set(["killed", "equivalent-reviewed"]);
+
 const MUTANT_KEYS = new Set([
   "schema_version",
   "id",
@@ -335,6 +348,19 @@ export function validateMutantRecord(raw, at, problems, opts = {}) {
   }
 
   enumValue(raw.expected_detection, CLASSIFICATION_SET, `${at}.expected_detection`, problems);
+  if (
+    synthetic !== true &&
+    CLASSIFICATION_SET.has(raw.expected_detection) &&
+    !NON_SYNTHETIC_CLASSIFICATIONS.has(raw.expected_detection)
+  ) {
+    fail(
+      problems,
+      "schema",
+      `${at}.expected_detection is "${raw.expected_detection}", but a non-synthetic record may only declare ` +
+        `${[...NON_SYNTHETIC_CLASSIFICATIONS].join(" or ")} — a bare non-killed outcome on real evidence is an ` +
+        "expected-failure/tolerance-list entry, forbidden by repo invariant 7",
+    );
+  }
   if (raw.expected_detection === "equivalent-reviewed" && raw.equivalence_review === null) {
     fail(
       problems,

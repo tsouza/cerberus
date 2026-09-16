@@ -243,6 +243,61 @@ test("rejects a malformed isolation.memory_max", () => {
   assert.ok(problems.some((p) => p.includes("memory_max")));
 });
 
+test("a non-synthetic record declaring a bare survived is rejected (invariant 7)", () => {
+  const { problems } = validate(
+    exampleMutantRecord({
+      synthetic: false,
+      synthetic_rationale: null,
+      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
+      expected_detection: "survived",
+    }),
+    "MUTANT-SYNTH-EXAMPLE.json",
+    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
+  );
+  assert.ok(
+    problems.some(
+      (p) => p.includes("expected_detection") && p.includes("survived") && p.includes("invariant 7"),
+    ),
+  );
+});
+
+test("a non-synthetic record may still declare killed or equivalent-reviewed", () => {
+  const { problems: killedProblems } = validate(
+    exampleMutantRecord({
+      synthetic: false,
+      synthetic_rationale: null,
+      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
+      expected_detection: "killed",
+    }),
+    "MUTANT-SYNTH-EXAMPLE.json",
+    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
+  );
+  assert.deepEqual(killedProblems, []);
+
+  const { problems: equivalentProblems } = validate(
+    exampleMutantRecord({
+      synthetic: false,
+      synthetic_rationale: null,
+      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
+      expected_detection: "equivalent-reviewed",
+      equivalence_review: {
+        reviewer: "x",
+        reviewed_at: "2026-01-01T00:00:00Z",
+        source_fingerprint: REAL_SOURCE_FINGERPRINT,
+        rationale: "y",
+      },
+    }),
+    "MUTANT-SYNTH-EXAMPLE.json",
+    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
+  );
+  assert.deepEqual(equivalentProblems, []);
+});
+
+test("a synthetic record may still declare a bare survived (its whole purpose)", () => {
+  const { problems } = validate(exampleMutantRecord({ expected_detection: "survived" }));
+  assert.deepEqual(problems, []);
+});
+
 // --- loadMutants: end-to-end over the real committed corpus -------------
 
 test("loadMutants: the real committed test/semantic/mutants/ corpus is valid", () => {
