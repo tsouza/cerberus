@@ -638,14 +638,29 @@ jobs:
         run: |
           node --test .github/scripts/ci-lane-contract.test.mjs
           MODE=registry node .github/scripts/ci-lane-contract.mjs
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+        with:
+          tool: just
+      # The four steps below are cerberus issue #3436's merge fence: the
+      # Semantic Conformance Framework's structural model, lane-policy,
+      # evidence-liveness and generated-report validators, enrolled in
+      # .github/ci-lanes.json as lane `ci.semantic-conformance` (owner job
+      # `forbid-skip`, this job) so a missing recipe or an uncovered source
+      # path is itself caught by `ci-lane-contract.mjs`/`TestCILaneRegistry`
+      # above rather than needing a bespoke pin here. Each step runs the
+      # script's own self-test first, then its live CLI through the SAME
+      # `just` recipe (`just semantic-check`, etc.) a developer runs by
+      # hand — never a raw `node .../*.mjs` invocation duplicating what
+      # just/test.just already declares — so the two commands can never
+      # drift apart.
       - name: Validate the semantic contract metadata model
         run: |
           node --test .github/scripts/semantic-model.test.mjs
-          node .github/scripts/semantic-model.mjs
+          just semantic-check
       - name: Validate the semantic lane adapter against the checked-in policy snapshot
         run: |
           node --test .github/scripts/semantic-lane-adapter.test.mjs
-          node .github/scripts/semantic-lane-adapter.mjs
+          just semantic-lane-check
       # semantic-evidence-adapter.mjs (#3428) resolves a semantic binding's
       # test_ref against the property-shape rosters, the TXTAR spec corpus,
       # the surface-parity/rejection-parity ledgers and the QL feature
@@ -655,7 +670,7 @@ jobs:
       - name: Validate the semantic evidence adapter against the executable test corpus
         run: |
           node --test .github/scripts/semantic-evidence-adapter.test.mjs
-          node .github/scripts/semantic-evidence-adapter.mjs
+          just semantic-evidence-check
       # semantic-report.mjs (#3435) joins the model to its verifier owners,
       # bound vs observed evidence, and merge/release obligations, and
       # generates docs/semantic-conformance.{md,json}. Both are committed,
@@ -666,10 +681,7 @@ jobs:
       - name: Validate the generated semantic conformance report is fresh
         run: |
           node --test .github/scripts/semantic-report.test.mjs
-          node .github/scripts/semantic-report.mjs --check
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
-        with:
-          tool: just
+          just semantic-report-check
       # verify-just-invocations.mjs (#3093) dry-runs every `just <recipe>
       # [args...]` found inside a workflow run: step, catching a missing
       # recipe AND an arity mismatch a plain `just --show` existence check

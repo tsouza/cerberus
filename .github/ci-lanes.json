@@ -641,6 +641,47 @@
       "accountable_owner": "quality-platform"
     },
     {
+      "id": "ci.semantic-conformance",
+      "description": "Semantic contract model, lane-policy, evidence-liveness, and generated-report validators for the three-head foundation.",
+      "owner": {
+        "workflow": ".github/workflows/ci.yml",
+        "jobs": ["forbid-skip"],
+        "producer_jobs": [],
+        "context_job": "forbid-skip"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "forbid-skip", "protected": false },
+      "purpose": "governance",
+      "layers": [],
+      "oracle_class": "static",
+      "recipes": [
+        "semantic-check",
+        "semantic-evidence-check",
+        "semantic-lane-check",
+        "semantic-report-check"
+      ],
+      "command": "just semantic-check, semantic-lane-check, semantic-evidence-check, and semantic-report-check",
+      "build_tags": [],
+      "package_globs": [
+        ".github/ci-lanes.json",
+        ".github/scripts/lib/semantic-*.mjs",
+        ".github/scripts/semantic-*.mjs",
+        "docs/semantic-conformance.json",
+        "docs/semantic-conformance.md",
+        "test/semantic/*.json"
+      ],
+      "substrate": "runner",
+      "risk_domains": ["ci", "governance", "semantic-conformance"],
+      "merge_posture": "always",
+      "main_posture": "always",
+      "release_posture": "required",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 30,
+      "slo_minutes": 5,
+      "accountable_owner": "quality-platform"
+    },
+    {
       "id": "compatibility.gate",
       "description": "Compatibility workflow's duplicated compile and discipline pre-gate.",
       "owner": {
