@@ -33,6 +33,7 @@ package spec
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -95,6 +96,17 @@ func evaluateLokiParity(
 		Step:  q.Step,
 	})
 	if err != nil {
+		// ErrReferenceEvaluation (the real Loki engine's own Exec failing on
+		// a well-formed query) and ErrLogStreamShape (a log query answering
+		// with lines, not samples) are both upstream telling us no
+		// comparable answer exists for this seed and query — that IS the
+		// obstacle a `parity_exempt:` fixture claims, so it counts as
+		// refusal evidence the exemption remains live, not a broken
+		// checker. Any other Evaluate error (e.g. a query-construction
+		// failure) stays unclassified and fails the liveness check loudly.
+		if errors.Is(err, oracle.ErrReferenceEvaluation) || errors.Is(err, oracle.ErrLogStreamShape) {
+			return nil, parityRefusal(err)
+		}
 		return nil, err
 	}
 
@@ -120,11 +132,11 @@ func readSeededStreams(db *sql.DB) ([]oracle.Stream, error) {
 	}
 	for _, required := range []string{colTimestamp, colBody, colResourceAttributes} {
 		if !present[required] {
-			return nil, fmt.Errorf(
+			return nil, parityRefusal(fmt.Errorf(
 				"fixture seeds %s without a %s column, so its rows cannot be expressed as Loki "+
 					"streams (label set, timestamp, line). This fixture cannot be parity-checked "+
 					"against the Loki engine", logsTable, required,
-			)
+			))
 		}
 	}
 
@@ -213,14 +225,14 @@ func rejectOpaqueColumn(column, value string) error {
 	if value == "" || value == emptyMapJSON {
 		return nil
 	}
-	return fmt.Errorf(
+	return parityRefusal(fmt.Errorf(
 		"seeded rows carry a non-empty %s (%q), which the reference engine cannot observe: "+
 			"upstream's in-process querier processes every entry with an EMPTY structured-metadata "+
 			"label set, and cerberus additionally folds %s into the synthesised `detected_level` "+
 			"label. Comparing the two answers would compare two different questions, so this "+
 			"fixture cannot be enrolled against the Loki oracle",
 		column, value, colSeverityText,
-	)
+	))
 }
 
 // labelsFromResourceAttributes builds the reference-engine stream label

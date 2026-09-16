@@ -121,6 +121,14 @@ func TestFusedVariantsSharedValueColumn(t *testing.T) {
 	rw := &chplan.RangeWindow{
 		Input: &chplan.Project{
 			Input: &chplan.Scan{Table: "otel_logs"},
+			// A RangeWindow's Input schema must be closed and carry exactly
+			// one RoleTimestamp column for the emitter to resolve its
+			// temporal driver — see internal/chsql/range_window_input_schema.go.
+			Roles: []chplan.Column{
+				{Name: "ResourceAttributes", Role: chplan.RoleAttributes},
+				{Name: "Timestamp", Role: chplan.RoleTimestamp},
+				{Name: "Value_0", Role: chplan.RoleValue},
+			},
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "ResourceAttributes"},
 				{Expr: &chplan.ColumnRef{Name: "Timestamp"}},
@@ -379,6 +387,15 @@ func crossedTieValueB() chplan.Expr {
 func crossedTieInput() chplan.Node {
 	return &chplan.Project{
 		Input: &chplan.Scan{Table: "otel_logs"},
+		// See TestFusedVariantsSharedValueColumn's own Roles comment: the
+		// RangeWindow emitter requires a closed input schema declaring
+		// exactly one RoleTimestamp column.
+		Roles: []chplan.Column{
+			{Name: "ResourceAttributes", Role: chplan.RoleAttributes},
+			{Name: "Timestamp", Role: chplan.RoleTimestamp},
+			{Name: "Value_0", Role: chplan.RoleValue},
+			{Name: "Value_1", Role: chplan.RoleValue},
+		},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "ResourceAttributes"},
 			{Expr: &chplan.ColumnRef{Name: "Timestamp"}},
@@ -419,6 +436,11 @@ func runCrossedTieSingleArm(t *testing.T, fn, seed string, value func() chplan.E
 	rw := &chplan.RangeWindow{
 		Input: &chplan.Project{
 			Input: &chplan.Scan{Table: "otel_logs"},
+			Roles: []chplan.Column{
+				{Name: "ResourceAttributes", Role: chplan.RoleAttributes},
+				{Name: "Timestamp", Role: chplan.RoleTimestamp},
+				{Name: "Value", Role: chplan.RoleValue},
+			},
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "ResourceAttributes"},
 				{Expr: &chplan.ColumnRef{Name: "Timestamp"}},

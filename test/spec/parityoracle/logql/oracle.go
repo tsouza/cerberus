@@ -64,6 +64,7 @@ package logql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -80,6 +81,23 @@ import (
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
 )
+
+// ErrReferenceEvaluation marks an error the real Loki engine's own
+// Query.Exec raised while evaluating an otherwise well-formed, correctly
+// shaped query — as opposed to [Evaluate]'s query-construction failure
+// above it, which means the fixture's query does not parse as valid LogQL
+// at all. An Exec failure is data: it is upstream's own answer that no
+// comparable result exists for this exact seed and query, which is exactly
+// what an `unwrap`/extraction-error fixture's exemption claims. The caller
+// (test/spec's evaluateLokiParity) classifies it as a parity refusal rather
+// than an unclassified harness failure.
+var ErrReferenceEvaluation = errors.New("reference engine evaluation failed")
+
+// ErrLogStreamShape marks [flatten]'s rejection of a log query's answer
+// (logqlmodel.Streams — lines, not samples). The shape mismatch is
+// permanent and query-language-intrinsic, not an evaluation accident, so
+// the caller classifies it as a parity refusal the same way.
+var ErrLogStreamShape = errors.New("reference answer is a log stream, not samples")
 
 // mockQuerierShards is the shard count handed to [logql.NewMockQuerier].
 // Zero means "do not shard": the fixture corpus asks unsharded queries,
@@ -219,7 +237,7 @@ func Evaluate(tb testing.TB, streams []Stream, q Query) ([]Result, error) {
 	ctx := user.InjectOrgID(context.Background(), referenceTenant)
 	res, err := engine.Query(params).Exec(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("reference engine evaluation failed: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrReferenceEvaluation, err)
 	}
 	return flatten(res.Data)
 }
@@ -288,10 +306,10 @@ func flatten(v parser.Value) ([]Result, error) {
 		out = append(out, Result{Labels: map[string]string{}, TMillis: val.T, Value: val.V})
 	case logqlmodel.Streams:
 		return nil, fmt.Errorf(
-			"reference answer is %d log stream(s), not samples; a log query's answer cannot be "+
+			"%w: reference answer is %d log stream(s), not samples; a log query's answer cannot be "+
 				"compared element-wise against a fixture's `expected_rows:`, whose column layout "+
 				"is the fixture's own `SELECT *` projection. Enrol metric queries only",
-			len(val),
+			ErrLogStreamShape, len(val),
 		)
 	default:
 		return nil, fmt.Errorf("reference engine returned unsupported value type %T", v)
