@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   UnresolvableMergeGroupError,
+  checkBranchClear,
   findOpenPRsForBranch,
   findPRHeadBranch,
   listInFlightRuns,
@@ -17,7 +18,6 @@ import {
   runForWorkflowRunEvent,
   runTargetsBranch,
   setCommitStatus,
-  waitForBranchClear,
 } from './update-golden-guard.mjs';
 
 function run(overrides = {}) {
@@ -43,114 +43,61 @@ test('runTargetsBranch does not match an unrelated display title', () => {
   assert.equal(runTargetsBranch('some other workflow', 'fix/example'), false);
 });
 
-test('waitForBranchClear passes immediately when nothing targets the branch', async () => {
+test('checkBranchClear passes on one snapshot when nothing targets the branch', async () => {
   let calls = 0;
-  const result = await waitForBranchClear({
+  const result = await checkBranchClear({
     listRuns: async () => {
       calls += 1;
       return [run({ display_title: 'update-golden[other-branch]' })];
     },
     branch: 'fix/example',
-    sleep: async () => assert.fail('must not sleep when the branch is already clear'),
   });
-  assert.deepEqual(result, { clear: true, waitedMs: 0, runs: [] });
-  assert.equal(calls, 1);
+  assert.deepEqual(result, { clear: true, runs: [] });
+  assert.equal(calls, 1, 'must take exactly one snapshot — no retry loop');
 });
 
-test('waitForBranchClear polls until the matching run leaves the in-flight list', async () => {
-  const responses = [
-    [run()], // in_progress
-    [run({ status: 'queued' })], // still there, now queued (serialised second dispatch)
-    [], // finished — no longer in_progress or queued
-  ];
-  let sleeps = 0;
-  const result = await waitForBranchClear({
-    listRuns: async () => responses.shift(),
-    branch: 'fix/example',
-    pollIntervalMs: 5,
-    sleep: async () => {
-      sleeps += 1;
+test('checkBranchClear reports not-clear immediately, without retrying, when a run is in flight', async () => {
+  let calls = 0;
+  const result = await checkBranchClear({
+    listRuns: async () => {
+      calls += 1;
+      return [run()];
     },
-    now: () => 0,
-  });
-  assert.equal(result.clear, true);
-  assert.equal(sleeps, 2);
-});
-
-test('waitForBranchClear fails closed once the deadline passes with a run still in flight', async () => {
-  let ticks = 0;
-  const result = await waitForBranchClear({
-    listRuns: async () => [run()],
     branch: 'fix/example',
-    pollIntervalMs: 10,
-    maxWaitMs: 25,
-    sleep: async () => {
-      ticks += 10;
-    },
-    now: () => ticks,
   });
   assert.equal(result.clear, false);
-  assert.equal(result.timedOut, true);
   assert.equal(result.runs.length, 1);
+  assert.equal(calls, 1, 'must not poll — one snapshot is the whole check');
 });
 
-test('waitForBranchClear ignores a run for a branch whose name is a substring of this one', async () => {
-  const result = await waitForBranchClear({
+test('checkBranchClear ignores a run for a branch whose name is a substring of this one', async () => {
+  const result = await checkBranchClear({
     listRuns: async () => [run({ display_title: 'update-golden[fix/example]' })],
     branch: 'fix/example-longer',
-    sleep: async () => assert.fail('must not sleep — the only run present targets a different branch'),
   });
   assert.equal(result.clear, true);
 });
 
-test('waitForBranchClear treats several in-flight runs (serialised dispatches) as one hazard', async () => {
-  const responses = [
-    [run({ html_url: 'https://…/1' }), run({ html_url: 'https://…/2', status: 'queued' })],
-    [],
-  ];
-  let sleeps = 0;
-  const result = await waitForBranchClear({
-    listRuns: async () => responses.shift(),
+test('checkBranchClear treats several in-flight runs (serialised dispatches) as one hazard', async () => {
+  const result = await checkBranchClear({
+    listRuns: async () => [run({ html_url: 'https://…/1' }), run({ html_url: 'https://…/2', status: 'queued' })],
     branch: 'fix/example',
-    sleep: async () => {
-      sleeps += 1;
-    },
-    now: () => 0,
   });
-  assert.equal(result.clear, true);
-  assert.equal(sleeps, 1);
+  assert.equal(result.clear, false);
+  assert.equal(result.runs.length, 2);
 });
 
-test('waitForBranchClear calls onWaiting with the matching runs while polling', async () => {
-  const responses = [[run()], []];
-  const seen = [];
-  await waitForBranchClear({
-    listRuns: async () => responses.shift(),
-    branch: 'fix/example',
-    sleep: async () => {},
-    now: () => 0,
-    onWaiting: (runs) => seen.push(runs.length),
-  });
-  assert.deepEqual(seen, [1]);
-});
-
-test('waitForBranchClear sees a merely-"requested" run as still in flight (#2350 narrower race)', async () => {
-  // Finding #11: before IN_FLIGHT_STATUSES included 'requested', a poll
+test('checkBranchClear sees a merely-"requested" run as still in flight (#2350 narrower race)', async () => {
+  // Finding #11: before IN_FLIGHT_STATUSES included 'requested', a snapshot
   // landing in the window between dispatch creation and runner pickup would
   // have missed this run entirely (listRuns only ever queried in_progress
   // and queued) and reported a false-clear.
-  const responses = [[run({ status: 'requested' })], []];
-  let sleeps = 0;
-  const result = await waitForBranchClear({
-    listRuns: async () => responses.shift(),
+  const result = await checkBranchClear({
+    listRuns: async () => [run({ status: 'requested' })],
     branch: 'fix/example',
-    sleep: async () => {
-      sleeps += 1;
-    },
-    now: () => 0,
   });
-  assert.equal(result.clear, true);
-  assert.equal(sleeps, 1, 'must have polled once more instead of clearing immediately on a "requested" run');
+  assert.equal(result.clear, false);
+  assert.equal(result.runs.length, 1);
 });
 
 test('parseTargetBranch extracts the branch from the update-golden[<branch>] shape', () => {
@@ -454,10 +401,10 @@ test('resolveGuardedBranch FAILS an unresolvable merge group instead of certifyi
   );
 });
 
-test('the merge_group poll blocks on a dispatch against the queued PR branch (the #2350 race, on the queue)', async () => {
+test('the merge_group snapshot catches a dispatch against the queued PR branch (the #2350 race, on the queue)', async () => {
   // The behavioural pin: resolve the queue branch to the PR's head branch,
-  // then feed that branch through the SAME poll the pull_request path uses.
-  // A free-pass merge_group implementation would clear here on the first read.
+  // then feed that branch through the SAME snapshot check the pull_request
+  // path uses. A free-pass merge_group implementation would clear here.
   const branch = await resolveGuardedBranch({
     eventName: 'merge_group',
     env: {
@@ -470,24 +417,15 @@ test('the merge_group poll blocks on a dispatch against the queued PR branch (th
     findHeadBranch: async () => 'fix/example',
   });
 
-  const stillRunning = await waitForBranchClear({
+  const stillRunning = await checkBranchClear({
     listRuns: async () => [run()],
     branch,
-    pollIntervalMs: 10,
-    maxWaitMs: 25,
-    sleep: async () => {},
-    now: (() => {
-      let t = 0;
-      return () => (t += 20);
-    })(),
   });
-  assert.equal(stillRunning.clear, false, 'a dispatch against the queued PR branch must hold the queue entry');
-  assert.equal(stillRunning.timedOut, true);
+  assert.equal(stillRunning.clear, false, 'a dispatch against the queued PR branch must fail the queue entry');
 
-  const cleared = await waitForBranchClear({
+  const cleared = await checkBranchClear({
     listRuns: async () => [run({ display_title: 'update-golden[unrelated]' })],
     branch,
-    sleep: async () => assert.fail('must not sleep once nothing targets the queued PR branch'),
   });
   assert.equal(cleared.clear, true);
 });
@@ -622,18 +560,22 @@ test('merge_group: the guard REPORTS (exit 0) when nothing targets the queued PR
   assert.match(result.stdout, new RegExp(QUEUED_PR_BRANCH), 'must guard the PR head branch, not the queue ref');
 });
 
-test('merge_group: the guard still FAILS (exit 1) while a dispatch targets the queued PR branch', async () => {
+test('merge_group: the guard still FAILS (exit 1) immediately while a dispatch targets the queued PR branch', async () => {
+  const started = Date.now();
   const result = await withStubAPI(
     [{ display_title: `update-golden[${QUEUED_PR_BRANCH}]`, status: 'in_progress', html_url: 'https://…/run/1' }],
-    (api) => runGuard(mergeGroupEnv(api, { POLL_INTERVAL_MS: '1', MAX_WAIT_MS: '1' })),
+    (api) => runGuard(mergeGroupEnv(api)),
   );
   assert.equal(result.code, 1, `guard exited ${result.code} — a queue entry must not merge over a live dispatch`);
-  assert.match(result.stdout, /timed out/);
+  assert.match(result.stdout, /is in flight/);
+  assert.match(result.stdout, /re-added to the merge queue/, 'must name the merge_group-specific recovery step');
+  assert.ok(Date.now() - started < 5_000, 'must fail on one snapshot, not block waiting for the dispatch');
 });
 
-test('pull_request: the guard still FAILS (exit 1) while a dispatch targets the PR branch (#2350)', async () => {
+test('pull_request: the guard still FAILS (exit 1) immediately while a dispatch targets the PR branch (#2350)', async () => {
   const declared = workflowStepEnv('pull_request');
   assert.deepEqual(Object.keys(declared).sort(), ['BRANCH', 'GH_TOKEN', 'REPO']);
+  const started = Date.now();
   const result = await withStubAPI(
     [{ display_title: 'update-golden[fix/example]', status: 'queued', html_url: 'https://…/run/1' }],
     (api) =>
@@ -643,10 +585,10 @@ test('pull_request: the guard still FAILS (exit 1) while a dispatch targets the 
         BRANCH: 'fix/example',
         GITHUB_EVENT_NAME: 'pull_request',
         API_URL: api,
-        POLL_INTERVAL_MS: '1',
-        MAX_WAIT_MS: '1',
       }),
   );
   assert.equal(result.code, 1, 'the original #2350 block must still be reachable');
-  assert.match(result.stdout, /timed out/);
+  assert.match(result.stdout, /is in flight/);
+  assert.match(result.stdout, /flip back to success on its own/, 'must name the self-heal path, not tell the reader to wait');
+  assert.ok(Date.now() - started < 5_000, 'must fail on one snapshot, not block waiting for the dispatch');
 });
