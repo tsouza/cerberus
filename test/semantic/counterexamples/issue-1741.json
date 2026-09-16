@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "CTREX-1741",
+  "source_issue": 1741,
+  "source_issue_url": "https://github.com/tsouza/cerberus/issues/1741",
+  "title": "unanchored regex label matchers over-match via ClickHouse's substring match()",
+  "summary": "PromQL and LogQL regex label matchers (=~ / !~) lowered a matcher's raw pattern text straight into ClickHouse's match(), which is a SUBSTRING search, while Prometheus's and Loki's own regex matcher semantics are always fully anchored. job=~\"ap\" wrongly matched job=\"api\" and job=\"apiserver\" in addition to job=\"ap\"; the same substring-search lowering fed both heads' stream/label-matcher path (not LogQL's separate, already-anchored line-filter parser).",
+  "root_cause_subsystem": "internal/chsql/builder.go:846 (anchoredRegexPattern), the single chplan.OpMatch/OpNotMatch SQL-emission site both internal/promql/lower.go's matcherToExpr/metricNamePredicateOn and internal/logql/lower.go's matchOp route a label matcher's pattern through; no anchoring existed anywhere upstream of it before the fix.",
+  "fix_pr": 1746,
+  "fix_pr_url": "https://github.com/tsouza/cerberus/pull/1746",
+  "fix_commit": "04f09c1d810112ed873538687214aa41e406ab2b",
+  "fix_merged_at": "2026-08-05T10:42:03Z",
+  "discovery_evidence_class": "manual-review",
+  "discovery_narrative": "Found by direct, ad hoc empirical probing of the project's own chDB engine (match('0.1','1')=1, match('0.1','1|2.5')=1, both wrong under anchored semantics) while implementing the unrelated le-matcher restriction algebra for issue #1478, not by any automated verifier catching a live query. The issue body names this a 'neutralized-equals-missing' class: existing regex-matcher fixtures used patterns like .+/.* that could not exercise the anchoring boundary, so no compat-suite red had ever surfaced it.",
+  "seed_provenance": "verified",
+  "seed_provenance_note": null,
+  "mutation_class": "boundary-condition",
+  "mutation_class_rationale": "The defect is precisely where the FULL-match/CONTAINS-match boundary is drawn: ClickHouse's match() tests containment, Prometheus/Loki's regex matcher tests full-string equality against the pattern. internal/chsql (the fix's home) is in gremlins' Phase 2 rollout, but the historical defect itself was an omitted ^(?:...)$ wrap — a call-omission no single gremlins operator (.gremlins.yaml's eleven arithmetic/conditional/bitwise/loop-control mutators) models, so this class label is this module's own taxonomy rather than a gremlins mutator ID.",
+  "contracts": [
+    {
+      "contract_id": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "related_bindings": [
+        "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
+        "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT"
+      ],
+      "locator_path": "test/spec/promql/regex_unanchored_no_overmatch.txtar",
+      "locator_detail": "up{job=~\"ap\"} against seeded job values ap/api/apiserver/web (-- seed --); -- expected_rows -- pins exactly the job=\"ap\" row, so job=\"api\"/job=\"apiserver\" answering would fail this fixture's chDB roundtrip.",
+      "replay_test_path": "test/spec/promql/roundtrip_chdb_test.go",
+      "replay_test_name": "TestRoundTripChDB (over regex_unanchored_no_overmatch.txtar's -- seed --/-- expected_rows -- sections)",
+      "replay_command": "just spec-chdb"
+    },
+    {
+      "contract_id": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "related_bindings": [
+        "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
+        "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT"
+      ],
+      "locator_path": "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml",
+      "locator_detail": "{service_name=~\"auth\"} (stream selector) and {service_name=\"auth-service\"} | service_name=~\"auth\" (label filter) against a seeded service_name=\"auth-service\" stream; \"auth\" is a strict prefix, so both queries must resolve to zero results on cerberus AND reference Loki.",
+      "replay_test_path": "test/spec/logql/stream_regex_no_overmatch.txtar",
+      "replay_test_name": "TestRoundTripChDB (over stream_regex_no_overmatch.txtar's -- expected_rows --); compatibility/loki differential harness over anchored-regex-matcher.yaml",
+      "replay_command": "just spec-chdb (spec fixture); just compat-logql (reference differential)"
+    }
+  ]
+}

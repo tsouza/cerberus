@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "CTREX-3271",
+  "source_issue": 3271,
+  "source_issue_url": "https://github.com/tsouza/cerberus/issues/3271",
+  "title": "spec-lane PromQL oracle and the compat lane's real Prometheus server graded queries under different engine flags",
+  "summary": "test/spec/parityoracle/promql/oracle.go built its in-process promql.Engine via promqltest.NewTestEngine, which hardcodes EnableDelayedNameRemoval: true, while compatibility/prometheus runs a real prom/prometheus:v3.11.3 server with only --enable-feature=promql-experimental-functions, leaving delayed name removal at Prometheus's own documented default of OFF. On most shapes the two settings agree, but a name-dropping fold over a colliding histogram/float `or` diverges: OFF raises \"vector cannot contain metrics with the same labelset\", ON silently answers one histogram-valued series — so \"matches reference\" had no single meaning for that shape, and invariant 7 (compatibility is authoritative) was violated by the spec lane's own construction.",
+  "root_cause_subsystem": "test/spec/parityoracle/promql/oracle.go (the spec-lane oracle's EnableDelayedNameRemoval configuration), independently declared from and silently diverging out of sync with compatibility/prometheus/docker-compose.yml's --enable-feature line.",
+  "fix_pr": 3273,
+  "fix_pr_url": "https://github.com/tsouza/cerberus/pull/3273",
+  "fix_commit": "0c3c8bde8f1c538f851441fde88366f3777ea5e3",
+  "fix_merged_at": "2026-09-10T13:53:57Z",
+  "discovery_evidence_class": "execution",
+  "discovery_narrative": "Found by a deliberate, direct A/B measurement: two in-process promql.Engine instances built with promql.NewEngine over the same promqltest.LoadedStorage seed, differing only in EnableDelayedNameRemoval, run against the same instant/range queries across all four hist/hist, hist/float, float/hist, float/float arm combinations (issue #3271's own measurement table). This was an ad hoc /tmp scratch harness, never committed, not a standing verifier run.",
+  "seed_provenance": "not-replayed",
+  "seed_provenance_note": "The original A/B measurement harness described in issue #3271 ('/tmp scratch harness, but reproducible from scratch in ~40 lines') was never committed to the tree and no longer exists anywhere in it. The permanent regression guard PR #3273 added, test/regression/promql_oracle_engine_parity_test.go, does not re-run that measurement; it mechanically pins only that the ONE discriminating flag (EnableDelayedNameRemoval) is declared identically on both surfaces by reading the compose file's --enable-feature line and the oracle's own constant. No committed artifact replays the original full four-arm A/B measurement.",
+  "mutation_class": "configuration-divergence",
+  "mutation_class_rationale": "Two independently-declared configurations meant to represent the SAME reference engine (the spec oracle's Go constant, the compat lane's compose flag) silently disagreed. Neither test/spec/parityoracle/promql (an oracle package, architecturally forbidden from importing internal/promql per TestParityOracleImportsNoCerberusLowering) nor compatibility/prometheus/docker-compose.yml (a YAML config file) is Go production code gremlins mutates, and no gremlins operator flips a boolean struct-literal field in any case, so this class label is this module's own taxonomy.",
+  "contracts": [
+    {
+      "contract_id": "PROMQL-ORACLE-ENGINE-ANSWER-FLAG-PARITY",
+      "related_bindings": [
+        "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN"
+      ],
+      "locator_path": "test/spec/parityoracle/promql/oracle.go",
+      "locator_detail": "EnableDelayedNameRemoval (const, line 117) versus compatibility/prometheus/docker-compose.yml's --enable-feature=promql-experimental-functions line; before the fix these disagreed (oracle: true via promqltest.NewTestEngine's own default, compat server: false).",
+      "replay_test_path": "test/regression/promql_oracle_engine_parity_test.go",
+      "replay_test_name": "TestPromQLOracleEngineParity",
+      "replay_command": "just test-unit (narrowed: go test -run '^TestPromQLOracleEngineParity$' ./test/regression/)"
+    }
+  ]
+}

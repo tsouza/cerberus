@@ -88,15 +88,15 @@ const CONTRACT_SCOPES = Object.freeze({
   ARCH: "architecture",
 });
 
-const HEAD_ID_RE = /^HEAD-[A-Z][A-Z0-9]*$/;
+export const HEAD_ID_RE = /^HEAD-[A-Z][A-Z0-9]*$/;
 const CAP_ID_RE = /^CAP-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/;
-const CONTRACT_ID_RE =
+export const CONTRACT_ID_RE =
   /^(PROMQL|LOGQL|TRACEQL|SIGNAL|ARCH)-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/;
 const VERIFIER_ID_RE = /^VERIFIER-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/;
-const BINDING_ID_RE = /^BINDING-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/;
+export const BINDING_ID_RE = /^BINDING-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/;
 const EXEC_ID_RE = /^EXEC-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/;
 const OWNER_RE = /^[a-z0-9][a-z0-9-]*$/;
-const OBSERVED_AT_RE =
+export const OBSERVED_AT_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 
 const CATALOG_STATUSES = new Set(["draft", "active", "superseded"]);
@@ -107,7 +107,7 @@ const CONTRACT_STATUSES = new Set([
   "explicit_deficit",
 ]);
 const BINDING_STATUSES = new Set(["draft", "active"]);
-const EVIDENCE_CLASSES = new Set([
+export const EVIDENCE_CLASSES = new Set([
   "execution",
   "property",
   "reference",
@@ -207,11 +207,19 @@ export class SemanticModelError extends Error {
   }
 }
 
-function isObject(value) {
+// isObject/fail/exactObject/stringValue/nullableStringValue/enumValue/
+// stringArray/parseJSONFile are exported so a sibling record kind that lives
+// outside the six files this module owns — test/semantic/counterexamples/
+// (lib/semantic-counterexamples.mjs, issue #3445) is the first one — can
+// apply the SAME schema discipline (exactObject's mandatory-key/no-unknown-
+// key rule, explicit-null optionality) against the validated model this
+// module produces, instead of re-implementing a second, driftable copy of
+// these primitives.
+export function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function fail(problems, tag, message) {
+export function fail(problems, tag, message) {
   problems.push(`[${tag}] ${message}`);
 }
 
@@ -221,7 +229,7 @@ function fail(problems, tag, message) {
 // expressed inside the value (an explicit `null`, or an explicit `[]`), never
 // by omitting the key, because omission is exactly the "inferred, not
 // explicit" shape acceptance criterion #2 forbids for capability membership.
-function exactObject(value, keys, path, problems) {
+export function exactObject(value, keys, path, problems) {
   if (!isObject(value)) {
     fail(problems, "schema", `${path} must be an object`);
     return false;
@@ -236,7 +244,7 @@ function exactObject(value, keys, path, problems) {
   return true;
 }
 
-function stringValue(value, path, problems, { pattern, allowEmpty = false } = {}) {
+export function stringValue(value, path, problems, { pattern, allowEmpty = false } = {}) {
   if (typeof value !== "string" || (!allowEmpty && value.trim() === "")) {
     fail(problems, "schema", `${path} must be a non-empty string`);
     return false;
@@ -248,12 +256,12 @@ function stringValue(value, path, problems, { pattern, allowEmpty = false } = {}
   return true;
 }
 
-function nullableStringValue(value, path, problems, opts = {}) {
+export function nullableStringValue(value, path, problems, opts = {}) {
   if (value === null) return true;
   return stringValue(value, path, problems, opts);
 }
 
-function enumValue(value, allowed, path, problems) {
+export function enumValue(value, allowed, path, problems) {
   if (!allowed.has(value)) {
     fail(
       problems,
@@ -270,7 +278,7 @@ function nullableEnumValue(value, allowed, path, problems) {
   return enumValue(value, allowed, path, problems);
 }
 
-function stringArray(value, path, problems, { allowEmpty = true, pattern } = {}) {
+export function stringArray(value, path, problems, { allowEmpty = true, pattern } = {}) {
   if (!Array.isArray(value)) {
     fail(problems, "schema", `${path} must be an array`);
     return false;
@@ -320,7 +328,7 @@ function expandApplicableHeads(value, path, problems) {
   return heads;
 }
 
-function parseJSONFile(path, label) {
+export function parseJSONFile(path, label) {
   let body;
   try {
     body = readFileSync(path, "utf8");

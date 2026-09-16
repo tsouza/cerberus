@@ -1,18 +1,30 @@
 // semantic-model.mjs — CLI entry point for `just semantic-check`. Loads and
 // validates test/semantic/'s hand-authored JSON semantic contract model
 // (schema, ID uniqueness, cross-references, inheritance/replacement cycles,
-// and evidence assurance). All the logic lives in
-// lib/semantic-model.mjs, which downstream issues (#3427-#3430, #3445,
-// #3456) import directly to build head-specific catalogs and reports on top
-// of the same validated model rather than re-parsing the files themselves.
+// and evidence assurance), then loads and validates
+// test/semantic/counterexamples/*.json (issue #3445) against that same
+// model — the historical-bug records join a source issue, its fix, the
+// contract(s) it violated, its discovery mechanism, and its current replay
+// owner into one record, and their contract/binding references, locator
+// paths and replay-test paths are checked against the live model and the
+// live filesystem here, not merely parsed. All the logic lives in
+// lib/semantic-model.mjs (the six-file model) and
+// lib/semantic-counterexamples.mjs (the counterexample records), which
+// downstream issues (#3427-#3430, #3456) import directly to build
+// head-specific catalogs and reports on top of the same validated model
+// rather than re-parsing the files themselves.
 //
 // Env:
-//   SEMANTIC_MODEL_DIR    directory holding the six JSON files (optional;
-//                          default test/semantic)
-//   GITHUB_STEP_SUMMARY   optional summary destination
+//   SEMANTIC_MODEL_DIR             directory holding the six JSON files
+//                                   (optional; default test/semantic)
+//   SEMANTIC_COUNTEREXAMPLES_DIR   directory holding the counterexample
+//                                   records (optional; default
+//                                   test/semantic/counterexamples)
+//   GITHUB_STEP_SUMMARY            optional summary destination
 //
-// Node builtins only. Exit 0 when the model is valid, 1 (with an ::error::
-// annotation) on any schema, reference, cycle, or assurance violation.
+// Node builtins only. Exit 0 when the model and its counterexample records
+// are valid, 1 (with an ::error:: annotation) on any schema, reference,
+// cycle, or assurance violation.
 
 import process from "node:process";
 import { appendFileSync } from "node:fs";
@@ -24,6 +36,11 @@ import {
   loadSemanticModel,
   renderSummary,
 } from "./lib/semantic-model.mjs";
+import {
+  DEFAULT_COUNTEREXAMPLES_DIR,
+  loadCounterexamples,
+  renderCounterexamplesSummary,
+} from "./lib/semantic-counterexamples.mjs";
 
 function appendSummary(body) {
   const path = process.env.GITHUB_STEP_SUMMARY;
@@ -46,6 +63,15 @@ function main() {
     `semantic-model: ${model.contracts.size} contracts (${model.assurance.assured.length} assured) across ${model.heads.size} heads are structurally valid\n`,
   );
   appendSummary(summary);
+
+  const counterexamplesDir =
+    process.env.SEMANTIC_COUNTEREXAMPLES_DIR || DEFAULT_COUNTEREXAMPLES_DIR;
+  const counterexamples = loadCounterexamples(model, counterexamplesDir, { root: process.cwd() });
+  const counterexamplesSummary = renderCounterexamplesSummary(counterexamples);
+  process.stdout.write(
+    `semantic-counterexamples: ${counterexamples.size} historical-bug records are structurally valid\n`,
+  );
+  appendSummary(`${counterexamplesSummary}\n`);
 }
 
 const invokedDirectly =

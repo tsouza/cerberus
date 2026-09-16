@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "CTREX-2241",
+  "source_issue": 2241,
+  "source_issue_url": "https://github.com/tsouza/cerberus/issues/2241",
+  "title": "TraceQL property generator's root-marker sentinel hid real descendant matches from its own oracle",
+  "summary": "The chDB-backed TraceQL property oracle reported a deterministic divergence on { resource.service.name = \"web\" } >> { resource.service.name = \"batch\" }: cerberus returned no series where the oracle expected the trace-level {} result. The root cause was NOT a cerberus lowering bug: gen.TraceQLDataset marked a root span with the sentinel \"0000000000000000\" while OTel-CH's real convention is an EMPTY ParentSpanId for a root, so cerberus's structural rootedness walk correctly treated every generated chain as orphaned (removing all child/descendant matches) while the in-memory reference oracle kept naively following the sentinel's parent links anyway. Production internal/traceql structural-relation lowering was correct throughout; the property harness's own generator was producing OTel-CH-invalid input.",
+  "root_cause_subsystem": "test/property/gen (TraceQLDataset's span-chain root-marker sentinel) — NOT internal/traceql, whose descendant-relation lowering PR #2244's own root-cause note confirms was correct throughout.",
+  "fix_pr": 2244,
+  "fix_pr_url": "https://github.com/tsouza/cerberus/pull/2244",
+  "fix_commit": "3504939ec0f9a2dcfef1852029d819cab8157ab0",
+  "fix_merged_at": "2026-08-16T16:19:05Z",
+  "discovery_evidence_class": "property",
+  "discovery_narrative": "Found by the chDB-backed Rapid property sweep (go test -tags chdb -run '^TestTraceQL_Property$' ./test/property) during its canonical coverage lane, which persisted a failing counterexample to test/property/testdata/rapid/TestTraceQL_Property/TestTraceQL_Property-20260816143957-2846777.fail per the issue's own repro section.",
+  "seed_provenance": "reconstructed",
+  "seed_provenance_note": "The original Rapid failfile named in issue #2241 (test/property/testdata/rapid/TestTraceQL_Property/TestTraceQL_Property-20260816143957-2846777.fail) has since rotated out of the tree — test/property/testdata does not exist in the current checkout. This record binds instead to TestTraceQLDescendantPropertyMatch, the permanent deterministic regression PR #2244 added (test/property/traceql_test.go) as a hand-authored, stable two-span reconstruction of the same descendant shape; it is a reconstructed minimal case, not the original seed file.",
+  "mutation_class": "constant-substitution",
+  "mutation_class_rationale": "The wrong literal sentinel (\"0000000000000000\") stood in for the correct root convention (empty string), and no gremlins operator mutates a string-literal sentinel. This is also test-only code (test/property/gen), categorically outside gremlins' phased rollout (internal/** only per .gremlins.yaml), so no gremlins mutant could ever have exercised this defect regardless of operator vocabulary.",
+  "contracts": [
+    {
+      "contract_id": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
+      "related_bindings": [
+        "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY",
+        "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC"
+      ],
+      "locator_path": "test/property/traceql_test.go",
+      "locator_detail": "TestTraceQLDescendantPropertyMatch (lines 143-180) seeds a two-span otel_traces chain — root span '0102...0708' with empty ParentSpanId, child span '1112...1718' with ParentSpanId set to the root's SpanId — and asserts { resource.service.name = \"web\" } >> { resource.service.name = \"batch\" } answers exactly one trace-level empty-label row.",
+      "replay_test_path": "test/property/traceql_test.go",
+      "replay_test_name": "TestTraceQLDescendantPropertyMatch",
+      "replay_command": "just property (narrowed: go test -tags chdb -count=1 -run '^TestTraceQLDescendantPropertyMatch$' ./test/property)"
+    }
+  ]
+}
