@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-SYNTH-BUILD-BREAK",
+  "title": "ClampUpper's return statement is left as a dangling expression",
+  "synthetic": true,
+  "synthetic_rationale": "Exercises the runner's build-failed path: a transformation that applies cleanly (git apply succeeds, fingerprints match) but does not compile. This must be reported distinctly from both killed and infrastructure-error. Not a per-head query mutation.",
+  "violated_contracts": ["SYNTHETIC-CLAMP-UPPER-BOUND"],
+  "transformation": {
+    "target_path": "test/semantic/mutants/fixtures/arith.go",
+    "patch_path": "test/semantic/mutants/patches/build-break.patch",
+    "source_fingerprint": "32ceda8eb16574aebd2eafd1b719984e83dec5c95cb4fa9947f56e61143c2556",
+    "expected_mutated_fingerprint": "b32266e29bec2bb458bf0484424cd4ace7310871eb2b084e409a38c06b185b27"
+  },
+  "detectors": [
+    {
+      "id": "clamp-upper-inversion",
+      "package": "./test/semantic/mutants/fixtures",
+      "test_run": "^TestClampUpperCatchesInversion$",
+      "build_tags": [],
+      "timeout_seconds": 15
+    }
+  ],
+  "expected_detection": "build-failed",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": false,
+    "memory_max": "1GiB",
+    "memory_hold": "150s"
+  },
+  "notes": null
+}

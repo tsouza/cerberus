@@ -555,6 +555,84 @@ into a multi-minute integration test; it verifies that mechanism routes
 correctly and leaves running it to a developer's own
 `just semantic-replay <id>`.
 
+## Semantic mutation runner
+
+`test/semantic/mutants/*.json` (issue #3448, unblocked by spike #3447) is a
+mutant record: one hand-authored, contract-linked source transformation,
+paired with the detector(s) that should catch it, the isolation it needs,
+and — for a mutant the author has hand-reviewed and judged equivalent — an
+audited review tied to the exact source it reviewed. Unlike the gremlins
+lane's automatic operator sweep (`mutate` / `mutate-chdb`, `just/mutation.just`),
+a mutant record here names one specific, reviewable mutation as a unified
+diff — the format #3447's spike settled on precisely because it is also what
+lets a mutant be reviewed and versioned like a #3445 counterexample record —
+never a bulk-generated AST edit. This issue's own scope is the RUNNER, record
+validation, and synthetic self-tests; real per-head query-language mutants
+arrive in #3449-#3451 once this runner exists, and every record currently
+committed carries `synthetic: true` for exactly that reason.
+
+`lib/semantic-mutation.mjs` is the Node-builtins-only loader/validator
+(`validateMutantRecord()` / `loadMutants()`, reusing `lib/semantic-model.mjs`'s
+own schema primitives the same way `lib/semantic-counterexamples.mjs` does)
+plus the execution engine implementing the protocol #3447's spike approved:
+apply the mutant's patch to a scratch copy of its target file and point `go
+test -overlay` at the swap — never a disposable worktree, never a write to
+this checkout. `applyTransformation()` fails closed in three independent
+ways, checked in order: the live target file's own SHA-256 must match the
+record's declared `source_fingerprint` BEFORE `git apply` ever runs (a stale
+mutant is refused, never silently tested unmodified); `git apply --check`
+must pass; and the patched content's own SHA-256 must match
+`expected_mutated_fingerprint` after applying. `classifyGoTestOutput()` is
+the pure verdict reader: a per-test `--- FAIL: TestName` line is `killed`
+(a caught panic reports this way too, per the spike's own finding), a bare
+`PASS` is `survived`, a `[build failed]` signature is `build-failed`, an
+external signal or an exit that leaves neither a `PASS` nor a `--- FAIL:`
+line — the exact shape of a direct `os.Exit()` bypassing the testing
+package's own reporting — is `infrastructure-error`, and the runner's own
+wall-clock kill is `timeout`. **A crash is never a kill**: only output the
+detector's own harness actually adjudicated counts. `runMutant()` orchestrates
+all seven as one closed, never-collapsed vocabulary: it runs each selected
+detector's clean control FIRST and aborts the whole measurement as
+`infrastructure-error` on any failure (a broken baseline is never silently
+skipped), then verifies the transformation, then runs the mutant, then — only
+for a bare `survived` — checks a non-null `equivalence_review` whose own
+`source_fingerprint` still matches the just-observed live source before
+reclassifying to `equivalent-reviewed`; a stale review (the target file has
+since changed) falls back to a plain `survived` needing re-review rather than
+being trusted. This is never an automatic exemption list (repo invariant 7):
+the review is prose a human wrote and it is tied to a cryptographic fingerprint
+of the exact content it reviewed, not a name on a list.
+
+Isolation reuses `mutant-memory-guard.mjs` entirely unchanged, via `go test
+-exec`, exactly as that script's own header documents — this module imports
+its `byteSize()`/`goDurationSeconds()` parsers to validate a record's
+`isolation.memory_max`/`memory_hold` rather than duplicating that grammar.
+Every write lands under one `mkdtempSync()` scratch directory per invocation
+(`RUNNER_TEMP` when set, the OS temp dir otherwise — `scratchRootFor()`),
+unique by construction, so concurrent runs never collide and nothing is ever
+written into a real target file; `createScratchDir()` is called by the CLI
+BEFORE any async work starts specifically so a `SIGINT`/`SIGTERM` handler
+registered immediately after can still clean up the exact path, and cleanup
+runs on every exit path — normal completion, a thrown error, or a signal —
+via one idempotent function.
+
+`semantic-mutation.mjs` is the thin CLI `just semantic-mutate <mutant-id>`
+runs: loads the record, runs it, prints the full result (every mutant/source/
+detector/artifact identity field, on every outcome) as JSON, appends a
+one-line `GITHUB_STEP_SUMMARY` row, and exits `0` only when the observed
+classification matches the record's own declared `expected_detection` — the
+same "did this regress" posture `gremlins-threshold.mjs` and
+`forbid-contradicted-mutants.mjs` already apply to the unrelated gremlins
+lane, which this module never modifies. `semantic-mutation.test.mjs` (root,
+`node --test`) pairs every acceptance criterion with a fixture — including
+the three pure negative cases the issue calls out by name (a failing clean
+control aborts before the mutant is ever attempted, zero selected detectors
+is a hard usage error raised before any run, and a `source_fingerprint`
+mismatch never invokes `git` at all) — plus real `git apply`/filesystem
+integration tests and an end-to-end load of the real committed
+`test/semantic/mutants/` corpus, which exercises all seven classifications
+against real `go test` runs, no Go code faked.
+
 ## Semantic lane adapter
 
 `lib/semantic-lane-adapter.mjs` binds the semantic contract model above to

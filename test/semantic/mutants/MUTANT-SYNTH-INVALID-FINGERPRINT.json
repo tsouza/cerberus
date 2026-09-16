@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-SYNTH-INVALID-FINGERPRINT",
+  "title": "Declared source fingerprint deliberately disagrees with the live target file",
+  "synthetic": true,
+  "synthetic_rationale": "Exercises the runner's fail-closed path: a mutant record whose declared source_fingerprint does not match the live target file (simulating drift since authoring time). The runner must refuse to test the unmodified candidate and report invalid-transform, never silently proceed. Not a per-head query mutation.",
+  "violated_contracts": ["SYNTHETIC-CLAMP-UPPER-BOUND"],
+  "transformation": {
+    "target_path": "test/semantic/mutants/fixtures/arith.go",
+    "patch_path": "test/semantic/mutants/patches/killed-invert.patch",
+    "source_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+    "expected_mutated_fingerprint": "d704056d00f7a5b3a5cf4c7f2720378bd5580274fe51897a2cf2b5f1373d6efe"
+  },
+  "detectors": [
+    {
+      "id": "clamp-upper-inversion",
+      "package": "./test/semantic/mutants/fixtures",
+      "test_run": "^TestClampUpperCatchesInversion$",
+      "build_tags": [],
+      "timeout_seconds": 15
+    }
+  ],
+  "expected_detection": "invalid-transform",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": false,
+    "memory_max": "1GiB",
+    "memory_hold": "150s"
+  },
+  "notes": "source_fingerprint above is deliberately wrong (68 zero characters, also the wrong length) — this record's entire purpose is to prove the mismatch is caught before git apply or any detector ever runs."
+}

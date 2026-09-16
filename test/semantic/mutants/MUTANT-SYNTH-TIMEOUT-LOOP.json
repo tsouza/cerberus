@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-SYNTH-TIMEOUT-LOOP",
+  "title": "SpinUntil's loop advance is inverted into a non-terminating spin",
+  "synthetic": true,
+  "synthetic_rationale": "Exercises the runner's timeout path with a bounded, allocation-free non-terminating loop: costs CPU only for the duration of this record's own short timeout_seconds, never memory, so it is safe to run on a developer machine. Not a per-head query mutation.",
+  "violated_contracts": [
+    "SYNTHETIC-LOOP-TERMINATION"
+  ],
+  "transformation": {
+    "target_path": "test/semantic/mutants/fixtures/arith.go",
+    "patch_path": "test/semantic/mutants/patches/timeout-loop.patch",
+    "source_fingerprint": "32ceda8eb16574aebd2eafd1b719984e83dec5c95cb4fa9947f56e61143c2556",
+    "expected_mutated_fingerprint": "b636cb247cedb7f2319b87e11bfda6ed7375c86763f5cafb7dec0657291e172f"
+  },
+  "detectors": [
+    {
+      "id": "spin-until-terminates",
+      "package": "./test/semantic/mutants/fixtures",
+      "test_run": "^TestSpinUntilTerminates$",
+      "build_tags": [],
+      "timeout_seconds": 3
+    }
+  ],
+  "expected_detection": "timeout",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": false,
+    "memory_max": "256MiB",
+    "memory_hold": "5s"
+  },
+  "notes": "timeout_seconds is deliberately short (3s, not the usual 15s) so this record's own control case runs quickly; the mutated loop never allocates, so it cannot trip the memory bound before the wall-clock ceiling does."
+}

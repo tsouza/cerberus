@@ -1,0 +1,13 @@
+diff --git a/test/semantic/mutants/fixtures/arith.go b/test/semantic/mutants/fixtures/arith.go
+index 96732dbd7..4e473af25 100644
+--- a/test/semantic/mutants/fixtures/arith.go
++++ b/test/semantic/mutants/fixtures/arith.go
+@@ -16,7 +16,7 @@ func ClampUpper(v, hi int) int {
+ 	if v > hi {
+ 		return hi
+ 	}
+-	return v
++	return v +
+ }
+ 
+ // PreallocCapacity is the slice capacity a caller would pre-allocate for n

@@ -1,0 +1,20 @@
+diff --git a/test/semantic/mutants/fixtures/arith.go b/test/semantic/mutants/fixtures/arith.go
+index 96732dbd7..ae772bb72 100644
+--- a/test/semantic/mutants/fixtures/arith.go
++++ b/test/semantic/mutants/fixtures/arith.go
+@@ -8,6 +8,8 @@
+ // production behaviour.
+ package fixtures
+ 
++import "os"
++
+ // ClampUpper returns hi when v exceeds hi, and v otherwise. It does not
+ // clamp a lower bound — this fixture only needs one operator to mutate.
+ // MUTANT-SYNTH-KILLED-INVERT inverts the comparison (`>` -> `<`), which
+@@ -54,5 +56,6 @@ func SpinUntil(n int) int {
+ // pass/fail reporting entirely — the crash case the runner must classify as
+ // infrastructure-error, never as a kill.
+ func ExitAbruptly(v int) int {
++	os.Exit(2)
+ 	return v
+ }

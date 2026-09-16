@@ -1,0 +1,13 @@
+diff --git a/test/semantic/mutants/fixtures/arith.go b/test/semantic/mutants/fixtures/arith.go
+index 96732dbd7..616a8a793 100644
+--- a/test/semantic/mutants/fixtures/arith.go
++++ b/test/semantic/mutants/fixtures/arith.go
+@@ -13,7 +13,7 @@ package fixtures
+ // MUTANT-SYNTH-KILLED-INVERT inverts the comparison (`>` -> `<`), which
+ // TestClampUpperCatchesInversion below distinguishes at v > hi.
+ func ClampUpper(v, hi int) int {
+-	if v > hi {
++	if v < hi {
+ 		return hi
+ 	}
+ 	return v

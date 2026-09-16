@@ -728,6 +728,19 @@ jobs:
       # Self-test only, same rationale as the step above.
       - name: Self-test the compat execution report
         run: node --test .github/scripts/compat-execution-report.test.mjs
+      # semantic-mutation.mjs (#3448, unblocked by spike #3447) executes one
+      # hand-authored, contract-linked mutant from test/semantic/mutants/
+      # via `go test -overlay`. Self-test only here, same rationale as
+      # semantic-execution-adapter/verify-just-invocations/e2e-up below: this
+      # job installs no Go toolchain at all (it validates JSON/JS metadata,
+      # not Go code), so `just semantic-mutate` cannot run here regardless —
+      # every acceptance-criterion negative case (a failing clean control
+      # aborts, zero detectors is an error, a fingerprint mismatch never
+      # invokes git) is a pure or injected-fake test that needs no Go
+      # toolchain, plus real git/filesystem integration tests and an
+      # end-to-end load of the real committed test/semantic/mutants/ corpus.
+      - name: Self-test the semantic mutation runner
+        run: node --test .github/scripts/semantic-mutation.test.mjs
       # verify-just-invocations.mjs (#3093) dry-runs every `just <recipe>
       # [args...]` found inside a workflow run: step, catching a missing
       # recipe AND an arity mismatch a plain `just --show` existence check

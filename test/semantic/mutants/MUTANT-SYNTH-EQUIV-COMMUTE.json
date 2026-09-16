@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "MUTANT-SYNTH-EQUIV-COMMUTE",
+  "title": "CommutativeSum's operand order is swapped",
+  "synthetic": true,
+  "synthetic_rationale": "Exercises the runner's equivalent-reviewed path: a mutation that survives AND has an audited, fingerprint-tied equivalence review, so the runner must reclassify it away from a bare survivor. Not a per-head query mutation.",
+  "violated_contracts": ["SYNTHETIC-COMMUTATIVE-OPERAND-ORDER"],
+  "transformation": {
+    "target_path": "test/semantic/mutants/fixtures/arith.go",
+    "patch_path": "test/semantic/mutants/patches/equiv-commute.patch",
+    "source_fingerprint": "32ceda8eb16574aebd2eafd1b719984e83dec5c95cb4fa9947f56e61143c2556",
+    "expected_mutated_fingerprint": "08f829a1a905394ec79a2d6cb54bbf7cc34c5af0bbc7d505a8369cba77dc2914"
+  },
+  "detectors": [
+    {
+      "id": "commutative-sum-operand-order",
+      "package": "./test/semantic/mutants/fixtures",
+      "test_run": "^TestCommutativeSumMatchesOperandOrder$",
+      "build_tags": [],
+      "timeout_seconds": 15
+    }
+  ],
+  "expected_detection": "equivalent-reviewed",
+  "equivalence_review": {
+    "reviewer": "cerberus-core",
+    "reviewed_at": "2026-09-16T00:00:00Z",
+    "source_fingerprint": "32ceda8eb16574aebd2eafd1b719984e83dec5c95cb4fa9947f56e61143c2556",
+    "rationale": "a+b and b+a are byte-for-byte identical under Go's two's-complement int addition for every pair of inputs: addition is commutative and neither operand order can overflow differently. No test can distinguish them because there is nothing to distinguish. Hand-verified against Go's spec (arithmetic operators), not merely asserted."
+  },
+  "isolation": {
+    "requires_chdb": false,
+    "memory_max": "1GiB",
+    "memory_hold": "150s"
+  },
+  "notes": "The equivalence_review.source_fingerprint must equal transformation.source_fingerprint; if arith.go changes, this review goes stale and the runner falls back to reporting a bare survived until re-reviewed."
+}
