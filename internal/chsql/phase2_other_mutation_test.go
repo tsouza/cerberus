@@ -154,3 +154,22 @@ func TestMutation_ResolveRangeLWRInputColumns_MissingSingleRoleRejected(t *testi
 		})
 	}
 }
+
+// TestMutation_RangeBucketFanoutFoldCostAliases_RequiresGroupArray kills the
+// INVERT_LOGICAL mutant on range_bucket_fanout.go:rangeBucketFanoutFoldCostAliases:
+// `if samples == "" && af.Fn == chplan.FnGroupArray` rewritten to `||`.
+//
+// With no groupArray accumulator in the list at all, the original leaves
+// `samples` empty and returns the "requires a groupArray AggFunc" error.
+// The mutant sets `samples` from the first non-groupArray alias instead,
+// and the malformed accumulator set is accepted.
+func TestMutation_RangeBucketFanoutFoldCostAliases_RequiresGroupArray(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := rangeBucketFanoutFoldCostAliases([]chplan.AggFunc{
+		{Fn: chplan.FnSum, Alias: "sum"},
+	})
+	if err == nil {
+		t.Fatal("rangeBucketFanoutFoldCostAliases accepted an accumulator set with no groupArray")
+	}
+}
