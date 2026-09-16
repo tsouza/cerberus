@@ -6,8 +6,11 @@
       "name": "Spec fixture roundtrip",
       "description": "A TXTAR fixture under test/spec/ that lowers a query to SQL and, where seeded, executes it against chDB and asserts on the returned rows.",
       "detects": ["wrong SQL lowering", "wrong result rows against a known seed"],
-      "cannot_detect": ["semantic drift against the reference backend's own engine"],
-      "complemented_by": ["VERIFIER-REFERENCE-DIFFERENTIAL"],
+      "cannot_detect": [
+        "semantic drift against the reference backend's own engine",
+        "an emit-type mismatch chDB coerces silently (e.g. UInt8/UInt64 -> *float64) but production clickhouse-go's real strict positional scan rejects with a 502 -- chDB is a coercive, not a strict, oracle for this class, so a green roundtrip here says nothing about whether the identical query strict-scans cleanly; only VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN's real-server evidence can show that"
+      ],
+      "complemented_by": ["VERIFIER-REFERENCE-DIFFERENTIAL", "VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN"],
       "substrate": "chdb",
       "relative_cost": "low",
       "status": "active",

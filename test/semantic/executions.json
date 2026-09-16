@@ -702,6 +702,13 @@
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     },
     {
+      "id": "EXEC-ARCH-STRICT-SCAN-ENUM-RECONCILIATION-20260916",
+      "binding": "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+      "observed_at": "2026-09-16T06:04:18Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
       "id": "EXEC-ARCH-BREAKER-RESILIENCE-STATE-MACHINE-20260916",
       "binding": "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
       "observed_at": "2026-09-16T00:00:00Z",
