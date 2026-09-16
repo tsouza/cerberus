@@ -12,7 +12,41 @@ CREATE TABLE otel_logs (
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES ('match'), ('wrong-env'), ('wrong-region'), ('wrong-cell'), ('wrong-job');
 -- expected_rows --
-[]
+[
+  ["match"]
+]
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{job="api",env!="prod",region=~"us-.*",cell!~"staging.*"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "env"
+[3] string = "prod"
+[4] string = "region"
+[5] string = "^(?:us-.*)$"
+[6] string = "cell"
+[7] string = "^(?:staging.*)$"
+-- args_optimized --
+[0] string = "job"
+[1] string = "api"
+[2] string = "env"
+[3] string = "prod"
+[4] string = "region"
+[5] string = "^(?:us-.*)$"
+[6] string = "cell"
+[7] string = "^(?:staging.*)$"
+-- chplan --
+Filter predicate=((((ResourceAttributes["job"] = "api") AND (ResourceAttributes["env"] != "prod")) AND (ResourceAttributes["region"] =~ "us-.*")) AND (ResourceAttributes["cell"] !~ "staging.*"))
+  Scan(otel_logs)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] != ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] != ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)

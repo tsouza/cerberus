@@ -18,4 +18,100 @@ INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job', 'api', 'env', 'staging', 'region', 'us-east', 'cell', 'staging-2'), toDateTime64('2026-01-01 00:00:00', 9), 4.0),
     ('up', map('job', 'other', 'env', 'staging', 'region', 'us-east', 'cell', 'prod-1'), toDateTime64('2026-01-01 00:00:00', 9), 5.0);
 -- expected_rows --
-[]
+[
+  ["up", {"cell": "prod-1", "env": "staging", "job": "api", "region": "us-east"}, "2026-01-01T00:00:00Z", 1]
+]
+-- args --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "up"
+[8] string = "job"
+[9] string = ""
+[10] string = "job"
+[11] string = ""
+[12] string = ""
+[13] string = "api"
+[14] string = "env"
+[15] string = ""
+[16] string = "env"
+[17] string = ""
+[18] string = ""
+[19] string = "prod"
+[20] string = "region"
+[21] string = ""
+[22] string = "region"
+[23] string = ""
+[24] string = ""
+[25] string = "^(?:us-.*)$"
+[26] string = "cell"
+[27] string = ""
+[28] string = "cell"
+[29] string = ""
+[30] string = ""
+[31] string = "^(?:staging.*)$"
+[32] string = "2026-01-01 00:00:01.000000000"
+[33] int64 = 9
+[34] string = "2026-01-01 00:00:01.000000000"
+[35] int64 = 9
+[36] int64 = 300000000000
+-- args_optimized --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "up"
+[8] string = "job"
+[9] string = ""
+[10] string = "job"
+[11] string = ""
+[12] string = ""
+[13] string = "api"
+[14] string = "env"
+[15] string = ""
+[16] string = "env"
+[17] string = ""
+[18] string = ""
+[19] string = "prod"
+[20] string = "region"
+[21] string = ""
+[22] string = "region"
+[23] string = ""
+[24] string = ""
+[25] string = "^(?:us-.*)$"
+[26] string = "cell"
+[27] string = ""
+[28] string = "cell"
+[29] string = ""
+[30] string = ""
+[31] string = "^(?:staging.*)$"
+[32] string = "2026-01-01 00:00:01.000000000"
+[33] int64 = 9
+[34] string = "2026-01-01 00:00:01.000000000"
+[35] int64 = 9
+[36] int64 = 300000000000
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+  Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
+    Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(((((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "api") AND (FnCoalesce(FnNullIf(Attributes["env"], ""), FnNullIf(ResourceAttributes["env"], ""), "") != "prod")) AND (FnCoalesce(FnNullIf(Attributes["region"], ""), FnNullIf(ResourceAttributes["region"], ""), "") =~ "us-.*")) AND (FnCoalesce(FnNullIf(Attributes["cell"], ""), FnNullIf(ResourceAttributes["cell"], ""), "") !~ "staging.*")) AND (MetricName = "up"))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=2;union
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) != ?) AND match(coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?), ?) AND NOT match(coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?), ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
+-- sql_optimized --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) != ?) AND match(coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?), ?) AND NOT match(coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?), ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
