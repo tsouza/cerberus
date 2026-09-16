@@ -828,6 +828,231 @@
       "independence_group": "resource-config-projection",
       "test_ref": "test/semantic/resourcefixture/resource_config_test.go:TestResourceFixture_DottedKeyNormalization",
       "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CURSOR-TEARDOWN-PROM-ORDER",
+      "contract": "ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001",
+      "verifier": "VERIFIER-DETERMINISTIC-TEARDOWN-ORDER-TEST",
+      "evidence_class": "execution",
+      "independence_group": "prom-seam-close-before-cancel-order",
+      "test_ref": "test/regression/cursor_teardown_order_test.go:TestPromRangeCursorClosedBeforeContextCancel",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND",
+      "contract": "ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001",
+      "verifier": "VERIFIER-DETERMINISTIC-TEARDOWN-ORDER-TEST",
+      "evidence_class": "execution",
+      "independence_group": "prom-seam-bounded-drain",
+      "test_ref": "test/regression/cursor_teardown_order_test.go:TestPromRangeCursorTeardownIsBounded",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
+      "contract": "ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001",
+      "verifier": "VERIFIER-REAL-CLICKHOUSE-INTEGRATION",
+      "evidence_class": "execution",
+      "independence_group": "real-network-connection-recovery",
+      "test_ref": "internal/chclient/conn_teardown_integration_test.go:TestCursorTeardown_ReturnsConnectionToPool",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL",
+      "contract": "ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001",
+      "verifier": "VERIFIER-DETERMINISTIC-CHAOS-INJECTION",
+      "evidence_class": "execution",
+      "independence_group": "goroutine-leak-normal-request",
+      "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_PromQuery",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CANCELLATION-CLEANUP-ERROR",
+      "contract": "ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001",
+      "verifier": "VERIFIER-DETERMINISTIC-CHAOS-INJECTION",
+      "evidence_class": "execution",
+      "independence_group": "goroutine-leak-error-path",
+      "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_UnderError",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT",
+      "contract": "ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001",
+      "verifier": "VERIFIER-DETERMINISTIC-CHAOS-INJECTION",
+      "evidence_class": "execution",
+      "independence_group": "goroutine-leak-concurrent-path",
+      "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_ConcurrentRequests",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO",
+      "contract": "ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001",
+      "verifier": "VERIFIER-DETERMINISTIC-CHAOS-INJECTION",
+      "evidence_class": "execution",
+      "independence_group": "goroutine-leak-route-memo-retry",
+      "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_RouteMemo",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
+      "contract": "ARCH-SERVING-PATH-CANCELLATION-CLEANUP-001",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "panic-recovery-releases-admission-slot",
+      "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_MiddlewareUnderHandlerPanic_ReleasesSlot",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
+      "contract": "ARCH-CH-DATA-SHARD-FANOUT-BOUND-001",
+      "verifier": "VERIFIER-RESOURCE-FANOUT-BOUND-TEST",
+      "evidence_class": "execution",
+      "independence_group": "gate-allocation-floor",
+      "test_ref": "internal/chclient/fanout_gate_test.go:TestNewDataShardFanoutGate_DataShardCountLE1_NeverAllocates",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
+      "contract": "ARCH-CH-DATA-SHARD-FANOUT-BOUND-001",
+      "verifier": "VERIFIER-RESOURCE-FANOUT-BOUND-TEST",
+      "evidence_class": "execution",
+      "independence_group": "gate-concurrency-cap",
+      "test_ref": "internal/chclient/fanout_gate_test.go:TestQueryOpen_ConcurrentDataShardFanout_NeverExceedsCap",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
+      "contract": "ARCH-CH-DATA-SHARD-FANOUT-BOUND-001",
+      "verifier": "VERIFIER-RESOURCE-FANOUT-BOUND-TEST",
+      "evidence_class": "execution",
+      "independence_group": "gate-cancel-kill-ordering",
+      "test_ref": "internal/chclient/fanout_gate_test.go:TestAcquireDataShardFanout_CancelledDispatch_IssuesKillQueryBeforeRelease",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+      "contract": "ARCH-CH-DATA-SHARD-FANOUT-BOUND-001",
+      "verifier": "VERIFIER-RESOURCE-FANOUT-BOUND-TEST",
+      "evidence_class": "execution",
+      "independence_group": "gate-denial-breaker-neutral",
+      "test_ref": "internal/chclient/fanout_gate_test.go:TestQueryCursor_DataShardFanoutGate_DeniedIsBreakerNeutral",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE",
+      "contract": "SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001",
+      "verifier": "VERIFIER-MIGRATION-TIER-SCENARIO",
+      "evidence_class": "execution",
+      "independence_group": "tier1-substrate-mechanism",
+      "test_ref": "test/e2e/migration/tier1_stack_test.go:TestTier1Substrate",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
+      "contract": "SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001",
+      "verifier": "VERIFIER-MIGRATION-TIER-SCENARIO",
+      "evidence_class": "execution",
+      "independence_group": "tier1-query-parity",
+      "test_ref": "test/e2e/migration/tier1_parity_test.go:TestTier1Parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING",
+      "contract": "SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001",
+      "verifier": "VERIFIER-MIGRATION-TIER-SCENARIO",
+      "evidence_class": "execution",
+      "independence_group": "tier2-firing-parity",
+      "test_ref": "test/e2e/migration/tier2_ruler_test.go:TestTier2Substrate",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
+      "contract": "ARCH-CH-STRICT-SCAN-DIFFERENTIAL-001",
+      "verifier": "VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN",
+      "evidence_class": "execution",
+      "independence_group": "corpus-decode-differential",
+      "test_ref": "test/spec/strictscan_integration_test.go:TestStrictScanDifferential",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+      "contract": "ARCH-CH-STRICT-SCAN-DIFFERENTIAL-001",
+      "verifier": "VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN",
+      "evidence_class": "execution",
+      "independence_group": "query-log-exit-status-enum-reconciliation",
+      "test_ref": "internal/optcorpus/enummigrate_realch_integration_test.go:TestCorpusEnumMigrationRealClickHouse",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB",
+      "contract": "SIGNAL-CONSUMER-CORPUS-WIRE-REPLAY-001",
+      "verifier": "VERIFIER-CONSUMER-CORPUS-REPLAY",
+      "evidence_class": "execution",
+      "independence_group": "wire-shape-stub-replay",
+      "test_ref": "test/consumer-corpus/replay_test.go:TestConsumerCorpus_Replay_Stub",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
+      "contract": "SIGNAL-CONSUMER-CORPUS-WIRE-REPLAY-001",
+      "verifier": "VERIFIER-CONSUMER-CORPUS-REPLAY",
+      "evidence_class": "execution",
+      "independence_group": "route-memo-retry-preserves-decode-contract",
+      "test_ref": "test/consumer-corpus/route_memo_replay_test.go:TestConsumerCorpus_RouteMemoRetry_PreservesConsumerDecodeContract",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
+      "contract": "ARCH-CH-CIRCUIT-BREAKER-RESILIENCE-001",
+      "verifier": "VERIFIER-DETERMINISTIC-CHAOS-INJECTION",
+      "evidence_class": "execution",
+      "independence_group": "breaker-deterministic-state-machine",
+      "test_ref": "internal/chclient/breaker_chaos_test.go:TestBreaker_OpensAfterNConsecutiveFailures",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT",
+      "contract": "ARCH-CH-CIRCUIT-BREAKER-RESILIENCE-001",
+      "verifier": "VERIFIER-LIVE-STACK-CHAOS-INJECTION",
+      "evidence_class": "execution",
+      "independence_group": "breaker-live-fault-corroboration",
+      "test_ref": ".github/scripts/chaos-run.mjs#ch-pod-kill",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
+      "contract": "ARCH-PERF-BASELINE-MEASURED-EVIDENCE-001",
+      "verifier": "VERIFIER-PERF-BASELINE-REGRESSION",
+      "evidence_class": "execution",
+      "independence_group": "nightly-real-ch-memory-gate",
+      "test_ref": "test/perf/nightly/realch_perfnightly_integration_test.go:TestPerfNightlyRealCH",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING",
+      "contract": "ARCH-PERF-BASELINE-MEASURED-EVIDENCE-001",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "baseline-prong-ordering-invariant",
+      "test_ref": "test/perf/nightly/baseline_test.go:TestNightlyBaseline_ProngBIsNeverLooserThanProngA",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT",
+      "contract": "ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001",
+      "verifier": "VERIFIER-STATIC-INVARIANT-SCAN",
+      "evidence_class": "static-analysis",
+      "independence_group": "static-fanout-lint",
+      "test_ref": "internal/perf/fanout/lint_test.go:TestRule1_UnboundedCrossJoin_Trips",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET",
+      "contract": "ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001",
+      "verifier": "VERIFIER-CARDINALITY-FANOUT-RATCHET",
+      "evidence_class": "execution",
+      "independence_group": "cardinality-scale-wall-ratchet",
+      "test_ref": "test/perf/cardinality_ratchet_test.go:TestCardinalityRatchet",
+      "status": "active"
     }
   ]
 }

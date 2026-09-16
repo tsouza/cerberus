@@ -602,6 +602,146 @@
       "observed_at": "2026-09-16T00:00:00Z",
       "result": "pass",
       "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CURSOR-TEARDOWN-CH-RECOVERY-20260916",
+      "binding": "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
+      "observed_at": "2026-09-16T06:01:06Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CURSOR-TEARDOWN-PROM-ORDER-20260916",
+      "binding": "BINDING-ARCH-CURSOR-TEARDOWN-PROM-ORDER",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CURSOR-TEARDOWN-PROM-BOUND-20260916",
+      "binding": "BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CANCELLATION-CLEANUP-NORMAL-20260916",
+      "binding": "BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CANCELLATION-CLEANUP-ERROR-20260916",
+      "binding": "BINDING-ARCH-CANCELLATION-CLEANUP-ERROR",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CANCELLATION-CLEANUP-CONCURRENT-20260916",
+      "binding": "BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO-20260916",
+      "binding": "BINDING-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-CANCELLATION-CLEANUP-PANIC-20260916",
+      "binding": "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR-20260916",
+      "binding": "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-FANOUT-BOUND-CONCURRENCY-CAP-20260916",
+      "binding": "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER-20260916",
+      "binding": "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL-20260916",
+      "binding": "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-CONSUMER-WIRE-REPLAY-STUB-20260916",
+      "binding": "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO-20260916",
+      "binding": "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-STRICT-SCAN-ENUM-RECONCILIATION-20260916",
+      "binding": "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+      "observed_at": "2026-09-16T06:04:18Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL-20260916",
+      "binding": "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
+      "observed_at": "2026-09-16T06:04:18Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-BREAKER-RESILIENCE-STATE-MACHINE-20260916",
+      "binding": "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-PERF-BASELINE-PRONG-ORDERING-20260916",
+      "binding": "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-COMPUTE-FANOUT-STATIC-LINT-20260916",
+      "binding": "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
+    },
+    {
+      "id": "EXEC-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET-20260916",
+      "binding": "BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET",
+      "observed_at": "2026-09-16T00:00:00Z",
+      "result": "pass",
+      "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000"
     }
   ]
 }
