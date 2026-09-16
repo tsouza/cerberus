@@ -56,7 +56,7 @@ test("runPilot: each ledger entry carries the full schema loadMutantExecutions e
     },
     runMutantFn: async ({ record }) => ({
       status: record.expected_detection,
-      mutant_runs: [{ detector: "example-detector", classification: record.expected_detection }],
+      mutant_runs: [{ detector: "example-detector", classification: record.expected_detection, durationMs: 4312 }],
     }),
   });
 
@@ -69,8 +69,22 @@ test("runPilot: each ledger entry carries the full schema loadMutantExecutions e
     for (const d of entry.detectors) {
       assert.ok(typeof d.id === "string");
       assert.ok(typeof d.classification === "string");
+      assert.equal(d.duration_ms, 4312, "runtime/cost metadata must be carried through from runMutant's own durationMs");
     }
   }
+});
+
+test("runPilot: a detector result with no durationMs reports duration_ms null, never a fabricated number", async () => {
+  const { entries } = await runPilot({
+    root: REPO_ROOT,
+    dir: DEFAULT_MUTANTS_DIR,
+    env: {},
+    runMutantFn: async ({ record }) => ({
+      status: record.expected_detection,
+      mutant_runs: [{ detector: "example-detector", classification: record.expected_detection }],
+    }),
+  });
+  assert.equal(entries[0].detectors[0].duration_ms, null);
 });
 
 test("runPilot: with no GitHub Actions env, source_sha is null and run_ref reports a readable placeholder", async () => {

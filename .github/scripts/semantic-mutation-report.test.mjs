@@ -10,7 +10,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { loadMutants } from "./lib/semantic-mutation.mjs";
+import { CLASSIFICATIONS, loadMutants } from "./lib/semantic-mutation.mjs";
+import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import {
   CANONICAL_HEADS,
   SMALL_COHORT_DENOMINATOR_FLOOR,
@@ -209,17 +210,40 @@ test("buildMutationCohortReport: a stale equivalence review's fresher 'survived'
 });
 
 // --- Cohort revision / fingerprint ------------------------------------------
+//
+// cohortFingerprint takes the already-RESOLVED report records (each
+// {id, synthetic, violated_contracts, disposition: {status}}), never raw
+// mutant records — these fixtures build that shape directly rather than
+// going through buildMutationCohortReport, so the fingerprint's own
+// sensitivity is pinned independent of everything else buildReport does.
 
-test("cohortFingerprint: changing one record's classification changes the fingerprint even when the total count is unchanged", () => {
-  const before = recordsMap([mutantRecord({ id: "MUTANT-A", expected_detection: "killed" })]);
-  const after = recordsMap([mutantRecord({ id: "MUTANT-A", expected_detection: "survived" })]);
+function reportRecord({ id = "MUTANT-A", synthetic = false, violatedContracts = ["FIXTURE-CONTRACT"], status = "killed" } = {}) {
+  return { id, synthetic, violated_contracts: violatedContracts, disposition: { status } };
+}
+
+test("cohortFingerprint: changing one record's RESOLVED status changes the fingerprint even when the total count is unchanged", () => {
+  const before = [reportRecord({ status: "killed" })];
+  const after = [reportRecord({ status: "survived" })];
   assert.notEqual(cohortFingerprint(before), cohortFingerprint(after));
 });
 
 test("cohortFingerprint: identical cohorts fingerprint identically (deterministic, order-independent)", () => {
-  const a = recordsMap([mutantRecord({ id: "MUTANT-A" }), mutantRecord({ id: "MUTANT-B" })]);
-  const b = new Map([...a.entries()].reverse());
+  const a = [reportRecord({ id: "MUTANT-A" }), reportRecord({ id: "MUTANT-B" })];
+  const b = [...a].reverse();
   assert.equal(cohortFingerprint(a), cohortFingerprint(b));
+});
+
+test("cohortFingerprint: a ledger observation overriding a record's DECLARATION moves the fingerprint even though the declared JSON is untouched", () => {
+  // The exact case this fingerprint exists to catch (per its own header):
+  // fingerprinting only the declared expected_detection would leave
+  // cohort_revision unchanged here, while the published rate moves.
+  const records = recordsMap([mutantRecord({ id: "MUTANT-STALE", expected_detection: "equivalent-reviewed" })]);
+  const before = buildMutationCohortReport(records, { contracts: new Map() });
+  const executions = new Map([
+    ["MUTANT-STALE", { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] }],
+  ]);
+  const after = buildMutationCohortReport(records, { contracts: new Map(), executions });
+  assert.notEqual(before.cohort_revision, after.cohort_revision);
 });
 
 // --- Head / scope attribution -----------------------------------------------
@@ -276,19 +300,41 @@ test("dispositionRates: small_sample flags a denominator below the documented fl
 
 // --- Unresolved survivors ----------------------------------------------------
 
-test("buildMutationCohortReport: a declared survivor WITH a linked_issue is not flagged as unresolved", () => {
+// A non-synthetic record can never DECLARE expected_detection "survived" —
+// #3520/#3532 (lib/semantic-mutation.mjs's NON_SYNTHETIC_CLASSIFICATIONS)
+// forbid it at the schema level, since a bare non-killed outcome on real
+// evidence would be an expected-failure/tolerance-list entry (invariant 7).
+// So the only way a non-synthetic record's RESOLVED disposition is ever
+// "survived" is a ledger observation overriding its (valid) declared
+// "killed"/"equivalent-reviewed" — every fixture below reflects exactly
+// that, never a declared "survived" a real record could never carry.
+
+test("buildMutationCohortReport: an observed survivor WITH a linked_issue is not flagged as unresolved", () => {
   const records = recordsMap([
-    mutantRecord({ id: "MUTANT-REAL-SURVIVOR", expected_detection: "survived", linked_issue: 9999 }),
+    mutantRecord({ id: "MUTANT-REAL-SURVIVOR", expected_detection: "killed", linked_issue: 9999 }),
   ]);
-  const report = buildMutationCohortReport(records, { contracts: new Map() });
+  const executions = new Map([
+    [
+      "MUTANT-REAL-SURVIVOR",
+      { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] },
+    ],
+  ]);
+  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
+  assert.equal(report.records[0].disposition.status, "survived");
   assert.deepEqual(report.unresolved_survivors, []);
 });
 
-test("buildMutationCohortReport: a declared survivor with NO linked_issue is flagged as unresolved", () => {
+test("buildMutationCohortReport: an observed survivor with NO linked_issue is flagged as unresolved", () => {
   const records = recordsMap([
-    mutantRecord({ id: "MUTANT-REAL-SURVIVOR", expected_detection: "survived", linked_issue: null }),
+    mutantRecord({ id: "MUTANT-REAL-SURVIVOR", expected_detection: "killed", linked_issue: null }),
   ]);
-  const report = buildMutationCohortReport(records, { contracts: new Map() });
+  const executions = new Map([
+    [
+      "MUTANT-REAL-SURVIVOR",
+      { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] },
+    ],
+  ]);
+  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
   assert.deepEqual(report.unresolved_survivors, ["MUTANT-REAL-SURVIVOR"]);
 });
 
@@ -304,6 +350,34 @@ test("buildMutationCohortReport: an observed (not declared) survivor with no lin
   assert.deepEqual(report.unresolved_survivors, ["MUTANT-DRIFTED"]);
 });
 
+// --- Disposition disagreements (declared vs. observed) ----------------------
+
+test("buildMutationCohortReport: an observation that disagrees with the declaration is surfaced in disposition_disagreements", () => {
+  const records = recordsMap([mutantRecord({ id: "MUTANT-DRIFTED", expected_detection: "killed" })]);
+  const executions = new Map([
+    ["MUTANT-DRIFTED", { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] }],
+  ]);
+  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
+  assert.deepEqual(report.disposition_disagreements, [
+    { id: "MUTANT-DRIFTED", declared_status: "killed", observed_status: "survived" },
+  ]);
+});
+
+test("buildMutationCohortReport: an observation that CONFIRMS the declaration never appears in disposition_disagreements", () => {
+  const records = recordsMap([mutantRecord({ id: "MUTANT-CONFIRMED", expected_detection: "killed" })]);
+  const executions = new Map([
+    ["MUTANT-CONFIRMED", { status: "killed", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] }],
+  ]);
+  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
+  assert.deepEqual(report.disposition_disagreements, []);
+});
+
+test("buildMutationCohortReport: with no ledger entry at all, a record is never reported as a disagreement", () => {
+  const records = recordsMap([mutantRecord({ id: "MUTANT-NO-LEDGER", expected_detection: "killed" })]);
+  const report = buildMutationCohortReport(records, { contracts: new Map() });
+  assert.deepEqual(report.disposition_disagreements, []);
+});
+
 // --- Determinism / rendering --------------------------------------------------
 
 test("buildMutationCohortReport + renderMutationCohortMarkdown: byte-identical across two independent builds", () => {
@@ -316,18 +390,40 @@ test("buildMutationCohortReport + renderMutationCohortMarkdown: byte-identical a
 
 // --- Real committed corpus (end to end) ----------------------------------
 
-test("real corpus: builds without throwing and every canonical head is represented", () => {
+test("real corpus: every canonical head has real, non-empty membership, including the cross-head record", () => {
   const records = loadMutants();
-  const report = buildMutationCohortReport(records, { contracts: new Map() });
+  const model = loadSemanticModel(DEFAULT_SEMANTIC_MODEL_DIR);
+  const report = buildMutationCohortReport(records, { contracts: model.contracts });
   assert.equal(report.records.length, 13);
+
+  // Real membership, not just "the key exists" — each canonical head must
+  // actually have at least one real record attributed to it, and the one
+  // mutation whose violated_contracts span two heads (the LogQL anchoring
+  // mutant, which also violates a PromQL contract via the shared
+  // anchoredRegexPattern emission site) must appear under BOTH.
   for (const headId of CANONICAL_HEADS) {
-    assert.ok(headId in report.by_head);
+    assert.ok(report.by_head[headId].record_ids.length > 0, `${headId} has no real record attributed to it`);
   }
-  // The synthetic cohort's own seven records exercise all seven outcomes —
-  // every bucket must be represented at least once (this is what makes the
-  // corpus a genuine calibration set for the runner, not just a smoke test).
+  assert.ok(report.by_head["HEAD-LOGQL"].record_ids.includes("MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"));
+  assert.ok(report.by_head["HEAD-PROMQL"].record_ids.includes("MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"));
+  assert.deepEqual(report.cross_head_record_ids, ["MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"]);
+
   assert.equal(report.synthetic_cohort.rates.total, 7);
   assert.equal(report.semantic_cohort.rates.total, 6);
+});
+
+test("real corpus: the synthetic cohort's seven records exercise every one of the seven CLASSIFICATIONS at least once", () => {
+  // This is what makes the synthetic cohort a genuine calibration set for
+  // the runner's own outcome vocabulary, not just a smoke test — a gap here
+  // would mean some classification path has zero committed coverage.
+  const records = loadMutants();
+  const report = buildMutationCohortReport(records, { contracts: new Map() });
+  for (const classification of CLASSIFICATIONS) {
+    assert.ok(
+      report.synthetic_cohort.rates.by_status[classification] >= 1,
+      `synthetic cohort has zero records classified ${classification}`,
+    );
+  }
 });
 
 test("real corpus: renders without throwing", () => {

@@ -17077,6 +17077,7 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
+        "declared_status": "killed",
         "disposition": {
           "status": "killed",
           "source": "observed",
@@ -17086,11 +17087,13 @@
           "detectors": [
             {
               "id": "logql-stream-regex-no-overmatch",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 4312
             },
             {
               "id": "promql-regex-unanchored-no-overmatch-supplementary",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 4850
             }
           ]
         },
@@ -17131,6 +17134,7 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
+        "declared_status": "killed",
         "disposition": {
           "status": "killed",
           "source": "observed",
@@ -17140,7 +17144,8 @@
           "detectors": [
             {
               "id": "logql-logfmt-then-numeric-filter-order",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 1768
             }
           ]
         },
@@ -17183,6 +17188,7 @@
           "memory_max": "2GiB",
           "memory_hold": "2s"
         },
+        "declared_status": "killed",
         "disposition": {
           "status": "killed",
           "source": "observed",
@@ -17192,7 +17198,8 @@
           "detectors": [
             {
               "id": "counter-reset-mid-window-compensation",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 1771
             }
           ]
         },
@@ -17235,6 +17242,7 @@
           "memory_max": "2GiB",
           "memory_hold": "2s"
         },
+        "declared_status": "killed",
         "disposition": {
           "status": "killed",
           "source": "observed",
@@ -17244,7 +17252,8 @@
           "detectors": [
             {
               "id": "range-window-boundary-exact-sample",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 1614
             }
           ]
         },
@@ -17281,6 +17290,7 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
+        "declared_status": "build-failed",
         "disposition": {
           "status": "build-failed",
           "source": "declared",
@@ -17322,6 +17332,7 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
+        "declared_status": "equivalent-reviewed",
         "disposition": {
           "status": "equivalent-reviewed",
           "source": "declared",
@@ -17368,6 +17379,7 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
+        "declared_status": "infrastructure-error",
         "disposition": {
           "status": "infrastructure-error",
           "source": "declared",
@@ -17409,6 +17421,7 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
+        "declared_status": "invalid-transform",
         "disposition": {
           "status": "invalid-transform",
           "source": "declared",
@@ -17450,6 +17463,7 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
+        "declared_status": "killed",
         "disposition": {
           "status": "killed",
           "source": "declared",
@@ -17491,6 +17505,7 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
+        "declared_status": "survived",
         "disposition": {
           "status": "survived",
           "source": "declared",
@@ -17532,6 +17547,7 @@
           "memory_max": "256MiB",
           "memory_hold": "1s"
         },
+        "declared_status": "timeout",
         "disposition": {
           "status": "timeout",
           "source": "declared",
@@ -17589,6 +17605,7 @@
           "memory_max": "2GiB",
           "memory_hold": "2s"
         },
+        "declared_status": "killed",
         "disposition": {
           "status": "killed",
           "source": "observed",
@@ -17598,11 +17615,13 @@
           "detectors": [
             {
               "id": "structural-branching-http",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 2231
             },
             {
               "id": "structural-branching-grpc",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 1745
             }
           ]
         },
@@ -17655,6 +17674,7 @@
           "memory_max": "2GiB",
           "memory_hold": "2s"
         },
+        "declared_status": "killed",
         "disposition": {
           "status": "killed",
           "source": "observed",
@@ -17664,11 +17684,13 @@
           "detectors": [
             {
               "id": "scope-collision-conjunction-http",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 1598
             },
             {
               "id": "scope-collision-conjunction-grpc",
-              "classification": "killed"
+              "classification": "killed",
+              "duration_ms": 1545
             }
           ]
         },
@@ -17871,6 +17893,7 @@
     "cross_head_record_ids": [
       "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"
     ],
-    "unresolved_survivors": []
+    "unresolved_survivors": [],
+    "disposition_disagreements": []
   }
 }

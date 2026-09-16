@@ -1700,7 +1700,7 @@ Excluded from the assured count above by design — a draft is not yet load-bear
 
 ## Semantic mutation pilot
 
-A bounded, hand-authored cohort of contract-linked domain-semantic mutations (issues #3448-#3452), isolated from the developer checkout via `go test -overlay` (lib/semantic-mutation.mjs) — distinct from, and never a substitute for, the required traditional `mutation` (gremlins) lane. Cohort revision (content fingerprint over every record's id/synthetic/disposition/violated_contracts, so a classification change is visible even when a published rate's own digits do not move): `5b2c6ba05cee06f2686bd42a52188c7415010ba24dbeb3df17a3073e98aee56d`.
+A bounded, hand-authored cohort of contract-linked domain-semantic mutations (issues #3448-#3452), isolated from the developer checkout via `go test -overlay` (lib/semantic-mutation.mjs) — distinct from, and never a substitute for, the required traditional `mutation` (gremlins) lane. Cohort revision (content fingerprint over every record's id/synthetic/violated_contracts and its RESOLVED disposition — the latest ledger observation when one exists, not merely the declared expected_detection — so a classification change is visible even when a published rate's own digits do not move): `5b2c6ba05cee06f2686bd42a52188c7415010ba24dbeb3df17a3073e98aee56d`.
 
 Escape/kill rate is computed ONLY over records in the `denominator` bucket (`killed` + `survived` — a real detector ran, against a validly-applied, non-equivalent mutation, with a passing clean control). `equivalent` (an audited exemption), `invalid` (the mutation never validly applied), and `incomplete` (build-failed/timeout/infrastructure-error — the measurement itself never finished) are each reported separately and never folded into either side of the rate — an incomplete run is neither a kill nor a clean escape.
 
@@ -1802,7 +1802,15 @@ denominator (killed+survived): **2** — **SMALL SAMPLE**, treat the percentages
 
 ### Survivors requiring a linked issue
 
-None on record. A non-synthetic mutant whose disposition is `survived` cannot be committed without a `linked_issue` (schema-enforced, lib/semantic-mutation.mjs) — this list is never populated by a record silently passing review.
+A non-synthetic record can never DECLARE `expected_detection: "survived"` — #3520/#3532 forbid it at the schema level (a bare non-killed outcome on real evidence is an expected-failure/tolerance-list entry, invariant 7). The only way a real record's RESOLVED disposition is ever `survived` is a fresh `test/semantic/mutant-executions.json` observation overriding its own valid declaration — an actual regression an execution caught. Listed below when that has happened and the record's own `linked_issue` is still null.
+
+None on record.
+
+### Disposition disagreements (declared vs. observed)
+
+A record whose latest ledger observation disagrees with what it still declares — the ledger is hand-authored and never cross-checked by CI against `expected_detection`, so this is the one place such a drift becomes visible.
+
+None on record.
 
 ### Synthetic self-test cohort
 

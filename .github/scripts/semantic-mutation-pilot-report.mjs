@@ -104,7 +104,11 @@ export async function runPilot({
       status: result.status,
       run_ref: runRef,
       source_sha: run.sourceSha,
-      detectors: (result.mutant_runs ?? []).map((r) => ({ id: r.detector, classification: r.classification })),
+      detectors: (result.mutant_runs ?? []).map((r) => ({
+        id: r.detector,
+        classification: r.classification,
+        duration_ms: r.durationMs ?? null,
+      })),
     });
   }
 
