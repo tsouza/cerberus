@@ -105,16 +105,21 @@ const settingMinTableRowsToUseProjectionIndex = "min_table_rows_to_use_projectio
 // production scale.
 const traceIDBitmapFilterMinTableRows = 0
 
-// SettingsRules holds the DARK-by-default, plan-shape-gated per-query
-// ClickHouse settings rules the engine evaluates at the execute seam. The
-// zero value applies NOTHING: with both flags false the ctx is returned
-// unchanged, so wiring SettingsRules is byte-neutral until an operator opts
-// in via the CERBERUS_* flags.
+// SettingsRules holds the flag-gated, plan-shape-gated per-query ClickHouse
+// settings rules the engine evaluates at the execute seam. Each feature flag
+// is driven by the boot-resolved chopt EnabledSet (internal/choptwire's
+// SettingsRules): under the default CERBERUS_CH_OPTIMIZATIONS=auto every
+// AutoSelect feature the connected server carries resolves in, so on a
+// capable server most rules are ON by default; `off`, or an explicit listing
+// without the feature, turns each off. The zero value applies NOTHING — it is
+// what an `off` posture, or a server too old for every feature, produces.
+// The operator-configured fields (LogCommentShape, QueryWorkload, the
+// result-cache horizons) come off config, not off the EnabledSet.
 //
-// Both rules are safe on ClickHouse 24.8 (cerberus's min floor):
-// optimize_aggregation_in_order is a long-standing result-equivalent
-// execution knob, and log_comment is a free-form annotation. Neither adopts
-// a 25.x feature.
+// Every rule is RESULT-EQUIVALENT — it changes how ClickHouse executes the
+// statement, never which rows it returns — and each is stamped only where its
+// feature's version floor (or capability probe) has resolved in, so the set is
+// safe on every server from cerberus's 24.8 floor upward.
 type SettingsRules struct {
 	// OptimizeAggregationInOrder, when true, stamps
 	// optimize_aggregation_in_order=1 on queries whose post-optimize plan
@@ -201,9 +206,9 @@ type SettingsRules struct {
 	// (chclient.ProbeQueryWorkloadCapability) found the connected server
 	// accepts the `workload` setting; a Forbidden/Unreachable verdict leaves
 	// this empty (permissive/auto fallback — see docs/operations.md
-	// #workload-scheduling-server-side-isolation-between-query-and-ingest), so the byte-identical-by-default guarantee
-	// holds whether the knob is simply unset or the probe found it
-	// unusable. cerberus never creates the named WORKLOAD itself — see
+	// #workload-scheduling-server-side-isolation-between-query-and-ingest), so no `workload` setting
+	// rides any query whether the knob is simply unset or the probe found
+	// it unusable. cerberus never creates the named WORKLOAD itself — see
 	// SettingWorkload's own doc.
 	//
 	// Not memory-bounding: `workload` governs CPU-slot/IO-byte scheduling

@@ -307,33 +307,29 @@ func ProbeQuerySettings(plan chplan.Node, rules SettingsRules, memCap int64) Que
 	}
 }
 
-// execContext wraps the execute-stage ctx with any per-plan ClickHouse
-// settings the emitted plan requires. Today the single rule is: when the
-// optimized plan contains a chplan.RangeWindowGridNative node (the
-// experimental timeSeriesRateToGrid lowering), mark the ctx with
-// chclient.WithTSGridSetting so the chclient query path adds
-// `allow_experimental_time_series_aggregate_functions=1` to THAT query's
-// settings. Plans without the native node return ctx unchanged, so the
-// experimental setting never rides an unrelated query (a plain unknown
-// setting can itself error on a ClickHouse < 25.6).
+// execContext wraps the execute-stage ctx with every per-plan ClickHouse
+// setting the emitted plan requires, then fixes the dispatch's query_id and
+// feeds the corpus observer. The settings come in two layers:
 //
-// Applied identically on the eager (QueryPlan) and streaming
-// (QueryPlanCursor) execute sites so the native path is gated the same
-// way regardless of which one runs.
+//   - the ts-grid gate: when the optimized plan contains a node from the
+//     experimental timeSeries*ToGrid family (planHasTSGridNative), the ctx is
+//     marked with chclient.WithTSGridSetting so the chclient query path adds
+//     `allow_experimental_time_series_aggregate_functions=1` to THAT query's
+//     settings and never to an unrelated one (a plain unknown setting can
+//     itself error on a ClickHouse < 25.6);
+//   - applySharedQuerySettings: the always-on bounds (spill, compare(),
+//     native-histogram analyzer fix, sorted slab), the feature-gated bounds
+//     (join spill, exp-histogram two-level) and the flag-gated
+//     SettingsRules from e.settings() — each of those driven by the
+//     boot-resolved chopt EnabledSet, so on a capable server under the
+//     default `auto` posture most of them are ON; `CERBERUS_CH_OPTIMIZATIONS=off`
+//     turns each off. The always-on bounds fire whenever their plan shape
+//     matches regardless of posture.
 //
-// On top of the always-on ts-grid gate, spill bound, compare() memory bound,
-// native-histogram analyzer fix and sorted-slab memory bound, execContext
-// applies the join spill bound
-// — gated on BOTH the join_spill chopt feature (server >= 26.4, resolved once
-// at boot into e.settings().JoinSpill) AND the plan containing a join-bearing
-// node, so it is absent on every server too old to carry
-// max_bytes_before_external_join — and layers the DARK, flag-gated settings
-// rules from e.settings() (optimize_aggregation_in_order, log_comment shape
-// id). Each of THOSE rules is OFF unless its CERBERUS_* flag is set, so the
-// default ctx is byte-identical to before they existed; the always-on rules
-// above them fire unconditionally whenever their plan shape matches. Every
-// rule writes through chclient.WithQuerySetting, so a plan that triggers more
-// than one rule carries all of them on the one per-request settings map.
+// Every rule writes through chclient.WithQuerySetting, so a plan that
+// triggers more than one rule carries all of them on the one per-request
+// settings map. Applied identically on the eager (QueryPlan) and streaming
+// (QueryPlanCursor) execute sites so both are gated the same way.
 func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string, decision *solver.Decision) (context.Context, string) {
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
@@ -967,11 +963,12 @@ type Engine struct {
 	// default config.
 	Solver *solver.Solver
 
-	// Settings carries the optional, DARK-by-default per-query ClickHouse
-	// settings rules the engine evaluates against the post-optimize plan
-	// (optimize_aggregation_in_order, log_comment shape id). The zero value
-	// is "every rule off": every existing call path is byte-unchanged. Wired
-	// from the CERBERUS_* flags in cmd/cerberus. See SettingsRules.
+	// Settings carries the flag-gated per-query ClickHouse settings rules the
+	// engine evaluates against the post-optimize plan. The zero value is
+	// "every rule off" — the `CERBERUS_CH_OPTIMIZATIONS=off` posture; under
+	// the default `auto` cmd/cerberus wires it from the boot-resolved chopt
+	// EnabledSet (internal/choptwire.SettingsRules), so on a capable server
+	// most rules are on. See SettingsRules.
 	//
 	// It is the value in force until SetSettings installs a replacement, and it
 	// is never read directly on the query path — see settings.
