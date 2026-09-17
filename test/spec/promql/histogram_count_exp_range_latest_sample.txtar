@@ -132,6 +132,7 @@ SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+group_by_two_level_threshold_bytes=1
 log_comment=cerb:project;rbf
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
