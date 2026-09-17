@@ -151,16 +151,32 @@ func runHistogramMergeBoundQueryWithOpts(t *testing.T, fixture *chdbFixture, opt
 	return nil
 }
 
-// TestHistogramMergeBudget_ChDB_BucketWidthExceeded seeds two series whose
-// PositiveOffset diverges enough (0 vs 6000, both Scale 0, one bucket each)
-// that the merged bucket ladder spans 6001 buckets — past the point where
-// `rows(2) x width(6001)^2` crosses maxHistogramMergeCostUnits
-// (60,000,000; 2 x 6001^2 = ~72M) — and asserts the query aborts with the
-// budget guard's own throwIf, not a ClickHouse crash and not a silent
-// wrong answer. This isolates the WIDTH factor of the cost model: 2 rows
-// alone (histogramBinopOperandCount's own fixed row count) never trips it
-// on its own.
-func TestHistogramMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
+// TestHistogramMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects
+// seeds two series whose PositiveOffset diverges enough (0 vs 6000, both
+// Scale 0, one bucket each) that the NATURAL merge — at min(Scale) alone,
+// with no further downscale — would span 6001 buckets, past the point
+// where `rows(2) x width(6001)^2` crosses maxHistogramMergeCostUnits
+// (60,000,000; 2 x 6001^2 = ~72M).
+//
+// Before cerberus issue #3555's fix this aborted with the budget guard's
+// own throwIf: min(Scale) alone only guarantees every row CAN be
+// downscaled onto the merge, not that the resulting range is narrow — two
+// individually-narrow rows (one bucket each) with merely DIFFERENT central
+// values blew the guard exactly like this. wrapExpHistogramMergeScaleRefinement
+// now downscales the merge's shared scale FIRST so the merged width never
+// exceeds maxHistogramMergeOutputWidth (160), and the guard sees a cost of
+// 2 x 160^2 = 51,200 — comfortably under budget — so the query now
+// SUCCEEDS with a coarser (but still correct — every input bucket still
+// contributes to some output bucket) merged distribution instead of
+// refusing outright, matching how real exponential-histogram merge
+// implementations (the OTel SDK's own accumulator, Prometheus's
+// FloatHistogram.Add) handle the same shape.
+//
+// Width alone, isolated from row count, is deliberately no longer a
+// rejection axis after this fix — see
+// TestHistogramMergeBudget_ChDB_RowCountExceeded below for proof the guard
+// still meaningfully rejects a genuinely large series-per-group fan-out.
+func TestHistogramMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
@@ -168,20 +184,8 @@ func TestHistogramMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	b.WriteString("    " + histogramMergeBoundRow("far", 6000) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
-	err := runHistogramMergeBoundQuery(t, fixture)
-	if err == nil {
-		t.Fatal("expected the merge budget guard to abort the query (2 rows x width 6001^2 exceeds the cost budget), got no error")
-	}
-	// This test drives chdb-go's raw driver handle directly (see
-	// runHistogramMergeBoundQuery), never through chclient — the typed
-	// *chclient.ThrowIfError chsql's production HTTP-facing classifiers use
-	// only wraps errors that pass through chclient.Client's own driver-error
-	// classification, so it doesn't apply here. A raw substring check
-	// against chdb-go's own exception text is what this test actually needs:
-	// proof the emitted SQL's throwIf fires at real ClickHouse execution,
-	// carrying the right message.
-	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
-		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
+	if err := runHistogramMergeBoundQuery(t, fixture); err != nil {
+		t.Fatalf("a scale-divergent two-series merge must be compacted to a bounded width, not rejected: %v", err)
 	}
 }
 
@@ -220,6 +224,15 @@ func TestHistogramMergeBudget_ChDB_RowCountExceeded(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the merge budget guard to abort the query (2500 rows x width 160^2 exceeds the cost budget), got no error")
 	}
+	// This test drives chdb-go's raw driver handle directly (see
+	// runHistogramMergeBoundQuery), never through chclient — the typed
+	// *chclient.ThrowIfError chsql's production HTTP-facing classifiers use
+	// only wraps errors that pass through chclient.Client's own driver-error
+	// classification, so it doesn't apply here. A raw substring check
+	// against chdb-go's own exception text is what this test actually needs:
+	// proof the emitted SQL's throwIf fires at real ClickHouse execution,
+	// carrying the right message. Every other ChDB test in this file that
+	// asserts an error relies on this same explanation.
 	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
 		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
 	}
@@ -280,16 +293,31 @@ func TestHistogramMergeBudget_ChDB_WithinBudget(t *testing.T) {
 
 // TestHistogramMergeBudget_ChDB_EnvOverrideRaisesBudget proves the full
 // operator-override plumbing end to end (cerberus issue #2667): it seeds the
-// EXACT two-row/width-6001 shape TestHistogramMergeBudget_ChDB_BucketWidthExceeded
-// proves the compiled-in 60,000,000 default rejects (real cost ~72M), sets
+// EXACT 2,500-row/width-160 shape TestHistogramMergeBudget_ChDB_RowCountExceeded
+// proves the compiled-in 60,000,000 default rejects (real cost
+// 2,500 x 160^2 = 64,000,000), sets
 // CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS above that real cost,
 // confirms promql.ResourceBoundsFromEnv actually picked up the override,
 // and asserts the SAME query now SUCCEEDS once that resolved ResourceBounds
 // is threaded through promql.LowerOpts — same query, same seed, opposite
 // outcome, purely from the operator override reaching the emitted SQL's
 // throwIf threshold.
+//
+// This used to seed the 2-row/width-6001 scale-divergent shape instead —
+// cerberus issue #3555's scale-refinement fix now compacts that shape's
+// merge down to width 160 before the cost check ever runs (see
+// TestHistogramMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects),
+// so it no longer exceeds even the default budget and could no longer
+// demonstrate the override raising anything. The row-count-driven shape
+// above isn't touched by that refinement (its width is already 160), so it
+// still cleanly isolates the override plumbing.
 func TestHistogramMergeBudget_ChDB_EnvOverrideRaisesBudget(t *testing.T) {
-	const raisedBudget = 100_000_000 // > ~72M (2 rows x width(6001)^2 real cost), > the 60M default
+	const (
+		rowsOverBudget = 2500
+		perRowWidth    = 160
+		sharedOffset   = 0           // identical layout across every row
+		raisedBudget   = 100_000_000 // > 64,000,000 (2,500 rows x width(160)^2 real cost), > the 60M default
+	)
 
 	t.Setenv(promql.EnvHistogramMergeMaxCostUnits, strconv.FormatInt(raisedBudget, 10))
 	bounds, err := promql.ResourceBoundsFromEnv()
@@ -304,12 +332,15 @@ func TestHistogramMergeBudget_ChDB_EnvOverrideRaisesBudget(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
-	b.WriteString("    " + histogramMergeBoundRow("near", 0) + ",\n")
-	b.WriteString("    " + histogramMergeBoundRow("far", 6000) + ";\n")
+	rows := make([]string, rowsOverBudget)
+	for i := range rows {
+		rows[i] = histogramMergeBoundRowWide("s"+strconv.Itoa(i), sharedOffset, perRowWidth)
+	}
+	b.WriteString("    " + strings.Join(rows, ",\n    ") + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
 	if err := runHistogramMergeBoundQueryWithOpts(t, fixture, promql.LowerOpts{ResourceBounds: bounds}); err != nil {
-		t.Fatalf("the same merge TestHistogramMergeBudget_ChDB_BucketWidthExceeded proves the 60M "+
+		t.Fatalf("the same merge TestHistogramMergeBudget_ChDB_RowCountExceeded proves the 60M "+
 			"default rejects must succeed once %s raises the budget to %d: %v",
 			promql.EnvHistogramMergeMaxCostUnits, raisedBudget, err)
 	}

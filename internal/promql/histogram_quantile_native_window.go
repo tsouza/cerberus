@@ -663,14 +663,17 @@ func expHistogramMergeSeriesOrderKeyAgg(s schema.Metrics) chplan.AggFunc {
 // either way — sorting it once is strictly cheaper than the alternative
 // of carrying two differently-ordered copies of the same column.
 //
-// agg is routed through [wrapExpHistogramMergeBudgetGuard] FIRST — see that
-// function's doc (cerberus issue #2385) — so a group whose series-per-cell
-// or merged-bucket-width fan-out crosses its resource bound is refused
-// before paying for the three arraySort calls below, let alone the
-// per-target-bucket row-sum expHistogramMergeBucketsExpr builds on top of
-// this stage's output. Every caller of this function inherits the guard for
-// free; there is nowhere left for a new across-series merge site to forget
-// it.
+// agg is routed through [wrapExpHistogramMergeScaleRefinement] FIRST
+// (cerberus issue #3555) so hqAggMergedScaleAlias reflects a scale that
+// bounds the merged width even when the group's rows sit at very different
+// typical magnitudes despite sharing a scale — see that function's doc —
+// and THEN through [wrapExpHistogramMergeBudgetGuard] (cerberus issue
+// #2385) so a group whose series-per-cell or merged-bucket-width fan-out
+// STILL crosses its resource bound after that refinement is refused before
+// paying for the three arraySort calls below, let alone the per-target-
+// bucket row-sum expHistogramMergeBucketsExpr builds on top of this stage's
+// output. Every caller of this function inherits both for free; there is
+// nowhere left for a new across-series merge site to forget either one.
 //
 // maxCostUnits is the caller's already-resolved ceiling
 // (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue #2667) —
@@ -678,7 +681,8 @@ func expHistogramMergeSeriesOrderKeyAgg(s schema.Metrics) chplan.AggFunc {
 // re-resolved here, so this function stays a plain chplan.Node -> chplan.Node
 // transform with no lowerCtx dependency of its own.
 func expHistogramMergeSortStage(agg chplan.Node, maxCostUnits int64) chplan.Node {
-	guarded := wrapExpHistogramMergeBudgetGuard(agg, maxCostUnits)
+	refined := wrapExpHistogramMergeScaleRefinement(agg)
+	guarded := wrapExpHistogramMergeBudgetGuard(refined, maxCostUnits)
 	orderKey := &chplan.ColumnRef{Name: hqAggSeriesOrderKeyAlias}
 	sorted := func(arrAlias string) chplan.Projection {
 		return chplan.Projection{

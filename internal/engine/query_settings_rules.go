@@ -515,9 +515,9 @@ func applySortedSlabOverTimeMemoryBound(ctx context.Context, plan chplan.Node) c
 // planHasSortedSlabOverTime reports whether plan contains a
 // *chplan.RangeWindow node with SortedSlabOverTime set anywhere in its
 // tree. The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
-// planHasNativeHistogramMerge, so a sorted-slab RangeWindow nested inside a
-// scalar-binding subtree (an Expr slot Walk does not follow) is still
-// found.
+// planHasNativeHistogramAnalyzerHazard, so a sorted-slab RangeWindow nested
+// inside a scalar-binding subtree (an Expr slot Walk does not follow) is
+// still found.
 func planHasSortedSlabOverTime(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
@@ -601,97 +601,76 @@ func planHasSortedSlabOverTime(plan chplan.Node) bool {
 // same OSCPUVirtualTimeMicroseconds profile event). Neither reduces the
 // ANALYZER's real per-call-site work; disabling the analyzer itself does.
 //
-// planHasExpHistogramValueFnFanout is checked alongside planHasNativeHistogramMerge
-// because histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's range-mode
-// lowering (internal/promql/histogram_value_fns.go) reaches the identical
-// argMax-over-eight-exp-histogram-column / StepGrid-cross-join fan-out
-// histogram_quantile's native path builds, but never wraps it in a
-// HistogramQuantileNative/HistogramProjection node — cerberus issue #3552
-// found the two functions families' shared scaffold left the value-function
-// family the one exp-histogram consumer this stamp never reached. Measured
-// on the same floor-pinned CH 24.8 compat stack (2-vCPU-capped, matching the
-// compatibility/prometheus-floor CI runner), five repeated runs of the
-// range-mode histogram_stddev(<exp-hist>) fan-out batch: ~0.33s average with
-// the analyzer disabled against ~0.42s default — the same direction as the
-// original #2355 measurement, at the same low (2-series) cardinality.
+// planHasNativeHistogramAnalyzerHazard is checked via a SINGLE chplan.WalkDeep
+// covering both shapes this fix protects, rather than two separate
+// WalkDeep-driven predicates each sweeping the whole plan on their own:
+// cerberus issue #3559 found that shape — two unconditional full-tree walks
+// on every query, including the common case where NEITHER shape is present
+// (a bare `up` selector has no histogram anywhere) — measurably regressed
+// TestAllocs_HandleQuery_Small's allocation ceiling. Merging them into one
+// pass halves the walk cost for every query and changes no behavior: each
+// shape's own match condition, and the short-circuit on first match, are
+// unchanged from the two predicates this replaces.
+//
+// The two shapes, and why both are needed:
+//
+//   - *chplan.HistogramQuantileNative or *chplan.HistogramProjection — the
+//     two IR nodes exclusive to the exponential (native) histogram lowering
+//     (both carry the Scale/ZeroCount/PositiveOffset/NegativeOffset field
+//     set no classic-histogram or non-histogram node has), and the only
+//     roots internal/promql builds over histogram_quantile.go's shared
+//     merge/window-fold machinery. A bare native-histogram selector with no
+//     range function or cross-series aggregation still reaches one of
+//     these, so this can over-match a cheap query — harmless, since the
+//     setting is result-equivalent either way.
+//   - *chplan.RangeBucketFanout whose own RowType carries the
+//     exponential-only HistogramFieldScale column — cerberus issue #3552:
+//     histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's range-mode
+//     lowering (internal/promql/histogram_value_fns.go) reaches the
+//     identical argMax-over-eight-exp-histogram-column / StepGrid-cross-join
+//     fan-out histogram_quantile's native path builds, but the six value
+//     functions reduce straight to a scalar Project, never wrapping the
+//     fan-out in either node type above — so the first conjunct alone
+//     cannot see it even though the fan-out underneath is the SAME scaffold
+//     this fix exists to protect. histogramValueLatestAggs collects
+//     Scale/ZeroCount/PositiveOffset/NegativeOffset unconditionally for
+//     every one of the six functions (not only the ones whose value
+//     expression reads them), so this matches uniformly across the family.
+//     Scale is the field checked — rather than Count or Sum, which every
+//     histogram family (classic and exponential) carries — because it is
+//     one of the four fields exclusive to the exponential encoding, and
+//     FindHistogramField resolves it structurally (Role + HistogramField),
+//     not by column name, so a deployment's own schema.Metrics naming
+//     cannot defeat the match. Measured on the same floor-pinned CH 24.8
+//     compat stack (2-vCPU-capped, matching the
+//     compatibility/prometheus-floor CI runner), five repeated runs of the
+//     range-mode histogram_stddev(<exp-hist>) fan-out batch: ~0.33s average
+//     with the analyzer disabled against ~0.42s default — the same
+//     direction as the original #2355 measurement, at the same low
+//     (2-series) cardinality.
+//
+// The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
+// planHasSortedSlabOverTime: a node nested inside a scalar-binding subtree
+// (an Expr slot Walk does not follow) must still be found.
 func applyNativeHistogramAnalyzerFix(ctx context.Context, plan chplan.Node) context.Context {
-	if !planHasNativeHistogramMerge(plan) && !planHasExpHistogramValueFnFanout(plan) {
+	if !planHasNativeHistogramAnalyzerHazard(plan) {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 0)
 }
 
-// planHasExpHistogramValueFnFanout reports whether plan contains a
-// *chplan.RangeBucketFanout collapsing an exponential-histogram scan — the
-// shape internal/promql/histogram_value_fns.go's lowerHistogramValueFnRange
-// builds for histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's range-mode
-// lowering over a bare exp-histogram selector (cerberus issue #3552).
-//
-// Unlike histogram_quantile's native path, this lowering never wraps its
-// fan-out in a *chplan.HistogramQuantileNative / *chplan.HistogramProjection
-// node — the six value functions reduce straight to a scalar Project, so
-// planHasNativeHistogramMerge's type-identity check cannot see it even
-// though the fan-out underneath is the SAME scaffold that machinery exists
-// to protect: histogramValueLatestAggs collects
-// Scale/ZeroCount/PositiveOffset/NegativeOffset unconditionally for every
-// one of the six functions (not only the ones whose value expression reads
-// them), so this check matches uniformly across the family rather than only
-// the shapes whose trailing expression happens to be deep.
-//
-// Scale is the field checked — rather than Count or Sum, which every
-// histogram family (classic and exponential) carries — because it is one of
-// the four fields exclusive to the exponential encoding, mirroring
-// planHasNativeHistogramMerge's own Scale/ZeroCount/PositiveOffset/
-// NegativeOffset reasoning. FindHistogramField resolves it structurally
-// (Role + HistogramField), not by column name, so a deployment's own
-// schema.Metrics naming cannot defeat the match.
-//
-// The sweep is chplan.WalkDeep, matching planHasNativeHistogramMerge: a
-// fan-out nested inside a scalar-binding subtree (an Expr slot Walk does not
-// follow) must still be found.
-func planHasExpHistogramValueFnFanout(plan chplan.Node) bool {
+func planHasNativeHistogramAnalyzerHazard(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		fanout, ok := n.(*chplan.RangeBucketFanout)
-		if !ok {
-			return true
-		}
-		if _, ok := fanout.RowType().FindHistogramField(chplan.HistogramFieldScale); ok {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
-// planHasNativeHistogramMerge reports whether plan contains a
-// chplan.HistogramQuantileNative or chplan.HistogramProjection node anywhere
-// in its tree — the two IR nodes exclusive to the exponential (native)
-// histogram lowering (both carry the Scale/ZeroCount/PositiveOffset/
-// NegativeOffset field set no classic-histogram or non-histogram node has),
-// and the only roots internal/promql builds over histogram_quantile.go's
-// shared merge/window-fold machinery. A bare native-histogram selector with no
-// range function or cross-series aggregation still reaches
-// HistogramQuantileNative / HistogramProjection, so this can over-match a
-// cheap query — harmless, since the setting is result-equivalent either way.
-//
-// The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
-// planHasTSGridNative: a native-histogram node nested inside a scalar-binding
-// subtree (an Expr slot Walk does not follow) must still be found.
-//
-// This does NOT match histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's
-// range-mode lowering, which reaches the same cost-bearing fan-out through a
-// *chplan.RangeBucketFanout it never wraps in either of these two types —
-// see planHasExpHistogramValueFnFanout, applyNativeHistogramAnalyzerFix's
-// other caller.
-func planHasNativeHistogramMerge(plan chplan.Node) bool {
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		switch n.(type) {
+		switch v := n.(type) {
 		case *chplan.HistogramQuantileNative, *chplan.HistogramProjection:
 			found = true
 			return false
+		case *chplan.RangeBucketFanout:
+			if _, ok := v.RowType().FindHistogramField(chplan.HistogramFieldScale); ok {
+				found = true
+				return false
+			}
 		}
 		return true
 	})
@@ -781,8 +760,9 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, plan chplan.Node, expHi
 //
 //   - *chplan.HistogramQuantileNative or *chplan.HistogramProjection proves
 //     EXPONENTIAL. They are the two IR nodes exclusive to the exponential
-//     (native) histogram lowering — the same pair planHasNativeHistogramMerge
-//     matches, and for the same reason (both carry the Scale / ZeroCount /
+//     (native) histogram lowering — the same pair
+//     planHasNativeHistogramAnalyzerHazard matches, and for the same reason
+//     (both carry the Scale / ZeroCount /
 //     PositiveOffset / NegativeOffset field set no classic-histogram or
 //     non-histogram node has). Alone they over-match a bare selector, which
 //     builds no window state at all: measured, a bare exp-histogram selector
@@ -814,14 +794,14 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, plan chplan.Node, expHi
 // *chplan.RangeBucketFanout whose own RowType carries the exponential-only
 // HistogramFieldScale column (histogram_count/_sum/_avg/_stddev/_stdvar/
 // _fraction's range-mode lowering, internal/promql/histogram_value_fns.go —
-// see planHasExpHistogramValueFnFanout's own doc for why this family never
-// reaches HistogramQuantileNative/HistogramProjection). It is windowed by
-// construction (it IS the RangeBucketFanout), and its aggregation carries
+// see planHasNativeHistogramAnalyzerHazard's own doc for why this family
+// never reaches HistogramQuantileNative/HistogramProjection). It is windowed
+// by construction (it IS the RangeBucketFanout), and its aggregation carries
 // the identical eight-column exp-histogram argMax set as the merge path this
 // threshold protects, so it is not an over-match: it is the same shape the
 // two conjuncts already describe, discovered through one node instead of two.
 //
-// The sweep is chplan.WalkDeep, matching planHasNativeHistogramMerge /
+// The sweep is chplan.WalkDeep, matching planHasNativeHistogramAnalyzerHazard /
 // planHasSortedSlabOverTime: a node nested inside a scalar-binding subtree (an
 // Expr slot Walk does not follow) must still be found, because the answer
 // gates a memory bound.
@@ -859,8 +839,8 @@ func planHasExpHistogramWindowGrouping(plan chplan.Node) bool {
 // UPPER bound; this just carries whatever they resolved).
 //
 // The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
-// planHasNativeHistogramMerge, so a Limit(OrderBy(...)) nested inside a
-// scalar subquery's Expr slot is still found.
+// planHasNativeHistogramAnalyzerHazard, so a Limit(OrderBy(...)) nested
+// inside a scalar subquery's Expr slot is still found.
 //
 // Zero or more than one match returns ok=false: with none there is nothing
 // to stamp, and with more than one there is no single Count to size the

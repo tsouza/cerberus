@@ -163,9 +163,13 @@ func TestExpHistogramMergeSumMapBudget_ChDB_FanoutStillRejectsLargeRowCount(t *t
 // series (so the row-count backstop cannot be what rejects it) with an
 // unusually wide layout: `sumMapMergeCostMultiplier x width^2` =
 // 4 x 4000^2 = 64,000,000, over the 60,000,000 default — the width axis of
-// this guard's own cost formula, isolated from the row-count backstop the
-// way TestHistogramMergeBudget_ChDB_BucketWidthExceeded isolates the OLD
-// guard's width axis.
+// this guard's own cost formula, isolated from the row-count backstop.
+// Unlike the default (non-sumMap) fold path's own merge scale computation
+// (histogram_quantile.go's expHistogramMergeSortStage,
+// wrapExpHistogramMergeScaleRefinement, cerberus issue #3555), the sumMap
+// merge computes its own scale independently and does NOT downscale to
+// bound this width — see cerberus issue #3558 for that gap tracked against
+// this path.
 func TestExpHistogramMergeSumMapBudget_ChDB_WidthExceeded(t *testing.T) {
 	const rows, width = 1, 4000
 	fixture := seedExpHistSumMapBoundRows(t, rows, width)
