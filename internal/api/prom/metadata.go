@@ -543,7 +543,7 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string, start,
 		// statement can never under-charge the data-shard fan-out gate.
 		rows, err := h.Client.QueryMetricMeta(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sql, spec.kind, args...)
 		if err != nil {
-			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+			return nil, classifyMetadataError(err)
 		}
 		out = append(out, rows...)
 	}
@@ -787,7 +787,7 @@ func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, now
 		})
 	})
 	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+		return nil, classifyMetadataError(err)
 	}
 	collected := append([]string{model.MetricNameLabel}, names...)
 	if h.resourceArmActive() {
@@ -816,7 +816,7 @@ func (h *Handler) fetchResourceLabelNames(ctx context.Context, start, end time.T
 		})
 	})
 	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+		return nil, classifyMetadataError(err)
 	}
 	allow := h.resourceAllowSet()
 	out := make([]string, 0, len(resNames))
@@ -848,7 +848,7 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string, start, end 
 		})
 	})
 	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+		return nil, classifyMetadataError(err)
 	}
 	sort.Strings(values)
 	return values, nil
@@ -898,7 +898,7 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 			})
 		})
 		if err != nil {
-			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+			return nil, classifyMetadataError(err)
 		}
 		// Metric-name values pass through Prom's metric-name grammar
 		// (`[a-zA-Z_:][a-zA-Z0-9_:]*`); OTel may store dotted forms
@@ -957,7 +957,7 @@ func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, 
 		})
 	})
 	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+		return nil, classifyMetadataError(err)
 	}
 	return normalizeMetricValues(names), nil
 }
@@ -1514,7 +1514,7 @@ func (h *Handler) querySamples(ctx context.Context, sql string, args []any, phys
 		return h.Client.Query(ctx, sql, args...)
 	})
 	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+		return nil, classifyMetadataError(err)
 	}
 	return samples, nil
 }

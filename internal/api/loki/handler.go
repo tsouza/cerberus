@@ -659,6 +659,30 @@ func classifyEngineErr(err error) error {
 	if err == nil {
 		return nil
 	}
+	if ae := classifySentinelErr(err); ae != nil {
+		return ae
+	}
+	msg := err.Error()
+	switch {
+	case strings.HasPrefix(msg, "engine: execute:"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	case strings.HasPrefix(msg, "engine: emit:"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	default:
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	}
+}
+
+// classifySentinelErr maps every classified sentinel — the errors a
+// ClickHouse round trip can surface that are NOT a backend fault — onto the
+// Loki error vocabulary, and returns nil for anything else. It is the ONE
+// list both classifyEngineErr (the query path) and classifyMetadataErr (the
+// metadata drains) read, so a sentinel answers the same status, errorType
+// and telemetry reason on every endpoint of the head; only the
+// unclassified remainder differs between the two (an engine-stage 500/502
+// split versus the metadata drains' plain transport-fault 502). An error
+// that already IS an *apiError passes through unchanged.
+func classifySentinelErr(err error) *apiError {
 	// Circuit-breaker fast-fail short-circuit: when the chclient
 	// breaker is OPEN, surface 503 + Retry-After directly, sized from the
 	// tripped breaker's own recovery interval. See internal/api/prom for
@@ -804,32 +828,26 @@ func classifyEngineErr(err error) error {
 	if errors.As(err, &apiErr) {
 		return apiErr
 	}
-	msg := err.Error()
-	switch {
-	case strings.HasPrefix(msg, "engine: execute:"):
-		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
-	case strings.HasPrefix(msg, "engine: emit:"):
-		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
-	default:
-		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
-	}
+	return nil
 }
 
 // classifyMetadataErr maps an error from a metadata drain (labels / series /
 // label-values / detected-labels / index-volume / patterns) onto the Loki
-// error vocabulary. The metadata endpoints don't run through the engine
-// stage-prefixed path, so a generic ClickHouse failure stays a 502; but a
-// resource-limit rejection — the per-query sample budget (now enforced on the
-// metadata drains too, see chclient.drainBudgetExceeded), the line-peek byte
-// budget (chclient.maxLogPeekBytes), or the CH memory cap — gets Loki's
-// "maximum ... reached for a single query" 400, the same as the query path,
-// instead of being mislabelled as a transport fault.
+// error vocabulary. Every classified sentinel — a resource-limit rejection
+// (the per-query sample budget, enforced on the metadata drains too, see
+// chclient.drainBudgetExceeded; the line-peek byte budget,
+// chclient.maxLogPeekBytes; the CH memory cap), a wall-clock timeout, a
+// caller cancellation, an open breaker, a Distributed shard outage —
+// answers exactly what the query path answers for it (classifySentinelErr):
+// a Grafana label-browser cancel is a 503 errorType=canceled here as it is
+// on /query_range, never a 502 that reads as a backend fault. The metadata
+// endpoints don't run through the engine stage-prefixed path, so an
+// UNCLASSIFIED ClickHouse failure is the upstream transport fault the
+// `engine: execute:` marker would have named: 502, not the 500 an
+// engine-routed handler defaults to.
 func classifyMetadataErr(err error) error {
-	var tooMany *chclient.TooManySamplesError
-	var memLimit *chclient.MemoryLimitError
-	var bytesLimit *chclient.LogPeekBytesError
-	if errors.As(err, &tooMany) || errors.As(err, &memLimit) || errors.As(err, &bytesLimit) {
-		return classifyEngineErr(err)
+	if ae := classifySentinelErr(err); ae != nil {
+		return ae
 	}
 	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 }
