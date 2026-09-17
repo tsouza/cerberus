@@ -1,0 +1,42 @@
+# query_range grid whose span is NOT a multiple of its step: the harness
+# window [00:00, 00:05] over a 2m step names the anchors 00:00, 00:02 and
+# 00:04 (Prometheus's Start-anchored `start + i*step <= end` grid), never
+# 00:05, 00:03 and 00:01. Every fan-out emitter walks its grid backward
+# from one "newest anchor" base, so this pins that the base is the
+# Start-anchored 00:04 rather than the raw End. The counter grows by 10
+# every 30s, so each full [2m] window reads a steady 1/3 per second.
+-- query.promql --
+rate(http_requests_total[2m])
+-- range_step --
+2m
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    AggregationTemporality Int32,
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:57:30', 9), 10.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 20.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:58:30', 9), 30.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 40.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:30', 9), 50.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 60.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:30', 9), 70.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 80.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:30', 9), 90.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 100.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:30', 9), 110.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 120.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:30', 9), 130.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 140.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:30', 9), 150.0),
+    (2, 'http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 160.0);
+-- expected_rows --
+[]

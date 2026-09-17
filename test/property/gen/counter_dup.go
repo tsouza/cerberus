@@ -96,6 +96,15 @@ func CounterDupTimestampDataset() property.Dataset {
 	}
 }
 
+// CounterSumDDL renders the CounterSumTableName seed script for any set
+// of counter series — the same positional VALUES shape the
+// duplicate-timestamp proof seeds, exposed so a chDB test can plant its
+// own deterministic counter series (a dense monotonic ramp, for instance)
+// without re-describing the sum table.
+func CounterSumDDL(series []property.SeriesData) string {
+	return renderCounterDupDDL(series)
+}
+
 // renderCounterDupDDL renders the sum-table seed script for the counter
 // series. It reuses renderRow / renderMap / formatFloat (the gauge
 // renderer's row helpers — the four-column positional VALUES shape is

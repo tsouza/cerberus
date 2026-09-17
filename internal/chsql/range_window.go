@@ -899,14 +899,55 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	return e.emitSelect(outer)
 }
 
-// endExprFrag returns a Frag rendering `<End> [- toIntervalNanosecond(<offset>)]`.
-// Shared by every windowed-array emitter; centralises the Offset
-// branch. `r.Offset != 0` so a negative offset (Prom's forward-shift
-// form, `rate(metric[range] offset -5m)`) still emits the subtract —
-// CH interval arithmetic renders `End - toIntervalNanosecond(-N)` as
-// `End + N` so the window shifts forward into the future correctly.
+// endExprFrag returns a Frag rendering `<grid end> [- toIntervalNanosecond(<offset>)]`
+// — the newest anchor every windowed-array emitter walks its grid
+// backward from ([rangeWindowGridEnd]), offset-shifted. Shared by every
+// windowed-array emitter; centralises the Offset branch AND the
+// Start-anchoring of the grid base, so no emitter can walk from the raw
+// End on its own. `r.Offset != 0` so a negative offset (Prom's
+// forward-shift form, `rate(metric[range] offset -5m)`) still emits the
+// subtract — CH interval arithmetic renders `End - toIntervalNanosecond(-N)`
+// as `End + N` so the window shifts forward into the future correctly.
 func endExprFrag(r *chplan.RangeWindow) Frag {
-	return offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
+	return offsetShiftedBaseFrag(timeOrNowFrag(rangeWindowGridEnd(r)), r.Offset)
+}
+
+// rangeWindowGridEnd returns the newest anchor of r's evaluation grid —
+// the base every RangeWindow fan-out walks backward from (`<base> -
+// i*Step`, see anchorBaseAtIdxFrag).
+//
+// On a query_range grid (Start and End set, StepAlign false) that base is
+// the Start-anchored `Start + (numAnchors-1)*Step` of [startAnchoredGridEnd],
+// NOT the raw End: the backward walk then lands on exactly the `Start,
+// Start+Step, …` anchors Prometheus's and Loki's query_range grids name,
+// even when `(End-Start)` is not a multiple of Step. Walking from the raw
+// End instead shifts every reported anchor by `(End-Start) mod Step` and
+// drops the request's own anchors — the same defect
+// [emitter.emitRangeBucketFanout] and [emitRangeLWR] already guard
+// against, applied here once for every RangeWindow shape.
+//
+// The raw End is kept in every case where it is the grid's true base:
+//   - StepAlign (a PromQL subquery's inner epoch-aligned grid): the base is
+//     snapped to a phase-0 multiple of Step by [stepAlignGrid], which
+//     starts from End by contract.
+//   - No Start (an instant evaluation, an `@`-pinned window rendered as an
+//     instant shape, or the now64() fixture shape): a single anchor at End.
+//   - Step <= 0: no grid to anchor.
+//
+// numAnchors is derived by [rangeWindowGridAnchorCount], the same count
+// the emitters fan out with, so the base and the walk agree by
+// construction.
+func rangeWindowGridEnd(r *chplan.RangeWindow) time.Time {
+	if r.StepAlign || r.Step <= 0 || r.Start.IsZero() || r.End.IsZero() {
+		return r.End
+	}
+	numAnchors, err := rangeWindowGridAnchorCount(r, r.Step.Nanoseconds())
+	if err != nil {
+		// Start > End: every emitter rejects the node with the same error
+		// before rendering anything; the base is irrelevant.
+		return r.End
+	}
+	return startAnchoredGridEnd(r.Start, r.End, r.Step.Nanoseconds(), numAnchors)
 }
 
 // gridAnchorFrag renders the OUTPUT timestamp for a matrix anchor. The internal
