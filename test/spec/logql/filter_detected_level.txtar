@@ -278,6 +278,7 @@ CREATE TABLE otel_logs (
         Body = 'line-debug', 'DEBUG',
         Body = 'line-fatal', 'FATAL',
         'ERROR'),
+    SeverityNumber UInt8 MATERIALIZED 0,
     ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api'),
     LogAttributes Map(String, String) MATERIALIZED map()
 ) ENGINE = Memory;

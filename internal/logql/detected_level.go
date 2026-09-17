@@ -154,17 +154,24 @@ func detectedLevelExpr(s schema.Logs) chplan.Expr {
 //  2. The first non-empty allowed level field
 //     ([allowedLevelFields] — `level` / `severity` / `lvl` / …) present
 //     in the LogAttributes (structured-metadata) map.
-//  3. The dedicated `SeverityText` column — cerberus's stand-in for the
-//     OTLP severity source reference Loki reads from
-//     `__otlp_severity_number__` structured metadata.
+//  3. The dedicated `SeverityText` column — the OTLP `severity_text`
+//     field, which reference Loki's OTLP push handler lands as
+//     structured metadata and which sits in its DefaultAllowedLevelFields.
+//  4. The dedicated `SeverityNumber` column, mapped through the OTLP
+//     severity ranges ([severityNumberLevelExpr]) — the OTLP
+//     `severity_number` field, which reference Loki lands as
+//     `__otlp_severity_number__` structured metadata and consults only
+//     once no textual level field is present
+//     (detectLogLevelFromLogEntry). A record with `SeverityNumber=17`
+//     and an empty `SeverityText` is `error` upstream; before this arm it
+//     was `unknown` here.
 //
 // The shape is a `multiIf(...)` cascade that returns the first non-empty
 // candidate; an all-empty row yields `”`, which [normaliseLevelExpr]
 // maps to `unknown`. When the schema carries no structured-metadata
 // column (custom-schema opt-out, `AttributesColumn == ""`) the cascade
-// collapses to the bare `SeverityText` column — byte-identical to the
-// prior single-source behaviour, so custom schemas without LogAttributes
-// see zero churn.
+// collapses to the two dedicated columns; when it carries no severity
+// number column either, to the bare `SeverityText` column.
 //
 // Why this matters: production OTel pipelines that route a `level` /
 // `severity` structured-metadata attribute (without populating the
@@ -174,6 +181,16 @@ func detectedLevelExpr(s schema.Logs) chplan.Expr {
 // metadata field — this cascade restores that parity.
 func detectedLevelSourceExpr(s schema.Logs) chplan.Expr {
 	severity := chplan.Expr(&chplan.ColumnRef{Name: s.SeverityColumn})
+	if s.SeverityNumberColumn != "" {
+		// SeverityText first, the number only when the text is empty —
+		// upstream's allowed level fields (severity_text among them) come
+		// before its severity-number fallback.
+		severity = &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: []chplan.Expr{
+			&chplan.Binary{Op: chplan.OpNe, Left: severity, Right: &chplan.LitString{V: ""}},
+			severity,
+			severityNumberLevelExpr(&chplan.ColumnRef{Name: s.SeverityNumberColumn}),
+		}}
+	}
 	if s.AttributesColumn == "" {
 		return severity
 	}
@@ -198,9 +215,47 @@ func detectedLevelSourceExpr(s schema.Logs) chplan.Expr {
 			lookup,
 		)
 	}
-	// Final fallback: the dedicated severity column.
+	// Final fallback: the dedicated severity columns.
 	args = append(args, severity)
 	return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: args}
+}
+
+// OTLP severity-number range ceilings (the data model's
+// SeverityNumber field: 1-4 TRACE, 5-8 DEBUG, 9-12 INFO, 13-16 WARN,
+// 17-20 ERROR, 21-24 FATAL; 0 is UNSPECIFIED), the boundaries reference
+// Loki's detectLogLevelFromLogEntry compares against
+// (plog.SeverityNumberTrace4 … SeverityNumberFatal4).
+const (
+	otlpSeverityNumberUnspecified = 0
+	otlpSeverityNumberTrace4      = 4
+	otlpSeverityNumberDebug4      = 8
+	otlpSeverityNumberInfo4       = 12
+	otlpSeverityNumberWarn4       = 16
+	otlpSeverityNumberError4      = 20
+	otlpSeverityNumberFatal4      = 24
+)
+
+// severityNumberLevelExpr maps the numeric OTLP severity column onto
+// Loki's canonical level strings exactly as reference Loki's
+// detectLogLevelFromLogEntry does: 0 (unspecified) and anything past
+// FATAL4 yield `”` — which [normaliseLevelExpr] maps to `unknown` — and
+// every other value resolves by its range ceiling. The strings it yields
+// are already canonical, so they pass through normaliseLevelExpr's
+// grouping unchanged.
+func severityNumberLevelExpr(number chplan.Expr) chplan.Expr {
+	ceiling := func(n int64) chplan.Expr {
+		return &chplan.Binary{Op: chplan.OpLe, Left: number, Right: &chplan.LitInt{V: n}}
+	}
+	return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: []chplan.Expr{
+		&chplan.Binary{Op: chplan.OpLe, Left: number, Right: &chplan.LitInt{V: otlpSeverityNumberUnspecified}}, &chplan.LitString{V: ""},
+		ceiling(otlpSeverityNumberTrace4), &chplan.LitString{V: "trace"},
+		ceiling(otlpSeverityNumberDebug4), &chplan.LitString{V: "debug"},
+		ceiling(otlpSeverityNumberInfo4), &chplan.LitString{V: "info"},
+		ceiling(otlpSeverityNumberWarn4), &chplan.LitString{V: "warn"},
+		ceiling(otlpSeverityNumberError4), &chplan.LitString{V: "error"},
+		ceiling(otlpSeverityNumberFatal4), &chplan.LitString{V: "fatal"},
+		&chplan.LitString{V: ""},
+	}}
 }
 
 // normaliseLevelExpr returns a CH `multiIf(...)` chain that maps the

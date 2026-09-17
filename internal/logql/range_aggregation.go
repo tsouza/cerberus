@@ -982,6 +982,12 @@ func materialiseParserMergedLabels(
 		{Expr: &chplan.ColumnRef{Name: s.SeverityColumn}},
 		{Expr: labelsExpr, Alias: mergedAlias},
 	}
+	// The detected_level source reads the numeric severity column behind
+	// SeverityText (detectedLevelSourceExpr), so the identity wrap
+	// downstream needs it carried through exactly as SeverityText is.
+	if s.SeverityNumberColumn != "" {
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.SeverityNumberColumn}})
+	}
 	// Carry the structured-metadata (LogAttributes) column through the
 	// materialise step so the downstream identity wrap
 	// ([withDetectedLevelAndColumns]) can still coalesce a non-top-level

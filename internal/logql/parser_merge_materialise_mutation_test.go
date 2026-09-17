@@ -113,6 +113,7 @@ func TestMaterialiseParserMergedLabels_OuterByTopLevelColumnsAreNotDuplicated(t 
 		s.BodyColumn,
 		s.SeverityColumn,
 		"_logql_merged_labels",
+		s.SeverityNumberColumn,
 		s.AttributesColumn,
 		s.TraceIDColumn,
 	}
