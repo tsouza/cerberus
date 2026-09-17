@@ -12,6 +12,19 @@ import (
 // contributes no fanned row, so "at least one" is free.
 const fanoutNoMinSampleFilter = 1
 
+// rangeBucketFanoutGroupKeyAlias names the synthetic fan-out-stage column
+// [emitRangeBucketFanout] materializes for the i-th ALIASED GroupBy entry —
+// see the fan-out SELECT's own doc comment (issue #3551) for why. Positional
+// rather than content-derived because RangeBucketFanout.GroupBy is a small
+// list scoped to one node's own SELECT, so no two entries in the same
+// fan-out can collide on it, and the `_rbf_`-prefixed family this joins
+// (rangeBucketFanoutGroupGuardedQuery's CTE name, foldCostElemsAlias,
+// foldCostSamplesAlias) already establishes that prefix as reserved to this
+// emitter.
+func rangeBucketFanoutGroupKeyAlias(i int) string {
+	return "_rbf_key_" + strconv.Itoa(i+1)
+}
+
 // emitRangeBucketFanout renders a chplan.RangeBucketFanout — the
 // single-pass, bounded sample-side fan-out that supersedes the StepGrid
 // CROSS JOIN + per-anchor lookback Filter + per-(series, anchor)
@@ -149,6 +162,40 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		r.AnchorAlias,
 	))
 
+	// Issue #3551: materialize every ALIASED GroupBy entry here too, under
+	// its own synthetic per-index column ([rangeBucketFanoutGroupKeyAlias]),
+	// instead of leaving collapse's own SELECT-list as the first (and only)
+	// place that expression is ever rendered. ClickHouse 24.8 mis-resolves
+	// a GROUP BY that references a SAME-SELECT alias standing for a
+	// lambda-heavy expression (mapSort/mapConcat/mapFilter over the merged
+	// series-identity Map — [histogramIdentityExpr]'s shape) once the query
+	// nests six-plus subqueries deep: its aggregate-coverage check
+	// re-derives the GROUP BY key from the alias and, at that depth, fails
+	// to recognize the re-derived form as the same expression the
+	// SELECT-list rendered (verified against a live 24.8 container; see
+	// issue #3551 for the exact NOT_AN_AGGREGATE trace). Every
+	// RangeBucketFanout composition with a groupArray-family AggFunc
+	// (rangeBucketFanoutHasGrowingAccumulator) reaches exactly that depth
+	// via [rangeBucketFanoutGroupGuardedQuery]'s CTE wrap, so this
+	// materializes unconditionally rather than only for the guarded shape —
+	// a future composition need not rediscover the same depth to hit it.
+	// Moving the expression down turns collapse's own SELECT + GROUP BY
+	// entries for that key into a bare column reference — the same trivial
+	// column-rename shape no report has ever shown CH mis-resolving —
+	// while the expression's TEXT still renders exactly once in the whole
+	// query, same as the alias-reference form it replaces: no new
+	// duplication for the emitted-SQL size bound (issue #2733) to absorb.
+	hoistedGroupKeys := make([]string, len(r.GroupBy))
+	for i, g := range r.GroupBy {
+		if i >= len(r.GroupByAliases) || r.GroupByAliases[i] == "" {
+			continue
+		}
+		expr := g
+		hoisted := rangeBucketFanoutGroupKeyAlias(i)
+		fanout.Select(RawAs(func(b *Builder) { _ = b.Expr(expr) }, hoisted))
+		hoistedGroupKeys[i] = hoisted
+	}
+
 	// Prune the inner scan to the offset-shifted half-open grid span
 	// `(Start - Offset - Lookback, End - Offset]` before the SELECT-list
 	// arrayJoin fans each source row across its anchors — same granule-
@@ -177,11 +224,18 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	collapse := NewQuery().From(fanoutSource)
 	collapse.Select(As(verbatim(r.AnchorAlias), r.AnchorAlias))
 	for i, g := range r.GroupBy {
-		expr := g
 		alias := ""
 		if i < len(r.GroupByAliases) {
 			alias = r.GroupByAliases[i]
 		}
+		if hoisted := hoistedGroupKeys[i]; hoisted != "" {
+			// The expression already rendered once, in the fan-out SELECT
+			// above; this is a bare passthrough of that column under its
+			// GroupByAliases name, not a second rendering of the expression.
+			collapse.SelectAs(Col(hoisted), alias)
+			continue
+		}
+		expr := g
 		collapse.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 	for _, af := range r.AggFuncs {
@@ -191,10 +245,23 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 
 	// GROUP BY (anchor_ts, <user keys>). The anchor is referenced verbatim
 	// because it is the fanout SELECT's output column, not a base-table
-	// column; the user keys go through [groupKeyFrags].
+	// column. A hoisted key groups by its own fan-out column directly
+	// (see the materialization above) rather than by the GroupByAliases
+	// name [groupKeyFrags] would otherwise reference — collapse's
+	// SELECT-list entry for that key is now a bare passthrough of the same
+	// column, so the two name the identical value. An un-aliased key still
+	// re-renders its raw expression, matching [groupKeyFrags]'s existing
+	// fallback for that case.
 	groupFrags := make([]Frag, 0, len(r.GroupBy)+1)
 	groupFrags = append(groupFrags, verbatim(r.AnchorAlias))
-	groupFrags = append(groupFrags, groupKeyFrags(r.GroupBy, r.GroupByAliases)...)
+	for i, g := range r.GroupBy {
+		if hoisted := hoistedGroupKeys[i]; hoisted != "" {
+			groupFrags = append(groupFrags, Col(hoisted))
+			continue
+		}
+		expr := g
+		groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
+	}
 	collapse.GroupBy(groupFrags...)
 
 	// Per-function "no sample emitted" rule. An anchor whose window holds
