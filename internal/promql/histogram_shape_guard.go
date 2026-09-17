@@ -14,15 +14,7 @@ func mixedRowsFloatOnly(inner chplan.Node) chplan.Node {
 	if !mixedRowsNeedPreparation(inner) {
 		return inner
 	}
-	discriminator := requireSampleRole(inner.RowType(), chplan.RoleDiscriminator)
-	return &chplan.Filter{
-		Input: inner,
-		Predicate: &chplan.Binary{
-			Op:    chplan.OpEq,
-			Left:  discriminator,
-			Right: &chplan.LitInt{V: mixedDiscriminatorFloat},
-		},
-	}
+	return mixedDiscriminatorFilter(inner, mixedDiscriminatorFloat)
 }
 
 // mixedRowsNeedPreparation separates the physical mixed payload from the live
