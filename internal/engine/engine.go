@@ -420,8 +420,12 @@ func applySharedQuerySettings(ctx context.Context, plan chplan.Node, memCap int6
 	// Native-histogram-only: disable ClickHouse's newer query analyzer, whose
 	// cost on the merge/window-fold machinery's deeply nested lambda/arrayMap
 	// expressions is wildly superlinear on the floor-pinned CH 24.8 relative
-	// to the older analyzer (cerberus issue #2355).
-	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
+	// to the older analyzer (cerberus issue #2355). The hazard is resolved
+	// ONCE here and handed to rules.applyWithAnalyzerHazard below, whose
+	// analyzer-gated rules must not co-stamp enable_analyzer=1 over this
+	// fix's 0 — see that method's own doc.
+	analyzerHazard := planHasNativeHistogramAnalyzerHazard(plan)
+	ctx = applyNativeHistogramAnalyzerFix(ctx, analyzerHazard)
 	// Sorted-slab-eligible shapes only: cap max_block_size at 1 so the
 	// per-anchor arrayFilter/arrayMap intermediates the emitter builds per
 	// series row are freed row-by-row instead of retained across an entire
@@ -433,11 +437,13 @@ func applySharedQuerySettings(ctx context.Context, plan chplan.Node, memCap int6
 	// per-series groupArray see 256 small blocks instead of one whole-state
 	// block (cerberus issue #3247).
 	ctx = applyExpHistogramTwoLevelBound(ctx, plan, rules.ExpHistogramTwoLevel)
-	// The DARK, flag-gated rules (workload, log_comment shape id, result
-	// cache, aggregation-in-order, condition cache, lazy materialisation,
-	// trace-id bitmap filter). Each is OFF unless its CERBERUS_* flag is set,
-	// so a default deployment's ctx is unchanged on both routes.
-	return rules.apply(ctx, plan)
+	// The flag-gated rules (workload, log_comment shape id, result cache,
+	// aggregation-in-order, condition cache, lazy materialisation, trace-id
+	// bitmap filter), driven by the boot-resolved chopt EnabledSet: most
+	// auto-select on a server that carries the feature, and
+	// `CERBERUS_CH_OPTIMIZATIONS=off` (or a listing without the feature)
+	// turns each off.
+	return rules.applyWithAnalyzerHazard(ctx, plan, analyzerHazard)
 }
 
 // observeQuery feeds the corpus reconciler (when registered) the dispatch-seam

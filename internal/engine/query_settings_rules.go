@@ -43,6 +43,10 @@ const settingUseQueryConditionCache = "use_query_condition_cache"
 // not a result rewrite) and the analyzer is GA on every server the
 // condition_cache feature resolves on (>= 25.3), so co-stamping is version-safe.
 //
+// The same key is stamped 0 by applyNativeHistogramAnalyzerFix on a plan
+// carrying the native-histogram hazard, and that stamp takes precedence: the
+// co-stamping rules skip such a plan entirely (SettingsRules.applyWithAnalyzerHazard).
+//
 // perf-sentinel: neutral — selects which query planner runs. Its measured cost
 // (applyNativeHistogramAnalyzerFix) is CPU time before execution, not memory.
 const settingEnableAnalyzer = "enable_analyzer"
@@ -128,7 +132,11 @@ type SettingsRules struct {
 	// server >= 25.3; below that the feature is absent from the resolved set,
 	// so this flag is false and nothing is stamped (24.8-safe no-op). The cache
 	// is result-equivalent, so this is safe whenever it fires; the eligibility
-	// check (predicateStableForConditionCache) is still conservative.
+	// check (predicateStableForConditionCache) is still conservative. A plan
+	// carrying the native-histogram analyzer hazard is never stamped: the
+	// cache is analyzer-gated and that plan runs under enable_analyzer=0
+	// (applyNativeHistogramAnalyzerFix), which must not be overwritten by
+	// this rule's co-stamp.
 	ConditionCache bool
 
 	// JoinSpill, when true, stamps max_bytes_before_external_join=cap/2 on a
@@ -253,7 +261,9 @@ type SettingsRules struct {
 	// older server). The setting is result-equivalent (IO order only), so
 	// the eligibility check exists purely to size the max-limit knob to
 	// the request's own LIMIT rather than to guard correctness — see
-	// chopt.FeatureLazyMaterialization.
+	// chopt.FeatureLazyMaterialization. Like ConditionCache it is skipped on
+	// a plan carrying the native-histogram analyzer hazard, whose
+	// enable_analyzer=0 this rule's co-stamp must not overwrite.
 	LazyMaterialization bool
 
 	// Metrics / Traces / Logs are the schema instances whose SortingKeyPrefix
@@ -311,13 +321,37 @@ func (r SettingsRules) now() time.Time {
 
 // apply layers the enabled settings rules onto ctx for plan. Each rule that
 // fires writes through chclient.WithQuerySetting so they accumulate on the
-// one per-request settings map. With both flags off, ctx is returned
+// one per-request settings map. With every flag off, ctx is returned
 // unchanged.
+//
+// It resolves the native-histogram analyzer hazard itself; the dispatch seam
+// (applySharedQuerySettings) resolves it once for every rule and calls
+// applyWithAnalyzerHazard directly.
 func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Context {
+	return r.applyWithAnalyzerHazard(ctx, plan, planHasNativeHistogramAnalyzerHazard(plan))
+}
+
+// applyWithAnalyzerHazard is apply with the native-histogram analyzer hazard
+// (planHasNativeHistogramAnalyzerHazard) already resolved by the caller.
+//
+// analyzerHazard is what keeps enable_analyzer single-valued on the settings
+// map. applyNativeHistogramAnalyzerFix stamps enable_analyzer=0 on a plan
+// carrying the hazard, and the condition-cache and lazy-materialisation rules
+// each co-stamp enable_analyzer=1 — chclient.WithQuerySetting is
+// last-write-wins on a key, and these rules run after the fix, so before the
+// hazard was threaded here the co-stamp silently overwrote the fix on every
+// native-histogram query that carried a Filter (every real one does) on any
+// server where condition_cache resolved in (>= 25.3, the default). Both
+// co-stamping rules are inert under enable_analyzer=0 anyway (the settings
+// they carry are analyzer-gated), so on a hazard plan they stamp nothing and
+// the fix's measured 5x win is what reaches ClickHouse.
+// TestSharedQuerySettings_EveryKeyResolvesToOneValue enumerates every rule
+// pair for this class of collision.
+func (r SettingsRules) applyWithAnalyzerHazard(ctx context.Context, plan chplan.Node, analyzerHazard bool) context.Context {
 	if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(plan) {
 		ctx = chclient.WithQuerySetting(ctx, settingOptimizeAggregationInOrder, 1)
 	}
-	if r.ConditionCache && predicateStableForConditionCache(plan) {
+	if r.ConditionCache && !analyzerHazard && predicateStableForConditionCache(plan) {
 		ctx = chclient.WithQuerySetting(ctx, settingUseQueryConditionCache, 1)
 		// The condition cache is gated behind the analyzer; co-stamp
 		// enable_analyzer=1 so the cache is honored even if an operator
@@ -336,7 +370,7 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 	if r.ResultCache && eligibleForResultCache(plan, r.now(), r.ResultCacheIngestLag) {
 		ctx = chclient.WithResultCacheSetting(ctx, int64(r.ResultCacheTTL.Seconds()))
 	}
-	if r.LazyMaterialization {
+	if r.LazyMaterialization && !analyzerHazard {
 		if limit, ok := EligibleForLazyMaterialization(plan); ok {
 			ctx = chclient.WithQuerySetting(ctx, settingQueryPlanOptimizeLazyMaterialization, 1)
 			ctx = chclient.WithQuerySetting(ctx, settingQueryPlanMaxLimitForLazyMaterialization, limit)
@@ -652,8 +686,13 @@ func planHasSortedSlabOverTime(plan chplan.Node) bool {
 // The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
 // planHasSortedSlabOverTime: a node nested inside a scalar-binding subtree
 // (an Expr slot Walk does not follow) must still be found.
-func applyNativeHistogramAnalyzerFix(ctx context.Context, plan chplan.Node) context.Context {
-	if !planHasNativeHistogramAnalyzerHazard(plan) {
+//
+// analyzerHazard is planHasNativeHistogramAnalyzerHazard(plan), resolved by
+// the caller: applySharedQuerySettings resolves it once and hands the same
+// answer to SettingsRules.applyWithAnalyzerHazard, so the two never disagree
+// about which plan the fix fired on.
+func applyNativeHistogramAnalyzerFix(ctx context.Context, analyzerHazard bool) context.Context {
+	if !analyzerHazard {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 0)

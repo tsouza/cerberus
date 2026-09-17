@@ -268,15 +268,20 @@ func TestSentinels_StepIsPromWireParseable(t *testing.T) {
 	}
 }
 
-// TestSentinels_ExpHistogramTwoLevelStampIsAsserted pins what makes the
-// exp-histogram half of the native_histogram_quantile sentinel falsifiable:
-// it must require the group_by_two_level_threshold_bytes stamp
-// applyExpHistogramTwoLevelBound (cerberus issue #3247) applies. Without that
-// requirement the sentinel measures only peak memory and HTTP status, and the
-// committed bound is a CEILING — so deleting the mechanism would raise the
-// measured peak by roughly an order of magnitude and still pass as long as it
-// stayed under a bound calibrated before the mechanism existed.
-func TestSentinels_ExpHistogramTwoLevelStampIsAsserted(t *testing.T) {
+// TestSentinels_NativeHistogramStampsAreAsserted pins what makes BOTH halves
+// of the native_histogram_quantile sentinel falsifiable: it must require the
+// enable_analyzer=0 stamp applyNativeHistogramAnalyzerFix applies (the
+// mechanism #2364 broke) AND the group_by_two_level_threshold_bytes stamp
+// applyExpHistogramTwoLevelBound (cerberus issue #3247) applies. Without
+// those requirements the sentinel measures only peak memory and HTTP status,
+// and the committed bound is a CEILING — so deleting either mechanism would
+// raise the measured peak and still pass as long as it stayed under a bound
+// calibrated before the mechanism existed. The analyzer requirement is the
+// one that catches a co-stamp overwriting the fix: the sentinel's own plan
+// carries a Filter, so the condition-cache rule's enable_analyzer=1 used to
+// land on top of the fix's 0 on every server >= 25.3, and nothing in this
+// lane asserted the key.
+func TestSentinels_NativeHistogramStampsAreAsserted(t *testing.T) {
 	base := SentinelsForFloor(FloorBase)
 	var s *Sentinel
 	for i := range base {
@@ -305,7 +310,10 @@ func TestSentinels_ExpHistogramTwoLevelStampIsAsserted(t *testing.T) {
 
 	const cap1GiB int64 = 1 << 30
 	got := s.RequiredSettings(cap1GiB)
-	want := map[string]string{settingGroupByTwoLevelThresholdBytes: wantExpHistogramTwoLevelThresholdBytes}
+	want := map[string]string{
+		settingEnableAnalyzer:                wantNativeHistogramEnableAnalyzer,
+		settingGroupByTwoLevelThresholdBytes: wantExpHistogramTwoLevelThresholdBytes,
+	}
 	if len(got) != len(want) {
 		t.Fatalf("exp-histogram sentinel RequiredSettings = %v, want %v", got, want)
 	}

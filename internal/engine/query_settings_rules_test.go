@@ -371,7 +371,7 @@ func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.
 func TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled(t *testing.T) {
 	plan := &chplan.HistogramQuantileNative{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), planHasNativeHistogramAnalyzerHazard(plan))
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -385,7 +385,7 @@ func TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled(t *testing.T) {
 func TestApplyNativeHistogramAnalyzerFix_ProjectionStampsDisabled(t *testing.T) {
 	plan := &chplan.HistogramProjection{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), planHasNativeHistogramAnalyzerHazard(plan))
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -406,7 +406,7 @@ func TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled(t *testing.T) {
 		}},
 	}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), planHasNativeHistogramAnalyzerHazard(plan))
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -419,7 +419,7 @@ func TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled(t *testing.T) {
 func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T) {
 	plan := &chplan.RangeWindow{Input: aggOverScan("otel_metrics_sum", "MetricName")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), planHasNativeHistogramAnalyzerHazard(plan))
 
 	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
 		t.Errorf("non-histogram plan: enable_analyzer = %v; want absent", got)
@@ -433,7 +433,7 @@ func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T)
 // no HistogramQuantileNative/HistogramProjection wrapper ever covers — see
 // planHasNativeHistogramAnalyzerHazard, this fix's other trigger.
 func TestApplyNativeHistogramAnalyzerFix_ValueFnFanoutStampsDisabled(t *testing.T) {
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), expHistogramValueFnFanoutPlan())
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), planHasNativeHistogramAnalyzerHazard(expHistogramValueFnFanoutPlan()))
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -461,7 +461,7 @@ func TestApplyNativeHistogramAnalyzerFix_ClassicFanoutStampsNothing(t *testing.T
 		}},
 	}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), planHasNativeHistogramAnalyzerHazard(plan))
 
 	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
 		t.Errorf("classic fan-out: enable_analyzer = %v; want absent", got)
