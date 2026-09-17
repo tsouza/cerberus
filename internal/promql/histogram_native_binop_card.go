@@ -213,20 +213,28 @@ func mergeTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorMat
 	}
 	staged := &chplan.Project{Roles: metricRoles(s), Input: join, Projections: stage1}
 
+	// Cerberus issue #3558: refine the merge scale to bound the merged
+	// bucket-range WIDTH — not just min(Scale) across the two operands —
+	// BEFORE the budget guard below, the same ordering
+	// [mergeTwoHistogramProjections] (histogram_native_binop.go) now uses.
+	// `staged` already projects the SAME six aliases
+	// [wrapExpHistogramMergeScaleRefinement] reads
+	// (hqAggScalesArrayAlias/hqAggMergedScaleAlias/hqAggPos*/hqAggNeg*), so
+	// it applies here unchanged.
+	refined := wrapExpHistogramMergeScaleRefinement(staged)
+
 	// The identical unbounded arrayMap(range(mergedLength), ...) bucket
 	// ladder [histogramBinopMergeProjections] is about to fold below needs
-	// the same budget guard the one-to-one path attaches to its Aggregate's
-	// Having (histogramBinopMergeHavingGuard's bucket-width conjunct) — see
+	// the same budget guard [mergeTwoHistogramProjections] attaches — see
 	// this file's own doc and histogramBinopBucketWidthBudgetGuardExpr's.
-	// This path has no Aggregate to hang a HAVING on, but `staged` above
-	// already projects the SAME six aliases
-	// (hqAggScalesArrayAlias/hqAggMergedScaleAlias/hqAggPos*/hqAggNeg*)
+	// This path has no Aggregate to hang a HAVING on, but `refined` above
+	// already projects the SAME six aliases (now scale-refined)
 	// histogramBinopBucketWidthBudgetGuardExpr reads, so a Filter mirrors
 	// wrapExpHistogramMergeBudgetGuard's Filter-based wiring for the
 	// cross-series merge: unlike a pruneable unread SELECT column, a
 	// Filter's predicate is always evaluated to decide row survival, so the
 	// throwIf(...) side effect cannot be optimised away.
-	guarded := chplan.Node(&chplan.Filter{Input: staged, Predicate: histogramBinopBucketWidthBudgetGuardExpr(ctx.resourceBounds.HistogramMergeMaxCostUnits)})
+	guarded := chplan.Node(&chplan.Filter{Input: refined, Predicate: histogramBinopBucketWidthBudgetGuardExpr(ctx.resourceBounds.HistogramMergeMaxCostUnits)})
 
 	projs := []chplan.Projection{{Expr: &chplan.ColumnRef{Name: histSchema.AttributesColumn}, Alias: histSchema.AttributesColumn}}
 	projs = append(projs, histogramBinopMergeProjections(histSchema)...)

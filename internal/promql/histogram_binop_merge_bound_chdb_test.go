@@ -1,13 +1,16 @@
 //go:build chdb
 
-// chDB-backed proof that the two-operand exponential-histogram binop merge's
-// bucket-width budget guard (#2428, histogram_native_binop.go's
-// histogramBinopBucketWidthBudgetGuardExpr) actually FIRES at real
-// ClickHouse execution — not merely that the emitted SQL contains the right
-// tokens — and that it stays silent on a legitimate, well-within-budget
-// merge. Mirrors histogram_merge_bound_chdb_test.go's structure for the
-// cross-series merge guard (#2385), reusing that file's seed DDL / insert
-// column list / eval timestamp: both guards bound the identical
+// chDB-backed proof that the two-operand exponential-histogram binop
+// merge's scale refinement (#3558, histogram_merge_bound.go's
+// wrapExpHistogramMergeScaleRefinement) and its bucket-width budget guard
+// (#2428, histogram_native_binop.go's histogramBinopBucketWidthBudgetGuardExpr)
+// behave correctly at real ClickHouse execution — not merely that the
+// emitted SQL contains the right tokens: a scale-divergent merge is
+// compacted to a bounded width rather than rejected, and a legitimate,
+// well-within-budget merge stays untouched. Mirrors
+// histogram_merge_bound_chdb_test.go's structure for the cross-series
+// merge guard (#2385/#3555), reusing that file's seed DDL / insert column
+// list / eval timestamp: all three guards bound the identical
 // arrayMap-over-mergedLength shape, just over a different Aggregate.
 package promql_test
 
@@ -19,7 +22,6 @@ import (
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -101,16 +103,29 @@ func runHistogramBinopMergeBoundQuery(t *testing.T, fixture *chdbFixture) error 
 	return nil
 }
 
-// TestHistogramBinopMergeBudget_ChDB_BucketWidthExceeded seeds one series
-// on each of the two operand metrics, sharing the `series` label so default
-// one-to-one matching pairs them, whose PositiveOffset diverges enough (0
-// vs 20000, both Scale 0, one bucket each) that the merged bucket ladder
-// spans 20001 buckets — so `rows(2, fixed by construction) x width(20001)^2`
-// crosses maxHistogramMergeCostUnits (histogram_merge_bound.go) by many
-// orders of magnitude — and asserts the query aborts with the budget
-// guard's own throwIf rather than letting ClickHouse allocate an unbounded
-// Array(target-bucket-count) per output row (cerberus issue #2428).
-func TestHistogramBinopMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
+// TestHistogramBinopMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects
+// seeds one series on each of the two operand metrics, sharing the
+// `series` label so default one-to-one matching pairs them, whose
+// PositiveOffset diverges enough (0 vs 20000, both Scale 0, one bucket
+// each) that the NATURAL merge — at min(Scale) alone, with no further
+// downscale — would span 20001 buckets, so `rows(2, fixed by construction)
+// x width(20001)^2` crosses maxHistogramMergeCostUnits
+// (histogram_merge_bound.go) by many orders of magnitude.
+//
+// Before cerberus issue #3558's fix this aborted with the budget guard's
+// own throwIf: min(Scale) alone only guarantees every operand CAN be
+// downscaled onto the merge, not that the resulting range is narrow — two
+// individually-narrow operands (one bucket each) with merely DIFFERENT
+// central values blew the guard exactly like this, mirroring
+// TestHistogramMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects's
+// identical pre-#3555 shape for the cross-series merge.
+// [wrapExpHistogramMergeScaleRefinement] now downscales the merge's shared
+// scale FIRST so the merged width never exceeds
+// maxHistogramMergeOutputWidth (160), and the guard sees a cost of
+// 2 x 160^2 = 51,200 — comfortably under budget — so the query now
+// SUCCEEDS with a coarser (but still correct) merged distribution instead
+// of refusing outright.
+func TestHistogramBinopMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
@@ -118,17 +133,34 @@ func TestHistogramBinopMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricB, "x", 20000) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
-	err := runHistogramBinopMergeBoundQuery(t, fixture)
-	if err == nil {
-		t.Fatal("expected the binop merge budget guard to abort the query (merged width 20001 > 16384), got no error")
+	if err := runHistogramBinopMergeBoundQuery(t, fixture); err != nil {
+		t.Fatalf("a scale-divergent two-operand binop merge must be compacted to a bounded width, not rejected: %v", err)
 	}
-	// See TestHistogramMergeBudget_ChDB_RowCountExceeded's identical
-	// comment: this drives chdb-go's raw driver handle directly, never
-	// through chclient, so a raw substring check against chdb-go's own
-	// exception text is what proves the emitted SQL's throwIf fired at
-	// real ClickHouse execution, carrying the right message.
-	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
-		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
+}
+
+// TestHistogramBinopMergeBudget_ChDB_RowCountFixedNeverOverflowsWidthAlone
+// seeds one series on each operand metric whose PositiveOffset diverges
+// enough (0 vs 2,000,000, both Scale 0) that EVEN AFTER
+// [wrapExpHistogramMergeScaleRefinement]'s width-160 cap, the row-count
+// overflow guard is not what would reject it (the fixed operand count is
+// always 2, far under [maxHistogramMergeRowCountOverflowGuard]) — the
+// SAME cost formula's row-count-overflow disjunct that
+// TestHistogramMergeBudget_ChDB_RowCountOverflowGuard isolates for the
+// cross-series merge never applies here by construction. This proves the
+// refinement, not the row-count backstop, is what admits an even more
+// extreme scale divergence than the shape above.
+func TestHistogramBinopMergeBudget_ChDB_RowCountFixedNeverOverflowsWidthAlone(t *testing.T) {
+	const extremeOffset = 2_000_000
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
+	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricA, "x", 0) + ",\n")
+	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricB, "x", extremeOffset) + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	if err := runHistogramBinopMergeBoundQuery(t, fixture); err != nil {
+		t.Fatalf("an even more extreme scale-divergent two-operand binop merge must still be compacted "+
+			"to a bounded width by the refinement, not rejected: %v", err)
 	}
 }
 

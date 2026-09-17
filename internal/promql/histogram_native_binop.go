@@ -303,12 +303,26 @@ func mergeTwoHistogramProjections(hpL, hpR chplan.Node, s schema.Metrics, ctx lo
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
 		AggFuncs:           histogramBinopMergeAggs(histSchema),
-		Having:             histogramBinopMergeHavingGuard(ctx.resourceBounds.HistogramMergeMaxCostUnits),
+		Having:             histogramBinopBothSidesMatchedGuard(),
 		DropEmptyOnNoGroup: true,
+	}
+	// The scale refinement (cerberus issue #3558) must run BEFORE the
+	// bucket-width budget guard below — see [wrapExpHistogramMergeScaleRefinement]'s
+	// doc — so it can no longer live in this Aggregate's own Having
+	// alongside the count()=2 join guard (a Having conjunct cannot see a
+	// value a LATER Project computes). The guard moves to a Filter
+	// wrapping the refinement instead, mirroring
+	// [mergeTwoHistogramProjectionsCard]'s and
+	// [lowerMixedVVAdditiveArithmetic]'s own Filter-based wiring for the
+	// identical guard.
+	refined := wrapExpHistogramMergeScaleRefinement(merged)
+	guarded := &chplan.Filter{
+		Input:     refined,
+		Predicate: histogramBinopBucketWidthBudgetGuardExpr(ctx.resourceBounds.HistogramMergeMaxCostUnits),
 	}
 	projs = append(projs, chplan.Projection{Expr: attrsRebuild, Alias: histSchema.AttributesColumn})
 	projs = append(projs, histogramBinopMergeProjections(histSchema)...)
-	reshaped := &chplan.Project{Roles: metricRoles(s), Input: merged, Projections: projs}
+	reshaped := &chplan.Project{Roles: metricRoles(s), Input: guarded, Projections: projs}
 
 	tsExpr := chplan.Expr(chplan.NowNano())
 	if stepAligned {
@@ -324,40 +338,23 @@ func mergeTwoHistogramProjections(hpL, hpR chplan.Node, s schema.Metrics, ctx lo
 // This is reused, UNCHANGED, by the `==`/`!=` structural-compare path
 // (histogram_native_binop_eq.go's compareTwoHistogramProjections, its
 // `returnBool` arm) as well as by [mergeTwoHistogramProjections]'s own
-// Having below — deliberately just the bare guard, not
-// [histogramBinopMergeHavingGuard]'s wider one: the compare path's own
-// Aggregate collects a completely different set of groupArray aliases
-// (histogramCompareMergeAggs, keyed by histCompareFieldAlias) and never
-// builds the unbounded merged-bucket-ladder shape
-// [histogramBinopBucketWidthBudgetGuardExpr] bounds, so folding that
-// guard's column references in here would reference aliases that
-// Aggregate never projects.
+// Having — deliberately just this bare guard, with
+// [histogramBinopBucketWidthBudgetGuardExpr]'s width bound attached
+// SEPARATELY as a downstream Filter rather than folded into the same
+// Having (cerberus issue #3558: the width guard must run AFTER
+// [wrapExpHistogramMergeScaleRefinement]'s own downstream Project, which a
+// Having conjunct sitting on this SAME Aggregate cannot see) — the
+// compare path's own Aggregate collects a completely different set of
+// groupArray aliases (histogramCompareMergeAggs, keyed by
+// histCompareFieldAlias) and never builds the unbounded merged-bucket-
+// ladder shape [histogramBinopBucketWidthBudgetGuardExpr] bounds, so it
+// was already excluded from that guard even before this restructuring.
 func histogramBinopBothSidesMatchedGuard() chplan.Expr {
 	return &chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  &chplan.FuncCall{Fn: chplan.FnCount},
 		Right: &chplan.LitInt{V: histogramBinopOperandCount},
 	}
-}
-
-// histogramBinopMergeHavingGuard renders `count() = 2 AND <bucket-width
-// budget guard>` — [histogramBinopBothSidesMatchedGuard]'s `count() = 2`
-// conjunct (see its doc for why that alone implements default
-// one-to-one V-V matching's INNER JOIN semantics here) ANDed with
-// [histogramBinopBucketWidthBudgetGuardExpr]'s bound on
-// [histogramBinopMergedBucketsExpr]'s merged bucket ladder width
-// (cerberus issue #2428). Wired ONLY into
-// [mergeTwoHistogramProjections]'s Having, the one Aggregate whose
-// groupArrays ([histogramBinopMergeAggs], via [expHistogramMergeAggs])
-// actually carry the columns the budget guard reads — see
-// [histogramBinopBothSidesMatchedGuard]'s doc for why the `==`/`!=`
-// compare path must NOT share this wider guard.
-//
-// maxCostUnits — see [histogramBinopBucketWidthBudgetGuardExpr]'s doc — is
-// the caller's already-resolved histogram-merge cost ceiling
-// (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue #2667).
-func histogramBinopMergeHavingGuard(maxCostUnits int64) chplan.Expr {
-	return andExpr(histogramBinopBothSidesMatchedGuard(), histogramBinopBucketWidthBudgetGuardExpr(maxCostUnits))
 }
 
 // histogramBinopBucketWidthBudgetGuardExpr renders the `throwIf(...) = 0`
@@ -382,22 +379,24 @@ func histogramBinopMergeHavingGuard(maxCostUnits int64) chplan.Expr {
 // and the negative ladder, folded into the shared cost expression) is
 // open here.
 //
-// This reads the SAME groupArray aliases [histogramBinopMergeAggs]
-// collects via [expHistogramMergeAggs] (hqAggScalesArrayAlias plus the
-// four offset/bucket array aliases), so — like
-// [histogramMergeBudgetGuardExpr] — it must be attached directly to the
-// Aggregate producing them. Unlike the cross-series merge's Filter-based
-// wiring ([wrapExpHistogramMergeBudgetGuard]), this Aggregate's GroupBy
-// is never empty (histogramAggGroupBy(nil, ...) always yields the
-// single-element series-identity key), so DropEmptyOnNoGroup never takes
-// effect here and folding straight into the existing Having carries no
-// risk of the empty-GroupBy/Having conflict [chplan.Aggregate.Having]'s
-// doc warns about.
+// This reads the SAME groupArray/array-literal aliases
+// [histogramBinopMergeAggs] (via [expHistogramMergeAggs]) or its two
+// sibling shapes' own Projects collect (hqAggScalesArrayAlias plus the
+// four offset/bucket array aliases) — see [wrapExpHistogramMergeScaleRefinement]
+// (histogram_merge_bound.go, cerberus issue #3558), which every call site
+// below runs FIRST so hqAggMergedScaleAlias already bounds the merged
+// width before this guard's own cost computation reads it. All three call
+// sites wire this as a downstream Filter's predicate rather than a
+// Having conjunct — including [mergeTwoHistogramProjections] itself as of
+// #3558, which used to fold this directly into its Aggregate's Having
+// before the scale refinement needed a Project in between (see that
+// function's own comment) — since a Having conjunct on the SAME Aggregate
+// that produces these columns cannot see a value a LATER Project computes.
 //
 // maxCostUnits is the caller-resolved ceiling — see
 // [histogramMergeCostOverBudgetExpr]'s doc — threaded down from each of
 // this function's three call sites' own ctx.resourceBounds.HistogramMergeMaxCostUnits
-// (cerberus issue #2667): [histogramBinopMergeHavingGuard] above,
+// (cerberus issue #2667): [mergeTwoHistogramProjections] above,
 // mergeTwoHistogramProjectionsCard (histogram_native_binop_card.go), and
 // lowerMixedVVAdditiveArithmetic (histogram_native_mixed_or_vector_arithmetic.go).
 func histogramBinopBucketWidthBudgetGuardExpr(maxCostUnits int64) chplan.Expr {

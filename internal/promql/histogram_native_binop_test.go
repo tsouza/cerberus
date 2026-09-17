@@ -199,10 +199,16 @@ func TestLower_ExpHistogram_HistogramBinopSupportsOnIgnoringMatching(t *testing.
 // operands feeding a chplan.Aggregate grouped by Attributes with a
 // `count() = 2` Having guard — the stand-in for VectorJoin's INNER JOIN
 // default one-to-one matching (see histogram_native_binop.go's doc for
-// why that guard alone is sufficient here). Subtraction additionally
-// wraps the RHS arm in the existing scalar-scaling machinery (issue
-// #2087) with op=Mul, scale=-1, negating every count-bearing field
-// before it enters the same merge as `+`.
+// why that guard alone is sufficient here) — followed by cerberus issue
+// #3558's own scale-refinement Project and the bucket-width budget
+// guard's Filter, now separate stages rather than a second Having
+// conjunct (see mergeTwoHistogramProjections' own comment for why: the
+// refinement needs a Project in between, and a Having conjunct on the
+// SAME Aggregate that produces the merge's columns cannot see a value a
+// LATER Project computes). Subtraction additionally wraps the RHS arm in
+// the existing scalar-scaling machinery (issue #2087) with op=Mul,
+// scale=-1, negating every count-bearing field before it enters the same
+// merge as `+`.
 func TestLower_ExpHistogram_HistogramBinopMergesViaUnionAllAndCountGuard(t *testing.T) {
 	t.Parallel()
 
@@ -238,38 +244,47 @@ func TestLower_ExpHistogram_HistogramBinopMergesViaUnionAllAndCountGuard(t *test
 			if !ok {
 				t.Fatalf("lower(%q): HistogramProjection.Input is %T, want *chplan.Project", tc.query, hp.Input)
 			}
-			agg, ok := reshape.Input.(*chplan.Aggregate)
+			// Cerberus issue #3558: the bucket-width budget guard is now a
+			// Filter wrapping the scale-refinement Project, not a Having
+			// conjunct on the Aggregate below.
+			guardFilter, ok := reshape.Input.(*chplan.Filter)
 			if !ok {
-				t.Fatalf("lower(%q): reshape.Input is %T, want *chplan.Aggregate", tc.query, reshape.Input)
+				t.Fatalf("lower(%q): reshape.Input is %T, want *chplan.Filter (the bucket-width budget guard)", tc.query, reshape.Input)
 			}
-			if agg.Having == nil {
-				t.Fatalf("lower(%q): Aggregate.Having is nil, want the both-sides-matched count() = 2 guard AND the bucket-width budget guard", tc.query)
-			}
-			// Having is `count() = 2 AND <bucket-width budget guard>`
-			// (cerberus issue #2428) — see
-			// histogramBinopBothSidesMatchedGuard's doc.
-			conjunction, ok := agg.Having.(*chplan.Binary)
-			if !ok || conjunction.Op != chplan.OpAnd {
-				t.Fatalf("lower(%q): Aggregate.Having = %#v, want an And Binary", tc.query, agg.Having)
-			}
-			matched, ok := conjunction.Left.(*chplan.Binary)
-			if !ok || matched.Op != chplan.OpEq {
-				t.Fatalf("lower(%q): Aggregate.Having.Left = %#v, want an Eq Binary", tc.query, conjunction.Left)
-			}
-			if _, ok := matched.Left.(*chplan.FuncCall); !ok {
-				t.Fatalf("lower(%q): Aggregate.Having.Left.Left = %#v, want a count() FuncCall", tc.query, matched.Left)
-			}
-			lit, ok := matched.Right.(*chplan.LitInt)
-			if !ok || lit.V != 2 {
-				t.Fatalf("lower(%q): Aggregate.Having.Left.Right = %#v, want LitInt(2)", tc.query, matched.Right)
-			}
-			budgetGuard, ok := conjunction.Right.(*chplan.Binary)
+			budgetGuard, ok := guardFilter.Predicate.(*chplan.Binary)
 			if !ok || budgetGuard.Op != chplan.OpEq {
-				t.Fatalf("lower(%q): Aggregate.Having.Right = %#v, want an Eq Binary (the throwIf(...) = 0 budget guard)", tc.query, conjunction.Right)
+				t.Fatalf("lower(%q): Filter.Predicate = %#v, want an Eq Binary (the throwIf(...) = 0 budget guard)", tc.query, guardFilter.Predicate)
 			}
 			throwIfCall, ok := budgetGuard.Left.(*chplan.FuncCall)
 			if !ok || throwIfCall.Fn != chplan.FnThrowIf {
-				t.Fatalf("lower(%q): Aggregate.Having.Right.Left = %#v, want a throwIf FuncCall", tc.query, budgetGuard.Left)
+				t.Fatalf("lower(%q): Filter.Predicate.Left = %#v, want a throwIf FuncCall", tc.query, budgetGuard.Left)
+			}
+
+			refinement, ok := guardFilter.Input.(*chplan.Project)
+			if !ok || len(refinement.Replacements) == 0 {
+				t.Fatalf("lower(%q): Filter.Input is %#v, want a *chplan.Project with Replacements (the scale refinement)", tc.query, guardFilter.Input)
+			}
+
+			agg, ok := refinement.Input.(*chplan.Aggregate)
+			if !ok {
+				t.Fatalf("lower(%q): refinement.Input is %T, want *chplan.Aggregate", tc.query, refinement.Input)
+			}
+			if agg.Having == nil {
+				t.Fatalf("lower(%q): Aggregate.Having is nil, want the both-sides-matched count() = 2 guard", tc.query)
+			}
+			// Having is the bare `count() = 2` guard — see
+			// histogramBinopBothSidesMatchedGuard's doc for why the
+			// bucket-width budget guard above is no longer folded in here.
+			matched, ok := agg.Having.(*chplan.Binary)
+			if !ok || matched.Op != chplan.OpEq {
+				t.Fatalf("lower(%q): Aggregate.Having = %#v, want an Eq Binary", tc.query, agg.Having)
+			}
+			if _, ok := matched.Left.(*chplan.FuncCall); !ok {
+				t.Fatalf("lower(%q): Aggregate.Having.Left = %#v, want a count() FuncCall", tc.query, matched.Left)
+			}
+			lit, ok := matched.Right.(*chplan.LitInt)
+			if !ok || lit.V != 2 {
+				t.Fatalf("lower(%q): Aggregate.Having.Right = %#v, want LitInt(2)", tc.query, matched.Right)
 			}
 
 			union, ok := agg.Input.(*chplan.UnionAll)

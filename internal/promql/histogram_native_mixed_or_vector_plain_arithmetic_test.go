@@ -70,9 +70,16 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorPlainAdditiveArithmetic(t *testin
 				if !ok {
 					t.Fatalf("lower(%q): Project.Input is %T, want *chplan.Filter", query, proj.Input)
 				}
-				mergeInputs, ok := filter.Input.(*chplan.Project)
+				// Cerberus issue #3558: a scale-refinement Project
+				// (Replacements only) now sits between the Filter and the
+				// merge-array materialisation Project.
+				refinement, ok := filter.Input.(*chplan.Project)
+				if !ok || len(refinement.Replacements) == 0 {
+					t.Fatalf("lower(%q): Filter.Input is %#v, want a *chplan.Project with Replacements (the scale refinement)", query, filter.Input)
+				}
+				mergeInputs, ok := refinement.Input.(*chplan.Project)
 				if !ok {
-					t.Fatalf("lower(%q): Filter.Input is %T, want *chplan.Project", query, filter.Input)
+					t.Fatalf("lower(%q): refinement.Input is %T, want *chplan.Project", query, refinement.Input)
 				}
 				join, ok := mergeInputs.Input.(*chplan.MixedVectorJoin)
 				if !ok {

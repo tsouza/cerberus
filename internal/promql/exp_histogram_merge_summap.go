@@ -208,10 +208,15 @@ const (
 	hqAggNegSumMapAlias = "_hq_neg_summap"
 
 	// hqWinMergedScaleAlias names [expHistogramMergeScaleWindowProject]'s
-	// pre-pass WindowExpr column: each perSeries row annotated with ITS OWN
-	// group's mergedScale (min(Scale) OVER (PARTITION BY <group-key>)) —
-	// the multi-group counterpart of expHistogramMergeScaleScalarSubquery's
-	// single scalar (cerberus issue #2865).
+	// pre-pass column: each perSeries row annotated with ITS OWN group's
+	// merged scale — the multi-group counterpart of
+	// expHistogramMergeScaleScalarSubquery's single scalar (cerberus issue
+	// #2865). Since cerberus issue #3558, this is NOT the raw
+	// `min(Scale) OVER (PARTITION BY <group-key>)` WindowExpr result on its
+	// own: that raw value is downscaled FURTHER (see
+	// hqWinPosStartMinAlias's doc below) so the merged bucket-range width
+	// never exceeds [maxHistogramMergeOutputWidth] before pass 2 ever
+	// builds a sumMap key from it.
 	hqWinMergedScaleAlias = "_hq_win_merged_scale"
 
 	// hqWinTotalRowCountAlias / hqWinTotalGroupCountAlias name the SAME
@@ -222,6 +227,47 @@ const (
 	// exp_histogram_merge_summap_bound.go for how the guard reads them.
 	hqWinTotalRowCountAlias   = "_hq_win_total_row_count"
 	hqWinTotalGroupCountAlias = "_hq_win_total_group_count"
+
+	// hqWinRowPosStartAlias / hqWinRowPosEndAlias / hqWinRowNegStartAlias /
+	// hqWinRowNegEndAlias name each ROW's own downscaled absolute bucket
+	// index at the group's RAW (pre-refinement) merged scale — plain,
+	// per-row scalar expressions (bitShiftRight(Offset[+len-1], Scale -
+	// rawMergedScale)), mirroring [expHistogramMergeBucketsBoundsExpr]'s
+	// per-row arrayMap body, but computed directly from each row's OWN
+	// Scale/Offset/BucketCounts columns rather than from a groupArray —
+	// see hqWinPosStartMinAlias's doc for why.
+	hqWinRowPosStartAlias = "_hq_win_row_pos_start"
+	hqWinRowPosEndAlias   = "_hq_win_row_pos_end"
+	hqWinRowNegStartAlias = "_hq_win_row_neg_start"
+	hqWinRowNegEndAlias   = "_hq_win_row_neg_end"
+
+	// hqWinPosStartMinAlias / hqWinPosEndMaxAlias / hqWinNegStartMinAlias /
+	// hqWinNegEndMaxAlias hold the group's raw (pre-refinement) merged
+	// bucket range endpoints — min(hqWinRowPosStartAlias) OVER (PARTITION
+	// BY <group-key>), and so on — cerberus issue #3558's multi-group
+	// counterpart to [mergedLengthExpr]'s array-based
+	// arrayMin(arrayMap(...))/arrayMax(arrayMap(...)) computation.
+	//
+	// This does NOT collect a windowed groupArray of the group's own
+	// Scale/Offset/BucketCounts columns and reuse [mergedLengthExpr]
+	// directly the way the single-group ScalarSubquery pass 1
+	// ([expHistogramMergeScaleScalarSubquery]) and the two-operand binop
+	// merge ([refinedMergeScaleExpr]) both do: a `groupArray(...) OVER
+	// (PARTITION BY g)` window function materialises the WHOLE partition's
+	// array ONCE PER ROW of that partition — O(rows-per-group) memory per
+	// row, O(rows-per-group^2) total for one group — and this pre-pass
+	// already has to materialise every row of perSeries across EVERY group
+	// in the query at once (see this file's header, "The multi-group
+	// budget guard"), so an array-per-row blowup here would undo the very
+	// guard this package calibrates. Reducing each row to four plain
+	// scalars (its own downscaled start/end per ladder) before the window
+	// MIN/MAX keeps this pre-pass at the SAME O(1)-extra-columns-per-row
+	// cost its existing MergedScale/TotalRowCount/TotalGroupCount columns
+	// already have.
+	hqWinPosStartMinAlias = "_hq_win_pos_start_min"
+	hqWinPosEndMaxAlias   = "_hq_win_pos_end_max"
+	hqWinNegStartMinAlias = "_hq_win_neg_start_min"
+	hqWinNegEndMaxAlias   = "_hq_win_neg_end_max"
 
 	// hqAggMultiGroupTotalRowCountAlias / hqAggMultiGroupTotalGroupCountAlias
 	// name pass 2's own collection of the two window columns above — max()
@@ -235,12 +281,27 @@ const (
 )
 
 // expHistogramMergeScaleScalarSubquery renders pass 1: a no-GROUP-BY
-// min(Scale) Aggregate over a CLONE of perSeries, wrapped as a
-// [chplan.ScalarSubquery]. A plain (non-GROUP-BY) ClickHouse aggregate
-// always returns exactly one row — even over zero input rows (min()
-// answers NULL) — satisfying ScalarSubquery's "exactly one row" contract
-// without needing chplan.Aggregate.DropEmptyOnNoGroup, which exists for
-// the opposite (GROUPED, zero-groups-should-mean-zero-rows) case.
+// Aggregate over a CLONE of perSeries collecting raw min(Scale) plus the
+// four ladder arrays [refinedMergeScaleExpr] needs, wrapped as a
+// [chplan.ScalarSubquery] over a Project that downscales the raw min(Scale)
+// far enough to bound the merged bucket-range WIDTH (cerberus issue #3558)
+// — not just min(Scale) alone, which only guarantees every row CAN be
+// downscaled onto the merge, never that the resulting range is narrow (see
+// [refinedMergeScaleExpr]'s own doc, histogram_merge_bound.go). This value
+// feeds pass 2's sumMap key expressions directly
+// ([expHistogramSumMapRowIndexExpr]), so refining it HERE — before pass 2
+// ever builds a key from it — is what keeps the emitted bucket keys and
+// this scale mutually consistent; refining a copy of hqAggMergedScaleAlias
+// downstream of pass 2 instead (the way the two-operand binop merge does
+// it, [wrapExpHistogramMergeScaleRefinement]) would leave pass 2's own
+// sumMap keys built at the OLD, unrefined scale while claiming the NEW,
+// coarser one — a real correctness bug, not merely a missed optimisation.
+//
+// A plain (non-GROUP-BY) ClickHouse aggregate always returns exactly one
+// row — even over zero input rows (min() answers NULL) — satisfying
+// ScalarSubquery's "exactly one row" contract without needing
+// chplan.Aggregate.DropEmptyOnNoGroup, which exists for the opposite
+// (GROUPED, zero-groups-should-mean-zero-rows) case.
 //
 // CloneNode is required — not optional — because chplan rewrites plans in
 // place: reusing the SAME perSeries pointer both here and as pass 2's own
@@ -248,19 +309,40 @@ const (
 // other, exactly the hazard info_fn.go's own two-arm base clone guards
 // against.
 func expHistogramMergeScaleScalarSubquery(perSeries chplan.Node, s schema.Metrics) chplan.Expr {
-	const scalarAlias = "_hq_pass1_merged_scale"
+	const (
+		scalarAlias    = "_hq_pass1_merged_scale"
+		rawScaleAlias  = "_hq_pass1_raw_scale"
+		scalesArrAlias = "_hq_pass1_scales_arr"
+		posOffArrAlias = "_hq_pass1_pos_off_arr"
+		posBucArrAlias = "_hq_pass1_pos_buc_arr"
+		negOffArrAlias = "_hq_pass1_neg_off_arr"
+		negBucArrAlias = "_hq_pass1_neg_buc_arr"
+	)
+	groupArrayOf := func(col, alias string) chplan.AggFunc {
+		return chplan.AggFunc{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: alias}
+	}
 	agg := &chplan.Aggregate{
 		Roles: metricRoles(s),
 		Input: chplan.CloneNode(perSeries),
 		AggFuncs: []chplan.AggFunc{
-			{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: scalarAlias},
+			{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: rawScaleAlias},
+			groupArrayOf(s.ScaleColumn, scalesArrAlias),
+			groupArrayOf(s.PositiveOffsetColumn, posOffArrAlias),
+			groupArrayOf(s.PositiveBucketCountsColumn, posBucArrAlias),
+			groupArrayOf(s.NegativeOffsetColumn, negOffArrAlias),
+			groupArrayOf(s.NegativeBucketCountsColumn, negBucArrAlias),
 		},
 	}
+	refined := refinedMergeScaleExpr(
+		&chplan.ColumnRef{Name: rawScaleAlias}, &chplan.ColumnRef{Name: scalesArrAlias},
+		&chplan.ColumnRef{Name: posOffArrAlias}, &chplan.ColumnRef{Name: posBucArrAlias},
+		&chplan.ColumnRef{Name: negOffArrAlias}, &chplan.ColumnRef{Name: negBucArrAlias},
+	)
 	return &chplan.ScalarSubquery{
 		Input: &chplan.Project{
 			Roles:       metricRoles(s),
 			Input:       agg,
-			Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: scalarAlias}, Alias: scalarAlias}},
+			Projections: []chplan.Projection{{Expr: refined, Alias: scalarAlias}},
 		},
 	}
 }
@@ -295,56 +377,79 @@ type expHistogramMergeScaleWindowCols struct {
 	MergedScale, TotalRowCount, TotalGroupCount chplan.Expr
 }
 
-// expHistogramMergeScaleWindowProject wraps perSeries in a
-// non-aggregating Project stage that annotates every row with the three
-// [expHistogramMergeScaleWindowCols] scalars, keyed by partitionBy (see
-// [expHistogramMergeScaleWindowPartitionBy]). This is the WindowExpr
-// pre-pass cerberus issue #2865 verified against real ClickHouse 26.6 —
-// see this file's header for the mechanism and the guard's own header doc
-// (exp_histogram_merge_summap_bound.go) for TotalRowCount/TotalGroupCount's
-// calibration.
-//
-// The Project lists perSeries' columns EXPLICITLY rather than relying on
-// chplan.Project's bare-`*` pass-through: chplan.Project has no "wildcard
-// plus one new column" shape (only a full explicit list, or `*` with named
-// REPLACEMENTS), and an explicit list is this package's own established
-// idiom for exactly this kind of reshape (see e.g.
-// expHistogramGroupMergeProjectionsSumMap). The list is fixed by
-// [nativeExpHistValuedLatestAggs]' own output contract
-// (histogram_quantile_range.go) — every column
+// expHistogramMergeScaleWindowPassthroughCols returns the column names
+// every stage of [expHistogramMergeScaleWindowProject]'s pipeline forwards
+// unchanged — [nativeExpHistValuedLatestAggs]' own output contract
+// (histogram_quantile_range.go), every column
 // [expHistogramGroupMergeAggsSumMap]'s pass-2 aggregates read — so a
 // column added there without being added here would silently vanish
-// before pass 2 ever sees it.
+// before pass 2 ever sees it. Factored out so every stage below shares
+// ONE list rather than four hand-kept copies drifting apart.
 //
 // anchor is nil in instant mode and the range fan-out's step-anchor column
-// in range mode (cerberus issue #3027): when non-nil it is ALSO passed
-// through explicitly, for the identical reason every other column is —
-// pass 2's merge Aggregate groups by it (mirroring
-// [expHistogramGroupMergeFanout]'s own anchor-prepended GroupBy), so it
-// must survive this reshape too.
+// in range mode (cerberus issue #3027): when non-nil it is ALSO forwarded,
+// for the identical reason every other column is — pass 2's merge
+// Aggregate groups by it (mirroring [expHistogramGroupMergeFanout]'s own
+// anchor-prepended GroupBy), so it must survive this reshape too.
+func expHistogramMergeScaleWindowPassthroughCols(anchor *chplan.ColumnRef, s schema.Metrics) []string {
+	cols := []string{
+		s.AttributesColumn, s.CountColumn, s.SumColumn, s.ScaleColumn, s.ZeroCountColumn,
+		s.PositiveOffsetColumn, s.PositiveBucketCountsColumn, s.NegativeOffsetColumn, s.NegativeBucketCountsColumn,
+	}
+	if s.ZeroThresholdColumn != "" {
+		cols = append(cols, s.ZeroThresholdColumn)
+	}
+	if anchor != nil {
+		cols = append(cols, stepGridAnchorColumn)
+	}
+	return cols
+}
+
+// expHistogramMergeScaleWindowProject wraps perSeries in a four-stage,
+// non-aggregating Project pipeline that annotates every row with the
+// three [expHistogramMergeScaleWindowCols] scalars, keyed by partitionBy
+// (see [expHistogramMergeScaleWindowPartitionBy]). Stage 1 is the
+// WindowExpr pre-pass cerberus issue #2865 verified against real
+// ClickHouse 26.6 — see this file's header for the mechanism and the
+// guard's own header doc (exp_histogram_merge_summap_bound.go) for
+// TotalRowCount/TotalGroupCount's calibration. Stages 2-4 are cerberus
+// issue #3558's own addition: downscale stage 1's raw
+// `min(Scale) OVER (...)` far enough to bound the merged bucket-range
+// WIDTH, mirroring what [refinedMergeScaleExpr] does for the two-operand
+// binop merge and the sumMap single-group ScalarSubquery pass 1 — except
+// via a pair of scalar MIN/MAX window aggregates instead of a windowed
+// groupArray (see hqWinPosStartMinAlias's own doc for why the array
+// shape those other two callers use does not scale here).
+//
+// Each Project stage lists its own output columns EXPLICITLY, per
+// [expHistogramMergeScaleWindowPassthroughCols]'s own doc — no bare-`*`
+// pass-through — and stages are kept SEPARATE (rather than combining, say,
+// stage 1's WindowExpr with stage 2's plain per-row expressions in one
+// Project) because stage 2's expressions reference stage 1's own
+// hqWinMergedScaleAlias output and stage 3's window MIN/MAX reference
+// stage 2's own per-row scalars: each reference is to an ALREADY
+// materialised column of the FROM-subquery beneath it, never to a sibling
+// expression's alias within the SAME SELECT list, which keeps this
+// pipeline unambiguous standard SQL regardless of ClickHouse's own
+// same-SELECT alias-resolution rules for interacting window functions.
 func expHistogramMergeScaleWindowProject(perSeries chplan.Node, anchor *chplan.ColumnRef, partitionBy []chplan.Expr, s schema.Metrics) (chplan.Node, expHistogramMergeScaleWindowCols) {
 	passthrough := func(col string) chplan.Projection {
 		return chplan.Projection{Expr: &chplan.ColumnRef{Name: col}, Alias: col}
 	}
-	projs := []chplan.Projection{
-		passthrough(s.AttributesColumn),
-		passthrough(s.CountColumn),
-		passthrough(s.SumColumn),
-		passthrough(s.ScaleColumn),
-		passthrough(s.ZeroCountColumn),
-		passthrough(s.PositiveOffsetColumn),
-		passthrough(s.PositiveBucketCountsColumn),
-		passthrough(s.NegativeOffsetColumn),
-		passthrough(s.NegativeBucketCountsColumn),
+	passthroughAll := func(cols []string) []chplan.Projection {
+		projs := make([]chplan.Projection, 0, len(cols))
+		for _, col := range cols {
+			projs = append(projs, passthrough(col))
+		}
+		return projs
 	}
-	if s.ZeroThresholdColumn != "" {
-		projs = append(projs, passthrough(s.ZeroThresholdColumn))
-	}
-	if anchor != nil {
-		projs = append(projs, passthrough(stepGridAnchorColumn))
-	}
-	projs = append(
-		projs,
+	baseCols := expHistogramMergeScaleWindowPassthroughCols(anchor, s)
+
+	// Stage 1: the pre-existing per-group MergedScale/TotalRowCount/
+	// TotalGroupCount WindowExpr columns, unchanged.
+	stage1Projs := passthroughAll(baseCols)
+	stage1Projs = append(
+		stage1Projs,
 		chplan.Projection{
 			Expr: &chplan.WindowExpr{
 				Fn:          chplan.FnMin,
@@ -362,7 +467,84 @@ func expHistogramMergeScaleWindowProject(perSeries chplan.Node, anchor *chplan.C
 			Alias: hqWinTotalGroupCountAlias,
 		},
 	)
-	return &chplan.Project{Roles: expHistogramRoles(s), Input: perSeries, Projections: projs}, expHistogramMergeScaleWindowCols{
+	stage1 := &chplan.Project{Roles: expHistogramRoles(s), Input: perSeries, Projections: stage1Projs}
+
+	// Stage 2: reduce each row to its OWN downscaled bucket-range
+	// start/end for both ladders, at the group's RAW merged scale (stage
+	// 1's hqWinMergedScaleAlias) — mirroring
+	// [expHistogramMergeBucketsBoundsExpr]'s per-row arrayMap body, but
+	// reading each row's own Scale/Offset/BucketCounts columns directly
+	// rather than a groupArray.
+	rawMergedScale := &chplan.ColumnRef{Name: hqWinMergedScaleAlias}
+	shiftAmount := subExpr(&chplan.ColumnRef{Name: s.ScaleColumn}, rawMergedScale)
+	rowStartExpr := func(offsetCol string) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnBitShiftRight, Args: []chplan.Expr{&chplan.ColumnRef{Name: offsetCol}, shiftAmount}}
+	}
+	rowEndExpr := func(offsetCol, bucketsCol string) chplan.Expr {
+		lastIdx := subExpr(
+			addExpr(&chplan.ColumnRef{Name: offsetCol}, &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.ColumnRef{Name: bucketsCol}}}),
+			&chplan.LitInt{V: 1},
+		)
+		return &chplan.FuncCall{Fn: chplan.FnBitShiftRight, Args: []chplan.Expr{lastIdx, shiftAmount}}
+	}
+	stage2Projs := passthroughAll(baseCols)
+	stage2Projs = append(
+		stage2Projs,
+		passthrough(hqWinMergedScaleAlias), passthrough(hqWinTotalRowCountAlias), passthrough(hqWinTotalGroupCountAlias),
+		chplan.Projection{Expr: rowStartExpr(s.PositiveOffsetColumn), Alias: hqWinRowPosStartAlias},
+		chplan.Projection{Expr: rowEndExpr(s.PositiveOffsetColumn, s.PositiveBucketCountsColumn), Alias: hqWinRowPosEndAlias},
+		chplan.Projection{Expr: rowStartExpr(s.NegativeOffsetColumn), Alias: hqWinRowNegStartAlias},
+		chplan.Projection{Expr: rowEndExpr(s.NegativeOffsetColumn, s.NegativeBucketCountsColumn), Alias: hqWinRowNegEndAlias},
+	)
+	stage2 := &chplan.Project{Roles: expHistogramRoles(s), Input: stage1, Projections: stage2Projs}
+
+	// Stage 3: window-MIN/MAX stage 2's per-row scalars into the group's
+	// raw (pre-refinement) merged bucket-range endpoints for both ladders.
+	stage3Projs := passthroughAll(baseCols)
+	stage3Projs = append(
+		stage3Projs,
+		passthrough(hqWinMergedScaleAlias), passthrough(hqWinTotalRowCountAlias), passthrough(hqWinTotalGroupCountAlias),
+		chplan.Projection{
+			Expr:  &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: hqWinRowPosStartAlias}}, PartitionBy: partitionBy},
+			Alias: hqWinPosStartMinAlias,
+		},
+		chplan.Projection{
+			Expr:  &chplan.WindowExpr{Fn: chplan.FnMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: hqWinRowPosEndAlias}}, PartitionBy: partitionBy},
+			Alias: hqWinPosEndMaxAlias,
+		},
+		chplan.Projection{
+			Expr:  &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: hqWinRowNegStartAlias}}, PartitionBy: partitionBy},
+			Alias: hqWinNegStartMinAlias,
+		},
+		chplan.Projection{
+			Expr:  &chplan.WindowExpr{Fn: chplan.FnMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: hqWinRowNegEndAlias}}, PartitionBy: partitionBy},
+			Alias: hqWinNegEndMaxAlias,
+		},
+	)
+	stage3 := &chplan.Project{Roles: expHistogramRoles(s), Input: stage2, Projections: stage3Projs}
+
+	// Stage 4: downscale hqWinMergedScaleAlias in place — a `* REPLACE`
+	// Project, so every other stage-3 column (including the now-unused
+	// stage-2/3 intermediates, left for ClickHouse's own column pruning to
+	// drop) survives untouched, and every downstream reader of
+	// hqWinMergedScaleAlias sees the refined value with no alias change.
+	nonNegWidth := func(minAlias, maxAlias string) chplan.Expr {
+		return greatestExpr(
+			&chplan.LitInt{V: 0},
+			addExpr(subExpr(&chplan.ColumnRef{Name: maxAlias}, &chplan.ColumnRef{Name: minAlias}), &chplan.LitInt{V: 1}),
+		)
+	}
+	naturalWidth := greatestExpr(
+		nonNegWidth(hqWinPosStartMinAlias, hqWinPosEndMaxAlias),
+		nonNegWidth(hqWinNegStartMinAlias, hqWinNegEndMaxAlias),
+	)
+	refinedScale := subExpr(rawMergedScale, extraDownscaleStepsExpr(naturalWidth))
+	stage4 := &chplan.Project{
+		Input:        stage3,
+		Replacements: []chplan.Projection{{Expr: refinedScale, Alias: hqWinMergedScaleAlias}},
+	}
+
+	return stage4, expHistogramMergeScaleWindowCols{
 		MergedScale:     &chplan.ColumnRef{Name: hqWinMergedScaleAlias},
 		TotalRowCount:   &chplan.ColumnRef{Name: hqWinTotalRowCountAlias},
 		TotalGroupCount: &chplan.ColumnRef{Name: hqWinTotalGroupCountAlias},
@@ -409,12 +591,38 @@ func expHistogramSumMapRowCountsExpr(bucketsCol string) chplan.Expr {
 	}}
 }
 
-// expHistogramGroupMergeAggsSumMap is pass 2's AggFuncs: [expHistogramMergeAggs]
-// verbatim (still needed — the reused budget guard reads its groupArray
-// columns, see this file's header) plus the two sumMap aggregates keyed by
-// mergedScale (pass 1's resolved scalar).
-func expHistogramGroupMergeAggsSumMap(mergedScale chplan.Expr, s schema.Metrics) []chplan.AggFunc {
+// expHistogramMergeAggsWithScale is [expHistogramMergeAggs] with its own
+// min(Scale) AggFunc's VALUE replaced by max(mergedScale) — mergedScale is
+// pass 1's ALREADY-refined scalar/window value (cerberus issue #3558,
+// [expHistogramMergeScaleScalarSubquery] / [expHistogramMergeScaleWindowProject]),
+// the SAME value pass 2's sumMap key expressions
+// ([expHistogramSumMapRowIndexExpr]) build their keys from. Carrying it
+// through hqAggMergedScaleAlias via max() — the "max() over a value every
+// row already agrees on" idiom this file already uses for
+// ZeroThreshold/TotalRowCount/TotalGroupCount — rather than leaving
+// [expHistogramMergeAggs]'s own min(Scale) in place keeps the guard's cost
+// computation and the output's Scale field reading the SAME refined value
+// the emitted bucket keys actually used; independently re-deriving raw
+// min(Scale) a second time here would silently disagree with it the
+// moment pass 1's refinement downscales past the group's raw minimum.
+func expHistogramMergeAggsWithScale(mergedScale chplan.Expr, s schema.Metrics) []chplan.AggFunc {
 	aggs := expHistogramMergeAggs(s)
+	for i := range aggs {
+		if aggs[i].Alias == hqAggMergedScaleAlias {
+			aggs[i] = chplan.AggFunc{Fn: chplan.FnMax, Args: []chplan.Expr{mergedScale}, Alias: hqAggMergedScaleAlias}
+			break
+		}
+	}
+	return aggs
+}
+
+// expHistogramGroupMergeAggsSumMap is pass 2's AggFuncs:
+// [expHistogramMergeAggsWithScale] (still needed — the reused budget guard
+// reads its groupArray columns, see this file's header) plus the two
+// sumMap aggregates keyed by mergedScale (pass 1's resolved, refined
+// scalar).
+func expHistogramGroupMergeAggsSumMap(mergedScale chplan.Expr, s schema.Metrics) []chplan.AggFunc {
+	aggs := expHistogramMergeAggsWithScale(mergedScale, s)
 	return append(
 		aggs,
 		chplan.AggFunc{

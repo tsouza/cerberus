@@ -159,28 +159,52 @@ func TestExpHistogramMergeSumMapBudget_ChDB_FanoutStillRejectsLargeRowCount(t *t
 	}
 }
 
-// TestExpHistogramMergeSumMapBudget_ChDB_WidthExceeded seeds a single
-// series (so the row-count backstop cannot be what rejects it) with an
-// unusually wide layout: `sumMapMergeCostMultiplier x width^2` =
-// 4 x 4000^2 = 64,000,000, over the 60,000,000 default — the width axis of
-// this guard's own cost formula, isolated from the row-count backstop.
-// Unlike the default (non-sumMap) fold path's own merge scale computation
-// (histogram_quantile.go's expHistogramMergeSortStage,
-// wrapExpHistogramMergeScaleRefinement, cerberus issue #3555), the sumMap
-// merge computes its own scale independently and does NOT downscale to
-// bound this width — see cerberus issue #3558 for that gap tracked against
-// this path.
-func TestExpHistogramMergeSumMapBudget_ChDB_WidthExceeded(t *testing.T) {
+// TestExpHistogramMergeSumMapBudget_ChDB_WidthCompactsRatherThanRejects
+// seeds a single series (so the row-count backstop cannot be what
+// rejects it) with an unusually wide layout (width 4,000): before
+// cerberus issue #3558's fix, `sumMapMergeCostMultiplier x width^2` =
+// 4 x 4000^2 = 64,000,000 exceeded the 60,000,000 default and this
+// aborted, mirroring TestHistogramMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects's
+// identical pre-fix shape for the OLD guard. Pass 1's own scale
+// refinement (expHistogramMergeScaleScalarSubquery) now downscales the
+// merge's mergedScale FIRST so the merged width never exceeds
+// maxHistogramMergeOutputWidth (160) before pass 2 ever builds a sumMap
+// key from it, so the guard sees a cost of 4 x 160^2 = 102,400 —
+// comfortably under budget — and the query now SUCCEEDS with a coarser
+// merged distribution instead of refusing outright.
+func TestExpHistogramMergeSumMapBudget_ChDB_WidthCompactsRatherThanRejects(t *testing.T) {
 	const rows, width = 1, 4000
 	fixture := seedExpHistSumMapBoundRows(t, rows, width)
 
-	err := runExpHistSumMapBoundQuery(t, fixture, expHistSumMapBoundNativeLowerers)
-	if err == nil {
-		t.Fatal("expected the sumMap merge budget guard to abort the query " +
-			"(1 row x width 4000, cost 4x4000^2=64,000,000 exceeds the 60,000,000 default), got no error")
+	if err := runExpHistSumMapBoundQuery(t, fixture, expHistSumMapBoundNativeLowerers); err != nil {
+		t.Fatalf("an unusually wide single-series sumMap merge must be compacted to a bounded width, not rejected: %v", err)
 	}
-	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
-		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
+}
+
+// TestExpHistogramMergeSumMapBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects
+// is cerberus issue #3558's own repro shape, distinct from the single
+// wide-row shape above: TWO series, each individually narrow (one bucket
+// apiece, Scale 0), whose PositiveOffset diverges enough (0 vs 4,000) that
+// the NATURAL merge — at min(Scale) alone, with no further downscale —
+// would span 4,001 buckets: `sumMapMergeCostMultiplier x width^2` =
+// 4 x 4001^2 = 64,032,004, over the 60,000,000 default. Neither row is
+// individually wide, so this isolates the SAME scale-divergence-between-
+// rows gap #3555 found and fixed for the cross-series fold path, applied
+// to the sumMap merge's own pass-1 mergedScale computation
+// (expHistogramMergeScaleScalarSubquery). The refinement downscales the
+// merge's shared scale FIRST so the merged width never exceeds
+// maxHistogramMergeOutputWidth (160), and the query now SUCCEEDS with a
+// coarser merged distribution instead of refusing outright.
+func TestExpHistogramMergeSumMapBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
+	b.WriteString("    " + histogramMergeBoundRow("near", 0) + ",\n")
+	b.WriteString("    " + histogramMergeBoundRow("far", 4000) + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	if err := runExpHistSumMapBoundQuery(t, fixture, expHistSumMapBoundNativeLowerers); err != nil {
+		t.Fatalf("a scale-divergent two-series sumMap merge must be compacted to a bounded width, not rejected: %v", err)
 	}
 }
 
@@ -220,34 +244,54 @@ func TestExpHistogramMergeSumMapBudget_ChDB_WithinBudget(t *testing.T) {
 
 // TestExpHistogramMergeSumMapBudget_ChDB_EnvOverrideSharesKnob proves the
 // sumMap guard is NOT a second, incompatible knob (cerberus issue #2834's
-// own requirement): it seeds the exact width-4000 single-series shape
-// [TestExpHistogramMergeSumMapBudget_ChDB_WidthExceeded] proves the
-// 60,000,000 default rejects, raises the SAME
-// CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS override
-// [TestHistogramMergeBudget_ChDB_EnvOverrideRaisesBudget] uses for the OLD
-// guard, and asserts the identical query now succeeds — the sumMap guard
-// reads [promql.ResourceBounds.HistogramMergeMaxCostUnits], never an
-// independent env var.
+// own requirement) and that [promql.EnvHistogramMergeMaxCostUnits]
+// genuinely changes the query's outcome.
+//
+// It proves this in the LOWERING direction rather than raising: cerberus
+// issue #3558's own scale refinement (expHistogramMergeScaleScalarSubquery)
+// now downscales EVERY single-group merge's width to
+// [maxHistogramMergeOutputWidth] (160) or narrower before this guard's
+// cost check ever runs, so `sumMapMergeCostMultiplier x (posWidth^2 +
+// negWidth^2)` tops out around 4 x (160^2 x 2) = 204,800 for ANY
+// single-group input, real or synthetic — comfortably under even the
+// 60,000,000 default. There is no longer a width shape left that the
+// DEFAULT budget rejects and a RAISED budget admits (unlike
+// TestHistogramMergeBudget_ChDB_EnvOverrideRaisesBudget's row-count-driven
+// proof for the OLD, rows-dependent guard — this design's whole point,
+// cerberus issue #2834, is to have NO rows multiplier, so there is no
+// analogous rows-driven lever here either). Lowering the budget below a
+// small, otherwise-legitimate merge's own (now-bounded) cost is the
+// remaining way to observe the override take effect end to end.
 func TestExpHistogramMergeSumMapBudget_ChDB_EnvOverrideSharesKnob(t *testing.T) {
-	const raisedBudget = 100_000_000 // > 64,000,000 (1 row x width(4000) sumMap cost), > the 60M default
+	// width=2 -> refined cost = sumMapMergeCostMultiplier(4) x (2^2 + 0^2)
+	// = 16, comfortably admitted by the 60,000,000 default and rejected
+	// once the override lowers the ceiling below 16.
+	const rows, width = 1, 2
+	const loweredBudget = 15 // < 16 (this shape's own refined cost), so the override must now reject it
 
-	t.Setenv(promql.EnvHistogramMergeMaxCostUnits, strconv.FormatInt(raisedBudget, 10))
+	t.Setenv(promql.EnvHistogramMergeMaxCostUnits, strconv.FormatInt(loweredBudget, 10))
 	bounds, err := promql.ResourceBoundsFromEnv()
 	if err != nil {
 		t.Fatalf("ResourceBoundsFromEnv: %v", err)
 	}
-	if bounds.HistogramMergeMaxCostUnits != raisedBudget {
+	if bounds.HistogramMergeMaxCostUnits != loweredBudget {
 		t.Fatalf("ResourceBoundsFromEnv().HistogramMergeMaxCostUnits = %d, want %d (the %s override)",
-			bounds.HistogramMergeMaxCostUnits, raisedBudget, promql.EnvHistogramMergeMaxCostUnits)
+			bounds.HistogramMergeMaxCostUnits, loweredBudget, promql.EnvHistogramMergeMaxCostUnits)
 	}
 
-	const rows, width = 1, 4000
 	fixture := seedExpHistSumMapBoundRows(t, rows, width)
 
+	if err := runExpHistSumMapBoundQuery(t, fixture, expHistSumMapBoundNativeLowerers); err != nil {
+		t.Fatalf("the same width-2 single-series merge must succeed at the 60M default budget: %v", err)
+	}
+
 	opts := promql.LowerOpts{Lowerers: expHistSumMapBoundNativeLowerers, ResourceBounds: bounds}
-	if err := runExpHistSumMapBoundQueryWithOpts(t, fixture, opts); err != nil {
-		t.Fatalf("the same width-4000 single-series merge %s proves the 60M default rejects must "+
-			"succeed once the SHARED %s override raises the budget to %d: %v",
-			t.Name(), promql.EnvHistogramMergeMaxCostUnits, raisedBudget, err)
+	err = runExpHistSumMapBoundQueryWithOpts(t, fixture, opts)
+	if err == nil {
+		t.Fatalf("the same width-2 single-series merge (refined cost 16) must be REJECTED once the "+
+			"SHARED %s override lowers the budget to %d", promql.EnvHistogramMergeMaxCostUnits, loweredBudget)
+	}
+	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
+		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
 	}
 }
