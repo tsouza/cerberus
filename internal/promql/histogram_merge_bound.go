@@ -266,12 +266,26 @@ const (
 	// neither ever had a reason to pick a coarser Scale) but differ in
 	// TYPICAL MAGNITUDE still merge into an astronomically wide range —
 	// min(Scale) alone only guarantees every row CAN be downscaled onto
-	// the merge, never that the result is narrow. Real exponential-
-	// histogram merge implementations (the OTel SDK's own accumulator,
-	// Prometheus's FloatHistogram.Add/Compact) downscale FURTHER than
-	// min(existing scale) whenever the merged range itself would exceed a
-	// bucket-count budget — the same "auto-narrow" step a single series
-	// already performs against [queryDurationExpoHistogramMaxSize]
+	// the merge, never that the result is narrow. Cerberus issue #3555's
+	// own live measurement against the `cerberus-self` e2e dashboard's
+	// real ClickHouse data is the concrete case: `histogram_quantile(0.95,
+	// sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))`
+	// tripped [maxHistogramMergeCostUnits] with as few as 4 contributing
+	// series (four cerberus.route values under the SAME cerberus.ql), none
+	// individually wide — every row stayed at Scale 20 (the OTel SDK never
+	// had a reason to narrow a single series whose OWN samples cluster
+	// tightly) — because two rows with merely DIFFERENT typical
+	// magnitudes (a ~0.34ms route and a ~50ms route, under 150x apart)
+	// produced a merged width of ~7.6 MILLION buckets at Scale 20: Scale
+	// 20's own bucket boundaries are only a factor of 1.0000007 apart, and
+	// nothing coarsened the group's shared scale to account for the
+	// SPREAD BETWEEN rows' central values, only for each row's OWN
+	// internal spread. Real exponential-histogram merge implementations
+	// (the OTel SDK's own accumulator, Prometheus's
+	// FloatHistogram.Add/Compact) downscale FURTHER than min(existing
+	// scale) whenever the merged range itself would exceed a bucket-count
+	// budget — the same "auto-narrow" step a single series already
+	// performs against [queryDurationExpoHistogramMaxSize]
 	// (internal/telemetry/telemetry.go, this package cannot import it per
 	// .go-arch-lint.yml, hence restating the value here): 160 is the OTel
 	// exponential-histogram spec's own documented default MaxSize, the
@@ -280,15 +294,20 @@ const (
 	// one — means cross-series/cross-operand merging never throws away
 	// more resolution than a single series already tolerates by default,
 	// while turning an unbounded, data-shape-dependent width into a fixed
-	// one. This is a resolution FLOOR shared across every histogram-merge
-	// path in this package (the two-operand binop merge, the sumMap
-	// merge, and — separately, cerberus issue #3555 — the groupArray fold
-	// merge): the justification (never coarser than what a single series
-	// already tolerates) is about the WIDTH definition itself, independent
-	// of which algorithm produced it, not a per-path memory-cost
-	// calibration — those stay separate, already-calibrated per-path
-	// constants ([maxHistogramMergeCostUnits], [sumMapMergeCostMultiplier]
-	// in exp_histogram_merge_summap_bound.go). Recalibrate only alongside a
+	// one: at 160, [histogramMergeCostOverBudgetExpr]'s own
+	// `rows x width^2` formula admits rows up to maxHistogramMergeCostUnits
+	// / (160^2) = 2,343 before the fold path's own guard fires on
+	// width-capped input, comfortably above the handful of series a
+	// `sum by(cerberus_ql)` (or any similarly-shaped production query)
+	// actually needs. This is a resolution FLOOR shared across every
+	// histogram-merge path in this package (the two-operand binop merge,
+	// the sumMap merge, and the groupArray fold merge #3555 itself fixed):
+	// the justification (never coarser than what a single series already
+	// tolerates) is about the WIDTH definition itself, independent of
+	// which algorithm produced it, not a per-path memory-cost calibration
+	// — those stay separate, already-calibrated per-path constants
+	// ([maxHistogramMergeCostUnits], [sumMapMergeCostMultiplier] in
+	// exp_histogram_merge_summap_bound.go). Recalibrate only alongside a
 	// real measurement showing 160 buckets of resolution is insufficient
 	// for a real quantile/sum computation's accuracy — this is a
 	// resolution floor, not an arbitrary knob.
