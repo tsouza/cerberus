@@ -84,3 +84,79 @@ func TestMutation_RangeBucketFanout_MinSamplesFilterThreshold(t *testing.T) {
 		t.Errorf("MinSamples=%d must emit %q (the rate/increase two-scrape rule):\n%s", rateMinSamples, rateHaving, sql)
 	}
 }
+
+// TestMutation_RangeBucketFanout_MixedAliasedGroupByHoist defends the
+// per-index hoist loop issue #3551 added: every ALIASED GroupBy entry is
+// materialized in the fan-out SELECT under its own synthetic column
+// (rangeBucketFanoutGroupKeyAlias) rather than re-derived from a same-scope
+// alias in the collapse's own GROUP BY. Every other RangeBucketFanout test in
+// this package uses a single-entry GroupBy that is either fully aliased or
+// fully bare, which cannot distinguish "hoist this entry" from "hoist every
+// entry" or "hoist no entry" — this plan mixes one of each, in that order, so
+// each of the four mutations below changes the emitted SQL:
+//
+//   - INVERT_LOOPCTRL (`continue` -> `break`) at the hoist loop: with a bare
+//     entry at index 0, `break` would exit before ever reaching the aliased
+//     entry at index 1, so `_rbf_key_2` would never be materialized.
+//   - CONDITIONALS_NEGATION (`== ""` -> `!= ""`) on the same guard: flips
+//     which entry gets hoisted, materializing the bare entry's raw column
+//     reference under a needless synthetic alias and leaving the aliased
+//     entry's own expression untouched.
+//   - CONDITIONALS_NEGATION (`hoisted != ""` -> `hoisted == ""`) in the
+//     collapse SELECT-list loop: swaps which entry reads its hoisted column
+//     vs. re-renders its raw expression.
+//   - The same mutation in the GROUP BY loop, independently.
+//
+// A single-entry plan cannot catch any of these: with only one GroupBy
+// entry, "the loop keeps going" and "the branch picks the other entry" have
+// nothing else in the slice to get wrong.
+func TestMutation_RangeBucketFanout_MixedAliasedGroupByHoist(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.RangeBucketFanout{
+		Input: closedTimestampTestScan(
+			"otel_metrics_exponential_histogram", "TimeUnix", "RawKey", "Attributes", "BucketCounts",
+		),
+		Start:    time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+		End:      time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC),
+		Step:     30 * time.Second,
+		Lookback: 5 * time.Minute,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: "RawKey"},     // index 0: no alias -> stays raw, never hoisted
+			&chplan.ColumnRef{Name: "Attributes"}, // index 1: aliased -> hoisted to _rbf_key_2
+		},
+		GroupByAliases: []string{"", "Attributes"},
+		AnchorAlias:    "anchor_ts",
+		TimestampCol:   "TimeUnix",
+		AggFuncs: []chplan.AggFunc{
+			{
+				Fn:    chplan.FnArgMax,
+				Alias: "BucketCounts",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: "BucketCounts"},
+					&chplan.ColumnRef{Name: "TimeUnix"},
+				},
+			},
+		},
+	}
+
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	const (
+		fanoutHoist    = "`Attributes` AS _rbf_key_2"
+		collapseSelect = "SELECT anchor_ts AS `anchor_ts`, `RawKey`, `_rbf_key_2` AS `Attributes`, argMax(`BucketCounts`, `TimeUnix`) AS `BucketCounts`"
+		groupBy        = "GROUP BY anchor_ts, `RawKey`, `_rbf_key_2`"
+	)
+	if !strings.Contains(sql, fanoutHoist) {
+		t.Errorf("the ALIASED entry (index 1, Attributes) must be materialized in the fan-out SELECT as %q:\n%s", fanoutHoist, sql)
+	}
+	if !strings.HasPrefix(sql, collapseSelect) {
+		t.Errorf("collapse SELECT-list must read `RawKey` raw and `_rbf_key_2` under the Attributes alias:\nwant prefix %q\ngot  %s", collapseSelect, sql)
+	}
+	if !strings.Contains(sql, groupBy) {
+		t.Errorf("GROUP BY must reference the BARE entry's raw column and the ALIASED entry's hoisted column, not the other way around:\nwant %q\ngot  %s", groupBy, sql)
+	}
+}
