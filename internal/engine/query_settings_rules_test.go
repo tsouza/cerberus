@@ -431,7 +431,7 @@ func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T)
 // range-mode lowering reaches the same argMax-over-exp-histogram fan-out cost
 // as histogram_quantile's native path, but through a bare RangeBucketFanout
 // no HistogramQuantileNative/HistogramProjection wrapper ever covers — see
-// planHasExpHistogramValueFnFanout, this fix's other trigger.
+// planHasNativeHistogramAnalyzerHazard, this fix's other trigger.
 func TestApplyNativeHistogramAnalyzerFix_ValueFnFanoutStampsDisabled(t *testing.T) {
 	ctx := applyNativeHistogramAnalyzerFix(context.Background(), expHistogramValueFnFanoutPlan())
 
@@ -493,7 +493,7 @@ func expHistogramWindowPlan() chplan.Node {
 // under the SAME name, so the fan-out's own RowType republishes the
 // HistogramFieldScale tag (mirroring internal/promql/schema.go's
 // metricScanRoles + roleColumn's own name-preserving lookup) — the shape
-// planHasExpHistogramValueFnFanout matches without ever seeing a
+// planHasNativeHistogramAnalyzerHazard matches without ever seeing a
 // HistogramQuantileNative/HistogramProjection wrapper, because this lowering
 // never builds one.
 func expHistogramValueFnFanoutPlan() chplan.Node {
@@ -570,8 +570,8 @@ func TestApplyExpHistogramTwoLevelBound_ClassicBucketLadderStampsNothing(t *test
 // HistogramProjection with no window fan-out beneath it, builds no per-series
 // groupArray state to split, and measured 18.15 -> 18.63 MiB under the stamp.
 // It must not be stamped either — which is what makes this predicate narrower
-// than planHasNativeHistogramMerge, whose own doc accepts exactly this
-// over-match.
+// than planHasNativeHistogramAnalyzerHazard, whose own doc accepts exactly
+// this over-match.
 func TestApplyExpHistogramTwoLevelBound_BareExpHistogramSelectorStampsNothing(t *testing.T) {
 	plan := &chplan.HistogramProjection{
 		Input: &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
