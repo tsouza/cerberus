@@ -251,6 +251,51 @@ const (
 	// for a second, genuinely behavioral reason — recalibrate both guards
 	// together if this changes.
 	maxHistogramMergeRowCountOverflowGuard = 4096
+
+	// maxHistogramMergeOutputWidth bounds the per-ladder bucket-range WIDTH
+	// [wrapExpHistogramMergeScaleRefinement] downscales the merge onto,
+	// closing cerberus issue #3555: cerberus's own `cerberus-self` e2e
+	// dashboard trips [maxHistogramMergeCostUnits] on
+	// `histogram_quantile(0.95, sum by (cerberus_ql)
+	// (rate(cerberus_queries_duration_exp_hist[5m])))` with as few as 4
+	// contributing series (four cerberus.route values under the SAME
+	// cerberus.ql), none individually wide — every row stays at Scale 20
+	// (the OTel SDK never had a reason to narrow a single series whose OWN
+	// samples cluster tightly). The real driver, measured live against that
+	// exact dashboard's own ClickHouse data: min(Scale) alone (what
+	// hqAggMergedScaleAlias held before this fix) merges rows onto the
+	// FINEST scale ANY of them independently settled on, so two rows with
+	// merely DIFFERENT typical magnitudes — a ~0.34ms route and a ~50ms
+	// route, under 150x apart — produced a merged width of ~7.6 MILLION
+	// buckets at Scale 20, not because that many buckets carry real data,
+	// but because Scale 20's own bucket boundaries are only a factor of
+	// 1.0000007 apart and nothing coarsens the group's shared scale to
+	// account for the SPREAD BETWEEN rows' central values, only for each
+	// row's OWN internal spread. That is a genuine gap against the OTel
+	// exponential-histogram merge algorithm real reference implementations
+	// (both the OTel SDK's own accumulator and Prometheus's
+	// FloatHistogram.Add/Compact) use: downscale FURTHER than
+	// min(existing scale) whenever the merged range itself would exceed a
+	// bucket-count budget, exactly the "auto-narrow" step a single series
+	// already performs against [queryDurationExpoHistogramMaxSize]
+	// (internal/telemetry/telemetry.go) — this package cannot import that
+	// one (.go-arch-lint.yml), so 160 is restated here as the OTel
+	// exponential-histogram spec's own documented default MaxSize, the same
+	// value every major OTel SDK ships unconfigured. Capping the MERGED
+	// output at that same width means cross-series merging never throws
+	// away more resolution than a single series already tolerates by
+	// default, while turning an unbounded, data-shape-dependent width into
+	// a fixed one: at 160, [histogramMergeCostOverBudgetExpr]'s own
+	// `rows x width^2` formula admits rows up to maxHistogramMergeCostUnits
+	// / (160^2) = 2,343 before the guard fires on width-capped input,
+	// comfortably above the handful of series a `sum by(cerberus_ql)` (or
+	// any similarly-shaped production query) actually needs, so the guard
+	// keeps protecting against a genuinely large series-per-group fan-out
+	// without ever being tripped by scale divergence alone. Recalibrate
+	// only alongside a real measurement showing 160 buckets of resolution
+	// is insufficient for a real quantile computation's accuracy — this is
+	// a resolution floor, not an arbitrary knob.
+	maxHistogramMergeOutputWidth = 160
 )
 
 // mergedLengthExpr returns a FULLY BOUND rendering of one signed ladder's
@@ -279,6 +324,95 @@ func mergedLengthExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) chplan
 		scalesArr, offArr, bucArr, mergedScale,
 		func(_, mergedLength chplan.Expr) chplan.Expr { return mergedLength },
 	)
+}
+
+// wrapExpHistogramMergeScaleRefinement further downscales merged — the raw
+// across-series exponential-histogram merge Aggregate
+// [expHistogramMergeAggs] built — so hqAggMergedScaleAlias holds a scale
+// that ALSO bounds the merged bucket-range width to
+// [maxHistogramMergeOutputWidth], not just min(Scale) across the group's
+// rows (cerberus issue #3555).
+//
+// min(Scale) alone only guarantees every row CAN be downscaled onto the
+// result — ratio = 2^(rowScale-mergedScale) >= 1 for every row, the
+// invariant [expHistogramBucketPositionPickerExpr]'s own doc leans on — it
+// says nothing about how WIDE the union of the rows' downscaled ranges ends
+// up. Two rows can each independently sit at a narrow, high-precision Scale
+// (each one's OWN samples cluster tightly) and still merge into an
+// astronomically wide range the moment their CENTRAL values differ —
+// exactly what cerberus's own `cerberus-self` e2e dashboard hits merging as
+// few as 4 `cerberus.route` series under one `cerberus.ql` group (see
+// [maxHistogramMergeOutputWidth]'s doc for the live measurement). Real
+// exponential-histogram merge implementations (the OTel SDK's own
+// accumulator, Prometheus's FloatHistogram.Add) close this by downscaling
+// FURTHER than the operands' own scales whenever the merged range would
+// exceed a bucket-count budget; this function is that same step, applied
+// once per group.
+//
+// extraDownscaleSteps is computed from the NATURAL width (the merge at
+// min(Scale), i.e. hqAggMergedScaleAlias as [expHistogramMergeAggs] left
+// it) via ceil(log2(naturalWidth / maxHistogramMergeOutputWidth)): each
+// extra downscale step HALVES the merged width (one more bit of
+// bitShiftRight), so this is the minimum step count that brings the width
+// under the cap. greatest(1, naturalWidth) keeps log2's argument positive
+// (an empty-both-ladders group has naturalWidth 0, which needs no
+// downscale — log2(0) would otherwise render -inf) and greatest(0, ...)
+// around the final step count discards a negative value (naturalWidth
+// already under the cap needs no further downscale). Float64 arithmetic is
+// exact enough here: naturalWidth is bounded by the same Int32 offset range
+// [maxHistogramMergeClampedWidth] bounds downstream, so log2 of it is a
+// small, exactly-representable value; a stray rounding error could only
+// push extraDownscaleSteps one step higher than strictly necessary, which
+// only makes the result SAFER (narrower), never wrong.
+//
+// Rendered as a passthrough Project with a single Replacement — the same
+// `* REPLACE` idiom [expHistogramMergeSortStage] already uses for its own
+// groupArray re-sort — so hqAggMergedScaleAlias keeps its name and every
+// downstream reader ([expHistogramMergeOffsetExpr],
+// [expHistogramMergeBucketsExpr], [histogramMergeCostOverBudgetExpr]) needs
+// no change to see the refined value; ClickHouse's `SELECT * REPLACE(...)`
+// evaluates the replacement expression against merged's OWN, UNCHANGED
+// output columns, so referencing hqAggMergedScaleAlias inside the
+// replacement expression for that SAME alias reads the pre-replacement
+// (min(Scale)) value, not a self-reference.
+//
+// Must run BEFORE [wrapExpHistogramMergeBudgetGuard] — see
+// [expHistogramMergeSortStage]'s wiring — so the guard's own cost
+// computation, which reads hqAggMergedScaleAlias, sees this refined value
+// rather than the raw min(Scale) the Aggregate produced.
+func wrapExpHistogramMergeScaleRefinement(merged chplan.Node) chplan.Node {
+	scalesArr := &chplan.ColumnRef{Name: hqAggScalesArrayAlias}
+	naturalScale := &chplan.ColumnRef{Name: hqAggMergedScaleAlias}
+	posOff := &chplan.ColumnRef{Name: hqAggPosOffsetsArrayAlias}
+	posBuc := &chplan.ColumnRef{Name: hqAggPosBucketsArrayAlias}
+	negOff := &chplan.ColumnRef{Name: hqAggNegOffsetsArrayAlias}
+	negBuc := &chplan.ColumnRef{Name: hqAggNegBucketsArrayAlias}
+
+	naturalWidth := greatestExpr(
+		mergedLengthExpr(scalesArr, posOff, posBuc, naturalScale),
+		mergedLengthExpr(scalesArr, negOff, negBuc, naturalScale),
+	)
+
+	ratio := &chplan.Binary{
+		Op:    chplan.OpDiv,
+		Left:  toFloat64Expr(greatestExpr(&chplan.LitInt{V: 1}, naturalWidth)),
+		Right: &chplan.LitFloat{V: float64(maxHistogramMergeOutputWidth)},
+	}
+	extraDownscaleSteps := greatestExpr(
+		&chplan.LitInt{V: 0},
+		&chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnCeil, Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnLog2, Args: []chplan.Expr{ratio}},
+			}},
+		}},
+	)
+
+	return &chplan.Project{
+		Input: merged,
+		Replacements: []chplan.Projection{
+			{Expr: subExpr(naturalScale, extraDownscaleSteps), Alias: hqAggMergedScaleAlias},
+		},
+	}
 }
 
 // clampedLadderWidthSquaredExpr renders one signed ladder's merged width,

@@ -2669,10 +2669,13 @@ func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, para
 //
 // # Why a slice suffices
 //
-// mergedScale is always min(scalesArr) (hqAggMergedScaleAlias), so
-// downscaling only ever COARSENS: ratio = 2^(s-mergedScale) is a per-row
-// CONSTANT >= 1 (independent of j), and j -> bitShiftRight(off+j-1, s-
-// mergedScale) is therefore a REGULAR, monotonic step function of j. Every
+// mergedScale (hqAggMergedScaleAlias) is min(scalesArr), possibly refined
+// FURTHER down by [wrapExpHistogramMergeScaleRefinement] (cerberus issue
+// #3555) to also bound the merged width — either way it is <= every row's
+// own scale, so downscaling only ever COARSENS: ratio = 2^(s-mergedScale)
+// is a per-row CONSTANT >= 1 (independent of j), and j ->
+// bitShiftRight(off+j-1, s-mergedScale) is therefore a REGULAR, monotonic
+// step function of j. Every
 // target this row touches corresponds to exactly one CONTIGUOUS run of
 // j's — off's own alignment against ratio can only shorten the FIRST and
 // LAST such run (a partial chunk), never split one apart in the middle.
