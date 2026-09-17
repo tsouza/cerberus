@@ -539,6 +539,25 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 					"carries no span identity and cannot be parity-checked", i, len(row),
 			))
 		}
+		// A four-column row is not necessarily the canonical span shape:
+		// MetricsCompare's aggregate projection (is_selection, attr, val,
+		// Value) also has arity 4, but its second column is a plain string,
+		// never an Attributes object. Checking the cell's actual type here
+		// — rather than trusting the column count alone — is what tells
+		// the two apart structurally, by the shape of the decoded data
+		// itself, not by the fixture's name or its root plan node. A row
+		// whose second column genuinely IS an object but fails to decode
+		// (a malformed attribute value) falls through to rowAttrs below
+		// and stays an unclassified error, so a broken decoder can never
+		// manufacture liveness evidence for a stale exemption.
+		if _, ok := row[spanRowAttrsIdx].(map[string]any); !ok {
+			return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
+				"expected_rows[%d] column %d (where the canonical span shape carries Attributes) "+
+					"is %T, not an object; this fixture's projection is not the canonical span shape "+
+					"(SpanName, Attributes, Timestamp, Duration) and carries no span identity to compare",
+				i, spanRowAttrsIdx, row[spanRowAttrsIdx],
+			))
+		}
 		attrs, err := rowAttrs(row[spanRowAttrsIdx], i)
 		if err != nil {
 			return nil, err

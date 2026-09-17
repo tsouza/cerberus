@@ -309,7 +309,15 @@ func runParity(t *testing.T, c *Case, p *Parity, eval ParityEval, roundTrip Roun
 	}
 	sc, err := locateSampleColumns(cols)
 	if err != nil {
-		return err
+		// locateSampleColumns fails only on a structural fact about the
+		// projection itself — no Attributes and/or no Value column — which
+		// is fixed by the query shape and cannot change from one run to the
+		// next. A metadata-catalog fixture's single `value` column is never
+		// going to grow a Sample's Attributes/Value pair, so this is a
+		// permanent refusal to compare at the row layer, the same category
+		// [exemptionVerdict] already accepts from an actual disagreement,
+		// not an unclassified harness error.
+		return parityRefusal(err)
 	}
 
 	// A projection with no TimeUnix column cannot answer a comparison that
@@ -473,7 +481,7 @@ func evaluatePrometheusParity(
 	}
 	if len(seeded.series) == 0 {
 		// A genuinely empty series set is only a vacuous check — and
-		// therefore an error — when the query reads one. `pi()`, `time()`,
+		// therefore a REFUSAL — when the query reads one. `pi()`, `time()`,
 		// `vector(5)`, `year()` and friends are pure scalar/time functions
 		// that read no selector at all, so zero series is their CORRECT,
 		// intended seeded state (see e.g. pi_constant.txtar, whose `seed:`
@@ -484,11 +492,32 @@ func evaluatePrometheusParity(
 		// chDB session, so len(series) was spuriously nonzero and this
 		// guard never fired — it was never exercised against its own
 		// intended case until sessions became genuinely isolated.
-		if needsSeries, serr := exprReadsSeries(q.Expr); serr != nil || needsSeries {
+		//
+		// A query that DOES read a selector and seeds zero series for it
+		// (e.g. absent(sum(up)) with an empty `up` table) is not a broken
+		// fixture either: the seed is deliberately empty, on purpose, and
+		// no reference answer computed from zero input rows can ever be
+		// distinguished from any other — the comparison is structurally
+		// vacuous, permanently, no matter what cerberus answers. That is
+		// [parityRefusal], the same category [exemptionVerdict] already
+		// accepts from an actual disagreement, rather than an unclassified
+		// error: a name-based exception would be an allow-list, but "the
+		// seed produced zero rows for a selector the query reads" is a
+		// structural fact about the data, checked the same way for every
+		// fixture. A parse failure inspecting the expression, by contrast,
+		// stays unclassified — a broken inspector must not be able to
+		// manufacture liveness evidence for a stale exemption.
+		needsSeries, serr := exprReadsSeries(q.Expr)
+		if serr != nil {
 			return nil, fmt.Errorf(
+				"fixture %s: inspect whether the reference query reads a selector: %w", c.Name, serr,
+			)
+		}
+		if needsSeries {
+			return nil, parityRefusal(fmt.Errorf(
 				"fixture %s: seed produced no readable series, so the reference engine would "+
 					"trivially agree with any answer", c.Name,
-			)
+			))
 		}
 	}
 
