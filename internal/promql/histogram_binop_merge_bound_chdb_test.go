@@ -122,7 +122,7 @@ func TestHistogramBinopMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the binop merge budget guard to abort the query (merged width 20001 > 16384), got no error")
 	}
-	// See TestHistogramMergeBudget_ChDB_BucketWidthExceeded's identical
+	// See TestHistogramMergeBudget_ChDB_RowCountExceeded's identical
 	// comment: this drives chdb-go's raw driver handle directly, never
 	// through chclient, so a raw substring check against chdb-go's own
 	// exception text is what proves the emitted SQL's throwIf fired at
