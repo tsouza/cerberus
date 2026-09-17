@@ -85,35 +85,34 @@ package chplan
 func HasJoin(node Node) bool {
 	found := false
 	WalkDeep(node, func(n Node) bool {
-		switch v := n.(type) {
-		case *VectorJoin:
+		if IsJoinNode(n) {
 			found = true
-		case *HistogramVectorJoin:
-			found = true
-		case *HistogramFloatVectorJoin:
-			found = true
-		case *MixedVectorJoin:
-			found = true
-		case *InfoJoin:
-			found = true
-		case *StructuralJoin:
-			found = true
-		case *CrossJoin:
-			found = true
-		case *NestedSetAnnotate:
-			found = true
-		case *MetricsCompare:
-			if v.RootLookup != nil {
-				found = true
-			}
-		case *RangeWindow:
-			if v.DeltaPrefixAggregateInput != nil ||
-				(v.OuterRange == 0 && !v.IgnoreInputTemporality &&
-					v.Input.RowType().Has(RoleTemporality) && IsCounterRangeWindowFunc(v.Func)) {
-				found = true
-			}
 		}
 		return !found
 	})
 	return found
+}
+
+// IsJoinNode reports whether n ITSELF (not its subtree) is one of the
+// join-bearing node kinds HasJoin enumerates. It is the per-node half of
+// HasJoin, exported so a caller that already walks the plan for other
+// reasons (internal/engine's single plan-shape inspection) can fold the join
+// question into its own traversal instead of running HasJoin's WalkDeep
+// beside it — while still reading this one enumeration.
+func IsJoinNode(n Node) bool {
+	switch v := n.(type) {
+	case *VectorJoin, *HistogramVectorJoin, *HistogramFloatVectorJoin, *MixedVectorJoin,
+		*InfoJoin, *StructuralJoin, *CrossJoin, *NestedSetAnnotate:
+		return true
+	case *MetricsCompare:
+		return v.RootLookup != nil
+	case *RangeWindow:
+		// A RangeWindow with no Input has no row type to read a temporality
+		// column off — only a synthetic test plan is ever shaped that way,
+		// and it carries no join.
+		return v.DeltaPrefixAggregateInput != nil ||
+			(v.OuterRange == 0 && !v.IgnoreInputTemporality && v.Input != nil &&
+				v.Input.RowType().Has(RoleTemporality) && IsCounterRangeWindowFunc(v.Func))
+	}
+	return false
 }

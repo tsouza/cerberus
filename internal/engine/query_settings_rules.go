@@ -324,39 +324,37 @@ func (r SettingsRules) now() time.Time {
 	return time.Now()
 }
 
-// apply layers the enabled settings rules onto ctx for plan. Each rule that
-// fires writes through chclient.WithQuerySetting so they accumulate on the
-// one per-request settings map. With every flag off, ctx is returned
-// unchanged.
-//
-// It resolves the native-histogram analyzer hazard itself; the dispatch seam
-// (applySharedQuerySettings) resolves it once for every rule and calls
-// applyWithAnalyzerHazard directly.
+// apply layers the enabled settings rules onto ctx for plan. It inspects the
+// plan itself; the dispatch seam (applySharedQuerySettings) inspects it once
+// for every rule and calls applyFacts directly.
 func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Context {
-	return r.applyWithAnalyzerHazard(ctx, plan, planHasNativeHistogramAnalyzerHazard(plan))
+	return r.applyFacts(ctx, inspectPlanShape(plan, r.Traces.TraceIDColumn))
 }
 
-// applyWithAnalyzerHazard is apply with the native-histogram analyzer hazard
-// (planHasNativeHistogramAnalyzerHazard) already resolved by the caller.
+// applyFacts layers the enabled settings rules onto ctx for the plan f was
+// inspected from. Each rule that fires writes through
+// chclient.WithQuerySetting so they accumulate on the one per-request settings
+// map. With every flag off, ctx is returned unchanged.
 //
-// analyzerHazard is what keeps enable_analyzer single-valued on the settings
-// map. applyNativeHistogramAnalyzerFix stamps enable_analyzer=0 on a plan
-// carrying the hazard, and the condition-cache and lazy-materialisation rules
-// each co-stamp enable_analyzer=1 — chclient.WithQuerySetting is
-// last-write-wins on a key, and these rules run after the fix, so before the
-// hazard was threaded here the co-stamp silently overwrote the fix on every
-// native-histogram query that carried a Filter (every real one does) on any
-// server where condition_cache resolved in (>= 25.3, the default). Both
-// co-stamping rules are inert under enable_analyzer=0 anyway (the settings
-// they carry are analyzer-gated), so on a hazard plan they stamp nothing and
-// the fix's measured 5x win is what reaches ClickHouse.
-// TestSharedQuerySettings_EveryKeyResolvesToOneValue enumerates every rule
-// pair for this class of collision.
-func (r SettingsRules) applyWithAnalyzerHazard(ctx context.Context, plan chplan.Node, analyzerHazard bool) context.Context {
-	if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(plan) {
+// f.nativeHistogramAnalyzerHazard is what keeps enable_analyzer single-valued
+// on the settings map. applyNativeHistogramAnalyzerFix stamps enable_analyzer=0
+// on a plan carrying the hazard, and the condition-cache and
+// lazy-materialisation rules each co-stamp enable_analyzer=1 —
+// chclient.WithQuerySetting is last-write-wins on a key, and these rules run
+// after the fix, so before the hazard was read here the co-stamp silently
+// overwrote the fix on every native-histogram query that carried a Filter
+// (every real one does) on any server where condition_cache resolved in
+// (>= 25.3, the default). Both co-stamping rules are inert under
+// enable_analyzer=0 anyway (the settings they carry are analyzer-gated), so
+// on a hazard plan they stamp nothing and the fix's measured 5x win is what
+// reaches ClickHouse. TestSharedQuerySettings_EveryKeyResolvesToOneValue
+// enumerates every rule pair for this class of collision.
+func (r SettingsRules) applyFacts(ctx context.Context, f planShapeFacts) context.Context {
+	analyzerHazard := f.nativeHistogramAnalyzerHazard
+	if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f) {
 		ctx = chclient.WithQuerySetting(ctx, settingOptimizeAggregationInOrder, 1)
 	}
-	if r.ConditionCache && !analyzerHazard && predicateStableForConditionCache(plan) {
+	if r.ConditionCache && !analyzerHazard && predicateStableForConditionCache(f) {
 		ctx = chclient.WithQuerySetting(ctx, settingUseQueryConditionCache, 1)
 		// The condition cache is gated behind the analyzer; co-stamp
 		// enable_analyzer=1 so the cache is honored even if an operator
@@ -364,19 +362,19 @@ func (r SettingsRules) applyWithAnalyzerHazard(ctx context.Context, plan chplan.
 		// >= 25.3 servers this rule resolves on.
 		ctx = chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 1)
 	}
-	if r.TraceIDBitmapFilter && r.eligibleForTraceIDBitmapFilter(plan) {
+	if r.TraceIDBitmapFilter && r.eligibleForTraceIDBitmapFilter(f) {
 		ctx = chclient.WithQuerySetting(ctx, settingMinTableRowsToUseProjectionIndex, traceIDBitmapFilterMinTableRows)
 	}
 	if r.LogCommentShape {
-		if id := planShapeID(plan); id != "" {
+		if id := planShapeID(f.plan); id != "" {
 			ctx = chclient.WithQuerySetting(ctx, settingLogComment, id)
 		}
 	}
-	if r.ResultCache && eligibleForResultCache(plan, r.now(), r.ResultCacheIngestLag) {
+	if r.ResultCache && eligibleForResultCache(f, r.now(), r.ResultCacheIngestLag) {
 		ctx = chclient.WithResultCacheSetting(ctx, int64(r.ResultCacheTTL.Seconds()))
 	}
 	if r.LazyMaterialization && !analyzerHazard {
-		if limit, ok := EligibleForLazyMaterialization(plan); ok {
+		if limit, ok := f.lazyMaterializationLimit(); ok {
 			ctx = chclient.WithQuerySetting(ctx, settingQueryPlanOptimizeLazyMaterialization, 1)
 			ctx = chclient.WithQuerySetting(ctx, settingQueryPlanMaxLimitForLazyMaterialization, limit)
 			// Gated behind the analyzer, exactly like the condition cache above
@@ -416,9 +414,9 @@ const compareMaxThreads = 4
 
 // applyCompareMemoryBound stamps the two memory-bounding settings a TraceQL
 // compare() query needs to stay under the per-query memory budget on
-// wide-attribute, S3-backed scans. It fires ONLY when plan contains a
-// chplan.MetricsCompare node, so plain queries keep full read parallelism and
-// are byte-unchanged.
+// wide-attribute, S3-backed scans. It fires ONLY when the plan contains a
+// chplan.MetricsCompare node (f.hasCompare), so plain queries keep full read
+// parallelism and are byte-unchanged.
 //
 // The validated fix couples TWO result-equivalent knobs that must ride together
 // for compare():
@@ -434,33 +432,13 @@ const compareMaxThreads = 4
 // above the cap. Both knobs are RESULT-EQUIVALENT — external aggregation yields
 // the same rows, and bounding threads only changes concurrency — so attaching
 // them never changes the compare() result, only its peak memory.
-func applyCompareMemoryBound(ctx context.Context, plan chplan.Node, maxMemory int64) context.Context {
-	if !planHasMetricsCompare(plan) {
+func applyCompareMemoryBound(ctx context.Context, f planShapeFacts, maxMemory int64) context.Context {
+	if !f.hasCompare {
 		return ctx
 	}
 	ctx = chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalGroupBy, spillThreshold(maxMemory))
 	ctx = chclient.WithQuerySetting(ctx, settingMaxThreads, compareMaxThreads)
 	return ctx
-}
-
-// planHasMetricsCompare reports whether plan contains a chplan.MetricsCompare
-// node anywhere in its tree — the lowered form of TraceQL's compare() operator.
-//
-// The sweep is chplan.WalkDeep so a compare() nested inside a plan subtree that
-// hangs off an Expr slot still gets the spill + thread bound. Both settings are
-// result-equivalent, so widening the match can only cost read parallelism on a
-// query that reads the same wide Map columns; missing one is the OOM this bound
-// exists to prevent.
-func planHasMetricsCompare(plan chplan.Node) bool {
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		if _, ok := n.(*chplan.MetricsCompare); ok {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
 }
 
 // settingMaxBlockSize names the ClickHouse setting that caps the number of
@@ -513,7 +491,7 @@ const sortedSlabOverTimeMaxBlockSize = 1
 
 // applySortedSlabOverTimeMemoryBound stamps max_block_size=
 // sortedSlabOverTimeMaxBlockSize on any plan carrying a
-// chplan.RangeWindow.SortedSlabOverTime node, so the sorted-slab family's
+// chplan.RangeWindow.SortedSlabOverTime node (f.sortedSlabOverTime), so the sorted-slab family's
 // real per-anchor memory retention (see the const's own doc) never rides an
 // unbounded block width. It is unconditional — like
 // applyCompareMemoryBound and applyNativeHistogramAnalyzerFix above, NOT
@@ -527,8 +505,8 @@ const sortedSlabOverTimeMaxBlockSize = 1
 //
 // Known scope tradeoff, deliberately accepted rather than left
 // undocumented: max_block_size is a per-QUERY ClickHouse setting, not
-// scoped to a subquery, and planHasSortedSlabOverTime's WalkDeep matches a
-// sorted-slab RangeWindow ANYWHERE in the plan — so a query that combines a
+// scoped to a subquery, and the inspection matches a sorted-slab RangeWindow
+// ANYWHERE in the plan — so a query that combines a
 // sorted-slab branch with an unrelated, otherwise-cheap-to-stream sibling
 // (e.g. a binary op between a sorted-slab sum_over_time() and a large
 // fan-out/native rate() on the other side) pays single-row blocks for the
@@ -544,29 +522,11 @@ const sortedSlabOverTimeMaxBlockSize = 1
 // pattern yet; whoever revisits AutoSelect (see the feature's own doc)
 // should re-examine this tradeoff against real mixed-shape query traffic
 // first.
-func applySortedSlabOverTimeMemoryBound(ctx context.Context, plan chplan.Node) context.Context {
-	if !planHasSortedSlabOverTime(plan) {
+func applySortedSlabOverTimeMemoryBound(ctx context.Context, f planShapeFacts) context.Context {
+	if !f.sortedSlabOverTime {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingMaxBlockSize, sortedSlabOverTimeMaxBlockSize)
-}
-
-// planHasSortedSlabOverTime reports whether plan contains a
-// *chplan.RangeWindow node with SortedSlabOverTime set anywhere in its
-// tree. The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
-// planHasNativeHistogramAnalyzerHazard, so a sorted-slab RangeWindow nested
-// inside a scalar-binding subtree (an Expr slot Walk does not follow) is
-// still found.
-func planHasSortedSlabOverTime(plan chplan.Node) bool {
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		if rw, ok := n.(*chplan.RangeWindow); ok && rw.SortedSlabOverTime {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
 }
 
 // applyNativeHistogramAnalyzerFix stamps enable_analyzer=0 on a query whose
@@ -640,16 +600,14 @@ func planHasSortedSlabOverTime(plan chplan.Node) bool {
 // same OSCPUVirtualTimeMicroseconds profile event). Neither reduces the
 // ANALYZER's real per-call-site work; disabling the analyzer itself does.
 //
-// planHasNativeHistogramAnalyzerHazard is checked via a SINGLE chplan.WalkDeep
-// covering both shapes this fix protects, rather than two separate
-// WalkDeep-driven predicates each sweeping the whole plan on their own:
-// cerberus issue #3559 found that shape — two unconditional full-tree walks
-// on every query, including the common case where NEITHER shape is present
-// (a bare `up` selector has no histogram anywhere) — measurably regressed
-// TestAllocs_HandleQuery_Small's allocation ceiling. Merging them into one
-// pass halves the walk cost for every query and changes no behavior: each
-// shape's own match condition, and the short-circuit on first match, are
-// unchanged from the two predicates this replaces.
+// The hazard is read off planShapeFacts.nativeHistogramAnalyzerHazard, which
+// the single plan inspection (inspectPlanShape) sets for either of two
+// shapes. Two separate full-tree walks for the two shapes, run on every
+// query including the common case where NEITHER is present (a bare `up`
+// selector has no histogram anywhere), measurably regressed
+// TestAllocs_HandleQuery_Small's allocation ceiling (commit 27c3476d9, PR
+// #3559); they were first merged into one walk and then folded into the
+// inspection every other rule reads.
 //
 // The two shapes, and why both are needed:
 //
@@ -688,37 +646,15 @@ func planHasSortedSlabOverTime(plan chplan.Node) bool {
 //     direction as the original #2355 measurement, at the same low
 //     (2-series) cardinality.
 //
-// The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
-// planHasSortedSlabOverTime: a node nested inside a scalar-binding subtree
-// (an Expr slot Walk does not follow) must still be found.
-//
-// analyzerHazard is planHasNativeHistogramAnalyzerHazard(plan), resolved by
-// the caller: applySharedQuerySettings resolves it once and hands the same
-// answer to SettingsRules.applyWithAnalyzerHazard, so the two never disagree
-// about which plan the fix fired on.
-func applyNativeHistogramAnalyzerFix(ctx context.Context, analyzerHazard bool) context.Context {
-	if !analyzerHazard {
+// The inspection is deep (chplan.WalkDeep's reach): a node nested inside a
+// scalar-binding subtree (an Expr slot Walk does not follow) must still be
+// found. The same fact gates SettingsRules.applyFacts' analyzer co-stamps, so
+// the two never disagree about which plan the fix fired on.
+func applyNativeHistogramAnalyzerFix(ctx context.Context, f planShapeFacts) context.Context {
+	if !f.nativeHistogramAnalyzerHazard {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 0)
-}
-
-func planHasNativeHistogramAnalyzerHazard(plan chplan.Node) bool {
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		switch v := n.(type) {
-		case *chplan.HistogramQuantileNative, *chplan.HistogramProjection:
-			found = true
-			return false
-		case *chplan.RangeBucketFanout:
-			if _, ok := v.RowType().FindHistogramField(chplan.HistogramFieldScale); ok {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
 }
 
 // settingGroupByTwoLevelThresholdBytes is the ClickHouse setting naming the
@@ -776,7 +712,9 @@ const expHistogramTwoLevelThresholdBytes = 1
 //     24.8 floor by years), so this is an operator off-switch rather than a
 //     compatibility gate; it exists because the stamp is a real execution-shape
 //     change, not because an older server would reject the setting.
-//   - planHasExpHistogramWindowGrouping(plan) — the plan shape. This one is
+//   - f.expHistogramWindowGrouping — the plan shape, BOTH an
+//     exponential-histogram node AND a per-anchor window fan-out (the two
+//     conjuncts are explained below). This one is
 //     load-bearing: two-level aggregation costs a FIXED ~18 MiB (the 256
 //     sub-tables' own allocation) on an aggregation whose per-group state is
 //     scalar, measured on real ClickHouse 26.6 as `sum by (event)
@@ -789,18 +727,10 @@ const expHistogramTwoLevelThresholdBytes = 1
 // RESULT-EQUIVALENT — two-level aggregation emits the rows the single-level
 // table would have emitted, in a different block partitioning — so an
 // over-match costs memory, never correctness.
-func applyExpHistogramTwoLevelBound(ctx context.Context, plan chplan.Node, expHistogramTwoLevelEnabled bool) context.Context {
-	if !expHistogramTwoLevelEnabled || !planHasExpHistogramWindowGrouping(plan) {
-		return ctx
-	}
-	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, expHistogramTwoLevelThresholdBytes)
-}
-
-// planHasExpHistogramWindowGrouping reports whether plan carries BOTH an
-// exponential-histogram node and a per-anchor window fan-out — the conjunction
-// that identifies the shape whose peak the two-level threshold governs.
 //
-// The two conjuncts, and why neither alone is the predicate:
+// The shape is the conjunction of an exponential-histogram node and a
+// per-anchor window fan-out — the two conjuncts, and why neither alone is the
+// predicate:
 //
 //   - *chplan.HistogramQuantileNative or *chplan.HistogramProjection proves
 //     EXPONENTIAL. They are the two IR nodes exclusive to the exponential
@@ -838,34 +768,21 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, plan chplan.Node, expHi
 // *chplan.RangeBucketFanout whose own RowType carries the exponential-only
 // HistogramFieldScale column (histogram_count/_sum/_avg/_stddev/_stdvar/
 // _fraction's range-mode lowering, internal/promql/histogram_value_fns.go —
-// see planHasNativeHistogramAnalyzerHazard's own doc for why this family
+// see applyNativeHistogramAnalyzerFix's own doc for why this family
 // never reaches HistogramQuantileNative/HistogramProjection). It is windowed
 // by construction (it IS the RangeBucketFanout), and its aggregation carries
 // the identical eight-column exp-histogram argMax set as the merge path this
 // threshold protects, so it is not an over-match: it is the same shape the
 // two conjuncts already describe, discovered through one node instead of two.
 //
-// The sweep is chplan.WalkDeep, matching planHasNativeHistogramAnalyzerHazard /
-// planHasSortedSlabOverTime: a node nested inside a scalar-binding subtree (an
-// Expr slot Walk does not follow) must still be found, because the answer
-// gates a memory bound.
-func planHasExpHistogramWindowGrouping(plan chplan.Node) bool {
-	expHistogram, windowed := false, false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		switch v := n.(type) {
-		case *chplan.HistogramQuantileNative, *chplan.HistogramProjection:
-			expHistogram = true
-		case *chplan.RangeBucketFanout:
-			windowed = true
-			if _, ok := v.RowType().FindHistogramField(chplan.HistogramFieldScale); ok {
-				expHistogram = true
-			}
-		}
-		// Keep descending while EITHER conjunct is still missing; once both
-		// are found nothing further can change the answer.
-		return !expHistogram || !windowed
-	})
-	return expHistogram && windowed
+// The inspection is deep (chplan.WalkDeep's reach): a node nested inside a
+// scalar-binding subtree (an Expr slot Walk does not follow) must still be
+// found, because the answer gates a memory bound.
+func applyExpHistogramTwoLevelBound(ctx context.Context, f planShapeFacts, expHistogramTwoLevelEnabled bool) context.Context {
+	if !expHistogramTwoLevelEnabled || !f.expHistogramWindowGrouping {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, expHistogramTwoLevelThresholdBytes)
 }
 
 // EligibleForLazyMaterialization reports whether plan carries exactly one
@@ -882,9 +799,8 @@ func planHasExpHistogramWindowGrouping(plan chplan.Node) bool {
 // own maxSearchRecentLimit / SearchTraceLimit callers already cap the
 // UPPER bound; this just carries whatever they resolved).
 //
-// The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
-// planHasNativeHistogramAnalyzerHazard, so a Limit(OrderBy(...)) nested
-// inside a scalar subquery's Expr slot is still found.
+// The inspection is deep (chplan.WalkDeep's reach), so a Limit(OrderBy(...))
+// nested inside a scalar subquery's Expr slot is still found.
 //
 // Zero or more than one match returns ok=false: with none there is nothing
 // to stamp, and with more than one there is no single Count to size the
@@ -900,24 +816,7 @@ func planHasExpHistogramWindowGrouping(plan chplan.Node) bool {
 // so the reverse edge would cycle), so the check has to run from the
 // consuming package's test instead.
 func EligibleForLazyMaterialization(plan chplan.Node) (limit int64, ok bool) {
-	count := 0
-	var found int64
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		lim, isLimit := n.(*chplan.Limit)
-		if !isLimit || lim.Count <= 0 {
-			return true
-		}
-		if _, isOrderBy := lim.Input.(*chplan.OrderBy); !isOrderBy {
-			return true
-		}
-		count++
-		found = lim.Count
-		return true
-	})
-	if count != 1 {
-		return 0, false
-	}
-	return found, true
+	return inspectPlanShape(plan, "").lazyMaterializationLimit()
 }
 
 // eligibleForAggregationInOrder reports whether plan's single Aggregate has a
@@ -943,8 +842,8 @@ func EligibleForLazyMaterialization(plan chplan.Node) (limit int64, ok bool) {
 //     a prefix of.
 //   - the GROUP BY column-name sequence is an ordered prefix of that table's
 //     schema SortingKeyPrefix.
-func (r SettingsRules) eligibleForAggregationInOrder(plan chplan.Node) bool {
-	agg, ok := singleAggregate(plan)
+func (r SettingsRules) eligibleForAggregationInOrder(f planShapeFacts) bool {
+	agg, ok := f.singleAggregate()
 	if !ok {
 		return false
 	}
@@ -952,7 +851,7 @@ func (r SettingsRules) eligibleForAggregationInOrder(plan chplan.Node) bool {
 	if !ok || len(groupCols) == 0 {
 		return false
 	}
-	table, ok := singleScanTable(plan)
+	table, ok := f.singleScanTable()
 	if !ok {
 		return false
 	}
@@ -973,19 +872,8 @@ func (r SettingsRules) eligibleForAggregationInOrder(plan chplan.Node) bool {
 //
 // The whole rule is additionally gated upstream by ConditionCache, which only
 // resolves in on ClickHouse >= 25.3, so this never fires on an older server.
-func predicateStableForConditionCache(plan chplan.Node) bool {
-	hasFilter := false
-	hasScan := false
-	chplan.Walk(plan, func(n chplan.Node) bool {
-		switch n.(type) {
-		case *chplan.Filter:
-			hasFilter = true
-		case *chplan.Scan:
-			hasScan = true
-		}
-		return true
-	})
-	return hasFilter && hasScan
+func predicateStableForConditionCache(f planShapeFacts) bool {
+	return f.spineHasFilter && f.spineHasScan
 }
 
 // eligibleForTraceIDBitmapFilter reports whether plan carries a predicate or
@@ -1006,41 +894,16 @@ func predicateStableForConditionCache(plan chplan.Node) bool {
 //     structural query (`>`, `<`, `>>`, `<<`) lowers to one, and its emitted
 //     SQL is the `WITH RECURSIVE` shape the issue calls out by name.
 //
-// The sweep composes WalkDeep with InspectNodeExprs + InspectExpr, mirroring
-// planHasNowExpr, so a predicate buried inside an InSubquery's own Subquery
-// plan — invisible to a plain [chplan.Walk] — is still found.
-func (r SettingsRules) eligibleForTraceIDBitmapFilter(plan chplan.Node) bool {
-	traceIDColumn := r.Traces.TraceIDColumn
-	if traceIDColumn == "" {
+// The inspection composes WalkDeep's reach with every node's own
+// expressions, so a predicate buried inside an InSubquery's own Subquery
+// plan — invisible to a plain [chplan.Walk] — is still found. The trace-id
+// column f was inspected against is r.Traces.TraceIDColumn; an empty name
+// matches nothing.
+func (r SettingsRules) eligibleForTraceIDBitmapFilter(f planShapeFacts) bool {
+	if r.Traces.TraceIDColumn == "" {
 		return false
 	}
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		if found {
-			return false
-		}
-		if _, ok := n.(*chplan.StructuralJoin); ok {
-			found = true
-			return false
-		}
-		chplan.InspectNodeExprs(n, func(e chplan.Expr) {
-			if found {
-				return
-			}
-			chplan.InspectExpr(e, func(sub chplan.Expr) bool {
-				if found {
-					return false
-				}
-				if traceIDPredicateExpr(sub, traceIDColumn) {
-					found = true
-					return false
-				}
-				return true
-			})
-		})
-		return true
-	})
-	return found
+	return f.hasStructuralJoin || f.traceIDPredicate
 }
 
 // traceIDPredicateExpr reports whether e itself (not its children — the
@@ -1072,24 +935,6 @@ func isTraceIDColumnRef(e chplan.Expr, traceIDColumn string) bool {
 	return ok && ref.Qualifier == "" && ref.Name == traceIDColumn
 }
 
-// singleAggregate returns the sole Aggregate in plan, or ok=false when there
-// is none or more than one.
-func singleAggregate(plan chplan.Node) (*chplan.Aggregate, bool) {
-	var found *chplan.Aggregate
-	count := 0
-	chplan.Walk(plan, func(n chplan.Node) bool {
-		if a, ok := n.(*chplan.Aggregate); ok {
-			found = a
-			count++
-		}
-		return true
-	})
-	if count != 1 {
-		return nil, false
-	}
-	return found, true
-}
-
 // bareGroupByColumns returns the GROUP BY keys of agg as bare column names,
 // in order. ok is false (and the slice nil) if ANY key is not a bare,
 // unqualified chplan.ColumnRef.
@@ -1103,36 +948,6 @@ func bareGroupByColumns(agg *chplan.Aggregate) (cols []string, ok bool) {
 		cols = append(cols, ref.Name)
 	}
 	return cols, true
-}
-
-// singleScanTable returns the one physical table the plan scans, or ok=false
-// when there is not exactly one (zero Scans, a multi-table union, or two
-// Scans from a join).
-// ineligibleMarker poisons the scan count so the final count != 1
-// guard rejects the plan (a union / empty-table scan has no single
-// sort key to be a prefix of).
-const ineligibleMarker = -1
-
-func singleScanTable(plan chplan.Node) (table string, ok bool) {
-	count := 0
-	chplan.Walk(plan, func(n chplan.Node) bool {
-		s, isScan := n.(*chplan.Scan)
-		if !isScan {
-			return true
-		}
-		// A union scan has no single sort key to be a prefix of.
-		if len(s.UnionTables) > 0 || s.Table == "" {
-			count = ineligibleMarker
-			return false
-		}
-		table = s.Table
-		count++
-		return true
-	})
-	if count != 1 {
-		return "", false
-	}
-	return table, true
 }
 
 // sortingKeyPrefixFor maps a scanned table name to its bare-column
@@ -1199,7 +1014,7 @@ func (r SettingsRules) sortingKeyPrefixFor(table string) []string {
 //     has had time to land every row for it.
 //
 // Defense in depth, verifying EXHAUSTIVELY rather than assuming: even after
-// the above, planHasNowExpr additionally rejects a plan carrying a literal
+// the above, f.hasNowExpr additionally rejects a plan carrying a literal
 // now()/now64() FuncCall ANYWHERE in its Expr tree. PromQL's time() builtin
 // lowers to exactly that shape (internal/promql/synthetic.go's lowerTime)
 // before the range-mode synthetic-vector rewrite (rewriteAnchorRefs)
@@ -1207,91 +1022,36 @@ func (r SettingsRules) sortingKeyPrefixFor(table string) []string {
 // independent leg catches any residual non-deterministic expression the grid
 // check above cannot see, rather than trusting that every lowering path
 // already runs that rewrite.
-func eligibleForResultCache(plan chplan.Node, now time.Time, ingestLag time.Duration) bool {
-	threshold := now.Add(-ingestLag)
-	foundRangeCarrier := false
-	closed := true
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		gc, ok := n.(chplan.GridCarrier)
-		if !ok {
-			return true
-		}
-		start, end, step := gc.EvalGrid()
-
-		// The DATA edge, not the request grid's End. A selector's
-		// `offset` moves the rows a carrier reads, and PromQL accepts a
-		// NEGATIVE offset, which shifts evaluation FORWARD — `foo offset
-		// -1h` over a request grid ending at 11:50 reads up to 12:50.
-		// Judging End alone stamped the cache on a window that had not
-		// closed and could not have, which is the whole property this
-		// gate exists to prove.
-		dataEnd := gc.DataWindowEnd()
-		if dataEnd.IsZero() || !dataEnd.Before(threshold) {
-			closed = false
-			return false
-		}
-
-		if step <= 0 {
-			// Instant-mode carrier: Start carries no request-grid meaning
-			// (chplan.GridCarrier's own doc) and this carrier alone does
-			// not make the query range-mode. Its data edge was still
-			// checked above, because an `@`-pinned window rides an
-			// instant-shape carrier beside the request's own closed
-			// StepGrid and is exactly as able to sit at the live edge.
-			return true
-		}
-		foundRangeCarrier = true
-		if start.IsZero() || end.IsZero() {
-			closed = false
-			return false
-		}
-		return true
-	})
-	if !foundRangeCarrier || !closed {
+//
+// The DATA edge is judged, not the request grid's End. A selector's `offset`
+// moves the rows a carrier reads, and PromQL accepts a NEGATIVE offset, which
+// shifts evaluation FORWARD — `foo offset -1h` over a request grid ending at
+// 11:50 reads up to 12:50. Judging End alone stamped the cache on a window
+// that had not closed and could not have, which is the whole property this
+// gate exists to prove. An instant-mode carrier's data edge counts too (an
+// `@`-pinned window rides an instant-shape carrier beside the request's own
+// closed StepGrid and is exactly as able to sit at the live edge), while its
+// Start carries no request-grid meaning and does not make the query
+// range-mode (chplan.GridCarrier's own doc) — see planShapeFacts'
+// result-cache window facts for how the inspection records each half.
+//
+// f.hasNowExpr covers the two chplan function ids (chplan.FnNow,
+// chplan.FnNow64) that ever render a non-deterministic ClickHouse call.
+// internal/chplan/fn.go has no other nondeterministic entry point reachable
+// from PromQL/LogQL/TraceQL lowering (no rand/uuid/… function id exists in
+// the registry at all), so these two exhaust the search — verified by
+// inspection of chplan's Fn constant table, not merely assumed. The
+// inspection reaches every sub-expression of every node's own Expr-typed
+// fields, at every depth including inside an embedded ScalarSubquery, so it
+// is exhaustive over every expression anywhere in the plan.
+func eligibleForResultCache(f planShapeFacts, now time.Time, ingestLag time.Duration) bool {
+	if f.rangeCarriers == 0 || f.zeroDataEnd || f.zeroRangeGrid {
 		return false
 	}
-	return !planHasNowExpr(plan)
-}
-
-// planHasNowExpr reports whether plan carries a literal now()/now64()
-// FuncCall anywhere in ANY node's Expr tree — the two chplan function ids
-// (chplan.FnNow, chplan.FnNow64) that ever render a non-deterministic
-// ClickHouse call. internal/chplan/fn.go has no other nondeterministic
-// entry point reachable from PromQL/LogQL/TraceQL lowering (no rand/uuid/…
-// function id exists in the registry at all), so these two exhaust the
-// search — verified by inspection of chplan's Fn constant table, not merely
-// assumed.
-//
-// The walk composes chplan.WalkDeep (every Node reachable through Children()
-// AND every plan subtree embedded in an Expr slot, e.g. a ScalarSubquery)
-// with chplan.InspectNodeExprs + chplan.InspectExpr (every sub-expression of
-// each node's own Expr-typed fields), so it is exhaustive over every
-// expression anywhere in the plan — not just the ones the GridCarrier check
-// in eligibleForResultCache happens to visit.
-func planHasNowExpr(plan chplan.Node) bool {
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		if found {
-			return false
-		}
-		chplan.InspectNodeExprs(n, func(e chplan.Expr) {
-			if found {
-				return
-			}
-			chplan.InspectExpr(e, func(sub chplan.Expr) bool {
-				if found {
-					return false
-				}
-				if fc, ok := sub.(*chplan.FuncCall); ok && (fc.Fn == chplan.FnNow || fc.Fn == chplan.FnNow64) {
-					found = true
-					return false
-				}
-				return true
-			})
-		})
-		return true
-	})
-	return found
+	if !f.latestDataEnd.Before(now.Add(-ingestLag)) {
+		return false
+	}
+	return !f.hasNowExpr
 }
 
 // isOrderedPrefix reports whether group is a non-empty ordered prefix of

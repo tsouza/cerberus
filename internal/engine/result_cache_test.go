@@ -29,7 +29,7 @@ func stepGrid(start, end time.Time) chplan.Node {
 func TestEligibleForResultCache_ClosedWindow_Eligible(t *testing.T) {
 	// End = 11:50:00, well before the 11:55:00 threshold.
 	plan := stepGrid(fixedNow.Add(-2*time.Hour), fixedNow.Add(-10*time.Minute))
-	if !eligibleForResultCache(plan, fixedNow, testIngestLag) {
+	if !eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag) {
 		t.Error("closed window (End 10m before now, 5m ingest lag): want eligible")
 	}
 }
@@ -38,7 +38,7 @@ func TestEligibleForResultCache_LiveEdgeWindow_NotEligible(t *testing.T) {
 	// End = 11:59:00, inside the last 5 minutes (the ingest-lag horizon):
 	// rows for this window may still be arriving.
 	plan := stepGrid(fixedNow.Add(-2*time.Hour), fixedNow.Add(-1*time.Minute))
-	if eligibleForResultCache(plan, fixedNow, testIngestLag) {
+	if eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag) {
 		t.Error("live-edge window (End 1m before now, 5m ingest lag): want NOT eligible")
 	}
 }
@@ -50,7 +50,7 @@ func TestEligibleForResultCache_BoundaryIsExclusive(t *testing.T) {
 	// slide inside the live-edge zone, so the boundary must be conservative.
 	threshold := fixedNow.Add(-testIngestLag)
 	plan := stepGrid(fixedNow.Add(-2*time.Hour), threshold)
-	if eligibleForResultCache(plan, fixedNow, testIngestLag) {
+	if eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag) {
 		t.Error("End exactly at the ingest-lag threshold: want NOT eligible (exclusive boundary)")
 	}
 }
@@ -62,11 +62,11 @@ func TestEligibleForResultCache_ZeroTimeSentinel_NotEligible(t *testing.T) {
 	// live-edge shape this gate exists to exclude, regardless of how early
 	// the zero value compares numerically.
 	plan := stepGrid(fixedNow.Add(-2*time.Hour), time.Time{})
-	if eligibleForResultCache(plan, fixedNow, testIngestLag) {
+	if eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag) {
 		t.Error("zero-time End (now()-relative sentinel): want NOT eligible")
 	}
 	planZeroStart := stepGrid(time.Time{}, fixedNow.Add(-10*time.Minute))
-	if eligibleForResultCache(planZeroStart, fixedNow, testIngestLag) {
+	if eligibleForResultCache(shapeOf(planZeroStart), fixedNow, testIngestLag) {
 		t.Error("zero-time Start: want NOT eligible")
 	}
 }
@@ -78,7 +78,7 @@ func TestEligibleForResultCache_NoGridCarrier_NotEligible(t *testing.T) {
 	// chclient.Client.Query/QueryStrings directly, never through the engine's
 	// execute seam — see eligibleForResultCache's own doc).
 	plan := chplan.Node(&chplan.Scan{Table: "otel_metrics_sum"})
-	if eligibleForResultCache(plan, fixedNow, testIngestLag) {
+	if eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag) {
 		t.Error("plan with no GridCarrier: want NOT eligible")
 	}
 }
@@ -88,7 +88,7 @@ func TestEligibleForResultCache_InstantModeCarrier_NotEligible(t *testing.T) {
 	// meaning at all (see chplan.GridCarrier's own doc), so a plan whose only
 	// carrier is instant-mode has nothing that proves a closed window.
 	plan := &chplan.StepGrid{Start: fixedNow.Add(-time.Hour), End: fixedNow, Step: 0}
-	if eligibleForResultCache(plan, fixedNow, testIngestLag) {
+	if eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag) {
 		t.Error("instant-mode-only carrier: want NOT eligible")
 	}
 }
@@ -103,7 +103,7 @@ func TestEligibleForResultCache_MultipleCarriers_AllMustBeClosed(t *testing.T) {
 		Input:     closed,
 		Predicate: &chplan.ScalarSubquery{Input: liveEdge},
 	}
-	if eligibleForResultCache(plan, fixedNow, testIngestLag) {
+	if eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag) {
 		t.Error("one closed + one live-edge carrier (via a subquery-embedded plan): want NOT eligible")
 	}
 }
@@ -117,14 +117,14 @@ func TestEligibleForResultCache_NowExprPresent_NotEligible(t *testing.T) {
 		Input:     stepGrid(fixedNow.Add(-2*time.Hour), fixedNow.Add(-10*time.Minute)),
 		Predicate: &chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: chplan.NanoScale}}},
 	}
-	if eligibleForResultCache(plan, fixedNow, testIngestLag) {
+	if eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag) {
 		t.Error("closed window but a now64() expression present: want NOT eligible")
 	}
 }
 
 func TestPlanHasNowExpr(t *testing.T) {
 	closed := stepGrid(fixedNow.Add(-2*time.Hour), fixedNow.Add(-10*time.Minute))
-	if planHasNowExpr(closed) {
+	if shapeOf(closed).hasNowExpr {
 		t.Error("plain StepGrid with no Expr fields: want no now() expression found")
 	}
 
@@ -132,7 +132,7 @@ func TestPlanHasNowExpr(t *testing.T) {
 		Input:     &chplan.Scan{Table: "otel_metrics_sum"},
 		Predicate: &chplan.FuncCall{Fn: chplan.FnNow, Args: nil},
 	}
-	if !planHasNowExpr(withNow) {
+	if !shapeOf(withNow).hasNowExpr {
 		t.Error("Filter.Predicate carrying a bare now() FuncCall: want found")
 	}
 
@@ -148,7 +148,7 @@ func TestPlanHasNowExpr(t *testing.T) {
 			Right: &chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: chplan.NanoScale}}},
 		},
 	}
-	if !planHasNowExpr(nestedInBinary) {
+	if !shapeOf(nestedInBinary).hasNowExpr {
 		t.Error("now64() nested inside a Binary: want found")
 	}
 
@@ -159,7 +159,7 @@ func TestPlanHasNowExpr(t *testing.T) {
 			Predicate: &chplan.FuncCall{Fn: chplan.FnNow, Args: nil},
 		}},
 	}
-	if !planHasNowExpr(nestedInSubquery) {
+	if !shapeOf(nestedInSubquery).hasNowExpr {
 		t.Error("now() nested inside a ScalarSubquery-embedded plan: want found")
 	}
 }

@@ -81,19 +81,19 @@ func compositionContributors() []settingsContributor {
 			return applySpillSettings(ctx, memCap)
 		}},
 		{"join_spill", func(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
-			return applyJoinSpillSettings(ctx, plan, memCap, rules.JoinSpill)
+			return applyJoinSpillSettings(ctx, shapeOf(plan), memCap, rules.JoinSpill)
 		}},
 		{"compare_memory_bound", func(ctx context.Context, plan chplan.Node, memCap int64, _ SettingsRules) context.Context {
-			return applyCompareMemoryBound(ctx, plan, memCap)
+			return applyCompareMemoryBound(ctx, shapeOf(plan), memCap)
 		}},
 		{"native_histogram_analyzer_fix", func(ctx context.Context, plan chplan.Node, _ int64, _ SettingsRules) context.Context {
-			return applyNativeHistogramAnalyzerFix(ctx, planHasNativeHistogramAnalyzerHazard(plan))
+			return applyNativeHistogramAnalyzerFix(ctx, shapeOf(plan))
 		}},
 		{"sorted_slab_memory_bound", func(ctx context.Context, plan chplan.Node, _ int64, _ SettingsRules) context.Context {
-			return applySortedSlabOverTimeMemoryBound(ctx, plan)
+			return applySortedSlabOverTimeMemoryBound(ctx, shapeOf(plan))
 		}},
 		{"exp_histogram_two_level", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
-			return applyExpHistogramTwoLevelBound(ctx, plan, rules.ExpHistogramTwoLevel)
+			return applyExpHistogramTwoLevelBound(ctx, shapeOf(plan), rules.ExpHistogramTwoLevel)
 		}},
 	}
 	for _, f := range compositionRuleFlags {
@@ -272,7 +272,7 @@ func TestSharedQuerySettings_EveryKeyResolvesToOneValue(t *testing.T) {
 				}
 
 				composed := chclient.QuerySettingsFromContext(
-					applySharedQuerySettings(context.Background(), p.plan, testQueryMemoryCap, rules),
+					applySharedQuerySettings(context.Background(), shapeOf(p.plan), testQueryMemoryCap, rules),
 				)
 				if len(composed) != len(union) {
 					t.Errorf("%s / [%s]: composed map has %d keys, the union of contributions has %d\n composed: %v\n union:    %v",
@@ -322,7 +322,7 @@ func TestSharedQuerySettings_AnalyzerFixWinsOverCoStamps(t *testing.T) {
 		},
 	}
 
-	got := chclient.QuerySettingsFromContext(applySharedQuerySettings(context.Background(), plan, testQueryMemoryCap, rules))
+	got := chclient.QuerySettingsFromContext(applySharedQuerySettings(context.Background(), shapeOf(plan), testQueryMemoryCap, rules))
 	if v := got[settingEnableAnalyzer]; v != 0 {
 		t.Errorf("enable_analyzer = %v, want 0: the native-histogram analyzer fix must win over the condition-cache and lazy-materialisation co-stamps", v)
 	}
@@ -334,7 +334,7 @@ func TestSharedQuerySettings_AnalyzerFixWinsOverCoStamps(t *testing.T) {
 
 	// The same rules on a plan WITHOUT the hazard still fire — the skip is
 	// keyed on the hazard, not on the flags.
-	got = chclient.QuerySettingsFromContext(applySharedQuerySettings(context.Background(), tempoSearchRecentPlan(20), testQueryMemoryCap, rules))
+	got = chclient.QuerySettingsFromContext(applySharedQuerySettings(context.Background(), shapeOf(tempoSearchRecentPlan(20)), testQueryMemoryCap, rules))
 	if v := got[settingEnableAnalyzer]; v != 1 {
 		t.Errorf("no hazard: enable_analyzer = %v, want 1 (the co-stamp)", v)
 	}

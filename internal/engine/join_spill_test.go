@@ -37,7 +37,7 @@ func TestApplyJoinSpillSettings_StampsOnlyWhenEnabledAndJoinBearing(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := applyJoinSpillSettings(context.Background(), tc.plan, testQueryMemoryCap, tc.enabled)
+			ctx := applyJoinSpillSettings(context.Background(), shapeOf(tc.plan), testQueryMemoryCap, tc.enabled)
 			got := settingValue(ctx, settingMaxBytesBeforeExternalJoin)
 			if tc.wantStamp {
 				if got != validatedJoinSpillBytes {
@@ -55,7 +55,7 @@ func TestApplyJoinSpillSettings_StampsOnlyWhenEnabledAndJoinBearing(t *testing.T
 // re-derivation of spillThreshold is automatically reflected here too.
 func TestApplyJoinSpillSettings_CapRelative(t *testing.T) {
 	const cap6GiB = 6 * gib
-	ctx := applyJoinSpillSettings(context.Background(), &chplan.VectorJoin{}, cap6GiB, true)
+	ctx := applyJoinSpillSettings(context.Background(), shapeOf(&chplan.VectorJoin{}), cap6GiB, true)
 	want := spillThreshold(cap6GiB)
 	if got := settingValue(ctx, settingMaxBytesBeforeExternalJoin); got != want {
 		t.Errorf("max_bytes_before_external_join = %v; want %v (spillThreshold(%d))", got, want, cap6GiB)
