@@ -251,10 +251,28 @@ func TestClassicBucketMergeBudget_ChDB_Instant_WithinBudget(t *testing.T) {
 
 // TestClassicBucketMergeBudget_ChDB_Range_Exceeded is
 // TestClassicBucketMergeBudget_ChDB_Instant_Exceeded's range-mode
-// counterpart, proving the SAME guard fires through
-// lowerHistogramQuantileClassicAggRange (histogram_quantile_range.go) —
-// the function issue #2408's own audit names as the range-mode caller of
-// the shared, previously-unguarded merge.
+// counterpart, proving the over-budget shape is rejected by a resource
+// bound through lowerHistogramQuantileClassicAggRange
+// (histogram_quantile_range.go) — the function issue #2408's own audit
+// names as the range-mode caller of the shared, previously-unguarded
+// merge.
+//
+// In range mode TWO bounds sit on this shape, and the classic-bucket merge
+// guard is never the one that fires. The per-(anchor, series) window fold
+// is a RangeBucketFanout whose collapse carries groupArray accumulators, so
+// the collapse-output fold-cost probe (internal/chsql/range_bucket_fanout.go,
+// maxRangeBucketFanoutFoldCostUnits) wraps it — and ClickHouse evaluates
+// that probe as a scalar subquery BEFORE the guarded read streams into the
+// cross-series merge the classic guard sits on. The probe's cost is also
+// strictly the tighter of the two for every disjoint-layout seed: per
+// (anchor, series) group it charges `E + (E/S)^2` with `E = S x (2W+1)`
+// elements (the bounds and counts ladders of S in-window samples), i.e.
+// more than `4 x W^2`, against the classic guard's `W^2` per series — with
+// a 15,000,000-unit ceiling against 10,000,000. No seed can clear the probe
+// and still trip the merge guard, so the assertion accepts either guard's
+// own throwIf message: what it pins is that the shape never reaches the
+// merge unbounded. The instant-mode test above is where the classic guard
+// itself is proven to fire.
 func TestClassicBucketMergeBudget_ChDB_Range_Exceeded(t *testing.T) {
 	const seriesOverBudget = 2000
 	const widthOverBudget = 100
@@ -266,11 +284,12 @@ func TestClassicBucketMergeBudget_ChDB_Range_Exceeded(t *testing.T) {
 
 	err := runClassicBucketMergeBoundRangeQuery(t, fixture)
 	if err == nil {
-		t.Fatal("expected the classic-bucket merge budget guard to abort the range query " +
-			"(2,000 series x width 100, disjoint layouts, exceeds the cost budget), got no error")
+		t.Fatal("expected a resource bound to abort the range query " +
+			"(2,000 series x width 100, disjoint layouts, exceeds both the fold-cost and the merge cost budget), got no error")
 	}
-	if !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
-		t.Fatalf("range query failed, but not with the classic-bucket merge budget guard's throwIf: %v", err)
+	if !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) &&
+		!strings.Contains(err.Error(), chsql.RangeBucketFanoutGroupBudgetMessage) {
+		t.Fatalf("range query failed, but with neither the fold-cost probe's nor the classic-bucket merge budget guard's throwIf: %v", err)
 	}
 }
 

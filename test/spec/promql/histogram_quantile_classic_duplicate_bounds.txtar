@@ -15,10 +15,9 @@ INSERT INTO otel_metrics_histogram VALUES
 [
   ["", {"host": "a"}, "2026-01-01T00:00:01Z", 1.5]
 ]
--- parity --
-oracle: prometheus
-endpoint: /api/v1/query
-scope: full
+-- parity_exempt --
+reason: duplicate-timestamp-seed
+detail: the one histogram row's ExplicitBounds [1.0, 1.0, 5.0] read back as two le="1" bucket samples (cumulative 2 and 5) at one timestamp; cerberus keeps the first rung of the duplicate run and answers 1.5, and the reference engine's appender keeps whichever le="1" sample it ingests first, a survivor neither engine promises.
 -- args --
 [0] string = ""
 [1] int64 = 9
