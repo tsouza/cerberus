@@ -44,7 +44,7 @@ func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node
 	defer span.End()
 	plan, err := lowerRoot(expr, s, lowerCtx{
 		lowerers:       RangeLowerers{}.withDefaults(),
-		resourceBounds: DefaultResourceBounds(),
+		resourceBounds: DefaultResourceBounds().withDefaults(),
 	})
 	if err != nil {
 		span.RecordError(err)
@@ -208,7 +208,7 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 		end:               end,
 		metadataFullRange: true,
 		lowerers:          RangeLowerers{}.withDefaults(),
-		resourceBounds:    DefaultResourceBounds(),
+		resourceBounds:    DefaultResourceBounds().withDefaults(),
 	})
 	if err != nil {
 		span.RecordError(err)
