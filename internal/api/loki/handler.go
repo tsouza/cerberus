@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"runtime"
 	"sort"
@@ -474,29 +475,9 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return
 	}
-	// ABSENT and MALFORMED are different requests. Upstream Loki
-	// auto-resolves an absent step (loghttp's `parseSecondsOrDuration`
-	// is only reached when the param is present) and returns 400 —
-	// `cannot parse %q to a valid duration` — for one it cannot parse.
-	// Collapsing both into a 1m default answered `?step=banana` with a
-	// 200 over a window the client never asked for. `parsePatternsStep`
-	// in patterns.go already splits them the same way.
-	stepRaw := r.FormValue("step")
-	step := time.Minute
-	if stepRaw != "" {
-		step, err = format.ParseDuration(stepRaw)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, ErrBadData,
-				fmt.Errorf("cannot parse %q to a valid duration", stepRaw))
-			return
-		}
-	}
-	if step <= 0 {
-		// An explicitly non-positive step would divide by zero in the
-		// resolution cap below. Upstream Loki rejects the same shape
-		// (loghttp.ParseRangeQuery's errZeroOrNegativeStep), as does the
-		// Prom head's `step <= 0` guard.
-		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'step' parameter"))
+	step, err := parseQueryRangeStep(r.FormValue("step"), start, end)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
 	// Only a STRICTLY inverted window is rejected. Upstream Loki's
@@ -583,6 +564,49 @@ func (h *Handler) langForRequest(start, end time.Time, limit int, dir logDirecti
 		LogLineBackward:     dir == directionBackward,
 		AttrStrategies:      h.AttrStrategies,
 	}
+}
+
+// defaultQueryRangeStepDivisor is the number of grid points reference Loki
+// sizes an absent `?step=` to: `pkg/loghttp/params.go`'s
+// defaultQueryRangeStep is `max(floor((end-start).Seconds()/250), 1)`
+// seconds, so a one-hour window answers on a 14 s grid and a window under
+// 250 s on a 1 s one. Mirrored by value because the function is
+// unexported upstream.
+const defaultQueryRangeStepDivisor = 250
+
+// defaultQueryRangeStep is the step /loki/api/v1/query_range uses when the
+// request carries none — reference Loki's own derivation (see
+// defaultQueryRangeStepDivisor). A 1 m constant here answered a 1 h metric
+// query_range on a 60 s grid where Loki answers on a 14 s one: a different
+// sample count, and different per-anchor values for every window function.
+func defaultQueryRangeStep(start, end time.Time) time.Duration {
+	secs := math.Floor(end.Sub(start).Seconds() / defaultQueryRangeStepDivisor)
+	return time.Duration(math.Max(secs, 1)) * time.Second
+}
+
+// parseQueryRangeStep resolves the `?step=` of a /loki/api/v1/query_range
+// request. ABSENT and MALFORMED are different requests: upstream Loki
+// derives an absent step from the window (defaultQueryRangeStep — its
+// `parseSecondsOrDuration` is only reached when the param is present) and
+// returns 400 `cannot parse %q to a valid duration` for one it cannot
+// parse. Collapsing both into a default answered `?step=banana` with a 200
+// over a grid the client never asked for. An explicitly non-positive step
+// is rejected too — it would divide by zero in the resolution cap, and
+// upstream rejects the same shape (loghttp.ParseRangeQuery's
+// errZeroOrNegativeStep), as does the Prom head's `step <= 0` guard.
+// `parsePatternsStep` in patterns.go splits the same cases the same way.
+func parseQueryRangeStep(raw string, start, end time.Time) (time.Duration, error) {
+	if raw == "" {
+		return defaultQueryRangeStep(start, end), nil
+	}
+	step, err := format.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse %q to a valid duration", raw)
+	}
+	if step <= 0 {
+		return 0, errors.New("missing or invalid 'step' parameter")
+	}
+	return step, nil
 }
 
 // langForRangeRequest builds a per-request *logql.Lang carrying the
