@@ -159,8 +159,13 @@ func TestMutation_RangeBucketFanout_MixedAliasedGroupByHoist(t *testing.T) {
 		collapseSelect = "SELECT anchor_ts AS `anchor_ts`, `RawKey1`, `_rbf_key_2` AS `Attributes`, `RawKey2`, argMax(`BucketCounts`, `TimeUnix`) AS `BucketCounts`"
 		groupBy        = "GROUP BY anchor_ts, `RawKey1`, `_rbf_key_2`, `RawKey2`"
 	)
-	if !strings.Contains(sql, fanoutHoist) {
-		t.Errorf("the ALIASED entry (index 1, Attributes) must be materialized in the fan-out SELECT as %q:\n%s", fanoutHoist, sql)
+	// Exactly once: the fan-out SELECT is embedded twice by the row bound
+	// (the bounded read and its truncation probe), and a hoist rendered
+	// into both copies doubles every aliased key's expression text — the
+	// growth that pushed the level-2 mixed subquery composition past
+	// ClickHouse's default max_query_size.
+	if n := strings.Count(sql, fanoutHoist); n != 1 {
+		t.Errorf("the ALIASED entry (index 1, Attributes) must be materialized in the fan-out SELECT as %q exactly once, found %d:\n%s", fanoutHoist, n, sql)
 	}
 	if !strings.HasPrefix(sql, collapseSelect) {
 		t.Errorf("collapse SELECT-list must read both bare entries raw and `_rbf_key_2` under the Attributes alias, in order:\nwant prefix %q\ngot  %s", collapseSelect, sql)

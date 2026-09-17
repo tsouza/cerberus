@@ -436,9 +436,17 @@ const RangeBucketFanoutGroupBudgetMessage = "histogram window fold exceeds the c
 // truncation-detecting guard, and returns the bounded, guarded result as
 // the new source for that GROUP BY.
 //
-// probeColumn names a column fanoutSource is guaranteed to carry
-// unchanged (both callers pass their node's own TimestampCol) — used only
-// for the truncation probe's reduced-width second read, mirroring
+// probeSource is the fan-out the truncation probe counts: the same
+// arrayJoin over the same pruned input as fanoutSource, so its row count IS
+// fanoutSource's, but free to omit per-row projections the collapse needs
+// and the count does not (RangeBucketFanout's hoisted group keys). Each
+// source is embedded verbatim, so whatever text probeSource leaves out is
+// text the statement carries once instead of twice. RangeLWR passes the
+// same Frag for both.
+//
+// probeColumn names a column probeSource is guaranteed to carry unchanged
+// (both callers pass their node's own TimestampCol) — used only for the
+// truncation probe's reduced-width second read, mirroring
 // rateWindowFanoutBoundedSourceFrag's srcTs argument.
 //
 // Unlike rateWindowFanoutBoundedSourceFrag, which enumerates fanoutSource's
@@ -454,7 +462,7 @@ const RangeBucketFanoutGroupBudgetMessage = "histogram window fold exceeds the c
 // maxRows is the caller's own bound (maxRangeBucketFanoutRows or
 // maxRangeLWRFanoutRows — issue #2470) and message is the throwIf text that
 // names which one fired.
-func lwrFanoutBoundedSourceFrag(fanoutSource Frag, probeColumn string, maxRows int64, message string) Frag {
+func lwrFanoutBoundedSourceFrag(fanoutSource, probeSource Frag, probeColumn string, maxRows int64, message string) Frag {
 	// The real short-circuit. No blocking operator sits between this LIMIT
 	// and the underlying scan/arrayJoin, so ClickHouse stops pulling
 	// upstream data once maxRows+1 rows are produced.
@@ -462,14 +470,14 @@ func lwrFanoutBoundedSourceFrag(fanoutSource Frag, probeColumn string, maxRows i
 	bounded.Select(Star())
 	bounded.Limit(maxRows + 1)
 
-	// A second, independently LIMIT-bounded read of fanoutSource, reduced
-	// to a single scalar count() — deliberately NOT a window function on
-	// `bounded` itself. See rateWindowFanoutBoundedSourceFrag's doc
-	// comment (design 3/4) for why every window-function variant tried
-	// forces full materialisation of the whole LIMIT-bounded set before it
-	// can annotate even one row, defeating the bound at the scale this
-	// file needs to admit.
-	probe := NewQuery().From(fanoutSource)
+	// A second, independently LIMIT-bounded read of the fan-out (probeSource,
+	// the count-equivalent copy), reduced to a single scalar count() —
+	// deliberately NOT a window function on `bounded` itself. See
+	// rateWindowFanoutBoundedSourceFrag's doc comment (design 3/4) for why
+	// every window-function variant tried forces full materialisation of
+	// the whole LIMIT-bounded set before it can annotate even one row,
+	// defeating the bound at the scale this file needs to admit.
+	probe := NewQuery().From(probeSource)
 	probe.Select(Col(probeColumn))
 	probe.Limit(maxRows + 1)
 	probeCount := NewQuery().From(probe.Frag())

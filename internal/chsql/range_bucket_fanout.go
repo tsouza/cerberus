@@ -155,12 +155,23 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// the bounded grid anchor. `*` is required so the AggFunc source
 	// columns + group-key source columns + TimeUnix all reach the collapse
 	// SELECT without enumerating the (schema-dependent) column set here.
-	fanout := NewQuery().From(inner)
-	fanout.Select(Star())
-	fanout.Select(RawAs(
-		lwrAnchorFanoutFrag(gridBase, shiftBase, tsIdent, stepNS, lookbackNS, numAnchors),
-		r.AnchorAlias,
-	))
+	//
+	// Built twice from the same parts: `fanout` is the read the collapse
+	// consumes, `probeFanout` is the row-count probe's copy of it (see
+	// lwrFanoutBoundedSourceFrag). The probe only counts fanned rows, so it
+	// carries none of the hoisted group-key materialisations below — they
+	// are per-row projections that change no count, and leaving them out is
+	// what keeps each hoisted key's expression rendered ONCE in the
+	// statement rather than once per embedded copy of the fan-out.
+	anchorFrag := lwrAnchorFanoutFrag(gridBase, shiftBase, tsIdent, stepNS, lookbackNS, numAnchors)
+	newFanout := func() *QueryBuilder {
+		sb := NewQuery().From(inner)
+		sb.Select(Star())
+		sb.Select(RawAs(anchorFrag, r.AnchorAlias))
+		return sb
+	}
+	fanout := newFanout()
+	probeFanout := newFanout()
 
 	// Issue #3551: materialize every ALIASED GroupBy entry here too, under
 	// its own synthetic per-index column ([rangeBucketFanoutGroupKeyAlias]),
@@ -185,6 +196,12 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// while the expression's TEXT still renders exactly once in the whole
 	// query, same as the alias-reference form it replaces: no new
 	// duplication for the emitted-SQL size bound (issue #2733) to absorb.
+	// "Once" holds only because the hoist goes into `fanout` alone and not
+	// into `probeFanout`: the fan-out is embedded twice by the row bound
+	// below, and a hoist rendered into both copies doubles every aliased
+	// key's expression — measured at +6,368 placeholder bytes on the
+	// level-2 mixed subquery composition, enough to push that statement
+	// past ClickHouse's default max_query_size once its args are inlined.
 	hoistedGroupKeys := make([]string, len(r.GroupBy))
 	for i, g := range r.GroupBy {
 		if i >= len(r.GroupByAliases) || r.GroupByAliases[i] == "" {
@@ -200,8 +217,10 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// `(Start - Offset - Lookback, End - Offset]` before the SELECT-list
 	// arrayJoin fans each source row across its anchors — same granule-
 	// prune contract as emitRangeLWR. Gated on Start/End so the
-	// now64()/@-pinned/zero-grid fixtures stay byte-identical.
+	// now64()/@-pinned/zero-grid fixtures stay byte-identical. The probe
+	// reads the same pruned span, or its count would not be the read's.
 	maybePushRangeScanTimeBound(fanout, inputTimestamp, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
+	maybePushRangeScanTimeBound(probeFanout, inputTimestamp, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
 	// #2447: cap how many (series, anchor) fanout rows can ever reach the
 	// collapse GROUP BY below via a genuine LIMIT + truncation probe — that
@@ -213,7 +232,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// real calibration numbers.
 	// #2667: e.rangeBucketFanoutRowBound() resolves the operator override
 	// (or maxRangeBucketFanoutRows's own default) once per Emit call.
-	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), inputTimestamp, e.rangeBucketFanoutRowBound(), RangeBucketFanoutBudgetMessage)
+	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), probeFanout.Frag(), inputTimestamp, e.rangeBucketFanoutRowBound(), RangeBucketFanoutBudgetMessage)
 
 	// Collapse SELECT: GROUP BY (<user-keys>, anchor) with the configured
 	// AggFuncs. The user group keys are projected first (under their

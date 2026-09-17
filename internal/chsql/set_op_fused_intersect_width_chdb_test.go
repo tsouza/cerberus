@@ -308,10 +308,10 @@ func columnNames(s chplan.Schema) []string {
 func widenSpansTable(t *testing.T, db *sql.DB) {
 	t.Helper()
 	const alter = `ALTER TABLE otel_traces
-    ADD COLUMN "Events.Timestamp" Array(DateTime64(9)) DEFAULT [],
-    ADD COLUMN "Events.Name" Array(String) DEFAULT [],
-    ADD COLUMN "Links.TraceId" Array(String) DEFAULT [],
-    ADD COLUMN "Links.SpanId" Array(String) DEFAULT []`
+    ADD COLUMN IF NOT EXISTS "Events.Timestamp" Array(DateTime64(9)) DEFAULT [],
+    ADD COLUMN IF NOT EXISTS "Events.Name" Array(String) DEFAULT [],
+    ADD COLUMN IF NOT EXISTS "Links.TraceId" Array(String) DEFAULT [],
+    ADD COLUMN IF NOT EXISTS "Links.SpanId" Array(String) DEFAULT []`
 	if _, err := db.Exec(alter); err != nil {
 		t.Fatalf("widen otel_traces: %v", err)
 	}
