@@ -1,0 +1,11 @@
+{
+  "fixture": "metadata/labels_no_bounds",
+  "fan_factor": 1,
+  "scan_rows": 1200,
+  "peak_intermediate": 1200,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

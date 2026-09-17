@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/subquery_last_over_time_nested_subquery",
+  "fan_factor": 6.666666666666667,
+  "scan_rows": 6,
+  "peak_intermediate": 40,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
