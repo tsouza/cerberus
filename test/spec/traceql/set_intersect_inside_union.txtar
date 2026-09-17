@@ -1,0 +1,39 @@
+# A spanset `&&` nested inside a spanset `||`. The `&&` arm renders through
+# the single-pass window gate, and the `||` aligns its plain arm to the
+# intersect's positional column list, so the fused statement has to select
+# exactly the columns its RowType declares — never `*`. The seed carries a
+# nested Events.Name array column beyond the narrow span projection, so a
+# `SELECT *` would be one column wider than the sibling arm and the UNION
+# would be rejected (ClickHouse code 53). Trace ...01 matches the `&&` (one
+# span per arm, both carried); trace ...02 matches only the plain arm; trace
+# ...03 matches one `&&` arm alone and is admitted by neither.
+-- query.traceql --
+({ span.a = "x" } && { span.b = "y" }) || { span.c = "z" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String,
+    SpanKind String,
+    Duration Int64,
+    Timestamp DateTime64(9),
+    StatusCode String,
+    StatusMessage String,
+    ScopeName String,
+    ScopeVersion String,
+    SpanAttributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    `Events.Name` Array(String) DEFAULT []
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName, SpanKind, Duration, Timestamp, StatusCode, SpanAttributes) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', 'root', 'Server', 10, toDateTime64('2026-01-01 00:00:00', 9), 'Unset', map('a', 'x')),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', 'child', 'Client', 10, toDateTime64('2026-01-01 00:00:01', 9), 'Unset', map('b', 'y')),
+    ('a0000000000000000000000000000002', '0000000000000010', '', 'root', 'Server', 10, toDateTime64('2026-01-01 00:00:02', 9), 'Unset', map('c', 'z')),
+    ('a0000000000000000000000000000003', '0000000000000020', '', 'root', 'Server', 10, toDateTime64('2026-01-01 00:00:03', 9), 'Unset', map('a', 'x'));
+-- expected_rows --
+[]
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
