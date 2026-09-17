@@ -3,8 +3,10 @@
 -- args --
 [0] string = "left"
 [1] string = "right"
+[2] string = "left"
+[3] string = "right"
 -- sql --
-SELECT * EXCEPT (`_setand_side`) FROM ((SELECT *, 0 AS `_setand_side` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)))) UNION ALL (SELECT *, 1 AS `_setand_side` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?))))) QUALIFY max(`_setand_side` = 0) OVER (PARTITION BY `TraceId`) AND max(`_setand_side` = 1) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
+SELECT * FROM `otel_traces` WHERE ((`SpanName` = ?) OR (`SpanName` = ?)) QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) AND max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
@@ -39,6 +41,8 @@ scope: full
 [2] string = "__cerberus_spanID"
 [3] string = "left"
 [4] string = "right"
+[5] string = "left"
+[6] string = "right"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -47,4 +51,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT * EXCEPT (`_setand_side`) FROM ((SELECT *, 0 AS `_setand_side` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`SpanName` = ?)))) UNION ALL (SELECT *, 1 AS `_setand_side` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`SpanName` = ?))))) QUALIFY max(`_setand_side` = 0) OVER (PARTITION BY `TraceId`) AND max(`_setand_side` = 1) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`)
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ((`SpanName` = ?) OR (`SpanName` = ?)) QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) AND max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`)
