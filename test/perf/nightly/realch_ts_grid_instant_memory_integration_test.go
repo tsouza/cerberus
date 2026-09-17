@@ -68,6 +68,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/chopttest"
+	"github.com/tsouza/cerberus/internal/choptwire"
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
@@ -149,14 +150,14 @@ func TestTSGridInstantMemory_RealCH_Integration(t *testing.T) {
 	logSource := optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour)
 	query := fmt.Sprintf("rate(%s[%s])", sumMetric, tsGridInstantLookback)
 
-	handler.Lowerers = chopttest.BuildRangeLowerers(fanoutSet)
+	handler.Lowerers = choptwire.RangeLowerers(fanoutSet)
 	fanoutID := "ts-grid-instant-fanout"
 	if code := runTSGridInstantQuery(t, mux, query, maxTS, fanoutID); code != http.StatusOK {
 		t.Fatalf("fanout: HTTP %d (want 200)", code)
 	}
 	fanoutRow := tsGridInstantQueryLogRow(ctx, t, conn, logSource, fanoutID)
 
-	handler.Lowerers = chopttest.BuildRangeLowerers(nativeSet)
+	handler.Lowerers = choptwire.RangeLowerers(nativeSet)
 	nativeID := "ts-grid-instant-native"
 	if code := runTSGridInstantQuery(t, mux, query, maxTS, nativeID); code != http.StatusOK {
 		t.Fatalf("native: HTTP %d (want 200)", code)

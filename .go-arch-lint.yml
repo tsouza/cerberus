@@ -172,9 +172,8 @@ components:
   chdbsession:    { in: chdbsession }
   chsqltest:      { in: chsqltest }
   # Real-CH integration-test helper: resolves a live client's chopt.EnabledSet
-  # and builds the same promql.RangeLowerers native dispatch table
-  # cmd/cerberus/main.go's own nativeRangeLowerers builds (unexported,
-  # package main, so it cannot be imported), plus a system.query_log
+  # and hands it to choptwire for the same promql.RangeLowerers native
+  # dispatch table cmd/cerberus's boot path builds, plus a system.query_log
   # activation-proof assertion. Consumed by test/perf/smoke and
   # internal/api/prom's real-CH integration lanes (issue #2487).
   chopttest:      { in: chopttest }
@@ -564,17 +563,16 @@ deps:
       - chclient
       - testsql
   # chopttest resolves the boot-time chopt.EnabledSet against a live client
-  # (chclient) and builds, from it, BOTH axes cmd/cerberus's own boot path
-  # wires from that set: the full promql.RangeLowerers dispatch table
-  # (promql) and the per-query engine.SettingsRules (engine). Real-CH
-  # integration tests across packages wire a handler the way a real
-  # deployment does instead of inheriting prom.New's permanently
-  # fan-out-only, settings-rules-free zero value.
+  # (chclient) and returns the full promql.RangeLowerers dispatch table
+  # (promql) choptwire builds from it — the same function cmd/cerberus's own
+  # boot path calls. Real-CH integration tests across packages wire a
+  # handler the way a real deployment does instead of inheriting prom.New's
+  # permanently fan-out-only zero value; the settings-rules axis they take
+  # from choptwire.SettingsRules directly.
   chopttest:
     mayDependOn:
       - chclient
       - promql
-      - engine
       - choptwire
   # choptwire composes the boot-resolved capability set onto the query stack:
   # the promql lowering table and the engine settings rules. Those two are its

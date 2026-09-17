@@ -407,6 +407,13 @@ func downsampleAndSlabLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet)
 // test — leaves them at their zero values rather than inheriting a hidden
 // default it never asked for.
 //
+// An integration test that mounts a real handler must call this: prom.New /
+// tempo.New leave Engine.Settings at its zero value, which applies NOTHING,
+// so every SettingsRules mechanism is unreachable in a bare harness
+// regardless of the connected server's version — the gap that left the
+// join_spill memory guardrail with zero sentinel coverage (cerberus issue
+// #2820).
+//
 // Note on ResultCache: it rides the EnabledSet faithfully, but a set resolved
 // without chclient.ProbeResultCacheCapability keeps result_cache out by
 // construction (chopt's RequiresResultCacheCapability gate reads Capability's
