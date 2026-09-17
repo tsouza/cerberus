@@ -461,8 +461,8 @@ elsewhere, so they are enumerated here:
 - **`CERBERUS_SHARD_MAX_OUTPUT_ROWS`** (int64, default `2000000`) -
   the per-request output-row ceiling across all shards combined.
 
-Seven further resource-bound safety ceilings (five from issue #2667, then
-issue #2733's and issue #3252's) are resolved by `internal/chsql` and
+Eight further resource-bound safety ceilings (five from issue #2667, then
+issue #2733's, issue #3252's and issue #3468's) are resolved by `internal/chsql` and
 `internal/promql` rather than by the loader
 documented above - those two packages may not import `internal/config`
 (`.go-arch-lint.yml`), so each owns a small, self-contained env-parsing file
@@ -474,6 +474,15 @@ instead (`internal/engine/resource_bound_env.go`,
   (`internal/chsql/lwr_fanout_bound.go`, `maxRangeBucketFanoutRows`).
 - **`CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS`** (int64, default `40000000`) -
   RangeLWR's collapse GROUP BY row ceiling (same file, `maxRangeLWRFanoutRows`).
+- **`CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS`** (int64, default
+  `15000000`) - the fold-cost ceiling on RangeBucketFanout's whole collapse
+  OUTPUT (same file, `maxRangeBucketFanoutFoldCostUnits`): a second axis,
+  independent of the row ceiling above, spent as the sum over every
+  (series, anchor) group of `E + W^2` where `E` is the group's
+  accumulated bucket-ladder payload in elements and `W` its ladder width.
+  Applies only to a collapse carrying a groupArray-family accumulator (the
+  classic and exponential histogram window folds); an argMax/sumForEach
+  collapse reduces every group to a fixed-size row and is not charged.
 - **`CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS`** (int64, default `2800000`) -
   the windowed-array-extrapolated-matrix regroup GROUP BY row ceiling
   (`internal/chsql/rate_window_fanout_bound.go`, `maxRateWindowFanoutRows`).
@@ -499,7 +508,7 @@ instead (`internal/engine/resource_bound_env.go`,
   `S` is how many samples one series contributes to one window and
   `W` its widest stored bucket array
   (`internal/promql/exp_histogram_window_sample_bound.go`).
-  Unlike the six above it has **no fixed default**: unset, the ceiling is
+  Unlike the seven above it has **no fixed default**: unset, the ceiling is
   derived from `CERBERUS_CH_QUERY_MAX_MEMORY`, because the units it
   counts are a proxy for bytes and the byte budget is itself configurable -
   the same reasoning
@@ -510,7 +519,7 @@ instead (`internal/engine/resource_bound_env.go`,
   re-evaluates the identical windows at the identical per-group cost. The
   remedies are a shorter range, a coarser inner subquery step, or more memory.
 
-All seven reject a malformed or non-positive override at startup rather than
+All eight reject a malformed or non-positive override at startup rather than
 silently falling back to the default or admitting every query; see each
 constant's own doc for the calibration its shipped default protects.
 
@@ -534,8 +543,9 @@ is unset:
   `_UPPER_RATIO` - see [`solver.md`](solver.md) for the full mechanism.
   Prom-only: the feature keys off the solver's own plan-shape-id / K-clamp
   machinery.
-- **`CERBERUS_QUERY_ACTUALS_DRIFT_LOWER_RATIO`** / **`_UPPER_RATIO`** (float,
-  default `0.1` / `3.0`) - the "expected" band for actual-EMA/predicted.
+- **`CERBERUS_QUERY_ACTUALS_DRIFT_LOWER_RATIO`** /
+  **`CERBERUS_QUERY_ACTUALS_DRIFT_UPPER_RATIO`** (float, default `0.1` /
+  `3.0`) - the "expected" band for actual-EMA/predicted.
   EXPLAIN ESTIMATE is a granule-resolution UPPER BOUND, so the band is
   deliberately asymmetric around 1.0 rather than a symmetric +/-X%.
 - **`CERBERUS_QUERY_ACTUALS_MIN_OBSERVATIONS`** (int, default `2`) - the
