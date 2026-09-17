@@ -426,6 +426,48 @@ func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T)
 	}
 }
 
+// TestApplyNativeHistogramAnalyzerFix_ValueFnFanoutStampsDisabled — cerberus
+// issue #3552's gap: histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's
+// range-mode lowering reaches the same argMax-over-exp-histogram fan-out cost
+// as histogram_quantile's native path, but through a bare RangeBucketFanout
+// no HistogramQuantileNative/HistogramProjection wrapper ever covers — see
+// planHasExpHistogramValueFnFanout, this fix's other trigger.
+func TestApplyNativeHistogramAnalyzerFix_ValueFnFanoutStampsDisabled(t *testing.T) {
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), expHistogramValueFnFanoutPlan())
+
+	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
+		t.Errorf("enable_analyzer = %v; want %v", got, want)
+	}
+}
+
+// TestApplyNativeHistogramAnalyzerFix_ClassicFanoutStampsNothing — the
+// negative arm for the same predicate: a RangeBucketFanout collapsing a
+// CLASSIC histogram's BucketCounts/ExplicitBounds carries no
+// HistogramFieldScale column, so it must not be mistaken for the exponential
+// value-fn shape.
+func TestApplyNativeHistogramAnalyzerFix_ClassicFanoutStampsNothing(t *testing.T) {
+	scan := &chplan.Scan{
+		Table: "otel_metrics_histogram",
+		Roles: []chplan.Column{
+			{Name: "BucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+		},
+	}
+	plan := &chplan.RangeBucketFanout{
+		Input: scan,
+		AggFuncs: []chplan.AggFunc{{
+			Fn:    chplan.FnSumForEach,
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
+			Alias: "BucketCounts",
+		}},
+	}
+
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+
+	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
+		t.Errorf("classic fan-out: enable_analyzer = %v; want absent", got)
+	}
+}
+
 // expHistogramWindowPlan builds the minimal plan shape
 // applyExpHistogramTwoLevelBound targets: an exponential-histogram node
 // (HistogramQuantileNative) over the per-anchor window fan-out
@@ -440,6 +482,34 @@ func expHistogramWindowPlan() chplan.Node {
 		Input: &chplan.RangeBucketFanout{
 			Input: &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 		},
+	}
+}
+
+// expHistogramValueFnFanoutPlan builds the plan shape
+// histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's range-mode lowering
+// produces (internal/promql/histogram_value_fns.go's
+// lowerHistogramValueFnRange): a *chplan.RangeBucketFanout whose argMax
+// AggFuncs collapse the raw exp-histogram scan's Scale-identified column
+// under the SAME name, so the fan-out's own RowType republishes the
+// HistogramFieldScale tag (mirroring internal/promql/schema.go's
+// metricScanRoles + roleColumn's own name-preserving lookup) — the shape
+// planHasExpHistogramValueFnFanout matches without ever seeing a
+// HistogramQuantileNative/HistogramProjection wrapper, because this lowering
+// never builds one.
+func expHistogramValueFnFanoutPlan() chplan.Node {
+	scan := &chplan.Scan{
+		Table: "otel_metrics_exponential_histogram",
+		Roles: []chplan.Column{
+			{Name: "Scale", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldScale},
+		},
+	}
+	return &chplan.RangeBucketFanout{
+		Input: scan,
+		AggFuncs: []chplan.AggFunc{{
+			Fn:    chplan.FnArgMax,
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}, &chplan.ColumnRef{Name: "TimeUnix"}},
+			Alias: "Scale",
+		}},
 	}
 }
 
@@ -537,6 +607,25 @@ func TestApplyExpHistogramTwoLevelBound_NestedStampsThreshold(t *testing.T) {
 
 	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
 		t.Errorf("nested: group_by_two_level_threshold_bytes = %v; want %v", got, want)
+	}
+}
+
+// TestApplyExpHistogramTwoLevelBound_ValueFnFanoutStampsThreshold — the third
+// way to satisfy planHasExpHistogramWindowGrouping's two conjuncts: a single
+// *chplan.RangeBucketFanout whose own RowType carries HistogramFieldScale
+// (histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's range-mode
+// lowering, cerberus issue #3552) proves both WINDOWED and EXPONENTIAL at
+// once, without a HistogramQuantileNative/HistogramProjection wrapper.
+func TestApplyExpHistogramTwoLevelBound_ValueFnFanoutStampsThreshold(t *testing.T) {
+	// Literal, not expHistogramTwoLevelThresholdBytes — see
+	// TestApplyExpHistogramTwoLevelBound_WindowedExpHistogramStampsThreshold's
+	// own wantThresholdBytes for why.
+	const wantThresholdBytes = 1
+
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), expHistogramValueFnFanoutPlan(), true)
+
+	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
+		t.Errorf("value-fn fan-out: group_by_two_level_threshold_bytes = %v; want %v", got, want)
 	}
 }
 

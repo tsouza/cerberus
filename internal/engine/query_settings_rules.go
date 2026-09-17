@@ -600,11 +600,69 @@ func planHasSortedSlabOverTime(plan chplan.Node) bool {
 // moved wall-clock/CPU time by less than run-to-run noise (measured via the
 // same OSCPUVirtualTimeMicroseconds profile event). Neither reduces the
 // ANALYZER's real per-call-site work; disabling the analyzer itself does.
+//
+// planHasExpHistogramValueFnFanout is checked alongside planHasNativeHistogramMerge
+// because histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's range-mode
+// lowering (internal/promql/histogram_value_fns.go) reaches the identical
+// argMax-over-eight-exp-histogram-column / StepGrid-cross-join fan-out
+// histogram_quantile's native path builds, but never wraps it in a
+// HistogramQuantileNative/HistogramProjection node — cerberus issue #3552
+// found the two functions families' shared scaffold left the value-function
+// family the one exp-histogram consumer this stamp never reached. Measured
+// on the same floor-pinned CH 24.8 compat stack (2-vCPU-capped, matching the
+// compatibility/prometheus-floor CI runner), five repeated runs of the
+// range-mode histogram_stddev(<exp-hist>) fan-out batch: ~0.33s average with
+// the analyzer disabled against ~0.42s default — the same direction as the
+// original #2355 measurement, at the same low (2-series) cardinality.
 func applyNativeHistogramAnalyzerFix(ctx context.Context, plan chplan.Node) context.Context {
-	if !planHasNativeHistogramMerge(plan) {
+	if !planHasNativeHistogramMerge(plan) && !planHasExpHistogramValueFnFanout(plan) {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 0)
+}
+
+// planHasExpHistogramValueFnFanout reports whether plan contains a
+// *chplan.RangeBucketFanout collapsing an exponential-histogram scan — the
+// shape internal/promql/histogram_value_fns.go's lowerHistogramValueFnRange
+// builds for histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's range-mode
+// lowering over a bare exp-histogram selector (cerberus issue #3552).
+//
+// Unlike histogram_quantile's native path, this lowering never wraps its
+// fan-out in a *chplan.HistogramQuantileNative / *chplan.HistogramProjection
+// node — the six value functions reduce straight to a scalar Project, so
+// planHasNativeHistogramMerge's type-identity check cannot see it even
+// though the fan-out underneath is the SAME scaffold that machinery exists
+// to protect: histogramValueLatestAggs collects
+// Scale/ZeroCount/PositiveOffset/NegativeOffset unconditionally for every
+// one of the six functions (not only the ones whose value expression reads
+// them), so this check matches uniformly across the family rather than only
+// the shapes whose trailing expression happens to be deep.
+//
+// Scale is the field checked — rather than Count or Sum, which every
+// histogram family (classic and exponential) carries — because it is one of
+// the four fields exclusive to the exponential encoding, mirroring
+// planHasNativeHistogramMerge's own Scale/ZeroCount/PositiveOffset/
+// NegativeOffset reasoning. FindHistogramField resolves it structurally
+// (Role + HistogramField), not by column name, so a deployment's own
+// schema.Metrics naming cannot defeat the match.
+//
+// The sweep is chplan.WalkDeep, matching planHasNativeHistogramMerge: a
+// fan-out nested inside a scalar-binding subtree (an Expr slot Walk does not
+// follow) must still be found.
+func planHasExpHistogramValueFnFanout(plan chplan.Node) bool {
+	found := false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		fanout, ok := n.(*chplan.RangeBucketFanout)
+		if !ok {
+			return true
+		}
+		if _, ok := fanout.RowType().FindHistogramField(chplan.HistogramFieldScale); ok {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // planHasNativeHistogramMerge reports whether plan contains a
@@ -621,6 +679,12 @@ func applyNativeHistogramAnalyzerFix(ctx context.Context, plan chplan.Node) cont
 // The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
 // planHasTSGridNative: a native-histogram node nested inside a scalar-binding
 // subtree (an Expr slot Walk does not follow) must still be found.
+//
+// This does NOT match histogram_count/_sum/_avg/_stddev/_stdvar/_fraction's
+// range-mode lowering, which reaches the same cost-bearing fan-out through a
+// *chplan.RangeBucketFanout it never wraps in either of these two types —
+// see planHasExpHistogramValueFnFanout, applyNativeHistogramAnalyzerFix's
+// other caller.
 func planHasNativeHistogramMerge(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
@@ -746,6 +810,17 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, plan chplan.Node, expHi
 // alternative — proving the RangeBucketFanout found is the one BENEATH the
 // exponential node — is machinery for a shape that pays 1.67 MiB to be wrong.
 //
+// A THIRD way to satisfy both conjuncts through the SAME node: a
+// *chplan.RangeBucketFanout whose own RowType carries the exponential-only
+// HistogramFieldScale column (histogram_count/_sum/_avg/_stddev/_stdvar/
+// _fraction's range-mode lowering, internal/promql/histogram_value_fns.go —
+// see planHasExpHistogramValueFnFanout's own doc for why this family never
+// reaches HistogramQuantileNative/HistogramProjection). It is windowed by
+// construction (it IS the RangeBucketFanout), and its aggregation carries
+// the identical eight-column exp-histogram argMax set as the merge path this
+// threshold protects, so it is not an over-match: it is the same shape the
+// two conjuncts already describe, discovered through one node instead of two.
+//
 // The sweep is chplan.WalkDeep, matching planHasNativeHistogramMerge /
 // planHasSortedSlabOverTime: a node nested inside a scalar-binding subtree (an
 // Expr slot Walk does not follow) must still be found, because the answer
@@ -753,11 +828,14 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, plan chplan.Node, expHi
 func planHasExpHistogramWindowGrouping(plan chplan.Node) bool {
 	expHistogram, windowed := false, false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		switch n.(type) {
+		switch v := n.(type) {
 		case *chplan.HistogramQuantileNative, *chplan.HistogramProjection:
 			expHistogram = true
 		case *chplan.RangeBucketFanout:
 			windowed = true
+			if _, ok := v.RowType().FindHistogramField(chplan.HistogramFieldScale); ok {
+				expHistogram = true
+			}
 		}
 		// Keep descending while EITHER conjunct is still missing; once both
 		// are found nothing further can change the answer.
