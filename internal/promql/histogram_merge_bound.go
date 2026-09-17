@@ -251,7 +251,172 @@ const (
 	// for a second, genuinely behavioral reason — recalibrate both guards
 	// together if this changes.
 	maxHistogramMergeRowCountOverflowGuard = 4096
+
+	// maxHistogramMergeOutputWidth bounds the per-ladder bucket-range WIDTH
+	// [refinedMergeScaleExpr] downscales a merge onto, closing cerberus
+	// issue #3558: two of this guard's SIBLING merge paths —
+	// [histogramBinopBucketWidthBudgetGuardExpr]'s two-operand binop merge
+	// and the sumMap-based sum()/avg() merge
+	// (exp_histogram_merge_summap.go) — compute their own shared merge
+	// scale as min(Scale) across contributing rows with no further
+	// downscale to bound the merged range's WIDTH, exactly the gap
+	// cerberus issue #3555 found and fixed for the histogram_quantile()/
+	// histogram-valued sum() cross-series fold path: two rows that are
+	// each individually narrow (their OWN samples cluster tightly, so
+	// neither ever had a reason to pick a coarser Scale) but differ in
+	// TYPICAL MAGNITUDE still merge into an astronomically wide range —
+	// min(Scale) alone only guarantees every row CAN be downscaled onto
+	// the merge, never that the result is narrow. Real exponential-
+	// histogram merge implementations (the OTel SDK's own accumulator,
+	// Prometheus's FloatHistogram.Add/Compact) downscale FURTHER than
+	// min(existing scale) whenever the merged range itself would exceed a
+	// bucket-count budget — the same "auto-narrow" step a single series
+	// already performs against [queryDurationExpoHistogramMaxSize]
+	// (internal/telemetry/telemetry.go, this package cannot import it per
+	// .go-arch-lint.yml, hence restating the value here): 160 is the OTel
+	// exponential-histogram spec's own documented default MaxSize, the
+	// same value every major OTel SDK ships unconfigured. Capping the
+	// MERGED output at that same width — for every merge path, not just
+	// one — means cross-series/cross-operand merging never throws away
+	// more resolution than a single series already tolerates by default,
+	// while turning an unbounded, data-shape-dependent width into a fixed
+	// one. This is a resolution FLOOR shared across every histogram-merge
+	// path in this package (the two-operand binop merge, the sumMap
+	// merge, and — separately, cerberus issue #3555 — the groupArray fold
+	// merge): the justification (never coarser than what a single series
+	// already tolerates) is about the WIDTH definition itself, independent
+	// of which algorithm produced it, not a per-path memory-cost
+	// calibration — those stay separate, already-calibrated per-path
+	// constants ([maxHistogramMergeCostUnits], [sumMapMergeCostMultiplier]
+	// in exp_histogram_merge_summap_bound.go). Recalibrate only alongside a
+	// real measurement showing 160 buckets of resolution is insufficient
+	// for a real quantile/sum computation's accuracy — this is a
+	// resolution floor, not an arbitrary knob.
+	maxHistogramMergeOutputWidth = 160
 )
+
+// refinedMergeScaleExpr computes a merge scale downscaled far enough that
+// the merged bucket-range WIDTH — at rawScale, i.e. the natural
+// min(Scale)-only merge every caller below started from — never exceeds
+// [maxHistogramMergeOutputWidth], closing cerberus issue #3558 for the
+// two-operand binop merge (histogram_native_binop.go,
+// histogram_native_binop_card.go, histogram_native_mixed_or_vector_arithmetic.go)
+// and the sumMap-based sum()/avg() merge (exp_histogram_merge_summap.go).
+//
+// extraDownscaleSteps is computed from the NATURAL width (the merge at
+// rawScale) via ceil(log2(naturalWidth / maxHistogramMergeOutputWidth)):
+// each extra downscale step HALVES the merged width (one more bit of
+// bitShiftRight), so this is the minimum step count that brings the width
+// under the cap. greatest(1, naturalWidth) keeps log2's argument positive
+// (an empty-both-ladders group has naturalWidth 0, which needs no
+// downscale — log2(0) would otherwise render -inf) and greatest(0, ...)
+// around the final step count discards a negative value (naturalWidth
+// already under the cap needs no further downscale). Float64 arithmetic is
+// exact enough here: naturalWidth is bounded by the same Int32 offset range
+// [maxHistogramMergeClampedWidth] bounds downstream, so log2 of it is a
+// small, exactly-representable value; a stray rounding error could only
+// push extraDownscaleSteps one step higher than strictly necessary, which
+// only makes the result SAFER (narrower), never wrong.
+//
+// scalesArr/posOff/posBuc/negOff/negBuc must be the SAME shape
+// [mergedLengthExpr] expects: either the groupArray-collected arrays
+// [expHistogramMergeAggs] produces (the binop merge's shape — an
+// Aggregate's own output columns), or an equivalent per-group array a
+// caller derives some other way (the sumMap merge's single-group pass-1
+// shape, exp_histogram_merge_summap.go's expHistogramMergeScaleScalarSubquery
+// — which has no Aggregate to attach a HAVING or a post-Aggregate Filter
+// to, so it collects its own groupArrays in pass 1 instead). The sumMap
+// merge's MULTI-GROUP pass-1 shape (expHistogramMergeScaleWindowProject)
+// cannot cheaply collect per-group arrays via a WindowExpr — a windowed
+// groupArray materialises the WHOLE partition's array once PER ROW of
+// that partition, an O(rows-per-group^2) blowup a per-row pre-pass over
+// potentially many groups cannot afford — so it computes naturalWidth
+// directly via [extraDownscaleStepsExpr] instead of calling this function.
+func refinedMergeScaleExpr(rawScale, scalesArr, posOff, posBuc, negOff, negBuc chplan.Expr) chplan.Expr {
+	naturalWidth := greatestExpr(
+		mergedLengthExpr(scalesArr, posOff, posBuc, rawScale),
+		mergedLengthExpr(scalesArr, negOff, negBuc, rawScale),
+	)
+	return subExpr(rawScale, extraDownscaleStepsExpr(naturalWidth))
+}
+
+// extraDownscaleStepsExpr computes the minimum number of additional
+// downscale steps — each one HALVES the merged width (one more bit of
+// bitShiftRight) — needed to bring naturalWidth (the merge's width at
+// whatever raw scale it started from) under [maxHistogramMergeOutputWidth]:
+// ceil(log2(naturalWidth / maxHistogramMergeOutputWidth)), floored at 0.
+// greatest(1, naturalWidth) keeps log2's argument positive (an
+// empty-both-ladders group has naturalWidth 0, which needs no downscale —
+// log2(0) would otherwise render -inf) and the outer greatest(0, ...)
+// discards a negative step count (naturalWidth already under the cap
+// needs no further downscale). Float64 arithmetic is exact enough here:
+// naturalWidth is bounded by the same Int32 offset range
+// [maxHistogramMergeClampedWidth] bounds downstream, so log2 of it is a
+// small, exactly-representable value; a stray rounding error could only
+// push the step count one higher than strictly necessary, which only
+// makes the result SAFER (narrower), never wrong.
+//
+// Factored out of [refinedMergeScaleExpr] so a caller that already has
+// naturalWidth in hand via some OTHER route than [mergedLengthExpr]'s
+// array-based computation — exp_histogram_merge_summap.go's multi-group
+// WindowExpr pre-pass derives it from a pair of scalar MIN/MAX window
+// aggregates instead, see that file's own doc — can still share this one
+// downscale-step formula rather than re-deriving it.
+func extraDownscaleStepsExpr(naturalWidth chplan.Expr) chplan.Expr {
+	ratio := &chplan.Binary{
+		Op:    chplan.OpDiv,
+		Left:  toFloat64Expr(greatestExpr(&chplan.LitInt{V: 1}, naturalWidth)),
+		Right: &chplan.LitFloat{V: float64(maxHistogramMergeOutputWidth)},
+	}
+	return greatestExpr(
+		&chplan.LitInt{V: 0},
+		&chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnCeil, Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnLog2, Args: []chplan.Expr{ratio}},
+			}},
+		}},
+	)
+}
+
+// wrapExpHistogramMergeScaleRefinement further downscales merged — a raw
+// two-operand binop merge (the [chplan.Aggregate] or two-element-array
+// [chplan.Project] shapes histogram_native_binop.go /
+// histogram_native_binop_card.go / histogram_native_mixed_or_vector_arithmetic.go
+// build) — so hqAggMergedScaleAlias holds a scale that ALSO bounds the
+// merged bucket-range width to [maxHistogramMergeOutputWidth], not just
+// min(Scale) across the two operands (cerberus issue #3558). See
+// [refinedMergeScaleExpr]'s doc for the downscale arithmetic itself.
+//
+// Rendered as a passthrough Project with a single Replacement — the same
+// `* REPLACE` idiom this package already uses elsewhere for an in-place
+// column rewrite — so hqAggMergedScaleAlias keeps its name and every
+// downstream reader ([expHistogramMergeOffsetExpr],
+// [histogramBinopMergedBucketsExpr], [histogramBinopBucketWidthBudgetGuardExpr])
+// needs no change to see the refined value; ClickHouse's `SELECT * REPLACE(...)`
+// evaluates the replacement expression against merged's OWN, UNCHANGED
+// output columns, so referencing hqAggMergedScaleAlias inside the
+// replacement expression for that SAME alias reads the pre-replacement
+// (min(Scale)) value, not a self-reference.
+//
+// Must run BEFORE the caller's own bucket-width budget guard (whether that
+// guard is a Having conjunct or a downstream Filter) so the guard's own
+// cost computation, which reads hqAggMergedScaleAlias, sees this refined
+// value rather than the raw min(Scale) the merge produced.
+func wrapExpHistogramMergeScaleRefinement(merged chplan.Node) chplan.Node {
+	scalesArr := &chplan.ColumnRef{Name: hqAggScalesArrayAlias}
+	rawScale := &chplan.ColumnRef{Name: hqAggMergedScaleAlias}
+	posOff := &chplan.ColumnRef{Name: hqAggPosOffsetsArrayAlias}
+	posBuc := &chplan.ColumnRef{Name: hqAggPosBucketsArrayAlias}
+	negOff := &chplan.ColumnRef{Name: hqAggNegOffsetsArrayAlias}
+	negBuc := &chplan.ColumnRef{Name: hqAggNegBucketsArrayAlias}
+
+	return &chplan.Project{
+		Input: merged,
+		Replacements: []chplan.Projection{
+			{Expr: refinedMergeScaleExpr(rawScale, scalesArr, posOff, posBuc, negOff, negBuc), Alias: hqAggMergedScaleAlias},
+		},
+	}
+}
 
 // mergedLengthExpr returns a FULLY BOUND rendering of one signed ladder's
 // merged bucket-range length, reusing expHistogramOverMergedBucketRangeExpr

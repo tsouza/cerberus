@@ -22,7 +22,6 @@ import (
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -85,17 +84,26 @@ func runHistogramBinopCardMergeBoundQuery(t *testing.T, fixture *chdbFixture) er
 	return nil
 }
 
-// TestHistogramBinopCardMergeBudget_ChDB_BucketWidthExceeded is
-// TestHistogramBinopMergeBudget_ChDB_BucketWidthExceeded's group_left()
-// sibling: same divergent-offset seed (0 vs 20000, both Scale 0, one
-// bucket each — merged bucket ladder spans 20001 buckets, crossing
-// maxHistogramMergeCostUnits by many orders of magnitude), but reached via
-// `+ on(series) group_left()` instead of default one-to-one matching, so
-// it exercises mergeTwoHistogramProjectionsCard rather than
-// mergeTwoHistogramProjections. Before the fix this query had NO guard at
-// all and would have let ClickHouse attempt to allocate the unbounded
-// merged array.
-func TestHistogramBinopCardMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
+// TestHistogramBinopCardMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects
+// is TestHistogramBinopMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects's
+// group_left() sibling: same divergent-offset seed (0 vs 20000, both Scale
+// 0, one bucket each — the NATURAL merge, at min(Scale) alone, would span
+// 20001 buckets, crossing maxHistogramMergeCostUnits by many orders of
+// magnitude), but reached via `+ on(series) group_left()` instead of
+// default one-to-one matching, so it exercises
+// mergeTwoHistogramProjectionsCard rather than mergeTwoHistogramProjections.
+//
+// Before cerberus issue #2428's own fix this query had NO guard at all and
+// would have let ClickHouse attempt to allocate the unbounded merged
+// array; before issue #3558's fix (this test's own prior form asserted a
+// rejection here) the guard aborted the query outright. Cerberus issue
+// #3558's [wrapExpHistogramMergeScaleRefinement] now downscales the
+// merge's shared scale FIRST so the merged width never exceeds
+// maxHistogramMergeOutputWidth (160), and the query now SUCCEEDS with a
+// coarser merged distribution instead of refusing outright — see
+// TestHistogramBinopMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects's
+// identical one-to-one proof.
+func TestHistogramBinopCardMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
@@ -103,12 +111,8 @@ func TestHistogramBinopCardMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricB, "x", 20000) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
-	err := runHistogramBinopCardMergeBoundQuery(t, fixture)
-	if err == nil {
-		t.Fatal("expected the group_left() binop merge budget guard to abort the query (merged width 20001 > 16384), got no error")
-	}
-	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
-		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
+	if err := runHistogramBinopCardMergeBoundQuery(t, fixture); err != nil {
+		t.Fatalf("a scale-divergent group_left() binop merge must be compacted to a bounded width, not rejected: %v", err)
 	}
 }
 

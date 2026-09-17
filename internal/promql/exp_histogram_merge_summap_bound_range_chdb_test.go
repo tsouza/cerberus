@@ -160,15 +160,29 @@ func TestExpHistogramMergeSumMapBudget_ChDB_RangeTotalRowCountOverflowGuard(t *t
 }
 
 // TestExpHistogramMergeSumMapBudget_ChDB_RangePerGroupCostStillEnforced
-// seeds TWO step anchors — one legitimate, one with an unusually wide
-// single series (width 4,000, cost 4x4000^2=64,000,000, over the
-// 60,000,000 default) — proving the range-mode guard still ORs in
+// seeds TWO step anchors — one legitimate, one whose OWN row count
+// (4,097) is one past [maxHistogramMergeRowCountOverflowGuard] (4,096) —
+// proving the range-mode guard still ORs in
 // [expHistogramMergeSumMapCostOverBudgetExpr]'s existing per-group check
 // rather than replacing it, exactly like
 // TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupPerGroupCostStillEnforced
-// does for instant mode.
+// does for instant mode. The overflow anchor's own 4,097 rows and the
+// 2-anchor/4,098-total-row shape both stay far under
+// [maxHistogramMergeSumMapRangeTotalRowCountGuard] (6,000) and
+// [maxHistogramMergeSumMapRangeGroupCountGuard] (600), isolating the
+// PER-GROUP axis cleanly.
+//
+// This used to seed one anchor with an unusually wide single series
+// (width 4,000) instead — cerberus issue #3558's scale-refinement fix
+// now downscales EVERY anchor's width to [maxHistogramMergeOutputWidth]
+// (160) or narrower before this guard's cost check ever runs, so no
+// width shape can trip the per-group check any more (see
+// TestExpHistogramMergeSumMapBudget_ChDB_WidthCompactsRatherThanRejects);
+// the row-count-overflow backstop is the one axis that fix does not
+// touch.
 func TestExpHistogramMergeSumMapBudget_ChDB_RangePerGroupCostStillEnforced(t *testing.T) {
 	const steps = 2
+	const overflowAnchorRows = 4_097 // one past maxHistogramMergeRowCountOverflowGuard (4,096)
 	end := expHistSumMapRangeBoundBaseline.Add(time.Duration(steps) * expHistSumMapRangeBoundStep)
 	start := end.Add(-time.Duration(steps-1) * expHistSumMapRangeBoundStep)
 	ts0 := start.Add(-time.Second).Format("2006-01-02 15:04:05")
@@ -177,24 +191,25 @@ func TestExpHistogramMergeSumMapBudget_ChDB_RangePerGroupCostStillEnforced(t *te
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
-	wideBuckets := make([]string, 4000)
-	for i := range wideBuckets {
-		wideBuckets[i] = "1"
+	tuples := make([]string, 0, overflowAnchorRows+1)
+	for i := 0; i < overflowAnchorRows; i++ {
+		tuples = append(tuples, fmt.Sprintf(
+			"('%s', map('series', 's0_%d'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
+			histogramMergeBoundMetric, i, ts0,
+		))
 	}
-	tuples := []string{
-		fmt.Sprintf("('%s', map('series', 's0'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 0, [%s], 0, [])",
-			histogramMergeBoundMetric, ts0, strings.Join(wideBuckets, ",")),
-		fmt.Sprintf("('%s', map('series', 's1'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
-			histogramMergeBoundMetric, ts1),
-	}
+	tuples = append(tuples, fmt.Sprintf(
+		"('%s', map('series', 's1'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
+		histogramMergeBoundMetric, ts1,
+	))
 	b.WriteString("    " + strings.Join(tuples, ",\n    ") + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
 	query := fmt.Sprintf("sum(%s)", histogramMergeBoundMetric)
 	err := runExpHistSumMapRangeBoundQuery(t, fixture, query, steps)
 	if err == nil {
-		t.Fatal("expected the range-mode guard to still reject the first anchor's own width-4000 series " +
-			"(cost 4x4000^2=64,000,000 exceeds the 60,000,000 default) via the existing per-group check, got no error")
+		t.Fatal("expected the range-mode guard to still reject the first anchor's own 4,097-row " +
+			"overflow (one past the row-count backstop) via the existing per-group check, got no error")
 	}
 	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
 		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
@@ -213,5 +228,38 @@ func TestExpHistogramMergeSumMapBudget_ChDB_RangeWithinBudget(t *testing.T) {
 	query := fmt.Sprintf("sum(%s)", histogramMergeBoundMetric)
 	if err := runExpHistSumMapRangeBoundQuery(t, fixture, query, steps); err != nil {
 		t.Fatalf("a legitimate 3-anchor, 2-series-per-anchor range merge must not trip the range-mode budget guard: %v", err)
+	}
+}
+
+// TestExpHistogramMergeSumMapBudget_ChDB_RangeScaleDivergenceCompactsRatherThanRejects
+// is cerberus issue #3558's own repro shape for the range-mode mergedScale
+// mechanism: ONE step anchor with two individually-narrow series (one
+// bucket apiece, Scale 0) whose PositiveOffset diverges enough (0 vs
+// 4,000) that the natural merge would span 4,001 buckets — the SAME shape
+// TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupScaleDivergenceCompactsRatherThanRejects
+// proves for instant multi-group mode, here routed through range mode's
+// own anchor-prepended WindowExpr partition. The query must succeed with
+// a compacted merge, not reject.
+func TestExpHistogramMergeSumMapBudget_ChDB_RangeScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
+	const steps = 1
+	end := expHistSumMapRangeBoundBaseline.Add(time.Duration(steps) * expHistSumMapRangeBoundStep)
+	start := end.Add(-time.Duration(steps-1) * expHistSumMapRangeBoundStep)
+	ts0 := start.Add(-time.Second).Format("2006-01-02 15:04:05")
+
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
+	tuples := []string{
+		fmt.Sprintf("('%s', map('series', 'near'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
+			histogramMergeBoundMetric, ts0),
+		fmt.Sprintf("('%s', map('series', 'far'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 4000, [1], 0, [])",
+			histogramMergeBoundMetric, ts0),
+	}
+	b.WriteString("    " + strings.Join(tuples, ",\n    ") + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	query := fmt.Sprintf("sum(%s)", histogramMergeBoundMetric)
+	if err := runExpHistSumMapRangeBoundQuery(t, fixture, query, steps); err != nil {
+		t.Fatalf("a scale-divergent two-series range-mode sumMap merge must be compacted to a bounded width, not rejected: %v", err)
 	}
 }

@@ -406,13 +406,25 @@ func lowerMixedVVAdditiveArithmetic(join *chplan.MixedVectorJoin, op chplan.Bina
 		Projections: mixedVVHistMergeInputProjections(op, s),
 	}
 
+	// Cerberus issue #3558: refine the merge scale to bound the merged
+	// bucket-range WIDTH — not just min(Scale) across the two operands —
+	// BEFORE the budget guard below, the same ordering
+	// [mergeTwoHistogramProjections] (histogram_native_binop.go) uses.
+	// mergeInputs already projects the SAME six aliases
+	// [wrapExpHistogramMergeScaleRefinement] reads (see
+	// [mixedVVHistMergeInputProjections]), so it applies here unchanged —
+	// harmlessly, on a float,float row too (this file's own header doc
+	// already establishes the merge fold runs unconditionally over the
+	// all-zero, empty-bucket placeholder there).
+	refined := wrapExpHistogramMergeScaleRefinement(mergeInputs)
+
 	sameType := &chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  mixedJoinFieldRef(mixedVVJoinSideL, mixedDiscriminatorColumn),
 		Right: mixedJoinFieldRef(mixedVVJoinSideR, mixedDiscriminatorColumn),
 	}
 	filtered := &chplan.Filter{
-		Input:     mergeInputs,
+		Input:     refined,
 		Predicate: andExpr(sameType, histogramBinopBucketWidthBudgetGuardExpr(maxCostUnits)),
 	}
 

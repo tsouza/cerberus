@@ -136,34 +136,51 @@ func TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupTotalRowCountOverflowGuard
 }
 
 // TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupPerGroupCostStillEnforced
-// seeds TWO groups — one legitimate, one with an unusually wide single
-// series (width 4,000, cost 4x4000^2=64,000,000, over the 60,000,000
-// default — the SAME shape TestExpHistogramMergeSumMapBudget_ChDB_WidthExceeded
-// isolates for the single-group guard) — proving the multi-group guard
-// still ORs in [expHistogramMergeSumMapCostOverBudgetExpr]'s existing
-// per-group check rather than replacing it.
+// seeds TWO groups — one legitimate, one whose OWN row count (4,097) is
+// one past [maxHistogramMergeRowCountOverflowGuard] (4,096) — proving the
+// multi-group guard still ORs in
+// [expHistogramMergeSumMapCostOverBudgetExpr]'s existing per-group check
+// rather than replacing it with only the two multi-group total axes.
+// Route r0's own 4,097 rows and the 2-group total both stay far under
+// [maxHistogramMergeSumMapTotalRowCountGuard] (200,000) and
+// [maxHistogramMergeSumMapGroupCountGuard] (40,000), isolating the
+// PER-GROUP axis cleanly.
+//
+// This used to seed one group with an unusually wide single series
+// (width 4,000) instead — cerberus issue #3558's scale-refinement fix
+// (expHistogramMergeScaleWindowProject) now downscales EVERY group's
+// width to [maxHistogramMergeOutputWidth] (160) or narrower before this
+// guard's cost check ever runs, so no width shape can trip the per-group
+// check any more (see
+// TestExpHistogramMergeSumMapBudget_ChDB_WidthCompactsRatherThanRejects);
+// the row-count-overflow backstop is the one axis that fix does not
+// touch, so it still cleanly isolates the per-group check surviving
+// alongside the multi-group axes.
 func TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupPerGroupCostStillEnforced(t *testing.T) {
+	const overflowGroupRows = 4_097 // one past maxHistogramMergeRowCountOverflowGuard (4,096)
+
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
-	wideBuckets := make([]string, 4000)
-	for i := range wideBuckets {
-		wideBuckets[i] = "1"
+	tuples := make([]string, 0, overflowGroupRows+1)
+	for i := 0; i < overflowGroupRows; i++ {
+		tuples = append(tuples, fmt.Sprintf(
+			"('%s', map('route', 'r0', 'series', 's%d'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
+			histogramMergeBoundMetric, i,
+		))
 	}
-	tuples := []string{
-		fmt.Sprintf("('%s', map('route', 'r0', 'series', 's0'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [%s], 0, [])",
-			histogramMergeBoundMetric, strings.Join(wideBuckets, ",")),
-		fmt.Sprintf("('%s', map('route', 'r1', 'series', 's1'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
-			histogramMergeBoundMetric),
-	}
+	tuples = append(tuples, fmt.Sprintf(
+		"('%s', map('route', 'r1', 'series', 's_r1'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
+		histogramMergeBoundMetric,
+	))
 	b.WriteString("    " + strings.Join(tuples, ",\n    ") + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
 	query := fmt.Sprintf("sum by(route) (%s)", histogramMergeBoundMetric)
 	err := runExpHistSumMapMultiGroupBoundQuery(t, fixture, query)
 	if err == nil {
-		t.Fatal("expected the multi-group guard to still reject route r0's own width-4000 series " +
-			"(cost 4x4000^2=64,000,000 exceeds the 60,000,000 default) via the existing per-group check, got no error")
+		t.Fatal("expected the multi-group guard to still reject route r0's own 4,097-row overflow " +
+			"(one past the row-count backstop) via the existing per-group check, got no error")
 	}
 	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
 		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
@@ -182,5 +199,35 @@ func TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupWithinBudget(t *testing.T)
 	query := fmt.Sprintf("sum by(route) (%s)", histogramMergeBoundMetric)
 	if err := runExpHistSumMapMultiGroupBoundQuery(t, fixture, query); err != nil {
 		t.Fatalf("a legitimate 3-group, 2-series-per-group merge must not trip the multi-group budget guard: %v", err)
+	}
+}
+
+// TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupScaleDivergenceCompactsRatherThanRejects
+// is cerberus issue #3558's own repro shape for the MULTI-GROUP mergedScale
+// mechanism (expHistogramMergeScaleWindowProject): ONE route group with
+// two individually-narrow series (one bucket apiece, Scale 0) whose
+// PositiveOffset diverges enough (0 vs 4,000) that the natural merge would
+// span 4,001 buckets — the SAME shape
+// TestExpHistogramMergeSumMapBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects
+// proves for the single-group ScalarSubquery mechanism, here routed
+// through the WindowExpr pre-pass instead (by()/without() forces the
+// multi-group path even with only one group present). The query must
+// succeed with a compacted merge, not reject.
+func TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
+	tuples := []string{
+		fmt.Sprintf("('%s', map('route', 'r0', 'series', 'near'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
+			histogramMergeBoundMetric),
+		fmt.Sprintf("('%s', map('route', 'r0', 'series', 'far'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 4000, [1], 0, [])",
+			histogramMergeBoundMetric),
+	}
+	b.WriteString("    " + strings.Join(tuples, ",\n    ") + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	query := fmt.Sprintf("sum by(route) (%s)", histogramMergeBoundMetric)
+	if err := runExpHistSumMapMultiGroupBoundQuery(t, fixture, query); err != nil {
+		t.Fatalf("a scale-divergent two-series multi-group sumMap merge must be compacted to a bounded width, not rejected: %v", err)
 	}
 }
