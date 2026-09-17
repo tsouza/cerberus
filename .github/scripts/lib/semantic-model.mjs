@@ -55,12 +55,10 @@ import { join, resolve } from "node:path";
 // new revision-binding fields (source_sha and friends, see their own
 // comment below). exactObject() requires every declared key on every
 // record — optionality here is expressed as an explicit `null` value,
-// never by omitting the key (see exactObject's own comment) — so every
-// existing execution record needed the ten keys added (nulled out except
-// `selection: "executed"`, since every one of them already recorded a
-// real observed pass). The other five documents carry no new keys; their
-// schema_version bumped in lock-step only because loadSemanticModel reads
-// one shared constant, not because their own shape changed.
+// never by omitting the key (see exactObject's own comment). The other
+// five documents carry no new keys; their schema_version bumped in
+// lock-step only because loadSemanticModel reads one shared constant, not
+// because their own shape changed.
 export const SEMANTIC_MODEL_SCHEMA_VERSION = 2;
 export const DEFAULT_SEMANTIC_MODEL_DIR = "test/semantic";
 
@@ -195,6 +193,15 @@ export const EXECUTION_SELECTIONS = Object.freeze([
 export const SOURCE_SHA_PATTERN = /^[0-9a-f]{7,40}$/;
 export const RUN_IDENTITY_PATTERN = /^\d+$/;
 export const DATASET_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
+
+// A run_ref whose trailing run number is all zeros names no run at all:
+// GitHub Actions never issues run id 0, so `.../runs/0000000000` is a
+// typed-in placeholder, not a pointer to an observation. The ledger once
+// held 107 such records, every one claiming `result: "pass"` for a run
+// nobody could open — which made the report's "observed" column a copy of
+// its "bound" column. Rejected at load time so the report can only ever
+// show an observation somebody can follow to its log.
+export const PLACEHOLDER_RUN_REF_PATTERN = /\/runs\/0+$/;
 
 const EXECUTION_EVENTS_SET = new Set(EXECUTION_EVENTS);
 const EXECUTION_SELECTIONS_SET = new Set(EXECUTION_SELECTIONS);
@@ -700,7 +707,13 @@ function validateExecutions(raw, bindingIds, problems) {
     }
     stringValue(record.observed_at, `${at}.observed_at`, problems, { pattern: OBSERVED_AT_RE });
     enumValue(record.result, EXECUTION_RESULTS, `${at}.result`, problems);
-    stringValue(record.run_ref, `${at}.run_ref`, problems);
+    if (stringValue(record.run_ref, `${at}.run_ref`, problems) && PLACEHOLDER_RUN_REF_PATTERN.test(record.run_ref)) {
+      fail(
+        problems,
+        "schema",
+        `${at}.run_ref names an all-zero placeholder run (${record.run_ref}); an execution record must point at a run that actually happened`,
+      );
+    }
 
     const selectionOk = enumValue(record.selection, EXECUTION_SELECTIONS_SET, `${at}.selection`, problems);
     nullableStringValue(record.selection_reason, `${at}.selection_reason`, problems);
@@ -728,6 +741,19 @@ function validateExecutions(raw, bindingIds, problems) {
     }
 
     nullableStringValue(record.source_sha, `${at}.source_sha`, problems, { pattern: SOURCE_SHA_PATTERN });
+    // An "executed" record is the ledger's only positive claim ("this
+    // verifier ran and said pass/fail"), and a verdict that cannot say which
+    // commit it was produced against is not an observation a reader can
+    // check — it is exactly the "ran SOMETIME" overclaim the revision fields
+    // exist to rule out. The four non-executed selections stay nullable:
+    // they are non-evidence by construction (result must be "error" above).
+    if (selectionOk && record.selection === "executed" && record.source_sha === null) {
+      fail(
+        problems,
+        "schema",
+        `${at}.source_sha is required (non-null) when selection is "executed" — an observed verdict must name the commit it ran against`,
+      );
+    }
     nullableStringValue(record.run_id, `${at}.run_id`, problems, { pattern: RUN_IDENTITY_PATTERN });
     nullableStringValue(record.run_attempt, `${at}.run_attempt`, problems, { pattern: RUN_IDENTITY_PATTERN });
     nullableStringValue(record.job, `${at}.job`, problems);

@@ -863,9 +863,12 @@ re-deriving or hand-copying its answer:
 `bindingObservedStatus()` additionally surfaces the revision-binding fields
 issue #3459 added to `executions.json` (`selection`/`source_sha`) as a
 `revision_bound` boolean — true only when the latest execution's own
-selection reads `"executed"` and names a `source_sha` — without ever
-upgrading or downgrading the `status` verdict itself: a non-revision-bound
-pass is still a real pass. `verifierComplementGaps()` flags, informationally
+selection reads `"executed"` and names a `source_sha`. `validateExecutions()`
+(`lib/semantic-model.mjs`) rejects an `"executed"` record with a null
+`source_sha` and any record whose `run_ref` ends in an all-zero placeholder
+run number, so on a model that loads every observed pass/fail is
+revision-bound; the boolean is kept so the JSON carries the SHA itself.
+`verifierComplementGaps()` flags, informationally
 only, when an active binding's verifier names a documented complement
 (`complemented_by`) that no active binding on the same contract actually
 supplies. `buildReport()` assembles all of the above into one plain object —

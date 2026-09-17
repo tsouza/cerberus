@@ -114,7 +114,7 @@ function execution(overrides = {}) {
     run_ref: "https://example.invalid/run/1",
     selection: "executed",
     selection_reason: null,
-    source_sha: null,
+    source_sha: "0123456789abcdef0123456789abcdef01234567",
     run_id: null,
     run_attempt: null,
     job: null,

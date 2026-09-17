@@ -22,7 +22,7 @@
       "total": 118
     },
     "executions": {
-      "total": 107
+      "total": 0
     }
   },
   "assurance_summary": {
@@ -1725,7 +1725,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-AGPL-REACHABILITY-SCAN"
             ]
@@ -1733,13 +1733,13 @@
         },
         "byIndependenceGroup": {
           "agpl-reachability-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-AGPL-REACHABILITY-SCAN"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -1762,12 +1762,12 @@
           "test_ref": ".github/scripts/agpl-clean.mjs",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-AGPL-REACHABILITY-SCAN-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -1868,7 +1868,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CAP-FILTER-LABEL-MATCHER",
               "BINDING-ARCH-CAP-FILTER-LINE",
@@ -1878,25 +1878,25 @@
         },
         "byIndependenceGroup": {
           "label-matcher-filter-semantics": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CAP-FILTER-LABEL-MATCHER"
             ]
           },
           "line-filter-semantics": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CAP-FILTER-LINE"
             ]
           },
           "span-attribute-filter-semantics": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CAP-FILTER-SPAN-ATTR"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -1924,12 +1924,12 @@
           "test_ref": "test/spec/promql/signal_label_matcher_consistency.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CAP-FILTER-LABEL-MATCHER-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -2027,12 +2027,12 @@
           "test_ref": "test/spec/logql/sum_count_over_time_line_filter.txtar#sql_optimized",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CAP-FILTER-LINE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -2130,12 +2130,12 @@
           "test_ref": "test/spec/traceql/attr_not_nil.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CAP-FILTER-SPAN-ATTR-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -2266,7 +2266,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT",
               "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE"
@@ -2275,7 +2275,7 @@
         },
         "byIndependenceGroup": {
           "breaker-deterministic-state-machine": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE"
             ]
@@ -2385,12 +2385,12 @@
           "test_ref": "internal/chclient/breaker_chaos_test.go:TestBreaker_OpensAfterNConsecutiveFailures",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-BREAKER-RESILIENCE-STATE-MACHINE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -2551,7 +2551,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
               "BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND",
@@ -2561,25 +2561,25 @@
         },
         "byIndependenceGroup": {
           "prom-seam-close-before-cancel-order": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CURSOR-TEARDOWN-PROM-ORDER"
             ]
           },
           "prom-seam-bounded-drain": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND"
             ]
           },
           "real-network-connection-recovery": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -2603,12 +2603,12 @@
           "test_ref": "internal/chclient/conn_teardown_integration_test.go:TestCursorTeardown_ReturnsConnectionToPool",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T06:01:06Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CURSOR-TEARDOWN-CH-RECOVERY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -2740,12 +2740,12 @@
           "test_ref": "test/regression/cursor_teardown_order_test.go:TestPromRangeCursorTeardownIsBounded",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CURSOR-TEARDOWN-PROM-BOUND-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -2817,12 +2817,12 @@
           "test_ref": "test/regression/cursor_teardown_order_test.go:TestPromRangeCursorClosedBeforeContextCancel",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CURSOR-TEARDOWN-PROM-ORDER-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -2926,7 +2926,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
               "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
@@ -2937,31 +2937,31 @@
         },
         "byIndependenceGroup": {
           "gate-allocation-floor": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR"
             ]
           },
           "gate-concurrency-cap": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP"
             ]
           },
           "gate-cancel-kill-ordering": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER"
             ]
           },
           "gate-denial-breaker-neutral": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -2988,12 +2988,12 @@
           "test_ref": "internal/chclient/fanout_gate_test.go:TestNewDataShardFanoutGate_DataShardCountLE1_NeverAllocates",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -3126,12 +3126,12 @@
           "test_ref": "internal/chclient/fanout_gate_test.go:TestAcquireDataShardFanout_CancelledDispatch_IssuesKillQueryBeforeRelease",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -3264,12 +3264,12 @@
           "test_ref": "internal/chclient/fanout_gate_test.go:TestQueryOpen_ConcurrentDataShardFanout_NeverExceedsCap",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-FANOUT-BOUND-CONCURRENCY-CAP-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -3402,12 +3402,12 @@
           "test_ref": "internal/chclient/fanout_gate_test.go:TestQueryCursor_DataShardFanoutGate_DeniedIsBreakerNeutral",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -3564,7 +3564,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
               "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION"
@@ -3573,19 +3573,19 @@
         },
         "byIndependenceGroup": {
           "corpus-decode-differential": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL"
             ]
           },
           "query-log-exit-status-enum-reconciliation": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -3617,12 +3617,12 @@
           "test_ref": "test/spec/strictscan_integration_test.go:TestStrictScanDifferential",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T06:04:18Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -3718,12 +3718,12 @@
           "test_ref": "internal/optcorpus/enummigrate_realch_integration_test.go:TestCorpusEnumMigrationRealClickHouse",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T06:04:18Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-STRICT-SCAN-ENUM-RECONCILIATION-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -3875,13 +3875,13 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT"
             ]
           },
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET"
             ]
@@ -3889,19 +3889,19 @@
         },
         "byIndependenceGroup": {
           "static-fanout-lint": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT"
             ]
           },
           "cardinality-scale-wall-ratchet": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -3930,12 +3930,12 @@
           "test_ref": "test/perf/cardinality_ratchet_test.go:TestCardinalityRatchet",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -4016,12 +4016,12 @@
           "test_ref": "internal/perf/fanout/lint_test.go:TestRule1_UnboundedCrossJoin_Trips",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-COMPUTE-FANOUT-STATIC-LINT-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -4160,7 +4160,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
               "BINDING-ARCH-HEAD-EMIT-STRUCTURAL"
@@ -4169,19 +4169,19 @@
         },
         "byIndependenceGroup": {
           "chsql-emit-structural": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-EMIT-STRUCTURAL"
             ]
           },
           "chsql-emit-roundtrip": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -4209,12 +4209,12 @@
           "test_ref": "test/spec/promql/absent_aggregate_with_series.txtar#sql_optimized",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-EMIT-ROUNDTRIP-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -4309,12 +4309,12 @@
           "test_ref": "test/spec/chsql/filter_line_contains.txtar#sql",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-EMIT-STRUCTURAL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -4439,7 +4439,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-LOWER-LOGQL",
               "BINDING-ARCH-HEAD-LOWER-PROMQL",
@@ -4449,25 +4449,25 @@
         },
         "byIndependenceGroup": {
           "promql-lowering-roundtrip": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-LOWER-PROMQL"
             ]
           },
           "logql-lowering-roundtrip": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-LOWER-LOGQL"
             ]
           },
           "traceql-lowering-roundtrip": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-LOWER-TRACEQL"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -4495,12 +4495,12 @@
           "test_ref": "test/spec/logql/absent_over_time_instant.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-LOWER-LOGQL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -4598,12 +4598,12 @@
           "test_ref": "test/spec/promql/absent_aggregate_with_series.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-LOWER-PROMQL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -4701,12 +4701,12 @@
           "test_ref": "test/spec/traceql/and_two_attrs.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-LOWER-TRACEQL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -4839,14 +4839,14 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR",
               "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION"
             ]
           },
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY"
             ]
@@ -4854,25 +4854,25 @@
         },
         "byIndependenceGroup": {
           "optimizer-termination": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION"
             ]
           },
           "optimizer-snapshot-pair": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR"
             ]
           },
           "optimizer-property-equivalence": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -4899,12 +4899,12 @@
           "test_ref": "internal/optimizer/property_test.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-OPTIMIZE-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -5036,12 +5036,12 @@
           "test_ref": "test/spec/optimizer/filter_fusion.txtar#optimized",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -5130,12 +5130,12 @@
           "test_ref": "internal/optimizer/termination_test.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-OPTIMIZE-TERMINATION-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -5301,7 +5301,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "reference": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-WIRE-LOGQL",
               "BINDING-ARCH-HEAD-WIRE-PROMQL",
@@ -5311,25 +5311,25 @@
         },
         "byIndependenceGroup": {
           "promql-wire-parity": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-WIRE-PROMQL"
             ]
           },
           "logql-wire-parity": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-WIRE-LOGQL"
             ]
           },
           "traceql-wire-parity": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-HEAD-WIRE-TRACEQL"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -5354,12 +5354,12 @@
           "test_ref": "test/spec/logql/absent_over_time_instant.txtar#parity",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-WIRE-LOGQL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -5454,12 +5454,12 @@
           "test_ref": "test/spec/promql/absent_aggregate_with_series.txtar#parity",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-WIRE-PROMQL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -5554,12 +5554,12 @@
           "test_ref": "test/spec/traceql/and_two_attrs.txtar#parity",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-HEAD-WIRE-TRACEQL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -5689,13 +5689,13 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-NO-CACHING-STATIC"
             ]
           },
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-NO-CACHING-WINDOW-TESTS"
             ]
@@ -5703,19 +5703,19 @@
         },
         "byIndependenceGroup": {
           "static-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-NO-CACHING-STATIC"
             ]
           },
           "result-cache-window-tests": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-NO-CACHING-WINDOW-TESTS"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -5738,12 +5738,12 @@
           "test_ref": "internal/engine",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-10T04:05:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-NO-CACHING-STATIC-20260910",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -5856,12 +5856,12 @@
           "test_ref": "internal/engine/result_cache_test.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-NO-CACHING-WINDOW-TESTS-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -6004,7 +6004,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-NO-SKIP-SCAN"
             ]
@@ -6012,13 +6012,13 @@
         },
         "byIndependenceGroup": {
           "forbid-skip-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-NO-SKIP-SCAN"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -6041,12 +6041,12 @@
           "test_ref": ".github/scripts/forbid-skip.mjs",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-NO-SKIP-SCAN-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -6137,7 +6137,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
               "BINDING-ARCH-DEPENDENCY-GO-ARCH-LINT"
@@ -6146,19 +6146,19 @@
         },
         "byIndependenceGroup": {
           "go-arch-lint-declaration": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-DEPENDENCY-GO-ARCH-LINT"
             ]
           },
           "coverage-floor-enrollment": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -6182,12 +6182,12 @@
           "test_ref": ".github/scripts/coverage-package-floor.mjs",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-DEPENDENCY-COVERAGE-FLOOR-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -6252,12 +6252,12 @@
           "test_ref": ".go-arch-lint.yml",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-DEPENDENCY-GO-ARCH-LINT-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -6322,7 +6322,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO"
             ]
@@ -6330,13 +6330,13 @@
         },
         "byIndependenceGroup": {
           "forbidigo-type-checked-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -6360,12 +6360,12 @@
           "test_ref": ".golangci.yml",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-PARSER-ACCESSOR-FORBIDIGO-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -6434,7 +6434,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
               "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING"
@@ -6449,7 +6449,7 @@
             ]
           },
           "baseline-prong-ordering-invariant": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING"
             ]
@@ -6598,12 +6598,12 @@
           "test_ref": "test/perf/nightly/baseline_test.go:TestNightlyBaseline_ProngBIsNeverLooserThanProngA",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-PERF-BASELINE-PRONG-ORDERING-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -6743,7 +6743,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-GOLDEN-MERGE-GATE",
               "BINDING-ARCH-GOLDEN-SHARD-COVERAGE"
@@ -6752,19 +6752,19 @@
         },
         "byIndependenceGroup": {
           "shard-coverage-derivation": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-GOLDEN-SHARD-COVERAGE"
             ]
           },
           "merge-driver-gate": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-GOLDEN-MERGE-GATE"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -6789,12 +6789,12 @@
           "test_ref": "test/regression/generated_artifact_merge_gate_test.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-GOLDEN-MERGE-GATE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -6871,12 +6871,12 @@
           "test_ref": "test/regression/golden_shard_coverage_test.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-GOLDEN-SHARD-COVERAGE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -6988,7 +6988,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT",
               "BINDING-ARCH-CANCELLATION-CLEANUP-ERROR",
@@ -7000,37 +7000,37 @@
         },
         "byIndependenceGroup": {
           "goroutine-leak-normal-request": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL"
             ]
           },
           "goroutine-leak-error-path": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CANCELLATION-CLEANUP-ERROR"
             ]
           },
           "goroutine-leak-concurrent-path": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT"
             ]
           },
           "goroutine-leak-route-memo-retry": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO"
             ]
           },
           "panic-recovery-releases-admission-slot": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -7058,12 +7058,12 @@
           "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_ConcurrentRequests",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-CONCURRENT-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -7137,12 +7137,12 @@
           "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_UnderError",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-ERROR-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -7216,12 +7216,12 @@
           "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_PromQuery",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-NORMAL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -7292,12 +7292,12 @@
           "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_MiddlewareUnderHandlerPanic_ReleasesSlot",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-PANIC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -7437,12 +7437,12 @@
           "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_RouteMemo",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -7546,7 +7546,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-TYPED-SQL-RAW-SCAN",
               "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN"
@@ -7555,19 +7555,19 @@
         },
         "byIndependenceGroup": {
           "raw-write-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-TYPED-SQL-RAW-SCAN"
             ]
           },
           "verbatim-concat-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -7590,12 +7590,12 @@
           "test_ref": ".github/scripts/forbid-sql-raw.mjs",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-TYPED-SQL-RAW-SCAN-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -7658,12 +7658,12 @@
           "test_ref": ".github/scripts/forbid-verbatim-concat.mjs",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-ARCH-TYPED-SQL-VERBATIM-SCAN-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -7755,13 +7755,13 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE"
             ]
           },
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY"
             ]
@@ -7769,19 +7769,19 @@
         },
         "byIndependenceGroup": {
           "label-format-spec-fixture": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE"
             ]
           },
           "label-format-shape-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -7808,12 +7808,12 @@
           "test_ref": "test/property/gen#logql.stream.label-format",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -7881,12 +7881,12 @@
           "test_ref": "test/spec/logql/label_format.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-LABEL-FORMAT-SPEC-FIXTURE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -8025,13 +8025,13 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC"
             ]
           },
           "reference": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT"
             ]
@@ -8039,19 +8039,19 @@
         },
         "byIndependenceGroup": {
           "spec-fixture-roundtrip": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC"
             ]
           },
           "reference-differential": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -8076,12 +8076,12 @@
           "test_ref": "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -8131,12 +8131,12 @@
           "test_ref": "test/spec/logql/stream_regex_no_overmatch.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-LABEL-MATCHER-ANCHORING-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -8260,7 +8260,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC"
             ]
@@ -8268,13 +8268,13 @@
         },
         "byIndependenceGroup": {
           "parser-lowering": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -8302,12 +8302,12 @@
           "test_ref": "test/spec/logql/line_filter_regex_case_insensitive_multicase.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-LINE-FILTER-REGEX-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -8433,7 +8433,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "manual-review": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
               "BINDING-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW"
@@ -8442,14 +8442,14 @@
         },
         "byIndependenceGroup": {
           "oracle-package-doc-review": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
               "BINDING-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -8472,12 +8472,12 @@
           "test_ref": "test/property/oracle/logql/doc.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -8552,12 +8552,12 @@
           "test_ref": "test/property/oracle/logql/line_filters.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -8660,7 +8660,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
               "BINDING-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT"
@@ -8669,14 +8669,14 @@
         },
         "byIndependenceGroup": {
           "multistage-fixture-ordering": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
               "BINDING-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -8704,12 +8704,12 @@
           "test_ref": "test/spec/logql/edge_label_filter_and_then_line_filter.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -8807,12 +8807,12 @@
           "test_ref": "test/spec/logql/edge_multistage_filter_unpack_format.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -8941,7 +8941,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY",
               "BINDING-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY"
@@ -8950,19 +8950,19 @@
         },
         "byIndependenceGroup": {
           "logql-random-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY"
             ]
           },
           "logql-shape-roster-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -8989,12 +8989,12 @@
           "test_ref": "test/property/gen#logql.stream.selector",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9061,12 +9061,12 @@
           "test_ref": "test/property/gen#logql.stream.label-format",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9168,13 +9168,13 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "manual-review": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW"
             ]
           },
           "reference": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
               "BINDING-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL"
@@ -9183,25 +9183,25 @@
         },
         "byIndependenceGroup": {
           "stream-row-parity-exemption-review": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW"
             ]
           },
           "reference-stream-row-differential": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL"
             ]
           },
           "status-code-differential": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -9228,12 +9228,12 @@
           "test_ref": "compatibility/loki/cmd/loki-compliance-tester/status_parity.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-STATUS-CODE-DIFFERENTIAL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9284,12 +9284,12 @@
           "test_ref": "test/spec/logql/label_format.txtar#parity_exempt",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9384,12 +9384,12 @@
           "test_ref": "compatibility/loki",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9465,14 +9465,14 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
               "BINDING-LOGQL-UNWRAP-FIXTURE"
             ]
           },
           "reference": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE"
             ]
@@ -9480,20 +9480,20 @@
         },
         "byIndependenceGroup": {
           "structured-extraction-fixture-roundtrip": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
               "BINDING-LOGQL-UNWRAP-FIXTURE"
             ]
           },
           "range-aggregation-reference-differential": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -9518,12 +9518,12 @@
           "test_ref": "test/spec/logql/range_agg_without_grouping_unwrap.txtar#parity",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-RANGE-AGGREGATION-REFERENCE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9621,12 +9621,12 @@
           "test_ref": "test/spec/logql/parser_logfmt.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-STRUCTURED-EXTRACTION-FIXTURE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9724,12 +9724,12 @@
           "test_ref": "test/spec/logql/unwrap_sum_over_time.txtar#expected_rows",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-UNWRAP-FIXTURE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9854,7 +9854,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "manual-review": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW"
             ]
@@ -9862,13 +9862,13 @@
         },
         "byIndependenceGroup": {
           "upstream-skip-baseline-review": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -9891,12 +9891,12 @@
           "test_ref": "compatibility/loki/upstream-skip-baseline.txt",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -9966,7 +9966,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
               "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY"
@@ -9975,19 +9975,19 @@
         },
         "byIndependenceGroup": {
           "instant-random-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY"
             ]
           },
           "instant-window-engineered-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -10014,12 +10014,12 @@
           "test_ref": "test/property/gen#promql.instant.rate",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-COUNTER-RESET-INSTANT-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -10086,12 +10086,12 @@
           "test_ref": "test/property/gen#promql.instant-window.monotonic-running-total.rate",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -10235,7 +10235,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC"
             ]
@@ -10249,7 +10249,7 @@
         },
         "byIndependenceGroup": {
           "spec-fixture-roundtrip": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC"
             ]
@@ -10353,12 +10353,12 @@
           "test_ref": "test/spec/promql/regex_unanchored_no_overmatch.txtar",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-LABEL-MATCHER-ANCHORING-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -10481,7 +10481,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY"
             ]
@@ -10489,13 +10489,13 @@
         },
         "byIndependenceGroup": {
           "label-replace-rejection-boundary": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -10520,12 +10520,12 @@
           "test_ref": "internal/promql/label_fns.go:labelReplaceAttributesBuilder#d11e3df4",
           "evidence_system": "rejection-parity-site",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -10711,7 +10711,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-NATIVE-HISTOGRAM-PROPERTY"
             ]
@@ -10725,7 +10725,7 @@
         },
         "byIndependenceGroup": {
           "exp-histogram-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-NATIVE-HISTOGRAM-PROPERTY"
             ]
@@ -10828,12 +10828,12 @@
           "test_ref": "test/property/gen#promql.native-histogram.quantile-sum-rate",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-NATIVE-HISTOGRAM-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -10928,7 +10928,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN"
             ]
@@ -10936,13 +10936,13 @@
         },
         "byIndependenceGroup": {
           "oracle-engine-flag-parity-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -10965,12 +10965,12 @@
           "test_ref": "test/regression/promql_oracle_engine_parity_test.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -11070,7 +11070,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN"
             ]
@@ -11078,13 +11078,13 @@
         },
         "byIndependenceGroup": {
           "parser-single-source-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -11107,12 +11107,12 @@
           "test_ref": "test/regression/promql_parser_options_single_source_test.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-PARSER-SINGLE-SOURCE-SCAN-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -11217,7 +11217,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC"
             ]
@@ -11231,7 +11231,7 @@
         },
         "byIndependenceGroup": {
           "parser-lowering": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC"
             ]
@@ -11316,12 +11316,12 @@
           "test_ref": "test/property/gen#promql.range.rate",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-RANGE-ALIGNMENT-RANGE-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -11389,12 +11389,12 @@
           "test_ref": "test/spec/promql/edge_rate_at_timestamp_range_pinned.txtar",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-10T04:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-RANGE-ALIGNMENT-SPEC-20260910",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -11517,7 +11517,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "static-analysis": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN"
             ]
@@ -11525,13 +11525,13 @@
         },
         "byIndependenceGroup": {
           "fork-version-skew-scan": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -11554,12 +11554,12 @@
           "test_ref": "test/regression/fork_version_skew_test.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-PROMQL-FORK-VERSION-SKEW-SCAN-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -11801,7 +11801,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
               "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -11817,56 +11817,56 @@
         },
         "byIndependenceGroup": {
           "promql-admission-wiring": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING"
             ]
           },
           "logql-admission-wiring": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING"
             ]
           },
           "traceql-admission-wiring": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
             ]
           },
           "cross-head-budget-isolation": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION"
             ]
           },
           "tail-budget-isolation": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
               "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE"
             ]
           },
           "grpc-transport-rejection": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-GRPC-TRANSPORT"
             ]
           },
           "semaphore-capacity-recovery": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY"
             ]
           },
           "real-network-connection-teardown-boundary": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -11891,12 +11891,12 @@
           "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_MiddlewareUnderHandlerPanic_ReleasesSlot",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-CAPACITY-RECOVERY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -12032,12 +12032,12 @@
           "test_ref": "internal/chclient/conn_teardown_integration_test.go:TestCursorTeardown_ReturnsConnectionToPool",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -12168,12 +12168,12 @@
           "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_PerHandlerCaps_Independent",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -12310,12 +12310,12 @@
           "test_ref": "internal/api/admit/admit_test.go:TestStreamInterceptorRejectsAtCap",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-GRPC-TRANSPORT-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -12455,12 +12455,12 @@
           "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiAdmitRejectsAtCap",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-LOGQL-WIRING-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -12606,12 +12606,12 @@
           "test_ref": "internal/api/prom/conformance_test.go:TestConformance_PromAdmitRejectsAtCap",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-PROMQL-WIRING-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -12763,12 +12763,12 @@
           "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiTailRejectedAtTailCap",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -12914,12 +12914,12 @@
           "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-TAIL-INDEPENDENCE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -13065,12 +13065,12 @@
           "test_ref": "internal/api/tempo/conformance_test.go:TestConformance_TempoAdmitRejectsAtCap",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-ADMISSION-TRACEQL-WIRING-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -13241,7 +13241,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
               "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB"
@@ -13250,19 +13250,19 @@
         },
         "byIndependenceGroup": {
           "wire-shape-stub-replay": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB"
             ]
           },
           "route-memo-retry-preserves-decode-contract": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -13288,12 +13288,12 @@
           "test_ref": "test/consumer-corpus/route_memo_replay_test.go:TestConsumerCorpus_RouteMemoRetry_PreservesConsumerDecodeContract",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -13353,12 +13353,12 @@
           "test_ref": "test/consumer-corpus/replay_test.go:TestConsumerCorpus_Replay_Stub",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-CONSUMER-WIRE-REPLAY-STUB-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -14143,7 +14143,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
               "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
@@ -14154,31 +14154,31 @@
         },
         "byIndependenceGroup": {
           "promql-resource-fixture": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE"
             ]
           },
           "logql-resource-fixture": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE"
             ]
           },
           "traceql-resource-fixture": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE"
             ]
           },
           "resource-config-projection": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -14203,12 +14203,12 @@
           "test_ref": "test/semantic/resourcefixture/resource_config_test.go:TestResourceFixture_DottedKeyNormalization",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-RESOURCE-CONFIG-PROJECTION-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -14269,12 +14269,12 @@
           "test_ref": "test/semantic/resourcefixture/logql_resource_chdb_test.go:TestSignalResource_LogQL_ChDB",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-RESOURCE-LOGQL-FIXTURE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -14335,12 +14335,12 @@
           "test_ref": "test/semantic/resourcefixture/promql_resource_chdb_test.go:TestSignalResource_PromQL_ChDB",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-RESOURCE-PROMQL-FIXTURE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -14401,12 +14401,12 @@
           "test_ref": "test/semantic/resourcefixture/traceql_resource_chdb_test.go:TestSignalResource_TraceQL_ChDB",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-SIGNAL-RESOURCE-TRACEQL-FIXTURE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -14501,14 +14501,14 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
               "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY"
             ]
           },
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC"
             ]
@@ -14516,25 +14516,25 @@
         },
         "byIndependenceGroup": {
           "resource-scope-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY"
             ]
           },
           "span-scope-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY"
             ]
           },
           "unscoped-coalesce-spec-fixture": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -14561,12 +14561,12 @@
           "test_ref": "test/property/gen#traceql.selector.resource-attribute",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -14633,12 +14633,12 @@
           "test_ref": "test/property/gen#traceql.selector.span-attribute",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -14706,12 +14706,12 @@
           "test_ref": "test/spec/traceql/unscoped_bool_attr.txtar",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -14853,19 +14853,19 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY"
             ]
           },
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE"
             ]
           },
           "reference": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE"
             ]
@@ -14873,25 +14873,25 @@
         },
         "byIndependenceGroup": {
           "local-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY"
             ]
           },
           "in-process-forked-reference-evaluator": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE"
             ]
           },
           "live-reference-runtime-differential": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -14918,12 +14918,12 @@
           "test_ref": "test/spec/parityoracle/traceql/oracle.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -15024,12 +15024,12 @@
           "test_ref": "compatibility/tempo/driver/differ.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -15084,12 +15084,12 @@
           "test_ref": "test/property/oracle/traceql/evaluator.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -15191,7 +15191,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP"
             ]
@@ -15199,13 +15199,13 @@
         },
         "byIndependenceGroup": {
           "random-property-sweep": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -15232,12 +15232,12 @@
           "test_ref": "test/property/oracle/traceql/evaluator.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -15341,7 +15341,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP"
             ]
@@ -15349,13 +15349,13 @@
         },
         "byIndependenceGroup": {
           "random-property-sweep": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -15382,12 +15382,12 @@
           "test_ref": "test/property/oracle/traceql/evaluator.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T12:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -15490,13 +15490,13 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY"
             ]
           },
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC"
             ]
@@ -15504,14 +15504,14 @@
         },
         "byIndependenceGroup": {
           "select-pipeline-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
               "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -15538,12 +15538,12 @@
           "test_ref": "test/property/gen#traceql.pipeline.select",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -15611,12 +15611,12 @@
           "test_ref": "test/spec/traceql/select_attrs.txtar",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -15750,7 +15750,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "reference": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL"
             ]
@@ -15758,13 +15758,13 @@
         },
         "byIndependenceGroup": {
           "reference-differential": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -15789,12 +15789,12 @@
           "test_ref": "test/spec/traceql/bool_attr.txtar#parity",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -15921,14 +15921,14 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
               "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY"
             ]
           },
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC",
               "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC"
@@ -15937,21 +15937,21 @@
         },
         "byIndependenceGroup": {
           "structural-child-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
               "BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC"
             ]
           },
           "structural-descendant-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY",
               "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -15978,12 +15978,12 @@
           "test_ref": "test/property/gen#traceql.structural.child",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-STRUCTURAL-CHILD-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16051,12 +16051,12 @@
           "test_ref": "test/spec/traceql/edge_chain_child_5.txtar",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-STRUCTURAL-CHILD-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16153,12 +16153,12 @@
           "test_ref": "test/property/gen#traceql.structural.descendant",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16226,12 +16226,12 @@
           "test_ref": "test/spec/traceql/recursive_descendant.txtar",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-STRUCTURAL-DESCENDANT-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16367,14 +16367,14 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "property": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY",
               "BINDING-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY"
             ]
           },
           "execution": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TRACE-SCOPED-COUNT-SPEC"
             ]
@@ -16382,20 +16382,20 @@
         },
         "byIndependenceGroup": {
           "count-pipeline-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY",
               "BINDING-TRACEQL-TRACE-SCOPED-COUNT-SPEC"
             ]
           },
           "duration-aggregate-pipeline-property-oracle": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -16422,12 +16422,12 @@
           "test_ref": "test/property/gen#traceql.pipeline.count",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16495,12 +16495,12 @@
           "test_ref": "test/spec/traceql/count_per_trace.txtar",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-TRACE-SCOPED-COUNT-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16597,12 +16597,12 @@
           "test_ref": "test/property/gen#traceql.pipeline.duration-aggregate",
           "evidence_system": "property-shape",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16704,7 +16704,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "reference": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
               "BINDING-TRACEQL-TRANSPORT-ARM-HTTP"
@@ -16713,19 +16713,19 @@
         },
         "byIndependenceGroup": {
           "compat-http-transport": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TRANSPORT-ARM-HTTP"
             ]
           },
           "compat-grpc-transport": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TRANSPORT-ARM-GRPC"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -16750,12 +16750,12 @@
           "test_ref": "compatibility/tempo/driver/grpc_diff.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-TRANSPORT-ARM-GRPC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16808,12 +16808,12 @@
           "test_ref": "compatibility/tempo/driver/diff.go",
           "evidence_system": null,
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-TRANSPORT-ARM-HTTP-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
@@ -16899,7 +16899,7 @@
       "observed_evidence": {
         "byEvidenceClass": {
           "reference": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC"
             ]
@@ -16907,13 +16907,13 @@
         },
         "byIndependenceGroup": {
           "attr-type-hint-query-driven-coercion": {
-            "status": "pass",
+            "status": "unknown",
             "binding_ids": [
               "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC"
             ]
           }
         },
-        "overall": "pass"
+        "overall": "unknown"
       },
       "bindings": [
         {
@@ -16938,12 +16938,12 @@
           "test_ref": "test/spec/traceql/bool_attr.txtar#parity",
           "evidence_system": "txtar-fixture",
           "observed": {
-            "status": "pass",
-            "observed_at": "2026-09-16T00:00:00Z",
-            "run_ref": "https://github.com/tsouza/cerberus/actions/runs/0000000000",
-            "execution_id": "EXEC-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC-20260916",
-            "execution_count": 1,
-            "selection": "executed",
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0,
+            "selection": null,
             "source_sha": null,
             "revision_bound": false
           },
