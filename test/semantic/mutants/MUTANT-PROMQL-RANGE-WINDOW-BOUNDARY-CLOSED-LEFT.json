@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "internal/chsql/range_window.go",
     "patch_path": "test/semantic/mutants/patches/range-window-boundary-closed-left.patch",
-    "source_fingerprint": "1b122a4c3e8f07281e368263f9a91cf85fc07818e84bbe05ca54b059544b597a",
-    "expected_mutated_fingerprint": "4c6628ddee58cf0a4cacef4d7083cf35418abadd7170445c187d3bfbed3c1a43"
+    "source_fingerprint": "18cc64c991a3efd91a89ff97b55eec6c17b2e5790d41a7a147cce45b8ba79b42",
+    "expected_mutated_fingerprint": "9093a2d30c5c3147a5a57abac547992d17e49a4da8f71247fc147e6e5943d18e"
   },
   "detectors": [
     {

@@ -222,6 +222,77 @@ func TestFixedAccumulatorRateIncrease_DualEmitParity(t *testing.T) {
 	}
 }
 
+// fixedAccumRateIncreaseGaugeSeed exercises rate()/increase() over a table
+// with NO AggregationTemporality column (otel_metrics_gauge) — the shape
+// tsouza/cerberus#3556 investigates: `rate({__name__=~...}[...])` over a
+// selector spanning GAUGE metric families. PromQL's rate()/increase() apply
+// the counter-reset-repair rule regardless of the selector's declared
+// metric type (see the comment above fixedAccumRateIncreaseSeed), so this
+// path is reachable for a genuine gauge query and MUST agree with the
+// array-fold fan-out exactly like the Sum-table fixture above.
+//
+// Every otel_metrics_sum row above routes through
+// fixedAccumCounterDeltaFrag's temporalityRef != nil branch, which the
+// emitter renders as an atomic `if(...)` CALL, so
+// TestFixedAccumulatorRateIncrease_DualEmitParity never exercises the
+// temporalityRef == nil branch this seed forces (a Scan with no
+// TemporalityColumn at all): the two branches render counterDelta
+// differently (nil: a bare `Add` Frag; non-nil: an `If(...)` CALL), and only
+// the bare-Add form is vulnerable to a missing Paren re-associating it with
+// a neighbouring `*` or `/` operator — see extrapolatedValueExpr's own
+// Paren wrap this test pins.
+//
+//   - 'mono': monotonic increase, NO counter reset (reset_sum == 0 at every
+//     anchor) — the shape that silently collapsed to the RAW, unscaled
+//     delta once a missing Paren dropped the multiplicative extrapolation
+//     factor from the reset-corrected term entirely.
+//   - 'reset': one counter reset mid-window (reset_sum != 0 at some
+//     anchors) — the same defect combined with a non-zero reset_sum term.
+var fixedAccumRateIncreaseGaugeSeed = chsqltest.MetricsSeedDDL("otel_metrics_gauge") + `
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
+    ('demo_gauge_counter_like', map('job', 'mono'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+    ('demo_gauge_counter_like', map('job', 'mono'), toDateTime64('2026-01-01 00:01:00', 9), 110.0),
+    ('demo_gauge_counter_like', map('job', 'mono'), toDateTime64('2026-01-01 00:02:00', 9), 120.0),
+    ('demo_gauge_counter_like', map('job', 'mono'), toDateTime64('2026-01-01 00:03:00', 9), 130.0),
+    ('demo_gauge_counter_like', map('job', 'mono'), toDateTime64('2026-01-01 00:04:00', 9), 140.0),
+    ('demo_gauge_counter_like', map('job', 'mono'), toDateTime64('2026-01-01 00:05:00', 9), 150.0),
+    ('demo_gauge_counter_like', map('job', 'reset'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+    ('demo_gauge_counter_like', map('job', 'reset'), toDateTime64('2026-01-01 00:01:00', 9), 110.0),
+    ('demo_gauge_counter_like', map('job', 'reset'), toDateTime64('2026-01-01 00:02:00', 9), 5.0),
+    ('demo_gauge_counter_like', map('job', 'reset'), toDateTime64('2026-01-01 00:03:00', 9), 15.0),
+    ('demo_gauge_counter_like', map('job', 'reset'), toDateTime64('2026-01-01 00:04:00', 9), 25.0),
+    ('demo_gauge_counter_like', map('job', 'reset'), toDateTime64('2026-01-01 00:05:00', 9), 35.0);
+`
+
+func TestFixedAccumulatorRateIncrease_GaugeNoTemporality_DualEmitParity(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	for _, stmt := range splitSeedStatements(fixedAccumRateIncreaseGaugeSeed) {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v\n--- stmt ---\n%s", err, stmt)
+		}
+	}
+
+	for _, fn := range []string{"rate", "increase"} {
+		t.Run(fn, func(t *testing.T) {
+			query := "sum by(job) (" + fn + "(demo_gauge_counter_like[5m]))"
+			var fanoutLowerers, fixedLowerers promql.RangeLowerers
+			if fn == "rate" {
+				fanoutLowerers.Rate = promql.FanoutRateLowerer{}
+				fixedLowerers.Rate = promql.FixedAccumulatorRateLowerer{Fallback: promql.FanoutRateLowerer{}}
+			} else {
+				fanoutLowerers.Increase = promql.FanoutIncreaseLowerer{}
+				fixedLowerers.Increase = promql.FixedAccumulatorIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
+			}
+
+			fanout := runFixedAccumulatorRangeEmit(t, db, query, fanoutLowerers,
+				time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), 5*time.Minute, 30*time.Second, false)
+			fixed := runFixedAccumulatorRangeEmit(t, db, query, fixedLowerers,
+				time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), 5*time.Minute, 30*time.Second, true)
+			assertFixedAccumCellsWithinUlpBudget(t, fanout, fixed, fn)
+		})
+	}
+}
+
 // runFixedAccumulatorRangeEmit mirrors runLagAdjacencyRangeEmit exactly
 // (range_window_lag_adjacency_chdb_test.go), wiring the caller-supplied
 // promql.RangeLowerers instead. fixedAccumulator is used only for error

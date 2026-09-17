@@ -114,9 +114,10 @@ const END_TIME = process.env.TESTER_END_TIME || '2026-05-11T01:00:00Z';
 const RANGE = process.env.TESTER_RANGE || '3600';
 
 // Upstream's per-comparison deadline this harness build-time patches past:
-// see patchComparer() below for the full rationale (tsouza/cerberus#2707).
+// see patchComparer() below for the full rationale (tsouza/cerberus#2707,
+// widened further by tsouza/cerberus#3556).
 const ORIGINAL_COMPARE_TIMEOUT = '10*time.Second';
-const COMPARER_TIMEOUT_SECONDS = 45;
+const COMPARER_TIMEOUT_SECONDS = 90;
 
 // cerberus's own readiness poll: the compose `--wait` healthcheck only
 // proves the distroless `cerberus --version` binary runs, not that it has
@@ -190,6 +191,25 @@ async function waitForCerberusReady() {
 //    caught exactly as fast as before — only the amount of time a
 //    legitimately slow floor-lane answer is given before being mistaken for
 //    one changes.
+//
+//    tsouza/cerberus#3556 widened this a second time for the SAME class of
+//    problem on a different query shape: `rate()`/`increase()`/`delta()`
+//    over a multi-name regex selector (e.g. spanning several GAUGE metric
+//    families) reaches the identical un-optimized fallback — below 25.9 the
+//    native ts_grid_range aggregate is unavailable, and the improved
+//    argMin/argMax/sumIf fallback (chopt.FeatureFixedAccumulatorExtrapolated,
+//    #2760) stays opt-in on every server regardless of version (a measured
+//    memory-vs-wall-clock trade #2760/#2894 already decided against
+//    auto-enabling — re-confirmed at #3556's own 2,200-series multi-name-
+//    selector scale, so it is not a lever here either), so this shape falls
+//    through to the heaviest groupArray/arraySort/arrayPopBack/arrayPopFront
+//    array-fold plus a windowed `sum(...) OVER (...)`. #3556's own
+//    measurement: one isolated re-execution of a captured per-anchor batch
+//    took ~3.4s on a 2-vCPU-capped container matching the floor runner, and a
+//    live corpus run at this harness's own TESTER_QUERY_PARALLELISM measured
+//    13.1s wall-clock for the whole query_range request — within the 45s
+//    deadline on that host with little margin, and #3552 independently
+//    observed it exceed 45s on a GH Actions runner's heavier contention.
 function patchComparer() {
   let src = readFileSync(COMPARER_REL_PATH, 'utf8');
 

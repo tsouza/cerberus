@@ -701,6 +701,35 @@ const (
 	// negative-result precedent). Reachable only via an explicit
 	// CERBERUS_CH_OPTIMIZATIONS=fixed_accumulator_extrapolated listing.
 	//
+	// cerberus#3556 investigated widening AutoSelect narrowly for a
+	// multi-name / high-fan-out selector's rate()/increase() (the shape that
+	// times out on the ClickHouse-24.8-pinned compatibility/prometheus-floor
+	// lane below 25.9). A real ClickHouse A/B at the SAME 2,200-series scale
+	// this doc's own measurement uses, built from a multi-name selector
+	// spanning two GAUGE metric families, reproduced the identical
+	// memory-vs-wall-clock trade (~1.6x peak memory for a real but
+	// inconsistent wall-clock win) — no narrower rule changes the verdict,
+	// since every server this fallback is ever chosen on (sub-25.9, or
+	// capability-forbidden) is already the population this measurement
+	// covers. AutoSelect stays false; #3556 widened the
+	// compatibility/prometheus-floor harness's own per-comparison timeout
+	// instead (test-infra accommodation, not a production change — see
+	// .github/scripts/run-prometheus-compatibility.mjs's patchComparer()).
+	//
+	// That investigation also found and fixed a real correctness bug this
+	// feature shipped with: fixedAccumCounterDeltaFrag's counter-delta term
+	// rendered unparenthesized wherever the underlying Scan carried no
+	// TemporalityColumn (every GAUGE selector, since PromQL applies
+	// rate()/increase()'s counter-reset rule regardless of declared metric
+	// type) — silently dropping the extrapolation factor from the result
+	// whenever explicitly enabled via CERBERUS_CH_OPTIMIZATIONS. Fixed in
+	// internal/chsql/range_window_fixed_accumulator.go; the dual-emit parity
+	// corpus's own "bit-identical" claim above only ever covered the
+	// Sum-table (temporality-bearing) fixture, which happened to route
+	// through a DIFFERENT, already-safe code shape — see
+	// TestFixedAccumulatorRateIncrease_GaugeNoTemporality_DualEmitParity for
+	// the regression this added.
+	//
 	// Scope: eligible for a temporality-bearing counter window too — the
 	// DELTA/CUMULATIVE runtime branch and the reconstructed counter
 	// zero-clamp are both decomposed into fixed accumulators, reusing

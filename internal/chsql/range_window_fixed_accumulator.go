@@ -277,7 +277,21 @@ func fixedAccumCounterDeltaFrag(temporalityRef Frag) Frag {
 		Col(fixedAccumResetSumAlias),
 	)
 	if temporalityRef == nil {
-		return cumulative
+		// extrapolatedValueExpr (range_window.go) embeds its counterDelta
+		// parameter as an operand of `*` (the raw-result multiplication) and
+		// of `/` (the counter zero-crossing clamp's denominator) — both
+		// HIGHER precedence than the `+` this Add renders. Returning
+		// `cumulative` bare here would let it silently re-associate into
+		// `last_val - first_val + reset_sum * factor` instead of
+		// `((last_val - first_val) + reset_sum) * factor`, dropping the
+		// extrapolation factor from the reset-corrected term entirely — a
+		// real, measured divergence (see
+		// TestFixedAccumulatorRateIncrease_GaugeNoTemporality_DualEmitParity),
+		// not a float-order ULP nicety. The temporalityRef != nil branch
+		// below never needs this: `cumulative` there is embedded as an
+		// argument of the `If(...)` CALL two lines down, whose own parens
+		// already delimit it regardless of what it contains.
+		return Paren(cumulative)
 	}
 	delta := Sub(BareIdent(fixedAccumSumValAlias), BareIdent(fixedAccumFirstValAlias))
 	return If(Eq(temporalityRef, InlineLit(schema.AggregationTemporalityDelta)), delta, cumulative)
