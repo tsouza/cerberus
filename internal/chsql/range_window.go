@@ -174,7 +174,7 @@ func metricsAggregateCH(m *chplan.MetricsAggregate) (
 // as a decimal string (no trailing zeros) — "0.5" reads "0.5" (not
 // "0.500000"); aligned with Tempo upstream's per-quantile label
 // production in pkg/traceql/engine_metrics.go.
-const metricsMultiQuantilePhiLabel = "__phi__"
+const metricsMultiQuantilePhiLabel = chplan.MetricsMultiQuantilePhiColumn
 
 // RangeWindowAnchorAlias is the SELECT-list alias the matrix-shape
 // RangeWindow emitters give the per-step anchor timestamp column
@@ -991,7 +991,7 @@ func offsetUnshiftAnchorFrag(anchor Frag, offsetNS int64) Frag {
 // a Sample's timestamp — the name every *_over_time / rate / deriv matrix
 // emitter falls back to when its own RangeWindow carries no more specific
 // TimestampColumn override (see projectAnchorAsTimestampColumn).
-const rangeWindowSchemaTimestampColumn = "TimeUnix"
+const rangeWindowSchemaTimestampColumn = chplan.DefaultSampleTimestampColumn
 
 // projectAnchorAsTimestampColumn surfaces the matrix anchor under a named
 // timestamp column, in addition to the bare `anchor_ts` every matrix-shape
@@ -1761,8 +1761,9 @@ func quantileSamplePredicateFrag(isDuration bool) Frag {
 // row stream by a stable name. The Tempo handler holds its own
 // matching constant (`tempoQuantileBucketLabel` in
 // internal/api/tempo/metrics_query_range.go); both must agree on the
-// literal "__bucket".
-const metricsQuantileBucketAlias = "__bucket"
+// literal chplan.MetricsBucketColumn carries, which is also what the
+// node's RowType() publishes.
+const metricsQuantileBucketAlias = chplan.MetricsBucketColumn
 
 // quantileBucketFrag renders the per-row bucket key. Mirrors Tempo's
 // `Log2Bucketize(v) [/ time.Second]` (pkg/traceql/engine_metrics.go).
@@ -2812,7 +2813,7 @@ func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
 			out = append(out, aliases[i])
 			continue
 		}
-		out = append(out, "g"+strconv.Itoa(i))
+		out = append(out, chplan.MetricsGroupKeyName(i))
 	}
 	return out
 }

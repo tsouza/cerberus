@@ -525,34 +525,35 @@ func conjoinExpr(left, right chplan.Expr) chplan.Expr {
 }
 
 // compareSelOut / compareAttrOut / compareValOut / compareValueOut
-// resolve the output aliases with the same defaults the lowering pins
-// (internal/traceql/metrics_compare.go).
+// resolve the output aliases with the defaults the node's own RowType()
+// publishes (chplan's output-name constants), which are also the ones
+// the lowering pins (internal/traceql/metrics_compare.go).
 func compareSelOut(m *chplan.MetricsCompare) string {
 	if m.SelAlias != "" {
 		return m.SelAlias
 	}
-	return "is_selection"
+	return chplan.MetricsCompareSelectionColumn
 }
 
 func compareAttrOut(m *chplan.MetricsCompare) string {
 	if m.AttrAlias != "" {
 		return m.AttrAlias
 	}
-	return "attr"
+	return chplan.MetricsCompareAttrColumn
 }
 
 func compareValOut(m *chplan.MetricsCompare) string {
 	if m.ValAlias != "" {
 		return m.ValAlias
 	}
-	return "val"
+	return chplan.MetricsCompareValColumn
 }
 
 func compareValueOut(m *chplan.MetricsCompare) string {
 	if m.ValueAlias != "" {
 		return m.ValueAlias
 	}
-	return "Value"
+	return chplan.DefaultSampleValueColumn
 }
 
 // compareTupleElementFrag renders `tupleElement(kv, <idx>)` — the
