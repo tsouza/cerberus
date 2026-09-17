@@ -72,9 +72,18 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorAdditiveArithmetic(t *testi
 			if !ok {
 				t.Fatalf("lower(%q): Project.Input is %T, want *chplan.Filter (the same-type keep predicate)", query, proj.Input)
 			}
-			mergeInputs, ok := filter.Input.(*chplan.Project)
+			// Cerberus issue #3558: a scale-refinement Project (Replacements
+			// only) now sits between the Filter and the merge-array
+			// materialisation Project, downscaling the merge's shared scale
+			// to bound the merged bucket-range width before the Filter's own
+			// bucket-width budget guard conjunct reads it.
+			refinement, ok := filter.Input.(*chplan.Project)
+			if !ok || len(refinement.Replacements) == 0 {
+				t.Fatalf("lower(%q): Filter.Input is %#v, want a *chplan.Project with Replacements (the scale refinement)", query, filter.Input)
+			}
+			mergeInputs, ok := refinement.Input.(*chplan.Project)
 			if !ok {
-				t.Fatalf("lower(%q): Filter.Input is %T, want *chplan.Project (the merge-array materialisation)", query, filter.Input)
+				t.Fatalf("lower(%q): refinement.Input is %T, want *chplan.Project (the merge-array materialisation)", query, refinement.Input)
 			}
 			if _, ok := mergeInputs.Input.(*chplan.MixedVectorJoin); !ok {
 				t.Fatalf("lower(%q): merge-input Project.Input is %T, want *chplan.MixedVectorJoin", query, mergeInputs.Input)
