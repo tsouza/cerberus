@@ -168,6 +168,13 @@ components:
   # there would hand every component in the project a transitive edge to
   # the CH driver. Declared explicitly with its own deps block instead.
   api-reqctx:     { in: api/reqctx }
+  # Typed chsql fragments over the OTel attribute Map columns that the heads'
+  # label / tag metadata endpoints share (the subscript, its not-empty
+  # predicate, the one-scan projection of every candidate spelling). NOT a
+  # commonComponent for the same reason api-reqctx is not: it imports chsql,
+  # and listing it there would hand every component a transitive edge to the
+  # emitter. Declared explicitly with its own deps block instead.
+  api-attrmap:    { in: api/attrmap }
   chclienttest:   { in: chclienttest }
   chdbsession:    { in: chdbsession }
   chsqltest:      { in: chsqltest }
@@ -505,6 +512,7 @@ deps:
     mayDependOn:
       - chplan
       - chsql
+      - api-attrmap
       - chclient
       - engine
       - optimizer
@@ -517,6 +525,7 @@ deps:
     mayDependOn:
       - chplan
       - chsql
+      - api-attrmap
       - chclient
       - engine
       - optimizer
@@ -589,6 +598,12 @@ deps:
   api-reqctx:
     mayDependOn:
       - chclient
+  # api-attrmap composes chsql Frags and nothing else — it must never reach
+  # chclient, the engine or a QL layer: it builds an expression, it does not
+  # run a query.
+  api-attrmap:
+    mayDependOn:
+      - chsql
   # preflight builds introspection SQL (chsql) and reads CH (chclient);
   # it consults the resolved schema shapes via the schema commonComponent.
   preflight:

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/attrmap"
+
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
@@ -1814,10 +1816,10 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 	// candidate, unlike the non-nowAnchored shape below.
 	nowAnchoredAttrsArm := func(t, k string) chsql.Frag {
 		arm := chsql.NewQuery().
-			Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
+			Select(chsql.As(attrmap.DistinctAt(attrsCol, k), "value")).
 			From(chsql.PhysicalTable(t)).
 			GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol)).
-			Having(mapAtNotEmptyFrag(attrsCol, k))
+			Having(attrmap.NotEmpty(attrsCol, k))
 		if !start.IsZero() {
 			arm.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
 		}
@@ -2023,57 +2025,26 @@ func distinctIdent(col string) chsql.Frag {
 	return chsql.Distinct(chsql.Col(col))
 }
 
-// mapAtFrag emits `<col>[?]`, binding key as a positional `?` argument —
-// the bare Map subscript distinctMapAtFrag, mapAtNotEmptyFrag, and
-// resourceLabelValuesArmFrag each build on.
-func mapAtFrag(col, key string) chsql.Frag {
-	return func(b *chsql.Builder) { b.MapAt(col, key) }
-}
-
-// distinctMapAtFrag emits `DISTINCT <col>[?]` and binds key as a
-// positional argument — the projection shape for "distinct values of
-// label <key> stored in the Attributes map".
-func distinctMapAtFrag(col, key string) chsql.Frag {
-	return chsql.Distinct(mapAtFrag(col, key))
-}
-
-// mapAtNotEmptyFrag emits `<col>[?] != ?` and binds both the map key
-// and the empty-string sentinel as positional args — the WHERE
-// predicate that drops the empty-string CH returns when a Map key is
-// absent. The empty-string RHS is parameterised through chsql.Lit so
-// the whole expression stays inside the typed Frag surface (the public
-// Raw / Concat escape hatches were retired).
-func mapAtNotEmptyFrag(col, key string) chsql.Frag {
-	return chsql.Neq(mapAtFrag(col, key), chsql.Lit(""))
-}
-
 // collapsedMapValuesArmFrag builds ONE scan of table t surfacing every
 // candidate spelling's col values, replacing unionLabelValuesSQL's
 // historical one-full-scan-per-candidate shape (cerberus issue #3168).
-// Resolved in this change: the attrs arm's own non-nowAnchored branch had
-// the identical shape, just gated on an explicit caller-supplied window
-// rather than the resource-label allowlist — it now shares this same
-// collapsed scan too. It renders:
+// The attrs arm's own non-nowAnchored branch had the identical shape, just
+// gated on an explicit caller-supplied window rather than the
+// resource-label allowlist — it shares this same collapsed scan. It
+// renders:
 //
 //	SELECT arrayJoin(arrayFilter(v -> v != '', [<col>[k0], <col>[k1], …])) AS value
 //	FROM t [WHERE pred]
 //
-// arrayFilter drops the empty-string sentinel CH returns for an absent Map
-// key BEFORE arrayJoin explodes the survivors into rows, so a row missing
-// every candidate contributes zero rows — arrayJoin on an empty array
-// yields none — with no separate not-empty predicate needed, unlike the
-// per-candidate mapAtNotEmptyFrag arm used elsewhere. pred is the caller's
-// window bound alone (h.metadataWindowPred), not withWindow's row-content
-// filter: this arm's not-empty check already lives inside the SELECT.
+// The projection is attrmap.CollapsedValues, shared with the Loki head's
+// /loki/api/v1/label/<name>/values so the two cannot drift apart again (its
+// doc explains why no separate not-empty predicate is needed). pred is the
+// caller's window bound alone (h.metadataWindowPred), not withWindow's
+// row-content filter: this arm's not-empty check already lives inside the
+// SELECT.
 func collapsedMapValuesArmFrag(col, t string, candidates []string, pred chsql.Frag) chsql.Frag {
-	lookups := make([]chsql.Frag, len(candidates))
-	for i, k := range candidates {
-		lookups[i] = mapAtFrag(col, k)
-	}
-	notEmpty := chsql.Lambda1("v", chsql.Neq(chsql.BareIdent("v"), chsql.Lit("")))
-	values := chsql.Call("arrayJoin", chsql.Call("arrayFilter", notEmpty, chsql.Array(lookups...)))
 	q := chsql.NewQuery().
-		Select(chsql.As(values, "value")).
+		Select(chsql.As(attrmap.CollapsedValues(col, candidates), "value")).
 		From(chsql.PhysicalTable(t))
 	if pred != nil {
 		q.Where(pred)
