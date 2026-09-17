@@ -382,12 +382,18 @@ func compareNonRootRootLookupSQL(t *testing.T, spansTable, lookupTable string, w
 		}},
 		TraceIDColumn: "TraceId",
 		Inner: &chplan.Filter{
-			Input:     &chplan.Scan{Table: spansTable},
+			Input: &chplan.Scan{
+				Table: spansTable,
+				Roles: []chplan.Column{{Name: "Timestamp", Role: chplan.RoleTimestamp}},
+			},
 			Predicate: matchingChild,
 		},
 		RootLookup: &chplan.Aggregate{
 			Input: &chplan.Filter{
-				Input: &chplan.Scan{Table: spansTable},
+				Input: &chplan.Scan{
+					Table: spansTable,
+					Roles: []chplan.Column{{Name: "Timestamp", Role: chplan.RoleTimestamp}},
+				},
 				Predicate: &chplan.Binary{
 					Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ParentSpanId"}, Right: &chplan.LitString{V: ""},
 				},

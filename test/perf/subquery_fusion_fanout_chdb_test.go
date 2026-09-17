@@ -102,7 +102,14 @@ func fanoutPlan(subStep time.Duration) *chplan.RangeWindow {
 	start := end.Add(-fanoutRequestSpan)
 	innerStart := start.Add(-fanoutSubRange)
 	inner := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: fanoutTable},
+		Input: &chplan.Scan{
+			Table:   fanoutTable,
+			Columns: []string{"Attributes", "TimeUnix", "Value"},
+			Roles: []chplan.Column{
+				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+				{Name: "Value", Role: chplan.RoleValue},
+			},
+		},
 		Func:            "rate",
 		Range:           fanoutInnerRange,
 		Step:            subStep,
