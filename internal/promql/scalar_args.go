@@ -193,7 +193,7 @@ func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 	// Direct unions already resolve shadowing into separate arms. Keep the
 	// surviving float arm's envelope: scalar's reducer only needs its values.
 	if b, ok := mixedExpHistogramSetOp(v, s, ctx); ok {
-		return lowerScalarMixedOperand(func() (chplan.Node, error) {
+		return lowerUnderMixedOperandPolicy(mixedScalarFamily, mixedOperandAdmission, mixedFloatOnly, func() (chplan.Node, error) {
 			return shadowResolveFloatArmChecked(b, s, ctx)
 		})
 	}
@@ -204,28 +204,11 @@ func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 	return scalarFloatRows(node)
 }
 
-func requireFloatScalarPolicy(site mixedAdmissionSite) error {
-	key := mixedWrapperKey{family: mixedScalarFamily, site: site}
-	if mixedOperandPolicies[key] != mixedFloatOnly {
-		return fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
-	}
-	return nil
-}
-
-// lowerScalarMixedOperand authorizes the direct union before its loader runs.
-// Its shadow-resolved float arm needs no further projection or narrowing.
-func lowerScalarMixedOperand(build func() (chplan.Node, error)) (chplan.Node, error) {
-	if err := requireFloatScalarPolicy(mixedOperandAdmission); err != nil {
-		return nil, err
-	}
-	return build()
-}
-
 // scalarFloatRows narrows a complete nested operand only after its own shadow
 // resolution. Histogram placeholder values must never enter count()/any(Value).
 func scalarFloatRows(inner chplan.Node) (chplan.Node, error) {
 	if mixedRowsNeedPreparation(inner) {
-		if err := requireFloatScalarPolicy(mixedPlanAdmission); err != nil {
+		if err := requireMixedOperandPolicy(mixedScalarFamily, mixedPlanAdmission, mixedFloatOnly); err != nil {
 			return nil, err
 		}
 	}

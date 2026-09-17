@@ -77,7 +77,7 @@ func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Nod
 		if err != nil {
 			return nil, err
 		}
-		if err := requireMixedPlanPolicy(inner, mixedUnaryFamily); err != nil {
+		if err := requireMixedPlanPolicy(inner, mixedUnaryFamily, mixedPreserve); err != nil {
 			return nil, err
 		}
 		return inner, nil

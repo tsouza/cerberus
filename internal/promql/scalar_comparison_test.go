@@ -229,7 +229,7 @@ func TestScalarComparisonPolicyBeforeLoadAndProjection(t *testing.T) {
 				t.Cleanup(func() { mixedOperandPolicies[key] = previous })
 				if site == mixedRootAdmission {
 					called := false
-					plan, err := lowerComparisonRoot(func() (chplan.Node, error) {
+					plan, err := lowerUnderMixedOperandPolicy(mixedComparisonFamily, mixedRootAdmission, mixedFloatOnly, func() (chplan.Node, error) {
 						called = true
 						return nil, errors.New("must not lower")
 					})
@@ -258,49 +258,56 @@ func TestScalarComparisonPolicyBeforeLoadAndProjection(t *testing.T) {
 	}
 	wantError := errors.New("histogram operand error")
 	calls := 0
-	_, err := lowerComparisonRoot(func() (chplan.Node, error) { calls++; return nil, wantError })
+	_, err := lowerUnderMixedOperandPolicy(mixedComparisonFamily, mixedRootAdmission, mixedFloatOnly, func() (chplan.Node, error) { calls++; return nil, wantError })
 	if calls != 1 || err != wantError {
 		t.Fatalf("loader error changed: calls=%d error=%v", calls, err)
 	}
 }
 
-func TestScalarComparisonMissingAuthorityKeepsComputedControl(t *testing.T) {
+// A computed scalar operand (`scalar(vector(2))`) is a scalar in Prometheus's
+// evaluator, so a comparison against it over an already-lowered mixed plan is
+// governed by the SAME scalar-comparison existing-plan row as the literal
+// form: deleting that row rejects both, while deleting the root row (which
+// only the direct union consults) leaves both nested forms admitted.
+func TestScalarComparisonMissingAuthorityGovernsComputedScalarToo(t *testing.T) {
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	s := schema.DefaultOTelMetrics()
-	for _, site := range []mixedAdmissionSite{mixedRootAdmission, mixedPlanAdmission} {
-		t.Run(string(site), func(t *testing.T) {
-			key := mixedWrapperKey{family: mixedComparisonFamily, site: site}
-			old := mixedOperandPolicies[key]
-			delete(mixedOperandPolicies, key)
-			t.Cleanup(func() { mixedOperandPolicies[key] = old })
-			query := `(latency_exp_hist or num_cpus) > 2`
-			if site == mixedPlanAdmission {
-				query = `sort_by_label(latency_exp_hist or num_cpus, "job") > bool 2`
-			}
-			expr, err := p.ParseExpr(query)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = Lower(context.Background(), expr, s); err == nil {
-				t.Fatal("missing scalar-comparison authority admitted literal comparison")
-			}
-			expr, err = p.ParseExpr(`sort_by_label(latency_exp_hist or num_cpus, "job") > scalar(vector(2))`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = Lower(context.Background(), expr, s); err != nil {
-				t.Fatalf("computed scalar control changed: %v", err)
-			}
-		})
+	const nestedLiteral = `sort_by_label(latency_exp_hist or num_cpus, "job") > bool 2`
+	const nestedComputed = `sort_by_label(latency_exp_hist or num_cpus, "job") > scalar(vector(2))`
+	lower := func(t *testing.T, query string) error {
+		t.Helper()
+		expr, err := p.ParseExpr(query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Lower(context.Background(), expr, s)
+		return err
 	}
-}
-
-func TestScalarComparisonUnknownBoundaryFailsBeforeInput(t *testing.T) {
-	const unknownBoundary scalarComparisonBoundary = 255
-	plan, err := finishScalarComparison(nil, nil, schema.DefaultOTelMetrics(), lowerCtx{}, chplan.OpEq, 1, false, false, unknownBoundary)
-	if plan != nil || err == nil {
-		t.Fatalf("unknown comparison boundary continued: plan=%T error=%v", plan, err)
-	}
+	t.Run(string(mixedRootAdmission), func(t *testing.T) {
+		key := mixedWrapperKey{family: mixedComparisonFamily, site: mixedRootAdmission}
+		old := mixedOperandPolicies[key]
+		delete(mixedOperandPolicies, key)
+		t.Cleanup(func() { mixedOperandPolicies[key] = old })
+		if err := lower(t, `(latency_exp_hist or num_cpus) > 2`); err == nil {
+			t.Fatal("missing scalar-comparison root authority admitted the direct union")
+		}
+		for _, query := range []string{nestedLiteral, nestedComputed} {
+			if err := lower(t, query); err != nil {
+				t.Fatalf("root authority governed an existing-plan comparison %q: %v", query, err)
+			}
+		}
+	})
+	t.Run(string(mixedPlanAdmission), func(t *testing.T) {
+		key := mixedWrapperKey{family: mixedComparisonFamily, site: mixedPlanAdmission}
+		old := mixedOperandPolicies[key]
+		delete(mixedOperandPolicies, key)
+		t.Cleanup(func() { mixedOperandPolicies[key] = old })
+		for _, query := range []string{nestedLiteral, nestedComputed} {
+			if err := lower(t, query); err == nil {
+				t.Fatalf("missing scalar-comparison existing-plan authority admitted %q", query)
+			}
+		}
+	})
 }
 
 func TestScalarComparisonNonMixedIndependentOfPlanPolicy(t *testing.T) {

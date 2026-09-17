@@ -21,7 +21,7 @@ func TestDateKernelPayloadPreparation(t *testing.T) {
 			t.Cleanup(func() { mixedOperandPolicies[key] = original })
 			for _, policy := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedPreserve, mixedFloatOnly} {
 				mixedOperandPolicies[key] = policy
-				prepare, err := datePayloadPreparation(site)
+				prepare, err := lowerWithMixedOperandPolicy(mixedDateFamily, site, mixedFloatOnly)
 				if policy != mixedFloatOnly {
 					if err == nil || prepare != nil {
 						t.Fatalf("unsupported policy %v: prepare nil=%v error=%v", policy, prepare == nil, err)
@@ -49,7 +49,7 @@ func TestDateKernelPayloadPreparation(t *testing.T) {
 			}
 		})
 	}
-	if prepare, err := datePayloadPreparation(mixedRootAdmission); err == nil || prepare != nil {
+	if prepare, err := lowerWithMixedOperandPolicy(mixedDateFamily, mixedRootAdmission, mixedFloatOnly); err == nil || prepare != nil {
 		t.Fatal("date root admission must remain unsupported")
 	}
 }

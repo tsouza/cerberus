@@ -1,8 +1,6 @@
 package promql
 
 import (
-	"fmt"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -20,24 +18,6 @@ const (
 	scalarArithmeticCanonical
 )
 
-func requireFloatArithmeticPolicy(site mixedAdmissionSite) error {
-	key := mixedWrapperKey{family: mixedArithmeticFamily, site: site}
-	if mixedOperandPolicies[key] != mixedFloatOnly {
-		return fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
-	}
-	return nil
-}
-
-// lowerArithmeticRoot checks authority before the original union loader runs.
-// The loader keeps its histogram-first error order and completes shadow
-// resolution before the common finalizer discards histogram rows.
-func lowerArithmeticRoot(build func() (chplan.Node, error)) (chplan.Node, error) {
-	if err := requireFloatArithmeticPolicy(mixedRootAdmission); err != nil {
-		return nil, err
-	}
-	return build()
-}
-
 func scalarBinaryValue(value chplan.Expr, op chplan.BinaryOp, scalar float64, scalarOnLeft bool) chplan.Expr {
 	var left, right chplan.Expr = value, &chplan.LitFloat{V: scalar}
 	if scalarOnLeft {
@@ -49,16 +29,12 @@ func scalarBinaryValue(value chplan.Expr, op chplan.BinaryOp, scalar float64, sc
 func finishScalarArithmetic(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx,
 	op chplan.BinaryOp, scalar float64, scalarOnLeft bool, boundary scalarArithmeticBoundary,
 ) (chplan.Node, error) {
-	if boundary != scalarArithmeticGuarded && boundary != scalarArithmeticCanonical {
-		return nil, fmt.Errorf("promql: unknown scalar arithmetic projection boundary %d", boundary)
-	}
 	if boundary == scalarArithmeticCanonical {
-		if err := requireFloatArithmeticPolicy(mixedRootAdmission); err != nil {
+		if err := requireMixedOperandPolicy(mixedArithmeticFamily, mixedRootAdmission, mixedFloatOnly); err != nil {
 			return nil, err
 		}
-	}
-	if boundary == scalarArithmeticGuarded && mixedRowsNeedPreparation(inner) {
-		if err := requireFloatArithmeticPolicy(mixedPlanAdmission); err != nil {
+	} else if mixedRowsNeedPreparation(inner) {
+		if err := requireMixedOperandPolicy(mixedArithmeticFamily, mixedPlanAdmission, mixedFloatOnly); err != nil {
 			return nil, err
 		}
 	}

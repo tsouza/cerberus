@@ -75,7 +75,7 @@ func guardedValueProjection(
 	newValue func(sampleRoleRefs) chplan.Expr,
 	carry ...string,
 ) (chplan.Node, error) {
-	if err := requireMixedPlanPolicy(inner, family); err != nil {
+	if err := requireMixedPlanPolicy(inner, family, mixedFloatOnly); err != nil {
 		return nil, err
 	}
 	inner = mixedRowsFloatOnly(inner)

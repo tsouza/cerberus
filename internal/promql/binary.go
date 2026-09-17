@@ -149,14 +149,6 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 	if err != nil {
 		return nil, err
 	}
-	family := mixedVectorBinaryFamily(op)
-	if err := requireMixedPlanPolicy(left, family); err != nil {
-		return nil, err
-	}
-	if err := requireMixedPlanPolicy(right, family); err != nil {
-		return nil, err
-	}
-
 	// Synthetic-scalar fold: when BOTH legs lower to the canonical
 	// 4-slot synthetic-vector shape ([syntheticScalarVector]), the
 	// VectorJoin emit path collapses each side to one row via the
@@ -217,6 +209,21 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		case !lSynth && rSynth:
 			return foldSyntheticVectorBinary(right, left, b.LHS, op, false /*scalarOnLeft*/, b.ReturnBool, s, ctx)
 		}
+	}
+
+	// A genuine vector-vector join over a live mixed leg has no registered
+	// existing-plan rule (the two synthetic folds above carry their own,
+	// scalar-family admission): the plain VectorJoin below reads the
+	// placeholder Value of a histogram row as a float sample, which is
+	// wrong for every operator. Rejected here until cerberus issue #3562
+	// routes these through the discriminator-aware mixed arithmetic and
+	// comparison lowerings the direct `(h or f) OP v` roots already use.
+	family := mixedVectorBinaryFamily(op)
+	if err := requireMixedPlanPolicy(left, family, mixedBespoke); err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(right, family, mixedBespoke); err != nil {
+		return nil, err
 	}
 
 	match := chplan.VectorMatch{}
@@ -406,6 +413,17 @@ func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool
 // vec leg's row stream. Instant-mode synthetic Values are pure
 // literal expressions (`toFloat64(toUnixTimestamp64Nano(<lit>) /
 // 1e9)`) with no ColumnRefs, so the rewrite is a no-op there.
+//
+// Mixed float/histogram vec legs are admitted under the SCALAR binary
+// families, not the vector-vector ones: a synthetic scalar (`time()`,
+// `scalar(...)`) is a scalar in Prometheus's evaluator, which drops
+// histogram samples for a histogram-vs-scalar comparison, `+`, `-` and
+// the rest of the non-scaling arithmetic, so the float-only narrowing
+// this fold applies is the reference behaviour for those. The scaling
+// operators (`* k`, `/ k`) are the one place that narrowing would be
+// wrong — Prometheus scales the histogram — and their family has no
+// existing-plan row, so a live mixed vec leg under them is rejected
+// (cerberus issue #3562 lowers it instead of rejecting).
 func foldSyntheticVectorBinary(
 	synth, vec chplan.Node,
 	vecExpr parser.Expr,
@@ -414,7 +432,8 @@ func foldSyntheticVectorBinary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	if err := requireMixedPlanPolicy(vec, mixedVectorBinaryFamily(op)); err != nil {
+	family := mixedScalarBinaryFamily(op, scalarOnLeft)
+	if err := requireMixedPlanPolicy(vec, family, mixedFloatOnly); err != nil {
 		return nil, err
 	}
 	synthVal := rewriteAnchorToTimeUnix(syntheticValueExpr(synth), s)
@@ -438,7 +457,7 @@ func foldSyntheticVectorBinary(
 	// exposes only (Attributes, Value), so a TimeUnix passthrough would
 	// raise CH UNKNOWN_IDENTIFIER. For a selector / already-canonicalised
 	// vec leg the helper emits the identical 4-column shape.
-	return guardedValueProjection(vec, vecExpr, s, ctx, mixedVectorBinaryFamily(op), func(refs sampleRoleRefs) chplan.Expr {
+	return guardedValueProjection(vec, vecExpr, s, ctx, family, func(refs sampleRoleRefs) chplan.Expr {
 		scalarValue := rewriteAnchorToTimeUnix(syntheticValueExpr(synth), refs.sourceMetrics(s))
 		var left, right chplan.Expr = refs.Value, scalarValue
 		if scalarOnLeft {

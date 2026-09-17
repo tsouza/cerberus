@@ -161,7 +161,7 @@ func lowerHistogramNativeSubqueryInner(sub *parser.SubqueryExpr, step time.Durat
 		if herr != nil {
 			return nil, true, herr
 		}
-		if err := requireMixedPlanPolicy(plan, mixedSubqueryFamily); err != nil {
+		if err := requireMixedPlanPolicy(plan, mixedSubqueryFamily, mixedBespoke); err != nil {
 			return nil, true, err
 		}
 		if rowsMayContainHistograms(plan) {
@@ -269,7 +269,7 @@ func lowerSubqueryOverUnary(
 		if err != nil {
 			return nil, err
 		}
-		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
 			return nil, err
 		}
 		if state == subqueryGridEmpty {
@@ -289,7 +289,7 @@ func lowerSubqueryOverUnary(
 	if err != nil {
 		return nil, err
 	}
-	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
 	return wrapSubqueryIdentity(sub, inner, step, s, ctx)
@@ -825,7 +825,7 @@ func lowerSubqueryOverInstantCall(
 	if err != nil {
 		return nil, err
 	}
-	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
 	if state == subqueryGridEmpty {
@@ -891,7 +891,7 @@ func lowerSubqueryOverBinary(
 		if err != nil {
 			return nil, err
 		}
-		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
 			return nil, err
 		}
 		if state == subqueryGridEmpty {
@@ -1278,7 +1278,7 @@ func lowerOuterRangeFnOverHistogramSubquery(
 	// (deriv, predict_linear, ...) falls through unmatched to this
 	// function's own existing float-only-drop / rejection handling
 	// below, unchanged.
-	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil {
+	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
 	if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, kind, outer.Func.Name, sub, s, ctx); matched {
@@ -3180,7 +3180,7 @@ func lowerSubqueryOverCallSubquery(
 		// composition; anything else (deriv, predict_linear, ...) falls
 		// through unmatched to the existing float-only-drop / rejection
 		// handling below, unchanged.
-		if err := requireMixedPlanPolicy(wideInner, mixedSubqueryFamily); err != nil {
+		if err := requireMixedPlanPolicy(wideInner, mixedSubqueryFamily, mixedBespoke); err != nil {
 			return nil, err
 		}
 		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, kind, call.Func.Name, sub, innerSub, step, s, ctx); matched {

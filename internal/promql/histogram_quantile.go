@@ -320,7 +320,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		if err != nil {
 			return nil, err
 		}
-		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily); err != nil {
+		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
 			return nil, err
 		}
 		return &chplan.Filter{

@@ -30,7 +30,7 @@ func TestScalarOperandPolicyAndIdentity(t *testing.T) {
 				var node chplan.Node
 				var err error
 				if site == mixedOperandAdmission {
-					node, err = lowerScalarMixedOperand(func() (chplan.Node, error) {
+					node, err = lowerUnderMixedOperandPolicy(mixedScalarFamily, mixedOperandAdmission, mixedFloatOnly, func() (chplan.Node, error) {
 						calls++
 						return &chplan.OneRow{}, nil
 					})
@@ -57,7 +57,7 @@ func TestScalarOperandPolicyAndIdentity(t *testing.T) {
 	want := &chplan.OneRow{}
 	wantErr := errors.New("original loader error")
 	calls := 0
-	got, err := lowerScalarMixedOperand(func() (chplan.Node, error) {
+	got, err := lowerUnderMixedOperandPolicy(mixedScalarFamily, mixedOperandAdmission, mixedFloatOnly, func() (chplan.Node, error) {
 		calls++
 		return want, wantErr
 	})

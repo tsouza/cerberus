@@ -135,7 +135,7 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return nil, err
 	}
 
-	if err := requireMixedPlanPolicy(base, mixedInfoFamily); err != nil {
+	if err := requireMixedPlanPolicy(base, mixedInfoFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
 	nameMatchers, dataMatchers, err := infoSecondArgMatchers(c)

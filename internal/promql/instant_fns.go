@@ -176,7 +176,7 @@ func lowerMathOperand(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.N
 	if !mixedRowsNeedPreparation(inner) {
 		return inner, nil
 	}
-	if _, err := mathPayloadPreparation(mixedPlanAdmission); err != nil {
+	if _, err := lowerWithMixedOperandPolicy(mixedMathFamily, mixedPlanAdmission, mixedFloatOnly); err != nil {
 		return nil, err
 	}
 	return inner, nil
@@ -189,7 +189,7 @@ func prepareMathValueInput(inner chplan.Node) (chplan.Node, error) {
 	if !mixedRowsNeedPreparation(inner) {
 		return inner, nil
 	}
-	return prepareMixedMathOperand(mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
+	return lowerFloatOnlyMixedOperand(mixedMathFamily, mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
 }
 
 // lowerClamp implements the PromQL clamp family:

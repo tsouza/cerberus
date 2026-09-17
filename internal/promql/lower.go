@@ -687,7 +687,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// doc comment for why every comparison op drops the histogram side
 	// unconditionally, regardless of `bool`.
 	if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerComparisonRoot(func() (chplan.Node, error) {
+		plan, err := lowerUnderMixedOperandPolicy(mixedComparisonFamily, mixedRootAdmission, mixedFloatOnly, func() (chplan.Node, error) {
 			return lowerComparisonOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
 		})
 		return plan, true, err
@@ -5543,7 +5543,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 	if err != nil {
 		return nil, err
 	}
-	if err := requireMixedPlanPolicy(input, mixedCountValuesFamily); err != nil {
+	if err := requireMixedPlanPolicy(input, mixedCountValuesFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
 	valueKey := promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn})

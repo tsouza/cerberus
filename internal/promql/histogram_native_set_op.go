@@ -324,7 +324,7 @@ func lowerVectorSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx, f
 	if err != nil {
 		return nil, err
 	}
-	if err := requireMixedPlanPolicy(inner, family); err != nil {
+	if err := requireMixedPlanPolicy(inner, family, mixedBespoke); err != nil {
 		return nil, err
 	}
 	return inner, nil

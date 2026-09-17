@@ -185,7 +185,7 @@ func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, family mixe
 			return nil, err
 		}
 	} else {
-		if err := requireMixedPlanPolicy(inner, family); err != nil {
+		if err := requireMixedPlanPolicy(inner, family, mixedBespoke); err != nil {
 			return nil, err
 		}
 	}
@@ -198,11 +198,8 @@ func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, family mixe
 // labelPayloadPolicy maps this family's table mode to the forwarder's actual
 // payload behavior. No other family is admitted by this resolver.
 func labelPayloadPolicy(site mixedAdmissionSite) (samplePayloadPolicy, error) {
-	key := mixedWrapperKey{family: mixedLabelFamily, site: site}
-	switch mixedOperandPolicies[key] {
-	case mixedPreserve:
-		return preserveMixedSamplePayload, nil
-	default:
-		return floatSamplePayload, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
+	if err := requireMixedOperandPolicy(mixedLabelFamily, site, mixedPreserve); err != nil {
+		return floatSamplePayload, err
 	}
+	return preserveMixedSamplePayload, nil
 }
