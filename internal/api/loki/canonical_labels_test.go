@@ -68,9 +68,15 @@ func TestMetadataSQL_CanonicalisesWholeMapIdentityKeys(t *testing.T) {
 			alias: loki.StoredLabelsAlias,
 		},
 		{
-			name: "index/stats counts distinct canonicalised label sets",
+			// /index/stats counts the SERVED label set (normalizedLabelsFrag
+			// over the stored Map), whose result is rebuilt from a sorted
+			// array and wrapped in the same canonical function — so the
+			// wrap sits on the rewrite's CAST rather than on the bare
+			// column, and the bare column reaches it through mapKeys /
+			// mapValues.
+			name: "index/stats counts distinct canonicalised served label sets",
 			path: `/loki/api/v1/index/stats?query=%7Bjob%3D%22api%22%7D&` + window,
-			want: "uniqExact(" + canonicalLabelsCol + ")",
+			want: "uniqExact(mapSort(CAST(",
 		},
 		{
 			name:  "series groups by the canonicalised label set",

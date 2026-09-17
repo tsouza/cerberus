@@ -82,7 +82,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 // the chsql.Builder. The shape is:
 //
 //	SELECT
-//	  uniqExact(mapSort(`ResourceAttributes`)) AS streams,
+//	  uniqExact(<served label set of `ResourceAttributes`>) AS streams,
 //	  count()                                  AS entries,
 //	  sum(length(`Body`))                     AS bytes
 //	FROM `otel_logs`
@@ -112,9 +112,9 @@ func buildIndexStatsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers
 }
 
 // streamsAggFrag returns the Frag that counts distinct streams:
-// "uniqExact(mapSort(`<col>`))", composed through the typed Call
-// constructor so the SQL stream stays inside the chsql surface (no raw
-// clause-keyword cosplay).
+// uniqExact over the label set cerberus SERVES for each row, composed
+// through the typed Call constructor so the SQL stream stays inside the
+// chsql surface (no raw clause-keyword cosplay).
 //
 // The Map expression is supplied by the caller through [attrMapFrag]
 // rather than read as a bare column, so a JSON-typed attributes column
@@ -122,14 +122,21 @@ func buildIndexStatsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers
 // JSON column would hash as an opaque JSON value and count streams by
 // its serialised text.
 //
-// uniqExact over the whole label-set Map is a series-identity key, and CH
-// hashes a Map positionally over its (keys, values) arrays, so the
-// canonical key-order wrap is what makes one logical stream delivered
-// under two OTLP key orders count once. The result is a scalar straight
-// out of CH — unlike /series there is no Go-side dedupe that could
-// recover a doubled count, so the wrap is the whole fix.
+// The identity counted is the SERVED label set, [normalizedLabelsFrag]
+// over the stored one — the same key /index/volume groups on and /series
+// dedupes on. The stored-to-served rewrite is not injective: `a.b` and
+// `a_b` are two stored keys and one served name, and upstream normalises
+// at ingest so they are one stream by the time anything counts them.
+// Counting the stored Map (even key-order-canonicalised) reported 2
+// streams for that pair while /index/volume answered one series for it.
+// uniqExact hashes a Map positionally over its (keys, values) arrays, and
+// normalizedLabelsFrag's result is wrapped in [canonicalLabelsFrag]'s own
+// mapSort, so one logical stream delivered under two OTLP key orders
+// counts once as well. The result is a scalar straight out of CH — unlike
+// /series there is no Go-side dedupe that could recover a doubled count,
+// so the SQL identity is the whole fix.
 func streamsAggFrag(attrMap chsql.Frag) chsql.Frag {
-	return chsql.Call("uniqExact", canonicalLabelsFrag(attrMap))
+	return chsql.Call("uniqExact", normalizedLabelsFrag(attrMap))
 }
 
 // countStar returns a Frag that emits "count()" via the typed Call
