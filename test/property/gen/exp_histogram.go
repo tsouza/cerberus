@@ -149,7 +149,7 @@ func ExpHistogramDataset() *rapid.Generator[property.Dataset] {
 		}
 
 		return property.Dataset{
-			DDL:     renderExpHistogramDDL(series),
+			DDL:     ExpHistogramDDL(series),
 			Metrics: &property.MetricsModel{Series: series},
 		}
 	})
@@ -257,8 +257,11 @@ func bucketMidpointSum(scale, posOffset int32, pos []uint64, negOffset int32, ne
 	return sum
 }
 
-// renderExpHistogramDDL produces the multi-statement seed script for
-// series: one `CREATE OR REPLACE TABLE` plus one INSERT per series.
+// ExpHistogramDDL produces the multi-statement seed script for series:
+// one `CREATE OR REPLACE TABLE` plus one INSERT per series. Exported so
+// other packages can seed a hand-built exp-histogram dataset (a fixed
+// counter-reset or resource-bound-scale scenario, say) without redrawing
+// one from [ExpHistogramDataset]'s random generator.
 //
 // The column set mirrors the OTel-CH exponential-histogram layout
 // [schema.DefaultOTelMetrics] reads (ExpHistogramTable and its
@@ -268,7 +271,7 @@ func bucketMidpointSum(scale, posOffset int32, pos []uint64, negOffset int32, ne
 // optimizer promotes) and ResourceAttributes is present-but-empty so
 // the read path's `mapUpdate(ResourceAttributes, Attributes)` label
 // merge collapses to Attributes alone.
-func renderExpHistogramDDL(series []property.SeriesData) string {
+func ExpHistogramDDL(series []property.SeriesData) string {
 	var b strings.Builder
 	b.WriteString(`CREATE OR REPLACE TABLE `)
 	b.WriteString(ExpHistogramTableName)

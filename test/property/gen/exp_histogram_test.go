@@ -199,7 +199,7 @@ func TestBucketMidpointSumHandDerived(t *testing.T) {
 
 // TestRenderExpHistogramRowHandDerived pins the exact INSERT tuple the
 // generator emits. The literal below is written out by hand from the
-// column order in renderExpHistogramDDL, so a silent reordering of the
+// column order in ExpHistogramDDL, so a silent reordering of the
 // value list against the column list — which would seed every field
 // into the wrong column and make the whole differential compare two
 // wrong answers — fails here.

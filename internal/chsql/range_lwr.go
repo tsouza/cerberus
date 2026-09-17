@@ -232,8 +232,14 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 
 	// Membership base (offset-shifted newest anchor) and value base
 	// (unshifted grid anchor). Offset folds onto the membership base only.
-	shiftBase := offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
-	gridBase := timeOrNowFrag(r.End)
+	// gridEnd is the Start-anchored newest anchor (see
+	// [startAnchoredGridEnd]) rather than the raw End, so the backward walk
+	// below reports the same anchor timestamps Prometheus's Start-anchored
+	// query_range grid does even when (End-Start) is not an exact multiple
+	// of Step.
+	gridEnd := startAnchoredGridEnd(r.Start, r.End, stepNS, numAnchors)
+	shiftBase := offsetShiftedBaseFrag(timeOrNowFrag(gridEnd), r.Offset)
+	gridBase := timeOrNowFrag(gridEnd)
 
 	inner, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -403,6 +409,37 @@ func lwrAnchorFanoutFrag(gridBase, shiftBase, ts Frag, stepNS, lookbackNS, numAn
 			),
 		),
 	)
+}
+
+// startAnchoredGridEnd returns the newest grid anchor of the (Start, End,
+// Step) span: `Start + (numAnchors-1)*Step`, the largest `Start + k*Step`
+// that does not exceed `End`.
+//
+// [emitRangeLWR] and [emitter.emitRangeBucketFanout] both walk their anchor
+// grid BACKWARD from a single "newest anchor" base (anchorBaseAtIdxFrag
+// renders `<base> - i*Step` for i = 0, 1, …) rather than forward from
+// Start, because the shared membership math (dist-behind-anchor,
+// anchorGridFloorIdxFrag) is written in terms of "how far behind the
+// newest anchor is this sample". That walk produces the SAME set of
+// timestamps Prometheus's own Start-anchored `Start, Start+Step, …`
+// query_range grid does ([chplan.StepGrid]'s contract, emitStepGrid's own
+// doc) only when `(End-Start)` is an exact multiple of `Step` — the newest
+// backward-walked anchor then lands exactly on Start after numAnchors-1
+// steps. When it is NOT an exact multiple, anchoring the backward walk at
+// the raw `End` instead silently shifts every reported anchor timestamp by
+// the remainder `(End-Start) mod Step`, so a query whose window does not
+// divide evenly by its step answers at the wrong instants instead of the
+// ones the request named.
+//
+// numAnchors is the caller's own `(End-Start)/Step + 1` (integer floor
+// division), so `Start + (numAnchors-1)*Step` is exactly that same floor
+// applied to the anchor arithmetic instead of left implicit in the walk's
+// base.
+func startAnchoredGridEnd(start, end time.Time, stepNS, numAnchors int64) time.Time {
+	if start.IsZero() || end.IsZero() {
+		return end
+	}
+	return start.Add(time.Duration((numAnchors - 1) * stepNS))
 }
 
 // offsetShiftedBaseFrag renders an anchor base shifted back by a PromQL

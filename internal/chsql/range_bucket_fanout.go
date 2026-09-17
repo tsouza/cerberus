@@ -89,12 +89,13 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	stepNS := r.Step.Nanoseconds()
 	lookbackNS := r.Lookback.Nanoseconds()
 
-	// Membership base (offset-shifted newest anchor) and value base
-	// (unshifted grid anchor). Offset folds onto the membership base only.
-	shiftBase := offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
-
 	var numAnchors int64
 	var gridBase Frag
+	// Membership base (offset-shifted newest anchor) and value base
+	// (unshifted grid anchor). Offset folds onto the membership base only.
+	// Reassigned below in the (Start, End) branch to the Start-anchored
+	// grid end — see [startAnchoredGridEnd].
+	shiftBase := offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
 	if r.OuterRange > 0 {
 		// Independent-subquery-grid mode (cerberus issue #2726): the anchor
 		// grid is derived from (End, OuterRange, Step) — mirrors
@@ -125,7 +126,9 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 			}
 			numAnchors = span/stepNS + 1
 		}
-		gridBase = timeOrNowFrag(r.End)
+		gridEnd := startAnchoredGridEnd(r.Start, r.End, stepNS, numAnchors)
+		shiftBase = offsetShiftedBaseFrag(timeOrNowFrag(gridEnd), r.Offset)
+		gridBase = timeOrNowFrag(gridEnd)
 	}
 
 	inner, err := e.subqueryFrag(r.Input)
