@@ -95,12 +95,12 @@ export function bindingVerifier(model, binding) {
   return model.verifiers.get(binding.verifier) ?? null;
 }
 
-/** Classifies a binding's test_ref into one of the five known evidence systems, or null. */
+/** Classifies a binding's test_ref into one of the six known evidence systems, or null when no scheme parses it. */
 export function classifyBindingEvidenceSystem(binding) {
   return classifyTestRef(binding.test_ref).system;
 }
 
-/** Active-binding counts per evidence system (the five known ones, plus "unclassified"). */
+/** Active-binding counts per evidence system (the six known ones, plus "unclassified" for a test_ref no scheme parses). */
 export function evidenceSystemCounts(model) {
   const counts = Object.fromEntries(EVIDENCE_SYSTEMS.map((s) => [s, 0]));
   counts.unclassified = 0;

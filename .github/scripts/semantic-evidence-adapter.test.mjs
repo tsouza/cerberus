@@ -13,9 +13,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { loadSemanticModel } from "./lib/semantic-model.mjs";
 import {
@@ -33,11 +35,14 @@ import {
   resolveOracleInventoryEvidence,
   resolvePropertyShapeEvidence,
   resolveRejectionParityEvidence,
+  resolveSourcePathEvidence,
   resolveSurfaceParityEvidence,
   resolveTxtarEvidence,
 } from "./lib/semantic-evidence-adapter.mjs";
 
 const REPO_ROOT = process.cwd();
+const SCRIPT_DIR = fileURLToPath(new URL(".", import.meta.url));
+const CLI_PATH = join(SCRIPT_DIR, "semantic-evidence-adapter.mjs");
 
 function tempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -87,13 +92,92 @@ test("classifyTestRef dispatches each of the five schemes", () => {
   assert.equal(classifyTestRef("test/oracle/inventory#promql/agg:avg").system, "oracle-inventory-case");
 });
 
-test("classifyTestRef returns system:null for a test_ref outside these five systems", () => {
-  // Real existing bindings.json test_refs for other verifiers (#3427's own
-  // lane adapter, or a static-scan verifier) — not dangling, just not ours.
-  assert.equal(classifyTestRef("compatibility/prometheus").system, null);
-  assert.equal(classifyTestRef("internal/engine").system, null);
+test("classifyTestRef classifies a bare path, a path:GoTestName and a path#token as source-path", () => {
+  assert.deepEqual(classifyTestRef("compatibility/prometheus"), {
+    system: "source-path",
+    path: "compatibility/prometheus",
+    symbol: null,
+    token: null,
+  });
+  assert.deepEqual(classifyTestRef("internal/engine"), {
+    system: "source-path",
+    path: "internal/engine",
+    symbol: null,
+    token: null,
+  });
+  assert.deepEqual(classifyTestRef("test/regression/goleak_test.go:TestNoGoroutineLeak_PromQuery"), {
+    system: "source-path",
+    path: "test/regression/goleak_test.go",
+    symbol: "TestNoGoroutineLeak_PromQuery",
+    token: null,
+  });
+  assert.deepEqual(classifyTestRef(".github/scripts/chaos-run.mjs#ch-pod-kill"), {
+    system: "source-path",
+    path: ".github/scripts/chaos-run.mjs",
+    symbol: null,
+    token: "ch-pod-kill",
+  });
+});
+
+test("classifyTestRef returns system:null only for a test_ref no scheme can parse", () => {
   assert.equal(classifyTestRef("").system, null);
   assert.equal(classifyTestRef(undefined).system, null);
+  assert.equal(classifyTestRef("/absolute/path.go").system, null);
+  assert.equal(classifyTestRef("internal/engine:Sym#frag").system, null);
+  assert.equal(classifyTestRef("internal/engine:not a symbol").system, null);
+});
+
+// --- source-path resolver ----------------------------------------------------
+
+test("resolveSourcePathEvidence resolves a real file, a real file:TestName, a real directory and a real file#token", () => {
+  assert.equal(resolveSourcePathEvidence("internal/engine/result_cache_test.go", REPO_ROOT).ok, true);
+  assert.equal(
+    resolveSourcePathEvidence("test/regression/goleak_test.go:TestNoGoroutineLeak_PromQuery", REPO_ROOT).ok,
+    true,
+  );
+  assert.equal(resolveSourcePathEvidence("internal/engine", REPO_ROOT).ok, true);
+  assert.equal(resolveSourcePathEvidence("compatibility/prometheus", REPO_ROOT).ok, true);
+  assert.equal(resolveSourcePathEvidence(".github/scripts/chaos-run.mjs#ch-pod-kill", REPO_ROOT).ok, true);
+});
+
+test("resolveSourcePathEvidence names each way a source-path claim can dangle", () => {
+  const dir = tempDir("semantic-source-path-");
+  try {
+    mkdirSync(join(dir, "pkg"));
+    writeFileSync(join(dir, "pkg", "a_test.go"), "package pkg\n\nfunc TestReal(t *testing.T) {}\n");
+    mkdirSync(join(dir, "nogo"));
+    writeFileSync(join(dir, "nogo", "README.md"), "no go files here\n");
+
+    const missingFile = resolveSourcePathEvidence("pkg/missing_test.go:TestNope", dir);
+    assert.equal(missingFile.ok, false);
+    assert.match(missingFile.problems[0], /pkg\/missing_test\.go/);
+    assert.match(missingFile.problems[0], /does not exist/);
+
+    const missingFunc = resolveSourcePathEvidence("pkg/a_test.go:TestNope", dir);
+    assert.equal(missingFunc.ok, false);
+    assert.match(missingFunc.problems[0], /func TestNope\(/);
+
+    const symbolOnDir = resolveSourcePathEvidence("pkg:TestReal", dir);
+    assert.equal(symbolOnDir.ok, false);
+    assert.match(symbolOnDir.problems[0], /directory/);
+
+    const missingDir = resolveSourcePathEvidence("does_not_exist", dir);
+    assert.equal(missingDir.ok, false);
+    assert.match(missingDir.problems[0], /does not exist/);
+
+    const noGo = resolveSourcePathEvidence("nogo", dir);
+    assert.equal(noGo.ok, false);
+    assert.match(noGo.problems[0], /no \.go file/);
+
+    const missingToken = resolveSourcePathEvidence("pkg/a_test.go#no-such-token", dir);
+    assert.equal(missingToken.ok, false);
+    assert.match(missingToken.problems[0], /no-such-token/);
+
+    assert.equal(resolveSourcePathEvidence("pkg/a_test.go:TestReal", dir).ok, true);
+    assert.equal(resolveSourcePathEvidence("pkg", dir).ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- TXTAR parsing ---------------------------------------------------------
@@ -271,10 +355,17 @@ test("classifyObservedEvidence: pass and fail are observed; error/missing are no
 
 // --- resolveBindingEvidence / diagnoseDanglingBindings ------------------------
 
-test("resolveBindingEvidence returns system:null for a binding outside the five systems", () => {
-  const r = resolveBindingEvidence({ test_ref: "internal/engine" }, {});
-  assert.equal(r.system, null);
+test("resolveBindingEvidence resolves a bare directory ref through the source-path resolver", () => {
+  const r = resolveBindingEvidence({ test_ref: "internal/engine" }, { repoRoot: REPO_ROOT });
+  assert.equal(r.system, "source-path");
   assert.equal(r.ok, true);
+});
+
+test("resolveBindingEvidence fails closed on a test_ref no scheme can parse", () => {
+  const r = resolveBindingEvidence({ test_ref: "/absolute/nowhere.go" }, { repoRoot: REPO_ROOT });
+  assert.equal(r.system, null);
+  assert.equal(r.ok, false);
+  assert.match(r.problems[0], /matches none of the six/);
 });
 
 test("diagnoseDanglingBindings names the binding id, contract and missing identity", () => {
@@ -298,13 +389,88 @@ test("diagnoseDanglingBindings names the binding id, contract and missing identi
   assert.match(problems[0], /promql\.instant\.does-not-exist/);
 });
 
-test("diagnoseDanglingBindings reports nothing for a binding outside the five systems", () => {
+test("diagnoseDanglingBindings reports a dangling file:TestName and a dangling bare directory", () => {
   const model = {
     bindings: new Map([
-      ["BINDING-Y", { id: "BINDING-Y", contract: "ARCH-Y", at: "x", test_ref: "internal/engine" }],
+      [
+        "BINDING-Y",
+        {
+          id: "BINDING-Y",
+          contract: "ARCH-Y",
+          at: "x",
+          test_ref: "test/regression/DOES_NOT_EXIST_test.go:TestNope",
+        },
+      ],
+      ["BINDING-Z", { id: "BINDING-Z", contract: "ARCH-Z", at: "y", test_ref: "internal/does_not_exist" }],
+      ["BINDING-OK", { id: "BINDING-OK", contract: "ARCH-OK", at: "z", test_ref: "internal/engine" }],
     ]),
   };
-  assert.deepEqual(diagnoseDanglingBindings(model, {}), []);
+  const problems = diagnoseDanglingBindings(model, { repoRoot: REPO_ROOT });
+  assert.equal(problems.length, 2, problems.join("\n"));
+  assert.match(problems[0], /BINDING-Y/);
+  assert.match(problems[0], /DOES_NOT_EXIST_test\.go/);
+  assert.match(problems[1], /BINDING-Z/);
+  assert.match(problems[1], /internal\/does_not_exist/);
+});
+
+test("diagnoseDanglingBindings reports a test_ref that no scheme can parse as dangling, never as not-applicable", () => {
+  const model = {
+    bindings: new Map([
+      ["BINDING-Q", { id: "BINDING-Q", contract: "ARCH-Q", at: "q", test_ref: "internal/engine:Sym#frag" }],
+    ]),
+  };
+  const problems = diagnoseDanglingBindings(model, { repoRoot: REPO_ROOT });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /BINDING-Q/);
+  assert.match(problems[0], /matches none of the six/);
+});
+
+test("diagnoseDanglingBindings over the real committed model resolves every binding (none is skipped)", () => {
+  const model = loadSemanticModel("test/semantic", { root: REPO_ROOT });
+  const indices = {
+    repoRoot: REPO_ROOT,
+    shapeExport: loadPropertyShapeExport({ repoRoot: REPO_ROOT }),
+    surfaceParityEntries: loadSurfaceParityInventory(REPO_ROOT),
+    rejectionCatalogueEntries: loadRejectionParityCatalogue(REPO_ROOT),
+    oracleInventory: loadOracleInventory(REPO_ROOT),
+  };
+  assert.deepEqual(diagnoseDanglingBindings(model, indices), []);
+  for (const [, binding] of model.bindings) {
+    const r = resolveBindingEvidence(binding, indices);
+    assert.notEqual(r.system, null, `${binding.id} (${binding.test_ref}) classified to no system`);
+  }
+});
+
+// A binding pointing at a file or directory that does not exist used to pass
+// the CLI (its test_ref classified to no system and was skipped as "not
+// applicable"). The real CLI, over a copy of the real model with two such
+// refs, must exit 1 and name both.
+test("CLI: a binding at a non-existent file:TestName or a non-existent directory exits 1", () => {
+  const dir = tempDir("semantic-evidence-cli-");
+  try {
+    cpSync(join(REPO_ROOT, "test/semantic"), dir, { recursive: true });
+    const bindingsPath = join(dir, "bindings.json");
+    const doc = JSON.parse(readFileSync(bindingsPath, "utf8"));
+    const cancellation = doc.bindings.find((b) => b.id === "BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL");
+    const noCaching = doc.bindings.find((b) => b.id === "BINDING-ARCH-NO-CACHING-STATIC");
+    assert.ok(cancellation && noCaching, "the two bindings this test rewrites must exist in the real model");
+    cancellation.test_ref = "test/regression/DOES_NOT_EXIST_test.go:TestNope";
+    noCaching.test_ref = "internal/does_not_exist";
+    writeFileSync(bindingsPath, JSON.stringify(doc, null, 2));
+
+    const result = spawnSync(process.execPath, [CLI_PATH], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: { ...process.env, SEMANTIC_MODEL_DIR: dir },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL/);
+    assert.match(result.stderr, /DOES_NOT_EXIST_test\.go/);
+    assert.match(result.stderr, /BINDING-ARCH-NO-CACHING-STATIC/);
+    assert.match(result.stderr, /internal\/does_not_exist/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- Contract IDs are independent of where their evidence lives --------------

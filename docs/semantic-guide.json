@@ -1459,7 +1459,7 @@
           "id": "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "test_ref": "internal/optimizer/property_test.go",
           "evidence_class": "property",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "obligations": [
             {
               "lane_id": "chdb.perf-guards",
@@ -1659,7 +1659,7 @@
           "id": "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "test_ref": "internal/optimizer/termination_test.go",
           "evidence_class": "execution",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "obligations": [
             {
               "lane_id": "chdb.perf-guards",

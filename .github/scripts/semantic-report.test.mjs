@@ -287,17 +287,19 @@ test("verifierComplementGaps: no gap once the complement is also in active use",
 
 // --- evidence systems / head indexing ---------------------------------------
 
-test("evidenceSystemCounts classifies property-shape, txtar-fixture and unclassified test_refs", () => {
+test("evidenceSystemCounts classifies property-shape, txtar-fixture, source-path and unparseable test_refs", () => {
   const model = buildModel({
     bindings: [
       binding({ id: "BINDING-A", test_ref: "test/property/gen#promql.example" }),
       binding({ id: "BINDING-B", test_ref: "test/spec/promql/example.txtar", independence_group: "group-a" }),
       binding({ id: "BINDING-C", test_ref: "internal/engine", independence_group: "group-a" }),
+      binding({ id: "BINDING-D", test_ref: "internal/engine:Sym#frag", independence_group: "group-a" }),
     ],
   });
   const counts = evidenceSystemCounts(model);
   assert.equal(counts["property-shape"], 1);
   assert.equal(counts["txtar-fixture"], 1);
+  assert.equal(counts["source-path"], 1);
   assert.equal(counts.unclassified, 1);
 });
 

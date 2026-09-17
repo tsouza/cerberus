@@ -59,7 +59,8 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | surface-parity-symbol | 0               |
 | rejection-parity-site | 1               |
 | oracle-inventory-case | 0               |
-| unclassified          | 71              |
+| source-path           | 71              |
+| unclassified          | 0               |
 
 ## Lane inventory (merge / release obligations)
 

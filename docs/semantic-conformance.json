@@ -44,7 +44,8 @@
     "surface-parity-symbol": 0,
     "rejection-parity-site": 1,
     "oracle-inventory-case": 0,
-    "unclassified": 71
+    "source-path": 71,
+    "unclassified": 0
   },
   "lane_inventory": {
     "lanes": [
@@ -1760,7 +1761,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "agpl-reachability-scan",
           "test_ref": ".github/scripts/agpl-clean.mjs",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -2316,7 +2317,7 @@
           "evidence_class": "execution",
           "independence_group": "breaker-live-fault-corroboration",
           "test_ref": ".github/scripts/chaos-run.mjs#ch-pod-kill",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -2383,7 +2384,7 @@
           "evidence_class": "execution",
           "independence_group": "breaker-deterministic-state-machine",
           "test_ref": "internal/chclient/breaker_chaos_test.go:TestBreaker_OpensAfterNConsecutiveFailures",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -2601,7 +2602,7 @@
           "evidence_class": "execution",
           "independence_group": "real-network-connection-recovery",
           "test_ref": "internal/chclient/conn_teardown_integration_test.go:TestCursorTeardown_ReturnsConnectionToPool",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -2738,7 +2739,7 @@
           "evidence_class": "execution",
           "independence_group": "prom-seam-bounded-drain",
           "test_ref": "test/regression/cursor_teardown_order_test.go:TestPromRangeCursorTeardownIsBounded",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -2815,7 +2816,7 @@
           "evidence_class": "execution",
           "independence_group": "prom-seam-close-before-cancel-order",
           "test_ref": "test/regression/cursor_teardown_order_test.go:TestPromRangeCursorClosedBeforeContextCancel",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -2986,7 +2987,7 @@
           "evidence_class": "execution",
           "independence_group": "gate-allocation-floor",
           "test_ref": "internal/chclient/fanout_gate_test.go:TestNewDataShardFanoutGate_DataShardCountLE1_NeverAllocates",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -3124,7 +3125,7 @@
           "evidence_class": "execution",
           "independence_group": "gate-cancel-kill-ordering",
           "test_ref": "internal/chclient/fanout_gate_test.go:TestAcquireDataShardFanout_CancelledDispatch_IssuesKillQueryBeforeRelease",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -3262,7 +3263,7 @@
           "evidence_class": "execution",
           "independence_group": "gate-concurrency-cap",
           "test_ref": "internal/chclient/fanout_gate_test.go:TestQueryOpen_ConcurrentDataShardFanout_NeverExceedsCap",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -3400,7 +3401,7 @@
           "evidence_class": "execution",
           "independence_group": "gate-denial-breaker-neutral",
           "test_ref": "internal/chclient/fanout_gate_test.go:TestQueryCursor_DataShardFanoutGate_DeniedIsBreakerNeutral",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -3615,7 +3616,7 @@
           "evidence_class": "execution",
           "independence_group": "corpus-decode-differential",
           "test_ref": "test/spec/strictscan_integration_test.go:TestStrictScanDifferential",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -3716,7 +3717,7 @@
           "evidence_class": "execution",
           "independence_group": "query-log-exit-status-enum-reconciliation",
           "test_ref": "internal/optcorpus/enummigrate_realch_integration_test.go:TestCorpusEnumMigrationRealClickHouse",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -3928,7 +3929,7 @@
           "evidence_class": "execution",
           "independence_group": "cardinality-scale-wall-ratchet",
           "test_ref": "test/perf/cardinality_ratchet_test.go:TestCardinalityRatchet",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -4014,7 +4015,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "static-fanout-lint",
           "test_ref": "internal/perf/fanout/lint_test.go:TestRule1_UnboundedCrossJoin_Trips",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -4897,7 +4898,7 @@
           "evidence_class": "property",
           "independence_group": "optimizer-property-equivalence",
           "test_ref": "internal/optimizer/property_test.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -5128,7 +5129,7 @@
           "evidence_class": "execution",
           "independence_group": "optimizer-termination",
           "test_ref": "internal/optimizer/termination_test.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -5736,7 +5737,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "static-scan",
           "test_ref": "internal/engine",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -5854,7 +5855,7 @@
           "evidence_class": "execution",
           "independence_group": "result-cache-window-tests",
           "test_ref": "internal/engine/result_cache_test.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -6039,7 +6040,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "forbid-skip-scan",
           "test_ref": ".github/scripts/forbid-skip.mjs",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -6180,7 +6181,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "coverage-floor-enrollment",
           "test_ref": ".github/scripts/coverage-package-floor.mjs",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -6250,7 +6251,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "go-arch-lint-declaration",
           "test_ref": ".go-arch-lint.yml",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -6358,7 +6359,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "forbidigo-type-checked-scan",
           "test_ref": ".golangci.yml",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -6478,7 +6479,7 @@
           "evidence_class": "execution",
           "independence_group": "nightly-real-ch-memory-gate",
           "test_ref": "test/perf/nightly/realch_perfnightly_integration_test.go:TestPerfNightlyRealCH",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -6596,7 +6597,7 @@
           "evidence_class": "execution",
           "independence_group": "baseline-prong-ordering-invariant",
           "test_ref": "test/perf/nightly/baseline_test.go:TestNightlyBaseline_ProngBIsNeverLooserThanProngA",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -6787,7 +6788,7 @@
           "evidence_class": "execution",
           "independence_group": "merge-driver-gate",
           "test_ref": "test/regression/generated_artifact_merge_gate_test.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -6869,7 +6870,7 @@
           "evidence_class": "execution",
           "independence_group": "shard-coverage-derivation",
           "test_ref": "test/regression/golden_shard_coverage_test.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -7056,7 +7057,7 @@
           "evidence_class": "execution",
           "independence_group": "goroutine-leak-concurrent-path",
           "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_ConcurrentRequests",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -7135,7 +7136,7 @@
           "evidence_class": "execution",
           "independence_group": "goroutine-leak-error-path",
           "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_UnderError",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -7214,7 +7215,7 @@
           "evidence_class": "execution",
           "independence_group": "goroutine-leak-normal-request",
           "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_PromQuery",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -7290,7 +7291,7 @@
           "evidence_class": "execution",
           "independence_group": "panic-recovery-releases-admission-slot",
           "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_MiddlewareUnderHandlerPanic_ReleasesSlot",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -7435,7 +7436,7 @@
           "evidence_class": "execution",
           "independence_group": "goroutine-leak-route-memo-retry",
           "test_ref": "test/regression/goleak_test.go:TestNoGoroutineLeak_RouteMemo",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -7588,7 +7589,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "raw-write-scan",
           "test_ref": ".github/scripts/forbid-sql-raw.mjs",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -7656,7 +7657,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "verbatim-concat-scan",
           "test_ref": ".github/scripts/forbid-verbatim-concat.mjs",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -8074,7 +8075,7 @@
           "evidence_class": "reference",
           "independence_group": "reference-differential",
           "test_ref": "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -8470,7 +8471,7 @@
           "evidence_class": "manual-review",
           "independence_group": "oracle-package-doc-review",
           "test_ref": "test/property/oracle/logql/doc.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -8550,7 +8551,7 @@
           "evidence_class": "manual-review",
           "independence_group": "oracle-package-doc-review",
           "test_ref": "test/property/oracle/logql/line_filters.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -9226,7 +9227,7 @@
           "evidence_class": "reference",
           "independence_group": "status-code-differential",
           "test_ref": "compatibility/loki/cmd/loki-compliance-tester/status_parity.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -9382,7 +9383,7 @@
           "evidence_class": "reference",
           "independence_group": "reference-stream-row-differential",
           "test_ref": "compatibility/loki",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -9889,7 +9890,7 @@
           "evidence_class": "manual-review",
           "independence_group": "upstream-skip-baseline-review",
           "test_ref": "compatibility/loki/upstream-skip-baseline.txt",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -10284,7 +10285,7 @@
           "evidence_class": "reference",
           "independence_group": "reference-differential",
           "test_ref": "compatibility/prometheus/query-corpus/header.yml",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -10760,7 +10761,7 @@
           "evidence_class": "reference",
           "independence_group": "reference-differential",
           "test_ref": "compatibility/prometheus/query-corpus/header.yml",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -10963,7 +10964,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "oracle-engine-flag-parity-scan",
           "test_ref": "test/regression/promql_oracle_engine_parity_test.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -11105,7 +11106,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "parser-single-source-scan",
           "test_ref": "test/regression/promql_parser_options_single_source_test.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -11266,7 +11267,7 @@
           "evidence_class": "reference",
           "independence_group": "reference-differential",
           "test_ref": "compatibility/prometheus",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -11552,7 +11553,7 @@
           "evidence_class": "static-analysis",
           "independence_group": "fork-version-skew-scan",
           "test_ref": "test/regression/fork_version_skew_test.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -11695,7 +11696,7 @@
           "evidence_class": "manual-review",
           "independence_group": "corpus-provenance-documentation-review",
           "test_ref": "compatibility/prometheus/query-corpus/header.yml",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -11889,7 +11890,7 @@
           "evidence_class": "execution",
           "independence_group": "semaphore-capacity-recovery",
           "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_MiddlewareUnderHandlerPanic_ReleasesSlot",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -12030,7 +12031,7 @@
           "evidence_class": "execution",
           "independence_group": "real-network-connection-teardown-boundary",
           "test_ref": "internal/chclient/conn_teardown_integration_test.go:TestCursorTeardown_ReturnsConnectionToPool",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -12166,7 +12167,7 @@
           "evidence_class": "execution",
           "independence_group": "cross-head-budget-isolation",
           "test_ref": "internal/api/admit/chaos_test.go:TestAdmit_PerHandlerCaps_Independent",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -12308,7 +12309,7 @@
           "evidence_class": "execution",
           "independence_group": "grpc-transport-rejection",
           "test_ref": "internal/api/admit/admit_test.go:TestStreamInterceptorRejectsAtCap",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -12453,7 +12454,7 @@
           "evidence_class": "execution",
           "independence_group": "logql-admission-wiring",
           "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiAdmitRejectsAtCap",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -12604,7 +12605,7 @@
           "evidence_class": "execution",
           "independence_group": "promql-admission-wiring",
           "test_ref": "internal/api/prom/conformance_test.go:TestConformance_PromAdmitRejectsAtCap",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -12761,7 +12762,7 @@
           "evidence_class": "execution",
           "independence_group": "tail-budget-isolation",
           "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiTailRejectedAtTailCap",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -12912,7 +12913,7 @@
           "evidence_class": "execution",
           "independence_group": "tail-budget-isolation",
           "test_ref": "internal/api/loki/conformance_test.go:TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -13063,7 +13064,7 @@
           "evidence_class": "execution",
           "independence_group": "traceql-admission-wiring",
           "test_ref": "internal/api/tempo/conformance_test.go:TestConformance_TempoAdmitRejectsAtCap",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -13286,7 +13287,7 @@
           "evidence_class": "execution",
           "independence_group": "route-memo-retry-preserves-decode-contract",
           "test_ref": "test/consumer-corpus/route_memo_replay_test.go:TestConsumerCorpus_RouteMemoRetry_PreservesConsumerDecodeContract",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -13351,7 +13352,7 @@
           "evidence_class": "execution",
           "independence_group": "wire-shape-stub-replay",
           "test_ref": "test/consumer-corpus/replay_test.go:TestConsumerCorpus_Replay_Stub",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -13785,7 +13786,7 @@
           "evidence_class": "execution",
           "independence_group": "tier1-query-parity",
           "test_ref": "test/e2e/migration/tier1_parity_test.go:TestTier1Parity",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -13893,7 +13894,7 @@
           "evidence_class": "execution",
           "independence_group": "tier1-substrate-mechanism",
           "test_ref": "test/e2e/migration/tier1_stack_test.go:TestTier1Substrate",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -14001,7 +14002,7 @@
           "evidence_class": "execution",
           "independence_group": "tier2-firing-parity",
           "test_ref": "test/e2e/migration/tier2_ruler_test.go:TestTier2Substrate",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -14201,7 +14202,7 @@
           "evidence_class": "execution",
           "independence_group": "resource-config-projection",
           "test_ref": "test/semantic/resourcefixture/resource_config_test.go:TestResourceFixture_DottedKeyNormalization",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -14267,7 +14268,7 @@
           "evidence_class": "execution",
           "independence_group": "logql-resource-fixture",
           "test_ref": "test/semantic/resourcefixture/logql_resource_chdb_test.go:TestSignalResource_LogQL_ChDB",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -14333,7 +14334,7 @@
           "evidence_class": "execution",
           "independence_group": "promql-resource-fixture",
           "test_ref": "test/semantic/resourcefixture/promql_resource_chdb_test.go:TestSignalResource_PromQL_ChDB",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -14399,7 +14400,7 @@
           "evidence_class": "execution",
           "independence_group": "traceql-resource-fixture",
           "test_ref": "test/semantic/resourcefixture/traceql_resource_chdb_test.go:TestSignalResource_TraceQL_ChDB",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -14916,7 +14917,7 @@
           "evidence_class": "execution",
           "independence_group": "in-process-forked-reference-evaluator",
           "test_ref": "test/spec/parityoracle/traceql/oracle.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -15022,7 +15023,7 @@
           "evidence_class": "reference",
           "independence_group": "live-reference-runtime-differential",
           "test_ref": "compatibility/tempo/driver/differ.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -15082,7 +15083,7 @@
           "evidence_class": "property",
           "independence_group": "local-property-oracle",
           "test_ref": "test/property/oracle/traceql/evaluator.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -15230,7 +15231,7 @@
           "evidence_class": "property",
           "independence_group": "random-property-sweep",
           "test_ref": "test/property/oracle/traceql/evaluator.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -15380,7 +15381,7 @@
           "evidence_class": "property",
           "independence_group": "random-property-sweep",
           "test_ref": "test/property/oracle/traceql/evaluator.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -16748,7 +16749,7 @@
           "evidence_class": "reference",
           "independence_group": "compat-grpc-transport",
           "test_ref": "compatibility/tempo/driver/grpc_diff.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
@@ -16806,7 +16807,7 @@
           "evidence_class": "reference",
           "independence_group": "compat-http-transport",
           "test_ref": "compatibility/tempo/driver/diff.go",
-          "evidence_system": null,
+          "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
             "observed_at": null,
