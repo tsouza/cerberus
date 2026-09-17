@@ -33,6 +33,36 @@ const (
 	spanIdentitySpanIDKey  = "__cerberus_spanID"
 )
 
+// attributesColumnAlias is the backtick-quoted alias every canonical
+// span-shaped chplan lowering gives its Attributes output column
+// (internal/api/tempo/handler.go writes the same wire name) — the same
+// WIRE-fact restatement as the span identity keys above, for the same
+// reason: whether a fixture's own emitted SQL claims this alias at all is
+// what distinguishes a deliberately non-span-shaped aggregate projection
+// (MetricsCompare, MetricsAggregate, or any future one) from a
+// span-shaped fixture whose Attributes cell is simply malformed (see
+// spanIdentitiesOfExpectedRows).
+const attributesColumnAlias = "`Attributes`"
+
+// outerSelectClaimsAttributesColumn reports whether sql's OWN (outermost)
+// SELECT list aliases a column attributesColumnAlias.
+//
+// Scoped to the outermost SELECT specifically, not the whole query text,
+// because an inner subquery commonly passes an Attributes-named column
+// straight through on its way to becoming something else entirely (a
+// MetricsCompare/MetricsAggregate output never named Attributes) — chsql's
+// own emitted SQL for exactly that shape still has "`Attributes` AS
+// `Attributes`" at an inner level, so matching anywhere in sql would read
+// every non-canonical projection as canonical. chsql always renders the
+// outermost SELECT's own column list before its first top-level `FROM`,
+// and none of the column expressions this comparator ever sees embed a
+// scalar subquery of their own, so the substring before the first ` FROM
+// ` is that column list alone.
+func outerSelectClaimsAttributesColumn(sql string) bool {
+	outer, _, _ := strings.Cut(sql, " FROM ")
+	return strings.Contains(outer, attributesColumnAlias)
+}
+
 // errTempoSpanIdentityUnavailable marks a successfully decoded answer shape
 // that cannot identify a set of spans for the Tempo comparator. Malformed
 // expected-row data deliberately does not wrap this sentinel.
@@ -541,22 +571,42 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 		}
 		// A four-column row is not necessarily the canonical span shape:
 		// MetricsCompare's aggregate projection (is_selection, attr, val,
-		// Value) also has arity 4, but its second column is a plain string,
-		// never an Attributes object. Checking the cell's actual type here
-		// — rather than trusting the column count alone — is what tells
-		// the two apart structurally, by the shape of the decoded data
-		// itself, not by the fixture's name or its root plan node. A row
-		// whose second column genuinely IS an object but fails to decode
-		// (a malformed attribute value) falls through to rowAttrs below
-		// and stays an unclassified error, so a broken decoder can never
-		// manufacture liveness evidence for a stale exemption.
+		// Value) and MetricsAggregate's by/without projection (one column
+		// per grouping key, then Value) both also have arity 4, and their
+		// second column is whatever the user's second grouping expression
+		// is — never an Attributes object. A non-object second column is
+		// ambiguous on its own, though — it is equally what a genuinely
+		// malformed span-shaped fixture's Attributes cell looks like — so
+		// the column's decoded type alone cannot tell the two apart, and
+		// neither can naming one specific emitter's own column, because a
+		// third non-canonical shape would just repeat this bug. What does
+		// generalize is outerSelectClaimsAttributesColumn: every canonical
+		// span projection's OWN (outermost) SELECT aliases this position
+		// literally `Attributes` — internal/api/tempo/handler.go and every
+		// span-shaped chplan lowering agree on that name — so its absence
+		// from the fixture's own emitted SQL is positive, structural
+		// evidence the projection never claimed to carry Attributes here
+		// at all. Its presence (or unknown SQL, as in a caller that never
+		// populated rt.SQL) means a row that IS trying to be the canonical
+		// shape has a broken Attributes cell, which stays an unclassified
+		// error — like a row whose second column genuinely IS an object
+		// but fails to decode (a malformed attribute value), which falls
+		// through to rowAttrs below — so a broken decoder, or a caller
+		// that can't prove the projection is legitimately different, can
+		// never manufacture liveness evidence for a stale exemption.
 		if _, ok := row[spanRowAttrsIdx].(map[string]any); !ok {
-			return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
+			if rt.SQL != "" && !outerSelectClaimsAttributesColumn(rt.SQL) {
+				return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
+					"expected_rows[%d] column %d (where the canonical span shape carries Attributes) "+
+						"is %T, not an object; this fixture's projection is not the canonical span shape "+
+						"(SpanName, Attributes, Timestamp, Duration) and carries no span identity to compare",
+					i, spanRowAttrsIdx, row[spanRowAttrsIdx],
+				))
+			}
+			return nil, fmt.Errorf(
 				"expected_rows[%d] column %d (where the canonical span shape carries Attributes) "+
-					"is %T, not an object; this fixture's projection is not the canonical span shape "+
-					"(SpanName, Attributes, Timestamp, Duration) and carries no span identity to compare",
-				i, spanRowAttrsIdx, row[spanRowAttrsIdx],
-			))
+					"is %T, not an object", i, spanRowAttrsIdx, row[spanRowAttrsIdx],
+			)
 		}
 		attrs, err := rowAttrs(row[spanRowAttrsIdx], i)
 		if err != nil {
