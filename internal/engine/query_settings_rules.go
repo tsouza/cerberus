@@ -324,17 +324,11 @@ func (r SettingsRules) now() time.Time {
 	return time.Now()
 }
 
-// apply layers the enabled settings rules onto ctx for plan. It inspects the
-// plan itself; the dispatch seam (applySharedQuerySettings) inspects it once
-// for every rule and calls applyFacts directly.
-func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Context {
-	return r.applyFacts(ctx, inspectPlanShape(plan, r.Traces.TraceIDColumn))
-}
-
 // applyFacts layers the enabled settings rules onto ctx for the plan f was
-// inspected from. Each rule that fires writes through
-// chclient.WithQuerySetting so they accumulate on the one per-request settings
-// map. With every flag off, ctx is returned unchanged.
+// inspected from — the dispatch seam (applySharedQuerySettings) inspects the
+// plan once for every rule and hands the facts here. Each rule that fires
+// writes through chclient.WithQuerySetting so they accumulate on the one
+// per-request settings map. With every flag off, ctx is returned unchanged.
 //
 // f.nativeHistogramAnalyzerHazard is what keeps enable_analyzer single-valued
 // on the settings map. applyNativeHistogramAnalyzerFix stamps enable_analyzer=0

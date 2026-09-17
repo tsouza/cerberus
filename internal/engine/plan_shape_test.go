@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -13,6 +14,14 @@ import (
 // SettingsRules.Traces.
 func shapeOf(plan chplan.Node) planShapeFacts {
 	return inspectPlanShape(plan, schema.DefaultOTelTraces().TraceIDColumn)
+}
+
+// apply is the per-rule tests' entry point: applyFacts over an inspection of
+// plan against r's own trace-id column, exactly as the dispatch seam composes
+// the two. Production has no plan-taking form — the seam inspects once and
+// hands the facts to every rule — so this lives with the tests.
+func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Context {
+	return r.applyFacts(ctx, inspectPlanShape(plan, r.Traces.TraceIDColumn))
 }
 
 // TestInspectPlanShape_SpineFactsStopAtExprSlots pins the one place the
