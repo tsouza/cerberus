@@ -5322,6 +5322,14 @@ func extrapolatedValueExpr(
 	counterDelta, sampledInterval, firstVal, lastVal, durToStart, durToEnd Frag,
 ) Frag {
 	// raw result: counter_delta for rate/increase, (last - first) for delta.
+	//
+	// counterDelta is embedded below as an operand of `*` (rawResult) and of
+	// `/` (the counter zero-crossing clamp's denominator, both HIGHER
+	// precedence than `+`), so a caller whose counterDelta is a compound
+	// expression — rather than a bare identifier or a `Call(...)`, both
+	// already atomic — MUST Paren-wrap it itself before passing it in; see
+	// fixedAccumCounterDeltaFrag's own doc (range_window_fixed_accumulator.go)
+	// for the caller this bites.
 	rawResult := counterDelta
 	if kind == extrapolationKindDelta {
 		rawResult = Paren(Sub(lastVal, firstVal))
