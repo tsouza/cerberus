@@ -357,9 +357,20 @@ func collectIntersectArms(n chplan.Node, traceIDColumn, spanIDColumn string, sca
 	return true
 }
 
-// filterChainOverScan peels a chain of Filters off a Scan and returns the
-// conjunction of their predicates (nil for a bare, unfiltered Scan — an
-// arm that matches every span). Reports false for any other node shape.
+// filterChainOverScan peels a chain of Filters (and pure column-selecting
+// Projects) off a Scan and returns the conjunction of the Filters'
+// predicates (nil for a bare, unfiltered Scan — an arm that matches every
+// span). Reports false for any other node shape.
+//
+// A Project only qualifies as transparent when isPureColumnProjection holds
+// (see its doc) — traceql's alignUnionArms wraps an otherwise-bare
+// Filter/Scan selector arm in exactly this shape (narrowSpanProjection) to
+// give both `&&`/`||` arms the same positional UNION column list. That
+// reshaping is invisible to fusableIntersect's rewrite: emitFusedIntersect
+// always renders `SELECT * FROM <scan> WHERE …` straight off the Scan and
+// predicates, never off the arm's own projected column list, so a
+// column-selecting Project above the Filter/Scan chain changes nothing the
+// fused shape would emit and must not disqualify the arm.
 func filterChainOverScan(n chplan.Node) (chplan.Expr, *chplan.Scan, bool) {
 	var preds []chplan.Expr
 	for {
@@ -375,6 +386,11 @@ func filterChainOverScan(n chplan.Node) (chplan.Expr, *chplan.Scan, bool) {
 				preds = append(preds, v.Predicate)
 			}
 			n = v.Input
+		case *chplan.Project:
+			if !isPureColumnProjection(v.Projections) {
+				return nil, nil, false
+			}
+			n = v.Input
 		case *chplan.Scan:
 			for i, j := 0, len(preds)-1; i < j; i, j = i+1, j-1 {
 				preds[i], preds[j] = preds[j], preds[i]
@@ -384,6 +400,23 @@ func filterChainOverScan(n chplan.Node) (chplan.Expr, *chplan.Scan, bool) {
 			return nil, nil, false
 		}
 	}
+}
+
+// isPureColumnProjection reports whether every projection is an unaliased,
+// bare column reference — a reshaping/reordering of the input's own
+// columns that computes nothing and renames nothing. This is the shape
+// narrowSpanProjection builds, and the only Project shape
+// filterChainOverScan treats as transparent.
+func isPureColumnProjection(projections []chplan.Projection) bool {
+	for _, p := range projections {
+		if p.Alias != "" {
+			return false
+		}
+		if _, ok := p.Expr.(*chplan.ColumnRef); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // conjoinExprs folds preds into a single left-associated AND expression.
