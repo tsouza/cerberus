@@ -671,6 +671,7 @@ subquery_over_bottomk.txtar
 subquery_over_count_values.txtar
 subquery_over_increase.txtar
 subquery_over_limit_ratio.txtar
+subquery_over_limitk.txtar
 subquery_over_quantile.txtar
 subquery_over_quantile_phi_above_one.txtar
 subquery_over_quantile_phi_negative.txtar
