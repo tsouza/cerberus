@@ -66,6 +66,16 @@ branch as shields.io badge JSON; the README shows them live. On
   histograms, whose data upstream's float-only demo fixture never carries.
   The case count is reconstructed as `heads.prometheus.total` from
   [`compatibility/parity-baseline/`](../compatibility/parity-baseline/manifest.json).
+- **Native-histogram merge width**: a merge of exponential histograms —
+  `sum()` / `avg()` across series, `histogram_quantile()` over an
+  aggregate, `histogram + histogram` — whose natural bucket range at the
+  rows' minimum scale exceeds 160 buckets (the OTel SDK default bucket
+  budget, `chplan.OTelExpoHistogramDefaultMaxSize`) is answered at a
+  coarser scale than Prometheus computes: the scale is lowered by
+  `ceil(log2(width / 160))` so the merged ladder holds at most 161
+  buckets. Count, sum and zero-count are exact at any scale; only the
+  bucket ladder, and any quantile read from it, is coarser. Prometheus
+  merges at the minimum scale with sparse spans and applies no budget.
 - **Today**: every case passes; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
   a real reference. (Parity drift is report-only in CI; the score is a

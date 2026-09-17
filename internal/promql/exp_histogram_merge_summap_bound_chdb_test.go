@@ -176,9 +176,11 @@ func TestExpHistogramMergeSumMapBudget_ChDB_WidthCompactsRatherThanRejects(t *te
 	const rows, width = 1, 4000
 	fixture := seedExpHistSumMapBoundRows(t, rows, width)
 
-	if err := runExpHistSumMapBoundQuery(t, fixture, expHistSumMapBoundNativeLowerers); err != nil {
+	got, err := readMergedHistogramShape(t, fixture, fmt.Sprintf("sum(%s)", histogramMergeBoundMetric), promql.LowerOpts{Lowerers: expHistSumMapBoundNativeLowerers})
+	if err != nil {
 		t.Fatalf("an unusually wide single-series sumMap merge must be compacted to a bounded width, not rejected: %v", err)
 	}
+	assertCompactedMerge(t, got, 0, width, rows)
 }
 
 // TestExpHistogramMergeSumMapBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects
@@ -196,16 +198,19 @@ func TestExpHistogramMergeSumMapBudget_ChDB_WidthCompactsRatherThanRejects(t *te
 // maxHistogramMergeOutputWidth (160), and the query now SUCCEEDS with a
 // coarser merged distribution instead of refusing outright.
 func TestExpHistogramMergeSumMapBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
+	const farOffset = 4000
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 	b.WriteString("    " + histogramMergeBoundRow("near", 0) + ",\n")
-	b.WriteString("    " + histogramMergeBoundRow("far", 4000) + ";\n")
+	b.WriteString("    " + histogramMergeBoundRow("far", farOffset) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
-	if err := runExpHistSumMapBoundQuery(t, fixture, expHistSumMapBoundNativeLowerers); err != nil {
+	got, err := readMergedHistogramShape(t, fixture, fmt.Sprintf("sum(%s)", histogramMergeBoundMetric), promql.LowerOpts{Lowerers: expHistSumMapBoundNativeLowerers})
+	if err != nil {
 		t.Fatalf("a scale-divergent two-series sumMap merge must be compacted to a bounded width, not rejected: %v", err)
 	}
+	assertCompactedMerge(t, got, 0, farOffset+1, 2)
 }
 
 // TestExpHistogramMergeSumMapBudget_ChDB_RowCountOverflowGuard seeds 4,097

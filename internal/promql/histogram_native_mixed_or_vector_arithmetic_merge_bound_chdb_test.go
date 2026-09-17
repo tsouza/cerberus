@@ -14,6 +14,7 @@ package promql_test
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -47,7 +48,21 @@ func mvvMergeBoundSeed() string {
 		"INSERT INTO otel_metrics_exponential_histogram " +
 		"(MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n" +
 		"    ('" + mvvMergeBoundLHSHistMetric + "', map('series', 'hh'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, []),\n" +
-		"    ('" + mvvMergeBoundRHSHistMetric + "', map('series', 'hh'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 20000, [1], 0, []);\n"
+		"    ('" + mvvMergeBoundRHSHistMetric + "', map('series', 'hh'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, " + strconv.Itoa(mvvMergeBoundFarOffset) + ", [1], 0, []);\n"
+}
+
+// mvvMergeBoundFarOffset is the RHS arm's PositiveOffset: 20,000 buckets
+// from the LHS arm's 0, so the natural merge spans 20,001.
+const mvvMergeBoundFarOffset = 20000
+
+// mvvMergeBoundQuery is the `(<lhs> or histogram_quantile(...)) + (<rhs>
+// or histogram_quantile(...))` shape every case here lowers.
+func mvvMergeBoundQuery() string {
+	return fmt.Sprintf(
+		"(%s or histogram_quantile(0.5, %s)) + (%s or histogram_quantile(0.5, %s))",
+		mvvMergeBoundLHSHistMetric, mvvMergeBoundLHSHistMetric,
+		mvvMergeBoundRHSHistMetric, mvvMergeBoundRHSHistMetric,
+	)
 }
 
 // runMvvMergeBoundQuery lowers + emits `(<lhs> or histogram_quantile(...))
@@ -65,11 +80,7 @@ func runMvvMergeBoundQuery(t *testing.T, fixture *chdbFixture) error {
 	t.Helper()
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{})
-	query := fmt.Sprintf(
-		"(%s or histogram_quantile(0.5, %s)) + (%s or histogram_quantile(0.5, %s))",
-		mvvMergeBoundLHSHistMetric, mvvMergeBoundLHSHistMetric,
-		mvvMergeBoundRHSHistMetric, mvvMergeBoundRHSHistMetric,
-	)
+	query := mvvMergeBoundQuery()
 	expr, err := p.ParseExpr(query)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
@@ -107,7 +118,9 @@ func runMvvMergeBoundQuery(t *testing.T, fixture *chdbFixture) error {
 func TestMixedVVAdditiveMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
 	fixture := newChDBFixture(t, mvvMergeBoundSeed())
 
-	if err := runMvvMergeBoundQuery(t, fixture); err != nil {
+	got, err := readMergedHistogramShape(t, fixture, mvvMergeBoundQuery(), promql.LowerOpts{})
+	if err != nil {
 		t.Fatalf("a scale-divergent mixed-or vector-vector histogram merge must be compacted to a bounded width, not rejected: %v", err)
 	}
+	assertCompactedMerge(t, got, 0, mvvMergeBoundFarOffset+1, 2)
 }

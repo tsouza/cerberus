@@ -580,9 +580,10 @@ func mixedVVHistMergeInputProjections(op chplan.BinaryOp, s schema.Metrics) []ch
 // least(0,0) = 0; merged ZeroThreshold = greatest(0,0) = 0; every
 // plainArraySum over [0, ±0] = 0; and the merged bucket ladder — per
 // [expHistogramMergeBucketsBoundsExpr]'s own documented handling of an
-// empty-array row ("Rows with empty arrays produce (om + 0 - 1) = om - 1
-// — slightly below their start, which is fine since they contribute
-// nothing") — resolves to length 0, i.e. `[]`. That is exactly the SAME
+// empty-array row (an empty ladder holds no bucket position, so it is
+// excluded from the merged start and its end is the below-everything
+// sentinel; a group of only empty rows has length 0) — resolves to
+// length 0, i.e. `[]`. That is exactly the SAME
 // placeholder shape [mixedVectorSetOpHistogramPlaceholderCols] itself
 // uses, so a float,float row's Histogram* output is the correct
 // placeholder regardless of which fold produced it.
@@ -594,7 +595,7 @@ func mixedVVHistMergeOutputProjections() []chplan.Projection {
 		{Expr: &chplan.ColumnRef{Name: mixedVVMergedZeroThresholdAlias}, Alias: chplan.HistogramZeroThresholdColumn},
 		{Expr: plainArraySum(&chplan.ColumnRef{Name: hqMergeZeroCountsArrayAlias}), Alias: chplan.HistogramZeroCountColumn},
 		{
-			Expr:  expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
+			Expr:  expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
 			Alias: chplan.HistogramPositiveOffsetColumn,
 		},
 		{
@@ -602,7 +603,7 @@ func mixedVVHistMergeOutputProjections() []chplan.Projection {
 			Alias: chplan.HistogramPositiveBucketCountsColumn,
 		},
 		{
-			Expr:  expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
+			Expr:  expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
 			Alias: chplan.HistogramNegativeOffsetColumn,
 		},
 		{

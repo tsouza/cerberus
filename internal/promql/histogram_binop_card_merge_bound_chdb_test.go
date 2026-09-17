@@ -104,16 +104,20 @@ func runHistogramBinopCardMergeBoundQuery(t *testing.T, fixture *chdbFixture) er
 // TestHistogramBinopMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects's
 // identical one-to-one proof.
 func TestHistogramBinopCardMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
+	const farOffset = 20000
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricA, "x", 0) + ",\n")
-	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricB, "x", 20000) + ";\n")
+	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricB, "x", farOffset) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
-	if err := runHistogramBinopCardMergeBoundQuery(t, fixture); err != nil {
+	query := fmt.Sprintf("%s + on(series) group_left() %s", histogramBinopMergeBoundMetricA, histogramBinopMergeBoundMetricB)
+	got, err := readMergedHistogramShape(t, fixture, query, promql.LowerOpts{})
+	if err != nil {
 		t.Fatalf("a scale-divergent group_left() binop merge must be compacted to a bounded width, not rejected: %v", err)
 	}
+	assertCompactedMerge(t, got, 0, farOffset+1, 2)
 }
 
 // TestHistogramBinopCardMergeBudget_ChDB_WithinBudget seeds a small,
