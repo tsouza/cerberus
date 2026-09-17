@@ -38,7 +38,7 @@ func scalarArithmeticPriorProjection(inner chplan.Node, arg parser.Expr, s schem
 	}
 	inner = mixedRowsFloatOnly(inner)
 	inner = guardNameDropCollision(inner, arg, s, ctx)
-	return projectValueOverInner(inner, s, legacySampleProjectionLayout(inner), func(refs sampleRoleRefs) chplan.Expr { return build(refs.Value) })
+	return projectValueOverInner(inner, s, derivedSampleProjectionLayout(inner), func(refs sampleRoleRefs) chplan.Expr { return build(refs.Value) })
 }
 
 func assertScalarArithmeticPlansEqual(t *testing.T, got, want chplan.Node) {

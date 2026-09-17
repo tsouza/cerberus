@@ -429,8 +429,8 @@ func finishMathEmpty(inner chplan.Node, s schema.Metrics, finish mathFinalizatio
 }
 
 // projectValueOverInner applies the wrapper's float-only, drop-name policy.
-// The temporary legacy adapter selects only its temporal/materialization
-// envelope; actual input names are resolved from roles before build runs.
+// The layout selects only the temporal/materialization envelope; actual
+// input names are resolved from roles before build runs.
 func projectValueOverInner(inner chplan.Node, s schema.Metrics, layout sampleProjectionLayout, build func(sampleRoleRefs) chplan.Expr) chplan.Node {
 	return projectSampleRoles(inner, s,
 		sampleProjectionPolicy{name: dropSampleName, payload: floatSamplePayload},
@@ -438,12 +438,12 @@ func projectValueOverInner(inner chplan.Node, s schema.Metrics, layout samplePro
 		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{value: build(refs)} })
 }
 
-// legacySampleProjectionLayout derives the input's temporal envelope from its
+// derivedSampleProjectionLayout derives the input's temporal envelope from its
 // physical roles. Metric-name presence and anchor presence are orthogonal: a
 // name-preserving range wrapper legitimately publishes both the canonical
-// sample columns and the matrix anchor. The adapter must not choose a wrapper's
+// sample columns and the matrix anchor. The layout must not choose a wrapper's
 // name or payload policy, and it never supplies input column names.
-func legacySampleProjectionLayout(inner chplan.Node) sampleProjectionLayout {
+func derivedSampleProjectionLayout(inner chplan.Node) sampleProjectionLayout {
 	_, layout, err := resolveSampleTemporalLayout(inner.RowType())
 	if err != nil {
 		panic(err.Error())

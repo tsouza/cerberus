@@ -78,7 +78,7 @@ func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	}
 	if boundary == scalarComparisonGuarded {
 		inner = guardNameDropCollision(inner, arg, s, ctx)
-		layout = legacySampleProjectionLayout(inner)
+		layout = derivedSampleProjectionLayout(inner)
 	}
 	return projectValueOverInner(inner, s, layout, func(refs sampleRoleRefs) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{scalarBinaryValue(refs.Value, op, scalar, scalarOnLeft)}}

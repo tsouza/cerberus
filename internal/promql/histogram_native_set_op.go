@@ -136,8 +136,8 @@ func lowerExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx
 // op's own operand can itself be a *chplan.VectorSetOp — the inner arm
 // of a chain like `a or b or c`, parsed as `(a or b) or c` — and that
 // node publishes the exact same thirteen-column contract
-// ([chplan.RowShapeOf] answers [chplan.HistogramRowShape] for it, see
-// [chplan.VectorSetOp.Histogram]) without BEING a HistogramProjection.
+// ([chplan.LiveSampleKind] answers [chplan.SampleKindHistogram] for it,
+// see [chplan.VectorSetOp.Histogram]) without BEING a HistogramProjection.
 // The join/union machinery below only ever references its operands by
 // the canonical Sample column names plus the fixed Histogram*Column
 // aliases (see [chplan.VectorSetOp]'s chsql emitter), never by Go type,
@@ -175,9 +175,10 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 // the `and`/`unless` itself histogram-valued, and this predicate
 // correctly answers false for that shape. `or` is deliberately excluded:
 // it unions rather than forwards one side, so a nested `or`'s own
-// histogram-valued-ness is decided by [chplan.RowShapeOf] once lowered
-// (HistogramRowShape when [expHistogramSetOp] matched both arms,
-// MixedRowShape when [mixedExpHistogramSetOp] matched — both already
+// histogram-valued-ness is decided by its lowered row type through
+// [chplan.LiveSampleKind] ([chplan.SampleKindHistogram] when
+// [expHistogramSetOp] matched both arms, [chplan.SampleKindMixed] when
+// [mixedExpHistogramSetOp] matched — both already
 // recognised by their own existing static checks) rather than by this
 // LHS-forwarding predicate.
 //
@@ -191,9 +192,9 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 // shape this predicate recognises instead already lowers correctly
 // through the ORDINARY [lower] dispatcher: binary.go's [lowerVectorSetOp]
 // computes its own Histogram/Mixed output flags from each operand's
-// ACTUAL lowered [chplan.RowShapeOf], not from a static recognizer, so an
-// `and`/`unless` whose LHS operand recursively resolves to
-// HistogramRowShape (via THIS SAME recursion inside
+// ACTUAL lowered [chplan.LiveSampleKind], not from a static recognizer,
+// so an `and`/`unless` whose LHS operand recursively resolves to
+// [chplan.SampleKindHistogram] (via THIS SAME recursion inside
 // [lowerVectorSetOpOperand], or directly via
 // [lowerExpHistogramSetOpOperand]) already publishes HistogramRowShape
 // itself with no extra plumbing — this predicate exists purely so
@@ -233,7 +234,7 @@ func isExpHistogramValuedOrForwarded(expr parser.Expr, s schema.Metrics, ctx low
 //     routed through the ordinary [lower] dispatcher instead:
 //     binary.go's [lowerVectorSetOp] already resolves this shape
 //     correctly on its own (its Histogram output flag is computed from
-//     the ACTUAL lowered [chplan.RowShapeOf] of its Left operand, not a
+//     the ACTUAL lowered [chplan.LiveSampleKind] of its Left operand, not a
 //     static recognizer — see that function's doc comment), so no
 //     dedicated lowering machinery is needed here, only this
 //     recognition plus the same row-shape assertion

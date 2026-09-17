@@ -191,7 +191,7 @@ func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, family mixe
 	}
 	return projectSampleRoles(inner, s,
 		sampleProjectionPolicy{name: preserveSampleName, payload: payload},
-		legacySampleProjectionLayout(inner),
+		derivedSampleProjectionLayout(inner),
 		func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{attributes: build(refs)} }), nil
 }
 

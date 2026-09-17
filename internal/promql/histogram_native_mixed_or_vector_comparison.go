@@ -82,9 +82,10 @@ import (
 // and nine Histogram*Column fields, plus L's own discriminator
 // (unambiguous — the only surviving combinations are (float,float) and
 // (histogram,histogram), so L's and R's discriminators always agree on a
-// kept row) — [chplan.RowShapeOf] resolves this to [chplan.MixedRowShape]
-// via its *Project case, mirroring [lowerMixedVVScaledArithmetic]'s own
-// shape. Unlike that arithmetic fold, MetricName is L's own name
+// kept row) — the Project republishes the discriminator, so
+// [chplan.LiveSampleKind] answers [chplan.SampleKindMixed], mirroring
+// [lowerMixedVVScaledArithmetic]'s own shape. Unlike that arithmetic
+// fold, MetricName is L's own name
 // UNCHANGED rather than forced to `""`: comparisons never
 // `changesMetricSchema` (reference's own `changesMetricSchema` switch
 // lists only ADD/SUB/MUL/DIV/POW/MOD/ATAN2), so `resultMetric` never
@@ -93,9 +94,9 @@ import (
 // With `bool`: reference forces the histogram payload to nil and the
 // name to "" for EVERY surviving row (`dropMetricName := ...&&
 // returnBool`) — the output is always FLOAT-valued, a plain 4-column
-// Sample [chplan.RowShapeOf] resolves to [chplan.SampleRowShape] via its
-// default case, mirroring histogram_native_mixed_or_arithmetic.go's own
-// drop-family Project.
+// Sample ([chplan.LiveSampleKind] answers [chplan.SampleKindFloat]),
+// mirroring histogram_native_mixed_or_arithmetic.go's own drop-family
+// Project.
 // The Value fold is `if(<bothFloat>, toFloat64(<float compare>),
 // toFloat64(<histogram field compare>))` for `==`/`!=` (the only two ops
 // where the histogram,histogram branch can ever be reached — the `if`'s

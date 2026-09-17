@@ -99,7 +99,7 @@ func TestProjectForwarders_AcceptEveryNonHistogramShape(t *testing.T) {
 				t.Fatalf("fixture publishes %s, want %s", got, in.shape)
 			}
 			// Both forwarders must return a projection rather than panic.
-			if got := projectValueOverInner(in.node, s, legacySampleProjectionLayout(in.node), func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: 1} }); got == nil {
+			if got := projectValueOverInner(in.node, s, derivedSampleProjectionLayout(in.node), func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: 1} }); got == nil {
 				t.Error("projectValueOverInner returned nil")
 			}
 			if got := mustProjectAttributesOverInner(t, in.node, s, func(refs sampleRoleRefs) chplan.Expr { return refs.Attributes }); got == nil {

@@ -199,7 +199,7 @@ func TestScalarComparisonPriorBoundaryEquivalence(t *testing.T) {
 											want = &chplan.Filter{Input: inner, Predicate: build(&chplan.ColumnRef{Name: s.ValueColumn})}
 										} else {
 											inner = guardNameDropCollision(inner, expr, s, ctx)
-											want = projectValueOverInner(inner, s, legacySampleProjectionLayout(inner), func(refs sampleRoleRefs) chplan.Expr {
+											want = projectValueOverInner(inner, s, derivedSampleProjectionLayout(inner), func(refs sampleRoleRefs) chplan.Expr {
 												return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{build(refs.Value)}}
 											})
 										}

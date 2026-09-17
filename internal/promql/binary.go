@@ -893,10 +893,6 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	}
 	// Histogram-scaling operators retain their separate family authority.
 	return guardedValueProjection(inner, vec, s, ctx, mixedScalarBinaryFamily(op, scalarOnLeft), func(refs sampleRoleRefs) chplan.Expr {
-		var left, right chplan.Expr = refs.Value, &chplan.LitFloat{V: scalar}
-		if scalarOnLeft {
-			left, right = right, left
-		}
-		return &chplan.Binary{Op: op, Left: left, Right: right}
+		return scalarBinaryValue(refs.Value, op, scalar, scalarOnLeft)
 	})
 }

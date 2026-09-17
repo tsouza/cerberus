@@ -367,9 +367,10 @@ func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 // histogram,histogram combination (a genuine merge/subtract, see this
 // file's header) for these two ops; float,histogram and histogram,float
 // both drop. The output is therefore the full fourteen-column Mixed
-// shape — [chplan.RowShapeOf] resolves it to [chplan.MixedRowShape] via
-// its *Project case, mirroring [lowerMixedVVScaledArithmetic]'s own
-// shape, unlike this function's own float-only predecessor.
+// shape — the Project republishes the discriminator, so
+// [chplan.LiveSampleKind] answers [chplan.SampleKindMixed] — mirroring
+// [lowerMixedVVScaledArithmetic]'s own shape, unlike this function's own
+// float-only predecessor.
 //
 // Shape:
 //
@@ -616,9 +617,9 @@ func mixedVVHistMergeOutputProjections() []chplan.Projection {
 // lowerMixedVVScaledArithmetic answers `*`/`/`: reference keeps THREE of
 // the four combinations for these two ops (float,float; and, depending on
 // op, float,histogram and/or histogram,float — see this file's header),
-// so the output is the full fourteen-column Mixed shape,
-// [chplan.RowShapeOf] resolving it to [chplan.MixedRowShape] via its
-// *Project case (this Project republishes [mixedDiscriminatorColumn]).
+// so the output is the full fourteen-column Mixed shape: this Project
+// republishes [mixedDiscriminatorColumn], so [chplan.LiveSampleKind]
+// answers [chplan.SampleKindMixed] for it.
 //
 // Value is scaled UNCONDITIONALLY (`L.Value <op> R.Value` on every
 // surviving row) rather than branched per combination — the same

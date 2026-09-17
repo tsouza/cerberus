@@ -42,7 +42,7 @@ func finishScalarArithmetic(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	layout := sampleProjectionLayout{canonical: true, materializeAliases: true}
 	if boundary == scalarArithmeticGuarded {
 		inner = guardNameDropCollision(inner, arg, s, ctx)
-		layout = legacySampleProjectionLayout(inner)
+		layout = derivedSampleProjectionLayout(inner)
 	}
 	return projectValueOverInner(inner, s, layout, func(refs sampleRoleRefs) chplan.Expr {
 		return scalarBinaryValue(refs.Value, op, scalar, scalarOnLeft)

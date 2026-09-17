@@ -80,7 +80,7 @@ func guardedValueProjection(
 	}
 	inner = mixedRowsFloatOnly(inner)
 	inner = guardNameDropCollision(inner, arg, s, ctx, carry...)
-	return projectValueOverInner(inner, s, legacySampleProjectionLayout(inner), newValue), nil
+	return projectValueOverInner(inner, s, derivedSampleProjectionLayout(inner), newValue), nil
 }
 
 // guardKeysOnTimestamp reports whether a collision guard over `inner` must
@@ -475,7 +475,7 @@ func pinnedMetricName(e parser.Expr) string {
 // one input row. The shared forwarder restores the same canonical order and
 // aliases after that Aggregate rather than dropping the histogram payload.
 func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chplan.Node {
-	layout := legacySampleProjectionLayout(rewritten)
+	layout := derivedSampleProjectionLayout(rewritten)
 	keyOnStep := guardKeysOnTimestamp(rewritten, s)
 	output := rewritten.RowType()
 	mixed := chplan.RowShapeFromSchema(output) == chplan.MixedRowShape

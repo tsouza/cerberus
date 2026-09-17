@@ -302,7 +302,7 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 // function's own doc for why it is typed `chplan.Node`, not
 // `*chplan.HistogramProjection`), and a histogram-shaped *chplan.VectorSetOp
 // publishes those same fixed Histogram*Column aliases
-// ([chplan.RowShapeOf]'s VectorSetOp doc), so accepting any
+// ([chplan.VectorSetOp.Histogram]'s doc), so accepting any
 // histogram-shaped node here — mirroring
 // [lowerExpHistogramSetOpOperand]'s identical widening in
 // histogram_native_set_op.go — is correct, not merely permissive.

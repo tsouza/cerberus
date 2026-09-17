@@ -153,10 +153,11 @@ func lowerSortFloatOperand(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 // catch-all rejection instead of ever reaching label-sort logic at all
 // (#2462). Once recognised, the histogram-valued plan is ordered by the
 // exact same natural-sort-key machinery the float arm uses — the row
-// shape underneath the sort keys never enters the comparison — and
-// [chplan.RowShapeOf]'s OrderBy arm forwards [chplan.HistogramRowShape]
-// through unchanged so the wire layer keeps every histogram column
-// instead of re-projecting down to the canonical float quartet.
+// shape underneath the sort keys never enters the comparison — and an
+// OrderBy's row type is its input's, so the histogram fields (and
+// [chplan.LiveSampleKind]'s histogram answer) pass through unchanged and
+// the wire layer keeps every histogram column instead of re-projecting
+// down to the canonical float quartet.
 // lowerSortByLabelArg resolves sort_by_label/sort_by_label_desc's first
 // (vector) argument, split out of [lowerSortByLabel] to keep that
 // function's cyclomatic complexity in check (nestif). Tries, in order: a
