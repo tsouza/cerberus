@@ -23,8 +23,9 @@
 // so a unit test over the rendered statement proves only that cerberus emits
 // what it meant to. Only the server distinguishes an accepted table from a
 // replicating one, and it does so in one place: system.replicas holds a row per
-// table whose engine actually replicates its DATA. A plain-MergeTree corpus
-// table is absent from it while sitting in system.tables looking healthy.
+// table whose engine registers as a REPLICA (a Replicated* engine with resolved
+// Keeper coordinates). A plain-MergeTree corpus table is absent from it while
+// sitting in system.tables looking healthy.
 //
 // It is the sibling of replicated_realch_integration_test.go, one topology
 // over, and shares that lane's server bootstrap (keeperServerConfigSection).
@@ -82,11 +83,14 @@ const (
 )
 
 // classicClusterRemoteServers defines a one-node <remote_servers> cluster. One
-// node carries the whole claim: whether the corpus table registers as a REPLICA
-// is a per-table engine fact, and whether ON CLUSTER reaches every node is
-// already pinned by TestCorpusDDL_OnCluster. What a second node would add is
-// coverage of ClickHouse's own distributed-DDL propagation, which is not
-// cerberus's behaviour to prove.
+// node carries the claim this lane makes: whether the corpus table registers
+// as a REPLICA is a per-table engine fact, and whether ON CLUSTER reaches every
+// node is already pinned by TestCorpusDDL_OnCluster. What a second node would
+// add — and what this lane therefore does NOT prove — is that a row written
+// through one node is readable from the other: the cross-node visibility the
+// design's premise (every node resolving default_replica_path to the same
+// coordinates under ON CLUSTER) rests on. That needs a two-node rig; cerberus
+// issue #3566 tracks the lane.
 const classicClusterRemoteServers = `    <remote_servers>
         <` + classicClusterName + `>
             <shard>
@@ -110,7 +114,7 @@ const classicClusterServerConfigTemplate = "<clickhouse>\n" +
 // TestCorpusClassicClusterEngineRealClickHouse is the behavioural pin for
 // cerberus issue #3250: on a classic ON CLUSTER cluster whose operator declared
 // replication through CERBERUS_SCHEMA_TABLE_ENGINE, the corpus table cerberus
-// creates must actually REPLICATE ITS ROWS, and the server is the only witness.
+// creates must register as a replica, and the server is the only witness.
 //
 // It asserts four things a rendered-SQL test cannot:
 //
@@ -119,10 +123,12 @@ const classicClusterServerConfigTemplate = "<clickhouse>\n" +
 //     Replicated database to supply them, so they come from the server's
 //     default_replica_path / default_replica_name. That this resolves at all is
 //     the premise the whole design rests on, and it is a server fact.
-//  2. system.replicas carries the corpus table. This is the definitive "the
-//     DATA replicates" check; a plain MergeTree is absent from it while sitting
-//     in system.tables looking healthy, which is exactly how the corpus came to
-//     accumulate per node with nothing saying so.
+//  2. system.replicas carries the corpus table: the engine registers as a
+//     replica with resolved coordinates. A plain MergeTree is absent from it
+//     while sitting in system.tables looking healthy, which is exactly how the
+//     corpus came to accumulate per node with nothing saying so. Registration
+//     is what one node can witness; that a second replica receives the rows is
+//     the two-node claim classicClusterRemoteServers' doc defers to #3566.
 //  3. The corpus table's Keeper path is its OWN — not the path the operator's
 //     engine expression names for the signal tables. This is the assertion that
 //     discriminates this design from the rejected one: had cerberus threaded
@@ -174,7 +180,7 @@ func TestCorpusClassicClusterEngineRealClickHouse(t *testing.T) {
 		t.Fatalf("build the CH table sink on a classic ON CLUSTER cluster: %v", err)
 	}
 
-	// The definitive check. A plain MergeTree — the engine this sink emitted
+	// The registration check. A plain MergeTree — the engine this sink emitted
 	// on this topology before #3250 — creates fine here and reports 0.
 	corpusPath := replicaZooPath(ctx, t, conn, CorpusTableName)
 	if corpusPath == "" {
