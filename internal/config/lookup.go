@@ -7,16 +7,21 @@ import (
 
 // Lookup resolves a CERBERUS_* setting that the server's typed registry does
 // not own — the `cerberus migrate` verify/inventory settings, which configure a
-// one-shot CLI run rather than the running gateway, and the read-side schema
-// shape that `internal/schema` resolves for itself — from the same two sources,
-// in the same order, as every other cerberus setting: the environment variable
-// first, then an optional cerberus.yaml in the working directory or
-// /etc/cerberus.
+// one-shot CLI run rather than the running gateway; the read-side schema
+// shape that `internal/schema` resolves for itself; and the settings the
+// packages in [externalSettings] parse through a getter — from the same two
+// sources, in the same order, as every other cerberus setting: the
+// environment variable first, then an optional cerberus.yaml in the working
+// directory or /etc/cerberus.
 //
 // The migrate settings stay out of Config (and therefore out of the generated
 // docs/configuration.md) because nothing in the server reads them, but a
 // migration is configured from the same file as the gateway it migrates to, so
 // one cerberus.yaml carries both surfaces.
+//
+// A nil *Lookup is valid and resolves from the environment alone — the same
+// answer a Lookup over no file gives — so a getter taken from one
+// ([Config.Settings] on a hand-built Config) never has to check for it.
 type Lookup struct {
 	settings map[string]string
 	err      error
@@ -36,13 +41,21 @@ func NewLookup() *Lookup {
 
 // Err reports why the config file could not be used, or nil when there was
 // none or it loaded cleanly.
-func (l *Lookup) Err() error { return l.err }
+func (l *Lookup) Err() error {
+	if l == nil {
+		return nil
+	}
+	return l.err
+}
 
 // String returns key's value — the environment variable of that exact name
 // when it is set and non-empty, else the cerberus.yaml entry, else "".
 func (l *Lookup) String(key string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	if l == nil {
+		return ""
 	}
 	return l.settings[key]
 }
