@@ -59,6 +59,21 @@ practical monitoring impact. That is why cerberus still evaluates
 vector-involving `atan2`, `^`, and window sums in ClickHouse SQL rather
 than in Go.
 
+## Why LogQL `/patterns` text is graded only on a constant line
+
+Upstream's pattern ingester mines online, in push order, with per-ingester
+lifetime state cerberus does not share — the first line to arrive seeds a
+template that later lines join or split against as it stood at that
+moment, out-of-order entries are dropped, and clusters are LRU-evicted,
+pruned on chunk age and throttled by an eviction-ratio limiter — so a
+template over a line with variable positions is not a function of the
+data alone and cannot be diffed as one; a constant line's template is the
+line itself under every miner, which is why the seeder's fixture line is
+constant and the tester grades it verbatim. The same reasoning is why
+`/index/stats`'s `chunks` and `bytes` and `/index/volume`'s byte values
+are not compared: they are chunk-storage quantities (per-chunk counts and
+KB-rounded uncompressed chunk sizes) a row store has no analogue of.
+
 ## Why a vanished or unrecorded case is fatal
 
 `VANISHED` and `UNRECORDED` are loud rather than silent on purpose. A

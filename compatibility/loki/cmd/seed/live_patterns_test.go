@@ -41,6 +41,18 @@ func TestBuildLivePatternsFixture_UsesOneInjectedClock(t *testing.T) {
 	if !reflect.DeepEqual(fixture.metadata.EntriesByLevel, wantCounts) {
 		t.Fatalf("entries_by_level=%v, want %v", fixture.metadata.EntriesByLevel, wantCounts)
 	}
+	// The tester grades /patterns template text EXACTLY against the
+	// handshake line, which is sound only while every entry carries that
+	// one constant line (a variable position would make the template
+	// miner-dependent). Pin the contract here, at the source.
+	if fixture.metadata.Line != livePatternsLine {
+		t.Fatalf("metadata line=%q, want %q", fixture.metadata.Line, livePatternsLine)
+	}
+	for i, e := range fixture.stream.entries {
+		if e.line != fixture.metadata.Line {
+			t.Fatalf("entry %d line=%q, want the handshake's constant line %q", i, e.line, fixture.metadata.Line)
+		}
+	}
 }
 
 func TestWriteLivePatternsMetadata_ReplacesCompleteJSON(t *testing.T) {
