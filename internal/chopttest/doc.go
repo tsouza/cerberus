@@ -26,7 +26,7 @@
 // boot path composes both from — which integration tests call directly
 // (choptwire.RangeLowerers, choptwire.SettingsRules); this package only
 // resolves the set against the live server and asserts activation. This
-// package used to carry reviewed DUPLICATES of that formula, on the stated
+// package used to carry hand-maintained DUPLICATES of that formula, on the stated
 // grounds that an unexported `package main` function cannot be imported —
 // true of the function, false of the formula, which depends only on chopt,
 // promql and engine and so always belonged in an importable package. While
