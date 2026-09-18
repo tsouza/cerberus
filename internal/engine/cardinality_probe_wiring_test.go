@@ -250,7 +250,7 @@ func TestCardinalityProbeAdvisor_SkipsUnrecognizedCarrierKind(t *testing.T) {
 // cardinalityProbeNewCarrierFixtures builds one minimal, well-formed plan
 // per non-RangeWindow recognised carrier kind — the four #2840 added
 // (RangeWindowGridNative, RangeBucketFanout, RangeBucketGridNative,
-// RangeLWR) plus RangeWindowStaleResample (added in the same ACPR pass
+// RangeLWR) plus RangeWindowStaleResample (added in the later review pass
 // that corrected this file's carrier-count doc: it shares the identical
 // maybePushRangeScanTimeBound-backed scan-bound formula but was excluded
 // from the original #2840 count on the circular basis of not being one of

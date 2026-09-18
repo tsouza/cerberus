@@ -49,7 +49,7 @@ import (
 //     concern, and by far the most common ModeAuto shape) plus, as of
 //     #2840, *chplan.RangeWindowGridNative, *chplan.RangeBucketFanout,
 //     *chplan.RangeBucketGridNative and *chplan.RangeLWR, and — added in
-//     the same ACPR pass that corrected this doc — *chplan.
+//     the later review pass that corrected this doc — *chplan.
 //     RangeWindowStaleResample: all five via chsql's shared
 //     maybePushRangeScanTimeBound helper (internal/chsql/range_lwr.go).
 //     #2840 set out to find each carrier's "own real-matrix

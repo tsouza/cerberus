@@ -382,7 +382,7 @@ function count(haystack, needle) {
 // Service block unchanged, and wires CERBERUS_CH_DATA_SHARDS +
 // CERBERUS_SCHEMA_CLUSTER for the running binary. Also covers the
 // PodDisruptionBudget per-shard split and the keeper.enabled=false +
-// dataShards.count>1 `fail` guard (both ACPR findings against the initial
+// dataShards.count>1 `fail` guard (both review findings against the initial
 // implementation).
 {
   const bareDefault = tpl([...OBJECT_STORE])
@@ -491,7 +491,7 @@ function count(haystack, needle) {
   // fail loudly, not silently render per-shard StatefulSets whose "config"
   // ConfigMap volume unconditionally requires cluster.xml/macros-datashard-
   // <i>.xml keys that configmap-config.yaml only emits when Keeper is
-  // enabled (ACPR finding: this combination previously left pods stuck in
+  // enabled (review finding: this combination previously left pods stuck in
   // ContainerCreating with no render-time signal at all).
   // Cross-shard forwarding with no inter-server secret (cerberus issue #3190):
   // ClickHouse forwards a Distributed query as `default` with an EMPTY
