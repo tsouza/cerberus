@@ -13,7 +13,7 @@ git push -u origin <branch>
 gh pr create
 ```
 
-The `main` ruleset blocks a merge on 17 status checks: `check` (golangci-lint + race tests + build), `lint` (commitlint + markdownlint), `CodeQL`, `agpl-clean`, `chart-validate`, `config-docs`, `coverage`, `forbid-deferral`, `forbid-skip`, `link-check`, `pr-body`, `probe`, `property (PromQL + LogQL + TraceQL, rapid N=500)`, `quickstart`, `schema-ddl`, `strict-scan` and `update-golden-guard`. That set is the ruleset's to state, not this file's — read it back with
+The `main` ruleset blocks a merge on 16 status checks: `check` (golangci-lint + race tests + build), `lint` (commitlint + markdownlint), `CodeQL`, `agpl-clean`, `chart-validate`, `config-docs`, `coverage`, `forbid-deferral`, `forbid-skip`, `link-check`, `pr-body`, `probe`, `property (PromQL + LogQL + TraceQL, rapid N=500)`, `quickstart`, `schema-ddl` and `strict-scan`. That set is the ruleset's to state, not this file's — read it back with
 
 ```sh
 gh api repos/tsouza/cerberus/rules/branches/main \
