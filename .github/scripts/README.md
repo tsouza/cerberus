@@ -3099,13 +3099,25 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   reuse this script unchanged, skipping the standalone
   `clickhouse/clickhouse-server:*-alpine` image its kustomization never
   applies. The multi-data-shard `e2e-datashard-up` (issue #3107) still
-  duplicates this loop rather than reusing this script.
+  duplicates this loop rather than reusing this script. The import path
+  depends on the Docker HOST's image store, detected once from `docker info
+  --format '{{json .DriverStatus}}'`: on the classic overlay2 graphdriver
+  (every CI runner) it is `k3d image import`, unchanged; on the containerd
+  image store (`driver-type: io.containerd.snapshotter.v1`) k3d's own import
+  fails with `ctr: content digest sha256:…: not found` — `docker save` there
+  writes the full multi-platform index with only the pulled platform's blobs
+  and k3d's `ctr image import --all-platforms` demands the rest — so the
+  script streams `docker save` straight into the server node's `ctr -n
+  k8s.io images import -` instead (cerberus issue #3589). Either way the
+  landing is verified against containerd; the exhausted-budget error names
+  the store, the path taken and the last import error.
   - Usage: `node .github/scripts/k3d-image-import.mjs <image>...`.
   - Env: `K3D_CLUSTER` (required), `IMAGE_IMPORT_EXCLUDE` (optional,
     whitespace-separated globs), `IMAGE_IMPORT_ATTEMPTS` (default `5`),
     `IMAGE_IMPORT_BACKOFF_SECONDS` (default `2`).
   - Exit: `0` once every non-excluded image verifies in containerd; `1` as
-    soon as one exhausts its import attempts.
+    soon as one exhausts its import attempts, or when `docker info` fails and
+    no import path can be chosen.
 - **`promql-surface-gate.mjs`** — `compatibility.yml`, the
   `compatibility/promql-surface` job (reference-backed full-surface PromQL
   rejection-completeness gate, #106). Stands up a flag-enabled reference
