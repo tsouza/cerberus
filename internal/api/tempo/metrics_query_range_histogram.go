@@ -54,7 +54,7 @@ func histogramLabelNames(m *chplan.MetricsHistogramOverTime) []string {
 // analogue of wrapMetricsForSample's quantile branch, except `__bucket`
 // is a real wire label here (no post-fold strips it).
 func wrapHistogramForSample(rw *chplan.RangeWindow, m *chplan.MetricsHistogramOverTime) chplan.Node {
-	attrAliases := metricsOuterGroupAliases(m.GroupBy, m.GroupByAliases)
+	attrAliases := chplan.OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	labelNames := histogramLabelNames(m)
 
 	args := make([]chplan.Expr, 0, (len(m.GroupBy)+1)*2)

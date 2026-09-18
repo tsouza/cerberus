@@ -204,7 +204,7 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 		// `anchor_ts` get a usable column reference in either mode.
 		sb := NewQuery().Select(As(func(b *Builder) {
 			b.DateTime64Lit(g.Start)
-		}, "anchor_ts"))
+		}, RangeWindowAnchorAlias))
 		return e.emitSelect(sb)
 	}
 	stepNS := g.Step.Nanoseconds()
@@ -230,7 +230,7 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 				Call("range", InlineLit(int64(0)), InlineLit(numAnchors)),
 			),
 		),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	))
 	return e.emitSelect(sb)
 }
@@ -853,25 +853,11 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 	if err != nil {
 		return err
 	}
-	kSchema := t.KExpr.RowType()
-	var kValueColumn string
-	for _, column := range kSchema.Columns {
-		if column.Role != chplan.RoleValue {
-			continue
-		}
-		if column.Name == "" || kValueColumn != "" {
-			return fmt.Errorf("chsql: computed topk requires one named scalar value column")
-		}
-		kValueColumn = column.Name
+	kValue, err := t.KExpr.RowType().UniqueNamedRole(chplan.RoleValue)
+	if err != nil {
+		return fmt.Errorf("chsql: computed topk scalar schema: %w", err)
 	}
-	if kValueColumn == "" {
-		return fmt.Errorf("chsql: computed topk scalar value role is missing")
-	}
-	for _, column := range kSchema.Columns {
-		if column.Name == kValueColumn && column.Role != chplan.RoleValue {
-			return fmt.Errorf("chsql: computed topk scalar value column is ambiguous")
-		}
-	}
+	kValueColumn := kValue.Name
 
 	partitionBy := make([]Frag, 0, len(t.By))
 	for _, by := range t.By {

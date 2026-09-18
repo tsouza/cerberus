@@ -1,6 +1,10 @@
 package chplan
 
-import "slices"
+import (
+	"errors"
+	"fmt"
+	"slices"
+)
 
 // ColumnRole describes a column's public purpose, independently of its storage name.
 type ColumnRole uint8
@@ -44,6 +48,74 @@ const (
 
 func (field HistogramField) valid() bool {
 	return field >= HistogramFieldCount && field <= HistogramFieldExplicitBounds
+}
+
+// unknownRoleSpelling is what a ColumnRole or HistogramField outside its
+// vocabulary spells as.
+const unknownRoleSpelling = "unknown"
+
+// String spells the role for diagnostics.
+func (role ColumnRole) String() string {
+	switch role {
+	case RoleOpaque:
+		return "opaque"
+	case RoleMetricName:
+		return "metric-name"
+	case RoleAttributes:
+		return "attributes"
+	case RoleTimestamp:
+		return "timestamp"
+	case RoleAnchor:
+		return "anchor"
+	case RoleValue:
+		return "value"
+	case RoleTemporality:
+		return "temporality"
+	case RoleHistogramField:
+		return "histogram-field"
+	case RoleDiscriminator:
+		return "discriminator"
+	case RoleTraceID:
+		return "trace-id"
+	case RoleSpanID:
+		return "span-id"
+	case RoleParentSpanID:
+		return "parent-span-id"
+	default:
+		return unknownRoleSpelling
+	}
+}
+
+// String spells the histogram field for diagnostics.
+func (field HistogramField) String() string {
+	switch field {
+	case HistogramFieldNone:
+		return "none"
+	case HistogramFieldCount:
+		return "count"
+	case HistogramFieldSum:
+		return "sum"
+	case HistogramFieldScale:
+		return "scale"
+	case HistogramFieldZeroThreshold:
+		return "zero-threshold"
+	case HistogramFieldZeroCount:
+		return "zero-count"
+	case HistogramFieldPositiveOffset:
+		return "positive-offset"
+	case HistogramFieldPositiveBucketCounts:
+		return "positive-bucket-counts"
+	case HistogramFieldNegativeOffset:
+		return "negative-offset"
+	case HistogramFieldNegativeBucketCounts:
+		return "negative-bucket-counts"
+	case HistogramFieldBucketCounts:
+		return "bucket-counts"
+	case HistogramFieldExplicitBounds:
+		return "explicit-bounds"
+	default:
+		return unknownRoleSpelling
+	}
 }
 
 // Column is one output. An empty Name denotes an unaliased expression whose
@@ -107,30 +179,84 @@ func (s Schema) Find(role ColumnRole) (Column, bool) {
 // Has reports whether any output carries role.
 func (s Schema) Has(role ColumnRole) bool { _, ok := s.Find(role); return ok }
 
-// FindHistogramField returns the uniquely identified histogram column.
-// Invalid, missing, duplicate, unnamed, wrongly-role-tagged, and physically
-// name-aliased identities fail closed.
-func (s Schema) FindHistogramField(field HistogramField) (Column, bool) {
+// The reasons a role or histogram-field resolution fails. Each is the
+// sentinel a consumer matches with errors.Is; the returned error also names
+// the role or field.
+var (
+	// ErrRoleMissing: no column carries the role or field.
+	ErrRoleMissing = errors.New("chplan: no column carries the role")
+	// ErrRoleRepeated: more than one column carries it.
+	ErrRoleRepeated = errors.New("chplan: more than one column carries the role")
+	// ErrRoleUnnamed: the one carrier is an unaliased expression, whose
+	// driver-assigned name cannot be derived without rendering SQL.
+	ErrRoleUnnamed = errors.New("chplan: the column carrying the role is unnamed")
+	// ErrRoleNameShared: another column with a different identity (role or
+	// histogram field) answers to the carrier's name, so a reference by that
+	// name could resolve to either.
+	ErrRoleNameShared = errors.New("chplan: another column with a different identity shares the carrier's name")
+	// ErrHistogramFieldRole: a histogram field is carried by a column whose
+	// role is not RoleHistogramField.
+	ErrHistogramFieldRole = errors.New("chplan: histogram field carried under a non-histogram role")
+)
+
+// UniqueNamedRole resolves role to the one named column carrying it. It is
+// the single resolution discipline every consumer of a schema follows:
+// exactly one column carries role, that column is named, and no other column
+// with a different identity answers to its name. Any other shape fails closed
+// with one of the ErrRole* sentinels. Openness is not the resolver's concern:
+// whether an operator tolerates an open child is the operator's own call.
+func (s Schema) UniqueNamedRole(role ColumnRole) (Column, error) {
+	return s.uniqueNamed(role.String(), func(column Column) bool { return column.Role == role })
+}
+
+// UniqueNamedHistogramField resolves field to the one named column carrying
+// it, under the same discipline as UniqueNamedRole. A field carried by a
+// column whose role is not RoleHistogramField is a contradiction rather than
+// a carrier and fails with ErrHistogramFieldRole; a field outside the payload
+// vocabulary has no carrier and fails with ErrRoleMissing.
+func (s Schema) UniqueNamedHistogramField(field HistogramField) (Column, error) {
+	label := "histogram field " + field.String()
 	if !field.valid() {
-		return Column{}, false
+		return Column{}, fmt.Errorf("%w: %s", ErrRoleMissing, label)
 	}
-	var found Column
-	seen := false
 	for _, column := range s.Columns {
-		if column.HistogramField != field {
-			continue
+		if column.HistogramField == field && column.Role != RoleHistogramField {
+			return Column{}, fmt.Errorf("%w: %s on %q", ErrHistogramFieldRole, label, column.Name)
 		}
-		if seen || column.Name == "" || column.Role != RoleHistogramField {
-			return Column{}, false
-		}
-		for _, candidate := range s.Columns {
-			if candidate.Name == column.Name && candidate.HistogramField != column.HistogramField {
-				return Column{}, false
-			}
-		}
-		found, seen = column, true
 	}
-	return found, seen
+	return s.uniqueNamed(label, func(column Column) bool { return column.HistogramField == field })
+}
+
+// uniqueNamed is the shared body of the two resolvers: carries selects the
+// columns that carry the identity being resolved, label names it in errors.
+func (s Schema) uniqueNamed(label string, carries func(Column) bool) (Column, error) {
+	found, count := Column{}, 0
+	for _, column := range s.Columns {
+		if carries(column) {
+			found = column
+			count++
+		}
+	}
+	switch {
+	case count == 0:
+		return Column{}, fmt.Errorf("%w: %s", ErrRoleMissing, label)
+	case count > 1:
+		return Column{}, fmt.Errorf("%w: %s", ErrRoleRepeated, label)
+	case found.Name == "":
+		return Column{}, fmt.Errorf("%w: %s", ErrRoleUnnamed, label)
+	}
+	for _, candidate := range s.Columns {
+		if candidate.Name == found.Name && (candidate.Role != found.Role || candidate.HistogramField != found.HistogramField) {
+			return Column{}, fmt.Errorf("%w: %s as %q", ErrRoleNameShared, label, found.Name)
+		}
+	}
+	return found, nil
+}
+
+// FindHistogramField is the boolean view of UniqueNamedHistogramField.
+func (s Schema) FindHistogramField(field HistogramField) (Column, bool) {
+	column, err := s.UniqueNamedHistogramField(field)
+	return column, err == nil
 }
 
 // ByName looks up a named output; unnamed expressions never match.

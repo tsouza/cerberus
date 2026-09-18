@@ -1,8 +1,6 @@
 package chsql
 
 import (
-	"fmt"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
@@ -10,7 +8,10 @@ func rangeWindowInputTimestampColumn(r *chplan.RangeWindow) string {
 	if r == nil || r.Input == nil {
 		return ""
 	}
-	column, _ := r.Input.RowType().Find(rangeWindowInputTimestampRole(r))
+	column, err := r.Input.RowType().UniqueNamedRole(rangeWindowInputTimestampRole(r))
+	if err != nil {
+		return ""
+	}
 	return column.Name
 }
 
@@ -27,26 +28,6 @@ func rangeWindowInputTimestampRole(r *chplan.RangeWindow) chplan.ColumnRole {
 }
 
 func validateRangeWindowInputTimestamp(r *chplan.RangeWindow) error {
-	if r.Input == nil {
-		return fmt.Errorf("%w: RangeWindow.Input is nil", ErrUnsupported)
-	}
-	row := r.Input.RowType()
-	role := rangeWindowInputTimestampRole(r)
-	var found chplan.Column
-	count := 0
-	for _, column := range row.Columns {
-		if column.Role == role {
-			found = column
-			count++
-		}
-	}
-	if row.Open || count != 1 || found.Name == "" {
-		return fmt.Errorf("%w: RangeWindow requires one named temporal driver in a closed child schema", ErrUnsupported)
-	}
-	for _, column := range row.Columns {
-		if column.Name == found.Name && column.Role != role {
-			return fmt.Errorf("%w: RangeWindow child temporal driver is ambiguous", ErrUnsupported)
-		}
-	}
-	return nil
+	_, err := roleChildColumn("RangeWindow", r.Input, rangeWindowInputTimestampRole(r))
+	return err
 }

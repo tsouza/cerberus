@@ -113,7 +113,7 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		gridSrc := NewQuery().Select(InlineLit(int64(1)))
 		fanout := NewQuery().
 			From(gridSrc.Frag()).
-			Select(As(absentOverTimeAnchorRangeFrag(prefilterStartFrag, stepNS, numAnchors), "anchor_ts"))
+			Select(As(absentOverTimeAnchorRangeFrag(prefilterStartFrag, stepNS, numAnchors), RangeWindowAnchorAlias))
 
 		// Covered set: each scanned sample fans to the anchors whose
 		// `(anchor - range, anchor]` window contains it.
@@ -123,14 +123,14 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 				absentOverTimeCoveredAnchorFrag(
 					prefilterStartFrag, Col(inputTimestamp), stepNS, rangeNS, numAnchors,
 				),
-				"anchor_ts",
+				RangeWindowAnchorAlias,
 			)).
 			Where(prefilterWhere)
 
 		emptyWindow = NewQuery().
 			From(fanout.Frag()).
-			Select(BareIdent("anchor_ts")).
-			Where(NotInSubquery(BareIdent("anchor_ts"), covered.Frag()))
+			Select(BareIdent(RangeWindowAnchorAlias)).
+			Where(NotInSubquery(BareIdent(RangeWindowAnchorAlias), covered.Frag()))
 	} else {
 		// Instant mode: single anchor at End — already bounded, keep the
 		// 1-row groupArray + arrayCount shape.
@@ -148,7 +148,7 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		// Single-anchor projection alongside the 1-row `sample_ts_arr`.
 		fanout := NewQuery().
 			From(innermost.Frag()).
-			Select(As(endFrag, "anchor_ts")).
+			Select(As(endFrag, RangeWindowAnchorAlias)).
 			Select(BareIdent("sample_ts_arr"))
 
 		// Outer filter: keep the anchor iff its lookback window has zero
@@ -156,13 +156,13 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		// toIntervalNanosecond(<rangeNS>) AND t <= anchor_ts`.
 		windowLambda := Lambda1("t", And(
 			Gt(BareIdent("t"),
-				Sub(BareIdent("anchor_ts"),
+				Sub(BareIdent(RangeWindowAnchorAlias),
 					Call("toIntervalNanosecond", InlineLit(rangeNS)))),
-			Lte(BareIdent("t"), BareIdent("anchor_ts")),
+			Lte(BareIdent("t"), BareIdent(RangeWindowAnchorAlias)),
 		))
 		emptyWindow = NewQuery().
 			From(fanout.Frag()).
-			Select(BareIdent("anchor_ts")).
+			Select(BareIdent(RangeWindowAnchorAlias)).
 			Where(Eq(
 				Call("arrayCount", windowLambda, BareIdent("sample_ts_arr")),
 				InlineLit(int64(0)),
@@ -201,9 +201,9 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 // Offset == 0 renders the bare anchor column unchanged.
 func absentGridAnchorFrag(offsetNS int64) Frag {
 	if offsetNS == 0 {
-		return BareIdent("anchor_ts")
+		return BareIdent(RangeWindowAnchorAlias)
 	}
-	return offsetUnshiftAnchorFrag(BareIdent("anchor_ts"), offsetNS)
+	return offsetUnshiftAnchorFrag(BareIdent(RangeWindowAnchorAlias), offsetNS)
 }
 
 // absentOverTimeBookendFrag returns a Frag rendering the eval-grid

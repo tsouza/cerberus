@@ -97,45 +97,20 @@ type rangeBucketGridNativeInputColumns struct {
 }
 
 func resolveRangeBucketGridNativeInputColumns(input chplan.Node) (rangeBucketGridNativeInputColumns, error) {
-	if input == nil {
-		return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative.Input is nil", ErrUnsupported)
+	const owner = "RangeBucketGridNative"
+	row, err := closedChildSchema(owner, input)
+	if err != nil {
+		return rangeBucketGridNativeInputColumns{}, err
 	}
-	row := input.RowType()
-	if row.Open {
-		return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative requires a closed child schema", ErrUnsupported)
-	}
-
 	var columns rangeBucketGridNativeInputColumns
-	seenNames := make(map[string]chplan.Column, len(row.Columns))
-	for _, column := range row.Columns {
-		if column.Name != "" {
-			if seen, ok := seenNames[column.Name]; ok &&
-				(seen.Role != column.Role || seen.HistogramField != column.HistogramField) {
-				return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative child column %q has ambiguous roles", ErrUnsupported, column.Name)
-			}
-			seenNames[column.Name] = column
-		}
-
-		var slot *string
-		switch {
-		case column.Role == chplan.RoleTimestamp:
-			slot = &columns.timestamp
-		case column.Role == chplan.RoleHistogramField && column.HistogramField == chplan.HistogramFieldBucketCounts:
-			slot = &columns.bucketCounts
-		case column.Role == chplan.RoleHistogramField && column.HistogramField == chplan.HistogramFieldExplicitBounds:
-			slot = &columns.explicitBounds
-		case column.HistogramField == chplan.HistogramFieldBucketCounts || column.HistogramField == chplan.HistogramFieldExplicitBounds:
-			return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative child column %q has an incompatible histogram role", ErrUnsupported, column.Name)
-		default:
-			continue
-		}
-		if column.Name == "" || *slot != "" {
-			return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative requires unique named timestamp, bucket-count, and explicit-bound child roles", ErrUnsupported)
-		}
-		*slot = column.Name
+	if columns.timestamp, err = roleColumnName(owner, row, chplan.RoleTimestamp); err != nil {
+		return rangeBucketGridNativeInputColumns{}, err
 	}
-	if columns.timestamp == "" || columns.bucketCounts == "" || columns.explicitBounds == "" {
-		return rangeBucketGridNativeInputColumns{}, fmt.Errorf("%w: RangeBucketGridNative child schema is missing timestamp, bucket-count, or explicit-bound roles", ErrUnsupported)
+	if columns.bucketCounts, err = histogramFieldColumnName(owner, row, chplan.HistogramFieldBucketCounts, false); err != nil {
+		return rangeBucketGridNativeInputColumns{}, err
+	}
+	if columns.explicitBounds, err = histogramFieldColumnName(owner, row, chplan.HistogramFieldExplicitBounds, false); err != nil {
+		return rangeBucketGridNativeInputColumns{}, err
 	}
 	return columns, nil
 }

@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -94,62 +95,31 @@ func TestMutation_RateWindowFanoutRowBound_ZeroFallsBackToDefault(t *testing.T) 
 	}
 }
 
-// TestMutation_ResolveRangeLWRInputColumns_AmbiguousRoleRejected kills the
-// CONDITIONALS_NEGATION mutant on range_lwr.go:resolveRangeLWRInputColumns:
-// `role != column.Role` rewritten to `role == column.Role`. A shared column
-// name carrying two different roles must be rejected as ambiguous.
-func TestMutation_ResolveRangeLWRInputColumns_AmbiguousRoleRejected(t *testing.T) {
+// TestResolveRangeLWRInputColumns_RequiresEveryRoleThroughTheResolver pins
+// that resolveRangeLWRInputColumns routes each of its four identities through
+// chplan.Schema.UniqueNamedRole: a child missing exactly one of them is
+// rejected by the resolver's own ErrRoleMissing, not by a later emitter step.
+func TestResolveRangeLWRInputColumns_RequiresEveryRoleThroughTheResolver(t *testing.T) {
 	t.Parallel()
 
-	_, err := resolveRangeLWRInputColumns(rangeLWRRoleProject(
-		chplan.Column{Name: "shared", Role: chplan.RoleTimestamp},
-		chplan.Column{Name: "shared", Role: chplan.RoleValue},
-	))
-	if err == nil {
-		t.Fatal("resolveRangeLWRInputColumns accepted a shared name with two roles")
+	all := []chplan.Column{
+		{Name: "metric", Role: chplan.RoleMetricName},
+		{Name: "attrs", Role: chplan.RoleAttributes},
+		{Name: "ts", Role: chplan.RoleTimestamp},
+		{Name: "value", Role: chplan.RoleValue},
 	}
-}
-
-// TestMutation_ResolveRangeLWRInputColumns_MissingSingleRoleRejected kills
-// both INVERT_LOGICAL mutants on range_lwr.go's required-role guard:
-//
-//	if columns.metricName == "" || columns.attributes == "" ||
-//	    columns.timestamp == "" || columns.value == "" {
-//
-// With exactly one role missing and the other three present, the original
-// `||` rejects the schema. Each `||` -> `&&` rewrite re-parenthesises the
-// guard so the lone missing role folds away against the other three false
-// operands and the malformed schema is accepted.
-func TestMutation_ResolveRangeLWRInputColumns_MissingSingleRoleRejected(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct {
-		name  string
-		roles []chplan.Column
-	}{
-		{
-			name: "missing metric-name",
-			roles: []chplan.Column{
-				{Name: "attrs", Role: chplan.RoleAttributes},
-				{Name: "ts", Role: chplan.RoleTimestamp},
-				{Name: "value", Role: chplan.RoleValue},
-			},
-		},
-		{
-			name: "missing attributes",
-			roles: []chplan.Column{
-				{Name: "metric", Role: chplan.RoleMetricName},
-				{Name: "ts", Role: chplan.RoleTimestamp},
-				{Name: "value", Role: chplan.RoleValue},
-			},
-		},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	for _, dropped := range all {
+		t.Run("missing "+dropped.Role.String(), func(t *testing.T) {
 			t.Parallel()
-			_, err := resolveRangeLWRInputColumns(rangeLWRRoleProject(tc.roles...))
-			if err == nil {
-				t.Fatal("resolveRangeLWRInputColumns accepted a schema missing a required role")
+			roles := make([]chplan.Column, 0, len(all)-1)
+			for _, column := range all {
+				if column != dropped {
+					roles = append(roles, column)
+				}
+			}
+			_, err := resolveRangeLWRInputColumns(rangeLWRRoleProject(roles...))
+			if !errors.Is(err, ErrUnsupported) || !errors.Is(err, chplan.ErrRoleMissing) {
+				t.Fatalf("a child missing %s must be rejected as ErrUnsupported+ErrRoleMissing, got %v", dropped.Role, err)
 			}
 		})
 	}

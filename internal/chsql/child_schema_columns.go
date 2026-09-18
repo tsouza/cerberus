@@ -1,70 +1,76 @@
 package chsql
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-type childColumnRequirement struct {
-	role           chplan.ColumnRole
-	histogramField chplan.HistogramField
-	name           string
-	optional       bool
-}
+// This file is the emitters' one door to chplan's role resolution
+// (chplan.Schema.UniqueNamedRole / UniqueNamedHistogramField). Every emitter
+// that needs "the child column carrying role R" goes through a helper here;
+// none re-derives the lookup (role_resolution_class_test.go pins that). The
+// helpers add what the resolver deliberately leaves to the operator: the nil
+// and open-child checks, and the ErrUnsupported wrapping that names the owner.
 
-func resolveChildColumn(owner string, child chplan.Node, want childColumnRequirement) (string, error) {
+// closedChildSchema returns child's row type for owner, rejecting a nil child
+// and an open schema.
+func closedChildSchema(owner string, child chplan.Node) (chplan.Schema, error) {
 	if child == nil {
-		return "", fmt.Errorf("%w: %s.Input is nil", ErrUnsupported, owner)
+		return chplan.Schema{}, fmt.Errorf("%w: %s.Input is nil", ErrUnsupported, owner)
 	}
 	row := child.RowType()
 	if row.Open {
-		return "", fmt.Errorf("%w: %s requires a closed child schema", ErrUnsupported, owner)
+		return chplan.Schema{}, fmt.Errorf("%w: %s requires a closed child schema", ErrUnsupported, owner)
 	}
-	var resolved string
-	for _, column := range row.Columns {
-		matches := column.Role == want.role
-		if want.role == chplan.RoleHistogramField {
-			matches = matches && column.HistogramField == want.histogramField
-			if column.HistogramField == want.histogramField && column.Role != chplan.RoleHistogramField {
-				return "", fmt.Errorf("%w: %s child column %q has incompatible role for %s", ErrUnsupported, owner, column.Name, want.name)
-			}
-		}
-		if !matches {
-			continue
-		}
-		if column.Name == "" || resolved != "" {
-			return "", fmt.Errorf("%w: %s requires one named child column for %s", ErrUnsupported, owner, want.name)
-		}
-		resolved = column.Name
+	return row, nil
+}
+
+// roleColumnName resolves role in row and reports a failure as owner's
+// unsupported-plan error.
+func roleColumnName(owner string, row chplan.Schema, role chplan.ColumnRole) (string, error) {
+	column, err := row.UniqueNamedRole(role)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s child schema: %w", ErrUnsupported, owner, err)
 	}
-	if resolved == "" {
-		if want.optional {
+	return column.Name, nil
+}
+
+// histogramFieldColumnName resolves field in row and reports a failure as
+// owner's unsupported-plan error. With optional set, an absent field resolves
+// to the empty name rather than an error; every other failure still rejects.
+func histogramFieldColumnName(owner string, row chplan.Schema, field chplan.HistogramField, optional bool) (string, error) {
+	column, err := row.UniqueNamedHistogramField(field)
+	if err != nil {
+		if optional && errors.Is(err, chplan.ErrRoleMissing) {
 			return "", nil
 		}
-		return "", fmt.Errorf("%w: %s child schema is missing %s", ErrUnsupported, owner, want.name)
+		return "", fmt.Errorf("%w: %s child schema: %w", ErrUnsupported, owner, err)
 	}
-	for _, column := range row.Columns {
-		if column.Name == resolved && (column.Role != want.role ||
-			(want.role == chplan.RoleHistogramField && column.HistogramField != want.histogramField)) {
-			return "", fmt.Errorf("%w: %s child column %q is ambiguous for %s", ErrUnsupported, owner, resolved, want.name)
-		}
-	}
-	return resolved, nil
+	return column.Name, nil
 }
 
+// roleChildColumn resolves role in owner's closed child.
+func roleChildColumn(owner string, child chplan.Node, role chplan.ColumnRole) (string, error) {
+	row, err := closedChildSchema(owner, child)
+	if err != nil {
+		return "", err
+	}
+	return roleColumnName(owner, row, role)
+}
+
+// timestampChildColumn resolves the timestamp role in owner's closed child.
 func timestampChildColumn(owner string, child chplan.Node) (string, error) {
-	return resolveChildColumn(owner, child, childColumnRequirement{role: chplan.RoleTimestamp, name: "timestamp role"})
+	return roleChildColumn(owner, child, chplan.RoleTimestamp)
 }
 
-func histogramChildColumn(child chplan.Node, field chplan.HistogramField, name string) (string, error) {
-	return resolveChildColumn("HistogramProjection", child, childColumnRequirement{
-		role: chplan.RoleHistogramField, histogramField: field, name: name,
-	})
-}
-
-func optionalHistogramChildColumn(child chplan.Node, field chplan.HistogramField, name string) (string, error) {
-	return resolveChildColumn("HistogramProjection", child, childColumnRequirement{
-		role: chplan.RoleHistogramField, histogramField: field, name: name, optional: true,
-	})
+// histogramFieldChildColumn resolves field in owner's closed child; see
+// histogramFieldColumnName for optional.
+func histogramFieldChildColumn(owner string, child chplan.Node, field chplan.HistogramField, optional bool) (string, error) {
+	row, err := closedChildSchema(owner, child)
+	if err != nil {
+		return "", err
+	}
+	return histogramFieldColumnName(owner, row, field, optional)
 }

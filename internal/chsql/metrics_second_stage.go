@@ -110,20 +110,7 @@ func metricsSecondStageValueColumn(row chplan.Schema) (string, error) {
 		return "", fmt.Errorf("%w: MetricsSecondStage.Input has open row schema", ErrUnsupported)
 	}
 
-	value := ""
-	for _, column := range row.Columns {
-		if column.Role != chplan.RoleValue {
-			continue
-		}
-		if value != "" || column.Name == "" {
-			return "", fmt.Errorf("%w: MetricsSecondStage.Input has invalid RoleValue schema", ErrUnsupported)
-		}
-		value = column.Name
-	}
-	if value == "" {
-		return "", fmt.Errorf("%w: MetricsSecondStage.Input has no RoleValue column", ErrUnsupported)
-	}
-	return value, nil
+	return roleColumnName("MetricsSecondStage", row, chplan.RoleValue)
 }
 
 // isThresholdOp reports whether op is one of the six comparison
