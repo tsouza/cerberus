@@ -20,13 +20,19 @@ name: update-golden-guard
 # than merely loud.
 #
 # See .github/scripts/update-golden-guard.mjs for the single-snapshot
-# mechanism, why it does not read the dispatch's own conclusion, and why
-# there are three triggers below (the pull_request and merge_group ones each
-# take one snapshot of the in-flight update-golden.yml runs and fail fast
-# rather than block when one targets their branch; the workflow_run one
-# closes issue #2350's race for a dispatch made AFTER the PR's required check
-# already went green — or already failed fast — which the pull_request
-# trigger alone cannot re-evaluate on its own since nothing re-runs it).
+# mechanism and why there are three triggers below: the pull_request and
+# merge_group ones each take one snapshot of the in-flight update-golden.yml
+# runs — never reading a run's conclusion — and fail fast rather than block
+# when one targets their branch; the workflow_run one closes issue #2350's
+# race for a dispatch made AFTER the PR's required check already went green
+# — or already failed fast — which the pull_request trigger alone cannot
+# re-evaluate on its own since nothing re-runs it. That handler CREATES a
+# fresh `update-golden-guard` check-run on the PR's head SHA through the
+# Checks API (the same object, name and app as the pull_request job's own
+# check-run, so GitHub's newest-check-run-wins rule supersedes it): in
+# progress while a dispatch is in flight, failed when the dispatch that just
+# completed did not conclude `success` (a cancelled or failed regeneration
+# pushed nothing, so the goldens are still stale), success otherwise.
 #
 # merge_group is not a formality. A required context that never posts on the
 # queue's projected trunk never resolves and the entry waits forever, so the
@@ -56,13 +62,13 @@ on:
 permissions:
   actions: read
   # workflow_run path: list the open PR(s) an update-golden.yml dispatch
-  # targets, and push a commit status onto their head SHA (see the mjs file
+  # targets, and create a check-run on their head SHA (see the mjs file
   # header). merge_group path: read the queued pull request to learn its head
   # branch name, which the queue's own ref carries only as a number. The
   # pull_request path relies solely on its own check-run result and needs
   # neither.
   pull-requests: read
-  statuses: write
+  checks: write
 
 concurrency:
   # A check run against a superseded head SHA can never gate the CURRENT one,
@@ -89,7 +95,7 @@ jobs:
     # No longer needs to be anywhere near the old ~65-minute ceiling: every
     # path here is a self-test plus a handful of fast API calls (a single
     # in-flight-runs snapshot, or — on workflow_run — a PR lookup and a
-    # status push), matching the other pull_request-triggered required
+    # check-run create), matching the other pull_request-triggered required
     # checks' own timeouts (pr-hygiene.yml: 5). Generous margin over the
     # normal sub-minute run for a slow GitHub API response.
     timeout-minutes: 5
@@ -137,11 +143,15 @@ jobs:
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: node .github/scripts/update-golden-guard.mjs
 
+      # `conclusion` is empty on `requested` and set on `completed`; the
+      # script reads it only on the latter (see its env contract).
       - name: Reflect an update-golden.yml dispatch onto its target PR's own check
         if: github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          WORKFLOW_RUN_ACTION: ${{ github.event.action }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           WORKFLOW_RUN_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
           WORKFLOW_RUN_HTML_URL: ${{ github.event.workflow_run.html_url }}
         run: node .github/scripts/update-golden-guard.mjs
