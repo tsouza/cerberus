@@ -42,6 +42,17 @@ catch. Making `profile.Record.FanFactor` a `*float64` that is nil whenever
 "unmeasured", which the ratchet can then treat as a state to hold rather than
 as a passing measurement.
 
+## Why `auto` selects the native rate path despite its experimental label
+
+The native `timeSeriesRateToGrid` path was validated on production data
+against a real (non-chDB) server with
+`allow_experimental_time_series_aggregate_functions` enforced and found
+result-correct at flat memory — for `rate` it is in fact *more* correct than
+the fan-out, which carries a known extrapolation bug. That is why the
+auto-picker selects it on `>= 25.9` rather than leaving it opt-in, and why the
+maturity label stays: the setting is ClickHouse's confidence signal, not a
+statement about cerberus's own verification.
+
 ## Why the rate-range fan-out ships as the default
 
 The `arrayJoin` fan-out that [`performance.md`](performance.md) describes for

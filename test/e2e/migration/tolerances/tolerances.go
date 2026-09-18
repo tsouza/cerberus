@@ -55,10 +55,10 @@ import "time"
 //     above.
 //
 // A single measurement is a lower bound on the true error distribution, not
-// its ceiling; MIG-17's per-query max/median divergence reporting (already
-// wired for the exact-parity corpus) is the mechanism that would surface a
-// wider gap on a later run, at which point this constant is the one place to
-// widen it — reviewed, per the shrink-only rule above, never silently.
+// its ceiling. MIG-17's step reports the observed |diff| against this constant
+// in its failure message, so a wider gap on a later run names the number; this
+// constant is the one place to widen it, and widening it is a visible edit
+// to this file's diff rather than a silent change elsewhere.
 const ExpHistogramQuantileEpsilon = 2.0
 
 // Band is one declared tolerance: the value a comparator is allowed to accept
