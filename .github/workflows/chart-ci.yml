@@ -52,6 +52,11 @@ jobs:
       - name: chart-kubeconform self-test (image-guard classifier + staging exemption)
         run: node .github/scripts/chart-kubeconform.mjs --self-test
 
+      # The filter names the chart AND every script the gated steps below run,
+      # with each script's `lib/` imports: a step that runs only when its own
+      # code did not change is a green check that executed nothing on the PR
+      # that edited it. test/regression/paths_filter_covers_scripts_test.go
+      # derives the required set from this job and fails on a missing path.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4
         id: changes
         with:
@@ -61,6 +66,13 @@ jobs:
               - '.github/workflows/chart-ci.yml'
               - '.github/scripts/chart-publish.mjs'
               - '.github/scripts/chart-kubeconform.mjs'
+              - '.github/scripts/chart-render-assert.mjs'
+              - '.github/scripts/render-helm-docs.mjs'
+              - '.github/scripts/registry-login.mjs'
+              - '.github/scripts/lib/helm-docs.mjs'
+              - '.github/scripts/lib/gh.mjs'
+              - '.github/scripts/lib/mirror.mjs'
+              - '.github/scripts/lib/registry.mjs'
 
       - if: steps.changes.outputs.chart == 'true'
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5

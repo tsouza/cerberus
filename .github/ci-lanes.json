@@ -109,6 +109,13 @@
         ".github/ci-lanes.json",
         ".github/scripts/chart-kubeconform.mjs",
         ".github/scripts/chart-publish.mjs",
+        ".github/scripts/chart-render-assert.mjs",
+        ".github/scripts/lib/gh.mjs",
+        ".github/scripts/lib/helm-docs.mjs",
+        ".github/scripts/lib/mirror.mjs",
+        ".github/scripts/lib/registry.mjs",
+        ".github/scripts/registry-login.mjs",
+        ".github/scripts/render-helm-docs.mjs",
         ".github/workflows/chart-ci.yml",
         "deploy/helm/**"
       ],
