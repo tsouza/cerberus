@@ -46,19 +46,23 @@ the script directly) and as a step inside the `forbid-skip` CI job. The
 lefthook `forbid-skip-self-test` command runs the same script on
 pre-push.
 
-Every row is carried by CI, and every row now has a test that proves its
-scan can go RED — in `scripts/test-forbid-skip.sh` (a regex-level harness) or
-in `.github/scripts/forbid-skip.test.mjs` (end-to-end against the real CLI in
-a throwaway git repository), both of which run in the `forbid-skip` job:
+Every row is carried by CI, and every `CHECK` arm has a case in
+`.github/scripts/forbid-skip.test.mjs` that seeds its violation into a
+throwaway repository, drives the real CLI and asserts the exit is RED, beside
+a case that sees the same arm pass a clean corpus. The file's last test reads
+the live `CHECKS` key set from the CLI's own unknown-`CHECK` error and fails
+when any arm has not been driven to both exits in that run, so an arm cannot
+be added to the registry without its pair. The suite runs in the
+`forbid-skip` job:
 
-| Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command | red-proving test       |
-| ------ | ----------------------------------------------------------------------------- | --------------------------- | ---------------------- |
-| 1      | Reject t.Skip in test files (`t-skip`)                                        | `forbid-skip-t-skip`        | both                   |
-| 2–4    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-soft-assert`        | `test-forbid-skip.sh`  |
-| 5      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-escape-hatch`       | `forbid-skip.test.mjs` |
-| 6      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`       | `forbid-skip.test.mjs` |
-| 7–8    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline` | `test-forbid-skip.sh`  |
-| 9      | Reject Playwright spec suppression (`playwright-skip`)                        | `forbid-skip-playwright`    | both                   |
+| Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command |
+| ------ | ----------------------------------------------------------------------------- | --------------------------- |
+| 1      | Reject t.Skip in test files (`t-skip`)                                        | `forbid-skip-t-skip`        |
+| 2–4    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-soft-assert`        |
+| 5      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-escape-hatch`       |
+| 6      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`       |
+| 7–8    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline` |
+| 9      | Reject Playwright spec suppression (`playwright-skip`)                        | `forbid-skip-playwright`    |
 
 Row 5 rejects every non-empty `should_skip:` block in
 `compatibility/**/*.{yml,yaml}` outright. lefthook's

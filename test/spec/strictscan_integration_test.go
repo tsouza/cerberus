@@ -52,17 +52,31 @@
 // and traceql exercise the Map and trace projections). The optimizer lane has
 // no round-trip fixtures. LogQL's LOG-STREAM wire projection is not in scope
 // here — Layer 2a records its SQL before ProjectSamples, so a log fixture's
-// `-- sql --` is a bare `SELECT *` that classifies as non-matrix; the real-CH
-// coverage for that shape is the compat-logql differential. See issue #2044
-// for closing the gap the way #1635 closed TraceQL's. Args are taken verbatim from each fixture's
-// `-- args --` block, so no synthetic placeholder binding is needed — EXCEPT
-// for TraceQL search-shaped fixtures, where traceqlWrapForStrictScan discards
-// the fixture's own `-- sql --` / `-- args --` and re-derives both (see its
-// doc comment): Layer 2a's TraceQL fixtures are captured before
-// engine.QueryPlan's wrap-projection stage (ProjectSamples), which
-// traceqlLang.ProjectSamples always applies in production via
-// wrapWithSampleProjection, so the recorded SQL for a search-shaped TraceQL
-// query never reaches a real server as-is (issue #1635).
+// `-- sql --` is a bare `SELECT *` that classifies as non-matrix; that shape
+// is strict-scanned by TestStrictScanDifferentialLogStreams
+// (strictscan_logql_integration_test.go), which reconstructs the production
+// log-stream wrap the same way this test reconstructs TraceQL's. Args are
+// taken verbatim from each fixture's `-- args --` block, so no synthetic
+// placeholder binding is needed — EXCEPT for TraceQL search-shaped fixtures,
+// where traceqlWrapForStrictScan discards the fixture's own `-- sql --` /
+// `-- args --` and re-derives both (see its doc comment): Layer 2a's TraceQL
+// fixtures are captured before engine.QueryPlan's wrap-projection stage
+// (ProjectSamples), which traceqlLang.ProjectSamples always applies in
+// production via wrapWithSampleProjection, so the recorded SQL for a
+// search-shaped TraceQL query never reaches a real server as-is. The
+// reconstructed wrap IS the matrix shape — production decodes every Tempo
+// search row through the same matrix cursor as a PromQL sample — so a
+// search-shaped fixture is in scope and a non-matrix verdict on one is a
+// failure, never a skip.
+//
+// The one TraceQL shape outside this lane's scope is a METRICS-PIPELINE
+// fixture (`| rate()`, `| count_over_time() by (...)`, …): production routes
+// those through /api/metrics/query_range's own metricsLang
+// (internal/api/tempo/metrics_query_range.go), whose wrap the search
+// reconstruction does not represent, so the fixture's recorded pre-wrap SQL
+// classifies non-matrix here. Their real-CH coverage is the compat-traceql
+// differential, which drives /api/metrics/query_range against a real
+// ClickHouse.
 //
 // Gated by the `integration` build tag (Docker required). A REQUIRED status
 // check on `main` (see .github/workflows/strict-scan.yml) — promoted after
@@ -118,7 +132,8 @@ func TestStrictScanDifferential(t *testing.T) {
 	client := newStrictScanClient(ctx, t)
 
 	repoRoot := repoRootFromTest(t)
-	var ran, skippedNonRT, skippedNonMatrix int
+	var ran, ranTraceqlSearch, skippedNonRT, skippedNonMatrix int
+	nonMatrixByHead := map[string]int{}
 	for _, head := range strictScanHeads {
 		dir := filepath.Join(repoRoot, "test", "spec", head)
 		spec.Walk(t, dir, func(t *testing.T, c *spec.Case) {
@@ -130,28 +145,48 @@ func TestStrictScanDifferential(t *testing.T) {
 				skippedNonRT++
 				return
 			}
+			wrapped := false
 			if head == "traceql" {
 				// Search-shaped fixtures get their SQL/args replaced with the
 				// production wrap-projected reconstruction; metrics-pipeline
 				// fixtures are left untouched (see traceqlWrapForStrictScan).
-				traceqlWrapForStrictScan(t, c, rt)
+				wrapped = traceqlWrapForStrictScan(t, c, rt)
 			}
-			switch runStrictScanCase(ctx, t, client, rt) {
+			outcome := runStrictScanCase(ctx, t, client, rt)
+			if wrapped && outcome != caseRan {
+				// The reconstructed wrap is byte-for-byte what production
+				// sends through the matrix cursor for this query, so a
+				// non-matrix verdict on it is a broken wrap or a broken shape
+				// probe — never a fixture that belongs to another decoder.
+				t.Fatalf("search-shaped TraceQL fixture %s: the production wrap projection was reconstructed but its SQL did not strict-scan as the matrix shape (MetricName, Attributes, TimeUnix, Value):\n--- sql ---\n%s", c.Name, rt.SQL)
+			}
+			switch outcome {
 			case caseRan:
 				ran++
+				if wrapped {
+					ranTraceqlSearch++
+				}
 			case caseNonMatrix:
 				skippedNonMatrix++
+				nonMatrixByHead[head]++
 			}
 		})
 	}
 
 	// A guard against a silently-empty corpus: if the walk matched no
 	// matrix-shaped round-trip fixtures the test would pass vacuously,
-	// defeating the lane.
+	// defeating the lane. The TraceQL search-row count is guarded on its
+	// own because that shape only reaches the cursor through the wrap
+	// reconstruction: a reconstruction that stopped matching every fixture
+	// would otherwise hide inside the promql total.
 	if ran == 0 {
 		t.Fatalf("strict-scan differential ran zero matrix-shaped fixtures (non-round-trip=%d, non-matrix=%d) — corpus glob or matrix detection is broken", skippedNonRT, skippedNonMatrix)
 	}
-	t.Logf("strict-scan differential: strict-scanned %d matrix-shaped fixtures against real ClickHouse (%d non-round-trip + %d non-matrix-shape skipped)", ran, skippedNonRT, skippedNonMatrix)
+	if ranTraceqlSearch == 0 {
+		t.Fatalf("strict-scan differential ran zero TraceQL search-shaped fixtures — traceqlWrapForStrictScan reconstructed nothing, so the Tempo search-row shape went unscanned")
+	}
+	t.Logf("strict-scan differential: strict-scanned %d matrix-shaped fixtures against real ClickHouse, %d of them TraceQL search rows through the production wrap (%d non-round-trip + %d non-matrix-shape skipped: promql=%d logql=%d traceql=%d)",
+		ran, ranTraceqlSearch, skippedNonRT, skippedNonMatrix, nonMatrixByHead["promql"], nonMatrixByHead["logql"], nonMatrixByHead["traceql"])
 }
 
 // caseOutcome classifies what runStrictScanCase did with a fixture.
@@ -162,9 +197,13 @@ const (
 	// strict-scanned through the production cursor.
 	caseRan caseOutcome = iota
 	// caseNonMatrix: the fixture's SQL is not the (MetricName, Attributes,
-	// TimeUnix, Value) matrix shape the production cursor decodes — it
-	// belongs to a different decoder (label values, Tempo search rows,
-	// index stats, …) and is out of this lane's scope.
+	// TimeUnix, Value) matrix shape the production cursor decodes — it is
+	// pre-wrap SQL production never sends (a LogQL log-stream `SELECT *`,
+	// a TraceQL metrics-pipeline fixture) or belongs to a different decoder
+	// (label values, index stats, …) and is out of this lane's scope. A
+	// Tempo search row is NOT in this class: production repacks it into the
+	// matrix shape, and the walk reconstructs that repack, so a search-shaped
+	// TraceQL fixture landing here fails the test.
 	caseNonMatrix
 )
 
@@ -178,7 +217,8 @@ const (
 // [, Metadata]), which carries no Value column and which no fixture's
 // recorded SQL produces — Layer 2a captures logql SQL BEFORE
 // ProjectSamples, so a log fixture's `-- sql --` is a bare `SELECT *` and
-// is skipped as non-matrix here. See issue #2044.
+// is skipped as non-matrix here; TestStrictScanDifferentialLogStreams
+// reconstructs and strict-scans that row shape.
 var matrixColumns = []string{"MetricName", "Attributes", "TimeUnix", "Value"}
 
 // runStrictScanCase seeds the fixture's tables, probes the emitted SQL's
@@ -191,10 +231,10 @@ var matrixColumns = []string{"MetricName", "Attributes", "TimeUnix", "Value"}
 // columns, exactly as production does.
 //
 // The column-shape probe scopes the lane to the matrix decoder's corpus: the
-// production cursor is only ever fed (MetricName, Attributes, TimeUnix, Value
-// [, Metadata]) results, so a fixture whose SQL projects a label-values column,
-// a 13-column Tempo search row, an index-stats tuple, etc. belongs to a
-// different decoder and would produce a meaningless "expected N destination
+// production cursor is only ever fed (MetricName, Attributes, TimeUnix, Value)
+// results, so a fixture whose SQL projects a label-values column, an
+// index-stats tuple, a pre-wrap log-stream or TraceQL metrics-pipeline
+// projection, etc. would produce a meaningless "expected N destination
 // arguments, not 4" mismatch rather than a real type-coercion finding.
 func runStrictScanCase(ctx context.Context, t *testing.T, client *chclient.Client, rt *spec.RoundTripSections) caseOutcome {
 	t.Helper()
@@ -244,7 +284,8 @@ func runStrictScanCase(ctx context.Context, t *testing.T, client *chclient.Clien
 
 // traceqlWrapForStrictScan reconstructs the wrap-projected SQL production
 // actually sends to ClickHouse for a TraceQL round-trip fixture's
-// search-shaped plan, and substitutes it into rt in place (rt.SQL, rt.Args) —
+// search-shaped plan, and substitutes it into rt in place (rt.SQL, rt.Args),
+// reporting true when it did so and false when rt was left untouched —
 // closing the gap documented in issue #1635: Layer 2a's `-- sql --` section
 // (internal/traceql/lower_test.go) is captured BEFORE engine.QueryPlan's
 // wrap-projection stage (ProjectSamples), which traceqlLang.ProjectSamples
@@ -265,7 +306,7 @@ func runStrictScanCase(ctx context.Context, t *testing.T, client *chclient.Clien
 // (see traceqlwrap.ReconstructSearchWrap's doc comment); they keep going through
 // runStrictScanCase with their original (pre-wrap) SQL, which — as today —
 // gets classified caseNonMatrix.
-func traceqlWrapForStrictScan(t *testing.T, c *spec.Case, rt *spec.RoundTripSections) {
+func traceqlWrapForStrictScan(t *testing.T, c *spec.Case, rt *spec.RoundTripSections) bool {
 	t.Helper()
 
 	sqlStr, args, ok, err := traceqlwrap.ReconstructSearchWrap(c)
@@ -273,10 +314,11 @@ func traceqlWrapForStrictScan(t *testing.T, c *spec.Case, rt *spec.RoundTripSect
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
 	if !ok {
-		return
+		return false
 	}
 	rt.SQL = sqlStr
 	rt.Args = args
+	return true
 }
 
 // isMatrixShape runs the query, reads the result column names, and reports

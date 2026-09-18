@@ -102,7 +102,12 @@ func (w *World) whenCompareDownsampled() error {
 	}
 	w.downsample.result = res
 	w.downsample.resultSet = true
-	return nil
+	// The headroom line is printed here, at the measurement, rather than in
+	// the Then step: a run that exceeds the band still reports how far.
+	return printHeadroom(headroomReport{
+		Story: "MIG-20", Archetype: archetype, Subject: "downsample relative delta",
+		Observed: res.RelativeDelta, Band: w.downsample.band,
+	})
 }
 
 // promRangeMatrix is the standard Prometheus range-query envelope: one
