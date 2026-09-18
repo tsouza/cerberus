@@ -27,7 +27,6 @@ import { validateSemanticModel } from "./semantic-model.mjs";
 import { loadRegistry } from "../ci-lane-contract.mjs";
 import { validatePolicySnapshot } from "./semantic-lane-adapter.mjs";
 import {
-  ADVERSARIAL_NOTE,
   MERGE_RELEASE_CAVEAT,
   buildImpactReport,
   impactedContracts,
@@ -292,10 +291,30 @@ test("SHARED PIPELINE at the CONTRACT level: one shared-package change reaches B
   );
   for (const c of contracts) {
     assert.equal(c.bound_evidence.assured, true);
-    assert.deepEqual(c.adversarial_bindings, []);
-    assert.equal(c.adversarial_note, ADVERSARIAL_NOTE);
+    assert.deepEqual(c.adversarial_mutants, []);
     assert.equal(c.bindings[0].triggers[0].reasons[0].kind, "derived");
   }
+});
+
+test("impactedContracts lists the real mutants targeting each affected contract, with their declared disposition", () => {
+  const model = fixtureModel();
+  const registry = fixtureRegistry();
+  const snapshot = fixtureSnapshot();
+  const closures = resolveLaneClosures(registry.lanes, { repoRoot: REPO_ROOT, runGoList: stubGoList(SHARED_PIPELINE) });
+  const declared = new Map([
+    ["promql.lane", registry.lanes[0].package_globs],
+    ["logql.lane", registry.lanes[1].package_globs],
+  ]);
+  const touched = touchedLanes(["internal/chplan/plan.go"], registry.lanes, declared, closures);
+  const mutants = new Map([
+    ["MUTANT-PROMQL-X", { id: "MUTANT-PROMQL-X", synthetic: false, violated_contracts: ["PROMQL-EXAMPLE"], expected_detection: "killed" }],
+    ["MUTANT-SYNTH-Y", { id: "MUTANT-SYNTH-Y", synthetic: true, violated_contracts: ["SYNTHETIC-Y"], expected_detection: "survived" }],
+  ]);
+  const contracts = impactedContracts(model, registry, snapshot, touched, mutants);
+  const promql = contracts.find((c) => c.id === "PROMQL-EXAMPLE");
+  const logql = contracts.find((c) => c.id === "LOGQL-EXAMPLE");
+  assert.deepEqual(promql.adversarial_mutants, [{ id: "MUTANT-PROMQL-X", disposition: "killed" }]);
+  assert.deepEqual(logql.adversarial_mutants, []);
 });
 
 test("a contract with no touched lane is absent, not reported as zero-impact", () => {
@@ -488,7 +507,7 @@ test("renderText names every impacted contract, its evidence, and the merge/rele
   assert.match(text, /LOGQL-EXAMPLE/);
   assert.match(text, /required evidence classes: execution/);
   assert.equal(text.includes(MERGE_RELEASE_CAVEAT), true);
-  assert.equal(text.includes(ADVERSARIAL_NOTE), true);
+  assert.match(text, /adversarial evidence: none \(no committed mutant targets this contract\)/);
 });
 
 test("renderJSON round-trips through JSON.parse with the same contract set", () => {

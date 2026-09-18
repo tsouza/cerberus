@@ -50,14 +50,15 @@
 // naming exactly what could not be computed (buildImpactReport,
 // resolveLaneClosures).
 //
-// ADVERSARIAL EVIDENCE. issue #3426's evidence_class vocabulary
-// (execution/property/reference/static-analysis/manual-review) has no
-// mutation/adversarial member yet — the M2 mutation-pilot binding class
-// this command's own issue explicitly says it must not wait for. Every
-// impacted contract therefore always reports an explicit (for now, always
-// empty) `adversarial_bindings` list rather than omitting the field, so "no
-// adversarial evidence exists yet" reads as a stated fact, not a silently
-// absent one.
+// ADVERSARIAL EVIDENCE. The semantic mutation pilot (test/semantic/mutants/,
+// lib/semantic-mutation.mjs) is a bounded cohort of hand-authored,
+// contract-linked mutants; each real (non-synthetic) record names the
+// contracts it violates. Every impacted contract reports the mutants that
+// target it, with the record's own declared expected_detection — derived
+// from the same loadMutants() corpus the conformance report's "Semantic
+// mutation pilot" section renders, never a hand-written sentence about
+// whether such evidence exists. A contract no mutant targets reports an
+// explicit empty list.
 //
 // SCOPE. Advisory only. This never selects, skips, or approves a CI
 // workflow, and a targeted local green from a recipe this module names is
@@ -71,12 +72,6 @@ import { declaredGlobs, laneAffectedGlobs } from "./lane-closure.mjs";
 import { matchesGlob } from "../ci-lane-contract.mjs";
 
 export const IMPACT_SCHEMA_VERSION = 1;
-
-export const ADVERSARIAL_NOTE =
-  "no mutation/adversarial evidence class exists yet in the semantic model " +
-  "(EVIDENCE_CLASSES, lib/semantic-model.mjs) — shown explicitly as none " +
-  "rather than omitted, per this command's own scope: it must work before " +
-  "the M2 mutation-pilot bindings land.";
 
 export const MERGE_RELEASE_CAVEAT =
   "A green run of the recipe(s) named above is evidence for that binding's " +
@@ -181,13 +176,28 @@ function byId(a, b) {
 }
 
 /**
+ * The real (non-synthetic) mutant records targeting `contractId`, each with
+ * its declared expected_detection — the adversarial evidence the semantic
+ * mutation pilot holds for that contract. `mutants` is loadMutants()'s own
+ * Map<id, record>.
+ */
+export function adversarialMutantsFor(contractId, mutants = new Map()) {
+  return [...mutants.values()]
+    .filter((m) => !m.synthetic && m.violated_contracts.includes(contractId))
+    .map((m) => ({ id: m.id, disposition: m.expected_detection }))
+    .sort(byId);
+}
+
+/**
  * Every contract with >=1 ACTIVE binding resolving (via resolveBindingLanes)
  * to a touched lane, sorted by contract ID. Never restricted to
  * `contract.status === "active"`: a draft or explicit_deficit contract is
  * still worth surfacing to a reader deciding what to verify, and its
- * status is reported plainly rather than silently filtered out.
+ * status is reported plainly rather than silently filtered out. `mutants`
+ * (loadMutants()'s Map, optional) supplies each contract's adversarial
+ * evidence — see adversarialMutantsFor.
  */
-export function impactedContracts(model, registry, snapshot, touched) {
+export function impactedContracts(model, registry, snapshot, touched, mutants = new Map()) {
   const byContract = new Map();
 
   for (const [, binding] of model.bindings) {
@@ -244,8 +254,7 @@ export function impactedContracts(model, registry, snapshot, touched) {
           coverage.missingClasses.length === 0 &&
           coverage.missingGroups.length === 0,
       },
-      adversarial_bindings: [],
-      adversarial_note: ADVERSARIAL_NOTE,
+      adversarial_mutants: adversarialMutantsFor(id, mutants),
       bindings: bindings
         .sort((a, b) => (a.binding.id < b.binding.id ? -1 : a.binding.id > b.binding.id ? 1 : 0))
         .map((b) => ({
@@ -278,6 +287,7 @@ export function buildImpactReport({
   model,
   registry,
   snapshot,
+  mutants = new Map(),
   repoRoot,
   base,
   head,
@@ -336,7 +346,7 @@ export function buildImpactReport({
     touched = touchedLanes(relevantFiles, ownerLanes, declared, closures);
   }
 
-  const contracts = impactedContracts(model, registry, snapshot, touched);
+  const contracts = impactedContracts(model, registry, snapshot, touched, mutants);
 
   return {
     schema_version: IMPACT_SCHEMA_VERSION,
@@ -348,7 +358,6 @@ export function buildImpactReport({
     owner_lane_count: owners.length,
     touched_lane_count: [...touched.values()].filter((t) => t.touched).length,
     merge_release_caveat: MERGE_RELEASE_CAVEAT,
-    adversarial_note: ADVERSARIAL_NOTE,
     contracts,
   };
 }
@@ -393,7 +402,11 @@ function renderContract(c) {
       : "";
   lines.push(`- structurally assured: ${c.bound_evidence.assured}${missing}`);
   lines.push(
-    `- adversarial evidence: ${c.adversarial_bindings.length ? c.adversarial_bindings.join(", ") : "none"} — ${c.adversarial_note}`,
+    `- adversarial evidence: ${
+      c.adversarial_mutants.length
+        ? c.adversarial_mutants.map((m) => `${m.id} (${m.disposition}; reproduce via \`just semantic-mutate ${m.id}\`)`).join(", ")
+        : "none (no committed mutant targets this contract)"
+    }`,
   );
   for (const b of c.bindings) lines.push(renderBinding(b));
   return lines.join("\n");

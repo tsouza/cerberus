@@ -84,7 +84,13 @@ function readIfExists(path) {
 // shared with semantic-guide.mjs's CLI rather than reimplemented here, per
 // CLAUDE.md's DRY invariant.
 
-export function generate(root = process.cwd()) {
+// loadReport builds the report object every generated semantic document
+// projects from — the model, the lane registry and policy snapshot, and the
+// mutation pilot corpus with its ledger, all from the same env-driven
+// paths. semantic-guide.mjs imports it rather than repeating the loading,
+// so the guide can never be built from a different input set than the
+// report it is a view over.
+export function loadReport(root = process.cwd()) {
   const model = loadSemanticModel(MODEL_DIR, { root });
   const registry = loadRegistry(REGISTRY_PATH);
   const snapshot = validatePolicySnapshot(JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")));
@@ -94,6 +100,11 @@ export function generate(root = process.cwd()) {
     mutantIds: new Set(mutants.keys()),
   });
   const report = buildReport(model, { registry, snapshot, mutants, mutantExecutions });
+  return { model, registry, snapshot, report };
+}
+
+export function generate(root = process.cwd()) {
+  const { report } = loadReport(root);
   const markdown = lintFixMarkdown(renderMarkdown(report), root);
   return { report, markdown, json: renderJSON(report) };
 }

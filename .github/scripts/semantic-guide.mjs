@@ -12,22 +12,20 @@
 //   node .github/scripts/semantic-guide.mjs            # write the guide
 //   node .github/scripts/semantic-guide.mjs --check     # fail on drift
 //
-// Env: same three as semantic-report.mjs (SEMANTIC_MODEL_DIR,
-// SEMANTIC_LANE_REGISTRY_PATH, SEMANTIC_LANE_POLICY_SNAPSHOT) plus
-// GITHUB_STEP_SUMMARY — this CLI reads the identical three inputs to build
-// the identical underlying report, so the env surface is deliberately not a
-// fourth, guide-specific set of names.
+// Env: the same set semantic-report.mjs reads (SEMANTIC_MODEL_DIR,
+// SEMANTIC_LANE_REGISTRY_PATH, SEMANTIC_LANE_POLICY_SNAPSHOT,
+// SEMANTIC_MUTANTS_DIR, SEMANTIC_MUTANT_EXECUTIONS_PATH) plus
+// GITHUB_STEP_SUMMARY — this CLI builds the identical underlying report
+// through semantic-report.mjs's own loadReport(), so the env surface is
+// deliberately not a second, guide-specific set of names.
 
 import process from "node:process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
-import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
-import { loadRegistry } from "./ci-lane-contract.mjs";
 import { lintFixMarkdown } from "./lib/markdown-lintfix.mjs";
-import { buildReport } from "./lib/semantic-report.mjs";
+import { loadReport } from "./semantic-report.mjs";
 import {
   DEFAULT_GUIDE_JSON_PATH,
   DEFAULT_GUIDE_MD_PATH,
@@ -35,11 +33,6 @@ import {
   renderJSON,
   renderMarkdown,
 } from "./lib/semantic-guide.mjs";
-
-const MODEL_DIR = process.env.SEMANTIC_MODEL_DIR || DEFAULT_SEMANTIC_MODEL_DIR;
-const REGISTRY_PATH = process.env.SEMANTIC_LANE_REGISTRY_PATH ?? ".github/ci-lanes.json";
-const SNAPSHOT_PATH =
-  process.env.SEMANTIC_LANE_POLICY_SNAPSHOT ?? "test/semantic/policy-snapshot.json";
 
 function appendSummary(body) {
   const path = process.env.GITHUB_STEP_SUMMARY;
@@ -61,10 +54,7 @@ function readIfExists(path) {
 }
 
 export function generate(root = process.cwd()) {
-  const model = loadSemanticModel(MODEL_DIR, { root });
-  const registry = loadRegistry(REGISTRY_PATH);
-  const snapshot = validatePolicySnapshot(JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")));
-  const report = buildReport(model, { registry, snapshot });
+  const { report, registry } = loadReport(root);
   const guide = buildGuide(report, registry);
   const markdown = lintFixMarkdown(renderMarkdown(guide), root);
   return { guide, markdown, json: renderJSON(guide) };

@@ -15,7 +15,7 @@ A compact, single entry point from **what task you are doing** to **what semanti
 
 3. **Search for counterexamples.** Where a contract binds a property-based or oracle-differential verifier (`just property`), run it — a randomized counterexample search is a materially different claim from one fixed golden input, and the Evidence-system column below (or the full report) names which contracts have it bound.
 
-4. **Optional adversarial probes.** no mutation/adversarial evidence class exists yet in the semantic model (EVIDENCE_CLASSES, lib/semantic-model.mjs) — shown explicitly as none rather than omitted, per this command's own scope: it must work before the M2 mutation-pilot bindings land. A contract with no adversarial evidence bound is not a gap this guide asks a reader to fill before the four steps around it are usable — mutation testing (`just mutate-pkg <path>`) is available and worth running for extra confidence, never required to complete the flow.
+4. **Optional adversarial probes.** The Adversarial evidence section below lists, per contract, the hand-authored contract-linked mutants of the semantic mutation pilot (`test/semantic/mutants/`, run with `just semantic-mutate <id>`) and each one's declared disposition. A contract with none listed has no adversarial evidence — not a gap this guide asks a reader to fill before the four steps around it are usable; mutation testing (`just mutate-pkg <path>`) is available and worth running for extra confidence, never required to complete the flow.
 
 5. **Required reference/release evidence.** Not every canonical execution is a merge or release OBLIGATION — the Contract index's merge-required/release-required columns (sourced from the captured CI policy snapshot, the same join semantic-impact.mjs and semantic-report.mjs already make) say which. A green run of the recipe(s) named above is evidence for that binding's own verifier only. It is never, by itself, a claim that the owning lane's merge or release obligation is satisfied — that requires the lane's own full, canonically-tagged run (see each binding's merge_required/release_required below), not a narrowed local reproduction of one test.
 
@@ -165,7 +165,18 @@ internal/optimizer's rewrites never change a query's observable outcome: every r
 
 ## Adversarial evidence
 
-no mutation/adversarial evidence class exists yet in the semantic model (EVIDENCE_CLASSES, lib/semantic-model.mjs) — shown explicitly as none rather than omitted, per this command's own scope: it must work before the M2 mutation-pilot bindings land.
+6 real (non-synthetic) mutant record(s) in the semantic mutation pilot (`test/semantic/mutants/`; the full report's "Semantic mutation pilot" section carries the kill/escape rates and every detector). Per targeted contract, each mutant's resolved disposition and bucket; a contract absent from this table has no adversarial evidence.
+
+| Contract                                                                                                 | Mutant                                            | Disposition | Bucket      |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ----------- | ----------- |
+| [`LOGQL-LABEL-MATCHER-REGEX-ANCHORING`](semantic-conformance.md#logql-label-matcher-regex-anchoring)     | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`      | killed      | denominator |
+| [`LOGQL-PIPELINE-STAGE-ORDER`](semantic-conformance.md#logql-pipeline-stage-order)                       | `MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED`      | killed      | denominator |
+| [`PROMQL-COUNTER-RESET-EXTRAPOLATION`](semantic-conformance.md#promql-counter-reset-extrapolation)       | `MUTANT-PROMQL-COUNTER-RESET-COMPENSATION`        | killed      | denominator |
+| [`PROMQL-LABEL-MATCHER-REGEX-ANCHORING`](semantic-conformance.md#promql-label-matcher-regex-anchoring)   | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`      | killed      | denominator |
+| [`PROMQL-RANGE-VECTOR-ALIGNMENT`](semantic-conformance.md#promql-range-vector-alignment)                 | `MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT` | killed      | denominator |
+| [`SIGNAL-LABEL-MATCHER-CONSISTENCY`](semantic-conformance.md#signal-label-matcher-consistency)           | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`      | killed      | denominator |
+| [`TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION`](semantic-conformance.md#traceql-attribute-scope-resolution)       | `MUTANT-TRACEQL-SCOPE-SWAP`                       | killed      | denominator |
+| [`TRACEQL-STRUCTURAL-RELATION-SEMANTICS`](semantic-conformance.md#traceql-structural-relation-semantics) | `MUTANT-TRACEQL-DESCENDANT-AS-CHILD`              | killed      | denominator |
 
 ## See also
 

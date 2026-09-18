@@ -19,6 +19,8 @@
 //                                    files (default test/semantic)
 //   SEMANTIC_LANE_REGISTRY_PATH     path to ci-lanes.json (default
 //                                    .github/ci-lanes.json)
+//   SEMANTIC_MUTANTS_DIR            directory holding the mutation pilot's
+//                                    records (default test/semantic/mutants)
 //   SEMANTIC_LANE_POLICY_SNAPSHOT   path to the captured snapshot (default
 //                                    test/semantic/policy-snapshot.json)
 
@@ -28,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
+import { DEFAULT_MUTANTS_DIR, loadMutants } from "./lib/semantic-mutation.mjs";
 import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
 import { loadRegistry } from "./ci-lane-contract.mjs";
 import { assertSafeArg } from "./lib/gh.mjs";
@@ -36,6 +39,7 @@ import { buildImpactReport, renderJSON, renderText } from "./lib/semantic-impact
 
 const MODEL_DIR = process.env.SEMANTIC_MODEL_DIR || DEFAULT_SEMANTIC_MODEL_DIR;
 const REGISTRY_PATH = process.env.SEMANTIC_LANE_REGISTRY_PATH ?? ".github/ci-lanes.json";
+const MUTANTS_DIR = process.env.SEMANTIC_MUTANTS_DIR || DEFAULT_MUTANTS_DIR;
 const SNAPSHOT_PATH = process.env.SEMANTIC_LANE_POLICY_SNAPSHOT ?? "test/semantic/policy-snapshot.json";
 
 function usage() {
@@ -55,11 +59,13 @@ export function main(argv = process.argv.slice(2), { root = process.cwd() } = {}
   const model = loadSemanticModel(MODEL_DIR, { root });
   const registry = loadRegistry(REGISTRY_PATH, { root });
   const snapshot = validatePolicySnapshot(JSON.parse(readFileSync(resolve(root, SNAPSHOT_PATH), "utf8")));
+  const mutants = loadMutants(MUTANTS_DIR, { root, contractIds: new Set(model.contracts.keys()) });
 
   const report = buildImpactReport({
     model,
     registry,
     snapshot,
+    mutants,
     repoRoot: root,
     base,
     head,

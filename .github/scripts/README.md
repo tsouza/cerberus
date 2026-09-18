@@ -1000,10 +1000,12 @@ collapses to "nothing affected" (indistinguishable from a genuinely clean
 diff) — both failure modes instead widen to every lane the model has active
 evidence on, with the reason naming exactly what could not be computed
 (`resolveLaneClosures()`, `buildImpactReport()`). Every impacted contract
-always reports an explicit (for now, always empty) `adversarial_bindings`
-list rather than omitting the field, since issue #3426's evidence-class
-vocabulary has no mutation/adversarial member yet — "no such evidence
-exists" is a stated fact here, not a silently absent one. The module is
+reports an `adversarial_mutants` list — the real (non-synthetic) records of
+the semantic mutation pilot (`test/semantic/mutants/`, loaded through
+`lib/semantic-mutation.mjs`'s `loadMutants()`) whose `violated_contracts`
+name it, each with its declared `expected_detection` — so "no committed
+mutant targets this contract" is a derived fact, never a hand-written
+sentence. The module is
 advisory only: it never selects, skips, or approves a CI workflow, and a
 targeted local green from a recipe it prints is never, by itself, a claim
 that the owning lane's merge or release obligation is satisfied (the

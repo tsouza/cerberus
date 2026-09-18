@@ -23,8 +23,11 @@
 // -> canonical execution -> counterexample search -> optional adversarial
 // probes -> required evidence flow; it never selects, skips, or approves a
 // CI workflow, exactly like semantic-impact.mjs (issue #3460) whose
-// MERGE_RELEASE_CAVEAT and ADVERSARIAL_NOTE this module reuses verbatim
-// rather than restating. An agent (or a human) cannot self-approve
+// MERGE_RELEASE_CAVEAT this module reuses verbatim rather than restating.
+// The adversarial-evidence section is a projection of the report's own
+// mutation_cohort (lib/semantic-mutation-report.mjs), so the guide and the
+// full report can never disagree about which contracts a committed mutant
+// targets. An agent (or a human) cannot self-approve
 // correctness by editing test/semantic/*.json: those files are
 // hand-authored/reviewed source like any other in this repository, a
 // change to a contract's statement, required evidence class, or binding is
@@ -40,7 +43,7 @@
 
 import { WORKED_EXAMPLE_CONTRACT_ID, mdEscapeProse } from "./semantic-report.mjs";
 import { classifyTestRef } from "./semantic-evidence-adapter.mjs";
-import { ADVERSARIAL_NOTE, MERGE_RELEASE_CAVEAT } from "./semantic-impact.mjs";
+import { MERGE_RELEASE_CAVEAT } from "./semantic-impact.mjs";
 import { matchesGlob } from "../ci-lane-contract.mjs";
 
 export const GUIDE_SCHEMA_VERSION = 1;
@@ -119,10 +122,14 @@ const HOW_TO_USE_STEPS = [
   {
     title: "Optional adversarial probes",
     body:
-      `${ADVERSARIAL_NOTE} A contract with no adversarial evidence bound is not ` +
-      "a gap this guide asks a reader to fill before the four steps around it " +
-      "are usable — mutation testing (`just mutate-pkg <path>`) is available and " +
-      "worth running for extra confidence, never required to complete the flow.",
+      "The Adversarial evidence section below lists, per contract, the " +
+      "hand-authored contract-linked mutants of the semantic mutation pilot " +
+      "(`test/semantic/mutants/`, run with `just semantic-mutate <id>`) and each " +
+      "one's declared disposition. A contract with none listed has no " +
+      "adversarial evidence — not a gap this guide asks a reader to fill before " +
+      "the four steps around it are usable; mutation testing (`just mutate-pkg " +
+      "<path>`) is available and worth running for extra confidence, never " +
+      "required to complete the flow.",
   },
   {
     title: "Required reference/release evidence",
@@ -328,6 +335,31 @@ function findContract(report, id) {
   return report.contracts.find((c) => c.id === id) ?? null;
 }
 
+/**
+ * The adversarial-evidence projection: which contracts the real
+ * (non-synthetic) mutants of the semantic mutation pilot target, each with
+ * its RESOLVED disposition and bucket — read straight from
+ * report.mutation_cohort (lib/semantic-mutation-report.mjs), never
+ * recomputed. `mutant_count` is the size of the semantic cohort, so an
+ * empty corpus reads as a derived zero rather than a hand-written claim.
+ */
+function adversarialEvidence(cohort) {
+  const records = new Map((cohort?.records ?? []).map((r) => [r.id, r]));
+  const byContract = Object.entries(cohort?.by_contract ?? {})
+    .map(([contract, ids]) => ({
+      contract,
+      mutants: [...ids].sort().map((id) => {
+        const record = records.get(id);
+        return { id, disposition: record?.disposition?.status ?? null, bucket: record?.bucket ?? null };
+      }),
+    }))
+    .sort((a, b) => (a.contract < b.contract ? -1 : a.contract > b.contract ? 1 : 0));
+  return {
+    mutant_count: cohort?.semantic_cohort?.record_ids?.length ?? 0,
+    by_contract: byContract,
+  };
+}
+
 function workedExample(report, key, contractId) {
   const contractRecord = findContract(report, contractId);
   if (!contractRecord) return null;
@@ -380,7 +412,7 @@ export function buildGuide(report, registry) {
     source: "the semantic-report.mjs buildReport() output over test/semantic/*.json",
     how_to_use: HOW_TO_USE_STEPS,
     metadata_integrity_note: METADATA_INTEGRITY_NOTE,
-    adversarial_note: ADVERSARIAL_NOTE,
+    adversarial_evidence: adversarialEvidence(report.mutation_cohort),
     merge_release_caveat: MERGE_RELEASE_CAVEAT,
     contract_index: contractIndex,
     architectural_rules: architecturalRules(report),
@@ -419,8 +451,8 @@ function renderIndexTable(rows) {
 // report.mjs) for why a bare "internal/chsql/**" or "__name__" silently
 // corrupts under the house-style autofixer otherwise. Hand-authored prose
 // this module itself writes (HOW_TO_USE_STEPS, METADATA_INTEGRITY_NOTE, the
-// imported ADVERSARIAL_NOTE/MERGE_RELEASE_CAVEAT) is real Markdown source
-// and is never escaped.
+// imported MERGE_RELEASE_CAVEAT) is real Markdown source and is never
+// escaped.
 function renderArchitecturalRules(rules) {
   const lines = [];
   for (const rule of rules) {
@@ -463,6 +495,31 @@ function renderWorkedExample(example) {
         .map((g) => `${g.verifier} needs ${g.missing_complements.join(", ")}`)
         .join("; ")}`,
     );
+  }
+  return lines.join("\n");
+}
+
+function renderAdversarialEvidence(evidence) {
+  const lines = [];
+  lines.push(
+    `${evidence.mutant_count} real (non-synthetic) mutant record(s) in the semantic mutation pilot ` +
+      "(`test/semantic/mutants/`; the full report's \"Semantic mutation pilot\" section carries " +
+      "the kill/escape rates and every detector). Per targeted contract, each mutant's resolved " +
+      "disposition and bucket; a contract absent from this table has no adversarial evidence.",
+  );
+  lines.push("");
+  if (evidence.by_contract.length === 0) {
+    lines.push("No committed mutant targets any contract.");
+    return lines.join("\n");
+  }
+  lines.push("| Contract | Mutant | Disposition | Bucket |");
+  lines.push("| --- | --- | --- | --- |");
+  for (const row of evidence.by_contract) {
+    for (const m of row.mutants) {
+      lines.push(
+        `| [\`${row.contract}\`](semantic-conformance.md#${anchor(row.contract)}) | \`${m.id}\` | ${m.disposition} | ${m.bucket} |`,
+      );
+    }
   }
   return lines.join("\n");
 }
@@ -531,7 +588,8 @@ export function renderMarkdown(guide) {
   }
 
   parts.push("## Adversarial evidence\n");
-  parts.push(`${guide.adversarial_note}\n`);
+  parts.push(renderAdversarialEvidence(guide.adversarial_evidence));
+  parts.push("");
 
   parts.push("## See also\n");
   parts.push(

@@ -17,7 +17,7 @@
     },
     {
       "title": "Optional adversarial probes",
-      "body": "no mutation/adversarial evidence class exists yet in the semantic model (EVIDENCE_CLASSES, lib/semantic-model.mjs) — shown explicitly as none rather than omitted, per this command's own scope: it must work before the M2 mutation-pilot bindings land. A contract with no adversarial evidence bound is not a gap this guide asks a reader to fill before the four steps around it are usable — mutation testing (`just mutate-pkg <path>`) is available and worth running for extra confidence, never required to complete the flow."
+      "body": "The Adversarial evidence section below lists, per contract, the hand-authored contract-linked mutants of the semantic mutation pilot (`test/semantic/mutants/`, run with `just semantic-mutate <id>`) and each one's declared disposition. A contract with none listed has no adversarial evidence — not a gap this guide asks a reader to fill before the four steps around it are usable; mutation testing (`just mutate-pkg <path>`) is available and worth running for extra confidence, never required to complete the flow."
     },
     {
       "title": "Required reference/release evidence",
@@ -25,7 +25,91 @@
     }
   ],
   "metadata_integrity_note": "test/semantic/*.json is hand-authored, reviewed source, not a self-service approval surface. A pull request that adds, weakens, or removes a contract statement, a required evidence class or independence group, or a binding is an ordinary diff line like any other production change — visible in `git diff`, reviewed under the same merge gate (docs/agent-workflow.md), and carried into this guide and the full report the moment `just semantic-report` / `just semantic-guide` regenerate them. Neither generator can mask a weakening: both only ever project the checked-in model faithfully, and their own `--check` mode fails the build the instant the committed projection stops matching it (invariant 9) — so a metadata change that widens what counts as assured is exactly as loud in review as a change to production code, never quieter for being JSON.",
-  "adversarial_note": "no mutation/adversarial evidence class exists yet in the semantic model (EVIDENCE_CLASSES, lib/semantic-model.mjs) — shown explicitly as none rather than omitted, per this command's own scope: it must work before the M2 mutation-pilot bindings land.",
+  "adversarial_evidence": {
+    "mutant_count": 6,
+    "by_contract": [
+      {
+        "contract": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
+        "mutants": [
+          {
+            "id": "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      },
+      {
+        "contract": "LOGQL-PIPELINE-STAGE-ORDER",
+        "mutants": [
+          {
+            "id": "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      },
+      {
+        "contract": "PROMQL-COUNTER-RESET-EXTRAPOLATION",
+        "mutants": [
+          {
+            "id": "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      },
+      {
+        "contract": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+        "mutants": [
+          {
+            "id": "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      },
+      {
+        "contract": "PROMQL-RANGE-VECTOR-ALIGNMENT",
+        "mutants": [
+          {
+            "id": "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      },
+      {
+        "contract": "SIGNAL-LABEL-MATCHER-CONSISTENCY",
+        "mutants": [
+          {
+            "id": "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      },
+      {
+        "contract": "TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION",
+        "mutants": [
+          {
+            "id": "MUTANT-TRACEQL-SCOPE-SWAP",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      },
+      {
+        "contract": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
+        "mutants": [
+          {
+            "id": "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      }
+    ]
+  },
   "merge_release_caveat": "A green run of the recipe(s) named above is evidence for that binding's own verifier only. It is never, by itself, a claim that the owning lane's merge or release obligation is satisfied — that requires the lane's own full, canonically-tagged run (see each binding's merge_required/release_required below), not a narrowed local reproduction of one test.",
   "contract_index": [
     {
