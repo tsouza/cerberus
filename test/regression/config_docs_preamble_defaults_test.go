@@ -45,7 +45,7 @@ const (
 // **`CERBERUS_X`** (type, default `V`) ..., or the paired form
 // **`CERBERUS_X_LOWER`** / **`_UPPER`** (float, default `A` / `B`).
 var preambleBullet = regexp.MustCompile(
-	"^\\*\\*`(CERBERUS_[A-Z0-9_]+)`\\*\\*(?: / \\*\\*`(_[A-Z0-9_]+)`\\*\\*)? \\((int|int64|float|duration|bool), default `([^`]+)`(?: / `([^`]+)`)?\\)",
+	"^\\*\\*`(CERBERUS_[A-Z0-9_]+)`\\*\\*(?: / \\*\\*`((?:CERBERUS_|_)[A-Z0-9_]+)`\\*\\*)? \\((int|int64|float|duration|bool), default `([^`]+)`(?: / `([^`]+)`)?\\)",
 )
 
 // documentedDefault is one knob's default as the doc spells it.
@@ -87,10 +87,14 @@ func preambleDefaults(t *testing.T) map[string]documentedDefault {
 			if second == "" {
 				t.Fatalf("%s pairs a second knob %s but documents one default", name, suffix)
 			}
-			// The pair shares the prefix up to the differing tail:
-			// CERBERUS_..._DRIFT_LOWER_RATIO / _UPPER_RATIO.
-			shared := name[:strings.LastIndex(name, "_LOWER")]
-			out[shared+suffix] = documentedDefault{kind: kind, value: second}
+			// A pair names its second knob either in full or by the tail
+			// that differs from the first (CERBERUS_..._DRIFT_LOWER_RATIO /
+			// _UPPER_RATIO); a tail is grafted onto the first name's prefix.
+			pair := suffix
+			if strings.HasPrefix(suffix, "_") {
+				pair = name[:strings.LastIndex(name, "_LOWER")] + suffix
+			}
+			out[pair] = documentedDefault{kind: kind, value: second}
 		}
 	}
 	return out
