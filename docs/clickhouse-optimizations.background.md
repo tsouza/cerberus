@@ -256,6 +256,142 @@ step (ratio 10, the threshold) measured 1.70x, a 5-minute window at a 15-second
 step (ratio 20) measured 2.65x, and a 30-minute window at a 15-second step
 (ratio 120) measured 10-14x.
 
+## Why `ts_grid_delta` / `ts_grid_irate` / `ts_grid_idelta` are auto-enabled
+
+Each shipped after a chDB differential sweep against its aggregate
+([#2745](https://github.com/tsouza/cerberus/issues/2745) for delta,
+[#2746](https://github.com/tsouza/cerberus/issues/2746) for irate and idelta)
+that isolated every rule the ClickHouse documentation leaves underspecified —
+the counter-reset posture, the trailing-pair selection, the two-sample NULL
+rule, the left-open window edge, the extrapolation clamp branch — and matched
+reference Prometheus on each. The one gap those sweeps found is the family-wide
+duplicate-timestamp NaN survivor (originally
+[#2798](https://github.com/tsouza/cerberus/issues/2798)), which the already
+auto-selected rate / increase / resets / deriv / predict_linear members carry
+identically, so it is not a reason to treat any one member differently. The two
+family members that ARE opt-in carry divergences ordinary data reaches:
+`ts_grid_changes` on any NaN-adjacent window with no duplicate at all, and
+`ts_grid_group_array` because it would import the nondeterminism into paths
+that do not have it today.
+
+## Why `ts_grid_vector_agg` is opt-in
+
+It is a new code path with no fielded validation yet — the same posture
+`ts_grid_instant` took on its own new floor — whereas `ts_grid_recollapse`, the
+other narrowing of the native grid, had its merge exactness checked across
+time-disjoint, interleaved and reset-straddling regimes before shipping
+auto-on. The five outer functions are the set proven element-wise over a
+finished per-series grid; `stddev` / `stdvar` / `quantile` / `group` are not
+element-wise and stay on the exploded Aggregate permanently.
+
+## Why `laginframe_adjacency` is auto-enabled and `fixed_accumulator_extrapolated` is not
+
+The annotation pass carries the same kernels as the fan-out (`curr < prev` for
+resets; `curr != prev AND NOT both-NaN` for changes; the DELTA / CUMULATIVE
+pair delta for irate) and was proven bit-identical by dual-emit parity, so
+there was nothing to weigh. The fixed-accumulator shape was also proven
+bit-identical, but [#2894](https://github.com/tsouza/cerberus/issues/2894)'s
+real ClickHouse 26.6.4.55 A/B (query_range `rate()` / `increase()`, 2,200
+series, 1h span, 60 anchors, 5m window) measured half the source rows and ~20%
+fewer bytes at neutral wall-clock (within ~10%) against ~1.8-2x the array-fold's
+peak memory — six concurrent per-group accumulators against one `groupArrayIf`.
+A memory increase for no consistent wall-clock win is an OOM-risk uplift on
+every default `rate()` request, so it stays opt-in.
+[#3556](https://github.com/tsouza/cerberus/issues/3556) re-ran the A/B for the
+multi-name, high-fan-out selector shape that times out on the 24.8-pinned
+compatibility floor lane and reproduced the same trade (~1.6x memory), so no
+narrower auto rule changes the verdict. That investigation also found and
+fixed a real bug in the shape: the counter-delta term rendered unparenthesised
+on a scan with no temporality column, silently dropping the extrapolation
+factor; the parity corpus had only ever covered the temporality-bearing
+fixture.
+
+## Why `sorted_slab_over_time` is opt-in
+
+[#2894](https://github.com/tsouza/cerberus/issues/2894)'s A/B found the shape's
+own "O(samples per series), independent of anchor count" memory claim did not
+hold as shipped: at 60-240 anchors it used 6-9x the array-fold's peak memory
+for no wall-clock win, and at 500 series / 480 anchors / 5m it OOMed a 6 GiB
+cap where the array-fold finished at 535 MiB.
+[#3046](https://github.com/tsouza/cerberus/issues/3046) traced that to
+ClickHouse's block execution retaining the per-anchor `arrayFilter` /
+`arrayMap` intermediates across a whole block of series rows, and fixed it
+with the mandatory `max_block_size=1` stamp; every re-measured case then beat
+the array-fold, including the one that OOMed. The negative measurement was
+taken under the unfixed shape, so it is stale rather than a verdict on the
+fixed one — but promotion to auto needs a fresh A/B against the fixed shape,
+including mixed-shape queries, since the block-size stamp applies to the whole
+statement.
+
+## Why the two `*_merge_summap` features are opt-in
+
+`classic_bucket_merge_summap` first shipped with a correctness gap on
+heterogeneous groups, closed by
+[#2817](https://github.com/tsouza/cerberus/issues/2817) (each row now
+cumulates over its own buckets before the key-wise `sumMap`). The per-row
+`arraySort` / `arrayCumSum` that fix added erased the speedup the feature
+existed for: [#2923](https://github.com/tsouza/cerberus/issues/2923)'s
+real-ClickHouse re-measurement against the shipped construction found its
+cost within ~1% of the fold's at every controlled point, converging to parity
+as volume grows. The existing `maxClassicBucketMergeCostUnits` guard protects
+this path within the same margin, so no second ceiling exists.
+
+`exp_histogram_merge_summap`'s reconstruction step is width-squared in the
+worst case, independent of row count.
+[#2757](https://github.com/tsouza/cerberus/issues/2757)'s real ClickHouse 26.6
+measurements found 13-43x less memory at the ~160-bucket OTel-SDK default
+width once rows reach the hundreds-to-thousands range, roughly parity at a
+single series, and MORE memory than the fold for a single series with a wide
+individual layout (1,280 buckets and up). The budget guards are per shape
+(single-group, multi-group instant, multi-group range), but the single-series
+wide-layout regression is a property of the design, not a calibration gap.
+
+## Why `arg_and_max_fusion` and `ts_throw_duplicate_series_if` are auto-enabled
+
+Both are tie-invariant substitutions with no operator tradeoff: ClickHouse
+keeps one hash-table entry per GROUP BY key regardless of aggregate count and
+per-group memory is dominated by the Attributes `Map` key, so `argAndMax`
+saves one aggregate state and one per-row comparison — roughly a third of the
+two states' payload, not a halving; `timeSeriesThrowDuplicateSeriesIf` changes
+only the message of a query that aborts either way. Both are `experimental` in
+maturity purely because the underlying functions are new (25.11 and 26.2) with
+no fielded history. `argAndMax`'s floor is 25.11 from upstream PR
+[#89884](https://github.com/ClickHouse/ClickHouse/pull/89884) and the 25.11
+release notes, not the "v1.1.0" badge on its docs page, which is a
+docs-tooling artefact.
+
+## Why `ts_tag_groups` is permanently opt-in
+
+The mechanism is sound — order-independent group ids, lossless rehydration,
+a verified 26.2 floor with no experimental setting — but it loses on every
+site tried. [#2750](https://github.com/tsouza/cerberus/issues/2750)'s real
+ClickHouse 26.2 A/B (2M rows, `FORMAT Null`) on the name-drop guard measured
+the UInt64-group-id path 2-3x slower at 100 distinct label sets (666-1083ms vs
+265-305ms) and ~50% slower at 200,000 (1358-1506ms vs 881-957ms), with peak
+memory ~1.8x higher at low cardinality and only 10-20% lower at high.
+[#2880](https://github.com/tsouza/cerberus/issues/2880) re-ran the same
+methodology on the strongest multi-stage candidate — the one-to-one
+vector-vector JOIN — and it lost by a wider margin (~2.2x slower, 3-4x more
+memory at low cardinality; ~1.9x slower, 25-30% more memory at high): the
+per-query tag collector's bookkeeping is paid per input ROW on each side
+before any reduction, while the cheaper UInt64 equality applies only to the
+already-reduced comparison, so more downstream reuse cannot amortise it. The
+label ops the tag-group family also offers (`by` / `without` /
+`label_replace` / `group_left`) are excluded for a second reason: a group id
+is per-query state, every label op reaches range mode, and route B
+concatenates per-shard cursors without re-aggregating, so an id cannot cross
+a shard.
+
+## Why `trace_id_external_table` is opt-in
+
+The external-table form was EXPLAIN-verified
+([#2783](https://github.com/tsouza/cerberus/issues/2783)) to prune
+`idx_trace_id` identically to the literal splice at every closure size tested,
+so it fixes only the SQL-text-size axis, and its production win at the
+`MaxSearchLimit=1000` phase-A width is unmeasured beyond that issue's synthetic
+corpus — the same posture `trace_id_projection` took on a fresh mechanism that
+only a real server exercises.
+
 ## Audited, not adopted
 
 Not every settings family the audit epic (#2778) reviews earns a registry
