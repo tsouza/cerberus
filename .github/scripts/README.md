@@ -4028,8 +4028,9 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   so the coverage has to be computed locally, before the run.
   - Env: `GOLDEN_SHARDS` (required; space/comma separated, or `all` — empty is an
     error that prints the vocabulary, there is deliberately no default),
-    `GOLDEN_UPDATE_BASE_REF` (optional; default the merge-base with
-    `origin/main`), `GOLDEN_UPDATE_CHANGED_FILES` (optional; replaces the
+    `GOLDEN_UPDATE_BASE_REF` (optional; a ref whose merge-base with HEAD is
+    the base — never the ref's tip — default `origin/main`; an unresolvable
+    merge-base is an error), `GOLDEN_UPDATE_CHANGED_FILES` (optional; replaces the
     git-derived file list, which is how the regression pin drives the check over
     a synthetic diff), `GOLDEN_UPDATE_CHECK_ONLY`, `GOLDEN_UPDATE_PRINT_PLAN`,
     `CHDB_INSTALL_PATH`, `JUST_EXECUTABLE`.
