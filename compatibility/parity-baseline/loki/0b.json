@@ -3,6 +3,8 @@
   "head": "loki",
   "bucket": "0b",
   "cases": [
+    "cerberus/metadata-endpoints | index_volume | range | n/a | {cluster=~\"cluster-.+\"} | index volume parity (label sets): aggregateBy=series limit=1000 targetLabels=<every advertised label> selector={cluster=~\"cluster-.+\"}",
+    "cerberus/metadata-endpoints | series | range | n/a | {cluster=\"cluster-0\"} | series parity: selector={cluster=\"cluster-0\"}",
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_field values parity: service=loki field=bytes",
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_field values parity: service=loki field=duration",
     "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | rate({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | json | unwrap duration_ms [5m]) | step=1m0s | Rate of unwrapped values - no grouping"
