@@ -8,7 +8,10 @@ func rangeWindowInputTimestampColumn(r *chplan.RangeWindow) string {
 	if r == nil || r.Input == nil {
 		return ""
 	}
-	column, _ := r.Input.RowType().Find(rangeWindowInputTimestampRole(r))
+	column, err := r.Input.RowType().UniqueNamedRole(rangeWindowInputTimestampRole(r))
+	if err != nil {
+		return ""
+	}
 	return column.Name
 }
 

@@ -284,7 +284,7 @@ func (e *emitter) emitMetricsExemplars(
 		Call("map", attrMapFrags...),
 		"Attributes",
 	))
-	outerSb.SelectAs(Col(RangeWindowAnchorAlias), "TimeUnix")
+	outerSb.SelectAs(Col(RangeWindowAnchorAlias), rangeWindowSchemaTimestampColumn)
 
 	// The row-counting ops carry no operand, and an operand-reading op
 	// whose Attr the lowering left unset has nothing to read — both fall

@@ -21,10 +21,14 @@ import (
 //
 // The names checked are the ones with a chplan constant whose text is
 // distinctive enough to have no other legitimate meaning in this package.
-// DefaultValueColumn ("Value"), CompareAttrColumn ("attr") and
-// CompareValColumn ("val") are not checked: the same text names physical
-// columns and exemplar fields here, so a literal of it is not necessarily a
-// second spelling of the output name.
+// Four constants are NOT checked, and their spelling is therefore reviewer
+// discipline rather than this test's: MatrixTimestampColumn ("TimeUnix")
+// is also the OTel-CH physical timestamp column and the Exemplars nested
+// field (query_exemplars.go reads `Exemplars.TimeUnix`); DefaultValueColumn
+// ("Value"), CompareAttrColumn ("attr") and CompareValColumn ("val") likewise
+// name physical columns and exemplar fields. A literal of any of those is not
+// necessarily a second spelling of the output name, so the walk cannot tell
+// a drift from a physical reference.
 func TestEmittersSpellSharedOutputNamesThroughChplan(t *testing.T) {
 	t.Parallel()
 

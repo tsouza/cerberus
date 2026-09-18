@@ -313,8 +313,8 @@ func rangeWindowTemporalityColumn(r *chplan.RangeWindow) string {
 	if r == nil || r.Input == nil || r.IgnoreInputTemporality {
 		return ""
 	}
-	column, ok := r.Input.RowType().Find(chplan.RoleTemporality)
-	if !ok {
+	column, err := r.Input.RowType().UniqueNamedRole(chplan.RoleTemporality)
+	if err != nil {
 		return ""
 	}
 	return column.Name
