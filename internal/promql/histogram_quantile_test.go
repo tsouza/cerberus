@@ -761,9 +761,11 @@ func TestLower_HistogramQuantile_BucketSuffixStrip(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 
-	// Same metric across all cases — `cerberus_queries_duration_seconds`
-	// mirrors the actual self-telemetry histogram the dashboard targets.
-	const bare = "cerberus_queries_duration_seconds"
+	// Same metric across all cases — `cerberus_pipeline_stage_duration_seconds`
+	// mirrors a classic explicit-bucket self-telemetry histogram cerberus
+	// emits (the query-duration histogram itself is native and has no
+	// `_bucket` series to strip).
+	const bare = "cerberus_pipeline_stage_duration_seconds"
 	const suffixed = bare + "_bucket"
 
 	cases := []struct {
