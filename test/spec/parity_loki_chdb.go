@@ -77,15 +77,26 @@ func evaluateLokiParity(
 		return nil, err
 	}
 	if len(streams) == 0 {
+		// A query that reads a stream selector and seeds zero streams for
+		// it is not a broken fixture: the seed is deliberately empty, and no
+		// reference answer computed from zero input rows can ever be
+		// distinguished from any other — the comparison is structurally
+		// vacuous, permanently, whatever cerberus answers. That is
+		// [parityRefusal], the category [exemptionVerdict] accepts as
+		// evidence that a `vacuous-empty-input` exemption remains live, and
+		// the same classification evaluatePrometheusParity gives the
+		// identical structural fact on the PromQL side. A parse failure
+		// inspecting the expression stays unclassified: a broken inspector
+		// must not be able to manufacture liveness for a stale exemption.
 		reads, rerr := logqlExprReadsStreams(q.Expr)
 		if rerr != nil {
 			return nil, fmt.Errorf("fixture %s: %w", c.Name, rerr)
 		}
 		if reads {
-			return nil, fmt.Errorf(
+			return nil, parityRefusal(fmt.Errorf(
 				"fixture %s: seed produced no readable streams, so the reference engine would "+
 					"trivially agree with any answer", c.Name,
-			)
+			))
 		}
 	}
 

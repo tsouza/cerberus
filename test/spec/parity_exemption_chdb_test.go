@@ -254,3 +254,29 @@ func loadSyntheticParityCase(t *testing.T, body string) *Case {
 	}
 	return c
 }
+
+// TestEmptySeedSelectorQueryIsARefusal_LogQL pins the LogQL side of the
+// empty-seed classification: a query that reads a stream selector over a
+// seed that landed zero streams is a structural [parityRefusal] — the
+// evidence a `vacuous-empty-input` exemption needs to stay live — and not
+// an unclassified error [exemptionVerdict] would report as "liveness
+// check could not run". evaluatePrometheusParity classifies the identical
+// fact the same way for PromQL.
+func TestEmptySeedSelectorQueryIsARefusal_LogQL(t *testing.T) {
+	db := OpenChDB(t)
+	if _, err := db.Exec("CREATE OR REPLACE TABLE " + logsTable + " (" +
+		colTimestamp + " DateTime64(9), " + colBody + " String, " +
+		colResourceAttributes + " Map(String, String)) ENGINE = Memory"); err != nil {
+		t.Fatalf("create empty logs table: %v", err)
+	}
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := evaluateLokiParity(t, db, &Case{Name: "empty_seed"}, parityQuery{
+		Expr: `count_over_time({job="api"}[1m])`, Start: at, End: at,
+	})
+	if err == nil {
+		t.Fatal("an empty seed under a selector-reading query was compared instead of refused")
+	}
+	if !errors.Is(err, errParityRefusal) {
+		t.Fatalf("empty seed was reported as an unclassified error, not a refusal: %v", err)
+	}
+}
