@@ -98,7 +98,10 @@ logFormat: json
 
 The literal `CERBERUS_*` form is valid in the same document and means the same
 thing. It is the escape hatch for the long tail - the settings with a `—` in the
-**Config file** column have no nested name, and this is how you reach them:
+**Config file** column have no nested name, and this is how you reach them. The
+same flat form reaches the settings resolved outside the loader (the solver,
+resource-bound and query-actuals families documented after the tables), which
+have no nested name either; a flat key nothing reads is rejected as unknown:
 
 ```yaml
 clickhouse:

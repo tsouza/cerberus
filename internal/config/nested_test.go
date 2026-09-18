@@ -258,6 +258,51 @@ func TestFromEnv_NestedConfigFileRejectsUnknownKey(t *testing.T) {
 	}
 }
 
+// The flat form is refused the same way: carrying the CERBERUS_ prefix does not
+// make a key one cerberus reads. A flat key that nothing resolves is the exact
+// failure the nested rejection exists to prevent — the file loads cleanly and
+// the setting silently stays on its default.
+func TestFromEnv_FlatConfigFileRejectsUnknownSetting(t *testing.T) {
+	clearAllEnv(t)
+	writeConfigFile(t, "CERBERUS_TOTALLY_BOGUS_KEY: 1\n")
+
+	_, err := FromEnv()
+	if err == nil {
+		t.Fatal("FromEnv accepted a CERBERUS_* key nothing reads; a flat key must be known to the loader or to an out-of-loader parser")
+	}
+	if !strings.Contains(err.Error(), "CERBERUS_TOTALLY_BOGUS_KEY") {
+		t.Errorf("error does not name the offending key: %v", err)
+	}
+}
+
+// A setting parsed outside the typed registry — here promql's exp-histogram
+// window ceiling, which internal/promql reads through the getter the boot path
+// feeds from Config.Settings — must come out of the file exactly as it would
+// out of the environment, and lose to the environment when both are set.
+// Without this the key is accepted by the file and never applied.
+func TestFromEnv_FlatConfigFileReachesOutOfLoaderSetting(t *testing.T) {
+	const key = "CERBERUS_PROMQL_EXP_HISTOGRAM_WINDOW_MAX_COST_UNITS"
+	clearAllEnv(t)
+	writeConfigFile(t, key+": 5\n")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if got := cfg.Settings.String(key); got != "5" {
+		t.Errorf("Settings.String(%s) = %q, want the file's 5", key, got)
+	}
+
+	t.Setenv(key, "7")
+	cfg, err = FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if got := cfg.Settings.String(key); got != "7" {
+		t.Errorf("Settings.String(%s) = %q, want the environment's 7", key, got)
+	}
+}
+
 // The commonest mistake is the right leaf under the wrong parent, so the
 // suggestion is matched on the leaf name.
 func TestFromEnv_NestedConfigFileSuggestsNearestPath(t *testing.T) {

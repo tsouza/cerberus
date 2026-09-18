@@ -282,7 +282,9 @@ func ConfigFilePath(setting string) (string, bool) {
 // default. That is the whole point of the nested shape: a mistyped or
 // wrongly-nested key looks exactly like a correct one until something
 // downstream behaves oddly under load, which is the worst possible moment to
-// discover the file was never read the way it was written.
+// discover the file was never read the way it was written. The flat form is
+// held to the same bar: the CERBERUS_ prefix marks a key as literal, it does
+// not make it one cerberus reads, so a flat key must be in [knownSettings].
 func translateDoc(file string, doc map[string]any) (map[string]string, error) {
 	out := make(map[string]string, len(doc))
 	var unknown []string
@@ -293,6 +295,10 @@ func translateDoc(file string, doc map[string]any) (map[string]string, error) {
 			// flattenDoc never descends below one — so it renders with the kind
 			// the setting uses nested, or as a newline-joined list when it has
 			// no nested name (the shape Lookup.Lines splits back apart).
+			if _, known := knownSettings[key]; !known {
+				unknown = append(unknown, key)
+				continue
+			}
 			kind := bindLineList
 			if b, ok := bindingBySetting[key]; ok {
 				kind = b.kind

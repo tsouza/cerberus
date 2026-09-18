@@ -146,29 +146,35 @@ type apiHeads struct {
 // LogQL/TraceQL never see it), all five from issue #2667, plus issue #2733's
 // head-agnostic emitted-SQL statement-size bound
 // (CERBERUS_CH_MAX_EMITTED_SQL_BYTES). Both resolutions share the same
-// fail-fast contract as buildSolver's own solver.ConfigFromEnv() above: a
+// fail-fast contract as buildSolver's own solver.ConfigFrom above: a
 // typo'd or non-positive override aborts startup rather than silently falling
 // back.
 //
-// chQueryMaxMemory is the loaded ClickHouse per-query memory cap. It is not
-// itself a bound: it is the byte budget cerberus issue #3252's
-// samples-per-series-per-window ceiling is DERIVED from when no explicit
-// override pins it, in the same sentinel-0 shape
+// Both parsers read through cfg.Settings — the loader's environment-then-file
+// lookup — rather than the process environment, so a cerberus.yaml carrying
+// one of these knobs configures it exactly as exporting the variable would;
+// the two packages may not import internal/config and so cannot ask the
+// loader themselves.
+//
+// cfg.ClickHouse.MaxQueryMemoryBytes is the loaded ClickHouse per-query
+// memory cap. It is not itself a bound: it is the byte budget cerberus issue
+// #3252's samples-per-series-per-window ceiling is DERIVED from when no
+// explicit override pins it, in the same sentinel-0 shape
 // CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS already uses. Passing
 // it here rather than re-reading the env keeps ONE resolution of the cap —
 // the loader's, which also applies the nested-YAML alias and the byte-size
 // suffix parsing — feeding both the setting cerberus stamps and the bound it
 // sizes against.
-func resolveBoundOverrides(chQueryMaxMemory int64) (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
-	resourceBounds, err := engine.ResourceBoundsFromEnv()
+func resolveBoundOverrides(cfg config.Config) (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
+	resourceBounds, err := engine.ResourceBoundsFrom(cfg.Settings.String)
 	if err != nil {
 		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
 	}
-	promResourceBounds, err := promql.ResourceBoundsFromEnv()
+	promResourceBounds, err := promql.ResourceBoundsFrom(cfg.Settings.String)
 	if err != nil {
 		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
 	}
-	promResourceBounds.CHQueryMaxMemory = chQueryMaxMemory
+	promResourceBounds.CHQueryMaxMemory = cfg.ClickHouse.MaxQueryMemoryBytes
 	return resourceBounds, promResourceBounds, nil
 }
 
@@ -213,18 +219,18 @@ func mountAPIHeads(
 		// built from it, so when prom is disabled neither the view nor the
 		// solver exists.
 		promClient := client.ForHead(chclient.HeadProm)
-		evalSolver, err := buildSolver(logger, cfg.ClickHouse, cfg.ClusterTopology, promClient, limiters.prom)
+		evalSolver, err := buildSolver(logger, cfg.Settings.String, cfg.ClickHouse, cfg.ClusterTopology, promClient, limiters.prom)
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure solver: %w", err)
 		}
 		// Issue #2789: same fail-fast contract as buildSolver's own
-		// solver.ConfigFromEnv() above — a malformed CERBERUS_QUERY_ACTUALS_*
+		// solver.ConfigFrom above — a malformed CERBERUS_QUERY_ACTUALS_*
 		// knob refuses to boot rather than silently running on an unintended
 		// value. Prom-only, mirroring evalSolver/RouteMemo/PerRungAdmission's
 		// own scope: the actuals hooks all key off the solver's own
 		// plan-shape-id / K-clamp machinery, which is PromQL-only
 		// (solver.RequestMeta.Lang's own doc).
-		actualsTracker, err := buildActualsTracker(ctx, logger, promClient)
+		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient)
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure query actuals: %w", err)
 		}
@@ -608,7 +614,7 @@ func run() error {
 	// (one process = one OOM kills all heads today). The Tempo gRPC server is
 	// likewise nil when tempo is off. /healthz + /readyz are mounted below,
 	// unconditionally, in every mode.
-	resourceBounds, promResourceBounds, err := resolveBoundOverrides(cfg.ClickHouse.MaxQueryMemoryBytes)
+	resourceBounds, promResourceBounds, err := resolveBoundOverrides(cfg)
 	if err != nil {
 		return err
 	}
@@ -791,7 +797,7 @@ const gracefulShutdownTimeout = 10 * time.Second
 // Client view + seed optimizer + solver), limiter, and runtime knobs wired in.
 //
 // resourceBounds carries the resolved CERBERUS_CH_*_MAX_ROWS overrides
-// (issue #2667, engine.ResourceBoundsFromEnv) — RangeBucketFanoutMaxRows and
+// (issue #2667, engine.ResourceBoundsFrom) — RangeBucketFanoutMaxRows and
 // RangeLWRFanoutMaxRows are wired here because RangeBucketFanout / RangeLWR
 // are PromQL-only lowerings (see engine.Engine.RangeBucketFanoutMaxRows's
 // doc); RateWindowFanoutMaxRows is wired here too — the prom head lowers
@@ -1014,17 +1020,18 @@ func buildCardinalityProbeAdvisor(
 // system.query_log are both ancient, always-available ClickHouse surfaces
 // with no version floor to probe). Returns (nil, nil) — the engine's
 // byte-unchanged, feature-off default — when the operator has not opted in;
-// returns a non-nil error only on a malformed CERBERUS_QUERY_ACTUALS_* env
-// var, the same fail-fast contract buildSolver's own solver.ConfigFromEnv()
-// uses.
+// returns a non-nil error only on a malformed CERBERUS_QUERY_ACTUALS_*
+// setting, the same fail-fast contract buildSolver's own solver.ConfigFrom
+// uses. settings is the loader's environment-then-file lookup
+// (config.Config.Settings), so a cerberus.yaml reaches these knobs too.
 //
 // When enabled, this ALSO starts the query_log fallback reconciler
 // (query_log_actuals.go) on its own goroutine, bound to ctx — mirroring
 // startOptCorpus's own goroutine-launch-and-log shape, independently
 // implemented (see query_log_actuals.go's own doc for why this package
 // cannot import internal/optcorpus).
-func buildActualsTracker(ctx context.Context, logger *slog.Logger, promClient *chclient.Client) (*actuals.Tracker, error) {
-	cfg, err := actuals.ConfigFromEnv()
+func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client) (*actuals.Tracker, error) {
+	cfg, err := actuals.ConfigFrom(settings)
 	if err != nil {
 		return nil, err
 	}
@@ -1855,8 +1862,11 @@ func attachQueryObserver(corpus *optcorpus.Reconciler, engines ...*engine.Engine
 }
 
 // buildSolver constructs the sharded-pushdown solver from the CERBERUS_*
-// environment and wires its data-plane hooks. The Config is validated
-// fail-fast (an invalid CERBERUS_EVAL_ROUTE / threshold aborts startup). The
+// settings and wires its data-plane hooks. settings is the loader's
+// environment-then-file lookup (config.Config.Settings), so a cerberus.yaml
+// configures the solver exactly as exporting the variables would. The Config
+// is validated fail-fast (an invalid CERBERUS_EVAL_ROUTE / threshold aborts
+// startup). The
 // GLOBAL gate is sized from the chclient pool (MaxOpenConns − reserve) and
 // shared across heads via the single returned *solver.Solver. Under the
 // phase-2 default (Mode=auto) eligible, above-threshold plans route B through
@@ -1874,12 +1884,13 @@ func attachQueryObserver(corpus *optcorpus.Reconciler, engines ...*engine.Engine
 // chclient.NewDataShardFanoutGate); client already carries it.
 func buildSolver(
 	logger *slog.Logger,
+	settings func(string) string,
 	chCfg chclient.Config,
 	topology chopt.ClusterTopology,
 	client *chclient.Client,
 	promLimiter *admit.Limiter,
 ) (*solver.Solver, error) {
-	cfg, err := solver.ConfigFromEnv()
+	cfg, err := solver.ConfigFrom(settings)
 	if err != nil {
 		return nil, err
 	}
@@ -1889,9 +1900,9 @@ func buildSolver(
 	}
 	// A soft-deprecated env name still applies, so it changes nothing about
 	// the resolved Config — but a rename nobody is told about is a rename that
-	// rots. Announce it here, at the one place the solver environment is read,
+	// rots. Announce it here, at the one place the solver settings are read,
 	// mirroring resolveCHOptimizations' legacy-alias notice.
-	for _, warn := range solver.DeprecatedEnvWarnings() {
+	for _, warn := range solver.DeprecatedWarningsFrom(settings) {
 		logger.Warn(warn)
 	}
 
