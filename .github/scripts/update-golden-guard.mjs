@@ -249,9 +249,10 @@ const WORKFLOW_RUN_COMPLETED = 'completed';
 // so the goldens the dispatch was asked to refresh are still stale.
 const CONCLUSION_SUCCESS = 'success';
 
-// The Checks API vocabulary this script writes. A check-run is either still
-// running (`status: in_progress`, no conclusion) or finished
-// (`status: completed`, with a conclusion).
+// The Checks API vocabulary this script writes — a separate enum from the
+// workflow_run conclusion read above, even where the spellings coincide. A
+// check-run is either still running (`status: in_progress`, no conclusion)
+// or finished (`status: completed`, with a conclusion).
 const CHECK_STATUS_IN_PROGRESS = 'in_progress';
 const CHECK_STATUS_COMPLETED = 'completed';
 const CHECK_CONCLUSION_SUCCESS = 'success';
