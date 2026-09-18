@@ -28,6 +28,8 @@
  * a non-empty `why`.
  */
 
+import { CONTEXT_EXCERPT_CHARS, truncate } from './excerpt.js';
+
 /** The declared outcome contract for a panel. */
 export type ExpectKind = 'nonempty' | 'empty' | `error:${string}`;
 
@@ -122,7 +124,7 @@ export function enforceExpectation(
       out.push(
         `expected a successful response but got HTTP ${observed.status}` +
           (observed.errorBody !== undefined && observed.errorBody !== ''
-            ? `: ${truncate(observed.errorBody, 300)}`
+            ? `: ${truncate(observed.errorBody, CONTEXT_EXCERPT_CHARS)}`
             : ''),
       );
       return out;
@@ -158,12 +160,9 @@ export function enforceExpectation(
     out.push(
       `declared error:${JSON.stringify(want)} and got HTTP ` +
         `${observed.status}, but the error body does not contain the ` +
-        `declared substring: ${truncate(body, 300)}`,
+        `declared substring: ${truncate(body, CONTEXT_EXCERPT_CHARS)}`,
     );
   }
   return out;
 }
 
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n)}…<truncated, ${s.length} chars>`;
-}

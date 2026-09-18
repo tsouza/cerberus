@@ -27,13 +27,12 @@ Please include:
 ## Threat model in scope
 
 - Query-injection / SQL-construction safety in `internal/chsql`. Arguments are bound positionally via `?` placeholders; bugs that allow literal interpolation are in scope.
-- Authentication and tenant-isolation flaws once the multi-tenant header (`X-Scope-OrgID`) lands.
-- ReDoS or super-linear parser pathologies in any of the three QL parsers (cerberus passes input verbatim to upstream parsers; if a query is rejected upstream as expensive, cerberus should reject it too).
+- ReDoS or super-linear parser pathologies in any of the three QL parsers. PromQL is parsed by the upstream `prometheus/prometheus` parser (a pathology there is in scope for cerberus only where cerberus fails to apply the same rejection Prometheus applies); LogQL (`internal/logql/lsyntax`) and TraceQL (`internal/traceql/ast`) are cerberus's own clean-room parsers, so any pathology in them is a cerberus bug — report it here, not to Grafana.
 - Information disclosure via error messages (CH-side schema details leaking into Prometheus-shaped error responses).
 
 ## Out of scope
 
-- Bugs in upstream `prometheus/prometheus`, `grafana/loki`, `grafana/tempo`, or `clickhouse-go` — please file upstream.
+- Bugs in the upstream libraries cerberus links — the `prometheus/prometheus` PromQL parser and `clickhouse-go` — please file upstream. (`grafana/loki` and `grafana/tempo` are not linked into the binary; their query languages are reimplemented in-house, and a bug in those reimplementations belongs here.)
 - Misconfigurations in deployments (e.g. exposing CH without auth in front of cerberus). Cerberus itself ships no authentication, authorization, or tenant isolation — [`docs/operations.md` → Security posture](docs/operations.md#security-posture) documents the boundary an operator has to provide.
 - Denial of service via legitimately expensive queries; cerberus relies on ClickHouse's query-time controls. We'll happily document mitigations.
 

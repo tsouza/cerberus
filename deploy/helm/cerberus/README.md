@@ -44,7 +44,8 @@ This chart lowers three layers into env:
 
 ### Full configuration surface
 
-cerberus reads roughly **90 `CERBERUS_*` environment variables**. The chart
+cerberus reads over a hundred **`CERBERUS_*` environment variables** (the
+generated docs/configuration.md is the complete table). The chart
 guarantees **every one of them is reachable** — nothing the binary reads is
 unreachable from values:
 
@@ -159,7 +160,7 @@ schema:
   ttl: "2w"
   replicated:
     enabled: true                     # ReplicatedMergeTree + Replicated database
-    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+    zookeeperPath: "/clickhouse/databases/otel"
 prom:
   # BOUNDED allowlist — leave empty and EVERY resource attribute becomes a
   # label (unbounded cardinality). List only what you query/group on.
@@ -169,8 +170,12 @@ prom:
     - k8s.pod.name
 ```
 
-`schema.replicated.zookeeperPath` **must** contain the `{shard}` / `{replica}`
-macros and mirror the ClickHouse cluster's own Replicated-DB coordination path.
+`schema.replicated.zookeeperPath` is the one shared Keeper root every replica
+registers under. It must **not** contain the `{shard}` / `{replica}` macros —
+the Replicated database engine takes those as its own separate arguments and
+expands macros inside the path as well, so a path carrying them gives every
+replica an unrelated root and nothing replicates. The render refuses a path
+with either macro.
 
 ### Co-locating with ClickHouse
 
@@ -188,15 +193,22 @@ affinityPresets:
     topologyKey: kubernetes.io/hostname
 ```
 
+`podSelector` names an external ClickHouse's pods. With
+`clickhouse.bundled.enabled: true` and the selector left at that shipped
+default, the term targets the bundled ClickHouse pods' own labels instead
+(`app.kubernetes.io/name: <name>-clickhouse`), which the default could never
+match; any other selector is used verbatim.
+
 **Caveat — this is probabilistic, not node-local routing.** The preset only
 influences *where cerberus pods land*. Query traffic still flows to
 `clickhouse.addr`, which is the ClickHouse **Service** — it round-robins across
 all `N` replicas, so a co-located pod hits the local replica only ~`1/N` of the
 time. The preset cuts cross-AZ hops (pair it with `topologyKey:
 topology.kubernetes.io/zone` to keep traffic same-zone) but does **not**
-guarantee the node-local replica answers the query. True node-local CH
-preference (a headless-Service / per-pod endpoint with client-side locality)
-is a deferred, app-side concern — see the v0.2.0 release notes.
+guarantee the node-local replica answers the query. cerberus has no
+client-side replica-locality routing: it connects to whatever `clickhouse.addr`
+resolves to, so node-local preference is only as strong as the Service in
+front of ClickHouse makes it.
 
 ## Maintainers
 
@@ -222,7 +234,7 @@ Kubernetes: `>=1.23.0-0`
 | affinityPresets.colocateWithClickHouse | object | `{"enabled":false,"mode":"preferred","podSelector":{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}},"topologyKey":"kubernetes.io/hostname"}` | Co-locate cerberus pods with the ClickHouse pods they query, to keep the hot native :9000 path node-local instead of crossing nodes/AZs. CAVEAT: this gives only PROBABILISTIC locality (~1/N), because `clickhouse.addr` is the ClickHouse Service, which round-robins across all replicas — it cuts cross-AZ traffic but does not guarantee the node-local replica is queried. See the chart README + docs/operations.md. |
 | affinityPresets.colocateWithClickHouse.enabled | bool | `false` | Enable the co-location podAffinity. |
 | affinityPresets.colocateWithClickHouse.mode | string | `"preferred"` | "preferred" (soft — cerberus still schedules if no ClickHouse node has room) or "required" (hard — only schedules onto a ClickHouse node). |
-| affinityPresets.colocateWithClickHouse.podSelector | object | `{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}}` | Label selector identifying the ClickHouse pods to sit with. |
+| affinityPresets.colocateWithClickHouse.podSelector | object | `{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}}` | Label selector identifying the ClickHouse pods to sit with. The shipped default names an external ClickHouse's conventional label. With `clickhouse.bundled.enabled: true` and this default left as is, the term targets the bundled ClickHouse pods' own selector labels (`app.kubernetes.io/name: <name>-clickhouse` + instance + component) instead, which the shipped default can never match; a selector set to anything else is used verbatim. |
 | affinityPresets.colocateWithClickHouse.topologyKey | string | `"kubernetes.io/hostname"` | Topology domain: kubernetes.io/hostname (same node) or topology.kubernetes.io/zone (same AZ). |
 | args | list | `[]` | Full override of the container args. |
 | autoCreate | object | `{"database":null,"schema":null}` | Auto-create toggles (lowered to CERBERUS_AUTO_CREATE_* env). See fields below. |
@@ -243,6 +255,7 @@ Kubernetes: `>=1.23.0-0`
 | clickhouse.bundled.cache | object | `{"size":"10Gi"}` | Local filesystem cache fronting the object-store disk. |
 | clickhouse.bundled.cache.size | string | `"10Gi"` | Max on-disk cache size (CH cache disk `max_size`). Lives under the metadata PVC, so keep it comfortably below `persistence.size`. |
 | clickhouse.bundled.configOverrides | string | `""` | Extra config.d XML appended verbatim inside the `<clickhouse>` root (tpl-rendered) for server-level overrides the typed knobs don't cover. |
+| clickhouse.bundled.dataShards | object | `{"count":1,"fanoutCap":null}` | ClickHouse cluster DATA-shard topology (cerberus issue #3077, epic #3074). DISAMBIGUATION: this is a DIFFERENT "shard" than `replicas` above — replicas are copies of the SAME data; a DATA shard is a disjoint PARTITION of the data, fanned across by a `Distributed`-engine table. It is also unrelated to ClickHouse's `{shard}`/`{replica}` macros that name a node's replication coordinates (see `schema.replicated.zookeeperPath`'s own comment) and to `internal/solver`'s query-time-range "shard" — see `internal/chopt/topology.go`'s terminology table for the full picture. |
 | clickhouse.bundled.dataShards.count | int | `1` | Number of independent ClickHouse DATA shards. `1` (default) renders EXACTLY today's single-StatefulSet/single-Service chart topology — same names, same `cluster.xml` shape, byte-identical. `> 1` renders `count` StatefulSets (`<fullname>-datashard-<i>`, INCLUDING index 0 — never a silent partial rename) each with `replicas` replicas of their own, a per-shard headless + ClusterIP Service pair, and a `macros-datashard-<i>.xml` ConfigMap key per shard replacing today's single hardcoded `<shard>01</shard>` literal. `remote_servers.xml` lists every shard's every replica identically on every pod. Also sets `CERBERUS_CH_DATA_SHARDS` so the sharded-pushdown solver's admission control (see docs/solver.md) knows the real ClickHouse-side fan-out width — leaving it unset here while the real cluster has `count > 1` shards would silently defeat that admission-control ceiling.  >>> EXPERIMENTAL — OFF BY DEFAULT <<< `count > 1` is the EXPERIMENTAL multi-shard Distributed-table path (epic #3074). It renders only with `experimentalDistributedMode: true` (above), which the chart forwards to cerberus as `CERBERUS_EXPERIMENTAL_DISTRIBUTED_MODE=true` so the binary's own boot-time gate agrees. It is NOT production-supported: the ClickHouse-side DDL/query mechanics are real (a `Distributed` wrapper over per-shard `_local` tables, `ON CLUSTER` DDL, verified on real k3d clusters — see docs/helm-clickhouse.md's DATA-shard topology section), and the `datashard` N=2/N=4 e2e lane (`.github/workflows/e2e.yml`, push/nightly/dispatch-only, never a required PR gate) runs the full correctness suite plus a real concurrent load burst against it, asserting from `system.query_log` that the data-shard fan-out ceiling holds both per cerberus PROCESS and CLUSTER-WIDE — the cluster-wide bound being `fanoutCap` below, apportioned across the cerberus replica count. The lane stays informational: no production support is offered for this path. Every compat/migration harness stays single-shard by design. See docs/operations.md's DATA-shard topology section for the lane's current status.  >>> 1 -> N IS MANUAL-MIGRATION-ONLY <<< Bumping this on an ALREADY populated single-shard deployment is NOT a supported in-place `helm upgrade`. Renaming even shard 0's StatefulSet (`<fullname>` -> `<fullname>-datashard-0`) changes the identity Kubernetes derives `volumeClaimTemplates` PVC names from — the new StatefulSet schedules against brand-new, EMPTY PVCs (`metadata`, and, if `hotVolume.persistence.enabled`, the dedicated hot-volume PVC too) while every existing PVC (and the data on it) sits orphaned under the OLD, now-unreferenced name. There is no automatic migration path — see the manual runbook in docs/helm-clickhouse.md before changing this on a live deployment. |
 | clickhouse.bundled.dataShards.fanoutCap | string | `nil` | CLUSTER-WIDE budget for `DataShardFanoutCap`, the data-shard fan-out admission ceiling (docs/solver.md, point 5 of the admission design). The gate itself is a per-PROCESS semaphore, so the ceiling the ClickHouse cluster actually experiences is `cerberus replicas x per-process cap` — and only the chart knows the replica count. Set this and the chart apportions it: per-process cap = floor(fanoutCap / effective replicas) — `autoscaling.maxReplicas` when the HPA is on, else `replicaCount`; in `mode: split` the sum of every enabled head's `replicaCount` — surfaced to the binary as `CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`. Must yield a share of at least `count` (every dispatch charges its full shard width; a smaller share could admit nothing) — the render fails otherwise, as it does when this is set together with a DIFFERENT explicit `config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP` (same knob, two contradicting scopes) or with `count: 1` (no gate exists to budget). `null` (default) leaves the per-process cap to the binary's own default (`CERBERUS_CH_MAX_OPEN_CONNS`) or an explicit `config.CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP`, both per process. |
 | clickhouse.bundled.enabled | bool | `false` | Render the bundled ClickHouse data tier and default cerberus at it. |
@@ -262,7 +275,8 @@ Kubernetes: `>=1.23.0-0`
 | clickhouse.bundled.keeper.persistence.size | string | `"10Gi"` | Keeper data PVC size. |
 | clickhouse.bundled.keeper.persistence.storageClass | string | `""` | StorageClass for the Keeper PVC (empty = cluster default). |
 | clickhouse.bundled.keeper.replicas | int | `3` | Keeper ensemble size (odd number for quorum). |
-| clickhouse.bundled.metrics | object | `{"enabled":true,"path":"/metrics","port":9363}` | ClickHouse's own Prometheus endpoint (cerberus issue #3193). Enabled by default: the chart ships Keeper, hot/cold tiering, replication and multi-shard fan-out, and those subsystems' failure modes — parts count, merge activity, replication lag, background pool depth, cache hit rates — are visible ONLY in ClickHouse's own `system.*` metrics. cerberus's own `/metrics` reports the query-serving side and says nothing about the storage layer beneath it, so a bundled deployment had no scrape target for the data tier at all.  `enabled: false` renders exactly as this chart did before the endpoint existed: no `<prometheus>` block, no container port, no Service port. |
+| clickhouse.bundled.metrics | object | `{"enabled":true,"path":"/metrics","port":9363}` | ClickHouse's own Prometheus endpoint (cerberus issue #3193). Enabled by default: the chart ships Keeper, hot/cold tiering, replication and multi-shard fan-out, and those subsystems' failure modes — parts count, merge activity, replication lag, background pool depth, cache hit rates — are visible ONLY in ClickHouse's own `system.*` metrics. cerberus itself exposes no `/metrics` (its self-telemetry is pushed over OTLP, see `otlp.endpoint`) and reports only the query-serving side, so without this a bundled deployment has no scrape target for the data tier at all. |
+| clickhouse.bundled.metrics.enabled | bool | `true` | Render the endpoint: the `<prometheus>` block in `metrics.xml` (projected into every ClickHouse pod, per-shard ones included), the container port and the Service port. `false` renders none of them. |
 | clickhouse.bundled.metrics.path | string | `"/metrics"` | Path the endpoint serves. |
 | clickhouse.bundled.metrics.port | int | `9363` | Port for the ClickHouse Prometheus endpoint. 9363 is ClickHouse's own documented default for it. |
 | clickhouse.bundled.objectStorage | object | `{"azure":{"accountKey":"","accountName":"","container":"","credentialsSecret":"","storageAccountUrl":"","useManagedIdentity":false},"backend":"s3","bucket":"","enabled":true,"gcs":{"accessKeyId":"","credentialsSecret":"","secretAccessKey":""},"path":"data","s3":{"accessKeyId":"","credentialsSecret":"","endpoint":"","forcePathStyle":false,"region":"us-east-1","secretAccessKey":"","useEnvironmentCredentials":false}}` | Object-store backend the ClickHouse disk targets. |
@@ -378,12 +392,12 @@ Kubernetes: `>=1.23.0-0`
 | query.timeout | string | `""` | Per-query wall-clock timeout (CERBERUS_QUERY_TIMEOUT). Binary default: 2m. Also derives the ClickHouse socket read timeout when CH_READ_TIMEOUT is unset. |
 | readinessProbe | object | `{"failureThreshold":5,"httpGet":{"path":"/readyz","port":"http"},"initialDelaySeconds":2,"periodSeconds":3,"timeoutSeconds":5}` | Readiness probe. `/readyz` pings ClickHouse (with a small TTL cache); a failure removes the pod from the Service endpoints (backpressure, no restart). |
 | replicaCount | int | `2` | Number of replicas. Ignored when `autoscaling.enabled` is true (the HPA owns the replica count then). In `split` mode this is the per-head default, overridable per head under `split.<head>.replicaCount`. |
-| requirementsCheck | bool | `false` | Run the startup requirements check (CERBERUS_REQUIREMENTS_CHECK): verify the ClickHouse connection + schema are usable at boot. Non-fatal — logs and retries rather than crash-looping. Emitted into env only when true. |
+| requirementsCheck | bool | `false` | Run the startup requirements check (CERBERUS_REQUIREMENTS_CHECK): verify the ClickHouse server version and the deployed schema shape at boot. A too-old server or a table that exists with the wrong shape is FATAL — cerberus exits non-zero and the pod restarts with the precise finding in its log. A schema that is entirely absent (not yet provisioned) or a ClickHouse that is entirely unreachable is transient: cerberus boots NOT READY and re-probes instead of exiting. Emitted into env only when true: `false` (the default) emits nothing, and the binary's own default for the check is ON, so the check runs either way — `true` merely pins it explicitly. To turn it off, set `config.CERBERUS_REQUIREMENTS_CHECK: "false"`. |
 | resources | object | `{"limits":{"memory":"1536Mi"},"requests":{"cpu":"250m","memory":"128Mi"}}` | Pod resource requests/limits. Mirrors the reference k3s manifest: a small request, a generous memory limit, no CPU limit (bursting is fine; probe kills under CPU starvation are the real risk). The chart auto-derives GOMEMLIMIT at ~80% of limits.memory; override it via extraEnv if you need a different value. |
 | schema | object | `{"replicated":{"enabled":false,"zookeeperPath":""},"settings":{},"storagePolicy":"","tierAfter":"","tierVolume":"","ttl":""}` | Schema / DDL configuration (lowered to CERBERUS_SCHEMA_* env). The typed keys (`ttl`, `replicated`) take precedence; any OTHER key is passed through verbatim as CERBERUS_SCHEMA_<KEY> (the long tail — see docs/configuration.md), e.g. `schema: { CLUSTER: "main" }` → CERBERUS_SCHEMA_CLUSTER. |
 | schema.replicated | object | `{"enabled":false,"zookeeperPath":""}` | Replicated-ClickHouse (HA) schema. Emits a Replicated database + ReplicatedMergeTree tables instead of plain MergeTree — required for any multi-replica ClickHouse cluster. |
 | schema.replicated.enabled | bool | `false` | Enable Replicated-DB schema (CERBERUS_SCHEMA_DATABASE_REPLICATED). |
-| schema.replicated.zookeeperPath | string | `""` | ZooKeeper/Keeper path for the Replicated database (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH). MUST contain the `{shard}` / `{replica}` macros and mirror the ClickHouse cluster's Replicated-DB coordination path, e.g. "/clickhouse/databases/otel/{shard}/{replica}". |
+| schema.replicated.zookeeperPath | string | `""` | ZooKeeper/Keeper root path for the Replicated database (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH), e.g. "/clickhouse/databases/otel" — the SAME literal root on every replica. It must NOT contain the `{shard}` / `{replica}` macros: the engine takes those as its own separate arguments (`ENGINE = Replicated(path, '{shard}', '{replica}')`) and expands macros inside the path as well, so a path carrying them gives every replica an unrelated database root and nothing replicates. The render refuses a path with either macro. Left empty, the bundled ClickHouse defaults it to `/clickhouse/databases/<clickhouse.database>` for `clickhouse.bundled.replicas > 1`; every other deployment must set it. |
 | schema.settings | object | `{}` | Extra MergeTree SETTINGS appended to every auto-created table's SETTINGS tail (CERBERUS_SCHEMA_SETTINGS), as a map of setting name -> value, e.g. `{ min_bytes_for_wide_part: 0 }`. Joined sorted into `k=v,k2=v2`. Empty appends nothing (byte-identical default DDL). |
 | schema.storagePolicy | string | `""` | MergeTree `storage_policy` for every auto-created table (CERBERUS_SCHEMA_STORAGE_POLICY) — the S3 / tiered-storage shorthand. Empty appends nothing. Mutually exclusive with a `storage_policy` key in `settings` below. A policy only declares which volumes a table MAY use: to actually tier between them, set `tierVolume` + `tierAfter` below. |
 | schema.tierAfter | string | `""` | Age at which a part moves to `tierVolume` (CERBERUS_SCHEMA_TIER_AFTER), e.g. "7d". Must be shorter than `ttl`. Per-signal overrides ride the long-tail passthrough: `schema: { TIER_AFTER_LOGS: "3d" }`. |

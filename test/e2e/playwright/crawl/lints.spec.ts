@@ -70,8 +70,8 @@ import {
   iterateDashboards,
   type Dashboard,
 } from '../helpers/index.js';
-import { truncate } from './lib.js';
 import { activeStack } from './stacks.js';
+import { truncate, EXPR_EXCERPT_CHARS } from '../helpers/excerpt.js';
 
 const SEED_TRAFFIC_SECONDS = 30;
 
@@ -256,13 +256,21 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
   // Vacuous-pass guard: lint 1 silently `continue`s on under-floor
   // families, so without this assertion a seed/export regression that
   // starves EVERY family would let the lint pass having judged
-  // nothing. (This assertion was claimed by the loop comment from day
-  // one but only landed with the adversarial-verification fix.)
-  expect(
-    judgedFamilies,
-    `lint 1 judged no histogram family: all ${families.size} quantile-consumed families are below ` +
-      `the ${HISTOGRAM_COUNT_FLOOR}-observation floor after seed traffic — seed/export regression`,
-  ).toBeGreaterThan(0);
+  // nothing. Conditional on input existing, the same shape as lint
+  // 2's guard below: a stack whose provisioned dashboards consume no
+  // classic `_bucket` family (floor 0, asserted above — the k3d stack,
+  // whose only quantile panel reads a native/exponential histogram)
+  // has nothing to judge and nothing to guard. The guard keys on the
+  // families ACTUALLY found, not on the declared floor, so a
+  // classic-bucket panel landing on a floor-0 stack is guarded from
+  // its first run.
+  if (families.size > 0) {
+    expect(
+      judgedFamilies,
+      `lint 1 judged no histogram family: all ${families.size} quantile-consumed families are below ` +
+        `the ${HISTOGRAM_COUNT_FLOOR}-observation floor after seed traffic — seed/export regression`,
+    ).toBeGreaterThan(0);
+  }
 
   // -------------------------------------------------------------------------
   // Lint 2 — identical-series suspicion across multi-quantile panels.
@@ -318,7 +326,7 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
             `histogram_quantile targets returned bitwise-identical series over the ${QUERY_WINDOW_SECONDS}s ` +
             `window — distinct quantiles collapsing to one value is the single-populated-bucket ` +
             `signature (fabricated-quantile incident class). Targets:\n` +
-            quantileTargets.map((t) => `    - ${truncate(t.expr, 200)}`).join('\n'),
+            quantileTargets.map((t) => `    - ${truncate(t.expr, EXPR_EXCERPT_CHARS)}`).join('\n'),
         );
       }
     }

@@ -59,6 +59,7 @@ import {
   iterateDashboards,
   iteratePanels,
 } from './helpers/index.js';
+import { truncate, BODY_EXCERPT_CHARS } from './helpers/index.js';
 
 // Self-traffic warmup duration. Picked at the low end of "long enough
 // to populate cerberus_queries_total bucketed by language" so the
@@ -221,7 +222,7 @@ test('panel-shape: every aggregating panel surfaces its by(...) and respects its
         if (resp.status() < 200 || resp.status() > 299) {
           const body = await resp.text().catch(() => '<unreadable>');
           failures.push(
-            `[${t.dashboardTitle} :: ${t.panelTitle} :: ${t.refId}] cerberus query_range → ${resp.status()}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+            `[${t.dashboardTitle} :: ${t.panelTitle} :: ${t.refId}] cerberus query_range → ${resp.status()}\n  url: ${queryURL}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
           );
           return;
         }

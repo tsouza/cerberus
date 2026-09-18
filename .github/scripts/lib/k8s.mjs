@@ -78,14 +78,36 @@ export function chQuery(kubectl, target, opts, sql) {
   return res.stdout.trim();
 }
 
+// distributedReplicaErrorHalfLifeSeconds is ClickHouse's default
+// `distributed_replica_error_half_life`: `system.clusters.errors_count`
+// HALVES every this-many seconds (PoolWithFailoverBase decays
+// error_count by one bit per elapsed half-life), so a count of N reaches
+// 0 only after ceil(log2(N + 1)) half-lives.
+export const distributedReplicaErrorHalfLifeSeconds = 60;
+
+// clusterHealthSettleHalfLives sizes the DEFAULT wait for a clean cluster:
+// the startup race waitForClusterHealth exists for leaves 1-3 refused
+// dials per target (one per peer that was not yet dialable), and a count of
+// 2-3 needs TWO half-lives to decay to 0. A single-half-life deadline
+// (which every caller used to default to) times out on a cluster whose
+// errors_count is still 1 — healthy, merely decaying — and reports the
+// race it was meant to wait out as a failure.
+export const clusterHealthSettleHalfLives = 2;
+
+// clusterHealthDefaultDeadlineSeconds is what a verify script waits for a
+// clean errors_count when HEALTH_POLL_SECONDS is not set — the one source
+// every datashard-lane script reads it from.
+export const clusterHealthDefaultDeadlineSeconds =
+  clusterHealthSettleHalfLives * distributedReplicaErrorHalfLifeSeconds;
+
 // clusterHealthPollIntervalMs is deliberately wider than pollUntil's own
 // DEFAULT_POLL_INTERVAL_MS: each iteration here spawns a fresh `kubectl
 // exec` + `clickhouse-client` subprocess (chQuery has no persistent-session
-// mode), and the phenomenon this poll waits out — ClickHouse's own
-// distributed_replica_error_half_life — decays over 60s by default, so
-// sub-second responsiveness buys nothing a caller could observe. 5s cuts a
-// worst-case 60s wait from ~30 subprocess spawns to ~12 while staying far
-// finer than the 60s time constant it is tracking.
+// mode), and the phenomenon this poll waits out — the errors_count decay
+// above — moves once per half-life, so sub-second responsiveness buys
+// nothing a caller could observe. 5s keeps a worst-case wait to a few dozen
+// subprocess spawns while staying far finer than the time constant it is
+// tracking.
 const clusterHealthPollIntervalMs = 5_000;
 
 // waitForClusterHealth polls `system.clusters` until every (shard, replica)

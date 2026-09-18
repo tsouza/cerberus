@@ -23,7 +23,7 @@
 // clusters multiplies BOTH cost and flake surface, so the shard count is kept
 // deliberately MODEST (3): two smoke shards + one crawl shard.
 //
-// Two modes (env MODE, or argv[2]; default `verify`):
+// Three modes (env MODE, or argv[2]; default `verify`):
 //   - verify : assert the SHARDS partition is a total, disjoint cover of the
 //              dashboard-lane spec cohort (discovered specs minus the explicit
 //              EXCLUDED list). `::error::` + exit 1 on ANY drift — an
@@ -38,6 +38,16 @@
 //              value, and whether it runs the Go e2e suite. emit re-runs the
 //              assertions internally, so it can never ship a matrix that
 //              silently drops a spec even if the verify step is removed.
+//   - list   : run the same assertions, then print — space-joined, on stdout —
+//              the union of the SMOKE shards' spec lists for ONE deployment
+//              mode (E2E_MODE, default `monolith`), i.e. exactly what CI runs
+//              against a single k3d cluster of that topology, minus the crawl
+//              shard (CRAWL_STACK=k3d, ~50min, its own lane). `just
+//              e2e-playwright` drops the output straight into `npx playwright
+//              test`, so the local recipe and the CI matrix share one manifest
+//              and cannot drift: a spec CI routes away from a topology (split-
+//              only on monolith) or away from k3d entirely (compose-only, in
+//              EXCLUDED) is never handed to the local run either.
 //
 // Discovery (not a hardcoded canonical set) is deliberate: a newly-added
 // `*.spec.ts` is IN the cohort by construction, forcing the author to either
@@ -45,7 +55,9 @@
 // There is no third "I forgot" outcome that silently drops it.
 //
 // Env:
-//   MODE            `emit` | `verify` (also argv[2]); default `verify`.
+//   MODE            `emit` | `verify` | `list` (also argv[2]); default `verify`.
+//   E2E_MODE        (list) `monolith` | `split`; default `monolith` — the
+//                   deployment topology whose smoke spec set is printed.
 //   PLAYWRIGHT_DIR  glob root; default `test/e2e/playwright`.
 //   INCLUDE_CRAWL   (emit) "true" adds the ~50min crawl shard — set on
 //                   schedule, workflow_dispatch, and release/* PRs.
@@ -350,6 +362,39 @@ export function buildMatrices(includeCrawl, includeSplit, regeneratesK3DInventor
   };
 }
 
+// smokeSpecsForMode() — the spec set ONE k3d cluster of the given deployment
+// topology runs when the whole smoke lane runs against it: the union of every
+// smoke shard's specs on that mode's leg of buildMatrix, in shard order. Pure,
+// derived from the same cross-product `emit` ships, so `just e2e-playwright`
+// (via `list`) and the CI matrix cannot disagree about which specs a
+// topology carries. The crawl shard is never part of it (its own lane, its
+// own CRAWL_STACK, its own ~50min budget). Throws on an unknown mode: a
+// typo'd E2E_MODE must fail loudly, never quietly run zero specs.
+export function smokeSpecsForMode(mode) {
+  if (!SMOKE_MODES.includes(mode)) {
+    throw new Error(
+      `dashboard-matrix: unknown E2E_MODE "${mode}" (want ${SMOKE_MODES.join('|')})`,
+    );
+  }
+  return buildMatrix(false, true)
+    .filter((e) => e.mode === mode)
+    .flatMap((e) => e.specs.split(' ').filter(Boolean));
+}
+
+function list() {
+  const discovered = discover();
+  assertCoverageOrExit(discovered);
+  let specs;
+  try {
+    specs = smokeSpecsForMode(process.env.E2E_MODE || MODE_MONOLITH);
+  } catch (e) {
+    error(e.message);
+    process.exit(1);
+  }
+  process.stdout.write(`${specs.join(' ')}\n`);
+  process.exit(0);
+}
+
 function emit() {
   const discovered = discover();
   assertCoverageOrExit(discovered);
@@ -395,8 +440,9 @@ if (invokedDirectly) {
   const mode = (process.env.MODE || process.argv[2] || 'verify').toLowerCase();
   if (mode === 'emit') emit();
   else if (mode === 'verify') verify();
+  else if (mode === 'list') list();
   else {
-    error(`dashboard-matrix: unknown MODE "${mode}" (want emit|verify)`);
+    error(`dashboard-matrix: unknown MODE "${mode}" (want emit|verify|list)`);
     process.exit(1);
   }
 }

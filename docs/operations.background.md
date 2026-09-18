@@ -8,7 +8,7 @@ self-sufficient for that.
 
 ## Why the composed cursor carries its own longer teardown budget
 
-Because the cancel `CloseCursor` holds there is an ANCESTOR of
+Because the cancel `CloseCursor` holds is an ANCESTOR of
 every per-shard query context, a composed cursor reports its own longer budget
 through `chclient.ComposedCursor`: nesting its teardown inside a single
 connection's drain budget would fire the ancestor cancel at exactly the moment
@@ -55,10 +55,15 @@ cerberus invariant.
 
 ## Why cerberus ships no authentication
 
-That is a deliberate scope decision — the same one the
-listener makes about TLS — but it is load-bearing for how you deploy
-the process, so it is spelled out here rather than left to be inferred
-from the absence of a `CERBERUS_AUTH_*` knob.
+The recorded reason is scope, the same scope decision the listener makes
+about TLS: cerberus is a stateless query gateway that sits behind an
+operator's ingress, and authentication, authorization and tenant
+separation are properties of that boundary rather than of the gateway —
+one implementation at the ingress covers every head, whereas a
+cerberus-side implementation would be a second authn surface to keep
+consistent with it. The decision is load-bearing for how the process is
+deployed, so `operations.md` spells it out rather than leaving it to be
+inferred from the absence of a `CERBERUS_AUTH_*` knob.
 
 ## Why the tail budget is sized separately from the Loki request budget
 
@@ -203,9 +208,10 @@ scheduling both matters more (bigger ingest win) and costs about the same
 
 ## Why `perShardMemoryBytes` divides by `DataShardCount`
 
-That last sentence is the whole reason the formula divides by
-`DataShardCount`: the setting name forwards to every shard UNCHANGED (per the
-two source facts above), but its enforcement is **per shard, independently**
+The formula divides by `DataShardCount` because the setting name forwards to
+every shard UNCHANGED (per the two source-level facts `operations.md`'s
+Distributed-settings section anchors on), but its enforcement is **per shard,
+independently**
 — each of the `DataShardCount` shards a fan-out touches gets its OWN,
 separate `max_memory_usage` budget at the SAME value, not one budget shared
 across them. Sending the un-apportioned `cap` value would let a `K`-way
@@ -457,9 +463,10 @@ fields by re-running the query path's own `| logfmt` / `| json` parser-stage
 extractions over a row peek — replicating that inside a materialized view
 would mean embedding the parser cascade in SQL and maintaining a second
 declaration of it, a substantially larger and riskier change than the
-label-key catalog above. See cerberus issue
-[#2844](https://github.com/tsouza/cerberus/issues/2844) for tracking a
-dedicated design pass on that, independent of this feature.
+label-key catalog in `operations.md`. A dedicated design pass on a
+refresh-scheduled `/detected_fields` catalog was considered and declined
+(cerberus issue [#2844](https://github.com/tsouza/cerberus/issues/2844),
+closed not planned): the endpoint stays on the live path.
 
 ## The Loki label-cardinality catalog's measured cost
 
@@ -493,20 +500,21 @@ Instrumentation scope (`ScopeAttributes`) remains excluded — the upstream
 schema carries no such column by default, so a stock deployment has
 nothing to catalog there; a custom schema that populates it stays on the
 live path for that bucket, and `?scope=none` steps off the catalog fast
-path entirely on such a schema (see above) rather than silently omit it.
+path entirely on such a schema (`operations.md`'s catalog section) rather
+than silently omit it.
 Service-name keying (a third `(Scope, ServiceName, TagKey)` catalog
 dimension) was considered and not pursued: neither `/search/tags` nor
 `/search/tag/{name}/values` accepts a service-scoped narrowing parameter
-in any request shape this codebase or upstream Tempo's own API defines
-today, so a service-keyed catalog would pay service-cardinality× more
+in any request shape this codebase or upstream Tempo's own API defines,
+so a service-keyed catalog would pay service-cardinality× more
 rows for zero present read-side consumer — a decision the request shape
 itself, not this repository's schedule, would prompt reopening. A
 separate, narrower bug this investigation found — `resolveTagName`
 silently routing an explicit `instrumentation.x` tag-values lookup to the
 auto-scope (resource/span) union instead of the configured
-`ScopeAttributesColumn`, on schemas that configure one — is tracked as
-cerberus issue #3010; it does not block this feature (the catalog never
-served that bucket either way).
+`ScopeAttributesColumn`, on schemas that configure one — was fixed
+separately as cerberus issue #3010; the catalog never served that bucket
+either way.
 
 **Measured before/after cost** (2,000,000 synthetic `otel_traces` rows
 spread across a trailing 1h window, 5 resource-attribute keys + 10
@@ -540,7 +548,7 @@ fraction of the 5-minute refresh period either way.
 **Only two of the issue's proposed candidates survived measurement.** Every
 candidate was benchmarked — not just reasoned about — against real
 production-shaped sample data (`test/perf/nightly/testdata/samples/`,
-issue #2411) or, where no real sample exists (span Duration — traces are
+PR #2411) or, where no real sample exists (span Duration — traces are
 outside that sample set's scope), representative synthetic data, via a real
 MergeTree engine (chDB), comparing whole-table compressed bytes before/after
 the codec swap:
@@ -681,8 +689,8 @@ substring shape cerberus's line-filter prefilter emits that it cannot
 answer. `idx_body_text` alone already accounts for the FULL pruning benefit
 in the "both" row; `idx_lower_body` contributes nothing incremental once
 `idx_body_text` exists. This confirms both #2839's own "zero query-time
-benefit" claim and this document's "harmless (if pointless) no-op" sentence
-above hold up under a real-server check, not just as a re-stated assumption
+benefit" claim and `operations.md`'s "harmless (if pointless) no-op"
+sentence hold up under a real-server check, not just as a re-stated assumption
 — `idx_lower_body` is confirmed dead weight on an upgraded deployment: real
 write-path bloom-filter-maintenance cost on every insert/merge, for zero
 read-path benefit on the one predicate shape it was built to accelerate.

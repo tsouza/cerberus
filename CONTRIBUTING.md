@@ -7,8 +7,8 @@ Thanks for your interest. cerberus is small + opinionated — here's how to land
 ```sh
 git checkout -b feat/<short-name>
 # ...edit...
-just lint && just test
-git commit -m "feat(<scope>): <subject>"   # Conventional Commits
+go test -run '^TestName$' ./internal/<pkg>/   # the ONE narrowed test for what changed, not the tree
+git commit -m "feat(<scope>): <subject>"   # Conventional Commits; lefthook lints the message
 git push -u origin <branch>
 gh pr create
 ```
@@ -36,7 +36,7 @@ The heavier lanes — the three `compatibility/<head>` harnesses, `compatibility
 ## Setup
 
 ```sh
-git clone git@github.com-tsouza:tsouza/cerberus.git   # or HTTPS; SSH alias if you have multiple GH identities
+git clone git@github.com:tsouza/cerberus.git          # or HTTPS
 cd cerberus
 direnv allow                                          # loads .envrc; puts Go + GOTOOLCHAIN=auto on PATH
 just install-tools                                    # one-time: golangci-lint, gofumpt, goimports, gremlins
@@ -44,16 +44,22 @@ just hooks-install                                    # one-time: lefthook (pre-
 just ci                                               # lint + test + build
 ```
 
-Hooks are lightweight: `pre-commit` runs `gofumpt -w` / `goimports -w` /
-`scripts/align-md-tables.py` / `markdownlint-cli2 --fix` on staged files
-(auto-fixes; restages), and `commit-msg` runs `commitlint` so a malformed
-subject is caught locally instead of in CI. The table-padding pass is separate
-because `MD060` has no auto-fixer; `markdownlint --fix` cannot realign a table.
-The markdownlint engine is pinned once, in
-`.github/scripts/markdownlint-run.mjs`, and CI runs that same module — so
-`just lint-md` reproduces a red `lint` job rather than disagreeing with it. Heavy validation (`go test`, `golangci-lint run`,
-`go build`) deliberately is **not** in the hook — CI owns that. Don't
-pre-flight manually.
+Hooks are lightweight and layered: `pre-commit` runs `gofumpt -w` /
+`goimports -w` / `scripts/align-md-tables.py` / `markdownlint-cli2 --fix` on
+staged files (auto-fixes; restages), `commit-msg` runs `commitlint` so a
+malformed subject is caught locally instead of in CI, and `pre-push` runs the
+`forbid-skip` and `repo-hygiene` scans plus `actionlint` in about a second.
+The table-padding pass is separate because `MD060` has no auto-fixer;
+`markdownlint --fix` cannot realign a table. The markdownlint engine is pinned
+once, in `.github/scripts/markdownlint-run.mjs`, and CI runs that same module —
+so `just lint-md` reproduces a red `lint` job rather than disagreeing with it.
+Heavy validation (`go test`, `golangci-lint run`, `go build`) deliberately is
+**not** in any hook — CI owns that, once, on the commit that merges. Don't
+pre-flight the whole tree before a push. The one time a local run is
+mandatory is *after* CI reports a red check: reproduce that exact failure
+locally, narrowed to the thing that failed (`go test -run '^TestName$'
+./internal/<pkg>/`, or the single `node .github/scripts/<gate>.mjs`), confirm
+the fix, and only then push again.
 
 If `direnv allow` complains, `eval "$(direnv export bash)"` once per shell.
 
@@ -72,8 +78,8 @@ just e2e-down          # tear down
 
 1. **Open an issue first if the work is non-trivial.** Sketches, design questions, and bug reports go through GitHub Issues so the direction can be agreed before code lands.
 2. **Branch from current `main`.** Branch names match the work: `feat/promql-binary-expr`, `chore/bump-grafana-deps`, `fix/range-window-counter-reset`.
-3. **Write the failing fixture first.** For QL changes, that's a TXTAR under `test/spec/<ql>/`. Use the `/cerberus:add-fixture` skill if you're driving Claude Code.
-4. **Implement + iterate.** `just test` for the inner loop; `just lint` before pushing.
+3. **Write the failing fixture first.** For QL changes, that's a TXTAR under `test/spec/<ql>/`. Use the `.claude/skills/cerberus-add-fixture.md` skill if you're driving Claude Code.
+4. **Implement + iterate.** Run the narrowed test for the thing you changed (`go test -run '^TestLower$/^<fixture>$' ./internal/<head>/`) as the inner loop; the whole-tree `just test` / `just lint` belong to CI, which runs them on every push.
 5. **Commit with Conventional Commits.** Type + scope enforced by `commitlint`.
 6. **Push + open PR.** Title matches the commit subject; body explains *why* + a Test plan checklist.
 7. **CI green → squash-merge.** Branch deleted on merge.
@@ -85,8 +91,7 @@ just e2e-down          # tear down
 - One bullet per substantive change, focused on *why*.
 
 ## Test plan
-- [ ] just lint clean
-- [ ] just test passes (race + spec)
+- [ ] narrowed test for the change run locally: <command>
 - [ ] new TXTAR fixture(s) reviewed: <paths>
 - [ ] compatibility pass rate moved: <from> → <to>
 - [ ] CI green

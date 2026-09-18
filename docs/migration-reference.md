@@ -12,16 +12,16 @@ the journey and want the detail behind one step of it.
 `migrate` is a command group of the single `cerberus` binary, with eight
 subcommands.
 
-| Command                      | What it does                                                                   | Key flags                                                                                                                                 | Network                                 |
-| ---------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `cerberus migrate schema`    | Print the `CREATE` statements cerberus expects, from the server config         | *(no flags; reads `cerberus.yaml` / `CERBERUS_*`)*                                                                                        | offline                                 |
-| `cerberus migrate harvest`   | Build a machine-readable PromQL + LogQL + TraceQL corpus from your files       | `--rules`, `--loki-rules`, `--dashboards`, `--out`                                                                                        | offline                                 |
-| `cerberus migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL             | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--out`                                                                          | offline                                 |
-| `cerberus migrate classify`  | Bucket each query as supported / unsupported / risky                           | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--json`, `--out`                                                                | offline                                 |
-| `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized        | `--rules`, `--loki-rules`, `--corpus`, `--json`, `--out`                                                                                  | offline                                 |
-| `cerberus migrate verify`    | Replay the corpus against each head's reference backend and diff (parity gate) | `--corpus`, per-head `--ref*`/`--cerberus*` pairs (below), `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out`     | live (two backends per configured head) |
-| `cerberus migrate inventory` | Probe live sources for the cardinality that drives OOM risk                    | `--source`, `--top`, `--window`, `--loki-source`, `--loki-selector`, `--tempo-source`, `--json`, `--out`                                  | live (Prometheus always; Loki optional) |
-| `cerberus migrate gate`      | Fold the artifacts into one cutover go/no-go decision                          | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`               | offline                                 |
+| Command                      | What it does                                                                   | Key flags                                                                                                                                                        | Network                                 |
+| ---------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `cerberus migrate schema`    | Print the `CREATE` statements cerberus expects, from the server config         | *(no flags; reads `cerberus.yaml` / `CERBERUS_*`)*                                                                                                               | offline                                 |
+| `cerberus migrate harvest`   | Build a machine-readable PromQL + LogQL + TraceQL corpus from your files       | `--rules`, `--loki-rules`, `--dashboards`, `--out`                                                                                                               | offline                                 |
+| `cerberus migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL             | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--out`                                                                                                 | offline                                 |
+| `cerberus migrate classify`  | Bucket each query as supported / unsupported / risky                           | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--json`, `--out`                                                                                       | offline                                 |
+| `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized        | `--rules`, `--loki-rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline                                 |
+| `cerberus migrate verify`    | Replay the corpus against each head's reference backend and diff (parity gate) | `--corpus`, per-head `--ref*`/`--cerberus*` pairs (below), `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out`                            | live (two backends per configured head) |
+| `cerberus migrate inventory` | Probe live sources for the cardinality that drives OOM risk                    | `--source`, `--top`, `--window`, `--loki-source`, `--loki-selector`, `--tempo-source`, `--json`, `--out`                                                         | live (Prometheus always; Loki optional) |
+| `cerberus migrate gate`      | Fold the artifacts into one cutover go/no-go decision                          | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series` (default `100000`), `--high-card-label-values` (default `50000`), `--json`, `--out` | offline                                 |
 
 See
 [`migration-reference.background.md`](migration-reference.background.md) for
@@ -36,9 +36,10 @@ clean.
 
 `verify` and `inventory` also read `migrate.verify.*` / `migrate.inventory.*`
 fallbacks (`CERBERUS_VERIFY_*` / `CERBERUS_INVENTORY_*` in the environment) for
-their connection, window, credential and (for `verify`) `--report` flags —
-`--report` has a `migrate.verify.report` fallback too — but **not** the stdout
-output flags (`--json` / `--out`, and for inventory not `--top`).
+their connection, window, credential and (for `verify`) `--tolerance`
+(`CERBERUS_VERIFY_TOLERANCE` / `migrate.verify.tolerance`) and `--report`
+(`migrate.verify.report`) flags — but **not** the stdout output flags
+(`--json` / `--out`, and for inventory not `--top`).
 
 Those fallbacks resolve exactly like every other cerberus setting: environment
 variable first, then a `cerberus.yaml` in the working directory or
@@ -72,8 +73,11 @@ tenant id is a *routing* parameter, not a credential, so it is recorded in the
 `--report` diagnostic and reproduced in the repro command; bearer tokens are
 credentials and appear in no artifact.
 
-`--tolerance` is a single value shared by every lane: the gate proves the same
-number on all three heads under one definition of equality.
+`--tolerance` (default `1e-9`) is a single value shared by every lane: the
+gate proves the same number on all three heads under one definition of
+equality — `|a − b| <= max(tolerance, 1e-9·max(|a|, |b|))`. A value at or
+above `1.0` is rejected, whether it arrives by flag, environment or config
+file.
 
 The window flags default to `--start -1h --end now --step 60s`, so they are
 optional; supply them when you want a specific window.
@@ -84,8 +88,9 @@ optional; supply them when you want a specific window.
 *range* (`query_range`) evaluation for panels. The instant/rule SQL matches what
 the server runs. The range/panel SQL uses the **fan-out** lowering for the
 range-window operators (`rate` / `changes` / `resets` / `*_over_time`,
-staleness); a live deployment with the experimental native `timeSeries*ToGrid`
-aggregates enabled (auto-selected on CH 25.9+) lowers those differently, so the
+staleness); a live deployment with the native `timeSeries*ToGrid` aggregates
+enabled (auto-selected on CH 25.9+ behind ClickHouse's
+`allow_experimental_time_series_aggregate_functions`) lowers those differently, so the
 previewed range SQL **may differ** from what such a deployment runs. The tool is
 offline and cannot know the target's ClickHouse version.
 
@@ -142,7 +147,8 @@ different shapes have different definitions of equality.
 
 **`metric-matrix`** — PromQL, LogQL metric queries, TraceQL metrics queries. Two
 backends agree when they return the same series, step-aligned, with values
-agreeing within `--tolerance`.
+agreeing within `max(--tolerance, 1e-9·max(|a|, |b|))`; NaN matches only NaN
+and an infinity only the same infinity.
 
 **`log-stream`** — a LogQL selector, with or without pipeline stages, returning
 log lines. Two backends agree when, for every `(stream label set, nanosecond

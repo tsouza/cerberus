@@ -134,11 +134,14 @@ env vars at startup; nothing rebuild-related is required.
 | `CERBERUS_SCHEMA_LOGS_TABLE`                  | `otel_logs`                          | Logs table name read by the Loki API.              |
 | `CERBERUS_SCHEMA_TRACES_TABLE`                | `otel_traces`                        | Spans table name read by the Tempo API.            |
 
-One related opt-in knob is a boolean rather than a table-name override:
+The remaining schema knobs are opt-ins rather than table-name overrides:
 
-| Variable                           | Default | Effect                                                                                                                                                                                                                                                                          |
-| ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_SCHEMA_TRACES_TS_LOOKUP` | `false` | When truthy, the Tempo trace-by-ID path window-prunes the spans scan through the OTel-CH `<spans>_trace_id_ts` lookup MV. Enable only after confirming that MV is populated; the lookup-table name derives from the (possibly overridden) spans table as `<spans>_trace_id_ts`. |
+| Variable                                            | Default | Effect                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_SCHEMA_TRACES_TS_LOOKUP`                  | `false` | When truthy, the Tempo trace-by-ID path window-prunes the spans scan through the OTel-CH `<spans>_trace_id_ts` lookup MV. Enable only after confirming that MV is populated; the lookup-table name derives from the (possibly overridden) spans table as `<spans>_trace_id_ts`.                                       |
+| `CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED`              | `false` | Provision the DELTA-temporality prefix-reconstruction aggregate table and its materialized view (`schema.Metrics.DeltaPrefixTable`); a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA` is also `true`. Provisioning only — the read path is gated separately by `CERBERUS_DELTA_PREFIX_READ_ENABLED` (`configuration.md`). |
+| `CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED` | `false` | Provision and route to the curated materialized span/resource attribute columns on the spans table (`http.status_code`, `rpc.method`, `k8s.namespace.name`); a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA` is also `true`.                                                                                             |
+| `CERBERUS_PROM_RESOURCE_LABELS`                     | `""`    | Allowlist of OTel `ResourceAttributes` keys (dotted form, e.g. `k8s.namespace.name`) projected as Prometheus labels; empty promotes every resource key. Config-file key `prom.resourceLabels`.                                                                                                                        |
 
 The active ClickHouse **database** is set by `CERBERUS_CH_DATABASE`
 (default `default`) — that single knob covers both the connection's
@@ -174,12 +177,13 @@ All OTel knobs are optional. With no env vars set, cerberus installs
 no-op trace and meter providers and runs as a zero-collector-dependency
 binary.
 
-| Variable                 | Default | Meaning                                                                                          |
-| ------------------------ | ------- | ------------------------------------------------------------------------------------------------ |
-| `CERBERUS_OTLP_ENDPOINT` | `""`    | gRPC target, e.g. `otel-collector.observability.svc:4317`. Empty disables both exporters.        |
-| `CERBERUS_OTLP_INSECURE` | `false` | When `true`, dial the endpoint without TLS. Use for local dev / k3d only.                        |
-| `CERBERUS_OTLP_HEADERS`  | `""`    | Comma-separated `key=value` list attached as gRPC metadata (e.g. `authorization=Bearer abc...`). |
-| `CERBERUS_OTLP_TIMEOUT`  | `10s`   | Per-request OTLP roundtrip timeout.                                                              |
+| Variable                        | Default | Meaning                                                                                          |
+| ------------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `CERBERUS_OTLP_ENDPOINT`        | `""`    | gRPC target, e.g. `otel-collector.observability.svc:4317`. Empty disables both exporters.        |
+| `CERBERUS_OTLP_INSECURE`        | `false` | When `true`, dial the endpoint without TLS. Use for local dev / k3d only.                        |
+| `CERBERUS_OTLP_HEADERS`         | `""`    | Comma-separated `key=value` list attached as gRPC metadata (e.g. `authorization=Bearer abc...`). |
+| `CERBERUS_OTLP_TIMEOUT`         | `10s`   | Per-request OTLP roundtrip timeout.                                                              |
+| `CERBERUS_OTLP_EXPORT_INTERVAL` | `10s`   | Metric `PeriodicReader` flush interval — how often self-metrics are pushed to the collector.     |
 
 Standard OTel SDK env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`,
 `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES`, …) are read by
@@ -187,56 +191,69 @@ the SDK on top of the cerberus-specific knobs above. When both are set,
 the `CERBERUS_OTLP_*` value wins for that field because cerberus passes
 it explicitly to the exporter constructor.
 
-`OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` reach the resource
-cerberus stamps on every exported span, metric point and log record.
-Precedence runs derived defaults (`service.name=cerberus`,
-`service.version=dev`, `service.instance.id` from the hostname) →
-environment → `CERBERUS_OTLP_SERVICE_NAME` / `_SERVICE_VERSION`, so the
-environment overrides a guess and explicit configuration overrides the
-environment. `OTEL_RESOURCE_ATTRIBUTES` is the only channel for the
-dimensions cerberus has no dedicated knob for, and deployments should use
-it to describe cerberus along the same axes as every other producer they
-run:
+`service.name` and `service.version` are fixed by the binary — `cerberus`
+and the `Version` var — and `service.instance.id` is derived from the
+hostname; the binary passes the first two explicitly, so `OTEL_SERVICE_NAME`
+does not override them. `OTEL_RESOURCE_ATTRIBUTES` adds dimensions to that
+resource and is the only channel for the ones cerberus has no dedicated
+knob for. Describe cerberus along the same axes as every other producer in
+the stack — Grafana's Traces Drilldown breaks a selected service down by
+`resource.service.namespace`, so a cerberus that publishes none produces an
+empty breakdown:
 
 ```sh
 OTEL_RESOURCE_ATTRIBUTES=service.namespace=platform,deployment.environment=prod
 ```
 
-This is not cosmetic. Grafana's Traces Drilldown breaks a selected
-service down by `resource.service.namespace`, so a cerberus that
-publishes no `service.namespace` produces an empty breakdown and the
-drill dead-ends one level in.
-
 ### Self-metrics
 
 The instrument set lives in `internal/telemetry`. Names, units and
 attribute keys are a public contract — dashboards and alert rules
-reference them verbatim, and `internal/telemetry/contract_test.go` pins
-each one so a rename cannot ship silently.
+reference them verbatim. `internal/telemetry/contract_test.go` pins the
+names and units of the query-pipeline instruments (the first eight rows)
+so a rename there cannot ship silently.
 
-| Metric                                       | Type               | Attributes                                                                                  |
-| -------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------- |
-| `cerberus_queries_total`                     | counter            | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
-| `cerberus_queries_duration_exp_hist`         | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
-| `cerberus_queries_duration_seconds`          | histogram          | `cerberus_ql`, `cerberus_route`, `result`                                                   |
-| `cerberus_pipeline_stage_duration_seconds`   | histogram          | `stage`, `cerberus_ql`                                                                      |
-| `cerberus_optimizer_rules_applied`           | histogram          | —                                                                                           |
-| `cerberus_optimizer_fixpoint_cap_hits_total` | counter            | `cerberus_optimizer_batch`                                                                  |
-| `cerberus_clickhouse_rows_read`              | histogram          | `cerberus_ql`                                                                               |
-| `cerberus_clickhouse_bytes_read`             | histogram          | `cerberus_ql`                                                                               |
-| `cerberus_query_inflight`                    | gauge              | `cerberus_ql`                                                                               |
-| `cerberus_tempo_exemplar_failures_total`     | counter            | `stage`                                                                                     |
+| Metric                                        | Type               | Attributes                                                                                  |
+| --------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------- |
+| `cerberus_queries_total`                      | counter            | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
+| `cerberus_queries_duration_exp_hist`          | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
+| `cerberus_queries_duration_seconds`           | histogram          | `cerberus_ql`, `cerberus_route`, `result`                                                   |
+| `cerberus_pipeline_stage_duration_seconds`    | histogram          | `stage`, `cerberus_ql`                                                                      |
+| `cerberus_optimizer_rules_applied`            | histogram          | —                                                                                           |
+| `cerberus_optimizer_fixpoint_cap_hits_total`  | counter            | `cerberus_optimizer_batch`                                                                  |
+| `cerberus_clickhouse_rows_read`               | histogram          | `cerberus_ql`                                                                               |
+| `cerberus_clickhouse_bytes_read`              | histogram          | `cerberus_ql`                                                                               |
+| `cerberus_query_inflight`                     | gauge              | `cerberus_ql`                                                                               |
+| `cerberus_route_memo_hit_skipped_total`       | counter            | `reason`                                                                                    |
+| `cerberus_route_memo_pressure_active`         | gauge (0/1)        | —                                                                                           |
+| `cerberus_routed_dispatch_inflight`           | gauge              | —                                                                                           |
+| `cerberus_route_ab_success_total`             | counter            | `cerberus_route_choice`                                                                     |
+| `cerberus_tempo_exemplar_failures_total`      | counter            | `stage`                                                                                     |
+| `cerberus_solver_estimate_drift_ratio`        | histogram          | `cerberus_actuals_source`                                                                   |
+| `cerberus_solver_estimate_drift_alerts_total` | counter            | `cerberus_actuals_source`                                                                   |
+
+The four `cerberus_route_*` / `cerberus_routed_*` instruments describe the
+failure-driven route memo and the A/B route outcome; the two
+`cerberus_solver_estimate_drift_*` instruments describe the
+predicted-vs-actual drift tracker. `docs/solver.md` covers both.
+
+Two further instruments live under their own meter scopes:
+`cerberus_admit_rejected_total` (counter; `cerberus_ql`, `budget`,
+`reason`) under `internal/api/admit` counts requests the per-handler
+concurrency cap refused, and `cerberus_solver_parallelism_clamped_total`
+(counter, no attributes) under `internal/solver` counts routed requests
+whose shard parallelism was clamped below the configured `P`.
 
 `cerberus_tempo_exemplar_failures_total` counts Tempo `/api/metrics/query_range` (and its gRPC `MetricsQueryRange` counterpart) exemplar-enrichment failures, split by which half of the best-effort exemplar attach failed: `stage="emit"` for a `chsql.EmitMetricsExemplars` render failure, `stage="execute"` for a ClickHouse query failure on the rendered SQL. Both failures still return the matrix response with an empty `exemplars` array — the same wire shape as a window with genuinely no exemplars — so this counter is the only way to notice a systematic exemplar outage without reading logs.
 
 `cerberus_optimizer_fixpoint_cap_hits_total` counts optimizer `FixedPoint` batches that exhausted their iteration cap with a rule still reporting change, by batch name. Every production batch converges well inside its cap, so a non-zero rate is a rule bug (two rules undoing each other, or one that always reports a change) that otherwise shows only as a slower `optimize` stage; the same event is logged at WARN as `optimizer: fixpoint batch hit its iteration cap without converging` with the batch name.
 
-`cerberus_queries_duration_seconds` is the name this histogram carried
-through v1.20.0. It is deprecated and emitted alongside the new name for
-one release, with its original classic explicit-bucket aggregation, so an
-existing dashboard or alert rule keeps working across the upgrade. Move
-queries to `cerberus_queries_duration_exp_hist`; the old name is removed
-one release after the rename ships.
+`cerberus_queries_duration_seconds` is the legacy name of the
+query-duration histogram. It is deprecated and emitted alongside
+`cerberus_queries_duration_exp_hist`, with its original classic
+explicit-bucket aggregation, so an existing dashboard or alert rule keeps
+working across the upgrade. Move queries to the new name; the removal of
+the legacy instrument is tracked in cerberus issue #3569.
 
 `cerberus_queries_duration_exp_hist` is collected as a native/exponential
 histogram (cerberus issue #3170), not the classic explicit-bucket shape
@@ -248,8 +265,6 @@ from a classic one, so it routes on that suffix alone
 `_bucket` series or `le` label:
 `histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))`
 is the whole expression, not `sum by (le, cerberus_ql) (rate(..._bucket[5m]))`.
-See [`observability.background.md`](observability.background.md) for the
-incident behind the switch.
 
 #### ClickHouse connection lifecycle
 
@@ -297,8 +312,9 @@ against `cerberus_ch_conn_dials_total` is the driver's own age eviction.
 
 The `pool` attribute exists because the connection gauges are
 process-wide while the pools are not: alongside the long-lived `serving`
-pool, startup opens short-lived bootstrap pools for the version probe,
-the ts-grid capability probe and the schema apply. The gauges are
+pool, startup opens five short-lived bootstrap pools — `version-probe`,
+`tsgrid-probe`, `result-cache-probe`, `query-workload-probe` and
+`schema-apply`. The gauges are
 observable instruments keyed by attribute set, so without the label
 those pools would collapse onto one series with a single registration
 silently winning — `cerberus_ch_conn_open{pool="serving"}` is the one to
@@ -340,11 +356,8 @@ exhaustion. `cause` names which kind of backend trouble caused the trip:
   name.
 
 Statement-scoped rejections — a syntax error, an unknown column, an
-unsatisfiable setting combination — can never trip the breaker. ClickHouse
-answering a statement with a typed exception is positive proof it is serving,
-and counting those would turn a handful of bad queries into a shed-everything
-outage. They are counted separately instead, and the pair is what makes triage
-decidable:
+unsatisfiable setting combination — never trip the breaker. They are
+counted separately, and the pair is what makes triage decidable:
 
 - rising `statement_rejections_total` with a flat `trips_total` — cerberus is
   emitting SQL ClickHouse declines. The backend is fine; look at the query
@@ -371,29 +384,20 @@ label cardinality is fixed:
 | `internal`              | A defect in cerberus — a recovered panic or an unclassified 5xx. Worth a page.                                                                                                        |
 
 `cerberus_status_class` is derived purely from the response's status
-family. `cerberus_error_reason` is not, and cannot be: upstream wire
-parity pins two statuses onto three meanings. Every head answers a query
-wall-clock timeout with **503** because upstream Prometheus and Loki do,
-and answers a per-query budget refusal with **422**. The handler that
-already classified the failure therefore records the reason directly
-(`telemetry.SetReason`, on a request-scoped cell the query middleware
-installs), and the middleware prefers it over its status-derived default.
-The wire bytes are unchanged; a handler that records nothing is classified
-from its status exactly as before. A recovered panic stays pinned to
-`internal` whatever the handler recorded.
+family. `cerberus_error_reason` is not: every head answers a query
+wall-clock timeout with **503** and a per-query budget refusal with
+**422**, so the handler that classified the failure records the reason
+directly (`telemetry.SetReason`, on a request-scoped cell the query
+middleware installs) and the middleware prefers it over its
+status-derived default. A handler that records nothing is classified from
+its status. A recovered panic stays pinned to `internal` whatever the
+handler recorded.
 
-A client cancellation is the third meaning those two statuses collide,
-and the one where the heads disagree on the wire: Tempo answers **499**,
-deliberately outside the 5xx band so a client hanging up is never read as
-"cerberus is unhealthy", while Prometheus and Loki answer **503** to stay
-byte-compatible with upstream's own `errorCanceled` envelope. The reason
-label travels the same route as the other two regardless:
-`httperr.TelemetryReason` names a `context.Canceled` failure `canceled`
-for every head, and the two constructors that restate the message in
-upstream's wording — and so destroy the sentinel — carry the reason on the
-error itself. See
-[`observability.background.md`](observability.background.md) for what a
-status-derived reason would have made of these three collisions.
+A client cancellation is answered **499** by Tempo and **503** by
+Prometheus and Loki (upstream's own `errorCanceled` envelope). The reason
+label is `canceled` on every head regardless: `httperr.TelemetryReason`
+names a `context.Canceled` failure, and the two constructors that restate
+the message in upstream's wording carry the reason on the error itself.
 
 A cancellation still counts as `result="error"`, because the query was
 not answered. It is the one error reason expected in normal operation
@@ -436,14 +440,16 @@ added to one is a failure until it is added to all three.
 
 #### Duration buckets
 
-The duration ladders are explicit (the SDK default is
-millisecond-shaped, and these instruments record seconds). Both reach
-the minute scale on purpose: a gateway fronting an analytical database
-can serve a request slower than any single-digit-second bound. `execute`
-carries the ClickHouse round trip, so the stage ladder has to reach as far
-up as the query ladder. See
-[`observability.background.md`](observability.background.md) for what
-happens to p95/p99 when the top finite bucket is set too low.
+`cerberus_queries_duration_exp_hist` is aggregated as a base-2
+exponential histogram by an SDK view (`internal/telemetry/telemetry.go`),
+so it has no explicit ladder. The classic histograms — the legacy
+`cerberus_queries_duration_seconds`,
+`cerberus_pipeline_stage_duration_seconds`, and the rows/bytes/rules
+instruments — carry explicit boundaries (`QueryDurationBoundaries`,
+`StageDurationBoundaries`, … in `internal/telemetry/metrics.go`); both
+duration ladders reach the minute scale, and the stage ladder reaches as
+far up as the query ladder because `execute` carries the ClickHouse round
+trip.
 
 #### Stage attribution
 

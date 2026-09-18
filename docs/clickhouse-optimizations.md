@@ -26,7 +26,8 @@ and run at flat memory — auto picks them once the server meets their floor
 23 of the registry's 44 features are `autoSelect: no` and are reachable only by
 explicit listing — `columnar_result_decode` (a perf tradeoff) and
 `ts_grid_changes` (a correctness gap) among them. The generated table below is
-the authoritative per-feature answer; the `autoSelect` column carries it.
+the authoritative per-feature answer; the `autoSelect` column carries it, and
+the `doc-counts` gate holds the two integers here to the registry.
 
 ## The two configuration knobs
 
@@ -51,8 +52,8 @@ feature id, and they **compose**:
   provided that server also **permits the experimental setting** they require;
   a server that forbids it silently keeps the native family on the fan-out path
   (see [Capability probe](#capability-probe-experimental-ts_grid-setting)).
-  The features `auto` never picks are the 23 of 44 features carrying `autoSelect: no`
-  in the generated table below, which is the authoritative list; each requires
+  The features `auto` never picks are the ones carrying `autoSelect: no` in
+  the generated table below, which is the authoritative list; each requires
   explicit listing. `auto` may appear **alongside** explicit ids, so
   `auto,columnar_result_decode` means "the auto-selected set **plus**
   `columnar_result_decode`" — the way to add an opt-in feature without giving
@@ -79,7 +80,7 @@ is "best available"; under `off` nothing is selected at all).
   explicit feature list is asserting "I require these".
 - **`permissive`** — an explicitly-requested but unsupported feature is
   **skipped with a `WARN`**:
-  `ch_opt '<id>' disabled: needs ClickHouse >=X.Y, server is A.B`.
+  `ch_opt "<id>" disabled: needs ClickHouse >=X.Y, server is A.B`.
   Startup continues.
 
 An **unknown** feature id is fatal in **both** modes.
@@ -110,72 +111,76 @@ version, a stability class (`stable` or `experimental`), and an `apply`
 behaviour that acts on the per-query path when the feature is in the resolved
 set.
 
-The structural columns below (`id` / `minVersion` / `stability`) are
-**generated** from `internal/chopt/registry.go` -- the single source of truth --
-and live inside the `BEGIN/END GENERATED` markers. Do not hand-edit them: run
+The columns below (`id` / `minVersion` / `stability` / `autoSelect` /
+`experimental setting` / `doc`) are **generated** from
+`internal/chopt/registry.go` -- the single source of truth -- and live inside
+the `BEGIN/END GENERATED` markers. `experimental setting` is read from each
+feature's `RequiresExperimentalTSGrid` flag and `doc` is the registry entry's
+own one-line description, so every feature has both without hand upkeep. Do not hand-edit them: run
 `just gen-opt-docs` (it calls `chopt.Registry()` and rewrites the block), and CI
 fails any PR whose block drifts from the registry. Adding a feature to the
 registry therefore lands here automatically; it can never go missing from the
 table.
 
 <!-- BEGIN GENERATED: chopt-feature-table (do not edit; regenerate with `just gen-opt-docs`) -->
-| id                               | minVersion | stability    | autoSelect |
-| -------------------------------- | ---------- | ------------ | ---------- |
-| `aggregation_in_order`           | 24.8       | stable       | yes        |
-| `condition_cache`                | 25.3       | stable       | yes        |
-| `ts_grid_range`                  | 25.9       | experimental | yes        |
-| `ts_grid_resample`               | 25.9       | experimental | yes        |
-| `columnar_result_decode`         | none       | experimental | no         |
-| `ts_grid_changes`                | 25.9       | experimental | no         |
-| `ts_grid_resets`                 | 25.9       | experimental | yes        |
-| `ts_grid_deriv`                  | 25.9       | experimental | yes        |
-| `ts_grid_predict_linear`         | 25.9       | experimental | yes        |
-| `ts_grid_recollapse`             | 25.9       | experimental | yes        |
-| `ts_grid_vector_agg`             | 25.9       | experimental | no         |
-| `ts_grid_instant`                | 26.5       | experimental | no         |
-| `ts_grid_increase`               | 25.9       | experimental | yes        |
-| `ts_grid_histogram`              | 25.9       | experimental | yes        |
-| `quantile_prom_histogram`        | 25.10      | experimental | no         |
-| `ts_grid_delta`                  | 25.9       | experimental | yes        |
-| `ts_grid_irate`                  | 25.9       | experimental | yes        |
-| `ts_grid_idelta`                 | 25.9       | experimental | yes        |
-| `laginframe_adjacency`           | none       | experimental | yes        |
-| `fixed_accumulator_extrapolated` | none       | experimental | no         |
-| `sorted_slab_over_time`          | none       | experimental | no         |
-| `ts_grid_group_array`            | 25.9       | experimental | no         |
-| `map_bucketed_serialization`     | 26.4       | experimental | no         |
-| `ts_grid_last_over_time`         | 26.6       | experimental | no         |
-| `downsample_tier`                | 25.9       | experimental | no         |
-| `column_statistics`              | 26.3       | experimental | no         |
-| `classic_bucket_merge_summap`    | none       | experimental | no         |
-| `exp_histogram_merge_summap`     | none       | experimental | no         |
-| `join_spill`                     | 26.4       | experimental | yes        |
-| `trace_id_projection`            | 25.5       | experimental | no         |
-| `loki_catalog_mv`                | 24.10      | experimental | no         |
-| `tempo_tag_catalog_mv`           | 24.10      | experimental | no         |
-| `trace_id_bitmap_filter`         | 25.11      | experimental | yes        |
-| `arg_and_max_fusion`             | 25.11      | experimental | yes        |
-| `result_cache`                   | 24.8       | stable       | yes        |
-| `lazy_materialization`           | 25.11      | experimental | yes        |
-| `explain_estimate`               | none       | experimental | no         |
-| `cardinality_probe`              | none       | experimental | no         |
-| `full_text_index`                | 26.2       | experimental | no         |
-| `text_index_line_filter`         | 26.4       | experimental | no         |
-| `trace_id_external_table`        | none       | experimental | no         |
-| `ts_tag_groups`                  | 26.2       | experimental | no         |
-| `ts_throw_duplicate_series_if`   | 26.2       | experimental | yes        |
-| `exp_histogram_two_level`        | none       | stable       | yes        |
+| id                               | minVersion | stability    | autoSelect | experimental setting                                 | doc                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------- | ---------- | ------------ | ---------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `aggregation_in_order`           | 24.8       | stable       | yes        | (none)                                               | stamp optimize_aggregation_in_order=1 when the Aggregate GROUP BY is a sort-key prefix (result-equivalent)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `condition_cache`                | 25.3       | stable       | yes        | (none)                                               | stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `ts_grid_range`                  | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `ts_grid_resample`               | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `columnar_result_decode`         | none       | experimental | no         | (none)                                               | decode the query_range matrix shape via ch-go columnar path (client-side, no version floor, opt-in only — never auto)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `ts_grid_changes`                | 25.9       | experimental | no         | `allow_experimental_time_series_aggregate_functions` | opt eligible changes(<v>[<range>]) shapes onto native timeSeriesChangesToGrid (experimental maturity, server >= 25.9, opt-in only via CERBERUS_CH_OPTIMIZATIONS — the builtin diverges from reference Prometheus on NaN-adjacent windows, #1721)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `ts_grid_resets`                 | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible resets(<counter>[<range>]) shapes onto native timeSeriesResetsToGrid (experimental maturity, auto-enabled on server >= 25.9)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `ts_grid_deriv`                  | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible deriv(<gauge>[<range>]) shapes onto native timeSeriesDerivToGrid (experimental maturity, auto-enabled on server >= 25.9)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `ts_grid_predict_linear`         | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible predict_linear(<gauge>[<range>], t) shapes (whole-second literal t) onto native timeSeriesPredictLinearToGrid (experimental maturity, auto-enabled on server >= 25.9)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `ts_grid_recollapse`             | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | defer the label-shaping tower past an eligible native rate grid via the -State/-Merge combinator pair, so it runs once per raw series instead of once per row (narrows ts_grid_range; experimental maturity, auto-enabled on server >= 25.9)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `ts_grid_vector_agg`             | 25.9       | experimental | no         | `allow_experimental_time_series_aggregate_functions` | fold an element-wise-correct sum/min/max/avg/count by/without into an eligible native rate grid via -ForEach, exploding only the aggregated per-output-series grid once (narrows ts_grid_range; experimental, server >= 25.9, opt-in — #2763)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `ts_grid_instant`                | 26.5       | experimental | no         | `allow_experimental_time_series_aggregate_functions` | extend rate/changes/resets/deriv/predict_linear's native matrix strategy to the instant shape via a one-point grid (narrows ts_grid_range/changes/resets/deriv/predict_linear; server >= 26.5, #103223/#105319; opt-in)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `ts_grid_increase`               | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible increase(<counter>[<range>]) shapes onto native timeSeriesRateToGrid multiplied back by the window seconds (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `ts_grid_histogram`              | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt the classic-histogram rate() window fold behind histogram_quantile onto a native timeSeriesRateToGrid ladder over the unnested le rungs (experimental maturity, auto-enabled on server >= 25.9 — floor inherited from the timeSeries*ToGrid family)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `quantile_prom_histogram`        | 25.10      | experimental | no         | (none)                                               | opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate over a BOUNDED ARRAY JOIN window (server >= 25.10, opt-in only via CERBERUS_CH_OPTIMIZATIONS — issue #2790's PR 2 rewrote the emission to ARRAY JOIN at most 3 rungs per row instead of the whole bucket ladder, a real-CH-measured ~1.5x-2x memory cut versus the original emission at every cardinality point tested; the conservative (1.5x) end of that range governs the safe recommendation — operators should keep a single histogram_quantile() call under ~22,500 series when opting in (1.5x PR 1's original ~15,000-series ceiling), with up to ~30,000 achievable in the best-measured case at the range's optimistic (2x) end — see #2790)       |
+| `ts_grid_delta`                  | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible delta(<gauge>[<range>]) shapes onto native timeSeriesDeltaToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB differential sweep proved no counter-reset correction, matching PromQL)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `ts_grid_irate`                  | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible irate(<counter>[<range>]) shapes onto native timeSeriesInstantRateToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB sweep proved trailing-pair counter-reset correction, matching PromQL)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `ts_grid_idelta`                 | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible idelta(<gauge>[<range>]) shapes onto native timeSeriesInstantDeltaToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB differential sweep proved no counter-reset correction, matching PromQL)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `laginframe_adjacency`           | none       | experimental | yes        | (none)                                               | opt eligible query_range changes/resets/irate/idelta shapes onto a lagInFrame/leadInFrame annotation pass with fixed-size accumulators, retiring the array-fold fan-out (client-side, no version floor, auto-enabled, bit-identical to the fan-out)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `fixed_accumulator_extrapolated` | none       | experimental | no         | (none)                                               | opt eligible query_range rate/increase/delta shapes onto per-(series, anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out (no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B measured half the source rows/~20% fewer bytes at roughly neutral wall-clock but ~1.8-2x the incumbent array-fold's peak memory, so auto never picks it; see #2894)                                                                                                                                                                                                                                                                                                                                  |
+| `sorted_slab_over_time`          | none       | experimental | no         | (none)                                               | opt eligible query_range sum/avg/first/stddev/stdvar/mad_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup (no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a real-CH 26.6.4.55 optcorpus A/B found its claimed O(samples)-per-series memory bound did not hold as shipped: 6-9x the incumbent's memory at typical anchor density, OOMing a 6GiB cap at 500 series/480 anchors where the array-fold held at 535MiB (#2894); follow-up #3046 fixed the root cause with a mandatory max_block_size=1 companion setting, and every re-measured case now beats the array-fold on memory — but AutoSelect stays false pending a FRESH optcorpus A/B against the fixed shape) |
+| `ts_grid_group_array`            | 25.9       | experimental | no         | `allow_experimental_time_series_aggregate_functions` | swap groupArray+arraySort(+dedup) window assembly for native timeSeriesGroupArray at sites that already dedup (server >= 25.9, opt-in — native collapse is order-dependent on a NaN duplicate, so auto never picks it)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `map_bucketed_serialization`     | 26.4       | experimental | no         | (none)                                               | stamp map_serialization_version='with_buckets' on new logs/traces tables only, never metrics (server >= 26.4, opt-in only via CERBERUS_CH_OPTIMIZATIONS — read side is transparent, but full-map reads get ~2x slower, so auto never picks it)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `ts_grid_last_over_time`         | 26.6       | experimental | no         | `allow_experimental_time_series_aggregate_functions` | opt eligible last_over_time(<v>[<range>]) shapes onto the native timeSeriesResampleToGridWithStaleness aggregate (ts_grid_resample's), [range] as staleness (experimental, server >= 26.6 — PRs #106504/#106577, opt-in via CERBERUS_CH_OPTIMIZATIONS)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `downsample_tier`                | 25.9       | experimental | no         | `allow_experimental_time_series_aggregate_functions` | route eligible irate()/idelta()/last_over_time() shapes onto the downsampled long-range tier (server >= 25.9, opt-in via CERBERUS_CH_OPTIMIZATIONS — new persisted state, provision + backfill first)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `column_statistics`              | 26.3       | experimental | no         | (none)                                               | curated ADD STATISTICS registry on metrics/logs/traces filter+join columns for PREWHERE/join-ordering (server >= 26.3, opt-in via CERBERUS_CH_OPTIMIZATIONS — unsupported on ClickHouse Cloud, tolerated; auto never picks it pending real-world calibration)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `classic_bucket_merge_summap`    | none       | experimental | no         | (none)                                               | opt the classic-histogram-quantile cross-series merge SUM fold onto a sumMap over per-row cumulative counts (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — real-CH remeasurement found it within ~1% of the fold's cost, not a win, auto stays off, #2923)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `exp_histogram_merge_summap`     | none       | experimental | no         | (none)                                               | opt the instant, single-group, SUM-fold exponential-histogram cross-series merge onto a two-pass sumMap-keyed reshape (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — regresses a single wide-layout series, #2757)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `join_spill`                     | 26.4       | experimental | yes        | (none)                                               | stamp max_bytes_before_external_join=cap/2 on join-bearing plans (server >= 26.4, auto-enabled) — mirrors the group_by/sort spill stamps; explicit, not the 26.5+ ratio default, silently ignored with no memory limit configured (cf. ClickHouse#76740)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `trace_id_projection`            | 25.5       | experimental | no         | (none)                                               | curated ADD PROJECTION proj_trace_id (TraceId, _part_offset) on otel_traces/otel_logs for exact-row trace lookups (server >= 25.5, opt-in via CERBERUS_CH_OPTIMIZATIONS — backfill/merge cost unmeasured at production volume pending real-world calibration)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `loki_catalog_mv`                | 24.10      | experimental | no         | (none)                                               | REFRESH EVERY 5 MINUTE materialized view for /detected_labels' selector-less requests (server >= 24.10, opt-in via CERBERUS_CH_OPTIMIZATIONS — refresh scan cost unmeasured at production volume pending real-world calibration)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `tempo_tag_catalog_mv`           | 24.10      | experimental | no         | (none)                                               | REFRESH EVERY 5 MINUTE materialized view for /search/tags and /search/tag/{name}/values' unfiltered resource+span lookups (server >= 24.10, opt-in via CERBERUS_CH_OPTIMIZATIONS — refresh scan cost unmeasured at production volume pending real-world calibration)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `trace_id_bitmap_filter`         | 25.11      | experimental | yes        | (none)                                               | stamp min_table_rows_to_use_projection_index=0 on TraceId-keyed predicates/joins so the projection-index bitmap PREWHERE path (server >= 25.11) is reachable regardless of table size (result-equivalent, auto-enabled)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `arg_and_max_fusion`             | 25.11      | experimental | yes        | (none)                                               | fuse RangeLWR.SampleTimestamp's and vector_join's non-derived instant-mode argMax(Value, TimeUnix) + max(TimeUnix) pair into one argAndMax(Value, TimeUnix) (server >= 25.11, auto-enabled — tie-invariant, proven-equivalent substitution)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `result_cache`                   | 24.8       | stable       | yes        | (none)                                               | stamp use_query_cache=1 + query_cache_ttl on cerberus-eligible fully-closed read paths (result cache, boot-probed knob availability, server >= 24.8)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `lazy_materialization`           | 25.11      | experimental | yes        | (none)                                               | stamp query_plan_optimize_lazy_materialization=1 + query_plan_max_limit_for_lazy_materialization=<request LIMIT> on any Limit(OrderBy(...)) plan shape — Tempo's search paths and Loki's log-line limit pushdown (server >= 25.11, auto-enabled — result-equivalent, chDB-verified)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `explain_estimate`               | none       | experimental | no         | (none)                                               | advisory EXPLAIN ESTIMATE pre-flight for solver K clamping and per-rung admission priors (no version floor — available since 21.9 — opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `cardinality_probe`              | none       | experimental | no         | (none)                                               | advisory bounded count()/uniqUpTo(100)/uniqCombined64 cardinality pre-probe complementing explain_estimate's marks-level estimate with real distinct-series fan-out, across five GridCarrier kinds (no version floor; opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `full_text_index`                | 26.2       | experimental | no         | (none)                                               | swap idx_lower_body from tokenbf_v1 to TYPE text on CREATE, plus an additive idx_body_text on existing tables (server >= 26.2 — verified GA floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — backfill/maintenance cost unmeasured at production volume)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `text_index_line_filter`         | 26.4       | experimental | no         | (none)                                               | prepend an ANDed per-token LIKE strict-superset prefilter ahead of the unchanged row predicate for non-negated LogQL line filters (server >= 26.4 — verified LIKE-via-text-index floor, opt-in via CERBERUS_CH_OPTIMIZATIONS, inert without full_text_index)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `trace_id_external_table`        | none       | experimental | no         | (none)                                               | push the /api/search two-phase phase-A TraceId set as a native-protocol external table instead of a literal IN list above a byte threshold (no version floor, native-protocol, opt-in via CERBERUS_CH_OPTIMIZATIONS -- EXPLAIN-verified idx_trace_id parity, #2783)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `ts_tag_groups`                  | 26.2       | experimental | no         | (none)                                               | group the instant-mode duplicate-labelset guard's name-drop collapse on a UInt64 tag-group id (timeSeriesTagsToGroup), not the raw Attributes Map, rehydrating via timeSeriesGroupToTags in the projection (server >= 26.2, no experimental gate, opt-in -- #2750)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `ts_throw_duplicate_series_if`   | 26.2       | experimental | yes        | (none)                                               | swap the duplicate-labelset guard's HAVING from throwIf(uniqExact(MetricName) > 1, <static message>) to timeSeriesThrowDuplicateSeriesIf, which names the actual colliding tags (server >= 26.2, no experimental gate, no measured downside -- #3038)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `exp_histogram_two_level`        | none       | stable       | yes        | (none)                                               | stamp group_by_two_level_threshold_bytes=1 on a windowed exponential-histogram plan so the aggregator converts to its two-level table at once instead of feeding the array stages one whole-state block (result-equivalent, no version floor, measured 157 -> 27 MiB at 21 anchors and 383 -> 53 MiB at 61 -- #3247)                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 <!-- END GENERATED: chopt-feature-table -->
 
-The rich, hand-authored columns below stay OUTSIDE the generated block: they
-carry operator judgement the registry cannot derive. The "experimental setting"
-column is informational -- where a feature needs an `allow_experimental_*`
-setting, that setting is co-stamped by the **engine plan path** (it inspects the
-post-optimize plan and stamps the setting on exactly the queries that use the
-native node), not carried as a registry field — so the co-stamp fires whether
-the feature was reached via `auto` or by explicit listing. 23 of the 44 features are
-`autoSelect: no`, opt-in only — the generated table above is the authoritative
-list, one row per feature. Why a given feature carries that flag is recorded in
+The hand-authored `effect` column below stays OUTSIDE the generated block: it
+carries operator judgement the registry cannot derive, for the features whose
+behaviour needs more than the registry's one line. Where a feature needs an
+`allow_experimental_*` setting, that setting is co-stamped by the **engine plan
+path** (it inspects the post-optimize plan and stamps the setting on exactly the
+queries that use the native node) — so the co-stamp fires whether the feature
+was reached via `auto` or by explicit listing. The generated table above is the
+authoritative list, one row per feature; a feature absent from the table below
+is described by its `doc` cell alone. Why a given feature carries its
+`autoSelect` flag is recorded in
 [`clickhouse-optimizations.background.md`](clickhouse-optimizations.background.md).
 
 | id                           | experimental setting                                 | effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -218,11 +223,12 @@ Notes:
   alias (below). Its native aggregate requires the experimental setting to be
   co-stamped on exactly the queries that emit the native node — and the engine
   co-stamps off the post-optimize plan, so the setting fires whether the
-  feature was reached via `auto` or explicit listing. It carries one KNOWN,
-  UNFIXED divergence: a duplicate `(series, timestamp)` pair where one sample
-  is NaN collapses inside the ClickHouse builtin in an order-DEPENDENT way,
-  unlike cerberus's own deterministic fan-out fold — tracked at
-  [#2798](https://github.com/tsouza/cerberus/issues/2798).
+  feature was reached via `auto` or explicit listing. It carries one known
+  divergence: a duplicate `(series, timestamp)` pair where one sample is NaN
+  collapses inside the ClickHouse builtin in an order-DEPENDENT way, unlike
+  cerberus's own deterministic fan-out fold. Whether the divergence still
+  reproduces on the current floor is re-checked under
+  [#3573](https://github.com/tsouza/cerberus/issues/3573).
 - **`ts_grid_resample`** is `experimental` in maturity but **auto-enabled** on
   a capable server (no legacy alias). It shares
   the `timeSeries*ToGrid` family floor (25.9) and the same experimental setting
@@ -248,13 +254,9 @@ Notes:
   native builtin overcounts by exactly 1 whenever a window's
   chronologically-earliest in-window sample is NaN, and implements no
   NaN-both-sides carve-out at all, so it diverges from reference Prometheus's
-  `changes()` on any NaN-adjacent window — confirmed against a real reference
-  Prometheus on the `compatibility/prometheus` substrate. Its floor is still
-  **25.9**, NOT the 25.6 of rate/resample: `timeSeriesChangesToGrid`/
-  `timeSeriesResetsToGrid` shipped a full quarter later (ClickHouse 25.9). It
-  shares the family's experimental setting, co-stamped on exactly the
-  queries that emit the native changes node when explicitly
-  listed.
+  `changes()` on any NaN-adjacent window. It shares the family's **25.9**
+  floor and experimental setting, co-stamped on exactly the queries that emit
+  the native changes node when explicitly listed.
 - **`ts_grid_resets`** is the sibling of `ts_grid_changes` (same PR upstream):
   experimental maturity, auto-enabled on a capable server, same **25.9** floor,
   same experimental setting.
@@ -268,11 +270,10 @@ Notes:
   `/range` divide, so `rate * range` recovers the same undivided extrapolated
   increase the fan-out publishes. Shares `ts_grid_range`'s **25.9** floor and
   experimental setting; `autoSelect: yes` because the divide-then-multiply
-  round trip introduces only a documented, measured 1-ULP float64 rounding
-  divergence from the fan-out's direct multiply-then-sum (proven by a
-  dual-emit chDB parity test), never a wrong answer the way `ts_grid_changes`'
-  NaN-adjacent overcount is. It carries no `ts_grid_recollapse` counterpart in
-  this cut: the label-shaping hoist is not wired for `increase()`.
+  round trip introduces only a 1-ULP float64 rounding divergence from the
+  fan-out's direct multiply-then-sum, never a wrong answer the way
+  `ts_grid_changes`' NaN-adjacent overcount is. It has no `ts_grid_recollapse`
+  counterpart: the label-shaping hoist is wired for `rate()` only.
 - **`ts_grid_deriv`** and **`ts_grid_predict_linear`** are the LAST members of
   the `timeSeries*ToGrid` family to adopt the native path: experimental
   maturity, auto-enabled on a capable server, same experimental setting. Both
@@ -348,10 +349,10 @@ Notes:
   this registry there is no per-shape fallback, because the native aggregate
   reproduces reference Prometheus's `bucketQuantile` (including its edge
   cases) for any row this node's IR contract accepts.
-  Floor **25.10**: confirmed via a direct `system.functions` probe (the
-  aggregate is undocumented as of this writing) — it is NOT part of the
-  `timeSeries*ToGrid` family and shares none of that family's 25.9 floor or
-  experimental setting. The emission still has to work around two input-
+  Floor **25.10** (the aggregate is absent from ClickHouse's documentation;
+  the floor comes from a direct `system.functions` probe) — it is NOT part of
+  the `timeSeries*ToGrid` family and shares none of that family's 25.9 floor
+  or experimental setting. The emission still has to work around two input-
   contract quirks the probe also surfaced: the aggregate answers `nan`
   whenever no row carries `le = +Inf` (an unconditional terminal pair is
   appended — the genuine overflow rung when the row has one, a synthetic
@@ -369,8 +370,7 @@ Notes:
   **Operator-facing ceiling: keep any single `histogram_quantile()` call
   under roughly 22,500 series when opting into this feature**. The feature is
   opt-in only (`CERBERUS_CH_OPTIMIZATIONS=quantile_prom_histogram`); this
-  cardinality
-  ceiling is the current operator guidance for that opt-in.
+  cardinality ceiling is the operator guidance for that opt-in.
 - **`map_bucketed_serialization`** ([#2774](https://github.com/tsouza/cerberus/issues/2774))
   is a SCHEMA feature, not a query-lowering one — it is the only registry
   entry that changes `internal/schema/ddl`'s `CREATE TABLE` output rather
@@ -560,7 +560,8 @@ Notes:
   chsql.Emit already rendered>`) against a ModeAuto-eligible candidate, caches
   the parts/rows/marks result per plan shape, and feeds it to the solver as an
   advisory bias on the fan-out factor `K`. See `docs/solver.md` §"Advisory
-  EXPLAIN ESTIMATE (issue #2787)" for the full mechanism, the cost bound that
+  EXPLAIN ESTIMATE: granule-resolution row bounds for K clamping" for the full
+  mechanism, the cost bound that
   keeps it off the hot per-rung-admission path, and the calibrated
   thresholds.
 
@@ -585,9 +586,8 @@ a restart.
 
 ## Capability probe (experimental ts_grid setting)
 
-The native `timeSeries*ToGrid` features (`ts_grid_range`, `ts_grid_increase`,
-`ts_grid_resample`, `ts_grid_changes`, `ts_grid_resets`, `ts_grid_deriv`,
-`ts_grid_predict_linear`) need the server to run with
+The native `timeSeries*` features — every row whose `experimental setting`
+cell in the generated table names it — need the server to run with
 `allow_experimental_time_series_aggregate_functions=1`, which cerberus
 co-stamps on exactly the queries that emit the native node. A server can be
 **new enough** for the version floor yet still **forbid** that setting — a
@@ -672,15 +672,18 @@ silent and the log carries one line per real capability change:
 ```text
 level=INFO msg="clickhouse optimizations re-resolved" server_version=25.9
   previous_server_version=24.8 enabled=aggregation_in_order,condition_cache,ts_grid_range
-  previous_enabled=aggregation_in_order
+  previous_enabled=aggregation_in_order query_workload=<mode> previous_query_workload=<mode>
 ```
+
+(`query_workload` / `previous_query_workload` carry the `CERBERUS_CH_QUERY_WORKLOAD`
+verdict the same pass re-probes.)
 
 What a transition swaps:
 
 | Consumer                      | Effect of a re-resolved set                                                                                                                       |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).   |
-| Engine per-query settings     | The `aggregation_in_order` / `condition_cache` rules are replaced, so subsequent queries stamp the settings the current server supports.          |
+| Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports.            |
 | `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with. |
 
 `columnar_result_decode` is deliberately **not** in that list: it is
@@ -706,9 +709,9 @@ any explicit `CERBERUS_CH_OPTIMIZATIONS` choice (a feature list **or** the
 
 - **explicitly `true`** (under `auto`) — force-enable `ts_grid_range` (as if
   it were listed), still subject to version gating and mode. On a `>= 25.9`
-  server `auto` already enables it, so this is now mostly redundant.
+  server `auto` already enables it, so this is redundant there.
 - **explicitly `false`** (under `auto`) — force-disable `ts_grid_range`, even
-  though `auto` now selects it on a capable server. This is the operator's
+  though `auto` selects it on a capable server. This is the operator's
   escape hatch back to the fan-out rate path.
 - **unset** — no effect. The framework resolves normally; under `auto`,
   `ts_grid_range` is enabled on a `>= 25.9` server (auto-selected by version,
@@ -722,11 +725,11 @@ any explicit `CERBERUS_CH_OPTIMIZATIONS` choice (a feature list **or** the
 When the legacy flag is set, cerberus emits a **one-time startup deprecation
 warning** pointing to `CERBERUS_CH_OPTIMIZATIONS`.
 
-The existing `Config.ExperimentalTSGridRange` bool field still exists and
-keeps compiling for its consumers (the PromQL lowering, the engine native
-gate, the preflight version floor). It is now **populated from the resolved
-`EnabledSet`** — `ts_grid_range in set` — so the set is the single source of
-truth and the consumers read a derived value, not the raw env.
+The `Config.ExperimentalTSGridRange` bool field is **populated from the
+resolved `EnabledSet`** — `ts_grid_range in set` — for its consumers (the
+PromQL lowering, the engine native gate, the preflight version floor), so the
+set is the single source of truth and the consumers read a derived value, not
+the raw env.
 
 > **Deprecated:** `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is soft-deprecated.
 > Use `CERBERUS_CH_OPTIMIZATIONS` (list `ts_grid_range` to enable the native
@@ -763,9 +766,10 @@ guarded off there.
   plus a client-side context deadline, so it can never starve the data plane
   or pin the reconciler goroutine even on a huge `system.query_log`.
 - **Joins** each row back to its shape-id and writes the
-  `(shape-id, enabled-opts, timings)` tuple to a durable sink. The v1 sink
-  is a JSONL file at a configurable path; the row shape is exposed so a
-  later ClickHouse-table sink is a trivial swap.
+  `(shape-id, enabled-opts, timings)` tuple to a durable sink selected by
+  `CERBERUS_CH_OPT_CORPUS_SINK_MODE`: `jsonl` (a file at
+  `CERBERUS_CH_OPT_CORPUS_SINK_PATH`) or `chtable` (the
+  `cerberus_router_corpus` MergeTree the router-rules miner reads).
 
 ### Guarantees
 
@@ -785,11 +789,13 @@ guarded off there.
 
 ### Config flags
 
-| Env var                              | Type       | Default   | Meaning                                                      |
-| ------------------------------------ | ---------- | --------- | ------------------------------------------------------------ |
-| `CERBERUS_CH_OPT_CORPUS_ENABLED`     | bool       | `false`   | Enable the reconciler (needs `system.query_log` access).     |
-| `CERBERUS_CH_OPT_CORPUS_INTERVAL`    | duration   | `60s`     | How often to reconcile recent query_ids against query_log.   |
-| `CERBERUS_CH_OPT_CORPUS_SINK_PATH`   | string     | (unset)   | JSONL sink path. Empty disables the file sink.               |
+| Env var                              | Type       | Default   | Meaning                                                                                                  |
+| ------------------------------------ | ---------- | --------- | -------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_OPT_CORPUS_ENABLED`     | bool       | `false`   | Enable the reconciler (needs `system.query_log` access).                                                 |
+| `CERBERUS_CH_OPT_CORPUS_INTERVAL`    | duration   | `60s`     | How often to reconcile recent query_ids against query_log.                                               |
+| `CERBERUS_CH_OPT_CORPUS_SINK_PATH`   | string     | (unset)   | JSONL sink path. Empty disables the file sink.                                                           |
+| `CERBERUS_CH_OPT_CORPUS_SINK_MODE`   | string     | `jsonl`   | `jsonl` writes the sink-path file; `chtable` writes the `cerberus_router_corpus` MergeTree instead.      |
+| `CERBERUS_CH_OPT_CORPUS_RING`        | int        | `4096`    | Ring capacity for tracked queries (a routed query holds one query_id per shard in one slot).             |
 
 ### Mining the corpus
 
@@ -867,7 +873,7 @@ Nothing in this suite can break ClickHouse 24.8:
 - `columnar_result_decode` is client-side and version-agnostic (no server
   setting); it is opt-in only, so `auto` never engages it.
 - Under `auto`, an unsupported feature is simply not enabled, so a deployment
-  on ClickHouse 24.8 sees identical behaviour regardless of this change.
+  on ClickHouse 24.8 keeps its 24.8-safe SQL unchanged.
 
 ---
 

@@ -25,8 +25,11 @@ import {
   MODE_MONOLITH,
   MODE_SPLIT,
   SPLIT_ONLY_SPECS,
+  SMOKE_MODES,
+  EXCLUDED,
   CRAWL_STACK_K3D,
   CRAWL_FRONTIER_SHARD_COUNT,
+  smokeSpecsForMode,
 } from './dashboard-matrix.mjs';
 
 test('live tree: SHARDS ∪ EXCLUDED is a total, disjoint cover (no violations)', () => {
@@ -191,4 +194,36 @@ test('buildMatrix: every emitted entry has a non-empty spec list and a filename-
     assert.ok(specsOf(e).length > 0, `entry ${e.name} would boot a cluster to run nothing`);
     assert.match(e.name, /^[a-z0-9-]+$/, `entry name not filename-safe: ${e.name}`);
   }
+});
+
+// smokeSpecsForMode is what `just e2e-playwright` (MODE=list) runs locally
+// against ONE k3d cluster; it must be exactly the union of the CI smoke legs
+// for that topology — nothing CI routes away from the topology (split-only on
+// monolith), nothing CI routes away from k3d (EXCLUDED: compose-only specs),
+// and never the crawl shard (its own lane). A drift here means `just e2e` runs
+// a spec that fails by construction on that cluster.
+test('smokeSpecsForMode: equals the CI smoke legs for the mode; no split-only, excluded, or crawl spec on monolith', () => {
+  for (const mode of SMOKE_MODES) {
+    const local = smokeSpecsForMode(mode);
+    const ciLegs = buildMatrix(true, true).filter(
+      (e) => e.mode === mode && e.crawlStack !== CRAWL_STACK_K3D,
+    );
+    const ci = ciLegs.flatMap(specsOf);
+    assert.deepEqual([...local].sort(), [...ci].sort(), `${mode}: local list drifted from the CI smoke legs`);
+    assert.ok(local.length > 0, `${mode}: the local list must not be empty`);
+    assert.equal(new Set(local).size, local.length, `${mode}: a spec is listed twice`);
+    assert.ok(
+      local.every((s) => !EXCLUDED.includes(s)),
+      `${mode}: an EXCLUDED (non-k3d) spec is in the local list: ${local.filter((s) => EXCLUDED.includes(s)).join(', ')}`,
+    );
+    assert.ok(local.every((s) => !s.startsWith('crawl/')), `${mode}: a crawl spec is in the local list`);
+  }
+  const mono = smokeSpecsForMode(MODE_MONOLITH);
+  const leaked = mono.filter((s) => SPLIT_ONLY_SPECS.has(s));
+  assert.deepEqual(leaked, [], `split-only specs in the monolith local list: ${leaked.join(', ')}`);
+  const split = smokeSpecsForMode(MODE_SPLIT);
+  for (const s of SPLIT_ONLY_SPECS) {
+    assert.ok(split.includes(s), `split-only spec ${s} missing from the split local list`);
+  }
+  assert.throws(() => smokeSpecsForMode('bogus'), /unknown E2E_MODE/);
 });

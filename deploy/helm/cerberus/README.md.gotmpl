@@ -46,7 +46,8 @@ This chart lowers three layers into env:
 
 ### Full configuration surface
 
-cerberus reads roughly **90 `CERBERUS_*` environment variables**. The chart
+cerberus reads over a hundred **`CERBERUS_*` environment variables** (the
+generated docs/configuration.md is the complete table). The chart
 guarantees **every one of them is reachable** — nothing the binary reads is
 unreachable from values:
 
@@ -161,7 +162,7 @@ schema:
   ttl: "2w"
   replicated:
     enabled: true                     # ReplicatedMergeTree + Replicated database
-    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+    zookeeperPath: "/clickhouse/databases/otel"
 prom:
   # BOUNDED allowlist — leave empty and EVERY resource attribute becomes a
   # label (unbounded cardinality). List only what you query/group on.
@@ -171,8 +172,12 @@ prom:
     - k8s.pod.name
 ```
 
-`schema.replicated.zookeeperPath` **must** contain the `{shard}` / `{replica}`
-macros and mirror the ClickHouse cluster's own Replicated-DB coordination path.
+`schema.replicated.zookeeperPath` is the one shared Keeper root every replica
+registers under. It must **not** contain the `{shard}` / `{replica}` macros —
+the Replicated database engine takes those as its own separate arguments and
+expands macros inside the path as well, so a path carrying them gives every
+replica an unrelated root and nothing replicates. The render refuses a path
+with either macro.
 
 ### Co-locating with ClickHouse
 
@@ -190,15 +195,22 @@ affinityPresets:
     topologyKey: kubernetes.io/hostname
 ```
 
+`podSelector` names an external ClickHouse's pods. With
+`clickhouse.bundled.enabled: true` and the selector left at that shipped
+default, the term targets the bundled ClickHouse pods' own labels instead
+(`app.kubernetes.io/name: <name>-clickhouse`), which the default could never
+match; any other selector is used verbatim.
+
 **Caveat — this is probabilistic, not node-local routing.** The preset only
 influences *where cerberus pods land*. Query traffic still flows to
 `clickhouse.addr`, which is the ClickHouse **Service** — it round-robins across
 all `N` replicas, so a co-located pod hits the local replica only ~`1/N` of the
 time. The preset cuts cross-AZ hops (pair it with `topologyKey:
 topology.kubernetes.io/zone` to keep traffic same-zone) but does **not**
-guarantee the node-local replica answers the query. True node-local CH
-preference (a headless-Service / per-pod endpoint with client-side locality)
-is a deferred, app-side concern — see the v0.2.0 release notes.
+guarantee the node-local replica answers the query. cerberus has no
+client-side replica-locality routing: it connects to whatever `clickhouse.addr`
+resolves to, so node-local preference is only as strong as the Service in
+front of ClickHouse makes it.
 
 {{ template "chart.maintainersSection" . }}
 

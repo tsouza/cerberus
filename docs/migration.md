@@ -478,8 +478,9 @@ and against cerberus over the same window, then diffs the two results.
 
 Run it, fix each divergence at the source, run it again.
 
-> If the cerberus you verify against has the experimental native ClickHouse
-> aggregates enabled (`timeSeries*ToGrid`, auto-selected on CH 25.9+), a
+> If the cerberus you verify against has the native ClickHouse
+> `timeSeries*ToGrid` aggregates enabled (auto-selected on CH 25.9+; gated
+> server-side by `allow_experimental_time_series_aggregate_functions`), a
 > sub-observable last-bit rounding difference can surface as a `diverge`. Verify
 > against the exact configuration you intend to run — see the
 > [exactness-vs-scale tradeoff](performance.md#native-rate-exactness-vs-scale-should-i-enable-it).

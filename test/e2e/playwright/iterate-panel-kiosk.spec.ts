@@ -68,6 +68,7 @@ import {
   sweepDepth,
   tolerateRepaintFlicker,
 } from './helpers/index.js';
+import { truncate, RESPONSE_LINE_EXCERPT_CHARS, MESSAGE_EXCERPT_CHARS } from './helpers/index.js';
 
 // Self-traffic warmup. Mirrors the phase-1/2 specs so cerberus
 // dashboards have populated panels by the time kiosk view opens —
@@ -346,7 +347,7 @@ async function sweepPanelKiosk(
           panelTitle: panel.title,
           panelId: panel.id,
           rule: 'kiosk-alert-banner',
-          detail: `role=alert banner with error text: ${truncate(banner, 400)}`,
+          detail: `role=alert banner with error text: ${truncate(banner, MESSAGE_EXCERPT_CHARS)}`,
         });
       }
     }
@@ -425,7 +426,7 @@ async function sweepPanelKiosk(
     const responseDetail =
       failedResponses.length > 0
         ? `\nnon-2xx responses captured during the same window:\n${failedResponses
-            .map((r) => `  - ${truncate(r, 700)}`)
+            .map((r) => `  - ${truncate(r, RESPONSE_LINE_EXCERPT_CHARS)}`)
             .join('\n')}`
         : '\n(no non-2xx HTTP response captured — the console errors came from elsewhere)';
     failures.push({
@@ -434,7 +435,7 @@ async function sweepPanelKiosk(
       panelId: panel.id,
       rule: 'kiosk-console-error',
       detail: `${cerberusConsoleErrors.length} console error(s):\n${cerberusConsoleErrors
-        .map((m) => `  - ${truncate(m, 400)}`)
+        .map((m) => `  - ${truncate(m, MESSAGE_EXCERPT_CHARS)}`)
         .join('\n')}${responseDetail}`,
     });
   }
@@ -442,7 +443,3 @@ async function sweepPanelKiosk(
   return failures;
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max)}…<truncated, ${s.length - max} more char(s)>`;
-}

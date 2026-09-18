@@ -356,8 +356,9 @@ jobs:
             datashard-replica-affinity
             brew-verify
         # On the maintenance path this also enforces the support-window / EOL
-        # policy: a push to a line 3+ minors behind the current minor is refused
-        # (the line is EOL, gets no hotfixes). See docs/operations.md "Release
+        # policy: a push to a line SUPPORTED_MINOR_LINES (release-preflight.mjs)
+        # or more minors behind the current minor is refused (the line is EOL,
+        # gets no hotfixes). See docs/operations.md "Release
         # support window / EOL policy".
         run: node .github/scripts/release-preflight.mjs
 

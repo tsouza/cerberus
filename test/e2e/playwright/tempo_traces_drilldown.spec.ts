@@ -50,6 +50,7 @@
  */
 
 import { test, expect, type Response } from '@playwright/test';
+import { truncate, EXPR_EXCERPT_CHARS } from './helpers/index.js';
 
 const baseURL =
   process.env.GRAFANA_URL ??
@@ -97,7 +98,7 @@ function assertSpanSetShape(body: SearchBody, source: string): void {
   for (const trace of body.traces ?? []) {
     expect(
       Array.isArray(trace.spanSets) && trace.spanSets.length > 0,
-      `${source}: every trace summary carries spanSets (got: ${JSON.stringify(trace).slice(0, 200)})`,
+      `${source}: every trace summary carries spanSets (got: ${truncate(JSON.stringify(trace), EXPR_EXCERPT_CHARS)})`,
     ).toBe(true);
     expect(
       (trace.spanSets?.[0]?.spans?.length ?? 0) > 0,
