@@ -783,6 +783,20 @@ func (h *Handler) respondRangeRetry(
 // param via the shared [reqctx.ApplyQueryTimeout]. A malformed ?timeout=
 // is a 400 bad_data (matching upstream Prometheus); ok=false signals the
 // caller already wrote the error and must return.
+// metadataContext derives the context a metadata endpoint's (or
+// /query_exemplars') ClickHouse round trip runs under: the request context
+// with the configured QueryTimeout installed (reqctx.WithQueryBudget) — the
+// same Go-side watchdog /query and /query_range install through
+// applyQueryTimeout, so a hung backend answers 503 errorType=timeout at
+// the deadline and the handler returns, releasing its admit slot and
+// pooled connection, instead of blocking until the driver's own read
+// timeout fires. Only the default is installed: reference Prometheus reads
+// no `?timeout=` on /labels, /series or /metadata. The caller MUST defer
+// cancel.
+func (h *Handler) metadataContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return reqctx.WithQueryBudget(r.Context(), h.QueryTimeout)
+}
+
 func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
 	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, h.QueryTimeout)
 	if err != nil {
@@ -2195,26 +2209,18 @@ func (h *Handler) respondError(ctx context.Context, w http.ResponseWriter, err e
 		writeError(w, apiErr.Status, apiErr.Kind, apiErr.Err)
 		return
 	}
-	// A bare per-query resource-limit rejection — the sample budget (now
-	// enforced on metadata drains too, chclient.drainBudgetExceeded) or the CH
-	// memory cap — maps to the same Prom 422 the matrix path gives via
-	// classifyDrainError, rather than the generic 500 below. A callsite that
-	// pre-wrapped its own *apiError already returned above, so this only
-	// reclassifies the raw sentinels.
-	if errors.Is(err, chclient.ErrTooManySamples) {
-		ae := tooManySamplesAPIError()
-		writeError(w, ae.Status, ae.Kind, ae.Err)
-		return
-	}
-	var byteBudget *chclient.DrainByteBudgetError
-	if errors.As(err, &byteBudget) {
-		ae := drainBytesAPIError(byteBudget)
-		writeError(w, ae.Status, ae.Kind, ae.Err)
-		return
-	}
-	var memLimit *chclient.MemoryLimitError
-	if errors.As(err, &memLimit) {
-		ae := memoryLimitAPIError(memLimit)
+	// A bare classified sentinel — a per-query resource-limit rejection (the
+	// sample budget, now enforced on metadata drains too,
+	// chclient.drainBudgetExceeded; the CH memory cap), a wall-clock
+	// timeout, a caller cancellation, a Distributed shard outage — answers
+	// exactly what every other classifier of this head answers for it
+	// (classifySentinelError), rather than the generic 500 below. A callsite
+	// that pre-wrapped its own *apiError already returned above, so this
+	// only reclassifies the raw sentinels.
+	if ae := classifySentinelError(err); ae != nil {
+		if ae.RetryAfterSeconds > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(ae.RetryAfterSeconds))
+		}
 		writeError(w, ae.Status, ae.Kind, ae.Err)
 		return
 	}

@@ -62,7 +62,9 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	// storage shape over the SAME logs table, and each arm is its own
 	// Distributed fan-out on a multi-data-shard deployment — so the weight is
 	// the arm count, not one (chclient.WithDataShardFanoutMultiplier's doc).
-	ctx := chclient.WithDataShardFanoutMultiplier(r.Context(), physicalScans)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	ctx = chclient.WithDataShardFanoutMultiplier(ctx, physicalScans)
 	vals, err := h.Client.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki label values CH query failed", "err", err, "sql", sqlStr)

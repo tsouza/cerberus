@@ -336,11 +336,13 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	nowAnchored := endT.IsZero()
 	startT, endT = h.boundMetadataWindow(startT, endT)
 
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
 	var names []string
 	if len(matchers) == 0 {
-		names, err = h.fetchLabelNames(r.Context(), startT, endT, nowAnchored)
+		names, err = h.fetchLabelNames(ctx, startT, endT, nowAnchored)
 	} else {
-		names, err = h.fetchLabelNamesMatched(r.Context(), matchers, startT, endT, nowAnchored)
+		names, err = h.fetchLabelNamesMatched(ctx, matchers, startT, endT, nowAnchored)
 	}
 	if err != nil {
 		h.respondError(r.Context(), w, err)
@@ -408,11 +410,13 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	nowAnchored := endT.IsZero()
 	startT, endT = h.boundMetadataWindow(startT, endT)
 
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
 	var values []string
 	if len(matchers) == 0 {
-		values, err = h.fetchLabelValues(r.Context(), name, startT, endT, nowAnchored)
+		values, err = h.fetchLabelValues(ctx, name, startT, endT, nowAnchored)
 	} else {
-		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers, startT, endT, nowAnchored)
+		values, err = h.fetchLabelValuesMatched(ctx, name, matchers, startT, endT, nowAnchored)
 	}
 	if err != nil {
 		h.respondError(r.Context(), w, err)
@@ -464,7 +468,9 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	// /api/v1/metadata supplies no explicit end, so its window always ends
 	// "now" — the now-anchored case that routes onto proj_metric_metadata via
 	// the aggregate-only HAVING bound (see metricMetaSQL).
-	rows, err := h.fetchMetricMeta(r.Context(), metricName, startT, endT, true)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	rows, err := h.fetchMetricMeta(ctx, metricName, startT, endT, true)
 	if err != nil {
 		h.respondError(r.Context(), w, err)
 		return
@@ -738,12 +744,14 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	// dedup below folds into distinct label sets — same series returned,
 	// N round-trips → 1. Pathologically broad probes chunk into ⌈N/K⌉
 	// bounded queries (still ≪ N); see fetchSeries.
-	variants, err := h.expandMetadataMatchers(r.Context(), matchers, startT, endT, nowAnchored)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	variants, err := h.expandMetadataMatchers(ctx, matchers, startT, endT, nowAnchored)
 	if err != nil {
 		h.respondError(r.Context(), w, err)
 		return
 	}
-	sets, err := h.fetchSeries(r.Context(), variants, startT, endT)
+	sets, err := h.fetchSeries(ctx, variants, startT, endT)
 	if err != nil {
 		h.respondError(r.Context(), w, err)
 		return

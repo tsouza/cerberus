@@ -646,6 +646,19 @@ func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration, 
 // the returned cancel (a no-op when no deadline was installed). A
 // malformed ?timeout= is a 400 bad_data; ok=false signals the caller
 // already wrote the error and must return.
+// metadataContext derives the context a metadata endpoint's ClickHouse
+// round trip runs under: the request context with the configured
+// QueryTimeout installed (reqctx.WithQueryBudget) — the same Go-side
+// watchdog /query and /query_range install through applyQueryTimeout, so a
+// hung backend answers 503 errorType=timeout at the deadline and the
+// handler returns, releasing its admit slot and pooled connection, instead
+// of blocking until the driver's own read timeout fires. Only the default
+// is installed: reference Loki reads no `?timeout=` on its metadata routes.
+// The caller MUST defer cancel.
+func (h *Handler) metadataContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return reqctx.WithQueryBudget(r.Context(), h.QueryTimeout)
+}
+
 func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
 	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, h.QueryTimeout)
 	if err != nil {

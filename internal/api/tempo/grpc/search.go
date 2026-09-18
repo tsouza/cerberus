@@ -36,10 +36,10 @@ const searchFrameSize = 20
 //
 // This method shadows the embedded
 // tempopb.UnimplementedStreamingQuerierServer.Search promoted via
-// Service — Go's method-shadowing rules dispatch here while the other
-// six RPCs continue to return codes.Unimplemented until PRs 3 + 4
-// land. See .claude/plans/tempo-grpc-streaming-design.md §3 (Search row)
-// + §4 (frame mapping) for the cross-RPC strategy.
+// Service — Go's method-shadowing rules dispatch here. Like every RPC in
+// this package it answers in ONE frame: the search is drained eagerly and
+// the summaries sent once, the same result the HTTP /api/search handler
+// returns.
 //
 // Error mapping runs through grpcStatusFor — the gRPC encoder over the
 // Tempo head's single tempo.ClassifyErr classification, shared with the
@@ -70,7 +70,8 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		})
 	}
 
-	ctx := stream.Context()
+	ctx, cancel := s.queryContext(stream.Context())
+	defer cancel()
 
 	// Thread the response trace limit into lowering so the nested-set
 	// numbering walk bounds to the traces this stream will keep — same

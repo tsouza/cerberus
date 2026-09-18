@@ -63,10 +63,23 @@ func ApplyQueryTimeout(r *http.Request, def time.Duration) (context.Context, con
 		}
 		budget = format.MinPositiveDuration(budget, reqTimeout)
 	}
+	ctx, cancel := WithQueryBudget(ctx, budget)
+	return ctx, cancel, nil
+}
+
+// WithQueryBudget installs budget on ctx the way ApplyQueryTimeout does
+// once the budget is resolved — the context deadline that unblocks a hung
+// handler and releases its admit slot, plus chclient.WithQueryTimeout so
+// the ClickHouse-side max_execution_time is narrowed to the same value —
+// for the entrypoints that have no `?timeout=` to resolve: the Tempo gRPC
+// RPCs (a stream.Context() carries whatever deadline the client set, and
+// Grafana sets none) and the Prom / Loki metadata handlers (reference
+// Prometheus reads no `?timeout=` on /labels). A budget <= 0 installs
+// nothing and returns a no-op cancel; the caller MUST defer cancel.
+func WithQueryBudget(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 	if budget <= 0 {
-		return ctx, func() {}, nil
+		return ctx, func() {}
 	}
 	ctx = chclient.WithQueryTimeout(ctx, budget)
-	ctx, cancel := context.WithTimeout(ctx, budget)
-	return ctx, cancel, nil
+	return context.WithTimeout(ctx, budget)
 }

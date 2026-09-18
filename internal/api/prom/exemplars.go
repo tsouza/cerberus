@@ -146,7 +146,9 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 	// Engine bypass: the union renders one arm per exemplar source table,
 	// and each arm is its own Distributed fan-out on a multi-data-shard
 	// deployment, so the gate weight is stamped here from the emitted count.
-	ctx := chclient.WithDataShardFanoutMultiplier(r.Context(), physicalScans)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	ctx = chclient.WithDataShardFanoutMultiplier(ctx, physicalScans)
 	rows, err := h.Client.QueryExemplars(ctx, sql, args...)
 	if err != nil {
 		// Bare err so respondError reclassifies a drain sample-budget overage

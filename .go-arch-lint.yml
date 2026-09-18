@@ -541,6 +541,8 @@ deps:
       - traceql
       - traceql-ast
       - api-reqctx
+  # api-reqctx: the gRPC RPCs install the same per-query budget every HTTP
+  # entrypoint does (reqctx.WithQueryBudget) on the stream's context.
   api-tempo-grpc:
     mayDependOn:
       - api-tempo
@@ -550,6 +552,7 @@ deps:
       - engine
       - optimizer
       - traceql
+      - api-reqctx
 
   # Utility components — `cerbtrace` pulls in `chplan`, `chclienttest`
   # is a build-tagged (`chdb`) test helper that wraps chclient so each

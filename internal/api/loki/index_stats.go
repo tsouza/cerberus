@@ -62,7 +62,9 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus loki index_stats", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
-	row, err := h.Client.QueryIndexStats(r.Context(), sqlStr, args...)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	row, err := h.Client.QueryIndexStats(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki index_stats CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(r.Context(), w, classifyMetadataErr(err))
