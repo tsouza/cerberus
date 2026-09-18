@@ -12,7 +12,12 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
-import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel, validateSemanticModel } from "./lib/semantic-model.mjs";
+import {
+  DEFAULT_SEMANTIC_MODEL_DIR,
+  SEMANTIC_MODEL_SCHEMA_VERSION,
+  loadSemanticModel,
+  validateSemanticModel,
+} from "./lib/semantic-model.mjs";
 import { loadRegistry } from "./ci-lane-contract.mjs";
 import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
 import {
@@ -40,7 +45,7 @@ const CLI_PATH = join(SCRIPT_DIR, "semantic-report.mjs");
 
 function heads() {
   return {
-    schema_version: 2,
+    schema_version: SEMANTIC_MODEL_SCHEMA_VERSION,
     heads: [
       { id: "HEAD-PROMQL", name: "PromQL", description: "d", status: "active", owner: "core", replaces: null, replaced_by: null },
       { id: "HEAD-LOGQL", name: "LogQL", description: "d", status: "active", owner: "core", replaces: null, replaced_by: null },
@@ -50,7 +55,7 @@ function heads() {
 }
 
 function capabilities() {
-  return { schema_version: 2, capabilities: [] };
+  return { schema_version: SEMANTIC_MODEL_SCHEMA_VERSION, capabilities: [] };
 }
 
 function contract(overrides = {}) {
@@ -112,16 +117,6 @@ function execution(overrides = {}) {
     observed_at: "2026-09-10T00:00:00Z",
     result: "pass",
     run_ref: "https://example.invalid/run/1",
-    selection: "executed",
-    selection_reason: null,
-    source_sha: "0123456789abcdef0123456789abcdef01234567",
-    run_id: null,
-    run_attempt: null,
-    job: null,
-    event: null,
-    substrate: null,
-    reference_version: null,
-    dataset_fingerprint: null,
     ...overrides,
   };
 }
@@ -130,10 +125,10 @@ function buildModel({ contracts = [contract()], verifiers = [verifier()], bindin
   const documents = {
     heads: heads(),
     capabilities: capabilities(),
-    contracts: { schema_version: 2, contracts },
-    verifiers: { schema_version: 2, verifiers },
-    bindings: { schema_version: 2, bindings },
-    executions: { schema_version: 2, executions },
+    contracts: { schema_version: SEMANTIC_MODEL_SCHEMA_VERSION, contracts },
+    verifiers: { schema_version: SEMANTIC_MODEL_SCHEMA_VERSION, verifiers },
+    bindings: { schema_version: SEMANTIC_MODEL_SCHEMA_VERSION, bindings },
+    executions: { schema_version: SEMANTIC_MODEL_SCHEMA_VERSION, executions },
   };
   return validateSemanticModel(documents);
 }

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
   "title": "mapStructuralOp swaps the `>` direct-child and `>>` descendant relations",
   "synthetic": false,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "internal/traceql/lower.go",
     "patch_path": "test/semantic/mutants/patches/descendant-as-child.patch",
-    "source_fingerprint": "11c9534c4664fa2aa83d4f2547f435aa73cb440332f2ee297251a7c51b406163",
-    "expected_mutated_fingerprint": "1c48ef547182a416b76f3154f7a8997c9ba8416dbb90792fe8ea95cb7308076c"
+    "pre_image_fingerprint": "84028e686c9f4df3a6c5da4388c62d498fb6c799fa1cdd281c9501e765cdd694",
+    "post_image_fingerprint": "8e054429b9e5000c587aac72a6cdcae11ce05406c43e5c193c0c39ca5a068fc5"
   },
   "detectors": [
     {
@@ -38,6 +38,5 @@
     "memory_max": "2GiB",
     "memory_hold": "2s"
   },
-  "notes": "mapStructuralOp (internal/traceql/lower.go) is the exact seam Tempo's OpSpansetChild / OpSpansetDescendant enum maps to chplan.StructuralChild / chplan.StructuralDescendant; this patch swaps the two return values, so `>` lowers to descendant-reachability and `>>` lowers to direct-child-only. Both detectors seed the SAME bounded branching-tree fixture #3444/#3518 added to gen/traceql.go (root -> childA -> grandchild, root -> childB) so the depth-two case is a real, wire-observed discriminator rather than an assumed one: the direct-child query `{root} > {grandchild}` must return zero matches and the descendant query `{root} >> {grandchild}` must return exactly one, on both the HTTP /api/search transport (test/property/traceql_test.go, real parse->lower->optimize->emit->chDB->HTTP pipeline) and the gRPC streaming Search RPC (internal/api/tempo/grpc, real *grpc.Server over bufconn against the same chDB session) independently. Both were hand-verified to fail (kill) against this exact patch and to pass cleanly against the unmutated tree before this record was added.\n\nLimits: the branching-tree fixture is a single FIXED topology (branching factor 2, max depth 2 — traceQLBranchingTreeSpanCount in gen/traceql.go) and only chdb-backed local pipelines are exercised here — no live reference-Tempo differential (compatibility/tempo/driver) carries an equivalent grandchild-depth structural case today; its seeder fixture is a flat root+children shape with no third generation, so `>` and `>>` never diverge there. See issue #3528 for a related, separately-filed contracts.json documentation gap this same generator strengthening exposed.",
-  "linked_issue": null
+  "notes": "mapStructuralOp (internal/traceql/lower.go) is the exact seam Tempo's OpSpansetChild / OpSpansetDescendant enum maps to chplan.StructuralChild / chplan.StructuralDescendant; this patch swaps the two return values, so `>` lowers to descendant-reachability and `>>` lowers to direct-child-only. Both detectors seed the SAME bounded branching-tree fixture #3444/#3518 added to gen/traceql.go (root -> childA -> grandchild, root -> childB) so the depth-two case is a real, wire-observed discriminator rather than an assumed one: the direct-child query `{root} > {grandchild}` must return zero matches and the descendant query `{root} >> {grandchild}` must return exactly one, on both the HTTP /api/search transport (test/property/traceql_test.go, real parse->lower->optimize->emit->chDB->HTTP pipeline) and the gRPC streaming Search RPC (internal/api/tempo/grpc, real *grpc.Server over bufconn against the same chDB session) independently. Both were hand-verified to fail (kill) against this exact patch and to pass cleanly against the unmutated tree before this record was added.\n\nLimits: the branching-tree fixture is a single FIXED topology (branching factor 2, max depth 2 — traceQLBranchingTreeSpanCount in gen/traceql.go) and only chdb-backed local pipelines are exercised here — no live reference-Tempo differential (compatibility/tempo/driver) carries an equivalent grandchild-depth structural case today; its seeder fixture is a flat root+children shape with no third generation, so `>` and `>>` never diverge there. See issue #3528 for a related, separately-filed contracts.json documentation gap this same generator strengthening exposed."
 }

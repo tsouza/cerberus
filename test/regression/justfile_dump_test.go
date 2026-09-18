@@ -10,10 +10,57 @@ import (
 
 // justDependency is one entry of a recipe's `dependencies` array in
 // `just --dump --dump-format json` output — the OTHER recipes it composes
-// (e.g. `test: test-unit test-chaos-sleep vet-tagged`).
+// (e.g. `test: test-unit test-chaos-sleep vet-tagged`). `Arguments` is the
+// dependency's argument list (`(recipe "literal" VAR)`): each element is
+// either a plain JSON string (a quoted literal in source) or a tagged
+// expression array (`["variable", "VAR"]`, a `concatenate`, a `call`) —
+// the same expression grammar an assignment value or a body fragment
+// uses, rendered by argumentSyntax(). Declared as raw JSON rather than
+// `[]string` because a parameterised dependency such as
+// `semantic-mutant-repin MUTANT_ID: && (semantic-mutate MUTANT_ID)` dumps
+// its argument as an expression, and a `[]string` field made every dump
+// consumer fail to parse the whole document the moment one existed.
 type justDependency struct {
-	Recipe    string   `json:"recipe"`
-	Arguments []string `json:"arguments"`
+	Recipe    string            `json:"recipe"`
+	Arguments []json.RawMessage `json:"arguments"`
+}
+
+// argumentSyntax renders a dependency's arguments back to the source syntax
+// they read as inside the `(recipe ...)` parenthesis: a literal is
+// re-quoted, a variable is its bare name (dependency arguments are bare
+// expressions, never `{{...}}` interpolations), and a call is `fn(...)`.
+func (d justDependency) argumentSyntax(t *testing.T) []string {
+	t.Helper()
+	out := make([]string, len(d.Arguments))
+	for i, raw := range d.Arguments {
+		var lit string
+		if err := json.Unmarshal(raw, &lit); err == nil {
+			out[i] = strconv.Quote(lit)
+			continue
+		}
+		s, ok := renderDependencyArgSyntax(raw)
+		if !ok {
+			t.Fatalf("dependency %q: unrecognised argument expression %s", d.Recipe, raw)
+		}
+		out[i] = s
+	}
+	return out
+}
+
+// renderDependencyArgSyntax is argumentSyntax's expression renderer: like
+// renderBodySyntax, but a variable renders bare and a call renders without
+// the `{{ }}` interpolation wrapper a body fragment carries.
+func renderDependencyArgSyntax(raw json.RawMessage) (string, bool) {
+	return renderJustExpr(raw, justExprHandlers{
+		variable: func(name string) (string, bool) { return name, true },
+		call: func(fname string, args []json.RawMessage) (string, bool) {
+			s, ok := renderBodyCallSyntax(fname, args)
+			if !ok {
+				return "", false
+			}
+			return strings.TrimSuffix(strings.TrimPrefix(s, "{{"), "}}"), true
+		},
+	})
 }
 
 // justParameter is one positional parameter a recipe declares
@@ -401,4 +448,32 @@ func renderBodyCallSyntax(fname string, args []json.RawMessage) (string, bool) {
 		parts = append(parts, s)
 	}
 	return "{{" + fname + "(" + strings.Join(parts, ", ") + ")}}", true
+}
+
+// The parameterised-dependency shape the Justfile carries today:
+// `semantic-mutant-repin MUTANT_ID: && (semantic-mutate MUTANT_ID)` dumps
+// its dependency argument as `["variable", "MUTANT_ID"]`. Pinned against the
+// live dump because `Arguments` was once `[]string`, which made this one
+// recipe an unmarshal error for EVERY regression test that reads the dump —
+// six unrelated tests went red at once, none of them about this recipe.
+func TestJustDumpParsesDependencyWithVariableArgument(t *testing.T) {
+	t.Parallel()
+
+	r := justDump(t).recipe(t, "semantic-mutant-repin")
+	if got := r.dependencyNames(); len(got) != 1 || got[0] != "semantic-mutate" {
+		t.Fatalf("semantic-mutant-repin dependencies = %v, want [semantic-mutate]", got)
+	}
+	if got := r.Dependencies[0].argumentSyntax(t); len(got) != 1 || got[0] != "MUTANT_ID" {
+		t.Fatalf("semantic-mutate dependency arguments = %v, want [MUTANT_ID]", got)
+	}
+
+	// A literal argument re-quotes, and a concatenate of both renders as
+	// source — the two other shapes the dependency grammar admits.
+	var dep justDependency
+	if err := json.Unmarshal([]byte(`{"recipe":"r","arguments":["lit",["concatenate",["variable","A"],"-x"]]}`), &dep); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	if got := dep.argumentSyntax(t); len(got) != 2 || got[0] != `"lit"` || got[1] != "A-x" {
+		t.Fatalf("argumentSyntax = %v, want [\"lit\" A-x]", got)
+	}
 }

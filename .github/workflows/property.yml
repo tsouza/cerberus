@@ -120,12 +120,6 @@ jobs:
   property:
     name: property (PromQL + LogQL + TraceQL, rapid N=500)
     runs-on: ubuntu-latest
-    # Read by `semantic-observations` below: the fan-out step's OWN outcome.
-    # `skipped` means run_heavy was false (no events file exists); `success`
-    # or `failure` both mean the go-test-json stream was written — a failing
-    # property test is real FAIL evidence, not non-evidence.
-    outputs:
-      fanout: ${{ steps.fanout.outcome }}
     # Must stay comfortably above HISTOGRAM_TIMEOUT_MINUTES in
     # property-fanout.mjs (the slowest leg the job waits on) plus setup —
     # see that constant's comment for the real measured per-check cost this
@@ -181,7 +175,6 @@ jobs:
         run: echo "property is a green no-op on non-release PRs (real run on push/nightly/dispatch + release/* PRs)."
 
       - name: Run property tests (rapid N=500)
-        id: fanout
         if: steps.run_heavy.outputs.run_heavy == 'true'
         # `-tags chdb,agpl_oracle,chdb_agpl_oracle` enables the chdb-tagged
         # property entry points AND the LogQL property test's from-scratch
@@ -216,24 +209,7 @@ jobs:
         # safe here either (chdb-go's session-level global).
         env:
           TAGS: chdb,agpl_oracle,chdb_agpl_oracle
-          # Opt-in path (cerberus issue #3499): when set, property-fanout.mjs
-          # converts every leg's own buffered -v output into a go-test-json
-          # event stream via `go tool test2json`, and writes the
-          # concatenation here — see that script's legToGoTestJSON for why
-          # this reuses the SAME -v run instead of re-invoking
-          # `go test -json` (log readability). Consumed by the "Generate
-          # semantic execution observations" step below.
-          GOTEST_JSON_OUT: property-gotest-events.ndjson
         run: node .github/scripts/property-fanout.mjs
-
-      - name: Upload go-test-json events for the semantic observations
-        if: always() && (steps.fanout.outcome == 'success' || steps.fanout.outcome == 'failure')
-        uses: actions/upload-artifact@v7
-        with:
-          name: property-gotest-events
-          path: property-gotest-events.ndjson
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Upload rapid failure artifacts
         if: failure()
@@ -246,49 +222,4 @@ jobs:
           path: |
             test/property/testdata/rapid/**
           if-no-files-found: ignore
-          retention-days: 30
-
-  # semantic-execution-adapter.mjs (#3459) normalizes the go-test-json stream
-  # the `property` job produced into revision-bound execution observations
-  # for test/semantic/executions.json's property-shape bindings (issue
-  # #3499), for a human to later fold into executions.json (which stays
-  # hand-authored/reviewed, per #3459's own design). It is evidence, never a
-  # gate — which is why it is its OWN job and not a step of `property`:
-  # `property (…)` is a protected, release-required lane, and a step that
-  # must not fail a gating job does not belong in that job
-  # (test/regression/ci_lane_registry_test.go bans both `continue-on-error`
-  # and a script-side SOFT_FAIL there). Here a real failure of the adapter
-  # goes red on its own, non-gating check-run, where it is visible instead of
-  # masked. Runs whenever the fan-out wrote its events file — on a failing
-  # property run too, since a captured stream still carries real FAIL
-  # evidence — and not at all on a non-heavy PR, where no file exists.
-  semantic-observations:
-    name: semantic observations (property)
-    needs: property
-    if: always() && (needs.property.outputs.fanout == 'success' || needs.property.outputs.fanout == 'failure')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download the go-test-json events
-        uses: actions/download-artifact@v8
-        with:
-          name: property-gotest-events
-
-      - name: Generate semantic execution observations (property)
-        env:
-          MODE: property
-          GOTEST_JSON_PATH: property-gotest-events.ndjson
-          OUT: property-executions.json
-        run: node .github/scripts/semantic-execution-adapter.mjs
-
-      - name: Upload semantic execution observations (property)
-        uses: actions/upload-artifact@v7
-        with:
-          name: semantic-executions-property
-          path: property-executions.json
-          if-no-files-found: error
           retention-days: 30

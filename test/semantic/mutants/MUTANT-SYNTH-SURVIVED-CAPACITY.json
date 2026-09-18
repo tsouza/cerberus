@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-SYNTH-SURVIVED-CAPACITY",
   "title": "PreallocCapacity drops its +1 growth headroom term",
   "synthetic": true,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/survived-capacity.patch",
-    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
-    "expected_mutated_fingerprint": "7fd79fc16b3f082fdcb0cfa1e8aa41fa37f79bb3503629b0de59c4f0566b17a8"
+    "pre_image_fingerprint": "994bb25e1f75d20ea80f9c0fe5e6d93ed01cc1e43a51d43279311e059d7bfb32",
+    "post_image_fingerprint": "8b14599e11612b1b44b5dc43da4b159232db547affba7a9fb260254487810138"
   },
   "detectors": [
     {
@@ -30,6 +30,5 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": "Documents a genuine detector weakness (headroom is unchecked), not a runner defect. A future strengthened detector should assert the exact capacity, at which point this record's expected_detection becomes killed.",
-  "linked_issue": null
+  "notes": "Documents a genuine detector weakness (headroom is unchecked), not a runner defect. A future strengthened detector should assert the exact capacity, at which point this record's expected_detection becomes killed."
 }

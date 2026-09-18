@@ -37,21 +37,15 @@
 // rate this module computes calls it, so there is exactly one place the
 // denominator rule can drift.
 //
-// BOUND (declared) vs OBSERVED, mirrored from lib/semantic-report.mjs. A
-// mutant record's own `expected_detection` is a DECLARATION, continuously
-// re-verified by CI's required `ci.check` lane (semantic-mutation-corpus.mjs
-// runs every committed record for real on every PR) — but a declaration is
-// not the same claim as "this exact run, on this exact revision, produced
-// this classification". resolveDisposition() below prefers a REAL, revision-
-// bound observation from the hand-authored ledger
-// (test/semantic/mutant-executions.json, ledger loader in
-// lib/semantic-mutation.mjs) over the static declaration whenever the ledger
-// has one — which is what lets a report reflect an equivalence review going
-// stale (lib/semantic-mutation.mjs's runMutant falls back to a bare
-// "survived" the moment the review's own source_fingerprint drifts from the
-// live target) even though the STATIC record still names
-// "equivalent-reviewed". Absent an observation, the declaration is reported
-// as such (`source: "declared"`), never silently upgraded to "observed".
+// EVERY DISPOSITION IS THE DECLARED expected_detection, RE-VERIFIED ON
+// EVERY PR. A mutant record's own `expected_detection` is a declaration —
+// but not an unverified one: the required `ci.check` lane's corpus step
+// (semantic-mutation-corpus.mjs) runs every committed record for real on
+// every PR and fails the build on any record whose observed classification
+// differs from its declaration. A record on `main` therefore always
+// classifies as it declares, and this report reads the declaration as the
+// verified disposition it is. There is no separate observation ledger: a
+// classification `main` cannot be in has nothing to report.
 //
 // DETERMINISM. Every function here is pure: no Date.now(), no environment
 // read, no random iteration order (every emitted array is explicitly sorted
@@ -59,7 +53,7 @@
 // exactly like lib/semantic-report.mjs's own buildReport().
 
 import { CLASSIFICATIONS, DETECTOR_EVIDENCE_KINDS, sha256Hex } from "./semantic-mutation.mjs";
-import { CANONICAL_HEAD_IDS, byId } from "./semantic-model.mjs";
+import { CANONICAL_HEAD_IDS } from "./semantic-model.mjs";
 
 export const MUTATION_COHORT_SCHEMA_VERSION = 1;
 
@@ -96,34 +90,6 @@ export function dispositionBucket(status) {
 }
 
 /**
- * Resolves ONE mutant record's disposition: an actual observation from the
- * ledger (Map<mutantId, executionRecord>, from lib/semantic-mutation.mjs's
- * loadMutantExecutions) when one exists, else the record's own declared
- * expected_detection. Never blends the two — `source` says which.
- */
-export function resolveDisposition(record, executionsByMutant = new Map()) {
-  const observed = executionsByMutant.get(record.id);
-  if (observed) {
-    return {
-      status: observed.status,
-      source: "observed",
-      observed_at: observed.observed_at,
-      source_sha: observed.source_sha,
-      run_ref: observed.run_ref,
-      detectors: observed.detectors ?? [],
-    };
-  }
-  return {
-    status: record.expected_detection,
-    source: "declared",
-    observed_at: null,
-    source_sha: null,
-    run_ref: null,
-    detectors: null,
-  };
-}
-
-/**
  * Resolves a non-synthetic record's `violated_contracts` to the union of
  * canonical heads they apply to (via the semantic contract model's own
  * `applicableHeads`, computed once by lib/semantic-model.mjs — never
@@ -153,36 +119,22 @@ export function mutantHeads(record, contracts = new Map()) {
 
 /**
  * A content fingerprint over the cohort's own decision-relevant facts (id,
- * synthetic, RESOLVED disposition status, violated contracts) — sorted and
- * joined deterministically, hashed with the same sha256Hex
- * lib/semantic-mutation.mjs already uses for fingerprinting mutated source.
- * Two cohorts with the same fingerprint are provably identical in every fact
- * a published rate depends on; changing a single record's disposition
- * changes this fingerprint even when a rounding coincidence would otherwise
- * leave a published rate unchanged — the cohort REVISION moves whenever the
- * cohort's own content does, independent of whether the currently-published
- * rate happens to move too.
- *
- * DELIBERATELY the RESOLVED status (record.disposition.status — a fresh
- * ledger observation when one exists, else the declared expected_detection;
- * see resolveDisposition), never the bare declared expected_detection alone.
- * A ledger observation overriding a record's declaration (the exact
- * mechanism this module exists to surface — an equivalent-reviewed
- * adjudication going stale, say) changes what the report PUBLISHES without
- * touching the record's own committed JSON at all; fingerprinting only the
- * declaration would let that exact case move a published rate while leaving
- * cohort_revision unchanged, precisely the "changing a record's
- * classification cannot silently improve an unchanged score" failure this
- * revision exists to rule out.
+ * synthetic, disposition status, violated contracts) — sorted and joined
+ * deterministically, hashed with the same sha256Hex the semantic family
+ * fingerprints with. Two cohorts with the same fingerprint are provably
+ * identical in every fact a published rate depends on; changing a single
+ * record's disposition changes this fingerprint even when a rounding
+ * coincidence would otherwise leave a published rate unchanged — the cohort
+ * REVISION moves whenever the cohort's own content does, independent of
+ * whether the currently-published rate happens to move too.
  *
  * Takes the already-built, per-record report entries (this module's own
- * `records` array — each `{id, synthetic, violated_contracts, disposition}`
- * shape) rather than raw mutant records, so the resolution work done to
- * build them is never repeated.
+ * `records` array — each `{id, synthetic, violated_contracts, status}`
+ * shape) rather than raw mutant records.
  */
 export function cohortFingerprint(records) {
   const lines = [...records]
-    .map((r) => `${r.id}|${r.synthetic}|${r.disposition.status}|${[...r.violated_contracts].sort().join(",")}`)
+    .map((r) => `${r.id}|${r.synthetic}|${r.status}|${[...r.violated_contracts].sort().join(",")}`)
     .sort();
   return sha256Hex(Buffer.from(lines.join("\n"), "utf8"));
 }
@@ -210,7 +162,7 @@ export function recordEvidenceKind(detectors) {
 }
 
 /**
- * Aggregates a list of resolved dispositions ({status, ...}) into the rate
+ * Aggregates a list of dispositions ({status, ...}) into the rate
  * report shape: raw per-status counts (every CLASSIFICATIONS value, always
  * present even at zero — see the acceptance criterion this satisfies:
  * equivalent/invalid/incomplete cases stay VISIBLE, never dropped from the
@@ -250,17 +202,13 @@ export function dispositionRates(dispositions) {
  * `mutantRecords` is loadMutants()'s own Map<id, record>. `contracts` is the
  * semantic model's contracts Map (model.contracts from loadSemanticModel),
  * used only for head/scope attribution — this module never re-validates or
- * re-derives assurance from it. `executions` is
- * loadMutantExecutions()'s own Map<mutantId, executionRecord>, optional
- * (defaults empty — an absent ledger falls back to every record's own
- * declared expected_detection, never a hard failure).
+ * re-derives assurance from it.
  */
-export function buildMutationCohortReport(mutantRecords, { contracts = new Map(), executions = new Map() } = {}) {
+export function buildMutationCohortReport(mutantRecords, { contracts = new Map() } = {}) {
   const sortedIds = [...mutantRecords.keys()].sort();
 
   const records = sortedIds.map((id) => {
     const record = mutantRecords.get(id);
-    const disposition = resolveDisposition(record, executions);
     const { heads, contract_scopes, unresolved } = mutantHeads(record, contracts);
     return {
       id: record.id,
@@ -284,11 +232,9 @@ export function buildMutationCohortReport(mutantRecords, { contracts = new Map()
       })),
       evidence_kind: recordEvidenceKind(record.detectors),
       isolation: { ...record.isolation },
-      declared_status: record.expected_detection,
-      disposition,
-      bucket: dispositionBucket(disposition.status),
+      status: record.expected_detection,
+      bucket: dispositionBucket(record.expected_detection),
       equivalence_review: record.equivalence_review,
-      linked_issue: record.linked_issue,
       notes: record.notes,
     };
   });
@@ -301,7 +247,7 @@ export function buildMutationCohortReport(mutantRecords, { contracts = new Map()
     const inHead = semanticRecords.filter((r) => r.heads.includes(headId));
     byHead[headId] = {
       record_ids: inHead.map((r) => r.id),
-      rates: dispositionRates(inHead.map((r) => r.disposition)),
+      rates: dispositionRates(inHead),
     };
   }
 
@@ -315,7 +261,7 @@ export function buildMutationCohortReport(mutantRecords, { contracts = new Map()
     const ofKind = semanticRecords.filter((r) => r.evidence_kind === kind);
     byEvidenceKind[kind] = {
       record_ids: ofKind.map((r) => r.id),
-      rates: dispositionRates(ofKind.map((r) => r.disposition)),
+      rates: dispositionRates(ofKind),
     };
   }
 
@@ -329,50 +275,29 @@ export function buildMutationCohortReport(mutantRecords, { contracts = new Map()
 
   const crossHeadRecordIds = semanticRecords.filter((r) => r.heads.length > 1).map((r) => r.id).sort();
 
-  const unresolvedSurvivors = semanticRecords
-    .filter((r) => r.disposition.status === "survived" && r.linked_issue === null)
-    .map((r) => r.id)
-    .sort();
-
-  // disposition_disagreements — a record whose LATEST ledger observation
-  // disagrees with what it still declares. test/semantic/mutant-
-  // executions.json is hand-authored and never cross-checked by CI against
-  // expected_detection (unlike the required ci.check corpus step, which
-  // re-verifies the DECLARATION on every PR but never touches this ledger),
-  // so a drift here would otherwise be invisible — this is the one place it
-  // surfaces. A record whose observation simply CONFIRMS its declaration
-  // never appears here, regardless of source.
-  const dispositionDisagreements = records
-    .filter((r) => r.disposition.source === "observed" && r.disposition.status !== r.declared_status)
-    .map((r) => ({ id: r.id, declared_status: r.declared_status, observed_status: r.disposition.status }))
-    .sort(byId);
-
   return {
     schema_version: MUTATION_COHORT_SCHEMA_VERSION,
     cohort_revision: cohortFingerprint(records),
-    generated_from:
-      "test/semantic/mutants/*.json (+ test/semantic/mutant-executions.json when an observation exists)",
+    generated_from: "test/semantic/mutants/*.json",
     records,
     synthetic_cohort: {
       description:
         "Harness self-test records (lib/semantic-mutation.mjs's own seven classification paths) — " +
         "never a per-head query mutation, and never folded into semantic_cohort's rate below.",
       record_ids: syntheticRecords.map((r) => r.id),
-      rates: dispositionRates(syntheticRecords.map((r) => r.disposition)),
+      rates: dispositionRates(syntheticRecords),
     },
     semantic_cohort: {
       description:
         "Real, per-head domain-semantic mutations (issues #3449-#3451) — the ONLY cohort " +
         "escape_rate/kill_rate below is computed over.",
       record_ids: semanticRecords.map((r) => r.id),
-      rates: dispositionRates(semanticRecords.map((r) => r.disposition)),
+      rates: dispositionRates(semanticRecords),
       by_evidence_kind: byEvidenceKind,
     },
     by_head: byHead,
     by_contract: byContract,
     cross_head_record_ids: crossHeadRecordIds,
-    unresolved_survivors: unresolvedSurvivors,
-    disposition_disagreements: dispositionDisagreements,
   };
 }
 
@@ -449,12 +374,8 @@ function renderEvidenceKindTable(byEvidenceKind) {
 
 function renderMutantRow(record) {
   const detectorIds = record.detectors.map((d) => `${d.id} (${d.evidence_kind})`).join(", ");
-  const observed =
-    record.disposition.source === "observed"
-      ? `observed (${record.disposition.observed_at ?? "?"}${record.disposition.source_sha ? `, \`${record.disposition.source_sha.slice(0, 12)}\`` : ""})`
-      : "declared (no ledger observation)";
   return (
-    `| ${record.id} | ${record.disposition.status} | ${record.bucket} | ${observed} | ` +
+    `| ${record.id} | ${record.status} | ${record.bucket} | ` +
     `\`${mdEscapeTableCell(detectorIds)}\` | \`${mdEscapeTableCell(record.target_path)}\` |`
   );
 }
@@ -462,8 +383,8 @@ function renderMutantRow(record) {
 function renderMutantSection(title, records) {
   if (records.length === 0) return `${title}\n\n(none)\n`;
   const lines = [title, ""];
-  lines.push("| id | disposition | bucket | source | detector(s) | target |");
-  lines.push("| --- | --- | --- | --- | --- | --- |");
+  lines.push("| id | disposition | bucket | detector(s) | target |");
+  lines.push("| --- | --- | --- | --- | --- |");
   for (const record of records) lines.push(renderMutantRow(record));
   return lines.join("\n");
 }
@@ -482,11 +403,13 @@ export function renderMutationCohortMarkdown(report) {
       "mutations (issues #3448-#3452), isolated from the developer checkout " +
       "via `go test -overlay` (lib/semantic-mutation.mjs) — distinct from, " +
       "and never a substitute for, the required traditional `mutation` " +
-      "(gremlins) lane. Cohort revision (content fingerprint over every " +
-      "record's id/synthetic/violated_contracts and its RESOLVED disposition " +
-      "— the latest ledger observation when one exists, not merely the " +
-      "declared expected_detection — so a classification change is visible " +
-      "even when a published rate's own digits do not move): `" +
+      "(gremlins) lane. Every disposition below is the record's declared " +
+      "`expected_detection`, which the required `check` job's corpus step " +
+      "re-verifies by running the record for real on every PR (a record on " +
+      "`main` always classifies as it declares). Cohort revision (content " +
+      "fingerprint over every record's id/synthetic/violated_contracts and " +
+      "disposition, so a classification change is visible even when a " +
+      "published rate's own digits do not move): `" +
       `${report.cohort_revision}` + "`.\n",
   );
   parts.push(`${MUTATION_DENOMINATOR_DISCLAIMER}\n`);
@@ -513,39 +436,6 @@ export function renderMutationCohortMarkdown(report) {
     parts.push(
       `**Cross-head mutations** (counted under every head their violated contracts apply to, ` +
         `never double-hidden): ${report.cross_head_record_ids.map((id) => `\`${id}\``).join(", ")}.\n`,
-    );
-  }
-
-  parts.push("### Survivors requiring a linked issue\n");
-  parts.push(
-    "A non-synthetic record can never DECLARE `expected_detection: \"survived\"` — #3520/#3532 forbid it " +
-      "at the schema level (a bare non-killed outcome on real evidence is an expected-failure/tolerance-list " +
-      "entry, invariant 7). The only way a real record's RESOLVED disposition is ever `survived` is a fresh " +
-      "`test/semantic/mutant-executions.json` observation overriding its own valid declaration — an actual " +
-      "regression an execution caught. Listed below when that has happened and the record's own `linked_issue` " +
-      "is still null.\n",
-  );
-  if (report.unresolved_survivors.length === 0) {
-    parts.push("None on record.\n");
-  } else {
-    parts.push(
-      report.unresolved_survivors.map((id) => `- \`${id}\` — reproduce via \`just semantic-mutate ${id}\`.`).join("\n") + "\n",
-    );
-  }
-
-  parts.push("### Disposition disagreements (declared vs. observed)\n");
-  parts.push(
-    "A record whose latest ledger observation disagrees with what it still declares — the ledger is " +
-      "hand-authored and never cross-checked by CI against `expected_detection`, so this is the one place " +
-      "such a drift becomes visible.\n",
-  );
-  if (report.disposition_disagreements.length === 0) {
-    parts.push("None on record.\n");
-  } else {
-    parts.push(
-      report.disposition_disagreements
-        .map((d) => `- \`${d.id}\` — declared \`${d.declared_status}\`, observed \`${d.observed_status}\`.`)
-        .join("\n") + "\n",
     );
   }
 

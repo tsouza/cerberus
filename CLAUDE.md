@@ -166,7 +166,13 @@ per-layer "catches X / misses Y" guidance.
    Review `git diff test/spec/ test/e2e/migration/archetypes/ test/perf/ test/surface-parity/
    test/rejection-parity/` before committing. A few ledgers sit outside `update-golden` because they
    need Docker or the `agpl_oracle` tag; the recipe's own comments name each one and its regeneration
-   command.
+   command. The semantic evidence fingerprints are generated too: a mutant record's
+   `transformation.pre_image_fingerprint` / `post_image_fingerprint` (`test/semantic/mutants/*.json`)
+   pin the patch's own hunk region — never the whole target file, so an unrelated edit elsewhere in
+   `range_window.go` or a lowerer is not drift — and `test/semantic/replay-fingerprints.json` pins
+   each counterexample replay's region; `just semantic-mutant-repin <id>` and
+   `just semantic-replay-repin` are the only way either changes (the runner's `invalid-transform`
+   detail names the recipe).
 10. **No raw SQL strings — typed chsql API only.** Compose clauses via `chsql.QueryBuilder` slots and
     expressions via typed Frags (`Eq` / `And` / `Call` / `Cast` / `Lambda1` / `Subquery` /
     `InlineLit` and friends). Any CH function is `Call("fn", args…)`; arithmetic is

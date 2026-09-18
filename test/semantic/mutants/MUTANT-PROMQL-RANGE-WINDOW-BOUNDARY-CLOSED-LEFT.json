@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
   "title": "emitRangeWindowOverTimeDirectInstant's window-start predicate becomes closed-left",
   "synthetic": false,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "internal/chsql/range_window.go",
     "patch_path": "test/semantic/mutants/patches/range-window-boundary-closed-left.patch",
-    "source_fingerprint": "c849bb6785a93fcd9c133a0911f379905c9d52511580e9e1392210e96da6cb8e",
-    "expected_mutated_fingerprint": "c3640728da2709c1b9229e64d54d624dfc683ebeff2ed99bedbe7a429f97d70c"
+    "pre_image_fingerprint": "05528c03f67183b2b531db6b6af42e76450e71875dc666170e842cafc2a505c7",
+    "post_image_fingerprint": "2d0e8e5def9d9fbd6e21ac087765ab78f882d80587e3c2a17ca4e5aed6cb678f"
   },
   "detectors": [
     {
@@ -30,6 +30,5 @@
     "memory_max": "2GiB",
     "memory_hold": "2s"
   },
-  "notes": "Real production seam: emitRangeWindowOverTimeDirectInstant (internal/chsql/range_window.go ~3378-3412) is the row-level WHERE that answers an instant count_over_time()/min_over_time()/max_over_time()/present_over_time() query -- the incrementally-reducible *_over_time family internal/chsql/range_window.go's emitRangeWindowOverTimeDirect routes to a direct CH aggregate rather than the groupArray+arrayFilter windowed-array path. The patch changes its start-boundary comparison from `Gt` to `Gte`, widening the (T-range, T] window to closed-left. This is deliberately NOT a mutation of chsql.RangeWindowFilter/windowFilterPairsFrag (builder.go ~2454-2477, the array path's own boundary predicate): that predicate sits BEHIND an equally strict scan-time WHERE (instantWindowScanBoundsFrags, pushed by pushInstantScanBound before the sample array is ever built), so mutating either one alone there is silently absorbed by the other -- confirmed by direct experiment (a Gt->Gte edit to RangeWindowFilter, and separately to instantWindowScanBoundsFrags, each left every existing and newly-added property test green). emitRangeWindowOverTimeDirectInstant's WHERE has no such redundant twin, so it is genuinely observable. gen.RangeBoundaryCase (test/property/gen/range_boundary.go) seeds one sample exactly at t=T-range (must be excluded) and one exactly at t=T (must be included). Locally reproduced end to end: the unmutated code returns the Prometheus-correct count_over_time() = 2; with this patch applied to a scratch copy the same query returns 3 (the boundary sample wrongly counted), and TestPromQL_RangeWindowBoundaryExactSample fails with exactly that drift. TestPromQL_CounterResetMidWindowCompensation (the sibling MUTANT-PROMQL-COUNTER-RESET-COMPENSATION's own detector) was re-run against this same patch and still passes, confirming the two mutants are independently attributable.",
-  "linked_issue": null
+  "notes": "Real production seam: emitRangeWindowOverTimeDirectInstant (internal/chsql/range_window.go ~3378-3412) is the row-level WHERE that answers an instant count_over_time()/min_over_time()/max_over_time()/present_over_time() query -- the incrementally-reducible *_over_time family internal/chsql/range_window.go's emitRangeWindowOverTimeDirect routes to a direct CH aggregate rather than the groupArray+arrayFilter windowed-array path. The patch changes its start-boundary comparison from `Gt` to `Gte`, widening the (T-range, T] window to closed-left. This is deliberately NOT a mutation of chsql.RangeWindowFilter/windowFilterPairsFrag (builder.go ~2454-2477, the array path's own boundary predicate): that predicate sits BEHIND an equally strict scan-time WHERE (instantWindowScanBoundsFrags, pushed by pushInstantScanBound before the sample array is ever built), so mutating either one alone there is silently absorbed by the other -- confirmed by direct experiment (a Gt->Gte edit to RangeWindowFilter, and separately to instantWindowScanBoundsFrags, each left every existing and newly-added property test green). emitRangeWindowOverTimeDirectInstant's WHERE has no such redundant twin, so it is genuinely observable. gen.RangeBoundaryCase (test/property/gen/range_boundary.go) seeds one sample exactly at t=T-range (must be excluded) and one exactly at t=T (must be included). Locally reproduced end to end: the unmutated code returns the Prometheus-correct count_over_time() = 2; with this patch applied to a scratch copy the same query returns 3 (the boundary sample wrongly counted), and TestPromQL_RangeWindowBoundaryExactSample fails with exactly that drift. TestPromQL_CounterResetMidWindowCompensation (the sibling MUTANT-PROMQL-COUNTER-RESET-COMPENSATION's own detector) was re-run against this same patch and still passes, confirming the two mutants are independently attributable."
 }

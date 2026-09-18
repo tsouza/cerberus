@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-TRACEQL-SCOPE-SWAP",
   "title": "lowerAttribute swaps the resource/span attribute carrier columns",
   "synthetic": false,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "internal/traceql/lower.go",
     "patch_path": "test/semantic/mutants/patches/scope-swap.patch",
-    "source_fingerprint": "11c9534c4664fa2aa83d4f2547f435aa73cb440332f2ee297251a7c51b406163",
-    "expected_mutated_fingerprint": "4741731a074a08649373cd37a59f39010dea1f482cef291eac9a40cb5e892cc3"
+    "pre_image_fingerprint": "13bfdda4deacfda867aa2aaf1d80582bd9e3f304593363c32d0c03a61ad5ae86",
+    "post_image_fingerprint": "745fcb7d64e8e8ecab789f2c6ea99f9ca9da309d897c0a6ed2232032c27a1a35"
   },
   "detectors": [
     {
@@ -38,6 +38,5 @@
     "memory_max": "2GiB",
     "memory_hold": "2s"
   },
-  "notes": "lowerAttribute (internal/traceql/lower.go) resolves a scoped attribute reference to its carrier column; this patch swaps the two branches so `resource.<key>` reads SpanAttributes and `span.<key>` reads ResourceAttributes. Both detectors target TraceQLScopeCollisionAttributeKey (`environment`, #3444/#3518's gen/traceql.go), the same key stamped into BOTH maps per span with disjoint value pools so a scope mix-up cannot coincidentally pass.\n\nThe HTTP detector runs the traceql.selector.scope-collision-conjunction shape from the property roster (`{ resource.environment = X && span.environment = Y }`) through property.CompareTraceIdentityOutcomes, the TraceID-multiset comparator this repo's TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY contract documents — reused as-is, not reimplemented.\n\nThe gRPC detector (internal/api/tempo/grpc) is a genuine equal-cardinality, wrong-identity case, not a count difference: it seeds two traces whose resource/span environment values are exact MIRRORS of each other (trace1: resource=prod/span=shadow; trace2: resource=shadow/span=prod), so the swapped query matches exactly one trace either way — just the WRONG one (trace2 instead of trace1) under the mutation. A bare match-count assertion is blind to this; the detector asserts the exact matched TraceID instead, which is what catches the misattribution.\n\nBoth detectors were hand-verified to fail (kill) against this exact patch — the HTTP shape roster reports two missing traces (empty result where two were expected); the gRPC case reports the wrong TraceID — and to pass cleanly against the unmutated tree.\n\nLimits: TraceQLScopeCollisionResourceValuePool / TraceQLScopeCollisionSpanValuePool are each only 2 values wide, and no live reference-Tempo differential (compatibility/tempo/driver) carries an equivalent same-key resource/span collision case today. See issue #3528 for a related, separately-filed contracts.json documentation gap this same generator strengthening exposed.",
-  "linked_issue": null
+  "notes": "lowerAttribute (internal/traceql/lower.go) resolves a scoped attribute reference to its carrier column; this patch swaps the two branches so `resource.<key>` reads SpanAttributes and `span.<key>` reads ResourceAttributes. Both detectors target TraceQLScopeCollisionAttributeKey (`environment`, #3444/#3518's gen/traceql.go), the same key stamped into BOTH maps per span with disjoint value pools so a scope mix-up cannot coincidentally pass.\n\nThe HTTP detector runs the traceql.selector.scope-collision-conjunction shape from the property roster (`{ resource.environment = X && span.environment = Y }`) through property.CompareTraceIdentityOutcomes, the TraceID-multiset comparator this repo's TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY contract documents — reused as-is, not reimplemented.\n\nThe gRPC detector (internal/api/tempo/grpc) is a genuine equal-cardinality, wrong-identity case, not a count difference: it seeds two traces whose resource/span environment values are exact MIRRORS of each other (trace1: resource=prod/span=shadow; trace2: resource=shadow/span=prod), so the swapped query matches exactly one trace either way — just the WRONG one (trace2 instead of trace1) under the mutation. A bare match-count assertion is blind to this; the detector asserts the exact matched TraceID instead, which is what catches the misattribution.\n\nBoth detectors were hand-verified to fail (kill) against this exact patch — the HTTP shape roster reports two missing traces (empty result where two were expected); the gRPC case reports the wrong TraceID — and to pass cleanly against the unmutated tree.\n\nLimits: TraceQLScopeCollisionResourceValuePool / TraceQLScopeCollisionSpanValuePool are each only 2 values wide, and no live reference-Tempo differential (compatibility/tempo/driver) carries an equivalent same-key resource/span collision case today. See issue #3528 for a related, separately-filed contracts.json documentation gap this same generator strengthening exposed."
 }

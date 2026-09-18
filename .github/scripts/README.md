@@ -458,8 +458,8 @@ issue-<N>.json`:
    or the test's own seeded rows, and check they still exercise the
    described defect shape rather than something the code has since grown
    past.
-3. Run `node .github/scripts/semantic-replay.mjs --update-fingerprints` so
-   the new record's contract entries get a real, current fingerprint in
+3. Run `just semantic-replay-repin` so the new record's contract entries
+   get a real, current region fingerprint in
    `test/semantic/replay-fingerprints.json` instead of shipping
    unfingerprinted — a missing fingerprint fails closed at replay time (see
    "Semantic replay" below), it does not silently pass.
@@ -516,20 +516,25 @@ A contract entry can resolve to more than one mechanism — CTREX-1741's
 compat corpus file for the same historical bug, and both are run and
 reported distinctly.
 
-**Source-fingerprint mechanism.** Before running any mechanism, the tool
-recomputes a SHA-256 over a contract entry's own `locator_path` +
-`replay_test_path` bytes (concatenated in that fixed order, deduped when
-both fields name the same path) and compares it against the value checked
-in at `test/semantic/replay-fingerprints.json`, keyed by
-`"<counterexample-id>#<contract-id>"`. A missing or mismatched fingerprint
-is reported as `STALE`, distinct from a real `FAIL`/`ERROR` — it means the
-record's own pointers drifted since the fingerprint was last refreshed, not
-that the replayed test failed. Refresh it by hand, mirroring this repo's
-existing hand-refreshed-snapshot precedent
-(`semantic-lane-policy-snapshot.mjs`):
+**Region-fingerprint mechanism.** Before running any mechanism, the tool
+recomputes a SHA-256 over the REGION each of the entry's resolved
+mechanisms executes — a go-test-direct mechanism's test function (its
+source from the `func Test...(` line to the next top-level declaration,
+`goFuncRegion`), a go-test-fixture mechanism's fixture file, a
+compat-corpus mechanism's corpus file — delimiter-joined in resolution
+order (`lib/semantic-fingerprint.mjs`'s `regionFingerprint`, the same
+scheme the mutant records pin their patch regions with, see "Semantic
+mutation runner" below), and compares it against the value checked in at
+`test/semantic/replay-fingerprints.json`, keyed by
+`"<counterexample-id>#<contract-id>"`. An edit to a sibling test function
+in the same file does not move the fingerprint. A missing or mismatched
+fingerprint is reported as `STALE`, distinct from a real `FAIL`/`ERROR` — it
+means the replay region changed since it was pinned, not that the replayed
+test failed. The snapshot is a generated artefact (CLAUDE.md invariant 9);
+regenerate it, never hand-edit it:
 
 ```sh
-node .github/scripts/semantic-replay.mjs --update-fingerprints
+just semantic-replay-repin        # node .github/scripts/semantic-repin.mjs replay
 ```
 
 **Independent-oracle-assertion boundary.** This tool's job ends at invoking
@@ -551,14 +556,14 @@ result's `status` + `reasonKind`: an unknown counterexample id (the CLI's
 own `EXIT_CODES.UNKNOWN_ID`, before any entry is processed); a missing or
 unresolvable selector (`ERROR` / `unresolved-selector`); zero selected tests
 actually executing — a `-run` pattern that matched nothing (`ERROR` /
-`zero-selected`); a source-fingerprint mismatch (`STALE`, see above).
+`zero-selected`); a region-fingerprint mismatch (`STALE`, see above).
 
 Usage:
 
 ```sh
 just semantic-replay CTREX-1741
 node .github/scripts/semantic-replay.mjs CTREX-1741       # equivalent
-node .github/scripts/semantic-replay.mjs --update-fingerprints
+just semantic-replay-repin                                # refresh the fingerprint snapshot
 ```
 
 Exit codes: `0` every resolved mechanism passed; `1` at least one mechanism
@@ -593,12 +598,17 @@ neither of which this module reads, writes, or otherwise touches), a mutant
 record here names one specific, reviewable mutation as a unified diff — the
 format #3447's spike settled on precisely because it is also what lets a
 mutant be reviewed and versioned like a #3445 counterexample record — never a
-bulk-generated AST edit. This issue's own scope is the RUNNER, record
-validation, and synthetic self-tests; real per-head query-language mutants
-arrive in #3449-#3451 once this runner exists, and every record currently
-committed carries `synthetic: true` for exactly that reason. Its target,
-`test/semantic/mutants/testdata/fixtures/` — never imported by production
-code — sits under a `testdata/` path component deliberately: Go's own
+bulk-generated AST edit. The committed corpus is two cohorts under one
+directory: six real (`synthetic: false`) per-head domain mutations from
+issues #3449-#3451 — two LogQL, two PromQL, two TraceQL — whose patches target
+`internal/chsql/builder.go`, `internal/chsql/range_window.go`,
+`internal/logql/lower.go` and `internal/traceql/lower.go` and whose
+detectors are real spec fixtures and property tests; and seven synthetic
+(`synthetic: true`) self-test records that exercise every one of the
+runner's seven classification paths against the throwaway package under
+`test/semantic/mutants/testdata/fixtures/`. That fixture package — never
+imported by production code — sits under a `testdata/` path component
+deliberately: Go's own
 tooling ignores that component in every `...` wildcard (`go build ./...`,
 `go vet ./...`, the coverage-floor ledger, `go list ./...`), so this
 synthetic package never needs a `test/coverage-floor/` entry the way a real
@@ -619,12 +629,42 @@ own schema primitives — including the shared `existingPathValue()` that
 each keeping its own copy) plus the execution engine implementing the
 protocol #3447's spike approved: apply the mutant's patch to a scratch copy
 of its target file and point `go test -overlay` at the swap — never a
-disposable worktree, never a write to this checkout. `applyTransformation()`
-fails closed in three independent ways, checked in order: the live target
-file's own SHA-256 must match the record's declared `source_fingerprint`
-BEFORE `git apply` ever runs (a stale mutant is refused, never silently
-tested unmodified); `git apply --check` must pass; and the patched content's
-own SHA-256 must match `expected_mutated_fingerprint` after applying.
+disposable worktree, never a write to this checkout.
+
+**Patch-region fingerprints.** A record pins its patch with two SHA-256
+values computed by `lib/semantic-fingerprint.mjs` from the patch file
+alone: `transformation.pre_image_fingerprint` over every hunk's context +
+removed lines (the exact text the target must contain for the hunk to
+apply) and `transformation.post_image_fingerprint` over every hunk's
+context + added lines (what the target contains at that place afterwards).
+Neither covers the target file as a whole: an edit anywhere else in
+`internal/chsql/range_window.go` or a lowerer leaves every hunk's pre-image
+intact, `git apply` locates the hunk at its new offset, and the record is
+still valid — only an edit INSIDE the mutated region is drift. Both values
+are generated artefacts (CLAUDE.md invariant 9) and change only through
+
+```sh
+just semantic-mutant-repin MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT
+```
+
+(`semantic-repin.mjs mutant <id>`, which rewrites exactly the two values in
+place and leaves the record's formatting untouched, followed by
+`just semantic-mutate <id>` so the re-pinned record is verified against its
+declared `expected_detection` in the same step). A patch whose pre-image no
+longer occurs in the target must be re-authored against the current source
+first — re-pinning cannot repair a hunk that no longer applies.
+`MUTANT-SYNTH-INVALID-FINGERPRINT` is deliberately mis-pinned and must never
+be re-pinned; its own `notes` say why.
+
+`applyTransformation()` fails closed in four independent ways, checked in
+order, the first two BEFORE `git apply` ever runs and every one naming the
+repin recipe in its `detail`: `pinned-fingerprint-mismatch` (the record's
+two pins disagree with what its patch file hashes to — the patch changed
+since it was pinned); `pre-image-not-in-target` (some hunk's context +
+removed lines no longer occur in the live target — the mutated region
+changed); `patch-check-failed` / `patch-apply-failed` (`git apply --check`,
+then `git apply`, rejected the patch); `post-image-not-applied` (a hunk's
+context + added lines are not present in the mutated copy after applying).
 `classifyGoTestOutput()` is the pure verdict reader: a per-test
 `--- FAIL: TestName` line is `killed` (a panic testing's OWN harness caught
 and reported this way counts too, per the spike's own finding), a bare
@@ -644,14 +684,15 @@ adjudicated is ever `killed`; an unadjudicated process death never is.
 vocabulary: it runs each selected detector's clean control FIRST and aborts
 the whole measurement as `infrastructure-error` on any failure (a broken
 baseline is never silently skipped), then verifies the transformation, then
-runs the mutant, then — only for a bare `survived` — checks a non-null
-`equivalence_review` whose own `source_fingerprint` still matches the
-just-observed live source before reclassifying to `equivalent-reviewed`; a
-stale review (the target file has since changed) falls back to a plain
-`survived` needing re-review rather than being trusted. This is never an
-automatic exemption list (repo invariant 7): the review is prose a human
-wrote and it is tied to a cryptographic fingerprint of the exact content it
-reviewed, not a name on a list.
+runs the mutant, then — only for a bare `survived` — reclassifies to
+`equivalent-reviewed` when the record carries a non-null
+`equivalence_review`. The review is consulted only after
+`applyTransformation()` verified the patch is byte-for-byte the one the
+record pins, so it can only ever be applied to the exact mutation it was
+written about — a review of a since-changed region is unreachable, because
+that record is `invalid-transform` first. This is never an automatic
+exemption list (repo invariant 7): the review is prose a human wrote about
+one pinned patch, not a name on a list.
 
 `runGoTest()` passes Go's own `-timeout=<timeout_seconds>s` on every
 invocation — this repo's own documented timeout doctrine
@@ -700,12 +741,17 @@ modifies. `semantic-mutation.test.mjs` (root, `node --test`) pairs every
 acceptance criterion with a fixture — including the three pure negative
 cases the issue calls out by name (a failing clean control aborts before the
 mutant is ever attempted, zero selected detectors is a hard usage error
-raised before any run, and a `source_fingerprint` mismatch never invokes
+raised before any run, and a pinned-fingerprint mismatch never invokes
 `git` at all) — plus real `git apply`/filesystem integration tests, an
 argv-assertion test pinning `runGoTest()`'s exact `go test` invocation
-against an injected `spawnFn`, and an end-to-end load of the real committed
-`test/semantic/mutants/` corpus. None of that needs a Go toolchain (confirmed
-by running the suite with `go` removed from `PATH`) — `.github/scripts/
+against an injected `spawnFn`, the region scheme's own class tests (an edit
+outside the patch region keeps the record valid, an edit inside it is
+`invalid-transform` before git runs, and `repinMutantRecord()` round-trips
+a mis-pinned record back to `killed` touching nothing but the two values),
+and an end-to-end load of the real committed `test/semantic/mutants/`
+corpus. `semantic-fingerprint.test.mjs` pins the hunk parser and region
+helpers themselves. None of that needs a Go toolchain (confirmed by running
+the suite with `go` removed from `PATH`) — `.github/scripts/
 semantic-mutation-corpus.mjs` is the one place a real `go test -overlay`
 actually runs, against every real committed record, in a Go-equipped CI job
 (`check-build` in `ci.yml`); its own header explains why the split is
@@ -768,95 +814,6 @@ no live check on every PR). `semantic-lane-adapter.test.mjs` pairs each
 acceptance criterion with a fixture, including a regression pin over the
 real registry and the real snapshot together.
 
-## Semantic execution adapter
-
-`lib/semantic-execution-adapter.mjs` (issue #3459) is what an EXISTING
-`test/semantic/executions.json` record still cannot say: WHICH candidate
-revision a verifier's pass/fail was actually about. The original five
-fields (`id`/`binding`/`observed_at`/`result`/`run_ref`) say a verifier ran
-SOMETIME; `EXECUTION_KEYS`' ten new fields
-(`source_sha`/`run_id`/`run_attempt`/`job`/`event`/`substrate`/
-`reference_version`/`dataset_fingerprint`/`selection`/`selection_reason`,
-all nullable — see `lib/semantic-model.mjs`'s own comment above
-`EXECUTION_EVENTS`) let a record say WHICH one, and `selection` names one
-of five states instead of silently omitting a bad observation:
-`"executed"` (a real recorded pass/fail) or one of four non-evidence
-classes the schema itself forces to carry `result: "error"`
-(`"selected_not_run"`, `"no_op"`, `"stale"`, `"unavailable"`) — so the
-report's existing `classifyExecutionObservation`/`classifyObservedEvidence`
-rule (only pass/fail counts as observed evidence) already treats every one
-of them as non-evidence with zero changes to that rule.
-
-`classifyRevisionBinding(candidate, observation)` is the one join: given
-what THIS classification asserts the evidence must be about (a required
-`sourceSha`, an optional asserted `referenceVersion`/`datasetFingerprint`)
-and the raw facts read off an existing artifact, it returns exactly one of
-the five selections above, checked in priority order — an aggregate no-op
-first (even a matching SHA on a short-circuited run is still no evidence),
-then a SHA mismatch, an asserted-but-mismatched reference version, an
-asserted-but-mismatched dataset fingerprint, a zero-count selection, a
-selected-but-never-ran case, and finally a non-pass/fail result. Two
-format-specific readers feed it from artifacts that already exist with no
-source change: `parseGoTestJSONShapeResults`/`propertyShapeObservation`
-read Go's own `go test -json` stream (property-shape bindings' `test_ref`
-already IS the exact ShapeID `test/property/framework.go`'s
-`RunShapeExamples`/`RunShapeCases` pass to `t.Run`, so the join needs no
-translation table), and `parseCaseSet` reads
-`compatibility/internal/score.CaseSet`'s JSON shape (`compat-cases.json`),
-the one report format all three compat drivers already funnel through.
-`hashCorpus` computes a dataset/corpus fingerprint directly from the
-checked-out working tree (sha256 over each file's repo-relative path and
-content, sorted) — no corpus/dataset content hash exists anywhere else in
-this repository, and no Go driver needed changing to get one.
-`githubRunContext` reads the run-identity env vars GitHub Actions already
-sets on every step (`GITHUB_SHA`/`GITHUB_RUN_ID`/`GITHUB_RUN_ATTEMPT`/
-`GITHUB_JOB`/`GITHUB_EVENT_NAME`) with no explicit workflow `env:` wiring.
-
-`semantic-execution-adapter.mjs` is the CLI, `MODE=property|compat|verify`
-selected (env-driven, per this file's own convention — see its own header
-for the full table). It only ever PRINTS a normalized
-`executions.json`-shaped record (or, for `verify`, a re-classification
-verdict against an already-recorded one) — it never writes
-`test/semantic/executions.json` itself, which stays hand-authored/reviewed
-like every other file under `test/semantic/`; a human decides whether/where
-to append a printed record. `semantic-execution-adapter.test.mjs` pairs
-every one of the five acceptance-criterion non-evidence classes with a
-real-shaped report sample and a positive "executed" control, plus end-to-end
-CLI runs over all three modes.
-
-Wired for real (issue #3499): `property.yml`'s property job converts each
-leg's own buffered `-v` output into a `go test -json`-equivalent stream via
-`go tool test2json` (`property-fanout.mjs`'s `legToGoTestJSON`, opt-in
-behind `GOTEST_JSON_OUT` so a bare local run is unaffected), then its
-"Generate semantic execution observations (property)" step runs
-`MODE=property` over the result and uploads the normalized records as the
-`semantic-executions-property` build artifact. `compatibility.yml`'s three
-`semantic-observations-<head>` jobs run `compat-execution-report.mjs` — see
-its own entry below — over the `compat-cases.json` the head job uploaded and
-upload `semantic-executions-compat-<head>`. Neither can redden a required
-check, because neither runs inside one: `property (…)` and the three
-`compatibility/*` heads are protected/release-required lanes, and
-`test/regression/ci_lane_registry_test.go` bans both `continue-on-error:
-true` and a script-side `SOFT_FAIL` on ANY step of a job backing one, with
-no exceptions (a real failure there would be indistinguishable from a masked
-one). The observation steps are therefore their own non-gating jobs that
-`needs:` the gating one and read its artifacts; a real failure of the
-adapter reds that job's own check-run, visible rather than masked. Each
-gates on a DIFFERENT `if:` condition matching what evidence it can actually
-produce: the property job runs whenever the fan-out step wrote its events
-file (`success` or `failure` — a captured go-test-json stream still carries
-real FAIL evidence even on a failing run), and not at all on a non-heavy PR,
-while each compat job gates on that head's own harness step outcome
-being `success`, never on a downstream ratchet (a harness that never
-produced a `compat-cases.json` has nothing to classify, but a ratchet that
-failed AFTER the harness succeeded still has real evidence to report). In
-both lanes a real FAIL result is still valid evidence a human should see,
-never something to suppress. `ci.yml`'s "forbid-skip" job still
-only self-tests both scripts — there is no committed artifact for THAT job
-to run the live CLIs against, the way the semantic-model/lane-adapter/
-evidence-adapter/report steps above it run against the real committed
-`test/semantic/` model.
-
 ## Semantic report
 
 `lib/semantic-report.mjs` (issue #3435) builds
@@ -884,14 +841,9 @@ re-deriving or hand-copying its answer:
   `lib/semantic-lane-adapter.mjs`) rather than re-declaring which lane owns
   which binding or which check is required.
 
-`bindingObservedStatus()` additionally surfaces the revision-binding fields
-issue #3459 added to `executions.json` (`selection`/`source_sha`) as a
-`revision_bound` boolean — true only when the latest execution's own
-selection reads `"executed"` and names a `source_sha`. `validateExecutions()`
-(`lib/semantic-model.mjs`) rejects an `"executed"` record with a null
-`source_sha` and any record whose `run_ref` ends in an all-zero placeholder
-run number, so on a model that loads every observed pass/fail is
-revision-bound; the boolean is kept so the JSON carries the SHA itself.
+`validateExecutions()` (`lib/semantic-model.mjs`) rejects any execution
+record whose `run_ref` ends in an all-zero placeholder run number, so every
+observation on a model that loads points at a run somebody can open.
 `verifierComplementGaps()` flags, informationally
 only, when an active binding's verifier names a documented complement
 (`complemented_by`) that no active binding on the same contract actually
@@ -921,13 +873,11 @@ carry a `DO NOT EDIT` header and need no `-merge` `.gitattributes` entry,
 since CI gates drift directly rather than relying on a merge driver.
 Env: `SEMANTIC_MODEL_DIR`, `SEMANTIC_LANE_REGISTRY_PATH`,
 `SEMANTIC_LANE_POLICY_SNAPSHOT`, `GITHUB_STEP_SUMMARY` (all optional, same
-defaults as the modules above). Unlike `semantic-evidence-adapter.mjs` and
-`semantic-execution-adapter.mjs` above, this CLI **is** wired into `ci.yml`
-as a standing gate ("Validate the generated semantic conformance report is
+defaults as the modules above). This CLI **is** wired into `ci.yml` as a
+standing gate ("Validate the generated semantic conformance report is
 fresh": `semantic-report.test.mjs`'s `node --test` suite, then `just
-semantic-report-check`) — the assurance gap those two document (dangling
-fixtures, no pipeline to append executions yet) does not apply here, since a
-stale generated doc is a plain diff CI can catch on every PR.
+semantic-report-check`) — a stale generated doc is a plain diff CI can catch
+on every PR.
 
 ## Semantic mutation cohort report
 
@@ -955,46 +905,18 @@ scoped rate, `null` (never `0`) when the denominator is zero, and a
 `small_sample` flag below `SMALL_COHORT_DENOMINATOR_FLOOR` (10) — today's
 real six-record denominator is flagged.
 
-**Declared vs. resolved, mirrored from the report above's bound-vs-observed
-split.** A mutant record's own `expected_detection` is a DECLARATION,
-re-verified by the required `ci.check` corpus step
-(`semantic-mutation-corpus.mjs`) on every PR — but #3520/#3532 already
-forbid a non-synthetic record from ever declaring `"survived"` (see
-"Semantic mutation runner" above), so the one real escape this report exists
-to surface can only ever be a fresh OBSERVATION overriding a valid
-declaration, never the declaration itself. `test/semantic/
-mutant-executions.json` is that observation ledger — hand-authored and
-reviewed, exactly like `executions.json` (never written by this module).
-`resolveDisposition()` prefers a ledger entry over the bare declaration when
-one exists; `cohortFingerprint()` (published as `cohort_revision`) hashes
-the RESOLVED status, not the declaration, specifically so a ledger
-observation overriding a stale `equivalent-reviewed` adjudication moves the
-published revision even though the record's own committed JSON never
-changed. `disposition_disagreements` lists every record whose latest
-observation disagrees with what it still declares — the ledger is never
-cross-checked against `expected_detection` by anything else, so this is the
-one place such a drift becomes visible. `unresolved_survivors` lists every
-non-synthetic record whose RESOLVED disposition is `"survived"` with no
-`linked_issue` set — `linked_issue` (`lib/semantic-mutation.mjs`) is a
-nullable positive integer, always null on a synthetic record, otherwise a
-non-synthetic record's author may set it (before or after an observation) to
-name the issue tracking a real regression the ledger caught.
-
-`semantic-mutation-pilot-report.mjs` is the scheduled, INFORMATIONAL
-complement (`.github/workflows/semantic-mutation-pilot.yml`, lane
-`quality.semantic-mutation-pilot` in `.github/ci-lanes.json`) — never a merge
-or release gate (`merge_posture`/`main_posture` `"never"`, `release_posture`
-`"advisory"`, so it can never become a required check and can never make the
-required `ci.check` corpus step or the traditional `mutation` gremlins lane
-look green). `runPilot()` re-runs every real record via the SAME
-`lib/semantic-mutation.mjs` `runMutant()` the CLI and the corpus script both
-drive, printing each run's revision-bound observation — including each
-detector's own `runGoTest()` `durationMs`, the runtime/cost metadata this
-issue's own acceptance criteria name — as a ready-to-review
-`mutant-executions.json` entry to the job summary; it never writes the
-ledger itself, and a mismatch against a record's declared
-`expected_detection` is logged but never fails the job (the required corpus
-step already owns that gate).
+**Every disposition is the declared `expected_detection`, re-verified on
+every PR.** A mutant record's own `expected_detection` is a declaration —
+but not an unverified one: the required `ci.check` corpus step
+(`semantic-mutation-corpus.mjs`) runs every committed record for real on
+every PR and fails the build on any record whose observed classification
+differs from its declaration, so a record on `main` always classifies as it
+declares, and this report reads the declaration as the verified disposition
+it is. There is no separate observation ledger for the cohort: a
+classification `main` cannot be in has nothing to report. `cohortFingerprint()`
+(published as `cohort_revision`) hashes every record's id, synthetic flag,
+disposition and violated contracts, so a classification change moves the
+published revision even when a rate's own digits do not.
 
 ## Semantic impact
 
@@ -1041,8 +963,7 @@ result the CLI's `--json` flag switches between.
 above). Unlike that module, this CLI is not itself CI-gated — being
 advisory-only, there is nothing for a gate to enforce — but
 `lib/semantic-impact.test.mjs`'s self-test still runs directly via `node
---test` in `forbid-deferral.yml` (no `just` recipe wraps it, the same
-posture `semantic-execution-adapter.mjs` holds above) to assert the
+--test` in `forbid-deferral.yml` (no `just` recipe wraps it) to assert the
 derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
 
 ## Modules
@@ -2747,63 +2668,22 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     publishes against a real bare-repo remote in a temp dir and asserts on
     every scenario that the checkout came out on its original branch with
     its files and scratch-worktree count unchanged.
-- **`compat-execution-report.mjs`** — `compatibility.yml`, the three
-  `semantic-observations-<head>` jobs' `Generate semantic execution
-  observations (compat/<head>)` steps (issue #3499). `lib/semantic-execution-adapter.mjs`'s own CLI (`MODE=compat`)
-  classifies exactly ONE caller-named `BINDING` per invocation by design — a
-  compat binding is scoped to the whole driver invocation, and tempo's HTTP/
-  gRPC transports are two bindings/two case sets for exactly that reason.
-  `compatibility/prometheus` and `compatibility/loki` each bind SEVERAL
-  active `"reference"` contracts to the SAME one case set their job
-  produces, so this script fans that one run out over every such binding
-  instead — filtering the semantic model to `status: "active"`,
-  `evidence_class: "reference"`, `test_ref` matching `compatibility/<head>`
-  at a path-segment boundary (`compatibility/<head>` itself, or
-  `compatibility/<head>/...` — never merely prefixed, so a hypothetical
-  future `compatibility/<head>-foo` binding is not pulled in; a
-  `"manual-review"` binding under the same prefix, e.g. a corpus-provenance
-  sign-off, is also never selected — no automated run is evidence for it).
-  It calls no CLASSIFICATION logic of its own: every record's
-  classification comes from `lib/semantic-execution-adapter.mjs`'s shared
-  `compatExecutionRecord` (which itself composes `classifyRevisionBinding` /
-  `toExecutionRecord` / `execIdFor` — the same composition
-  `semantic-execution-adapter.mjs`'s own `runCompat` calls, so the two
-  callers cannot drift apart on it, issue #3510). A binding whose `test_ref`
-  names a gRPC driver file (case-insensitive `"grpc"` substring) is
-  classified against `CASES_PATH_GRPC` when given; every other selected
-  binding against `CASES_PATH` — heads with only one arm (prometheus, loki)
-  never set `CASES_PATH_GRPC`, so every binding resolves to the one path. A
-  case-set path that cannot be read/parsed never aborts the whole report
-  (issue #3509): it degrades only the binding(s) resolving to that one path
-  to `selection: "unavailable"`, with the read/parse error as the reason,
-  on stderr — every other binding's record is still produced. A binding
-  whose `test_ref` names one corpus DATA file (`.yml`/`.yaml`) rather than
-  the whole driver invocation never has an aggregate `"fail"` attributed to
-  it specifically: `score.Case` carries no field joining a case back to the
-  corpus file it came from, so a failure elsewhere in the shared case set
-  degrades that binding's record to non-evidence (`"unavailable"`) instead
-  of a false `"fail"` (issue #3508) — a `"pass"` verdict is never touched,
-  since every case agreeing IS real evidence every behavior agreed. Never
-  writes `test/semantic/executions.json` itself — same posture as the CLI
-  it wraps.
-  - Env: `HEAD` (required), `CASES_PATH` (required), `CASES_PATH_GRPC`
-    (optional, tempo's gRPC arm), `CORPUS_PATH` (optional, one path or
-    several `:`-joined paths folded into one `dataset_fingerprint` via
-    `hashCorpus`'s array form — loki's harness draws from two separate
-    roots), `REFERENCE_VERSION` / `EXPECT_REFERENCE_VERSION`
-    (optional), `CANDIDATE_SHA` / `RUN_REF` / `OBSERVED_AT` / `MODEL_DIR` /
-    `OUT` (same defaults as the CLI's own `sharedContext`).
-  - Exit: `0` printing/writing one record per selected binding — a
-    per-binding case-set read/parse failure degrades that binding's own
-    record rather than exiting non-zero; `1` on error otherwise —
-    `HEAD`/`CASES_PATH` missing, or no active `"reference"` binding matches
-    the head.
-  - Tests: `compat-execution-report.test.mjs` (run in `ci.yml`), covering
-    the gRPC-arm routing, the manual-review exclusion, the multi-binding
-    fan-out against a prometheus-shaped model, the head-prefix segment-
-    boundary anchor, the corpus-file-scoped `"fail"`-attribution guard
-    (#3508), the per-path graceful degrade on an unreadable case set
-    (#3509), and end-to-end CLI runs.
+- **`semantic-repin.mjs`** — `just semantic-mutant-repin <id>` and
+  `just semantic-replay-repin`, the one sanctioned way the semantic
+  family's region fingerprints change (`lib/semantic-fingerprint.mjs`; see
+  "Semantic mutation runner" and "Semantic replay" above). `mutant <id>`
+  rewrites exactly `transformation.pre_image_fingerprint` /
+  `post_image_fingerprint` in `test/semantic/mutants/<id>.json` from the
+  record's own patch file, in place, leaving the record's formatting and
+  every other field byte-identical; `replay` regenerates
+  `test/semantic/replay-fingerprints.json` via `lib/semantic-replay.mjs`'s
+  `writeFingerprints`.
+  - Env: `SEMANTIC_MUTANTS_DIR` (optional; default `test/semantic/mutants`).
+  - Exit: `0` on a rewrite or when nothing moved; `1` on an unknown
+    subcommand or mutant id, an unparseable patch, or a record whose two
+    fingerprint fields are not exactly where the schema puts them.
+  - Tests: `semantic-mutation.test.mjs`'s region-scheme cases (run in
+    `ci.yml`) exercise `repinMutantRecord()` directly.
 - **`resolve-bench-refs.mjs`** — `perf-benchmark.yml`, the
   `resolve baseline + ref SHAs` step.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,

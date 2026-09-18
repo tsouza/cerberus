@@ -1483,10 +1483,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -1627,10 +1624,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -1718,10 +1712,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -1809,10 +1800,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -1985,10 +1973,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -2034,10 +2019,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -2240,10 +2222,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -2365,10 +2344,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -2430,10 +2406,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -2589,10 +2562,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -2715,10 +2685,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -2841,10 +2808,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -2967,10 +2931,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -3170,10 +3131,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -3265,10 +3223,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -3465,10 +3420,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -3539,10 +3491,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -3720,10 +3669,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -3808,10 +3754,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -3982,10 +3925,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4073,10 +4013,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4164,10 +4101,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4350,10 +4284,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4469,10 +4400,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4551,10 +4479,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4772,10 +4697,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4860,10 +4782,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4902,10 +4821,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -4990,10 +4906,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -5044,10 +4957,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -5132,10 +5042,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -5256,10 +5163,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -5362,10 +5266,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -5529,10 +5430,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -5646,10 +5544,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -5698,10 +5593,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": []
         }
@@ -5793,10 +5685,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": []
         }
@@ -5900,10 +5789,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6006,10 +5892,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6185,10 +6068,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6249,10 +6129,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6418,10 +6295,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6485,10 +6359,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6552,10 +6423,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6616,10 +6484,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6749,10 +6614,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6890,10 +6752,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -6934,10 +6793,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7060,10 +6916,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7121,10 +6974,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7304,10 +7154,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7347,10 +7194,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7506,10 +7350,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7664,10 +7505,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7726,10 +7564,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7860,10 +7695,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -7951,10 +7783,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8121,10 +7950,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8181,10 +8007,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8336,10 +8159,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8374,10 +8194,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8462,10 +8279,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8592,10 +8406,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8634,10 +8445,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8725,10 +8533,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8816,10 +8621,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -8971,10 +8773,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -9082,10 +8881,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -9142,10 +8938,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -9330,10 +9123,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -9385,10 +9175,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -9540,10 +9327,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -9770,10 +9554,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -9824,10 +9605,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -9949,10 +9727,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -10073,10 +9848,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -10216,10 +9988,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -10270,10 +10039,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -10331,10 +10097,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -10484,10 +10247,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -10609,10 +10369,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -10791,10 +10548,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -10920,10 +10674,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -11044,10 +10795,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -11174,10 +10922,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -11307,10 +11052,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -11446,10 +11188,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -11591,10 +11330,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -11730,10 +11466,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -11869,10 +11602,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12080,10 +11810,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12133,10 +11860,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12261,10 +11985,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12352,10 +12073,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12531,10 +12249,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12627,10 +12342,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12723,10 +12435,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12911,10 +12620,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -12965,10 +12671,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13019,10 +12722,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13073,10 +12773,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13221,10 +12918,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13281,10 +12975,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13342,10 +13033,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13542,10 +13230,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13630,10 +13315,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13672,10 +13354,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13802,10 +13481,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -13934,10 +13610,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14072,10 +13745,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14133,10 +13803,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14308,10 +13975,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14485,10 +14149,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14546,10 +14207,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14636,10 +14294,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14697,10 +14352,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14881,10 +14533,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -14942,10 +14591,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -15032,10 +14678,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -15173,10 +14816,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -15213,10 +14853,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -15327,10 +14964,7 @@
             "observed_at": null,
             "run_ref": null,
             "execution_id": null,
-            "execution_count": 0,
-            "selection": null,
-            "source_sha": null,
-            "revision_bound": false
+            "execution_count": 0
           },
           "obligations": [
             {
@@ -15403,7 +15037,7 @@
   "mutation_cohort": {
     "schema_version": 1,
     "cohort_revision": "5b2c6ba05cee06f2686bd42a52188c7415010ba24dbeb3df17a3073e98aee56d",
-    "generated_from": "test/semantic/mutants/*.json (+ test/semantic/mutant-executions.json when an observation exists)",
+    "generated_from": "test/semantic/mutants/*.json",
     "records": [
       {
         "id": "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
@@ -15453,29 +15087,9 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
-        "declared_status": "killed",
-        "disposition": {
-          "status": "killed",
-          "source": "observed",
-          "observed_at": "2026-09-16T15:50:15Z",
-          "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
-          "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741 (issue #3452)",
-          "detectors": [
-            {
-              "id": "logql-stream-regex-no-overmatch",
-              "classification": "killed",
-              "duration_ms": 4312
-            },
-            {
-              "id": "promql-regex-unanchored-no-overmatch-supplementary",
-              "classification": "killed",
-              "duration_ms": 4850
-            }
-          ]
-        },
+        "status": "killed",
         "bucket": "denominator",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": "Blanks anchoredRegexPattern's anchorPrefix/anchorSuffix constants (internal/chsql/builder.go:847-848) from \"^(?:\" / \")$\" to \"\", reopening issue #1741: job=~\"ap\" (or, here, LogQL's env=~\"prod|stg\" stream selector) would again match \"production\" as a substring instead of rejecting it, since ClickHouse's match() is a substring search and Prometheus/Loki/Tempo regex matchers are always fully anchored. Scoped to the label-matcher path deliberately: anchoredRegexPattern is called only from chplan.OpMatch/OpNotMatch sites (internal/chsql/builder.go's exprBinary and exprNestedArrayExists) — LogQL line filters (`|~`/`!~` against the log line) lower to a distinct chplan.LineContent node in internal/logql/lower.go's lineFilterPart and never call this function, so their already-unanchored (Loki-correct) substring semantics are untouched by this mutation, preserving the stream-selector/line-filter distinction the grounding issue calls out. THIS MUTATION IS NOT LOGQL-ONLY: anchoredRegexPattern is the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL (see LOGQL-LABEL-MATCHER-REGEX-ANCHORING's and PROMQL-LABEL-MATCHER-REGEX-ANCHORING's own blind_spots, and the cross-head SIGNAL-LABEL-MATCHER-CONSISTENCY contract) — the primary detector is the LogQL fixture (test/spec/logql/stream_regex_no_overmatch.txtar, the regression fixture #1741 itself added), and the second detector is PromQL's own regression twin (test/spec/promql/regex_unanchored_no_overmatch.txtar) included as SUPPLEMENTARY, disclosed evidence of the same shared-emitter blast radius rather than a second independent bug — both are expected to report killed for the identical root cause, not two uncorrelated findings. Both detectors share test/spec's generic spec.Walk/spec.Match golden-comparison harness (structural sql/args/chplan text diffing) — that harness is head-agnostic plumbing, not part of either head's own independent evidence; what differs per detector is the head-specific Lower() entry point and its own fixture corpus. Neither detector needs the chdb build tag or a live ClickHouse: the kill is a static sql/args/chplan text mismatch against the golden, verified before chDB round-trip execution is even reached (see internal/logql/lower_test.go's TestLower and internal/promql/lower_test.go's TestLower, both gated on no build tag). Independent real-Loki confirmation that the CONTROL behavior (anchored, no over-match) matches reference Loki lives in compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml, run via `just compat-logql` — that lane cannot itself execute against a mutated overlay (it needs a live docker-compose Loki + ClickHouse stack, not go test -overlay), so it is evidence for the control's correctness, not a third mutation detector."
       },
       {
@@ -15512,24 +15126,9 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
-        "declared_status": "killed",
-        "disposition": {
-          "status": "killed",
-          "source": "observed",
-          "observed_at": "2026-09-16T15:50:17Z",
-          "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
-          "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED (issue #3452)",
-          "detectors": [
-            {
-              "id": "logql-logfmt-then-numeric-filter-order",
-              "classification": "killed",
-              "duration_ms": 1768
-            }
-          ]
-        },
+        "status": "killed",
         "bucket": "denominator",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": "lowerPipelineWithLabels (internal/logql/lower.go, lowerPipelineWithLabels's own MultiStages loop) walks a pipeline's stages strictly left-to-right in source order per LOGQL-PIPELINE-STAGE-ORDER, threading the growing `labelsExpr` forward so a stage occurring AFTER a label-extracting parser stage (`| json`, `| logfmt`, `| regexp`, `| unpack`) sees its extracted keys, while a stage occurring BEFORE it does not. This mutation reverses the iteration (`for i := len(e.MultiStages) - 1; i >= 0; i--`) so every pipeline's stages are visited back-to-front instead. Query used by the detector: `{job=\"api\"} | logfmt | status > 400` (test/spec/logql/filter_numeric.txtar) — under CORRECT left-to-right order, `| logfmt` runs first and merges the extracted `status` key into labelsExpr, so `| status > 400` resolves it and correctly keeps only the two rows with status 500/503. Under the REVERSED mutant, `| status > 400` is lowered FIRST against the still-bare ResourceAttributes/LogAttributes columns (status is not a real column in either), so its presence probe is unconditionally false and the whole predicate degenerates to drop every row — a genuinely different, observably wrong result using actual supported LogQL syntax, not an invented shape. This is the label-mutation/filter-order case the grounding issue calls for: a query+dataset pair where swapping stage order changes labels/results, not merely the shape of an already-order-independent predicate. Two existing fixtures are already bound to the LOGQL-PIPELINE-STAGE-ORDER contract (BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE over edge_label_filter_and_then_line_filter.txtar, and BINDING-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT over edge_multistage_filter_unpack_format.txtar) but neither actually depends on stage order: both compose two SQL predicate-only stages (or a predicate stage plus a post-fetch-only `| unpack`/`| line_format` pair with no SQL impact), so their ANDed predicates are order-commutative and verified NOT to change under this exact reversal mutation (checked by hand before selecting filter_numeric.txtar instead) — this is precisely the coverage gap LOGQL-PIPELINE-STAGE-ORDER's own blind_spots entry already names (\"this contract's ordering claim rests entirely on the fixed TXTAR fixture set\"), so filter_numeric.txtar's kill is new, real evidence for the labels-threading half of the contract, not a restatement of the two existing bindings. This mutation is scoped to internal/logql/lower.go (LogQL's own package-local pipeline loop) and does not touch internal/chsql/builder.go or any other head's lowering, so there is no shared-emitter/PromQL/TraceQL side effect to report here (unlike MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741's anchoredRegexPattern mutation). The detector needs no chdb build tag or live ClickHouse: the kill is a static sql/args/chplan text mismatch against test/spec/logql/filter_numeric.txtar's golden, reached before any chDB round-trip execution (internal/logql/lower_test.go's TestLower, no build tag). test/property/logql_test.go + test/property/oracle/logql/evaluator.go (this issue's other cited grounding) were evaluated as an alternative/additional detector and deliberately NOT used: the property/oracle shape roster (test/property/gen/shapes.go's logQLShapeRoster, referenced by LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE's own blind_spots) draws at most one pipeline stage per generated query and never composes a parser stage with a dependent label filter, so it cannot exercise this bug class at all today — adding that coverage is out of this change's scope (no wholesale local-oracle rewrite, no arbitrary stage permutations) and, if wanted, belongs in a separate filed issue rather than folded into this mutant record."
       },
       {
@@ -15568,24 +15167,9 @@
           "memory_max": "2GiB",
           "memory_hold": "2s"
         },
-        "declared_status": "killed",
-        "disposition": {
-          "status": "killed",
-          "source": "observed",
-          "observed_at": "2026-09-16T15:50:26Z",
-          "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
-          "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-PROMQL-COUNTER-RESET-COMPENSATION (issue #3452)",
-          "detectors": [
-            {
-              "id": "counter-reset-mid-window-compensation",
-              "classification": "killed",
-              "duration_ms": 1771
-            }
-          ]
-        },
+        "status": "killed",
         "bucket": "denominator",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": "Real production seam, not a textual stand-in: chsql.CounterDelta (internal/chsql/builder.go, the typed compound-idiom behind counterDeltaFrag in internal/chsql/range_window.go ~2690-2707) renders `arrayMap((p, c) -> if(c < p, c, c - p), ...)` -- the counter-reset-aware pairwise delta rate()/increase() reduce over. The patch changes the comparison's second operand from `p` to `c` (`Lt(BareIdent(\"c\"), BareIdent(\"p\"))` -> `Lt(BareIdent(\"c\"), BareIdent(\"c\"))`), which is always false, so the emitted SQL always takes the `c - p` branch and the reset-compensation arm never fires: this is a disable, not merely an inversion. gen.CounterResetCase (test/property/gen/counter_reset.go) seeds a genuine mid-window reset (20 -> 5 between adjacent samples, not a duplicate timestamp -- see that file's header on why test/property/rate_dup_timestamp_test.go's duplicate-timestamp dataset does not exercise this). Locally reproduced end to end: the unmutated code returns the Prometheus-correct increase() = 33.333... (100/3); with this patch applied to a scratch copy the same query returns 6.666... (20/3, i.e. last-first with no reset added back), and TestPromQL_CounterResetMidWindowCompensation fails with exactly that drift. TestPromQL_RangeWindowBoundaryExactSample (the sibling MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT's own detector) was re-run against this same patch and still passes, confirming the two mutants are independently attributable."
       },
       {
@@ -15624,24 +15208,9 @@
           "memory_max": "2GiB",
           "memory_hold": "2s"
         },
-        "declared_status": "killed",
-        "disposition": {
-          "status": "killed",
-          "source": "observed",
-          "observed_at": "2026-09-16T15:50:29Z",
-          "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
-          "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT (issue #3452)",
-          "detectors": [
-            {
-              "id": "range-window-boundary-exact-sample",
-              "classification": "killed",
-              "duration_ms": 1614
-            }
-          ]
-        },
+        "status": "killed",
         "bucket": "denominator",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": "Real production seam: emitRangeWindowOverTimeDirectInstant (internal/chsql/range_window.go ~3378-3412) is the row-level WHERE that answers an instant count_over_time()/min_over_time()/max_over_time()/present_over_time() query -- the incrementally-reducible *_over_time family internal/chsql/range_window.go's emitRangeWindowOverTimeDirect routes to a direct CH aggregate rather than the groupArray+arrayFilter windowed-array path. The patch changes its start-boundary comparison from `Gt` to `Gte`, widening the (T-range, T] window to closed-left. This is deliberately NOT a mutation of chsql.RangeWindowFilter/windowFilterPairsFrag (builder.go ~2454-2477, the array path's own boundary predicate): that predicate sits BEHIND an equally strict scan-time WHERE (instantWindowScanBoundsFrags, pushed by pushInstantScanBound before the sample array is ever built), so mutating either one alone there is silently absorbed by the other -- confirmed by direct experiment (a Gt->Gte edit to RangeWindowFilter, and separately to instantWindowScanBoundsFrags, each left every existing and newly-added property test green). emitRangeWindowOverTimeDirectInstant's WHERE has no such redundant twin, so it is genuinely observable. gen.RangeBoundaryCase (test/property/gen/range_boundary.go) seeds one sample exactly at t=T-range (must be excluded) and one exactly at t=T (must be included). Locally reproduced end to end: the unmutated code returns the Prometheus-correct count_over_time() = 2; with this patch applied to a scratch copy the same query returns 3 (the boundary sample wrongly counted), and TestPromQL_RangeWindowBoundaryExactSample fails with exactly that drift. TestPromQL_CounterResetMidWindowCompensation (the sibling MUTANT-PROMQL-COUNTER-RESET-COMPENSATION's own detector) was re-run against this same patch and still passes, confirming the two mutants are independently attributable."
       },
       {
@@ -15674,25 +15243,16 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
-        "declared_status": "build-failed",
-        "disposition": {
-          "status": "build-failed",
-          "source": "declared",
-          "observed_at": null,
-          "source_sha": null,
-          "run_ref": null,
-          "detectors": null
-        },
+        "status": "build-failed",
         "bucket": "incomplete",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": null
       },
       {
         "id": "MUTANT-SYNTH-EQUIV-COMMUTE",
         "title": "CommutativeSum's operand order is swapped",
         "synthetic": true,
-        "synthetic_rationale": "Exercises the runner's equivalent-reviewed path: a mutation that survives AND has an audited, fingerprint-tied equivalence review, so the runner must reclassify it away from a bare survivor. Not a per-head query mutation.",
+        "synthetic_rationale": "Exercises the runner's equivalent-reviewed path: a mutation that survives AND has an audited equivalence review, so the runner must reclassify it away from a bare survivor. Not a per-head query mutation.",
         "violated_contracts": [
           "SYNTHETIC-COMMUTATIVE-OPERAND-ORDER"
         ],
@@ -15718,24 +15278,14 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
-        "declared_status": "equivalent-reviewed",
-        "disposition": {
-          "status": "equivalent-reviewed",
-          "source": "declared",
-          "observed_at": null,
-          "source_sha": null,
-          "run_ref": null,
-          "detectors": null
-        },
+        "status": "equivalent-reviewed",
         "bucket": "equivalent",
         "equivalence_review": {
           "reviewer": "cerberus-core",
           "reviewed_at": "2026-09-16T00:00:00Z",
-          "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
           "rationale": "a+b and b+a are byte-for-byte identical under Go's two's-complement int addition for every pair of inputs: addition is commutative and neither operand order can overflow differently. No test can distinguish them because there is nothing to distinguish. Hand-verified against Go's spec (arithmetic operators), not merely asserted."
         },
-        "linked_issue": null,
-        "notes": "The equivalence_review.source_fingerprint must equal transformation.source_fingerprint; if arith.go changes, this review goes stale and the runner falls back to reporting a bare survived until re-reviewed."
+        "notes": "The review is about this record's one patch: transformation.pre_image_fingerprint pins the patch's region, so if that region of arith.go changes the record is invalid-transform until the patch is re-authored and re-pinned (`just semantic-mutant-repin`) — the review is never applied to a mutation other than the one it reviewed."
       },
       {
         "id": "MUTANT-SYNTH-INFRA-EXIT",
@@ -15767,25 +15317,16 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
-        "declared_status": "infrastructure-error",
-        "disposition": {
-          "status": "infrastructure-error",
-          "source": "declared",
-          "observed_at": null,
-          "source_sha": null,
-          "run_ref": null,
-          "detectors": null
-        },
+        "status": "infrastructure-error",
         "bucket": "incomplete",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": null
       },
       {
         "id": "MUTANT-SYNTH-INVALID-FINGERPRINT",
-        "title": "Declared source fingerprint deliberately disagrees with the live target file",
+        "title": "Pinned pre-image fingerprint deliberately disagrees with the patch it names",
         "synthetic": true,
-        "synthetic_rationale": "Exercises the runner's fail-closed path: a mutant record whose declared source_fingerprint does not match the live target file (simulating drift since authoring time). The runner must refuse to test the unmodified candidate and report invalid-transform, never silently proceed. Not a per-head query mutation.",
+        "synthetic_rationale": "Exercises the runner's fail-closed path: a mutant record whose pinned pre_image_fingerprint does not match what its own patch file hashes to (simulating a patch edited, or a record hand-edited, since it was pinned). The runner must refuse to test anything and report invalid-transform before the patch is applied or any detector ever runs, never silently proceed. Not a per-head query mutation.",
         "violated_contracts": [
           "SYNTHETIC-CLAMP-UPPER-BOUND"
         ],
@@ -15811,19 +15352,10 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
-        "declared_status": "invalid-transform",
-        "disposition": {
-          "status": "invalid-transform",
-          "source": "declared",
-          "observed_at": null,
-          "source_sha": null,
-          "run_ref": null,
-          "detectors": null
-        },
+        "status": "invalid-transform",
         "bucket": "invalid",
         "equivalence_review": null,
-        "linked_issue": null,
-        "notes": "source_fingerprint above is deliberately wrong (64 zero characters — well-formed SHA-256 hex, simulating a stale-but-plausible fingerprint rather than a malformed one) — this record's entire purpose is to prove the mismatch is caught before git apply or any detector ever runs."
+        "notes": "pre_image_fingerprint above is deliberately wrong (64 zero characters — well-formed SHA-256 hex, simulating a stale-but-plausible pin rather than a malformed one) — this record's entire purpose is to prove the mismatch is caught before the patch is applied or any detector ever runs. It is the one record `just semantic-mutant-repin` must never be run on: re-pinning it would make it a duplicate of MUTANT-SYNTH-KILLED-INVERT and erase the path it exists to exercise."
       },
       {
         "id": "MUTANT-SYNTH-KILLED-INVERT",
@@ -15855,18 +15387,9 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
-        "declared_status": "killed",
-        "disposition": {
-          "status": "killed",
-          "source": "declared",
-          "observed_at": null,
-          "source_sha": null,
-          "run_ref": null,
-          "detectors": null
-        },
+        "status": "killed",
         "bucket": "denominator",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": null
       },
       {
@@ -15899,18 +15422,9 @@
           "memory_max": "1GiB",
           "memory_hold": "1s"
         },
-        "declared_status": "survived",
-        "disposition": {
-          "status": "survived",
-          "source": "declared",
-          "observed_at": null,
-          "source_sha": null,
-          "run_ref": null,
-          "detectors": null
-        },
+        "status": "survived",
         "bucket": "denominator",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": "Documents a genuine detector weakness (headroom is unchecked), not a runner defect. A future strengthened detector should assert the exact capacity, at which point this record's expected_detection becomes killed."
       },
       {
@@ -15943,18 +15457,9 @@
           "memory_max": "256MiB",
           "memory_hold": "1s"
         },
-        "declared_status": "timeout",
-        "disposition": {
-          "status": "timeout",
-          "source": "declared",
-          "observed_at": null,
-          "source_sha": null,
-          "run_ref": null,
-          "detectors": null
-        },
+        "status": "timeout",
         "bucket": "incomplete",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": "timeout_seconds is deliberately short (3s, not the usual 15s) so this record's own control case runs quickly; the mutated loop never allocates, so it cannot trip the memory bound before the wall-clock ceiling does."
       },
       {
@@ -16004,29 +15509,9 @@
           "memory_max": "2GiB",
           "memory_hold": "2s"
         },
-        "declared_status": "killed",
-        "disposition": {
-          "status": "killed",
-          "source": "observed",
-          "observed_at": "2026-09-16T15:50:39Z",
-          "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
-          "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-TRACEQL-DESCENDANT-AS-CHILD (issue #3452)",
-          "detectors": [
-            {
-              "id": "structural-branching-http",
-              "classification": "killed",
-              "duration_ms": 2231
-            },
-            {
-              "id": "structural-branching-grpc",
-              "classification": "killed",
-              "duration_ms": 1745
-            }
-          ]
-        },
+        "status": "killed",
         "bucket": "denominator",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": "mapStructuralOp (internal/traceql/lower.go) is the exact seam Tempo's OpSpansetChild / OpSpansetDescendant enum maps to chplan.StructuralChild / chplan.StructuralDescendant; this patch swaps the two return values, so `>` lowers to descendant-reachability and `>>` lowers to direct-child-only. Both detectors seed the SAME bounded branching-tree fixture #3444/#3518 added to gen/traceql.go (root -> childA -> grandchild, root -> childB) so the depth-two case is a real, wire-observed discriminator rather than an assumed one: the direct-child query `{root} > {grandchild}` must return zero matches and the descendant query `{root} >> {grandchild}` must return exactly one, on both the HTTP /api/search transport (test/property/traceql_test.go, real parse->lower->optimize->emit->chDB->HTTP pipeline) and the gRPC streaming Search RPC (internal/api/tempo/grpc, real *grpc.Server over bufconn against the same chDB session) independently. Both were hand-verified to fail (kill) against this exact patch and to pass cleanly against the unmutated tree before this record was added.\n\nLimits: the branching-tree fixture is a single FIXED topology (branching factor 2, max depth 2 — traceQLBranchingTreeSpanCount in gen/traceql.go) and only chdb-backed local pipelines are exercised here — no live reference-Tempo differential (compatibility/tempo/driver) carries an equivalent grandchild-depth structural case today; its seeder fixture is a flat root+children shape with no third generation, so `>` and `>>` never diverge there. See issue #3528 for a related, separately-filed contracts.json documentation gap this same generator strengthening exposed."
       },
       {
@@ -16076,29 +15561,9 @@
           "memory_max": "2GiB",
           "memory_hold": "2s"
         },
-        "declared_status": "killed",
-        "disposition": {
-          "status": "killed",
-          "source": "observed",
-          "observed_at": "2026-09-16T15:50:51Z",
-          "source_sha": "e5c87585bef0ecb1a1dc208e3299b8571184f320",
-          "run_ref": "local-verification: node .github/scripts/semantic-mutation.mjs MUTANT-TRACEQL-SCOPE-SWAP (issue #3452)",
-          "detectors": [
-            {
-              "id": "scope-collision-conjunction-http",
-              "classification": "killed",
-              "duration_ms": 1598
-            },
-            {
-              "id": "scope-collision-conjunction-grpc",
-              "classification": "killed",
-              "duration_ms": 1545
-            }
-          ]
-        },
+        "status": "killed",
         "bucket": "denominator",
         "equivalence_review": null,
-        "linked_issue": null,
         "notes": "lowerAttribute (internal/traceql/lower.go) resolves a scoped attribute reference to its carrier column; this patch swaps the two branches so `resource.<key>` reads SpanAttributes and `span.<key>` reads ResourceAttributes. Both detectors target TraceQLScopeCollisionAttributeKey (`environment`, #3444/#3518's gen/traceql.go), the same key stamped into BOTH maps per span with disjoint value pools so a scope mix-up cannot coincidentally pass.\n\nThe HTTP detector runs the traceql.selector.scope-collision-conjunction shape from the property roster (`{ resource.environment = X && span.environment = Y }`) through property.CompareTraceIdentityOutcomes, the TraceID-multiset comparator this repo's TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY contract documents — reused as-is, not reimplemented.\n\nThe gRPC detector (internal/api/tempo/grpc) is a genuine equal-cardinality, wrong-identity case, not a count difference: it seeds two traces whose resource/span environment values are exact MIRRORS of each other (trace1: resource=prod/span=shadow; trace2: resource=shadow/span=prod), so the swapped query matches exactly one trace either way — just the WRONG one (trace2 instead of trace1) under the mutation. A bare match-count assertion is blind to this; the detector asserts the exact matched TraceID instead, which is what catches the misattribution.\n\nBoth detectors were hand-verified to fail (kill) against this exact patch — the HTTP shape roster reports two missing traces (empty result where two were expected); the gRPC case reports the wrong TraceID — and to pass cleanly against the unmutated tree.\n\nLimits: TraceQLScopeCollisionResourceValuePool / TraceQLScopeCollisionSpanValuePool are each only 2 values wide, and no live reference-Tempo differential (compatibility/tempo/driver) carries an equivalent same-key resource/span collision case today. See issue #3528 for a related, separately-filed contracts.json documentation gap this same generator strengthening exposed."
       }
     ],
@@ -16385,8 +15850,6 @@
     },
     "cross_head_record_ids": [
       "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"
-    ],
-    "unresolved_survivors": [],
-    "disposition_disagreements": []
+    ]
   }
 }

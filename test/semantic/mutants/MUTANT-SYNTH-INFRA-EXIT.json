@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-SYNTH-INFRA-EXIT",
   "title": "ExitAbruptly bypasses go test's own reporting with a direct process exit",
   "synthetic": true,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/infra-exit.patch",
-    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
-    "expected_mutated_fingerprint": "2a4f1385f59667c33ca650c78f6392905b7654bad380b05b8a6547fdbd8461e8"
+    "pre_image_fingerprint": "b8b20cb040470e1053bb0a3ccbe2927ae9ec075ffe54d1b003aab12e80332eae",
+    "post_image_fingerprint": "5b6bd402c2ec750459cc84291d460e1c3e8a9ca283469dcd97dafd8f5412f704"
   },
   "detectors": [
     {
@@ -30,6 +30,5 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": null,
-  "linked_issue": null
+  "notes": null
 }

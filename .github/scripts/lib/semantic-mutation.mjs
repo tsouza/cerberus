@@ -30,20 +30,27 @@
 //   survived              a detector's own go test run reported a clean PASS
 //                         against the mutated candidate — nothing caught it.
 //   equivalent-reviewed   a survived mutant carrying an AUDITED, hand-written
-//                         equivalence_review whose own source_fingerprint
-//                         still matches the live target file. This is never
-//                         an automatic exemption list (repo invariant 7):
-//                         the review is prose a human wrote, and it goes
-//                         stale — falls back to a bare `survived` needing
-//                         re-review — the moment the target file's fingerprint
-//                         no longer matches.
-//   invalid-transform      the declared source_fingerprint disagrees with the
-//                         live target file, or `git apply` rejects the patch,
-//                         or the post-patch content's fingerprint disagrees
-//                         with the record's own expected_mutated_fingerprint.
-//                         Fails BEFORE any detector ever runs, so a stale
-//                         mutant can never silently test the unmodified
-//                         candidate.
+//                         equivalence_review. This is never an automatic
+//                         exemption list (repo invariant 7): the review is
+//                         prose a human wrote about one exact patch, and the
+//                         record's own pre-image fingerprint (below) is what
+//                         ties the review to that patch — a patch whose
+//                         pre-image moved is invalid-transform, so a stale
+//                         review can never be applied to a different
+//                         mutation than the one it reviewed.
+//   invalid-transform      the record's pinned pre_image_fingerprint /
+//                         post_image_fingerprint disagree with the patch
+//                         file (the patch changed since it was pinned), a
+//                         hunk's pre-image no longer occurs in the live
+//                         target (the mutated region changed), `git apply`
+//                         rejects the patch, or a hunk's post-image is not
+//                         present after applying. Fails BEFORE any detector
+//                         ever runs, so a stale mutant can never silently
+//                         test the unmodified candidate. Re-pin with
+//                         `just semantic-mutant-repin <id>`; an edit
+//                         elsewhere in the target file is not drift — the
+//                         fingerprints cover the patch's own region only
+//                         (lib/semantic-fingerprint.mjs).
 //   build-failed          the mutated overlay compiles to nothing: go test's
 //                         own `[build failed]` signature, distinct from a
 //                         real assertion failure.
@@ -88,7 +95,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -113,18 +119,28 @@ import {
   stringArray,
   stringValue,
 } from "./semantic-model.mjs";
+import { locateRegions, parsePatchHunks, patchFingerprints } from "./semantic-fingerprint.mjs";
 
 // Re-exported for the callers that fingerprint through this module's own
 // name (lib/semantic-mutation-report.mjs, the runner's tests); the
-// implementation is lib/semantic-model.mjs's, shared with the execution
-// adapter's corpus fingerprints.
+// implementation is lib/semantic-model.mjs's.
 export { sha256Hex };
 import { byteSize, goDurationSeconds } from "../mutant-memory-guard.mjs";
 
-export const MUTANT_SCHEMA_VERSION = 1;
+// Bumped 1 -> 2 when the whole-file source_fingerprint /
+// expected_mutated_fingerprint pair became the patch-region
+// pre_image_fingerprint / post_image_fingerprint pair
+// (lib/semantic-fingerprint.mjs), linked_issue was dropped, and
+// equivalence_review lost its own copy of the source fingerprint.
+export const MUTANT_SCHEMA_VERSION = 2;
 export const DEFAULT_MUTANTS_DIR = "test/semantic/mutants";
 export const DEFAULT_MEMORY_GUARD =
   ".github/scripts/mutant-memory-guard.mjs";
+
+// The recipe every invalid-transform detail names: the ONE way a record's
+// fingerprints are ever refreshed (CLAUDE.md invariant 9 — a generated
+// value is regenerated, never hand-edited).
+export const REPIN_RECIPE = "just semantic-mutant-repin";
 
 const MUTANT_ID_RE = /^MUTANT-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/;
 const SYNTHETIC_CONTRACT_RE = /^SYNTHETIC-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/;
@@ -172,14 +188,13 @@ const MUTANT_KEYS = new Set([
   "equivalence_review",
   "isolation",
   "notes",
-  "linked_issue",
 ]);
 
 const TRANSFORMATION_KEYS = new Set([
   "target_path",
   "patch_path",
-  "source_fingerprint",
-  "expected_mutated_fingerprint",
+  "pre_image_fingerprint",
+  "post_image_fingerprint",
 ]);
 
 const DETECTOR_KEYS = new Set([
@@ -214,12 +229,7 @@ const DETECTOR_EVIDENCE_KIND_SET = new Set(DETECTOR_EVIDENCE_KINDS);
 // detector "execution" would be false, and is rejected.
 const GOLDEN_TEXT_ONLY_TEST_RUN_RE = /^\^TestLower\$/;
 
-const EQUIVALENCE_REVIEW_KEYS = new Set([
-  "reviewer",
-  "reviewed_at",
-  "source_fingerprint",
-  "rationale",
-]);
+const EQUIVALENCE_REVIEW_KEYS = new Set(["reviewer", "reviewed_at", "rationale"]);
 
 const ISOLATION_KEYS = new Set(["requires_chdb", "memory_max", "memory_hold"]);
 
@@ -235,10 +245,8 @@ function validateTransformation(raw, at, problems, opts) {
   if (!exactObject(raw, TRANSFORMATION_KEYS, at, problems)) return;
   existingPathValue(raw.target_path, `${at}.target_path`, problems, opts);
   existingPathValue(raw.patch_path, `${at}.patch_path`, problems, opts);
-  stringValue(raw.source_fingerprint, `${at}.source_fingerprint`, problems, { pattern: SHA256_HEX_RE });
-  stringValue(raw.expected_mutated_fingerprint, `${at}.expected_mutated_fingerprint`, problems, {
-    pattern: SHA256_HEX_RE,
-  });
+  stringValue(raw.pre_image_fingerprint, `${at}.pre_image_fingerprint`, problems, { pattern: SHA256_HEX_RE });
+  stringValue(raw.post_image_fingerprint, `${at}.post_image_fingerprint`, problems, { pattern: SHA256_HEX_RE });
 }
 
 function validateDetector(raw, at, problems, seenIds) {
@@ -285,24 +293,16 @@ function validateIsolation(raw, at, problems) {
   }
 }
 
-function validateEquivalenceReview(raw, at, problems, { expectedSourceFingerprint }) {
+// An equivalence review carries no fingerprint of its own: it reviews the
+// record's one patch, and transformation.pre_image_fingerprint already
+// pins that patch's region — a review can only ever be applied to the
+// exact mutation it was written about, because any other mutation is
+// invalid-transform before the review is consulted (see runMutant).
+function validateEquivalenceReview(raw, at, problems) {
   if (raw === null) return;
   if (!exactObject(raw, EQUIVALENCE_REVIEW_KEYS, at, problems)) return;
   stringValue(raw.reviewer, `${at}.reviewer`, problems);
   stringValue(raw.reviewed_at, `${at}.reviewed_at`, problems, { pattern: OBSERVED_AT_RE });
-  if (stringValue(raw.source_fingerprint, `${at}.source_fingerprint`, problems, { pattern: SHA256_HEX_RE })) {
-    if (
-      typeof expectedSourceFingerprint === "string" &&
-      raw.source_fingerprint !== expectedSourceFingerprint
-    ) {
-      fail(
-        problems,
-        "schema",
-        `${at}.source_fingerprint (${raw.source_fingerprint}) disagrees with transformation.source_fingerprint ` +
-          `(${expectedSourceFingerprint}) — an equivalence review is tied to the exact source it reviewed`,
-      );
-    }
-  }
   stringValue(raw.rationale, `${at}.rationale`, problems);
 }
 
@@ -368,12 +368,8 @@ export function validateMutantRecord(raw, at, problems, opts = {}) {
     }
   }
 
-  let expectedSourceFingerprint = null;
   if (isObject(raw.transformation)) {
     validateTransformation(raw.transformation, `${at}.transformation`, problems, { root });
-    if (typeof raw.transformation.source_fingerprint === "string") {
-      expectedSourceFingerprint = raw.transformation.source_fingerprint;
-    }
   } else {
     fail(problems, "schema", `${at}.transformation must be an object`);
   }
@@ -414,9 +410,7 @@ export function validateMutantRecord(raw, at, problems, opts = {}) {
       `${at}.equivalence_review must be null unless expected_detection is "equivalent-reviewed"`,
     );
   } else if (isObject(raw.equivalence_review)) {
-    validateEquivalenceReview(raw.equivalence_review, `${at}.equivalence_review`, problems, {
-      expectedSourceFingerprint,
-    });
+    validateEquivalenceReview(raw.equivalence_review, `${at}.equivalence_review`, problems);
   }
 
   if (isObject(raw.isolation)) {
@@ -426,33 +420,6 @@ export function validateMutantRecord(raw, at, problems, opts = {}) {
   }
 
   nullableStringValue(raw.notes, `${at}.notes`, problems);
-
-  // linked_issue is the traceability seam issue #3452's own acceptance
-  // criteria requires — but it can only ever be a DECLARATION-TIME
-  // annotation, never a declaration-time REQUIREMENT: #3520/#3532 already
-  // forbid a non-synthetic record from declaring expected_detection
-  // "survived" at all (NON_SYNTHETIC_CLASSIFICATIONS above), so "this
-  // record's own declared status is survived" can never be true for a
-  // record that loads at all — a schema rule keyed off it would be
-  // unreachable dead code. The real traceability case #3452 cares about is
-  // a REAL regression an actual execution OBSERVED (test/semantic/
-  // mutant-executions.json, via resolveDisposition in
-  // lib/semantic-mutation-report.mjs) even though this record still
-  // declares "killed"/"equivalent-reviewed" — a fact only knowable at
-  // report-build time, never at record-authoring time, so lib/semantic-
-  // mutation-report.mjs's own unresolvedSurvivors (keyed off the RESOLVED
-  // disposition, not this field's declared expected_detection) is where
-  // that requirement actually lives; see its own header. This function only
-  // validates the field's SHAPE: null on a synthetic record (nothing real
-  // to link), otherwise either null (not yet linked) or a positive integer
-  // — a non-synthetic record's author may set it ahead of any observation,
-  // to pre-acknowledge a known regression, or after one via the report's
-  // own unresolved_survivors list telling them which record needs it.
-  if (synthetic === true && raw.linked_issue !== null) {
-    fail(problems, "schema", `${at}.linked_issue must be null on a synthetic record`);
-  } else if (raw.linked_issue !== null) {
-    positiveIntegerValue(raw.linked_issue, `${at}.linked_issue`, problems);
-  }
 
   return id;
 }
@@ -507,145 +474,6 @@ export function renderMutantsSummary(records) {
     (c) => `${c}: ${byExpectation[c]}`,
   );
   return [`- mutants: **${records.size}** (${parts.join(", ")})`].join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Execution ledger (test/semantic/mutant-executions.json)
-// ---------------------------------------------------------------------------
-//
-// A mutant record's `expected_detection` (above) is a DECLARATION, authored
-// once and re-verified by every CI run of `semantic-mutation-corpus.mjs`
-// (required, `ci.check`) — but a declaration is not itself an observation,
-// exactly the distinction lib/semantic-report.mjs already draws between a
-// contract's BOUND evidence and its OBSERVED evidence (executions.json).
-// This ledger is that same split applied to the mutation pilot: one
-// revision-bound, hand-reviewed record of what a REAL `runMutant` execution
-// actually reported, independent of what the record declares. Hand-authored
-// and reviewed like executions.json itself (see semantic-execution-
-// adapter.mjs's own header) — this module never writes it.
-//
-// WHY THIS MATTERS FOR STALENESS: an `equivalent-reviewed` mutant's audited
-// review is tied to a source fingerprint (validateEquivalenceReview above)
-// and runMutant() already falls back to a bare `survived` the moment that
-// fingerprint drifts from the live target file — but a report built only
-// from the STATIC record would never see that fallback happen; it would
-// keep reading the record's own unchanged `expected_detection:
-// "equivalent-reviewed"` forever. A ledger entry whose own `status` reports
-// the ACTUAL post-fallback classification (e.g. "survived") is what lets a
-// report built from this ledger reflect that expiry rather than silently
-// keep crediting a stale adjudication.
-
-export const DEFAULT_MUTANT_EXECUTIONS_PATH = "test/semantic/mutant-executions.json";
-export const MUTANT_EXECUTION_SCHEMA_VERSION = 1;
-
-const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
-const MUTANT_EXECUTION_ID_RE = /^MUTEXEC-[A-Z][A-Z0-9-]*$/;
-
-const MUTANT_EXECUTION_KEYS = new Set([
-  "id",
-  "mutant",
-  "observed_at",
-  "status",
-  "run_ref",
-  "source_sha",
-  "detectors",
-]);
-
-const MUTANT_EXECUTION_DETECTOR_KEYS = new Set(["id", "classification", "duration_ms"]);
-
-// duration_ms is the runtime/cost metadata issue #3452's own acceptance
-// criteria names ("exact detector outcomes and runtime/cost metadata") —
-// runGoTest's own durationMs, milliseconds wall-clock for that ONE detector
-// run (never a sum across detectors, and never the clean control's own
-// duration, which this ledger does not separately carry). Nullable: a
-// hand-authored or pre-#3452 entry may not have timed anything.
-function validateMutantExecutionDetector(raw, at, problems) {
-  if (!exactObject(raw, MUTANT_EXECUTION_DETECTOR_KEYS, at, problems)) return;
-  stringValue(raw.id, `${at}.id`, problems);
-  enumValue(raw.classification, CLASSIFICATION_SET, `${at}.classification`, problems);
-  if (raw.duration_ms !== null) positiveIntegerValue(raw.duration_ms, `${at}.duration_ms`, problems);
-}
-
-function validateMutantExecution(raw, at, problems, { mutantIds } = {}) {
-  if (!exactObject(raw, MUTANT_EXECUTION_KEYS, at, problems)) return null;
-  let id = null;
-  if (stringValue(raw.id, `${at}.id`, problems, { pattern: MUTANT_EXECUTION_ID_RE })) id = raw.id;
-  if (stringValue(raw.mutant, `${at}.mutant`, problems, { pattern: MUTANT_ID_RE })) {
-    if (mutantIds && !mutantIds.has(raw.mutant)) {
-      fail(problems, "reference", `${at}.mutant references unknown mutant record ${raw.mutant}`);
-    }
-  }
-  stringValue(raw.observed_at, `${at}.observed_at`, problems, { pattern: OBSERVED_AT_RE });
-  enumValue(raw.status, CLASSIFICATION_SET, `${at}.status`, problems);
-  stringValue(raw.run_ref, `${at}.run_ref`, problems);
-  nullableStringValue(raw.source_sha, `${at}.source_sha`, problems, { pattern: COMMIT_SHA_RE });
-  if (Array.isArray(raw.detectors)) {
-    raw.detectors.forEach((d, i) =>
-      validateMutantExecutionDetector(d, `${at}.detectors[${i}]`, problems),
-    );
-  } else {
-    fail(problems, "schema", `${at}.detectors must be an array (possibly empty)`);
-  }
-  return id;
-}
-
-// loadMutantExecutions reads test/semantic/mutant-executions.json (default
-// path), the hand-authored, revision-bound observation ledger for the
-// mutation pilot — never generated, exactly like test/semantic/
-// executions.json. Missing file is NOT an error: it returns an empty Map,
-// so a report built from it falls back to each record's own declared
-// expected_detection (the same "absent observation reports unknown, never
-// an assumed pass" discipline lib/semantic-report.mjs already applies to
-// contract bindings) rather than refusing to run at all.
-export function loadMutantExecutions(
-  path = DEFAULT_MUTANT_EXECUTIONS_PATH,
-  { root = process.cwd(), mutantIds } = {},
-) {
-  const absolute = resolve(root, path);
-  if (!existsSync(absolute)) return new Map();
-  const raw = parseJSONFile(absolute, path);
-
-  const problems = [];
-  if (raw?.schema_version !== MUTANT_EXECUTION_SCHEMA_VERSION) {
-    fail(
-      problems,
-      "schema",
-      `${path}.schema_version must be ${MUTANT_EXECUTION_SCHEMA_VERSION}; got ${JSON.stringify(raw?.schema_version)}`,
-    );
-  }
-  if (!Array.isArray(raw?.executions)) {
-    fail(problems, "schema", `${path}.executions must be an array`);
-  }
-  if (problems.length > 0) throw new SemanticModelError("invalid mutant execution ledger", problems);
-
-  const seenIds = new Set();
-  const records = [];
-  raw.executions.forEach((entry, i) => {
-    const at = `${path}.executions[${i}]`;
-    const id = validateMutantExecution(entry, at, problems, { mutantIds });
-    if (id !== null) {
-      if (seenIds.has(id)) fail(problems, "schema", `${at}.id is a duplicate across execution records: ${id}`);
-      seenIds.add(id);
-    }
-    records.push(entry);
-  });
-  if (problems.length > 0) throw new SemanticModelError("invalid mutant execution ledger", problems);
-
-  // Most-recent-observed-first per mutant: ties on observed_at break on id
-  // descending, mirroring lib/semantic-report.mjs's latestExecution() — an
-  // arbitrary but deterministic tiebreak, since real data never collides.
-  const byMutant = new Map();
-  for (const record of records) {
-    const current = byMutant.get(record.mutant);
-    if (
-      !current ||
-      record.observed_at > current.observed_at ||
-      (record.observed_at === current.observed_at && record.id > current.id)
-    ) {
-      byMutant.set(record.mutant, record);
-    }
-  }
-  return byMutant;
 }
 
 // ---------------------------------------------------------------------------
@@ -765,25 +593,71 @@ export function selectDetectors(record, detectorId) {
 
 // applyTransformation materializes the mutant's overlay file inside
 // `scratchDir`, without ever writing to the real target. Returns
-// { ok:true, mutatedAbsPath, targetAbsPath, observedSourceFingerprint,
-// observedMutatedFingerprint } or { ok:false, reason, detail, ... } — a
-// `reason` of "source-fingerprint-mismatch" is checked and can fail BEFORE
-// git apply ever runs, which is what makes the fail-closed guarantee hold
-// even for a patch that would otherwise still (perhaps fuzzily) apply.
+// { ok:true, mutatedAbsPath, targetAbsPath, observedPreImageFingerprint,
+// observedPostImageFingerprint } or { ok:false, reason, detail, ... }. The
+// fail-closed checks run in this order, and the first three run BEFORE
+// git is ever invoked:
+//   1. pinned-fingerprint-mismatch — the record's pre_image_fingerprint /
+//      post_image_fingerprint disagree with what the patch file itself
+//      hashes to: the patch changed since it was pinned (or a record was
+//      hand-edited), so the record no longer describes this mutation.
+//   2. pre-image-not-in-target — some hunk's context + removed lines do not
+//      occur in the live target: the mutated region itself changed. An
+//      edit anywhere else in the file leaves every hunk's pre-image intact
+//      and is deliberately NOT drift (git apply locates the hunk at any
+//      offset), which is the whole point of pinning the region and not the
+//      file.
+//   3. patch-check-failed / patch-apply-failed — `git apply --check`, then
+//      `git apply`, rejected the patch.
+//   4. post-image-not-applied — a hunk's context + added lines are not
+//      present in the mutated file after applying.
+// Every `detail` names the repin recipe, because re-pinning (after fixing
+// the patch, for 2-4) is the only sanctioned way back to a valid record.
 export function applyTransformation({ record, root, scratchDir, spawnSyncFn = spawnSync }) {
   const targetAbsPath = resolve(root, record.transformation.target_path);
   const patchAbsPath = resolve(root, record.transformation.patch_path);
+  const repin = `${REPIN_RECIPE} ${record.id}`;
 
-  const originalBytes = readFileSync(targetAbsPath);
-  const observedSourceFingerprint = sha256Hex(originalBytes);
-  if (observedSourceFingerprint !== record.transformation.source_fingerprint) {
+  const patchText = readFileSync(patchAbsPath, "utf8");
+  let hunks;
+  try {
+    hunks = parsePatchHunks(patchText);
+  } catch (cause) {
     return {
       ok: false,
-      reason: "source-fingerprint-mismatch",
+      reason: "patch-unparseable",
+      detail: `${cause.message} — fix ${record.transformation.patch_path}, then run \`${repin}\``,
+    };
+  }
+  const pinned = patchFingerprints(patchText);
+  if (
+    pinned.pre_image_fingerprint !== record.transformation.pre_image_fingerprint ||
+    pinned.post_image_fingerprint !== record.transformation.post_image_fingerprint
+  ) {
+    return {
+      ok: false,
+      reason: "pinned-fingerprint-mismatch",
       detail:
-        `declared source_fingerprint ${record.transformation.source_fingerprint} disagrees with the ` +
-        `live target file (observed ${observedSourceFingerprint}) — refusing to test a stale mutant`,
-      observedSourceFingerprint,
+        `the record pins pre_image_fingerprint ${record.transformation.pre_image_fingerprint} / ` +
+        `post_image_fingerprint ${record.transformation.post_image_fingerprint}, but ` +
+        `${record.transformation.patch_path} hashes to ${pinned.pre_image_fingerprint} / ` +
+        `${pinned.post_image_fingerprint} — the patch changed since it was pinned; run \`${repin}\``,
+      patchPreImageFingerprint: pinned.pre_image_fingerprint,
+      patchPostImageFingerprint: pinned.post_image_fingerprint,
+    };
+  }
+
+  const originalText = readFileSync(targetAbsPath, "utf8");
+  const located = locateRegions(originalText, hunks.map((h) => h.preImage));
+  if (located.fingerprint === null) {
+    return {
+      ok: false,
+      reason: "pre-image-not-in-target",
+      detail:
+        `hunk(s) ${located.missing.map((i) => i + 1).join(", ")} of ${record.transformation.patch_path} no longer ` +
+        `occur in ${record.transformation.target_path} — the mutated region changed; re-author the hunk(s) ` +
+        `against the current source, then run \`${repin}\``,
+      observedPreImageFingerprint: null,
     };
   }
 
@@ -800,8 +674,10 @@ export function applyTransformation({ record, root, scratchDir, spawnSyncFn = sp
     return {
       ok: false,
       reason: "patch-check-failed",
-      detail: (checkResult.stderr || checkResult.stdout || "").trim(),
-      observedSourceFingerprint,
+      detail:
+        `${(checkResult.stderr || checkResult.stdout || "").trim()} — fix ${record.transformation.patch_path}, ` +
+        `then run \`${repin}\``,
+      observedPreImageFingerprint: located.fingerprint,
     };
   }
 
@@ -810,22 +686,25 @@ export function applyTransformation({ record, root, scratchDir, spawnSyncFn = sp
     return {
       ok: false,
       reason: "patch-apply-failed",
-      detail: (applyResult.stderr || applyResult.stdout || "").trim(),
-      observedSourceFingerprint,
+      detail:
+        `${(applyResult.stderr || applyResult.stdout || "").trim()} — fix ${record.transformation.patch_path}, ` +
+        `then run \`${repin}\``,
+      observedPreImageFingerprint: located.fingerprint,
     };
   }
 
-  const mutatedBytes = readFileSync(scratchTargetPath);
-  const observedMutatedFingerprint = sha256Hex(mutatedBytes);
-  if (observedMutatedFingerprint !== record.transformation.expected_mutated_fingerprint) {
+  const mutatedText = readFileSync(scratchTargetPath, "utf8");
+  const applied = locateRegions(mutatedText, hunks.map((h) => h.postImage));
+  if (applied.fingerprint === null) {
     return {
       ok: false,
-      reason: "mutated-fingerprint-mismatch",
+      reason: "post-image-not-applied",
       detail:
-        `applied patch produced ${observedMutatedFingerprint}, expected ` +
-        `${record.transformation.expected_mutated_fingerprint} — the patch applied somewhere unexpected`,
-      observedSourceFingerprint,
-      observedMutatedFingerprint,
+        `hunk(s) ${applied.missing.map((i) => i + 1).join(", ")} of ${record.transformation.patch_path} did not ` +
+        `leave their post-image in the mutated copy of ${record.transformation.target_path} — the patch applied ` +
+        `somewhere unexpected; fix the patch, then run \`${repin}\``,
+      observedPreImageFingerprint: located.fingerprint,
+      observedPostImageFingerprint: null,
     };
   }
 
@@ -833,8 +712,8 @@ export function applyTransformation({ record, root, scratchDir, spawnSyncFn = sp
     ok: true,
     mutatedAbsPath: scratchTargetPath,
     targetAbsPath,
-    observedSourceFingerprint,
-    observedMutatedFingerprint,
+    observedPreImageFingerprint: located.fingerprint,
+    observedPostImageFingerprint: applied.fingerprint,
   };
 }
 
@@ -999,8 +878,8 @@ export function runGoTest({
 // selected detector(s): clean control(s) first — any failure aborts the
 // whole measurement as infrastructure-error before the mutant is ever
 // attempted — then transformation materialization/verification, then the
-// mutant run(s), classified and (for a bare `survived`) checked against an
-// audited equivalence_review tied to the observed source fingerprint.
+// mutant run(s), classified and (for a bare `survived`) promoted to
+// equivalent-reviewed when the record carries an audited equivalence_review.
 //
 // `scratchDir` must already exist (see createScratchDir) and is never
 // created or removed by this function — the CALLER owns its lifecycle, so
@@ -1065,13 +944,13 @@ export async function runMutant({
       detail: transformed.detail,
       target_path: record.transformation.target_path,
       patch_path: record.transformation.patch_path,
-      source_fingerprint: {
-        expected: record.transformation.source_fingerprint,
-        observed: transformed.observedSourceFingerprint ?? null,
+      pre_image_fingerprint: {
+        expected: record.transformation.pre_image_fingerprint,
+        observed: transformed.observedPreImageFingerprint ?? null,
       },
-      mutated_fingerprint: {
-        expected: record.transformation.expected_mutated_fingerprint,
-        observed: transformed.observedMutatedFingerprint ?? null,
+      post_image_fingerprint: {
+        expected: record.transformation.post_image_fingerprint,
+        observed: transformed.observedPostImageFingerprint ?? null,
       },
       detectors: detectors.map((d) => d.id),
       clean_controls: cleanControls,
@@ -1106,28 +985,24 @@ export async function runMutant({
   }
 
   let status = aggregateClassifications(mutantRuns.map((r) => r.classification));
-  if (status === "survived" && record.equivalence_review !== null) {
-    const review = record.equivalence_review;
-    if (review.source_fingerprint === transformed.observedSourceFingerprint) {
-      status = "equivalent-reviewed";
-    }
-    // A stale review (fingerprint disagrees with the live source) is
-    // deliberately NOT applied — status stays "survived", which is the
-    // fail-closed reading: re-review is required, never assumed.
-  }
+  // The review is consulted only after applyTransformation verified the
+  // patch is byte-for-byte the one the record pins, so it can only ever be
+  // applied to the exact mutation it was written about (see this file's
+  // header on equivalent-reviewed).
+  if (status === "survived" && record.equivalence_review !== null) status = "equivalent-reviewed";
 
   return {
     mutant_id: record.id,
     status,
     target_path: record.transformation.target_path,
     patch_path: record.transformation.patch_path,
-    source_fingerprint: {
-      expected: record.transformation.source_fingerprint,
-      observed: transformed.observedSourceFingerprint,
+    pre_image_fingerprint: {
+      expected: record.transformation.pre_image_fingerprint,
+      observed: transformed.observedPreImageFingerprint,
     },
-    mutated_fingerprint: {
-      expected: record.transformation.expected_mutated_fingerprint,
-      observed: transformed.observedMutatedFingerprint,
+    post_image_fingerprint: {
+      expected: record.transformation.post_image_fingerprint,
+      observed: transformed.observedPostImageFingerprint,
     },
     detectors: detectors.map((d) => d.id),
     clean_controls: cleanControls,

@@ -35,12 +35,7 @@ import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-mo
 import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
 import { loadRegistry } from "./ci-lane-contract.mjs";
 import { lintFixMarkdown } from "./lib/markdown-lintfix.mjs";
-import {
-  DEFAULT_MUTANT_EXECUTIONS_PATH,
-  DEFAULT_MUTANTS_DIR,
-  loadMutantExecutions,
-  loadMutants,
-} from "./lib/semantic-mutation.mjs";
+import { DEFAULT_MUTANTS_DIR, loadMutants } from "./lib/semantic-mutation.mjs";
 import {
   DEFAULT_REPORT_JSON_PATH,
   DEFAULT_REPORT_MD_PATH,
@@ -54,8 +49,6 @@ const REGISTRY_PATH = process.env.SEMANTIC_LANE_REGISTRY_PATH ?? ".github/ci-lan
 const SNAPSHOT_PATH =
   process.env.SEMANTIC_LANE_POLICY_SNAPSHOT ?? "test/semantic/policy-snapshot.json";
 const MUTANTS_DIR = process.env.SEMANTIC_MUTANTS_DIR || DEFAULT_MUTANTS_DIR;
-const MUTANT_EXECUTIONS_PATH =
-  process.env.SEMANTIC_MUTANT_EXECUTIONS_PATH ?? DEFAULT_MUTANT_EXECUTIONS_PATH;
 
 const ANNOTATION_TITLE = "Semantic conformance report";
 
@@ -87,8 +80,7 @@ function readIfExists(path) {
 
 // loadReport builds the report object every generated semantic document
 // projects from — the model, the lane registry and policy snapshot, and the
-// mutation pilot corpus with its ledger, all from the same env-driven
-// paths. semantic-guide.mjs imports it rather than repeating the loading,
+// mutation pilot corpus, all from the same env-driven paths. semantic-guide.mjs imports it rather than repeating the loading,
 // so the guide can never be built from a different input set than the
 // report it is a view over.
 export function loadReport(root = process.cwd()) {
@@ -96,11 +88,7 @@ export function loadReport(root = process.cwd()) {
   const registry = loadRegistry(REGISTRY_PATH);
   const snapshot = validatePolicySnapshot(JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")));
   const mutants = loadMutants(MUTANTS_DIR, { root, contractIds: new Set(model.contracts.keys()) });
-  const mutantExecutions = loadMutantExecutions(MUTANT_EXECUTIONS_PATH, {
-    root,
-    mutantIds: new Set(mutants.keys()),
-  });
-  const report = buildReport(model, { registry, snapshot, mutants, mutantExecutions });
+  const report = buildReport(model, { registry, snapshot, mutants });
   return { model, registry, snapshot, report };
 }
 

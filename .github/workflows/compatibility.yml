@@ -230,12 +230,6 @@ jobs:
   prometheus:
     name: compatibility/prometheus
     needs: [changes, gate]
-    # Read by `semantic-observations-prometheus` below: the harness step's OWN
-    # outcome, so the evidence job runs on a real case set even when a
-    # ratchet step after the harness failed this job (a real fail is still
-    # valid evidence, not non-evidence).
-    outputs:
-      harness: ${{ steps.compat.outcome }}
     # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
@@ -764,12 +758,6 @@ jobs:
   tempo:
     name: compatibility/tempo
     needs: [changes, gate]
-    # Read by `semantic-observations-tempo` below: the harness step's OWN
-    # outcome, so the evidence job runs on a real case set even when a
-    # ratchet step after the harness failed this job (a real fail is still
-    # valid evidence, not non-evidence).
-    outputs:
-      harness: ${{ steps.harness.outcome }}
     # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
@@ -911,12 +899,6 @@ jobs:
   loki:
     name: compatibility/loki
     needs: [changes, gate]
-    # Read by `semantic-observations-loki` below: the harness step's OWN
-    # outcome, so the evidence job runs on a real case set even when a
-    # ratchet step after the harness failed this job (a real fail is still
-    # valid evidence, not non-evidence).
-    outputs:
-      harness: ${{ steps.harness.outcome }}
     # `always()` is load-bearing, exactly as on ci.yml's `check` aggregator:
     # with a plain `needs:` this job is SKIPPED when `changes` or `gate`
     # fails, GitHub posts `skipped`, and release-preflight counts `skipped`
@@ -1037,165 +1019,3 @@ jobs:
         run: |
           echo "::error title=compatibility/loki suite failed::harness step failed -- see logs and uploaded report"
           exit 1
-
-  # compat-execution-report.mjs (issue #3499) fans the `prometheus` job's
-  # compat-cases.json out over every active "reference" binding the
-  # semantic model scopes to compatibility/prometheus, via
-  # semantic-execution-adapter.mjs's own classify/normalize logic, and
-  # uploads the records for a human to later fold into
-  # test/semantic/executions.json (which stays hand-authored/reviewed). It
-  # is evidence, never a gate — which is why it is its OWN job and not a
-  # step of `prometheus`: `compatibility/prometheus` is a release-required lane, and
-  # a step that must not fail a gating job does not belong in that job
-  # (test/regression/ci_lane_registry_test.go bans both `continue-on-error`
-  # and a script-side SOFT_FAIL there). Here a real failure of the report
-  # goes red on its own, non-gating check-run, where it is visible instead
-  # of masked. `always()` + the harness outcome: runs whenever the harness
-  # itself produced a real case set, regardless of whether a ratchet step
-  # failed the head job.
-  semantic-observations-prometheus:
-    name: semantic observations (compat/prometheus)
-    needs: prometheus
-    if: always() && needs.prometheus.outputs.harness == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download the head's report
-        uses: actions/download-artifact@v8
-        with:
-          name: compatibility-prometheus-report
-          path: compatibility/prometheus
-
-      - name: Generate semantic execution observations (compat/prometheus)
-        env:
-          HEAD: prometheus
-          CASES_PATH: compatibility/prometheus/compat-cases.json
-          CORPUS_PATH: compatibility/prometheus/query-corpus
-          # Matches docker-compose.yml's own pinned reference image
-          # (and lib/mirror.mjs's mirror-pull list) — the exact version
-          # this run's differential actually ran against.
-          REFERENCE_VERSION: "prom/prometheus:v3.11.3"
-          OUT: compat-executions-prometheus.json
-        run: node .github/scripts/compat-execution-report.mjs
-
-      - name: Upload semantic execution observations (compat/prometheus)
-        uses: actions/upload-artifact@v7
-        with:
-          name: semantic-executions-compat-prometheus
-          path: compat-executions-prometheus.json
-          if-no-files-found: error
-          retention-days: 30
-
-  # compat-execution-report.mjs (issue #3499) fans the `tempo` job's
-  # compat-cases.json out over every active "reference" binding the
-  # semantic model scopes to compatibility/tempo, via
-  # semantic-execution-adapter.mjs's own classify/normalize logic, and
-  # uploads the records for a human to later fold into
-  # test/semantic/executions.json (which stays hand-authored/reviewed). It
-  # is evidence, never a gate — which is why it is its OWN job and not a
-  # step of `tempo`: `compatibility/tempo` is a release-required lane, and
-  # a step that must not fail a gating job does not belong in that job
-  # (test/regression/ci_lane_registry_test.go bans both `continue-on-error`
-  # and a script-side SOFT_FAIL there). Here a real failure of the report
-  # goes red on its own, non-gating check-run, where it is visible instead
-  # of masked. `always()` + the harness outcome: runs whenever the harness
-  # itself produced a real case set, regardless of whether a ratchet step
-  # failed the head job.
-  semantic-observations-tempo:
-    name: semantic observations (compat/tempo)
-    needs: tempo
-    if: always() && needs.tempo.outputs.harness == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download the head's report
-        uses: actions/download-artifact@v8
-        with:
-          name: compatibility-tempo-report
-          path: compatibility/tempo/reports
-
-      - name: Generate semantic execution observations (compat/tempo)
-        env:
-          HEAD: tempo
-          CASES_PATH: compatibility/tempo/reports/compat-cases.json
-          CASES_PATH_GRPC: compatibility/tempo/reports/compat-cases-grpc.json
-          CORPUS_PATH: compatibility/tempo/driver/corpus/smoke.txtar
-          # Matches docker-compose.yml's own pinned reference image (and
-          # lib/mirror.mjs's mirror-pull list) — the exact version this
-          # run's differential actually ran against, for both transports.
-          REFERENCE_VERSION: "grafana/tempo:main-2f74ea8"
-          OUT: compat-executions-tempo.json
-        run: node .github/scripts/compat-execution-report.mjs
-
-      - name: Upload semantic execution observations (compat/tempo)
-        uses: actions/upload-artifact@v7
-        with:
-          name: semantic-executions-compat-tempo
-          path: compat-executions-tempo.json
-          if-no-files-found: error
-          retention-days: 30
-
-  # compat-execution-report.mjs (issue #3499) fans the `loki` job's
-  # compat-cases.json out over every active "reference" binding the
-  # semantic model scopes to compatibility/loki, via
-  # semantic-execution-adapter.mjs's own classify/normalize logic, and
-  # uploads the records for a human to later fold into
-  # test/semantic/executions.json (which stays hand-authored/reviewed). It
-  # is evidence, never a gate — which is why it is its OWN job and not a
-  # step of `loki`: `compatibility/loki` is a release-required lane, and
-  # a step that must not fail a gating job does not belong in that job
-  # (test/regression/ci_lane_registry_test.go bans both `continue-on-error`
-  # and a script-side SOFT_FAIL there). Here a real failure of the report
-  # goes red on its own, non-gating check-run, where it is visible instead
-  # of masked. `always()` + the harness outcome: runs whenever the harness
-  # itself produced a real case set, regardless of whether a ratchet step
-  # failed the head job.
-  semantic-observations-loki:
-    name: semantic observations (compat/loki)
-    needs: loki
-    if: always() && needs.loki.outputs.harness == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download the head's report
-        uses: actions/download-artifact@v8
-        with:
-          name: compatibility-loki-report
-          path: compatibility/loki/reports
-
-      - name: Generate semantic execution observations (compat/loki)
-        env:
-          HEAD: loki
-          CASES_PATH: compatibility/loki/reports/compat-cases.json
-          # Both corpus roots run-loki-compatibility.mjs's `-corpus` and
-          # `-cerberus-queries` flags draw from — see that script. Hashing
-          # only one leaves the fingerprint blind to drift in the other,
-          # notably BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT's own
-          # test_ref, which lives under cerberus-queries/.
-          CORPUS_PATH: "compatibility/loki/upstream/loki-bench/queries:compatibility/loki/cerberus-queries"
-          # Matches docker-compose.yml's own pinned reference image (and
-          # lib/mirror.mjs's mirror-pull list) — the exact version this
-          # run's differential actually ran against.
-          REFERENCE_VERSION: "grafana/loki:3.7.0"
-          OUT: compat-executions-loki.json
-        run: node .github/scripts/compat-execution-report.mjs
-
-      - name: Upload semantic execution observations (compat/loki)
-        uses: actions/upload-artifact@v7
-        with:
-          name: semantic-executions-compat-loki
-          path: compat-executions-loki.json
-          if-no-files-found: error
-          retention-days: 30

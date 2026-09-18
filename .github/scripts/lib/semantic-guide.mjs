@@ -335,7 +335,7 @@ function findContract(report, id) {
 /**
  * The adversarial-evidence projection: which contracts the real
  * (non-synthetic) mutants of the semantic mutation pilot target, each with
- * its RESOLVED disposition and bucket — read straight from
+ * its disposition and bucket — read straight from
  * report.mutation_cohort (lib/semantic-mutation-report.mjs), never
  * recomputed. `mutant_count` is the size of the semantic cohort, so an
  * empty corpus reads as a derived zero rather than a hand-written claim.
@@ -347,7 +347,7 @@ function adversarialEvidence(cohort) {
       contract,
       mutants: [...ids].sort().map((id) => {
         const record = records.get(id);
-        return { id, disposition: record?.disposition?.status ?? null, bucket: record?.bucket ?? null };
+        return { id, disposition: record?.status ?? null, bucket: record?.bucket ?? null };
       }),
     }))
     .sort((a, b) => (a.contract < b.contract ? -1 : a.contract > b.contract ? 1 : 0));
@@ -501,7 +501,7 @@ function renderAdversarialEvidence(evidence) {
   lines.push(
     `${evidence.mutant_count} real (non-synthetic) mutant record(s) in the semantic mutation pilot ` +
       "(`test/semantic/mutants/`; the full report's \"Semantic mutation pilot\" section carries " +
-      "the kill/escape rates and every detector). Per targeted contract, each mutant's resolved " +
+      "the kill/escape rates and every detector). Per targeted contract, each mutant's " +
       "disposition and bucket; a contract absent from this table has no adversarial evidence.",
   );
   lines.push("");

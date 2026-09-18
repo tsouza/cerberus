@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-SYNTH-TIMEOUT-LOOP",
   "title": "SpinUntil's loop advance is inverted into a non-terminating spin",
   "synthetic": true,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/timeout-loop.patch",
-    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
-    "expected_mutated_fingerprint": "def140c7484472860d8ab2962423c493b9a39ad91aab4c89faa413817ac74314"
+    "pre_image_fingerprint": "8af4ffb6981da766fd7eb974cfefc8c42fed8fe978d9da6b3a073d7cfdf84009",
+    "post_image_fingerprint": "e042e48274750d95ed8794795654d9f8e432f059c74553184b31e013d65489a9"
   },
   "detectors": [
     {
@@ -30,6 +30,5 @@
     "memory_max": "256MiB",
     "memory_hold": "1s"
   },
-  "notes": "timeout_seconds is deliberately short (3s, not the usual 15s) so this record's own control case runs quickly; the mutated loop never allocates, so it cannot trip the memory bound before the wall-clock ceiling does.",
-  "linked_issue": null
+  "notes": "timeout_seconds is deliberately short (3s, not the usual 15s) so this record's own control case runs quickly; the mutated loop never allocates, so it cannot trip the memory bound before the wall-clock ceiling does."
 }

@@ -1,17 +1,17 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-SYNTH-EQUIV-COMMUTE",
   "title": "CommutativeSum's operand order is swapped",
   "synthetic": true,
-  "synthetic_rationale": "Exercises the runner's equivalent-reviewed path: a mutation that survives AND has an audited, fingerprint-tied equivalence review, so the runner must reclassify it away from a bare survivor. Not a per-head query mutation.",
+  "synthetic_rationale": "Exercises the runner's equivalent-reviewed path: a mutation that survives AND has an audited equivalence review, so the runner must reclassify it away from a bare survivor. Not a per-head query mutation.",
   "violated_contracts": [
     "SYNTHETIC-COMMUTATIVE-OPERAND-ORDER"
   ],
   "transformation": {
     "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/equiv-commute.patch",
-    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
-    "expected_mutated_fingerprint": "6f44822ba1dc2c387fe5726bef558791eb6b0ae392a0d2d0f73906924c4bb907"
+    "pre_image_fingerprint": "b58287db62d647511ea2c83e6e3e1b52c0f3a5efd0c6506066da28f7a876d7c7",
+    "post_image_fingerprint": "870c5377f3c5bc7aed8fc1cbb2a03d5c98dcd005547bc59f3317084253184300"
   },
   "detectors": [
     {
@@ -27,7 +27,6 @@
   "equivalence_review": {
     "reviewer": "cerberus-core",
     "reviewed_at": "2026-09-16T00:00:00Z",
-    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
     "rationale": "a+b and b+a are byte-for-byte identical under Go's two's-complement int addition for every pair of inputs: addition is commutative and neither operand order can overflow differently. No test can distinguish them because there is nothing to distinguish. Hand-verified against Go's spec (arithmetic operators), not merely asserted."
   },
   "isolation": {
@@ -35,6 +34,5 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": "The equivalence_review.source_fingerprint must equal transformation.source_fingerprint; if arith.go changes, this review goes stale and the runner falls back to reporting a bare survived until re-reviewed.",
-  "linked_issue": null
+  "notes": "The review is about this record's one patch: transformation.pre_image_fingerprint pins the patch's region, so if that region of arith.go changes the record is invalid-transform until the patch is re-authored and re-pinned (`just semantic-mutant-repin`) \u2014 the review is never applied to a mutation other than the one it reviewed."
 }

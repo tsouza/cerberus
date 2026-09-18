@@ -1,17 +1,17 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-SYNTH-INVALID-FINGERPRINT",
-  "title": "Declared source fingerprint deliberately disagrees with the live target file",
+  "title": "Pinned pre-image fingerprint deliberately disagrees with the patch it names",
   "synthetic": true,
-  "synthetic_rationale": "Exercises the runner's fail-closed path: a mutant record whose declared source_fingerprint does not match the live target file (simulating drift since authoring time). The runner must refuse to test the unmodified candidate and report invalid-transform, never silently proceed. Not a per-head query mutation.",
+  "synthetic_rationale": "Exercises the runner's fail-closed path: a mutant record whose pinned pre_image_fingerprint does not match what its own patch file hashes to (simulating a patch edited, or a record hand-edited, since it was pinned). The runner must refuse to test anything and report invalid-transform before the patch is applied or any detector ever runs, never silently proceed. Not a per-head query mutation.",
   "violated_contracts": [
     "SYNTHETIC-CLAMP-UPPER-BOUND"
   ],
   "transformation": {
     "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/killed-invert.patch",
-    "source_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
-    "expected_mutated_fingerprint": "8f2155010033f16f00e0a9d48821ec4f049e5ea33064c250bb947ee4f9eada01"
+    "pre_image_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+    "post_image_fingerprint": "21f3469db6cc16757c2320d0ab892a3db725d66f7215e325cb1466da083cc1da"
   },
   "detectors": [
     {
@@ -30,6 +30,5 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": "source_fingerprint above is deliberately wrong (64 zero characters \u2014 well-formed SHA-256 hex, simulating a stale-but-plausible fingerprint rather than a malformed one) \u2014 this record's entire purpose is to prove the mismatch is caught before git apply or any detector ever runs.",
-  "linked_issue": null
+  "notes": "pre_image_fingerprint above is deliberately wrong (64 zero characters \u2014 well-formed SHA-256 hex, simulating a stale-but-plausible pin rather than a malformed one) \u2014 this record's entire purpose is to prove the mismatch is caught before the patch is applied or any detector ever runs. It is the one record `just semantic-mutant-repin` must never be run on: re-pinning it would make it a duplicate of MUTANT-SYNTH-KILLED-INVERT and erase the path it exists to exercise."
 }

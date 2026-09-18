@@ -64,17 +64,21 @@
 // cases, kept honestly extensible (one function per kind) — not a
 // speculative framework for routing kinds that do not exist yet.
 //
-// SOURCE-FINGERPRINT MECHANISM. Before running any mechanism, this module
-// recomputes a SHA-256 over the contract entry's own `locator_path` +
-// `replay_test_path` bytes and compares it against the value checked in at
-// `test/semantic/replay-fingerprints.json` (writeFingerprints() /
-// computeAllFingerprints() below; refreshed by hand via
-// `node .github/scripts/semantic-replay.mjs --update-fingerprints`, mirroring
-// this repo's existing hand-refreshed snapshot precedent,
-// .github/scripts/semantic-lane-policy-snapshot.mjs). A missing or
-// mismatched fingerprint is reported as STALE, a distinct status from a
-// real FAIL/ERROR — a stale reference means the record's own pointers have
-// drifted from what was fingerprinted, not that the replayed test failed.
+// REGION-FINGERPRINT MECHANISM. Before running any mechanism, this module
+// recomputes a SHA-256 over the REGION each of the entry's resolved
+// mechanisms executes — a go-test-direct mechanism's test function (its
+// source from the `func Test...(` line to the next top-level declaration),
+// a go-test-fixture mechanism's fixture file, a compat-corpus mechanism's
+// corpus file — via lib/semantic-fingerprint.mjs, the same scheme the
+// mutant records pin their patch regions with, and compares it against the
+// value checked in at `test/semantic/replay-fingerprints.json`
+// (writeFingerprints() / computeAllFingerprints() below; regenerated with
+// `just semantic-replay-repin`, never by hand — CLAUDE.md invariant 9). An
+// edit elsewhere in the same file (another test function in
+// test/property/traceql_test.go, say) does not move the fingerprint. A
+// missing or mismatched fingerprint is reported as STALE, a distinct status
+// from a real FAIL/ERROR — a stale reference means the replay region has
+// changed since it was pinned, not that the replayed test failed.
 //
 // FAIL-CLOSED CONDITIONS, each independently distinguishable via `status`
 // + `reasonKind` (see REPLAY_STATUS below): an unknown counterexample id
@@ -100,24 +104,20 @@
 //
 // Node builtins only.
 
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import { loadSemanticModel } from "./semantic-model.mjs";
 import { loadCounterexamples } from "./semantic-counterexamples.mjs";
+import { goFuncRegion, regionFingerprint } from "./semantic-fingerprint.mjs";
 
 export const DEFAULT_FINGERPRINTS_PATH = "test/semantic/replay-fingerprints.json";
-export const FINGERPRINT_SCHEMA_VERSION = 1;
-
-// Separates the (up to) two concatenated file byte-streams a fingerprint
-// hashes. A plain ASCII marker, not a control byte: a NUL in the leading
-// block of a committed .mjs source file trips repo-hygiene's binary-content
-// classifier (this file is source, never a build artefact). Not a sequence
-// either file's own contents could plausibly contain verbatim at the seam,
-// so it cannot be defeated by an edit to either file individually.
-const FINGERPRINT_DELIMITER = "\n<<semantic-replay-fingerprint-delimiter>>\n";
+// Bumped 1 -> 2 when the whole-file locator_path + replay_test_path hash
+// became the per-mechanism region hash (see the header).
+export const FINGERPRINT_SCHEMA_VERSION = 2;
+// The recipe every STALE detail names: the ONE way the snapshot is refreshed.
+export const REPIN_RECIPE = "just semantic-replay-repin";
 
 const GO_TEST_FILE_RE = /_test\.go$/;
 const FIXTURE_EXT = ".txtar";
@@ -244,6 +244,7 @@ export function resolveGoTestMechanism(entry, { root = process.cwd() } = {}) {
         subtest: basenameNoExt(entry.locator_path, FIXTURE_EXT),
         buildTag,
         sourceFile: testPath,
+        fixtureFile: entry.locator_path,
       };
     }
 
@@ -284,6 +285,7 @@ export function resolveGoTestMechanism(entry, { root = process.cwd() } = {}) {
       subtest: basenameNoExt(testPath, FIXTURE_EXT),
       buildTag: readBuildTag(companionAbs),
       sourceFile: companion,
+      fixtureFile: testPath,
     };
   }
 
@@ -347,27 +349,49 @@ export function fingerprintKey(counterexampleId, contractId) {
   return `${counterexampleId}#${contractId}`;
 }
 
-// computeEntryFingerprint — SHA-256 over a contract entry's own locator_path
-// + replay_test_path bytes, in that fixed order, separated by
-// FINGERPRINT_DELIMITER; when the two fields name the same path they are
-// hashed once (no delimiter), not doubled.
-export function computeEntryFingerprint(entry, { root = process.cwd() } = {}) {
-  const paths =
-    entry.locator_path === entry.replay_test_path
-      ? [entry.locator_path]
-      : [entry.locator_path, entry.replay_test_path];
-  const hash = createHash("sha256");
-  paths.forEach((p, i) => {
-    if (i > 0) hash.update(FINGERPRINT_DELIMITER);
-    hash.update(readFileSync(resolve(root, p)));
-  });
-  return hash.digest("hex");
+// mechanismRegion — the bytes one resolved mechanism's verdict depends on:
+// the test function's own source for go-test-direct, the fixture file for
+// go-test-fixture, the corpus file for compat-corpus. Throws on an
+// unresolved mechanism — there is no region to pin, and pinning a
+// placeholder would let a broken pointer read as fresh.
+export function mechanismRegion(mechanism, { root = process.cwd() } = {}) {
+  switch (mechanism.kind) {
+    case "go-test-direct": {
+      const region = goFuncRegion(readFileSync(resolve(root, mechanism.sourceFile), "utf8"), mechanism.testFunc);
+      if (region === null) {
+        throw new Error(`${mechanism.sourceFile} declares no top-level func ${mechanism.testFunc}`);
+      }
+      return region;
+    }
+    case "go-test-fixture":
+      return readFileSync(resolve(root, mechanism.fixtureFile));
+    case "compat-corpus":
+      return readFileSync(resolve(root, mechanism.sourceFile));
+    default:
+      throw new Error(`cannot fingerprint an unresolved replay mechanism: ${mechanism.reason}`);
+  }
+}
+
+// computeEntryFingerprint — SHA-256 over the regions of every mechanism a
+// contract entry resolves to, in resolution order (lib/semantic-
+// fingerprint.mjs's regionFingerprint, delimiter-joined). Throws when any
+// mechanism is unresolved, see mechanismRegion.
+export function computeEntryFingerprint(entry, { root = process.cwd(), mechanisms } = {}) {
+  const resolved = mechanisms ?? resolveMechanisms(entry, { root });
+  return regionFingerprint(resolved.map((m) => mechanismRegion(m, { root })));
 }
 
 export function loadFingerprints(path = DEFAULT_FINGERPRINTS_PATH, { root = process.cwd() } = {}) {
   const abs = resolve(root, path);
   if (!existsSync(abs)) return { schema_version: FINGERPRINT_SCHEMA_VERSION, fingerprints: {} };
-  return JSON.parse(readFileSync(abs, "utf8"));
+  const snapshot = JSON.parse(readFileSync(abs, "utf8"));
+  if (snapshot.schema_version !== FINGERPRINT_SCHEMA_VERSION) {
+    throw new Error(
+      `${path}: schema_version ${JSON.stringify(snapshot.schema_version)} is not ${FINGERPRINT_SCHEMA_VERSION} — ` +
+        `run \`${REPIN_RECIPE}\``,
+    );
+  }
+  return snapshot;
 }
 
 // computeAllFingerprints — recomputes the fingerprint for every
@@ -383,8 +407,8 @@ export function computeAllFingerprints({ root = process.cwd() } = {}) {
     }
   }
   // A pure function of the tree — no timestamp — so two refreshes from the
-  // same checkout are byte-identical and `--update-fingerprints` produces
-  // a diff only when a fingerprint actually moved.
+  // same checkout are byte-identical and `just semantic-replay-repin`
+  // produces a diff only when a fingerprint actually moved.
   return { schema_version: FINGERPRINT_SCHEMA_VERSION, fingerprints };
 }
 
@@ -532,10 +556,15 @@ export function loadCounterexampleRecord(id, { root = process.cwd() } = {}) {
 // fingerprint matches the live one (safe to run); otherwise returns the
 // STALE mechanism result to report instead of running anything, so a stale
 // pointer is never conflated with a real test failure or a substrate gap.
-export function checkEntryFingerprint(counterexampleId, entry, stored, { root = process.cwd() } = {}) {
+// An entry with an unresolved mechanism has no region to check and reports
+// status "unresolved" with a null result: the caller runs the mechanisms,
+// and the unresolved one reports its own ERROR/unresolved-selector.
+export function checkEntryFingerprint(counterexampleId, entry, stored, { root = process.cwd(), mechanisms } = {}) {
   const key = fingerprintKey(counterexampleId, entry.contract_id);
+  const resolved = mechanisms ?? resolveMechanisms(entry, { root });
+  if (resolved.some((m) => m.kind === "unresolved")) return { key, status: "unresolved", result: null };
   const storedHash = stored[key];
-  const liveHash = computeEntryFingerprint(entry, { root });
+  const liveHash = computeEntryFingerprint(entry, { root, mechanisms: resolved });
 
   if (storedHash === undefined) {
     return {
@@ -544,7 +573,7 @@ export function checkEntryFingerprint(counterexampleId, entry, stored, { root = 
       result: {
         status: REPLAY_STATUS.STALE,
         reasonKind: "fingerprint-missing",
-        detail: `no recorded fingerprint for ${key} — run 'node .github/scripts/semantic-replay.mjs --update-fingerprints'`,
+        detail: `no recorded fingerprint for ${key} — run \`${REPIN_RECIPE}\``,
       },
     };
   }
@@ -557,8 +586,8 @@ export function checkEntryFingerprint(counterexampleId, entry, stored, { root = 
         reasonKind: "fingerprint-mismatch",
         detail:
           `recorded fingerprint ${storedHash} does not match the live ${liveHash} for ${key} — ` +
-          `locator_path/replay_test_path content changed since the fingerprint was last refreshed. ` +
-          `Confirm the drift is intentional, then run --update-fingerprints.`,
+          `the replay region (${resolved.map((m) => m.kind === "go-test-direct" ? `${m.sourceFile}:${m.testFunc}` : m.fixtureFile ?? m.sourceFile).join(", ")}) ` +
+          `changed since it was pinned. Confirm the drift is intentional, then run \`${REPIN_RECIPE}\`.`,
       },
     };
   }
@@ -578,12 +607,13 @@ export function replayCounterexample(id, { root = process.cwd() } = {}) {
   const stored = loadFingerprints(undefined, { root }).fingerprints ?? {};
 
   const entries = record.contracts.map((entry) => {
-    const fp = checkEntryFingerprint(id, entry, stored, { root });
+    const resolved = resolveMechanisms(entry, { root });
+    const fp = checkEntryFingerprint(id, entry, stored, { root, mechanisms: resolved });
     if (fp.result) {
       return { contractId: entry.contract_id, fingerprintKey: fp.key, fingerprintStatus: fp.status, mechanisms: [fp.result] };
     }
 
-    const mechanisms = resolveMechanisms(entry, { root }).map((mechanism) => ({
+    const mechanisms = resolved.map((mechanism) => ({
       mechanism,
       ...runMechanism(mechanism, { root }),
     }));

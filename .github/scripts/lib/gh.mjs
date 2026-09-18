@@ -54,9 +54,9 @@ export function error(message, props = {}) {
 }
 
 // ::error:: on STDERR, same escaping as error() above. For a CLI whose
-// stdout is a payload something else parses (semantic-execution-adapter.mjs
-// prints executions.json-shaped records to stdout) or a one-line status a
-// caller matches on; the runner reads workflow commands from either stream.
+// stdout is a payload something else parses or a one-line status a caller
+// matches on (semantic-report.mjs prints its freshness line there); the
+// runner reads workflow commands from either stream.
 export function errorStderr(message, props = {}) {
   process.stderr.write(`::error${renderProps(props)}::${escapeData(message)}\n`);
 }

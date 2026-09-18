@@ -1,5 +1,5 @@
 // semantic-replay.test.mjs — node --test guard for
-// .github/scripts/lib/semantic-replay.mjs's structural routing, source-
+// .github/scripts/lib/semantic-replay.mjs's structural routing, region-
 // fingerprint check, and execution glue (issue #3446).
 //
 // SCOPING NOTE (why this suite never shells out to `just compat-logql`):
@@ -28,13 +28,15 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   CHDB_INSTALL_PATH_ENV,
   EXIT_CODES,
+  FINGERPRINT_SCHEMA_VERSION,
+  REPIN_RECIPE,
   REPLAY_STATUS,
   buildGoTestInvocation,
   chdbAvailable,
@@ -45,6 +47,7 @@ import {
   isChdbTag,
   loadCounterexampleRecord,
   loadFingerprints,
+  mechanismRegion,
   replayCounterexample,
   resolveCompatCorpusMechanism,
   resolveGoTestMechanism,
@@ -241,24 +244,111 @@ test("checkEntryFingerprint reports STALE/fingerprint-mismatch when the recorded
   assert.equal(check.result.reasonKind, "fingerprint-mismatch");
 });
 
-test("computeEntryFingerprint hashes locator_path and replay_test_path once (not doubled) when they are the same file", () => {
-  const path = "test/semantic/counterexamples/issue-3271.json";
-  const withDuplicate = computeEntryFingerprint(
-    { locator_path: path, replay_test_path: path },
-    { root: REPO_ROOT },
+test("checkEntryFingerprint's STALE details name the repin recipe, never a hand edit", () => {
+  const entry = entryOf("CTREX-3271", "PROMQL-ORACLE-ENGINE-ANSWER-FLAG-PARITY");
+  const missing = checkEntryFingerprint("CTREX-3271", entry, {}, { root: REPO_ROOT });
+  assert.ok(missing.result.detail.includes(REPIN_RECIPE));
+  const stored = { [fingerprintKey("CTREX-3271", entry.contract_id)]: "0".repeat(64) };
+  const mismatch = checkEntryFingerprint("CTREX-3271", entry, stored, { root: REPO_ROOT });
+  assert.ok(mismatch.result.detail.includes(REPIN_RECIPE));
+  assert.ok(mismatch.result.detail.includes("promql_oracle_engine_parity_test.go:TestPromQLOracleEngineParity"));
+});
+
+test("checkEntryFingerprint on an entry with an unresolved mechanism has no region to check and defers to the mechanism's own ERROR", () => {
+  const entry = {
+    ...entryOf("CTREX-3271", "PROMQL-ORACLE-ENGINE-ANSWER-FLAG-PARITY"),
+    replay_test_name: "TestNoSuchFunction",
+  };
+  const check = checkEntryFingerprint("CTREX-3271", entry, {}, { root: REPO_ROOT });
+  assert.equal(check.status, "unresolved");
+  assert.equal(check.result, null);
+  assert.throws(() => computeEntryFingerprint(entry, { root: REPO_ROOT }), /unresolved replay mechanism/);
+});
+
+test("loadFingerprints refuses a snapshot from another schema version and names the repin recipe", () => {
+  const dir = mkdtempSync(join(tmpdir(), "semantic-replay-fp-"));
+  try {
+    writeFileSync(join(dir, "old.json"), JSON.stringify({ schema_version: FINGERPRINT_SCHEMA_VERSION - 1, fingerprints: {} }));
+    assert.throws(() => loadFingerprints("old.json", { root: dir }), new RegExp(REPIN_RECIPE));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- Region scheme: the fingerprint covers what the mechanism runs, not the file it lives in --
+//
+// Built against a scratch copy of CTREX-3271's replay target (a plain
+// go-test-direct mechanism with no build tag) so the drift under test is
+// exactly one edit to the copy and the committed file is never touched.
+
+const DIRECT_ENTRY = () => entryOf("CTREX-3271", "PROMQL-ORACLE-ENGINE-ANSWER-FLAG-PARITY");
+
+function scratchRootWithReplayTarget(mutate) {
+  const root = mkdtempSync(join(tmpdir(), "semantic-replay-region-"));
+  const entry = DIRECT_ENTRY();
+  for (const rel of new Set([entry.replay_test_path, entry.locator_path])) {
+    mkdirSync(join(root, dirname(rel)), { recursive: true });
+    const text = readFileSync(join(REPO_ROOT, rel), "utf8");
+    writeFileSync(join(root, rel), rel === entry.replay_test_path ? mutate(text) : text);
+  }
+  return root;
+}
+
+test("region scheme: a go-test-direct fingerprint is the test function's own region, so an edit to a SIBLING function in the same file does not move it", () => {
+  const entry = DIRECT_ENTRY();
+  const live = computeEntryFingerprint(entry, { root: REPO_ROOT });
+  const region = mechanismRegion(resolveMechanisms(entry, { root: REPO_ROOT })[0], { root: REPO_ROOT });
+  assert.ok(region.startsWith(`func ${entry.replay_test_name}(`));
+  const root = scratchRootWithReplayTarget((text) => {
+    // Append a brand-new top-level function AFTER everything else: a
+    // whole-file hash moves, the replay function's own region does not.
+    return `${text}\nfunc TestUnrelatedSibling(t *testing.T) { t.Log("unrelated") }\n`;
+  });
+  try {
+    assert.equal(computeEntryFingerprint(entry, { root }), live);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("region scheme: an edit INSIDE the replay function's region moves the fingerprint (STALE until re-pinned)", () => {
+  const entry = DIRECT_ENTRY();
+  const live = computeEntryFingerprint(entry, { root: REPO_ROOT });
+  const root = scratchRootWithReplayTarget((text) => {
+    const decl = `func ${entry.replay_test_name}(t *testing.T) {`;
+    assert.ok(text.includes(decl), "fixture precondition: the replay function is declared");
+    return text.replace(decl, `${decl}\n\tt.Log("an edit inside the region")`);
+  });
+  try {
+    assert.notEqual(computeEntryFingerprint(entry, { root }), live);
+    const stored = { [fingerprintKey("CTREX-3271", entry.contract_id)]: live };
+    const check = checkEntryFingerprint("CTREX-3271", entry, stored, { root });
+    assert.equal(check.status, "mismatch");
+    assert.equal(check.result.status, REPLAY_STATUS.STALE);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("region scheme: a go-test-fixture entry pins the fixture file, and a two-mechanism entry pins both regions", () => {
+  const fixtureEntry = entryOf("CTREX-1741", "PROMQL-LABEL-MATCHER-REGEX-ANCHORING");
+  const [fixtureMechanism] = resolveMechanisms(fixtureEntry, { root: REPO_ROOT });
+  assert.equal(fixtureMechanism.kind, "go-test-fixture");
+  assert.equal(fixtureMechanism.fixtureFile, fixtureEntry.locator_path);
+  assert.deepEqual(
+    mechanismRegion(fixtureMechanism, { root: REPO_ROOT }),
+    readFileSync(join(REPO_ROOT, fixtureEntry.locator_path)),
   );
-  // A distinct-paths hash over the very same two byte-streams must differ
-  // from the deduped single-file hash — proves dedupe is actually applied,
-  // not merely documented.
-  const withTwoDistinctCopies = computeEntryFingerprint(
-    { locator_path: path, replay_test_path: "test/semantic/counterexamples/issue-2241.json" },
-    { root: REPO_ROOT },
-  );
-  assert.notEqual(withDuplicate, withTwoDistinctCopies);
-  // Deterministic: recomputing over the same inputs reproduces the same hash.
-  assert.equal(
-    withDuplicate,
-    computeEntryFingerprint({ locator_path: path, replay_test_path: path }, { root: REPO_ROOT }),
+
+  const twoEntry = entryOf("CTREX-1741", "LOGQL-LABEL-MATCHER-REGEX-ANCHORING");
+  const two = resolveMechanisms(twoEntry, { root: REPO_ROOT });
+  assert.deepEqual(two.map((m) => m.kind), ["go-test-fixture", "compat-corpus"]);
+  assert.equal(two[0].fixtureFile, twoEntry.replay_test_path);
+  assert.deepEqual(mechanismRegion(two[1], { root: REPO_ROOT }), readFileSync(join(REPO_ROOT, twoEntry.locator_path)));
+  // Dropping either region changes the entry's fingerprint: both are pinned.
+  assert.notEqual(
+    computeEntryFingerprint(twoEntry, { root: REPO_ROOT, mechanisms: [two[0]] }),
+    computeEntryFingerprint(twoEntry, { root: REPO_ROOT }),
   );
 });
 
@@ -368,7 +458,7 @@ test("every contract entry in the real committed cohort has a fresh, matching re
 // Every other generated artefact in this lane is a pure function of the
 // tree (lib/semantic-report.mjs's determinism contract); a wall-clock
 // timestamp in the fingerprint snapshot made two refreshes from the same
-// tree differ, so a `--update-fingerprints` run always produced a diff.
+// tree differ, so a `just semantic-replay-repin` run always produced a diff.
 test("computeAllFingerprints is a pure function of the tree: two snapshots are byte-identical and carry no timestamp", async () => {
   const { computeAllFingerprints } = await import("./lib/semantic-replay.mjs");
   const a = computeAllFingerprints();

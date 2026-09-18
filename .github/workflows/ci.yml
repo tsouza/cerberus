@@ -695,43 +695,10 @@ jobs:
         run: |
           node --test .github/scripts/semantic-guide.test.mjs
           just semantic-guide-check
-      # semantic-execution-adapter.mjs (#3459) normalizes existing Go
-      # test/report artifacts (go test -json, compatibility/internal/
-      # score.CaseSet's JSON shape) and GitHub Actions run identity into
-      # revision-bound execution observations for test/semantic/
-      # executions.json. Self-test only here, same rationale as
-      # verify-just-invocations/compose-grafana-smoke/e2e-up below — the
-      # live CLI now runs for real against a real go-test-json stream / real
-      # compat-cases.json artifacts in property.yml's "Generate semantic
-      # execution observations (property)" step and compatibility.yml's
-      # three per-head "Generate semantic execution observations
-      # (compat/<head>)" steps (issue #3499 — #3462 built the compact
-      # developer/agent guide over the model this adapter feeds, but never
-      # wired a live run through it; #3499, filed from #3462's own
-      # implementation work, is the issue that actually wired the
-      # pipeline), each uploading the normalized records as a build
-      # artifact for a human to review and
-      # fold into executions.json by hand — that file stays hand-authored/
-      # reviewed, never auto-written by CI. There is still no committed
-      # artifact for THIS job to run the live CLI against the way the four
-      # semantic-* steps above run their CLIs against the real committed
-      # test/semantic/ model, so this step stays a self-test. No `just`
-      # recipe either, for the same reason — there is nothing yet for one
-      # to wrap.
-      - name: Self-test the semantic execution adapter
-        run: node --test .github/scripts/semantic-execution-adapter.test.mjs
-      # compat-execution-report.mjs (#3499) is the multi-binding
-      # orchestration compatibility.yml's three per-head steps use: it fans
-      # ONE compat run's case-set artifact(s) out over every active
-      # "reference" binding the semantic model scopes to that head, reusing
-      # semantic-execution-adapter.mjs's own classify/normalize functions.
-      # Self-test only, same rationale as the step above.
-      - name: Self-test the compat execution report
-        run: node --test .github/scripts/compat-execution-report.test.mjs
       # semantic-mutation.mjs (#3448, unblocked by spike #3447) executes one
       # hand-authored, contract-linked mutant from test/semantic/mutants/
       # via `go test -overlay`. Self-test only here, same rationale as
-      # semantic-execution-adapter/verify-just-invocations/e2e-up below: this
+      # verify-just-invocations/e2e-up below: this
       # job installs no Go toolchain at all (it validates JSON/JS metadata,
       # not Go code), so `just semantic-mutate` cannot run here regardless —
       # every acceptance-criterion negative case (a failing clean control
@@ -745,17 +712,15 @@ jobs:
       # runner's synthetic corpus" step, which IS Go-equipped.
       - name: Self-test the semantic mutation runner
         run: |
+          node --test .github/scripts/semantic-fingerprint.test.mjs
           node --test .github/scripts/semantic-mutation.test.mjs
           node --test .github/scripts/semantic-mutation-corpus.test.mjs
       # semantic-mutation-report.mjs (#3452) builds the versioned cohort
-      # report over test/semantic/mutants/; semantic-mutation-pilot-report.mjs
-      # is the scheduled, informational pilot lane's own orchestration. Same
-      # discipline as the step above: pure/injected-fake tests only, no real
-      # `go test -overlay`, no Go toolchain needed.
-      - name: Self-test the semantic mutation report and pilot orchestration
-        run: |
-          node --test .github/scripts/semantic-mutation-report.test.mjs
-          node --test .github/scripts/semantic-mutation-pilot-report.test.mjs
+      # report over test/semantic/mutants/. Same discipline as the step
+      # above: pure/injected-fake tests only, no real `go test -overlay`, no
+      # Go toolchain needed.
+      - name: Self-test the semantic mutation report
+        run: node --test .github/scripts/semantic-mutation-report.test.mjs
       # verify-just-invocations.mjs (#3093) dry-runs every `just <recipe>
       # [args...]` found inside a workflow run: step, catching a missing
       # recipe AND an arity mismatch a plain `just --show` existence check

@@ -29,7 +29,6 @@ import {
   splitRapidChecks,
   legCommands,
   findTruncatedRapidRuns,
-  legToGoTestJSON,
 } from './property-fanout.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -221,72 +220,3 @@ test('findTruncatedRapidRuns: passing MORE than expected (should not happen, but
   assert.deepEqual(findTruncatedRapidRuns(out, 500), []);
 });
 
-// --- legToGoTestJSON (issue #3499: feeding this lane's real evidence to
-// semantic-execution-adapter.mjs) ------------------------------------------
-
-test('legToGoTestJSON converts a leg\'s buffered -v output into go-test-json terminal events', () => {
-  // A real `go test -v` stream always ends in a newline; test2json needs a
-  // complete final line to recognize the terminating "FAIL"/"PASS" marker.
-  const v =
-    [
-      '=== RUN   TestPromQL_Property_FromScratch/promql.instant.selector',
-      '--- PASS: TestPromQL_Property_FromScratch/promql.instant.selector (0.40s)',
-      '=== RUN   TestPromQL_Property_FromScratch/promql.instant.sum',
-      '--- FAIL: TestPromQL_Property_FromScratch/promql.instant.sum (0.60s)',
-      'FAIL',
-    ].join('\n') + '\n';
-  const jsonStream = legToGoTestJSON(v);
-  const events = jsonStream
-    .split('\n')
-    .filter((l) => l.length > 0)
-    .map((l) => JSON.parse(l));
-  const terminal = events.filter((e) => e.Action === 'pass' || e.Action === 'fail');
-  assert.deepEqual(
-    terminal.map((e) => [e.Test, e.Action]).filter(([t]) => t),
-    [
-      ['TestPromQL_Property_FromScratch/promql.instant.selector', 'pass'],
-      ['TestPromQL_Property_FromScratch/promql.instant.sum', 'fail'],
-    ],
-  );
-});
-
-test('legToGoTestJSON tolerates noise interleaved with -v output (e.g. stderr merged into the buffered leg)', () => {
-  const v =
-    [
-      'go: downloading some/module v1.2.3',
-      '=== RUN   TestPromQL_Property_FromScratch/promql.instant.selector',
-      '--- PASS: TestPromQL_Property_FromScratch/promql.instant.selector (0.40s)',
-      'PASS',
-    ].join('\n') + '\n';
-  const jsonStream = legToGoTestJSON(v);
-  const events = jsonStream
-    .split('\n')
-    .filter((l) => l.length > 0)
-    .map((l) => JSON.parse(l));
-  assert.ok(
-    events.some((e) => e.Test === 'TestPromQL_Property_FromScratch/promql.instant.selector' && e.Action === 'pass'),
-    'the real terminal event must still be recovered from noisy input',
-  );
-});
-
-test('legToGoTestJSON degrades to an empty string rather than throwing when the Go toolchain is unavailable', () => {
-  assert.equal(legToGoTestJSON('anything', '/no/such/go-binary'), '');
-});
-
-test('the property tests step sets GOTEST_JSON_OUT to the SAME path the later step reads as GOTEST_JSON_PATH', () => {
-  // A substring match on GOTEST_JSON_OUT: alone only proves the literal
-  // token appears somewhere in the workflow — it never links the write
-  // side to the read side, so a rename or path drift on either step would
-  // leave this green while the real wiring silently breaks. Extract both
-  // values and assert they are the identical path.
-  const out = workflow.match(/GOTEST_JSON_OUT:\s*(\S+)/);
-  const path_ = workflow.match(/GOTEST_JSON_PATH:\s*(\S+)/);
-  assert.ok(out, 'property.yml has no GOTEST_JSON_OUT: step output');
-  assert.ok(path_, 'property.yml has no GOTEST_JSON_PATH: step input');
-  assert.equal(
-    out[1],
-    path_[1],
-    'the "Run property tests" step\'s GOTEST_JSON_OUT must name the same file the ' +
-      '"Generate semantic execution observations" step reads as GOTEST_JSON_PATH',
-  );
-});
