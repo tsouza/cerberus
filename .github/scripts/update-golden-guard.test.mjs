@@ -803,8 +803,14 @@ function checkRunWrites(requests) {
   return requests.filter((r) => r.method === 'POST' && r.path.endsWith('/check-runs'));
 }
 
+/** The recorded requests that hit the Statuses API — matched on a path SEGMENT, not a substring. */
 function statusWrites(requests) {
-  return requests.filter((r) => r.path.includes('/statuses/'));
+  return requests.filter((r) => r.path.split('/').includes('statuses'));
+}
+
+/** The whole URLs a check-run summary names, as the tokens between whitespace and parentheses. */
+function urlsNamedIn(summary) {
+  return summary.split(/[\s()]+/).filter((token) => URL.canParse(token));
 }
 
 test('workflow_run: a SUCCESSFUL completed dispatch yields a success check-run on the PR head, and no commit status', async () => {
@@ -837,7 +843,7 @@ test('workflow_run: a CANCELLED completed dispatch leaves the guard red, naming 
   assert.equal(created[0].body.head_sha, TARGET_PR.head.sha);
   assert.equal(created[0].body.conclusion, 'failure', 'a cancelled regeneration pushed nothing — the goldens are still stale');
   assert.match(created[0].body.output.summary, /cancelled/);
-  assert.ok(created[0].body.output.summary.includes(DISPATCH_URL), 'must name the cancelled run');
+  assert.ok(urlsNamedIn(created[0].body.output.summary).includes(DISPATCH_URL), 'must name the cancelled run');
   assert.deepEqual(statusWrites(requests), []);
 });
 
