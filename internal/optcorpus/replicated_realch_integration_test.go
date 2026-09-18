@@ -142,17 +142,22 @@ const keeperServerConfigSection = `    <keeper_server>
 
 // TestCorpusReplicatedEngineRealClickHouse is the behavioural pin for cerberus
 // issue #3241: inside a Replicated database, the corpus table cerberus creates
-// must actually REPLICATE ITS ROWS, and the server is the only witness.
+// must register as a replica, and the server is the only witness.
 //
 // It asserts three things a rendered-SQL test cannot:
 //
 //  1. The engine cerberus emits is ACCEPTED. A Replicated database rejects
 //     explicit ReplicatedMergeTree arguments with code 36, so the bare form is
 //     not a stylistic choice — the CREATE fails without it.
-//  2. system.replicas carries the corpus table. This is the definitive "the
-//     DATA replicates" check; a plain MergeTree is absent from it while sitting
-//     in system.tables looking healthy, which is exactly how the corpus came to
-//     be partitioned per replica with nothing saying so.
+//  2. system.replicas carries the corpus table: the engine registers as a
+//     replica. A plain MergeTree is absent from it while sitting in
+//     system.tables looking healthy, which is exactly how the corpus came to be
+//     partitioned per replica with nothing saying so. One node witnesses the
+//     registration; that a second replica receives the rows is the two-node
+//     claim the `bwc-replicated` e2e lane (.github/workflows/e2e.yml,
+//     .github/scripts/e2e-bwc-replicated-verify.mjs) proves on the Helm
+//     chart's bundled `replicas: 2` topology — testcontainers cannot cheaply
+//     stand up a Keeper plus two servers here.
 //  3. A row written through the production sink lands and reads back. A
 //     replicating engine that could not take the columnar batch would trade one
 //     silent defect for a loud one.
@@ -183,7 +188,7 @@ func TestCorpusReplicatedEngineRealClickHouse(t *testing.T) {
 		t.Fatalf("build the CH table sink inside a Replicated database: %v", err)
 	}
 
-	// The definitive check. A plain MergeTree — the engine this sink emitted
+	// The registration check. A plain MergeTree — the engine this sink emitted
 	// before #3241 — creates fine here and reports 0.
 	var replicas uint64
 	if err := conn.QueryRow(

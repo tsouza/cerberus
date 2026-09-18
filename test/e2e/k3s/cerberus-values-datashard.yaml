@@ -31,11 +31,15 @@ clickhouse:
     # exercise the experimental path; it is informational, never a PR or
     # release gate, and its results are advisory in the nightly roll-up.
     experimentalDistributedMode: true
-    # 26.3 — same tag test/e2e/k3s/cerberus-values-bwc.yaml already pins
-    # (gotcha #1's dedicated non-`default`-user ConfigMap applies
-    # regardless of dataShards.count), so `just e2e-datashard-up` needs no
-    # additional image import beyond what `just e2e-bwc-up` already pulls.
-    image: clickhouse/clickhouse-server:26.3
+    # The chart's OWN bundled pin (deploy/helm/cerberus/values.yaml, which
+    # tracks versions.yaml `quickstart_clickhouse`), imported into k3d by
+    # `just e2e-datashard-up` (E2E_BUNDLED_CH_IMAGES in just/e2e.just).
+    # docs/operations.md's Distributed settings table is verified against
+    # this version and presents this lane as its live proof; the table's
+    # highest floor, `join_spill` at 26.4, is only observable under fan-out
+    # when the server the lane runs clears it. Gotcha #1's dedicated
+    # non-`default`-user ConfigMap applies regardless of the tag.
+    image: clickhouse/clickhouse-server:26.6
     replicas: 1
     # Cross-shard forwarding secret (cerberus issue #3190). The chart now
     # REFUSES dataShards.count > 1 without one, because ClickHouse otherwise
