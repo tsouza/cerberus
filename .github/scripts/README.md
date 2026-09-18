@@ -598,12 +598,17 @@ neither of which this module reads, writes, or otherwise touches), a mutant
 record here names one specific, reviewable mutation as a unified diff — the
 format #3447's spike settled on precisely because it is also what lets a
 mutant be reviewed and versioned like a #3445 counterexample record — never a
-bulk-generated AST edit. This issue's own scope is the RUNNER, record
-validation, and synthetic self-tests; real per-head query-language mutants
-arrive in #3449-#3451 once this runner exists, and every record currently
-committed carries `synthetic: true` for exactly that reason. Its target,
-`test/semantic/mutants/testdata/fixtures/` — never imported by production
-code — sits under a `testdata/` path component deliberately: Go's own
+bulk-generated AST edit. The committed corpus is two cohorts under one
+directory: six real (`synthetic: false`) per-head domain mutations from
+issues #3449-#3451 — two LogQL, two PromQL, two TraceQL — whose patches target
+`internal/chsql/builder.go`, `internal/chsql/range_window.go`,
+`internal/logql/lower.go` and `internal/traceql/lower.go` and whose
+detectors are real spec fixtures and property tests; and seven synthetic
+(`synthetic: true`) self-test records that exercise every one of the
+runner's seven classification paths against the throwaway package under
+`test/semantic/mutants/testdata/fixtures/`. That fixture package — never
+imported by production code — sits under a `testdata/` path component
+deliberately: Go's own
 tooling ignores that component in every `...` wildcard (`go build ./...`,
 `go vet ./...`, the coverage-floor ledger, `go list ./...`), so this
 synthetic package never needs a `test/coverage-floor/` entry the way a real

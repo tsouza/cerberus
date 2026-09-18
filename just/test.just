@@ -116,9 +116,8 @@ semantic-mutate MUTANT_ID:
 # be re-pinned (its own notes say why).
 
 # Re-pin one mutant record's patch-region fingerprints, then re-run it.
-semantic-mutant-repin MUTANT_ID:
+semantic-mutant-repin MUTANT_ID: && (semantic-mutate MUTANT_ID)
     node .github/scripts/semantic-repin.mjs mutant {{MUTANT_ID}}
-    @just semantic-mutate {{MUTANT_ID}}
 
 # Cross-checks each CI lane's self-declared requiredness (context.protected,
 # release_posture) against a captured, offline-readable snapshot of the live
