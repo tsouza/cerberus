@@ -53,12 +53,19 @@ function newFixtureRepo() {
   };
 }
 
+// observedRuns — every (CHECK, exit status) pair this file drove through the
+// CLI, in order. The registry-completeness test at the bottom reads it: an
+// arm is proved to discriminate only when the suite has seen it exit both
+// non-zero (a seeded violation found) and zero (a clean corpus passed).
+const observedRuns = [];
+
 function runGate(check, cwd) {
   const res = spawnSync(process.execPath, [CLI], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, CHECK: check },
   });
+  observedRuns.push({ check, status: res.status });
   return { status: res.status, out: `${res.stdout}${res.stderr}` };
 }
 
@@ -227,4 +234,178 @@ test('CHECK=playwright-skip does not fire on an identifier that merely ends in .
   write('e2e/ok.spec.ts', 'const n = report.latest.skip (0);\nconst m = counters.skip(1);\n');
   const { status, out } = runGate('playwright-skip', dir);
   assert.equal(status, 0, `a non-runner .skip must not trip the scan; got:\n${out}`);
+});
+
+// ---------------------------------------------------------------------------
+// soft-assert and feature-discipline — the two arms whose only "test" used to
+// be scripts/test-forbid-skip.sh, a harness that asserted its OWN literal
+// copies of the regexes and never read forbid-skip.mjs: a registry regex
+// mutated to match nothing left it green. Every canonical match / no-match
+// pair from that harness now drives the real CLI, so the assertion is about
+// the scan that runs, not about a transcription of it.
+// ---------------------------------------------------------------------------
+
+// softAssertCases — one fixture body per canonical shape, with whether the
+// soft-assert arm must reject it.
+const softAssertCases = [
+  { label: 'empty-needle Contains (2-arg)', body: 'assert.Contains(body, "")', reject: true },
+  { label: 'empty-needle Contains (3-arg)', body: 'assert.Contains(t, body, "")', reject: true },
+  { label: 'real-needle Contains (2-arg)', body: 'assert.Contains(body, "error: foo")', reject: false },
+  { label: 'real-needle Contains (3-arg)', body: 'assert.Contains(t, body, "error: foo")', reject: false },
+  { label: 'empty-slice ElementsMatch (2-arg)', body: 'assert.ElementsMatch(got, []string{})', reject: true },
+  { label: 'empty-slice ElementsMatch (3-arg)', body: 'assert.ElementsMatch(t, got, []string{})', reject: true },
+  { label: 'populated ElementsMatch (2-arg)', body: 'assert.ElementsMatch(got, []string{"a", "b"})', reject: false },
+  {
+    label: 'populated ElementsMatch (3-arg)',
+    body: 'assert.ElementsMatch(t, got, []string{"a", "b"})',
+    reject: false,
+  },
+  { label: 'bare defer recover()', body: 'defer recover()', reject: true },
+  { label: 'multi-line silent recover', body: 'defer func() {\n  _ = recover()\n}()', reject: true },
+  {
+    label: 'asserted-panic form',
+    body: 'defer func() {\n  r := recover()\n  if r == nil { t.Fatal("expected panic") }\n}()',
+    reject: false,
+  },
+];
+
+for (const { label, body, reject } of softAssertCases) {
+  test(`CHECK=soft-assert ${reject ? 'FAILS on' : 'passes'} ${label}`, () => {
+    const { dir, write } = newFixtureRepo();
+    write('shape_test.go', `package main\n\nfunc TestShape(t *testing.T) {\n${body}\n}\n`);
+    const { status, out } = runGate('soft-assert', dir);
+    if (reject) {
+      assert.notEqual(status, 0, `${label} must fail the gate; got:\n${out}`);
+      assert.match(out, /shape_test\.go/);
+    } else {
+      assert.equal(status, 0, `${label} must pass the gate; got:\n${out}`);
+    }
+  });
+}
+
+test('CHECK=soft-assert ignores a vendored upstream test file', () => {
+  const { dir, write } = newFixtureRepo();
+  write(
+    'compatibility/promql/upstream/vendored_test.go',
+    'package main\n\nfunc TestV(t *testing.T) { defer recover() }\n',
+  );
+  const { status, out } = runGate('soft-assert', dir);
+  assert.equal(status, 0, `the upstream exclude must apply to the soft-assert corpus too; got:\n${out}`);
+});
+
+// featureTagCases — Gherkin tag lines; the scan is case-insensitive because
+// the tag vocabulary is closed and fixed-case by construction.
+const featureTagCases = [
+  { label: '@wip suffix tag', line: '@MIG-04 @tier0 @wip', reject: true },
+  { label: 'bare @skip tag', line: '@skip', reject: true },
+  { label: 'uppercase @WIP', line: '@WIP', reject: true },
+  { label: 'mixed-case @Skip on an Examples line', line: '    @Skip', reject: true },
+  { label: 'real tag line', line: '@MIG-01 @tier0 @archetype:already-otel', reject: false },
+  { label: 'archetype containing a banned word', line: '@MIG-01 @tier0 @archetype:manual-scrape', reject: false },
+];
+
+// godogRouteCases — harness Go lines under test/e2e/migration.
+const godogRouteCases = [
+  { label: 'godog.ErrSkip', line: 'return godog.ErrSkip', reject: true },
+  { label: 'godog.ErrPending', line: 'return godog.ErrPending', reject: true },
+  { label: 'T(ctx).Skipf', line: 'godog.T(ctx).Skipf("no fixture for %s", archetype)', reject: true },
+  { label: 'local receiver SkipNow', line: 't := godog.T(ctx)\nt.SkipNow()', reject: true },
+  { label: 'Skipped field access', line: 'w.Skipped = corpus.Skipped', reject: false },
+  { label: 'ordinary error return', line: 'return fmt.Errorf("the harvester dropped %d inputs", n)', reject: false },
+];
+
+// Both corpora are seeded in every case: the arm reads two pathspec sets and
+// lsFilesRequired exits 1 on an empty one, so a clean pass has to be a pass
+// over real files in both.
+function seedFeatureCorpus(write, { tagLine, goLine }) {
+  write(
+    'test/e2e/migration/features/story.feature',
+    `${tagLine}\nFeature: story\n  Scenario: runs\n    Given nothing\n`,
+  );
+  write('test/e2e/migration/steps/steps.go', `package steps\n\nfunc step() error {\n${goLine}\n}\n`);
+}
+
+for (const { label, line, reject } of featureTagCases) {
+  test(`CHECK=feature-discipline ${reject ? 'FAILS on' : 'passes'} ${label}`, () => {
+    const { dir, write } = newFixtureRepo();
+    seedFeatureCorpus(write, { tagLine: line, goLine: 'return nil' });
+    const { status, out } = runGate('feature-discipline', dir);
+    if (reject) {
+      assert.notEqual(status, 0, `${label} must fail the gate; got:\n${out}`);
+      assert.match(out, /story\.feature/);
+    } else {
+      assert.equal(status, 0, `${label} must pass the gate; got:\n${out}`);
+    }
+  });
+}
+
+for (const { label, line, reject } of godogRouteCases) {
+  test(`CHECK=feature-discipline ${reject ? 'FAILS on' : 'passes'} ${label}`, () => {
+    const { dir, write } = newFixtureRepo();
+    seedFeatureCorpus(write, { tagLine: '@MIG-01 @tier0', goLine: line });
+    const { status, out } = runGate('feature-discipline', dir);
+    if (reject) {
+      assert.notEqual(status, 0, `${label} must fail the gate; got:\n${out}`);
+      assert.match(out, /steps\.go/);
+    } else {
+      assert.equal(status, 0, `${label} must pass the gate; got:\n${out}`);
+    }
+  });
+}
+
+test('CHECK=t-skip does not fire on a receiver that merely starts with t', () => {
+  const { dir, write } = newFixtureRepo();
+  write('ok2_test.go', 'package main\n\nfunc TestFoo(t *testing.T) { tx.Skipper() }\n');
+  const { status, out } = runGate('t-skip', dir);
+  assert.equal(status, 0, `tx.Skipper() must not trip the t-skip scan; got:\n${out}`);
+});
+
+// ---------------------------------------------------------------------------
+// Registry completeness — the class the cases above are instances of.
+//
+// Every case above proves ONE arm can go red. Nothing above proves that every
+// arm HAS such a case: an arm added to the CHECKS registry without one would
+// run in CI and lefthook, never fail on a clean tree, and so never be shown to
+// discriminate — the exact state soft-assert and feature-discipline sat in
+// before this file covered them. This test reads the live registry from the
+// CLI itself (the unknown-CHECK error enumerates it) and requires that the
+// suite has driven each arm to BOTH exit codes. It is declared last because
+// node:test runs a file's top-level tests in declaration order, so every run
+// this file makes has been recorded by the time it executes.
+// ---------------------------------------------------------------------------
+
+// registryArms — the CHECKS keys, as the CLI itself enumerates them when
+// handed a CHECK it does not know. Reading them from the running script
+// rather than from a copy here is what keeps this test honest when an arm is
+// added or renamed.
+function registryArms(cwd) {
+  const { status, out } = runGate('registry-probe-not-an-arm', cwd);
+  assert.notEqual(status, 0, 'the registry probe must be rejected as an unknown CHECK');
+  const m = out.match(/or one of: ([^)\n]+)\)/);
+  assert.ok(m, `the unknown-CHECK error must enumerate the registry; got:\n${out}`);
+  const arms = m[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  assert.ok(arms.length > 0, 'the CLI enumerated an empty registry');
+  return arms;
+}
+
+test('every CHECKS registry arm has been driven to BOTH a red and a green exit by this file', () => {
+  const { dir } = newFixtureRepo();
+  const arms = registryArms(dir);
+  const missing = [];
+  for (const arm of arms) {
+    const runs = observedRuns.filter((r) => r.check === arm);
+    const red = runs.some((r) => r.status !== 0);
+    const green = runs.some((r) => r.status === 0);
+    if (!red || !green) {
+      missing.push(`${arm}: red=${red} green=${green}`);
+    }
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `every registry arm needs a case in this file that seeds a violation and sees the CLI FAIL, and one that sees it pass on a clean corpus; unproved arms:\n${missing.join('\n')}`,
+  );
 });

@@ -75,14 +75,14 @@ func TestIncreaseNeedsAtLeastTwoPoints(t *testing.T) {
 }
 
 // TestCompareWithinDeclaredBand exercises the exact bucket/window shape
-// MIG20Downsample's derivation declares (a 2-minute bucket over a 20-minute
-// window) against a near-linear counter, and asserts the comparator reports
+// MIG20Downsample's derivation declares (MIG20DownsampleBucket over
+// MIG20VerifyWindow) against a near-linear counter, and asserts the comparator reports
 // the reconstruction within the declared band — the same property the live
 // Tier-1 scenario checks against a real fixture, pinned here against
 // synthetic data so it needs no Docker stack to verify.
 func TestCompareWithinDeclaredBand(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	window := 20 * time.Minute
+	window := tolerances.MIG20VerifyWindow
 	end := start.Add(window)
 	raw := linearCounter(start, end, time.Minute, 2)
 	rawIncrease, ok := Increase(raw)
@@ -112,7 +112,7 @@ func TestCompareWithinDeclaredBand(t *testing.T) {
 // pushes the relative delta past it.
 func TestCompareOutsideBandForACoarseBucket(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	window := 20 * time.Minute
+	window := tolerances.MIG20VerifyWindow
 	end := start.Add(window)
 	raw := linearCounter(start, end, time.Minute, 2)
 	rawIncrease, ok := Increase(raw)

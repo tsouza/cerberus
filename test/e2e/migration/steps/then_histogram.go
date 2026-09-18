@@ -300,8 +300,10 @@ func queryInstantScalar(ctx context.Context, baseURL, query string, at time.Time
 // thenExpHistogramWithinTolerance queries cerberus's live
 // histogram_quantile over each archetype's seeded probe row and asserts the
 // absolute difference from the true quantile stays within the declared,
-// derived tolerances.ExpHistogramQuantileEpsilon — the estimator-epsilon
-// comparison mode (docs/migration-testing.md section 5, mode 2).
+// derived tolerances.ExpHistogramQuantile band — the estimator-epsilon
+// comparison mode (docs/migration-testing.md section 5, mode 2). It prints
+// the observed headroom for every archetype before judging it, so a run's
+// log carries the evidence to tighten the band whether or not it passed.
 func (w *World) thenExpHistogramWithinTolerance() error {
 	if len(w.expHist) == 0 {
 		return fmt.Errorf("no exponential-histogram probe has been seeded; the scenario must seed one first")
@@ -337,10 +339,17 @@ func (w *World) thenExpHistogramWithinTolerance() error {
 		w.expHist[a] = probe
 
 		delta := math.Abs(got - probe.trueQuantile)
-		if delta > tolerances.ExpHistogramQuantileEpsilon {
+		band := tolerances.ExpHistogramQuantile
+		if err := printHeadroom(headroomReport{
+			Story: "MIG-12", Archetype: a, Subject: "exp-histogram quantile |diff|",
+			Observed: delta, Band: band,
+		}); err != nil {
+			return err
+		}
+		if delta > band.Value {
 			return fmt.Errorf(
 				"archetype %s: %s returned %v, want within %v of the true quantile %v (observed |diff| = %v)",
-				a, query, got, tolerances.ExpHistogramQuantileEpsilon, probe.trueQuantile, delta,
+				a, query, got, band.Value, probe.trueQuantile, delta,
 			)
 		}
 	}

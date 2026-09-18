@@ -553,8 +553,11 @@ const (
 	// numbers so every later sum is exact in IEEE-754 and a parity comparison
 	// needs no float tolerance.
 	gaugeCeiling = 500
-	// counterMaxIncrement bounds one step's counter increase.
-	counterMaxIncrement = 20
+	// CounterMaxIncrement bounds one step's counter increase: each step draws
+	// a whole number uniformly from [0, CounterMaxIncrement). Exported because
+	// test/e2e/migration/tolerances derives MIG-20's downsample band from the
+	// draw's peak-to-mean ratio.
+	CounterMaxIncrement = 20
 	// histogramStepCount is how many observations a histogram series records
 	// per step, split across buckets by histogramBucketWeights.
 	histogramStepCount = 10
@@ -677,7 +680,7 @@ func buildCounter(d Declaration, times []time.Time, rng *rand.Rand) []MetricSeri
 			if resets[i] {
 				total = 0
 			}
-			total += float64(rng.Intn(counterMaxIncrement))
+			total += float64(rng.Intn(CounterMaxIncrement))
 			samples = append(samples, Sample{Time: t, Value: total})
 		}
 		out = append(out, MetricSeries{
