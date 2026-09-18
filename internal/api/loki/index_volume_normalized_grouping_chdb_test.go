@@ -16,6 +16,16 @@
 // its volume is the sum. Cerberus normalises on read, so it has to reach
 // the same place by grouping on the rewritten key.
 //
+// The series shape reaches the served-key regrouping only through a
+// projection that itself carries a dotted key (a `targetLabels` entry
+// spelled `a.b`): its default key is the set of labels the selector's
+// matchers NAME (upstream's `labelsToMatch`), resolved by that name, so
+// two streams spelling one label two ways are merged there by the key
+// rule rather than by the regrouping — the series cases below pin that
+// rule and the cut it feeds. The two-spellings-on-one-stream case, the
+// realistic OTel-CH shape, is pinned on the labels aggregation, whose key
+// IS the full stored map.
+//
 // Only an engine can show any of this: a stub querier hands back rows the
 // SQL never grouped.
 
@@ -72,20 +82,17 @@ func assertVolumeSample(t *testing.T, got loki.VectorSample, wantMetric map[stri
 	}
 }
 
-// TestIndexVolume_ChDB_TwoStoredKeysServeOneSample is the wrong answer
-// #3246 recorded, measured through the handler.
+// TestIndexVolume_ChDB_SeriesKeyMergesUnnamedLabels pins the series key
+// rule over the shape #3246 recorded.
 //
 // Two streams under one selector, one carrying the attribute key `a.b` and
-// the other `a_b`, at ten and five body bytes. Both serve under the label
-// set `{a_b="1", job="api"}`, so the answer upstream gives is ONE sample
-// worth 15 B. Cerberus gave two samples, 10 and 5, with byte-identical
-// label maps — a vector that carries the same key twice, of which a
-// consumer keying by label set sees one silently win.
-//
-// It discriminates: with the served-key regrouping removed from
-// buildIndexVolumeSQL the response is two samples, and the count assertion
-// names both the length and the two values it saw.
-func TestIndexVolume_ChDB_TwoStoredKeysServeOneSample(t *testing.T) {
+// the other `a_b`, at ten and five body bytes. `{job="api"}` names only
+// `job`, so upstream keys both streams `{job="api"}` and answers ONE
+// sample worth 15 B whatever either stream's other labels are spelled.
+// Cerberus keyed the response by the full stored label set and answered
+// two samples — the LogQL differential harness's metadata pass caught it
+// against reference Loki.
+func TestIndexVolume_ChDB_SeriesKeyMergesUnnamedLabels(t *testing.T) {
 	srvURL := newVolumeServer(t, normGroupingSeed(
 		normGroupingRow{attrs: "'a.b','1'", bytes: 10},
 		normGroupingRow{attrs: "'a_b','1'", bytes: 5},
@@ -93,22 +100,24 @@ func TestIndexVolume_ChDB_TwoStoredKeysServeOneSample(t *testing.T) {
 
 	got := queryVolume(t, srvURL, 100)
 	if len(got) != 1 {
-		t.Fatalf("got %d samples %v, want exactly 1 — `a.b` and `a_b` serve under one label set, "+
-			"so they are one series and their volumes sum", len(got), got)
+		t.Fatalf("got %d samples %v, want exactly 1 — the selector names only `job`, "+
+			"so every matched stream projects to the one key {job=\"api\"}", len(got), got)
 	}
-	assertVolumeSample(t, got[0], map[string]string{"a_b": "1", "job": "api"}, "15")
+	assertVolumeSample(t, got[0], map[string]string{"job": "api"}, "15")
 }
 
 // TestIndexVolume_ChDB_MergedGroupOutranksTheCap is the half that a
 // Go-side merge over the returned rows cannot answer, and the reason the
-// regrouping is in the SQL.
+// key projection and the regrouping are in the SQL.
 //
-// The cut is a function of the volumes, and merging changes them. Here the
-// two halves of the `a_b` series are 10 B each and a third stream is 12 B,
-// so before merging the 12 B stream is the single largest group and after
-// merging it is second. At `limit=1` the answer is therefore the 20 B
-// merged series — which a cut taken over the STORED volumes has already
-// discarded both halves of, whatever Go does with what comes back.
+// The cut is a function of the volumes, and merging changes them. Here
+// two streams project to the same `{job="api"}` key at 10 B each and a
+// third, which the selector's `pod!="zzz"` matcher names `pod` for, is
+// 12 B on its own — so before merging the 12 B stream is the single
+// largest group and after merging it is second. At `limit=1` the answer
+// is therefore the 20 B merged key — which a cut taken over the STORED
+// volumes has already discarded both halves of, whatever Go does with
+// what comes back.
 func TestIndexVolume_ChDB_MergedGroupOutranksTheCap(t *testing.T) {
 	srvURL := newVolumeServer(t, normGroupingSeed(
 		normGroupingRow{attrs: "'a.b','1'", bytes: 10},
@@ -116,11 +125,11 @@ func TestIndexVolume_ChDB_MergedGroupOutranksTheCap(t *testing.T) {
 		normGroupingRow{attrs: "'pod','solo'", bytes: 12},
 	))
 
-	got := queryVolume(t, srvURL, 1)
+	got := queryVolumeParams(t, srvURL, `{job="api", pod!="zzz"}`, 1, "")
 	if len(got) != 1 {
 		t.Fatalf("got %d samples %v, want exactly 1 at limit=1", len(got), got)
 	}
-	assertVolumeSample(t, got[0], map[string]string{"a_b": "1", "job": "api"}, "20")
+	assertVolumeSample(t, got[0], map[string]string{"job": "api"}, "20")
 }
 
 // TestIndexVolume_ChDB_OneStreamTwoSpellingsChargesOneLabel is the

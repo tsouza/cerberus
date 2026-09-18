@@ -44,7 +44,8 @@ const defaultVolumeLimit = 100
 //     BOTH of them — upstream's aggregateBySeries branch builds its
 //     series key from `labelsToMatch` exactly as its labels branch does
 //     (the `aggregateBySeries` split inside `getVolume`,
-//     pkg/ingester/instance.go)
+//     pkg/ingester/instance.go). Without `targetLabels` the two modes
+//     key differently, and [volumeKeyLabels] is where that rule lives.
 func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	q := r.FormValue("query")
 	if q == "" {
@@ -76,8 +77,9 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	matchers = append(matchers, targetLabelPresenceMatchers(targetLabels, matchers)...)
+	keyLabels := volumeKeyLabels(targetLabels, matchers, aggregateBy)
 
-	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, targetLabels, aggregateBy)
+	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, keyLabels, aggregateBy)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -345,10 +347,10 @@ func buildIndexVolumeSQL(
 	matchers []*labels.Matcher,
 	start, end time.Time,
 	limit int,
-	targetLabels []string,
+	keyLabels []string,
 	aggregateBy string,
 ) (string, []any, error) {
-	stored, err := storedVolumeQuery(s, strategies, matchers, start, end, targetLabels)
+	stored, err := storedVolumeQuery(s, strategies, matchers, start, end, keyLabels)
 	if err != nil {
 		return "", nil, err
 	}
@@ -378,9 +380,9 @@ func storedVolumeQuery(
 	strategies chsql.AttrStrategies,
 	matchers []*labels.Matcher,
 	start, end time.Time,
-	targetLabels []string,
+	keyLabels []string,
 ) (*chsql.QueryBuilder, error) {
-	groupFrag, err := volumeGroupFrag(s, strategies, targetLabels)
+	groupFrag, err := volumeGroupFrag(s, strategies, keyLabels)
 	if err != nil {
 		return nil, err
 	}
@@ -399,15 +401,14 @@ func storedVolumeQuery(
 }
 
 // volumeGroupFrag picks the CH expression that produces the row's
-// label-set group key. "series" (or empty + no targetLabels) groups by
-// the full attribute map; otherwise we project to the targetLabels
-// subset.
+// label-set group key: the full attribute map when `keyLabels` is empty
+// (the labels aggregation without `targetLabels`), otherwise the
+// projection onto `keyLabels` — [volumeKeyLabels] decides which.
 //
 // Both /index/volume shapes read it: the series shape groups by this Map
 // directly, the labels shape ARRAY JOINs over its KEYS. That is why the
-// `targetLabels` projection lives here rather than in either branch —
-// upstream's `getVolume` restricts to `labelsToMatch` in both of its
-// branches too.
+// projection lives here rather than in either branch — upstream's
+// `getVolume` restricts to `labelsToMatch` in both of its branches too.
 //
 // The projection resolves each requested label through
 // [logql.LabelValueExpr] — the SAME storage-shape precedence
@@ -439,12 +440,12 @@ func storedVolumeQuery(
 func volumeGroupFrag(
 	s schema.Logs,
 	strategies chsql.AttrStrategies,
-	targetLabels []string,
+	keyLabels []string,
 ) (chsql.Frag, error) {
-	if len(targetLabels) == 0 {
+	if len(keyLabels) == 0 {
 		return attrMapFrag(strategies, s.ResourceAttributesColumn), nil
 	}
-	keys := append([]string(nil), targetLabels...)
+	keys := append([]string(nil), keyLabels...)
 	sort.Strings(keys)
 	// map(key, value, key, value, …) — CH's map-literal arity.
 	entries := make([]chsql.Frag, 0, 2*len(keys))
@@ -521,6 +522,35 @@ func targetLabelPresenceMatchers(targetLabels []string, matchers []*labels.Match
 			continue
 		}
 		out = append(out, labels.MustNewMatcher(labels.MatchRegexp, t, ".+"))
+	}
+	return out
+}
+
+// volumeKeyLabels is the label set the response's rows are keyed by —
+// upstream's `labelsToMatch` (`PrepareLabelsAndMatchers`,
+// pkg/util/series_volume.go, consumed by the `getVolume` /
+// `TSDBIndex.Volume` walks). Explicit `targetLabels` win in both modes.
+// Without them the two modes differ: the labels aggregation charges
+// EVERY label the stream carries (the `len(targetLabels) > 0` split in
+// the walk's else branch), reported here as nil so [volumeGroupFrag]
+// keeps the full map, while the series aggregation keys each row by the
+// labels the selector's MATCHERS name — `{service_name=~".+"}` yields
+// one `{service_name="<svc>"}` row per service, not one row per stream.
+// Upstream widens that to the full label set only for a nameless
+// match-all matcher (`includeAll`), which no LogQL selector can spell
+// and [selectorMatchers] never produces, so it has no arm here.
+func volumeKeyLabels(targetLabels []string, matchers []*labels.Matcher, aggregateBy string) []string {
+	if len(targetLabels) > 0 || aggregateBy == aggregateByLabels {
+		return targetLabels
+	}
+	seen := make(map[string]bool, len(matchers))
+	var out []string
+	for _, m := range matchers {
+		if m.Name == "" || seen[m.Name] {
+			continue
+		}
+		seen[m.Name] = true
+		out = append(out, m.Name)
 	}
 	return out
 }

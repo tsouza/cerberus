@@ -510,11 +510,18 @@ func expandStarProjectionWithCTEs(query, withHead string, tableCols map[string][
 	if len(names) == 0 {
 		return expandQualifiedStar(query, tableCols)
 	}
+	return "SELECT " + quotedIdentList(names, "") + tail
+}
+
+// quotedIdentList renders names as a comma-separated projection list of
+// backtick-quoted identifiers, each prefixed with qual (a `<alias>.`
+// table qualifier, or "" for none).
+func quotedIdentList(names []string, qual string) string {
 	quoted := make([]string, len(names))
 	for i, n := range names {
-		quoted[i] = "`" + n + "`"
+		quoted[i] = qual + "`" + n + "`"
 	}
-	return "SELECT " + strings.Join(quoted, ", ") + tail
+	return strings.Join(quoted, ", ")
 }
 
 // splitStarExcept splits a `* EXCEPT (<col>, …)` outer projection into the
@@ -689,9 +696,18 @@ func expandQualifiedStar(query string, tableCols map[string][]string) string {
 	}
 	// `tail` starts with " FROM "; the next non-space token should be
 	// `(` opening an inner subquery whose projection list we can
-	// borrow. Bail out otherwise.
+	// borrow. A bare `*` straight over a physical table (`SELECT * FROM
+	// <table> [PREWHERE …] [WHERE …]`, the leaf shape a Scan or
+	// Filter(Scan) plan emits with no Project above it) has no subquery
+	// to borrow from either, so it resolves against the seed DDL the same
+	// way the nested bare scan below does. Anything else bails.
 	rest := strings.TrimSpace(strings.TrimPrefix(tail, " FROM "))
 	if !strings.HasPrefix(rest, "(") {
+		if qual == "" {
+			if names, ok := bareTableColumns(tail, tableCols); ok {
+				return "SELECT " + quotedIdentList(names, "") + tail
+			}
+		}
 		return query
 	}
 	// Find the matching `)` for the subquery.
@@ -736,11 +752,7 @@ func expandQualifiedStar(query string, tableCols map[string][]string) string {
 	// list from the fixture's seed DDL instead of bailing (#1431).
 	if strings.TrimSpace(innerHead) == "*" {
 		if names, ok := bareTableColumns(innerTail, tableCols); ok {
-			aliases := make([]string, len(names))
-			for i, n := range names {
-				aliases[i] = qual + "`" + n + "`"
-			}
-			return "SELECT " + strings.Join(aliases, ", ") + tail
+			return "SELECT " + quotedIdentList(names, qual) + tail
 		}
 		return query
 	}
@@ -1055,8 +1067,11 @@ func trailerReferencesAny(tail string, names []string) bool {
 
 // mapTypedFunctions are the ClickHouse Map functions the emitters apply to
 // a raw Map column in a trailing clause; each takes the Map as its first
-// argument, so `fn(`name“ is its only spelling.
-var mapTypedFunctions = []string{"mapContains", "mapKeys", "mapValues", "mapFilter", "mapSort", "mapConcat", "mapApply", "mapExtractKeyLike", "mapUpdate", "length"}
+// argument, so fn(<quoted name> is its only spelling. The canonical key-order
+// function is deliberately absent: this package is a leaf and may not name
+// chplan.CanonicalMapFunc, and the emitters apply it on projections, never
+// in a trailing clause.
+var mapTypedFunctions = []string{"mapContains", "mapKeys", "mapValues", "mapFilter", "mapConcat", "mapApply", "mapExtractKeyLike", "mapUpdate", "length"}
 
 // isColumnReference reports whether expr is a plain column reference —
 // `name`, “ `name` “, or `qualifier.name` with either side optionally

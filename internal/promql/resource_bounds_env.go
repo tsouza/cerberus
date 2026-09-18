@@ -18,13 +18,17 @@ import (
 //
 // internal/promql may not import internal/config or internal/solver
 // (.go-arch-lint.yml: "promql: mayDependOn: [chplan]"), so this file is a
-// small, self-contained CERBERUS_* env-parsing surface, mirroring
-// internal/solver/config_env.go's own shape (its own envInt64 helper,
+// small, self-contained CERBERUS_* setting-parsing surface, mirroring
+// internal/solver/config_env.go's own shape (its own settingInt64 helper,
 // duplicated here rather than shared across the architecture boundary) but
-// owned entirely by this package. The parsed values are threaded down as
-// explicit parameters — [LowerOpts.ResourceBounds] -> [lowerCtx.resourceBounds]
-// -> the budget-guard call sites — never read from the environment at guard
-// time, keeping every guard function a pure function of its arguments.
+// owned entirely by this package. It reads through a getter the caller
+// supplies — the loader's environment-then-file lookup at boot, so a
+// cerberus.yaml reaches these knobs — and internal/config's own registry of
+// out-of-loader settings names each key here so the file accepts it. The
+// parsed values are threaded down as explicit parameters —
+// [LowerOpts.ResourceBounds] -> [lowerCtx.resourceBounds] -> the
+// budget-guard call sites — never read from the environment at guard time,
+// keeping every guard function a pure function of its arguments.
 const (
 	// EnvHistogramMergeMaxCostUnits overrides maxHistogramMergeCostUnits
 	// (histogram_merge_bound.go): the native-histogram across-series merge
@@ -151,36 +155,49 @@ func (b ResourceBounds) withDefaults() ResourceBounds {
 	return b
 }
 
-// ResourceBoundsFromEnv builds a ResourceBounds from the CERBERUS_*
-// environment, starting from [DefaultResourceBounds] and overriding each
-// field from its env var when set. A parse failure is returned so a typo
-// never silently widens (or narrows) a production safety rail — mirrors
-// internal/solver/config_env.go's ConfigFromEnv fail-fast contract. The
-// caller (cmd/cerberus, at boot) is responsible for threading the result
-// into every [LowerOpts.ResourceBounds] the running deployment builds,
-// exactly as it threads the boot-wired RangeLowerers table today.
+// ResourceBoundsFromEnv is [ResourceBoundsFrom] over the process
+// environment alone. The running gateway resolves through
+// [ResourceBoundsFrom] with the loader's environment-then-file getter so a
+// cerberus.yaml reaches these knobs; this form serves callers with no config
+// file to consult.
 func ResourceBoundsFromEnv() (ResourceBounds, error) {
+	return ResourceBoundsFrom(os.Getenv)
+}
+
+// ResourceBoundsFrom builds a ResourceBounds from the CERBERUS_* settings
+// get resolves, starting from [DefaultResourceBounds] and overriding each
+// field from its setting when set. get has the shape
+// [schema.DefaultOTelMetricsFrom] takes — os.Getenv, or the loader's
+// environment-then-file lookup — because internal/promql may not import
+// internal/config (.go-arch-lint.yml) and so cannot ask the loader itself.
+// A parse failure is returned so a typo never silently widens (or narrows)
+// a production safety rail — mirrors internal/solver/config_env.go's
+// ConfigFrom fail-fast contract. The caller (cmd/cerberus, at boot) is
+// responsible for threading the result into every
+// [LowerOpts.ResourceBounds] the running deployment builds, exactly as it
+// threads the boot-wired RangeLowerers table today.
+func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 	cfg := DefaultResourceBounds()
 	var err error
-	if cfg.HistogramMergeMaxCostUnits, err = envInt64(EnvHistogramMergeMaxCostUnits, cfg.HistogramMergeMaxCostUnits); err != nil {
+	if cfg.HistogramMergeMaxCostUnits, err = settingInt64(get, EnvHistogramMergeMaxCostUnits, cfg.HistogramMergeMaxCostUnits); err != nil {
 		return ResourceBounds{}, err
 	}
-	if cfg.ClassicBucketMergeMaxCostUnits, err = envInt64(EnvClassicBucketMergeMaxCostUnits, cfg.ClassicBucketMergeMaxCostUnits); err != nil {
+	if cfg.ClassicBucketMergeMaxCostUnits, err = settingInt64(get, EnvClassicBucketMergeMaxCostUnits, cfg.ClassicBucketMergeMaxCostUnits); err != nil {
 		return ResourceBounds{}, err
 	}
 	// Left at 0 unless explicitly pinned: [withDefaults] derives it from
 	// CHQueryMaxMemory, which the caller fills from the loaded config.
-	if cfg.ExpHistogramWindowMaxCostUnits, err = envInt64(EnvExpHistogramWindowMaxCostUnits, 0); err != nil {
+	if cfg.ExpHistogramWindowMaxCostUnits, err = settingInt64(get, EnvExpHistogramWindowMaxCostUnits, 0); err != nil {
 		return ResourceBounds{}, err
 	}
 	return cfg, nil
 }
 
-// envInt64 parses a 64-bit int env var, returning def when unset and a
-// wrapped error when malformed OR non-positive (fail-fast at startup) — a
-// self-contained cousin of internal/solver/config_env.go's own helper of
-// the same name, tightened with the positivity check
-// internal/engine/resource_bound_env.go's envPositiveInt64 already applies
+// settingInt64 parses a 64-bit int setting through get, returning def when
+// unset and a wrapped error when malformed OR non-positive (fail-fast at
+// startup) — a self-contained cousin of internal/solver/config_env.go's own
+// helper of the same name, tightened with the positivity check
+// internal/engine/resource_bound_env.go's settingPositiveInt64 already applies
 // for cerberus issue #2667's chsql-side siblings
 // (CERBERUS_CH_*_MAX_ROWS): a cost-unit ceiling of zero or less is never a
 // legitimate operator override — histogramMergeCostOverBudgetExpr /
@@ -193,8 +210,8 @@ func ResourceBoundsFromEnv() (ResourceBounds, error) {
 // internal/config per .go-arch-lint.yml, so each package that needs
 // CERBERUS_* env parsing carries its own small, dependency-free copy
 // rather than sharing one across an architecture boundary.
-func envInt64(key string, def int64) (int64, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+func settingInt64(get func(string) string, key string, def int64) (int64, error) {
+	v := strings.TrimSpace(get(key))
 	if v == "" {
 		return def, nil
 	}

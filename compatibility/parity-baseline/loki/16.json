@@ -3,6 +3,7 @@
   "head": "loki",
   "bucket": "16",
   "cases": [
+    "cerberus/metadata-endpoints | label_values | range | n/a | {cluster=~\"cluster-.+\"} | label values parity: label=service selector={cluster=~\"cluster-.+\"}",
     "cerberus/wrong-rejection-burndown | metric | range | FORWARD | sum by (detected_level) (count_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}[5m])) and sum by (detected_level) (bytes_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}[5m])) | step=1m0s | set-op and: LHS values survive, signature-matched",
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_field values parity: service=database field=table",
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | detected_field values parity: service=prometheus field=msg",

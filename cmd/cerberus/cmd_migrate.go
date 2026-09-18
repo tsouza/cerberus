@@ -1204,7 +1204,7 @@ func newDryRunExplainer(cfg config.Config) (dryRunExplainer, error) {
 	// exponential-histogram window budget is derived from the configured
 	// memory cap, so a preview without them bound every deployment's SQL to
 	// the 1 GiB default while claiming byte-identical SQL.
-	_, promBounds, err := resolveBoundOverrides(cfg.ClickHouse.MaxQueryMemoryBytes)
+	_, promBounds, err := resolveBoundOverrides(cfg)
 	if err != nil {
 		return dryRunExplainer{}, err
 	}

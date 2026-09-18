@@ -177,14 +177,31 @@ publishes its selector, exact query window, and per-level input volumes to
 selection. The range driver refuses a missing, malformed, future, or stale
 handshake before issuing any differential request.
 
-The four `/patterns` result rows grade only the portable contract: success
-envelope with non-empty data, exact seeded level vocabulary and coverage,
-two-integer positive sample tuples inside the advertised window, and returned
-volume in `(0, seeded]` for every level on each backend. Pattern text and
-cluster identity are intentionally not compared: upstream's Drain miner and
-Cerberus's clean-room miner are different implementations, and upstream's
-cluster floor/cap are not endpoint semantics Cerberus can soundly mirror by
-comparing templates.
+The five `/patterns` result rows grade: success envelope with non-empty data,
+exact seeded level vocabulary and coverage, two-integer positive sample tuples
+inside the advertised window, returned volume in `(0, seeded]` for every level
+on each backend, and the template text — exactly. The fixture line is
+constant, and a line with no variable position has the same Drain template
+(the line itself) under every miner configuration, so both backends must
+return it verbatim as the single pattern of every level; the seeder publishes
+the line in the handshake so the tester grades against it rather than
+against the other backend.
+
+Template text over lines *with* variable positions is not graded, and not
+because the two miners are different implementations: the reference's
+templates are not a function of the data alone. Upstream's pattern ingester
+mines online, in push order, and its clusters carry per-ingester lifetime
+state the two backends do not share — the first line to arrive seeds a
+template that every later line joins or splits against as it stood at that
+moment, out-of-order entries are dropped, and clusters are LRU-evicted,
+pruned on chunk age and throttled by an eviction-ratio limiter
+(`pkg/pattern/stream.go`, `pkg/pattern/drain/drain.go`). Cerberus mines a
+per-request peek window with none of that history, so once a line has a
+variable position two runs of the same miner with the same parameters can
+legitimately carry different templates. Adopting upstream's depth,
+similarity threshold and tokenisers would narrow that gap but could not
+close it, and a text comparison that fails for order rather than
+correctness is not a grade.
 
 ## Detected-fields differential pass
 
@@ -208,6 +225,50 @@ carries the same key set `pushLoki` sends as structured metadata
 bit-identical when both sides observed the same values. The pass
 queries with a `line_limit` above the per-service row count so
 neither backend truncates the peek window.
+
+## Metadata-endpoint differential pass
+
+The corpus never touches the routes Grafana's datasource UI, label
+browser and Logs Drilldown are driven off, so `metadata_endpoints.go`
+grades them directly over the corpus window, from both backends:
+`/labels`, `/label/{name}/values`, `/series`, `/index/stats`,
+`/index/volume` (both `aggregateBy` modes, with and without
+`targetLabels`) and `/detected_labels`. Each case compares the HTTP
+status and the body's data set; results join the same report + score
+pipeline as every other pass, with no allow-list. The label-values
+cases are enumerated from the reference's own `/labels` answer, as the
+detected-field values pass is from `/detected_fields`, so every label
+one backend advertises must open on the other.
+
+Every case carries a selector bounded to the corpus — `{cluster=~"cluster-.+"}`
+or a subset of it — never a selector-less request, because upstream's TSDB
+label discovery is bounded by matchers, not by the request window
+(`TSDBIndex.LabelNames` / `LabelValues` discard `from`/`through`): a
+selector-less `/labels`, `/label/{name}/values` or `/detected_labels`
+answers with every stream in every index file overlapping the window, and
+the now-anchored `/patterns` fixture shares the ingester's head index with
+the corpus until that head rotates. The fixture sits in its own
+`live-patterns` cluster so the corpus selector excludes it by construction.
+
+The comparison is set-valued and order-insensitive on the list routes
+because upstream's query frontend merges split responses in encounter
+order — wire order is not part of the reference's contract. Two
+quantities are structurally incomparable between a chunk store and a
+row store and are documented rather than graded: `/index/stats`'s
+`chunks` and `bytes` (the reference reports per-chunk counts and
+KB-rounded uncompressed chunk sizes; cerberus has no chunk model), and
+the byte values of `/index/volume`. `/index/stats` grades `streams` and
+`entries`; `/index/volume` grades the set of label sets each response
+carries, and grades the *ranking* through a tie-break case —
+`aggregateBy=labels` over every seeded stream ties every label name at
+the same volume on both backends, so a `limit` below the label count
+selects rows purely by upstream's name-ascending tie-break. It also
+grades upstream's series-mode key rule: without `targetLabels` the key is
+the set of label names the selector's matchers name, so
+`{service_name=~".+"}` answers one `{service_name="<svc>"}` row per
+service and `{cluster=~"cluster-.+"}` one row per cluster; projecting
+every advertised label through `targetLabels` is the request that
+answers one row per stream.
 
 ## Status-parity differential pass
 

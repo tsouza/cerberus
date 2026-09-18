@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,12 @@ var tiedVolumePods = []string{
 	"delta", "alpha", "echo", "charlie", "bravo", "foxtrot",
 	"golf", "hotel", "india", "juliet", "kilo", "lima",
 }
+
+// tieSelector names `pod` alongside `job` so the series key carries it:
+// the key is the set of labels the matchers name (upstream's
+// `labelsToMatch`), and under a bare `{job="api"}` all fourteen streams
+// would project to one row.
+const tieSelector = `{job="api", pod=~".+"}`
 
 // volumeTieSeed writes fourteen streams under one `job="api"` selector:
 //
@@ -88,19 +95,29 @@ func volumeTieRow(pod string, size int) string {
 	)
 }
 
-// queryVolume issues one /index/volume request and returns the samples
-// in the order the response carries them.
+// queryVolume issues one /index/volume request for `{job="api"}` and
+// returns the samples in the order the response carries them.
 func queryVolume(t *testing.T, srvURL string, limit int) []loki.VectorSample {
+	t.Helper()
+	return queryVolumeParams(t, srvURL, `{job="api"}`, limit, "")
+}
+
+// queryVolumeParams is [queryVolume] with the selector spelled by the
+// caller and `extra` appended verbatim to the query string (`&k=v…`),
+// for the cases whose subject is which labels the series key carries.
+func queryVolumeParams(t *testing.T, srvURL, selector string, limit int, extra string) []loki.VectorSample {
 	t.Helper()
 	var parsed struct {
 		Data loki.QueryData `json:"data"`
 	}
 	getJSON(t, fmt.Sprintf(
-		`%s/loki/api/v1/index/volume?query=%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d&limit=%d`,
+		`%s/loki/api/v1/index/volume?query=%s&start=%d&end=%d&limit=%d%s`,
 		srvURL,
+		url.QueryEscape(selector),
 		volumeTieBase.Add(-time.Minute).Unix(),
 		volumeTieBase.Add(time.Minute).Unix(),
 		limit,
+		extra,
 	), &parsed)
 
 	raw, err := json.Marshal(parsed.Data.Result)
@@ -166,7 +183,7 @@ func TestIndexVolume_ChDB_TiedVolumesTruncateDeterministically(t *testing.T) {
 
 	// zulu plus the two alphabetically-first members of the tie.
 	const keptRows = 3
-	got := podOrder(queryVolume(t, srvURL, keptRows))
+	got := podOrder(queryVolumeParams(t, srvURL, tieSelector, keptRows, ""))
 	want := []string{"zulu", "alpha", "bravo"}
 	if !equalStrings(got, want) {
 		t.Fatalf("limit=%d ranking: got %v, want %v — the twelve-way volume tie must be cut "+
@@ -192,7 +209,7 @@ func TestIndexVolume_ChDB_UntruncatedTieOrderIsUpstreams(t *testing.T) {
 
 	// One above the fourteen seeded streams, so nothing is cut.
 	const keptRows = 15
-	got := podOrder(queryVolume(t, srvURL, keptRows))
+	got := podOrder(queryVolumeParams(t, srvURL, tieSelector, keptRows, ""))
 	want := []string{
 		"zulu",
 		"alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
@@ -228,7 +245,8 @@ func equalStrings(got, want []string) bool {
 // [format.NormalizeLabelMap] rewrites the dotted key to `a_b` on the way
 // out, and `a_b` sorts AFTER `aZ` (`_` is 0x5F). Upstream compares the
 // names it serves — `seriesLabels.String()` over the stream's own labels —
-// so `aZ` is the one that must come first.
+// so `aZ` is the one that must come first. The labels aggregation, whose
+// key is the full stored map, reads it directly.
 const dottedKeySeed = `CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
@@ -239,25 +257,49 @@ INSERT INTO otel_logs (Timestamp, Body, ServiceName, ResourceAttributes) VALUES
     (toDateTime64('2026-05-14 12:00:00.000', 9), 'xxxxxxxxxx', 'svc', map('job','api','a.b','1')),
     (toDateTime64('2026-05-14 12:00:00.000', 9), 'xxxxxxxxxx', 'svc', map('job','api','aZ','1'));`
 
+// dottedKeySwapSeed is the series-shape twin of [dottedKeySeed]. The
+// series key is a PROJECTION onto the labels the request names, so the
+// stored-versus-served collation only reaches it through a dotted
+// `targetLabels` entry; and a `targetLabels` entry demands the label's
+// presence, so both streams carry both keys and differ in their VALUES.
+// Stored, `{a.b="1", aZ="2"}` collates before `{a.b="2", aZ="1"}` (the
+// first key is `a.b` either way, and "1" < "2"); served, the names sort
+// `aZ` first, and `{aZ="1", a_b="2"}` — the SECOND stream — comes first.
+const dottedKeySwapSeed = `CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ServiceName String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ServiceName, ResourceAttributes) VALUES
+    (toDateTime64('2026-05-14 12:00:00.000', 9), 'xxxxxxxxxx', 'svc', map('job','api','a.b','1','aZ','2')),
+    (toDateTime64('2026-05-14 12:00:00.000', 9), 'xxxxxxxxxx', 'svc', map('job','api','a.b','2','aZ','1'));`
+
+// dottedTargetLabels projects the series key onto the two dotted-seed
+// labels, spelled as STORED so the projection carries `a.b` and the
+// served rewrite has something to rename.
+const dottedTargetLabels = "&targetLabels=a.b,aZ"
+
 // TestIndexVolume_ChDB_TieOrderUsesServedLabelNames pins that the tie is
-// broken on the label names the RESPONSE carries, not on the raw storage
+// broken on the label set the RESPONSE carries, not on the raw storage
 // keys the GROUP BY ran over.
 //
 // The SQL's second ORDER BY key cannot answer this on its own: it sees
-// `ResourceAttributes` as stored, before the OTel-to-Prometheus name
-// rewrite, and on this seed that collates the two streams the wrong way
-// round. Ranking the returned rows with upstream's own comparator over
-// the served names is what settles it — which is why this test fails when
-// that re-rank is removed even with the SQL key in place, the exact
-// converse of [TestIndexVolume_ChDB_TiedVolumesTruncateDeterministically].
+// the projected map as stored, before the OTel-to-Prometheus name
+// rewrite, and on [dottedKeySwapSeed] that collates the two streams the
+// wrong way round. Ranking the returned rows with upstream's own
+// comparator over the served label set is what settles it — which is why
+// this test fails when that re-rank is removed even with the SQL key in
+// place, the exact converse of
+// [TestIndexVolume_ChDB_TiedVolumesTruncateDeterministically].
 func TestIndexVolume_ChDB_TieOrderUsesServedLabelNames(t *testing.T) {
-	srvURL := newVolumeServer(t, dottedKeySeed)
+	srvURL := newVolumeServer(t, dottedKeySwapSeed)
 
 	const keptRows = 2
-	got := nonJobLabelNames(queryVolume(t, srvURL, keptRows))
-	want := []string{"aZ", "a_b"}
+	got := aZValues(queryVolumeParams(t, srvURL, `{job="api"}`, keptRows, dottedTargetLabels))
+	want := []string{"1", "2"}
 	if !equalStrings(got, want) {
-		t.Fatalf("tie order by served label name: got %v, want %v — upstream ranks on "+
+		t.Fatalf("tie order by served label set (aZ values): got %v, want %v — upstream ranks on "+
 			"seriesLabels.String(), which is built from the names the response carries", got, want)
 	}
 }
@@ -289,56 +331,55 @@ func queryVolumeAggregateBy(t *testing.T, srvURL string, limit int, aggregateBy 
 	return samples
 }
 
-// nonJobLabelNames reduces a response to the label name each sample
-// carries besides `job`, in response order. On [dottedKeySeed] that is the
-// one name that distinguishes the two tied streams.
-func nonJobLabelNames(samples []loki.VectorSample) []string {
+// aZValues reduces a response to each sample's `aZ` value, in response
+// order. On [dottedKeySwapSeed] that value identifies the stream, and
+// the served rewrite must have renamed `a.b` to `a_b` beside it.
+func aZValues(samples []loki.VectorSample) []string {
 	out := make([]string, 0, len(samples))
 	for _, s := range samples {
-		for k := range s.Metric {
-			if k != "job" {
-				out = append(out, k)
-			}
+		if _, ok := s.Metric["a_b"]; !ok {
+			out = append(out, "missing a_b in "+fmt.Sprint(s.Metric))
+			continue
 		}
+		out = append(out, s.Metric["aZ"])
 	}
 	return out
 }
 
 // TestIndexVolume_ChDB_CapKeepsTheServedRankedTieMember is cerberus issue
 // #3237: the cap must keep the member upstream keeps, and upstream ranks
-// on the label names it SERVES.
+// on the label set it SERVES.
 //
 // [TestIndexVolume_ChDB_TieOrderUsesServedLabelNames] already pins the
-// served ORDER of the two [dottedKeySeed] streams, but it asks for both of
-// them, so a Go-side re-rank alone satisfies it. This asks for ONE. The
-// row that has to survive is the one the SQL's own collation ranks
-// second — `aZ` beats `a_b` served (`_` is 0x5F, `Z` is 0x5A) while `a.b`
-// beats `aZ` stored (`.` is 0x2E) — so no ordering the SQL can express
-// keeps it, and the re-rank cannot recover it either: at `limit=1` under a
-// plain LIMIT the row is already gone by the time Go sees the result.
+// served ORDER of the two [dottedKeySwapSeed] streams, but it asks for
+// both of them, so a Go-side re-rank alone satisfies it. This asks for
+// ONE. The row that has to survive is the one the SQL's own collation
+// ranks second — `{aZ="1", a_b="2"}` leads served, where `aZ` is the
+// first name, while `{a.b="1", aZ="2"}` leads stored, where `a.b` is —
+// so no ordering the SQL can express keeps it, and the re-rank cannot
+// recover it either: at `limit=1` under a plain LIMIT the row is already
+// gone by the time Go sees the result.
 //
 // It discriminates, and it is the ONE assertion in this file that does so
-// against a merely-deterministic cut. Measured on the pre-fix `ORDER BY
-// bytes DESC, labels LIMIT 1`, the endpoint answered `[a_b]`; the same
-// seed under upstream's rule answers `[aZ]`. Restoring the `labels` sort
-// key on top of WITH TIES turns the cut back into a total order in SQL and
-// fails this test again, which is what makes the WITH TIES half
-// load-bearing rather than decoration.
+// against a merely-deterministic cut: restoring the `labels` sort key on
+// top of WITH TIES turns the cut back into a total order in SQL — over
+// the stored collation — and fails this test again, which is what makes
+// the WITH TIES half load-bearing rather than decoration.
 func TestIndexVolume_ChDB_CapKeepsTheServedRankedTieMember(t *testing.T) {
-	srvURL := newVolumeServer(t, dottedKeySeed)
+	srvURL := newVolumeServer(t, dottedKeySwapSeed)
 
 	const keptRows = 1
-	samples := queryVolume(t, srvURL, keptRows)
+	samples := queryVolumeParams(t, srvURL, `{job="api"}`, keptRows, dottedTargetLabels)
 	if len(samples) != keptRows {
 		t.Fatalf("limit=%d returned %d samples — the WITH TIES over-fetch must be cut back "+
 			"to `limit` in Go, not served raw", keptRows, len(samples))
 	}
-	got := nonJobLabelNames(samples)
-	want := []string{"aZ"}
+	got := aZValues(samples)
+	want := []string{"1"}
 	if !equalStrings(got, want) {
-		t.Fatalf("limit=%d tie member kept: got %v, want %v — the surviving member is decided "+
-			"by seriesLabels.String() over the SERVED names, where `aZ` precedes `a_b`; the "+
-			"stored keys `a.b` and `aZ` collate the other way round and must not settle it",
+		t.Fatalf("limit=%d tie member kept (aZ value): got %v, want %v — the surviving member is "+
+			"decided by seriesLabels.String() over the SERVED label set, where `aZ` is the first "+
+			"name; the stored keys lead with `a.b` and collate the other way round",
 			keptRows, got, want)
 	}
 }

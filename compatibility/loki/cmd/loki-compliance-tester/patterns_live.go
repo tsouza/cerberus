@@ -1,5 +1,38 @@
 package main
 
+// Differential pass for GET /loki/api/v1/patterns over the seeder's
+// now-anchored live fixture (see cmd/seed/live_patterns.go and the
+// handshake file it publishes).
+//
+// Five axes are graded: the success envelope, the level vocabulary, the
+// sample-tuple encoding, the per-level volume bound, and the pattern
+// TEXT. The text axis is exact — both backends must return the fixture
+// line, verbatim, as the single pattern of every seeded level — and it
+// is exact only because the fixture line is constant. A template with
+// no variable position is the line itself under any Drain
+// configuration, so the axis grades the tokeniser and the wire
+// rendering (a `<_>` where a constant token belongs, a dropped token,
+// a re-joined delimiter) independently of how the two miners cluster.
+//
+// Pattern text over lines WITH variable positions is not graded, and
+// the reason is not that the two miners are different implementations
+// — it is that the reference's answer is not a function of the data
+// alone. Upstream's pattern ingester (pkg/pattern/stream.go,
+// pkg/pattern/drain/drain.go) mines online, in push order, and its
+// clusters are the product of per-ingester lifetime state the two
+// backends do not share: the first line to arrive seeds a template and
+// every later line joins or splits based on the template as it stood
+// at that moment; entries older than the stream's last-seen timestamp
+// are dropped on the floor; clusters are evicted through a 300-entry
+// LRU, pruned on chunk age, and throttled by an eviction-ratio limiter.
+// Cerberus mines a per-request peek window in query order with none of
+// that history, so two runs of the SAME miner with the SAME parameters
+// over the SAME lines can legitimately carry different templates once
+// a line has a variable position. Adopting upstream's depth,
+// similarity threshold and tokenisers would narrow the gap but could
+// not close it, and a text comparison that fails for order rather than
+// for correctness is not a grade.
+
 import (
 	"bytes"
 	"context"
@@ -19,8 +52,12 @@ import (
 )
 
 const (
-	livePatternsSource          = "cerberus/patterns-live"
-	livePatternsMetadataVersion = 1
+	livePatternsSource = "cerberus/patterns-live"
+	// livePatternsMetadataVersion is bumped whenever the handshake's
+	// shape changes; the seeder writes the same constant, so a stale
+	// seeder / tester pairing fails at decode instead of grading against
+	// a field that is not there. Version 2 added `line`.
+	livePatternsMetadataVersion = 2
 	livePatternsMetadataMaxAge  = 15 * time.Minute
 	livePatternsWindowMaxSpan   = 10 * time.Minute
 	livePatternsStep            = 10 * time.Second
@@ -34,9 +71,14 @@ type livePatternsMetadata struct {
 	End            time.Time      `json:"end"`
 	CreatedAt      time.Time      `json:"created_at"`
 	EntriesByLevel map[string]int `json:"entries_by_level"`
+	// Line is the constant log line every fixture entry carries. Its
+	// template under any Drain configuration is the line itself, which
+	// is what makes the pattern-text axis exact (see the file comment).
+	Line string `json:"line"`
 }
 
 type patternWire struct {
+	Pattern string            `json:"pattern"`
 	Level   string            `json:"level"`
 	Samples []json.RawMessage `json:"samples"`
 }
@@ -51,6 +93,8 @@ type patternsObservation struct {
 	encodingErr string
 	levels      []string
 	volume      map[string]int64
+	// patterns holds the sorted, de-duplicated pattern texts per level.
+	patterns map[string][]string
 }
 
 type livePatternsAxis struct {
@@ -64,6 +108,7 @@ func livePatternsAxes() []livePatternsAxis {
 		{kind: "patterns_levels", description: "live /patterns level vocabulary and coverage"},
 		{kind: "patterns_samples", description: "live /patterns sample tuple encoding"},
 		{kind: "patterns_volume", description: "live /patterns per-level volume bound"},
+		{kind: "patterns_text", description: "live /patterns template text per level equals the constant fixture line"},
 	}
 }
 
@@ -116,6 +161,9 @@ func validateLivePatternsMetadata(metadata livePatternsMetadata, now time.Time) 
 		if level == "" || level != strings.ToLower(level) || count <= 0 {
 			return fmt.Errorf("invalid level volume %q=%d", level, count)
 		}
+	}
+	if metadata.Line == "" {
+		return errors.New("line is empty")
 	}
 	return nil
 }
@@ -220,7 +268,7 @@ func decodePatternsWire(body []byte) patternsWire {
 }
 
 func observeLivePatterns(wire patternsWire, metadata livePatternsMetadata) patternsObservation {
-	observation := patternsObservation{volume: make(map[string]int64)}
+	observation := patternsObservation{volume: make(map[string]int64), patterns: make(map[string][]string)}
 	if wire.Status != "success" {
 		observation.envelopeErr = fmt.Sprintf("status field=%q", wire.Status)
 	} else if len(wire.Data) == 0 {
@@ -229,6 +277,9 @@ func observeLivePatterns(wire patternsWire, metadata livePatternsMetadata) patte
 	levelSet := make(map[string]struct{})
 	for patternIndex, pattern := range wire.Data {
 		levelSet[pattern.Level] = struct{}{}
+		if !slices.Contains(observation.patterns[pattern.Level], pattern.Pattern) {
+			observation.patterns[pattern.Level] = append(observation.patterns[pattern.Level], pattern.Pattern)
+		}
 		for sampleIndex, raw := range pattern.Samples {
 			var tuple []int64
 			if err := json.Unmarshal(raw, &tuple); err != nil {
@@ -255,6 +306,9 @@ func observeLivePatterns(wire patternsWire, metadata livePatternsMetadata) patte
 		observation.levels = append(observation.levels, level)
 	}
 	sort.Strings(observation.levels)
+	for level := range observation.patterns {
+		sort.Strings(observation.patterns[level])
+	}
 	return observation
 }
 
@@ -287,9 +341,30 @@ func compareLivePatternsAxis(kind string, reference, test patternsObservation, m
 			}
 		}
 		return ""
+	case "patterns_text":
+		return sideErrors("pattern text", patternTextErr(reference, metadata), patternTextErr(test, metadata))
 	default:
 		return "unknown live patterns axis " + kind
 	}
+}
+
+// patternTextErr checks one side's per-level pattern texts against the
+// handshake's constant fixture line: every seeded level must carry
+// exactly that line as its only pattern. Levels are iterated in sorted
+// order so the first divergence reported is deterministic.
+func patternTextErr(observation patternsObservation, metadata livePatternsMetadata) string {
+	levels := make([]string, 0, len(metadata.EntriesByLevel))
+	for level := range metadata.EntriesByLevel {
+		levels = append(levels, level)
+	}
+	sort.Strings(levels)
+	want := []string{metadata.Line}
+	for _, level := range levels {
+		if got := observation.patterns[level]; !slices.Equal(got, want) {
+			return fmt.Sprintf("level=%q patterns=%q, want exactly %q", level, got, metadata.Line)
+		}
+	}
+	return ""
 }
 
 func sideErrors(axis, reference, test string) string {

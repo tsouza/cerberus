@@ -10,8 +10,8 @@ import (
 
 // Env var names for the actuals tuning surface (issue #2789). Mirrors
 // internal/solver/config_env.go's own layout: one const block, one
-// ConfigFromEnv, shared envInt/envFloat/envDuration/envBool parsers local to
-// this package (solver's own helpers are unexported and this package must
+// ConfigFrom, shared settingInt/settingFloat/settingDuration/settingBool
+// parsers local to this package (solver's own helpers are unexported and this package must
 // not import solver — see .go-arch-lint.yml).
 const (
 	EnvEnabled              = "CERBERUS_QUERY_ACTUALS_ENABLED"
@@ -24,44 +24,56 @@ const (
 	EnvQueryLogLookback     = "CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK"
 )
 
-// ConfigFromEnv builds a Config from the CERBERUS_QUERY_ACTUALS_* environment,
-// starting from DefaultConfig (Enabled=false) and overriding each field from
-// its env var when set. Mirrors solver.ConfigFromEnv's own contract: does NOT
-// call Validate (the caller runs that at startup), and a parse failure on any
-// knob is returned so a typo never silently changes behavior.
+// ConfigFromEnv is [ConfigFrom] over the process environment alone. The
+// running gateway resolves through [ConfigFrom] with the loader's
+// environment-then-file getter so a cerberus.yaml reaches these knobs; this
+// form serves callers with no config file to consult.
 func ConfigFromEnv() (Config, error) {
+	return ConfigFrom(os.Getenv)
+}
+
+// ConfigFrom builds a Config from the CERBERUS_QUERY_ACTUALS_* settings get
+// resolves, starting from DefaultConfig (Enabled=false) and overriding each
+// field from its setting when set. get has the shape
+// [schema.DefaultOTelMetricsFrom] takes — os.Getenv, or the loader's
+// environment-then-file lookup — because this package may not import
+// internal/config (.go-arch-lint.yml) and so cannot ask the loader itself.
+// Mirrors solver.ConfigFrom's own contract: does NOT call Validate (the
+// caller runs that at startup), and a parse failure on any knob is returned
+// so a typo never silently changes behavior.
+func ConfigFrom(get func(string) string) (Config, error) {
 	cfg := DefaultConfig()
 
 	var err error
-	if cfg.Enabled, err = envBool(EnvEnabled, cfg.Enabled); err != nil {
+	if cfg.Enabled, err = settingBool(get, EnvEnabled, cfg.Enabled); err != nil {
 		return Config{}, err
 	}
-	if cfg.DriftLowerRatio, err = envFloat(EnvDriftLowerRatio, cfg.DriftLowerRatio); err != nil {
+	if cfg.DriftLowerRatio, err = settingFloat(get, EnvDriftLowerRatio, cfg.DriftLowerRatio); err != nil {
 		return Config{}, err
 	}
-	if cfg.DriftUpperRatio, err = envFloat(EnvDriftUpperRatio, cfg.DriftUpperRatio); err != nil {
+	if cfg.DriftUpperRatio, err = settingFloat(get, EnvDriftUpperRatio, cfg.DriftUpperRatio); err != nil {
 		return Config{}, err
 	}
-	if cfg.MinObservations, err = envInt(EnvMinObservations, cfg.MinObservations); err != nil {
+	if cfg.MinObservations, err = settingInt(get, EnvMinObservations, cfg.MinObservations); err != nil {
 		return Config{}, err
 	}
-	if cfg.EMAAlpha, err = envFloat(EnvEMAAlpha, cfg.EMAAlpha); err != nil {
+	if cfg.EMAAlpha, err = settingFloat(get, EnvEMAAlpha, cfg.EMAAlpha); err != nil {
 		return Config{}, err
 	}
-	if cfg.EntryTTL, err = envDuration(EnvEntryTTL, cfg.EntryTTL); err != nil {
+	if cfg.EntryTTL, err = settingDuration(get, EnvEntryTTL, cfg.EntryTTL); err != nil {
 		return Config{}, err
 	}
-	if cfg.QueryLogPollInterval, err = envDuration(EnvQueryLogPollInterval, cfg.QueryLogPollInterval); err != nil {
+	if cfg.QueryLogPollInterval, err = settingDuration(get, EnvQueryLogPollInterval, cfg.QueryLogPollInterval); err != nil {
 		return Config{}, err
 	}
-	if cfg.QueryLogLookback, err = envDuration(EnvQueryLogLookback, cfg.QueryLogLookback); err != nil {
+	if cfg.QueryLogLookback, err = settingDuration(get, EnvQueryLogLookback, cfg.QueryLogLookback); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-func envInt(key string, def int) (int, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+func settingInt(get func(string) string, key string, def int) (int, error) {
+	v := strings.TrimSpace(get(key))
 	if v == "" {
 		return def, nil
 	}
@@ -72,8 +84,8 @@ func envInt(key string, def int) (int, error) {
 	return n, nil
 }
 
-func envFloat(key string, def float64) (float64, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+func settingFloat(get func(string) string, key string, def float64) (float64, error) {
+	v := strings.TrimSpace(get(key))
 	if v == "" {
 		return def, nil
 	}
@@ -84,8 +96,8 @@ func envFloat(key string, def float64) (float64, error) {
 	return f, nil
 }
 
-func envBool(key string, def bool) (bool, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+func settingBool(get func(string) string, key string, def bool) (bool, error) {
+	v := strings.TrimSpace(get(key))
 	if v == "" {
 		return def, nil
 	}
@@ -96,8 +108,8 @@ func envBool(key string, def bool) (bool, error) {
 	return b, nil
 }
 
-func envDuration(key string, def time.Duration) (time.Duration, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+func settingDuration(get func(string) string, key string, def time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(get(key))
 	if v == "" {
 		return def, nil
 	}

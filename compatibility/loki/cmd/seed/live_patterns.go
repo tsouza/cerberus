@@ -23,7 +23,16 @@ const (
 	livePatternsFixtureAge      = 2 * time.Minute
 	livePatternsPollInterval    = 250 * time.Millisecond
 	livePatternsProbeTimeout    = 30 * time.Second
-	livePatternsMetadataVersion = 1
+	// livePatternsMetadataVersion must match the tester's constant
+	// (cmd/loki-compliance-tester/patterns_live.go); the tester refuses
+	// any other value. Version 2 added `line`.
+	livePatternsMetadataVersion = 2
+	// livePatternsLine is the one log line every fixture entry carries.
+	// It is CONSTANT on purpose: a line with no variable position has
+	// the same Drain template — the line itself — under every miner
+	// configuration, which is what lets the tester grade /patterns
+	// template text exactly (see the tester's patterns_live.go).
+	livePatternsLine = "live patterns fixture processed request"
 )
 
 var livePatternsLevels = []string{"ERROR", "INFO", "WARN"}
@@ -35,6 +44,7 @@ type livePatternsMetadata struct {
 	End            time.Time      `json:"end"`
 	CreatedAt      time.Time      `json:"created_at"`
 	EntriesByLevel map[string]int `json:"entries_by_level"`
+	Line           string         `json:"line"`
 }
 
 type livePatternsFixture struct {
@@ -53,11 +63,16 @@ func buildLivePatternsFixture(now time.Time) livePatternsFixture {
 		entries = append(entries, entry{
 			ts:    start.Add(time.Duration(i) * livePatternsEntryInterval),
 			level: level,
-			line:  "live patterns fixture processed request",
+			line:  livePatternsLine,
 		})
 		counts[strings.ToLower(level)]++
 	}
 
+	// The fixture's cluster / namespace / pod / container / service values
+	// are disjoint from every corpus stream's on purpose: the tester's
+	// metadata pass addresses the corpus through `{cluster=~"cluster-.+"}`
+	// because upstream's label discovery is matcher-bounded rather than
+	// window-bounded, and this now-anchored stream must fall outside it.
 	config := serviceConfig{
 		Name:        livePatternsService,
 		ServiceName: livePatternsService,
@@ -90,6 +105,7 @@ func buildLivePatternsFixture(now time.Time) livePatternsFixture {
 			End:            now,
 			CreatedAt:      now,
 			EntriesByLevel: counts,
+			Line:           livePatternsLine,
 		},
 	}
 }
@@ -155,6 +171,9 @@ func validateLivePatternsMetadata(metadata livePatternsMetadata) error {
 		if level == "" || count <= 0 {
 			return fmt.Errorf("invalid level volume %q=%d", level, count)
 		}
+	}
+	if metadata.Line == "" {
+		return errors.New("line is empty")
 	}
 	return nil
 }

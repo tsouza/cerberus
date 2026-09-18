@@ -46,7 +46,11 @@ import (
 // for the solver's tuning surface, called directly from cmd/cerberus/main.go
 // rather than routed through internal/config's Viper machinery — this file
 // owns the parsing itself and hands the caller (cmd/cerberus) plain int64
-// values to assign onto the Engine fields below. Engine is already the
+// values to assign onto the Engine fields below. It reads through a getter
+// the caller supplies — the loader's environment-then-file lookup at boot,
+// so a cerberus.yaml reaches these knobs — and internal/config's own
+// registry of out-of-loader settings names each key here so the file
+// accepts it. Engine is already the
 // seam that threads chsql.WithDeltaPrefixLookback /
 // chsql.WithDeltaPrefixReadEnabled onto the emit context for both route A
 // (emitForHead) and route B (routeBExecCtx); this reuses the identical two
@@ -83,7 +87,7 @@ const (
 // bound of 0 is a legitimate operator intent (either would reject every query
 // outright), so
 // reserving 0 as the "unset" sentinel loses no real configuration and
-// ResourceBoundsFromEnv rejects an explicit 0 or negative override as a
+// ResourceBoundsFrom rejects an explicit 0 or negative override as a
 // startup error instead of silently accepting it.
 type ResourceBoundOverrides struct {
 	RangeBucketFanoutMaxRows          int64
@@ -93,40 +97,52 @@ type ResourceBoundOverrides struct {
 	RangeBucketFanoutFoldCostMaxUnits int64
 }
 
-// ResourceBoundsFromEnv reads the five CERBERUS_CH_* knobs above.
-// An unset var resolves its field to 0 (see ResourceBoundOverrides' own
-// doc); a set var is parsed as a base-10 int64 and must be strictly
-// positive. A parse failure or a non-positive value is returned as an
-// error so a typo — or an operator override that would reject every query
-// — fails fast at startup rather than silently falling back to the
-// default or silently bricking the query path.
+// ResourceBoundsFromEnv is [ResourceBoundsFrom] over the process
+// environment alone. The running gateway resolves through
+// [ResourceBoundsFrom] with the loader's environment-then-file getter so a
+// cerberus.yaml reaches these knobs; this form serves callers with no config
+// file to consult.
 func ResourceBoundsFromEnv() (ResourceBoundOverrides, error) {
+	return ResourceBoundsFrom(os.Getenv)
+}
+
+// ResourceBoundsFrom reads the five CERBERUS_CH_* knobs above through get —
+// os.Getenv, or the loader's environment-then-file lookup, the shape
+// [schema.DefaultOTelMetricsFrom] takes — because this package may not
+// import internal/config and so cannot ask the loader itself. An unset
+// setting resolves its field to 0 (see ResourceBoundOverrides' own doc); a
+// set one is parsed as a base-10 int64 and must be strictly positive. A
+// parse failure or a non-positive value is returned as an error so a typo —
+// or an operator override that would reject every query — fails fast at
+// startup rather than silently falling back to the default or silently
+// bricking the query path.
+func ResourceBoundsFrom(get func(string) string) (ResourceBoundOverrides, error) {
 	var overrides ResourceBoundOverrides
 	var err error
-	if overrides.RangeBucketFanoutMaxRows, err = envPositiveInt64(EnvRangeBucketFanoutMaxRows); err != nil {
+	if overrides.RangeBucketFanoutMaxRows, err = settingPositiveInt64(get, EnvRangeBucketFanoutMaxRows); err != nil {
 		return ResourceBoundOverrides{}, err
 	}
-	if overrides.RangeLWRFanoutMaxRows, err = envPositiveInt64(EnvRangeLWRFanoutMaxRows); err != nil {
+	if overrides.RangeLWRFanoutMaxRows, err = settingPositiveInt64(get, EnvRangeLWRFanoutMaxRows); err != nil {
 		return ResourceBoundOverrides{}, err
 	}
-	if overrides.RateWindowFanoutMaxRows, err = envPositiveInt64(EnvRateWindowFanoutMaxRows); err != nil {
+	if overrides.RateWindowFanoutMaxRows, err = settingPositiveInt64(get, EnvRateWindowFanoutMaxRows); err != nil {
 		return ResourceBoundOverrides{}, err
 	}
-	if overrides.MaxEmittedSQLBytes, err = envPositiveInt64(EnvMaxEmittedSQLBytes); err != nil {
+	if overrides.MaxEmittedSQLBytes, err = settingPositiveInt64(get, EnvMaxEmittedSQLBytes); err != nil {
 		return ResourceBoundOverrides{}, err
 	}
-	if overrides.RangeBucketFanoutFoldCostMaxUnits, err = envPositiveInt64(EnvRangeBucketFanoutFoldCostMaxUnits); err != nil {
+	if overrides.RangeBucketFanoutFoldCostMaxUnits, err = settingPositiveInt64(get, EnvRangeBucketFanoutFoldCostMaxUnits); err != nil {
 		return ResourceBoundOverrides{}, err
 	}
 	return overrides, nil
 }
 
-// envPositiveInt64 parses an optional strictly-positive int64 env var,
-// returning 0 (the "unset" sentinel — see ResourceBoundOverrides' own doc)
-// when key is unset or blank, and a wrapped error both on a malformed
-// value and on a non-positive one (0 or negative).
-func envPositiveInt64(key string) (int64, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+// settingPositiveInt64 parses an optional strictly-positive int64 setting
+// through get, returning 0 (the "unset" sentinel — see
+// ResourceBoundOverrides' own doc) when key is unset or blank, and a wrapped
+// error both on a malformed value and on a non-positive one (0 or negative).
+func settingPositiveInt64(get func(string) string, key string) (int64, error) {
+	v := strings.TrimSpace(get(key))
 	if v == "" {
 		return 0, nil
 	}

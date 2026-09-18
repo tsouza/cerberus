@@ -49,17 +49,6 @@ var uncoveredOptimizerKinds = map[string]string{
 		"panics on a broken lowering invariant rather than rewriting anything. There is no " +
 		"rewrite for a round-trip to disagree about, and the invariant it checks is pinned " +
 		"directly by test/spec's traces resource-bound lane.",
-	"StructuralJoin": "a TraceQL span-to-span join over the otel_traces layout — parent/child " +
-		"span IDs, trace IDs and a nested-set window. This harness seeds the OTel metrics " +
-		"layouts only, so generating one needs a spans seed table first.",
-	"TopK": "its ranking is not a function of the row set alone once values tie: the optimized " +
-		"plan is a different query, so ClickHouse may legitimately break a tie the other way " +
-		"and the property would flake rather than report. Generating it needs a seed whose " +
-		"values are distinct within every partition the generator can draw.",
-	"VectorJoin": "an arithmetic vector-vector join, which needs two operands matched on series " +
-		"identity AND a cardinality modifier that makes the match well-defined. The gauge seed " +
-		"has one series per (MetricName, host) pair, so a generated join would be one-to-one " +
-		"only by accident; it needs a seed built for the join rather than for the leaf grammar.",
 }
 
 // assertOptimizerKindsCovered is called at the end of the property run

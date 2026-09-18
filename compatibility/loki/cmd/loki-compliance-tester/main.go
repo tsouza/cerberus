@@ -27,7 +27,12 @@
 //  2. For each expanded test case, fans out parallel `/loki/api/v1/query`
 //     or `/query_range` calls against both endpoints, decodes the
 //     responses into a typed value, normalises ordering, and diffs with
-//     a configurable epsilon.
+//     a configurable epsilon. The range lane then runs the fixed-case
+//     passes over the other routes — /detected_fields,
+//     /detected_field/{name}/values, the metadata routes (/labels,
+//     /label/{name}/values, /series, /index/stats, /index/volume,
+//     /detected_labels), the wrong-rejection burndown, status parity and
+//     /patterns — each in its own file.
 //  3. Writes the report to `-report` (default: stdout) in the Prom-shape
 //     JSON envelope (`{totalResults, includePassing, results: [...]}`),
 //     with each result carrying `testCase`, `diff`, `unexpectedFailure`,
@@ -206,6 +211,13 @@ func run() error {
 		// detected_field_values.go.
 		results = append(results, compareDetectedFieldValuesAll(httpClient, f, metadata)...)
 
+		// Metadata-endpoint differential: /labels, /label/{name}/values,
+		// /series, /index/stats, /index/volume (both aggregateBy modes)
+		// and /detected_labels over the corpus window — status plus
+		// data set on each. See metadata_endpoints.go for what each
+		// route grades and why.
+		results = append(results, compareMetadataEndpointsAll(httpClient, f, metadata)...)
+
 		// Wrong-rejection-burndown value pass (range lane only, like
 		// detected-fields): a fixed query set covering the operator
 		// shapes the corpus doesn't carry — vector set ops,
@@ -225,8 +237,14 @@ func run() error {
 		// /patterns is backed by a wall-clock-retained pattern ingester in
 		// reference Loki, so it consumes the separate live fixture described
 		// by the seeder handshake rather than dataset_metadata.json's static
-		// corpus. Only stable protocol axes are graded; pattern strings and
-		// cluster identities are deliberately outside the comparison.
+		// corpus. The envelope, level vocabulary, sample encoding, per-level
+		// volume and the template text are graded; the text exactly, because
+		// the fixture line is constant and a constant line's template is the
+		// line under any miner. Text over lines with variable positions is
+		// not graded: upstream mines online, in push order, with per-ingester
+		// eviction and pruning state cerberus does not share, so its
+		// templates are not a function of the data alone — see
+		// patterns_live.go.
 		results = append(results, compareLivePatterns(httpClient, f, livePatterns)...)
 	}
 

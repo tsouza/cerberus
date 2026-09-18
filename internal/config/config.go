@@ -34,6 +34,17 @@ type Config struct {
 	ClickHouse chclient.Config
 	Schema     schema.Metrics
 
+	// Settings resolves the CERBERUS_* settings the typed registry above
+	// does not own — the resource-bound ceilings internal/promql and
+	// internal/engine parse, the solver and query-actuals tuning surfaces —
+	// from the same two sources, in the same order, as every field here: the
+	// environment variable first, then the cerberus.yaml FromEnv loaded. The
+	// boot path hands Settings.String to each owner's From(get) constructor so
+	// a file value reaches those parsers exactly as an exported variable
+	// would. Nil-safe: a Config built by hand resolves from the environment
+	// alone, which is what a missing file means too.
+	Settings *Lookup
+
 	// ClusterTopology carries chopt.ClusterTopology.DataShardCount — the
 	// number of ClickHouse DATA shards behind this deployment's
 	// `Distributed` tables (CERBERUS_CH_DATA_SHARDS, default 1 — cerberus
@@ -1375,6 +1386,7 @@ func FromEnv() (Config, error) {
 		Schema:                  schema.DefaultOTelMetricsFrom(file.String),
 		Logs:                    schema.DefaultOTelLogsFrom(file.String),
 		Traces:                  schema.DefaultOTelTracesFrom(file.String),
+		Settings:                file,
 		AutoCreateSchema:        flags.AutoCreate,
 		AutoCreateDatabase:      flags.AutoCreateDatabase,
 		SchemaProvisioning:      schemaProvisioning,
