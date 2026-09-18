@@ -72,20 +72,48 @@ func evaluateLokiParity(
 ) ([]referenceSample, error) {
 	t.Helper()
 
+	// Whether the query is a LOG query is decided by the upstream parser
+	// before the seed is read: a log query's answer (lines, not samples)
+	// can never be compared here whatever the seed holds, and that
+	// query-level fact must not be pre-empted by a seed-shape refusal —
+	// most log fixtures seed only the columns their own `SELECT *` needs.
+	isLog, err := oracle.IsLogQuery(q.Expr)
+	if err != nil {
+		return nil, parityRefusal(refusalReferenceRejectedQuery, fmt.Errorf("fixture %s: %w", c.Name, err))
+	}
+	if isLog {
+		return nil, parityRefusal(refusalLogStreamAnswer, fmt.Errorf(
+			"fixture %s: the upstream parser classifies %q as a log query (syntax.LogSelectorExpr), whose "+
+				"answer is a set of log lines with no element-wise correspondence to a fixture's "+
+				"`expected_rows:` projection; enrol metric queries only", c.Name, q.Expr,
+		))
+	}
+
 	streams, err := readSeededStreams(db)
 	if err != nil {
 		return nil, err
 	}
 	if len(streams) == 0 {
+		// A query that reads a stream selector and seeds zero streams for
+		// it is not a broken fixture: the seed is deliberately empty, and no
+		// reference answer computed from zero input rows can ever be
+		// distinguished from any other — the comparison is structurally
+		// vacuous, permanently, whatever cerberus answers. That is
+		// [parityRefusal], the category [exemptionVerdict] accepts as
+		// evidence that a `vacuous-empty-input` exemption remains live, and
+		// the same classification evaluatePrometheusParity gives the
+		// identical structural fact on the PromQL side. A parse failure
+		// inspecting the expression stays unclassified: a broken inspector
+		// must not be able to manufacture liveness for a stale exemption.
 		reads, rerr := logqlExprReadsStreams(q.Expr)
 		if rerr != nil {
 			return nil, fmt.Errorf("fixture %s: %w", c.Name, rerr)
 		}
 		if reads {
-			return nil, fmt.Errorf(
+			return nil, parityRefusal(refusalEmptySeedForSelector, fmt.Errorf(
 				"fixture %s: seed produced no readable streams, so the reference engine would "+
 					"trivially agree with any answer", c.Name,
-			)
+			))
 		}
 	}
 
@@ -104,8 +132,11 @@ func evaluateLokiParity(
 		// refusal evidence the exemption remains live, not a broken
 		// checker. Any other Evaluate error (e.g. a query-construction
 		// failure) stays unclassified and fails the liveness check loudly.
-		if errors.Is(err, oracle.ErrReferenceEvaluation) || errors.Is(err, oracle.ErrLogStreamShape) {
-			return nil, parityRefusal(err)
+		if errors.Is(err, oracle.ErrReferenceEvaluation) {
+			return nil, parityRefusal(refusalReferenceEvaluation, err)
+		}
+		if errors.Is(err, oracle.ErrLogStreamShape) {
+			return nil, parityRefusal(refusalLogStreamAnswer, err)
 		}
 		return nil, err
 	}
@@ -132,7 +163,7 @@ func readSeededStreams(db *sql.DB) ([]oracle.Stream, error) {
 	}
 	for _, required := range []string{colTimestamp, colBody, colResourceAttributes} {
 		if !present[required] {
-			return nil, parityRefusal(fmt.Errorf(
+			return nil, parityRefusal(refusalSeedNotStreams, fmt.Errorf(
 				"fixture seeds %s without a %s column, so its rows cannot be expressed as Loki "+
 					"streams (label set, timestamp, line). This fixture cannot be parity-checked "+
 					"against the Loki engine", logsTable, required,
@@ -225,7 +256,7 @@ func rejectOpaqueColumn(column, value string) error {
 	if value == "" || value == emptyMapJSON {
 		return nil
 	}
-	return parityRefusal(fmt.Errorf(
+	return parityRefusal(refusalOpaqueColumn, fmt.Errorf(
 		"seeded rows carry a non-empty %s (%q), which the reference engine cannot observe: "+
 			"upstream's in-process querier processes every entry with an EMPTY structured-metadata "+
 			"label set, and cerberus additionally folds %s into the synthesised `detected_level` "+

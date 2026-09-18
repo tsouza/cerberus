@@ -86,7 +86,7 @@ func TestEligibleForResultCache_JudgesTheDataWindowNotTheRequestGrid(t *testing.
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := eligibleForResultCache(tc.plan, fixedNow, testIngestLag); got != tc.want {
+			if got := eligibleForResultCache(shapeOf(tc.plan), fixedNow, testIngestLag); got != tc.want {
 				t.Errorf(
 					"eligibleForResultCache = %v, want %v — the carrier's data window ends at %v, threshold is %v",
 					got, tc.want,
@@ -141,7 +141,7 @@ func TestEligibleForResultCache_InstantShapeCarrierIsJudgedToo(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := &chplan.CrossJoin{Left: closedGrid, Right: tc.pinned}
-			if got := eligibleForResultCache(plan, fixedNow, testIngestLag); got != tc.want {
+			if got := eligibleForResultCache(shapeOf(plan), fixedNow, testIngestLag); got != tc.want {
 				t.Errorf(
 					"eligibleForResultCache = %v, want %v — closed StepGrid beside a pinned window ending %v",
 					got, tc.want, tc.pinned.DataWindowEnd(),

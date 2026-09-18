@@ -440,6 +440,14 @@ columnar `Enum8` batch, then reads the rows back to assert the `route` /
 resolves), plus the upstream `system.query_log` reconciler read
 (`optcorpus.CHQueryLogSource`).
 
+**Every integer-returning aggregate a corpus SELECT scans into a Go float or
+int destination is wrapped in `toFloat64(…)` / `toInt64(…)`**
+([`source_ch.go`](../internal/routerrules/source_ch.go)). `clickhouse-go/v2`'s
+`Scan` is strict — a `UInt64` `count()` scanned into a `*float64` is a hard
+error (code 47) the operator sees as a 502 — and the chDB parity lane cannot
+catch the omission because chDB's driver coerces leniently. A new param
+resolver follows the same rule, and the real-CH lane above is what proves it.
+
 Two further real-CH lanes live beside it in `internal/optcorpus`, both covering
 seams whose failure mode is *silence* on a fake:
 
@@ -604,14 +612,16 @@ Adding a detector is a declarative edit — **no Go change**:
 4. `just route-rules --validate-only` confirms the catalog still holds the
    invariant; the guard test confirms no number slipped in.
 
-## Limitations / future grammar work
+## Grammar scope
 
 - **No group-aggregate-vs-fleet node.** The grammar cannot express "this
-  group's cost share exceeds the fleet's" inside a condition, so Pareto
-  cost-share rules are deferred. `corpus_count_ratio` resolves a deployment-wide
-  scalar (usable only as message context), not a per-group fraction.
+  group's cost share exceeds the fleet's" inside a condition, so a Pareto
+  cost-share rule is not expressible. `corpus_count_ratio` resolves a
+  deployment-wide scalar (usable only as message context), not a per-group
+  fraction.
 - **No time-windowed param kind.** Params resolve over the whole `--since`
-  window; drift/regression rules that compare two windows are deferred.
+  window, so a drift or regression rule that compares two windows is not
+  expressible.
 - **Only one arithmetic form.** `config_scaled` is the whole of the grammar's
   arithmetic: exactly one fraction param multiplied by exactly one magnitude
   param. There is no production for a sum, a ratio, a three-operand expression,

@@ -8,6 +8,12 @@ GOFUMPT_VERSION := "v0.7.0"
 GOIMPORTS_VERSION := "latest"
 GREMLINS_VERSION := "v0.6.0"
 ACTIONLINT_VERSION := "v1.7.12"
+# The `just` release CI installs (every `taiki-e/install-action` step says
+# `tool: just@{{JUST_VERSION}}` by value). The Justfile is executed by whatever
+# `just` a developer has; this is the version it is written against, and
+# test/regression/tool_version_pins_test.go holds every workflow literal —
+# this, GOLANGCI_LINT_VERSION and ACTIONLINT_VERSION — to the Justfile.
+JUST_VERSION := "1.46.0"
 MODULE := "github.com/tsouza/cerberus"
 
 # The build tag the untagged lint pass runs under. `.golangci.yml` declares the

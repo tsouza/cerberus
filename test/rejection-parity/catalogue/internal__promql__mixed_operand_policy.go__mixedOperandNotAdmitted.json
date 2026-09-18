@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/mixed_operand_policy.go:mixedOperandNotAdmitted#efa3d4e1",
+      "message": "promql: mixed operand is not admitted for %s at %s",
+      "class": "divergence",
+      "trigger_query": "sort_by_label(demo_latency_exp_hist or demo_http_requests_total, \"instance\") * 2",
+      "tracking_issue": 3562,
+      "evidence": {
+        "guard": null,
+        "callers": [
+          "requireMixedOperandPolicy"
+        ]
+      },
+      "since": "2026-09-17"
+    }
+  ]
+}

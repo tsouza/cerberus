@@ -61,7 +61,9 @@
 //   REPLICAS                expected replicas PER shard             (required, must be >= 2)
 //   REQUEST_COUNT           sequential solver-splitting requests fired (default 3)
 //   FLUSH_WAIT_SECONDS      settle time before SYSTEM FLUSH LOGS    (default 10)
-//   HEALTH_POLL_SECONDS     bounded wait for a clean errors_count   (default 60)
+//   HEALTH_POLL_SECONDS     bounded wait for a clean errors_count   (default:
+//                           lib/k8s.mjs clusterHealthDefaultDeadlineSeconds —
+//                           two errors_count half-lives)
 //
 // Exit 0 = every assertion passed; 1 = any failed (with ::error:: annotation).
 //
@@ -91,7 +93,13 @@
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
-import { makeKubectl, clickhousePodName, chQuery, waitForClusterHealth } from './lib/k8s.mjs';
+import {
+  makeKubectl,
+  clickhousePodName,
+  chQuery,
+  waitForClusterHealth,
+  clusterHealthDefaultDeadlineSeconds,
+} from './lib/k8s.mjs';
 
 const NS = process.env.NAMESPACE || 'cerberus';
 const CERBERUS_URL = process.env.CERBERUS_URL || 'http://localhost:8080';
@@ -103,7 +111,7 @@ const DATA_SHARD_COUNT = Number(process.env.DATA_SHARD_COUNT || '0');
 const REPLICAS = Number(process.env.REPLICAS || '0');
 const REQUEST_COUNT = Number(process.env.REQUEST_COUNT || '3');
 const FLUSH_WAIT_SECONDS = Number(process.env.FLUSH_WAIT_SECONDS || '10');
-const HEALTH_POLL_SECONDS = Number(process.env.HEALTH_POLL_SECONDS || '60');
+const HEALTH_POLL_SECONDS = Number(process.env.HEALTH_POLL_SECONDS || String(clusterHealthDefaultDeadlineSeconds));
 
 if (!DATA_SHARD_COUNT || DATA_SHARD_COUNT < 2) {
   error(`DATA_SHARD_COUNT must be a real data-shard count (>= 2), got ${process.env.DATA_SHARD_COUNT}`);

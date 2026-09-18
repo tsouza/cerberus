@@ -12,16 +12,11 @@
 package promql_test
 
 import (
-	"context"
 	"fmt"
+	"strconv"
 	"testing"
-	"time"
 
-	"github.com/prometheus/prometheus/promql/parser"
-
-	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
-	"github.com/tsouza/cerberus/internal/schema"
 )
 
 const (
@@ -47,55 +42,21 @@ func mvvMergeBoundSeed() string {
 		"INSERT INTO otel_metrics_exponential_histogram " +
 		"(MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n" +
 		"    ('" + mvvMergeBoundLHSHistMetric + "', map('series', 'hh'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, []),\n" +
-		"    ('" + mvvMergeBoundRHSHistMetric + "', map('series', 'hh'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 20000, [1], 0, []);\n"
+		"    ('" + mvvMergeBoundRHSHistMetric + "', map('series', 'hh'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, " + strconv.Itoa(mvvMergeBoundFarOffset) + ", [1], 0, []);\n"
 }
 
-// runMvvMergeBoundQuery lowers + emits `(<lhs> or histogram_quantile(...))
-// + (<rhs> or histogram_quantile(...))` and runs it against fixture,
-// returning the query error (nil on success). Wraps in `SELECT count()
-// FROM (...)` for the identical reason histogram_binop_merge_bound_chdb_test.go's
-// own helper does: chdb-go's parquet driver cannot decode the merged
-// output's Map/Array(UInt64) histogram columns, and wrapping in count()
-// still forces ClickHouse to fully evaluate the merge — including the
-// guard's throwIf — without needing to decode any of them. Neither
-// operand's own base (float) metric needs seeding: the "hh" series' own
-// histogram metric is present on both sides, so the mixed `or`'s shadow
-// rule means the float arm never surfaces regardless.
-func runMvvMergeBoundQuery(t *testing.T, fixture *chdbFixture) error {
-	t.Helper()
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{})
-	query := fmt.Sprintf(
+// mvvMergeBoundFarOffset is the RHS arm's PositiveOffset: 20,000 buckets
+// from the LHS arm's 0, so the natural merge spans 20,001.
+const mvvMergeBoundFarOffset = 20000
+
+// mvvMergeBoundQuery is the `(<lhs> or histogram_quantile(...)) + (<rhs>
+// or histogram_quantile(...))` shape every case here lowers.
+func mvvMergeBoundQuery() string {
+	return fmt.Sprintf(
 		"(%s or histogram_quantile(0.5, %s)) + (%s or histogram_quantile(0.5, %s))",
 		mvvMergeBoundLHSHistMetric, mvvMergeBoundLHSHistMetric,
 		mvvMergeBoundRHSHistMetric, mvvMergeBoundRHSHistMetric,
 	)
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
-	}
-	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
-	plan, err := promql.LowerAt(context.Background(), expr, s, evalTS, evalTS)
-	if err != nil {
-		t.Fatalf("LowerAt(%q): %v", query, err)
-	}
-	sqlStr, args, err := chsql.Emit(context.Background(), plan)
-	if err != nil {
-		t.Fatalf("Emit(%q): %v", query, err)
-	}
-	wrapped := "SELECT count() FROM (" + sqlStr + ")"
-	rows, qerr := fixture.db.Query(wrapped, args...)
-	if qerr != nil {
-		return qerr
-	}
-	defer func() { _ = rows.Close() }()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		t.Fatal("count() query returned no rows")
-	}
-	return rows.Err()
 }
 
 // TestMixedVVAdditiveMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects
@@ -107,7 +68,9 @@ func runMvvMergeBoundQuery(t *testing.T, fixture *chdbFixture) error {
 func TestMixedVVAdditiveMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
 	fixture := newChDBFixture(t, mvvMergeBoundSeed())
 
-	if err := runMvvMergeBoundQuery(t, fixture); err != nil {
+	got, err := readMergedHistogramShape(t, fixture, mvvMergeBoundQuery(), promql.LowerOpts{})
+	if err != nil {
 		t.Fatalf("a scale-divergent mixed-or vector-vector histogram merge must be compacted to a bounded width, not rejected: %v", err)
 	}
+	assertCompactedMerge(t, got, 0, mvvMergeBoundFarOffset+1, 2)
 }

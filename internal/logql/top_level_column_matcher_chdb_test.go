@@ -38,7 +38,7 @@ func TestStreamMatcherOnEveryTopLevelColumn(t *testing.T) {
 
 	// The OTel-CH logs layout, with the two numeric columns at their
 	// real declared types.
-	if _, err := db.Exec("CREATE TABLE otel_logs (" +
+	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_logs (" +
 		"Timestamp DateTime64(9), Body String, " +
 		"SeverityText LowCardinality(String) DEFAULT '', SeverityNumber Int32 DEFAULT 0, " +
 		"ScopeName String DEFAULT '', ScopeVersion String DEFAULT '', " +

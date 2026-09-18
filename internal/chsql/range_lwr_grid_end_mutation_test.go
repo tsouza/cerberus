@@ -43,9 +43,17 @@ func TestMutation_StartAnchoredGridEnd_ZeroGuardIsOr(t *testing.T) {
 	})
 
 	t.Run("neither zero computes the start-anchored end", func(t *testing.T) {
+		// The span is NOT a multiple of the step (5m15s over 30s), so the
+		// Start-anchored newest anchor (start + 10 steps = start + 5m) and
+		// the raw end differ by the 15s remainder: a `return end` here — a
+		// wholesale revert of the Start anchoring — is caught, which an
+		// exact-multiple span (where both coincide) could not do.
 		start := nonZero
-		end := start.Add(5 * time.Minute)
+		end := start.Add(5*time.Minute + 15*time.Second)
 		want := start.Add(time.Duration((numAnchors - 1) * stepNS))
+		if want.Equal(end) {
+			t.Fatalf("the case's span must not be a step multiple, or the anchoring is indistinguishable from the raw end")
+		}
 		got := startAnchoredGridEnd(start, end, stepNS, numAnchors)
 		if !got.Equal(want) {
 			t.Fatalf("startAnchoredGridEnd(%s, %s, ...) = %s, want %s", start, end, got, want)

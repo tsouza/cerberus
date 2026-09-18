@@ -806,9 +806,10 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 // assertSourceCascade verifies that `e` is the detected_level source
 // precedence cascade [detectedLevelSourceExpr] produces for the default
 // OTel schema: a `multiIf(...)` whose terminal fallback branch is the
-// bare SeverityColumn ColumnRef. The intermediate branches resolve the
-// structured-metadata level keys; the pin here is the final fallback,
-// which is the load-bearing severity source.
+// dedicated-columns cascade (assertDedicatedSeverityFallback). The
+// intermediate branches resolve the structured-metadata level keys; the
+// pin here is the final fallback, which is the load-bearing severity
+// source.
 func assertSourceCascade(t *testing.T, e chplan.Expr, s schema.Logs) {
 	t.Helper()
 	mi, ok := e.(*chplan.FuncCall)
@@ -818,9 +819,43 @@ func assertSourceCascade(t *testing.T, e chplan.Expr, s schema.Logs) {
 	if len(mi.Args) == 0 {
 		t.Fatalf("source multiIf has no args")
 	}
-	fallback, ok := mi.Args[len(mi.Args)-1].(*chplan.ColumnRef)
-	if !ok || fallback.Name != s.SeverityColumn {
-		t.Errorf("source fallback branch = %#v; want ColumnRef(%q)", mi.Args[len(mi.Args)-1], s.SeverityColumn)
+	assertDedicatedSeverityFallback(t, mi.Args[len(mi.Args)-1], s)
+}
+
+// assertDedicatedSeverityFallback verifies the terminal branch of the
+// detected_level source: `multiIf(SeverityText != ”, SeverityText,
+// <severity-number ranges>)` — the text column first, the numeric OTLP
+// severity only when the text is empty, mirroring reference Loki's order
+// (severity_text is an allowed level field; severity_number is the
+// fallback detectLogLevelFromLogEntry consults). The number arm's own
+// range boundaries are pinned behaviourally by
+// TestDetectedLevel_SeverityNumberResolvesWhenNoTextIsPresent (chdb).
+func assertDedicatedSeverityFallback(t *testing.T, e chplan.Expr, s schema.Logs) {
+	t.Helper()
+	mi, ok := e.(*chplan.FuncCall)
+	if !ok || mi.Fn != chplan.FnMultiIf || len(mi.Args) != 3 {
+		t.Fatalf("dedicated severity fallback = %#v; want multiIf(<text != ''>, <text>, <number ranges>)", e)
+	}
+	cond, ok := mi.Args[0].(*chplan.Binary)
+	if !ok || cond.Op != chplan.OpNe {
+		t.Fatalf("fallback condition = %#v; want SeverityText != ''", mi.Args[0])
+	}
+	if col, ok := cond.Left.(*chplan.ColumnRef); !ok || col.Name != s.SeverityColumn {
+		t.Errorf("fallback condition reads %#v; want ColumnRef(%q)", cond.Left, s.SeverityColumn)
+	}
+	if col, ok := mi.Args[1].(*chplan.ColumnRef); !ok || col.Name != s.SeverityColumn {
+		t.Errorf("fallback text branch = %#v; want ColumnRef(%q)", mi.Args[1], s.SeverityColumn)
+	}
+	number, ok := mi.Args[2].(*chplan.FuncCall)
+	if !ok || number.Fn != chplan.FnMultiIf {
+		t.Fatalf("fallback number branch = %#v; want the severity-number multiIf", mi.Args[2])
+	}
+	first, ok := number.Args[0].(*chplan.Binary)
+	if !ok {
+		t.Fatalf("number branch first condition = %#v; want a comparison on the number column", number.Args[0])
+	}
+	if col, ok := first.Left.(*chplan.ColumnRef); !ok || col.Name != s.SeverityNumberColumn {
+		t.Errorf("number branch reads %#v; want ColumnRef(%q)", first.Left, s.SeverityNumberColumn)
 	}
 }
 
@@ -919,10 +954,7 @@ func TestDetectedLevelSource_PrecedenceCascade(t *testing.T) {
 		}
 	}
 
-	fallback, ok := cascade.Args[len(cascade.Args)-1].(*chplan.ColumnRef)
-	if !ok || fallback.Name != s.SeverityColumn {
-		t.Errorf("fallback branch = %#v; want ColumnRef(%q)", cascade.Args[len(cascade.Args)-1], s.SeverityColumn)
-	}
+	assertDedicatedSeverityFallback(t, cascade.Args[len(cascade.Args)-1], s)
 }
 
 // sourceCapHint evaluates the SHAPE of detected_level.go's cascade capacity
@@ -1058,16 +1090,19 @@ func TestDetectedLevelSource_CapHintMutantsAreKilled(t *testing.T) {
 
 // TestDetectedLevelSource_NoAttributesColumnCollapses verifies that a
 // custom schema without a structured-metadata column resolves the level
-// from the bare SeverityColumn only — byte-identical to the pre-cascade
-// behaviour, so such schemas see zero churn.
+// from the two dedicated columns only (text, then number) — no
+// structured-metadata lookups at all — and that a schema without a
+// severity-number column either collapses to the bare SeverityColumn.
 func TestDetectedLevelSource_NoAttributesColumnCollapses(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
 	s.AttributesColumn = ""
+	assertDedicatedSeverityFallback(t, detectedLevelSourceExpr(s), s)
 
+	s.SeverityNumberColumn = ""
 	col, ok := detectedLevelSourceExpr(s).(*chplan.ColumnRef)
 	if !ok || col.Name != s.SeverityColumn {
-		t.Fatalf("source = %#v; want bare ColumnRef(%q) when AttributesColumn is empty", detectedLevelSourceExpr(s), s.SeverityColumn)
+		t.Fatalf("source = %#v; want bare ColumnRef(%q) with neither an attributes nor a severity-number column", detectedLevelSourceExpr(s), s.SeverityColumn)
 	}
 }

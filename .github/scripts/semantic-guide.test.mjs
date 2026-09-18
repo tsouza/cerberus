@@ -19,6 +19,7 @@ import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-mo
 import { loadRegistry } from "./ci-lane-contract.mjs";
 import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
 import { buildReport } from "./lib/semantic-report.mjs";
+import { DEFAULT_MUTANTS_DIR, loadMutants } from "./lib/semantic-mutation.mjs";
 import {
   DEFAULT_GUIDE_MD_PATH,
   WORKED_EXAMPLES,
@@ -31,15 +32,19 @@ const SCRIPT_DIR = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = process.cwd();
 const CLI_PATH = join(SCRIPT_DIR, "semantic-guide.mjs");
 
-function generateAgainstRealRepo() {
+function generateAgainstRealRepo({ mutants } = {}) {
   const model = loadSemanticModel(DEFAULT_SEMANTIC_MODEL_DIR, { root: REPO_ROOT });
   const registry = loadRegistry(join(REPO_ROOT, ".github/ci-lanes.json"));
   const snapshot = validatePolicySnapshot(
     JSON.parse(readFileSync(join(REPO_ROOT, "test/semantic/policy-snapshot.json"), "utf8")),
   );
-  const report = buildReport(model, { registry, snapshot });
+  const report = buildReport(model, { registry, snapshot, mutants });
   const guide = buildGuide(report, registry);
-  return { report, registry, guide, markdown: renderMarkdown(guide), json: renderJSON(guide) };
+  return { model, report, registry, guide, markdown: renderMarkdown(guide), json: renderJSON(guide) };
+}
+
+function realMutants(model) {
+  return loadMutants(DEFAULT_MUTANTS_DIR, { root: REPO_ROOT, contractIds: new Set(model.contracts.keys()) });
 }
 
 // --- Determinism --------------------------------------------------------
@@ -100,6 +105,39 @@ test("real model: every contract index row with a resolvable lane carries a `jus
   }
 });
 
+test("real model: a contract's canonical execution is the lane that runs its evidence, never a tree-wide lane such as lint", () => {
+  const { guide } = generateAgainstRealRepo();
+  const byId = new Map(guide.contract_index.map((r) => [r.id, r]));
+  for (const row of guide.contract_index) {
+    if (!row.execution) continue;
+    assert.doesNotMatch(row.execution.command, /just lint/, `${row.id}: ${row.execution.command}`);
+    assert.doesNotMatch(row.execution.lane_id, /^(ci\.lint|governance\.|ci\.link-check|security\.codeql)/, row.id);
+  }
+  // Range-vector alignment binds a TXTAR fixture, a property shape and the
+  // Prometheus differential harness; none of those is verified by lint.
+  const alignment = byId.get("PROMQL-RANGE-VECTOR-ALIGNMENT");
+  assert.ok(alignment?.execution, "PROMQL-RANGE-VECTOR-ALIGNMENT must resolve to a lane");
+  assert.match(alignment.execution.lane_id, /^(chdb\.roundtrip-promql|quality\.property|compatibility\.prometheus|ci\.check)$/);
+  // Per-evidence-system routing over the real model.
+  for (const contract of guide.worked_examples.map((e) => e.contract.id)) {
+    assert.ok(byId.has(contract));
+  }
+  const counterReset = byId.get("PROMQL-COUNTER-RESET-EXTRAPOLATION");
+  assert.notEqual(counterReset.execution.lane_id, "ci.forbid-skip", counterReset.execution.command);
+});
+
+test("real model: a binding at a compatibility harness directory obligates that head's compat lane", () => {
+  const { report } = generateAgainstRealRepo();
+  const alignment = report.contracts.find((c) => c.id === "PROMQL-RANGE-VECTOR-ALIGNMENT");
+  const compat = alignment.bindings.find((b) => b.test_ref === "compatibility/prometheus");
+  assert.ok(compat, "the compat binding must still exist in the real model");
+  assert.ok(
+    compat.obligations.some((o) => o.lane_id === "compatibility.prometheus"),
+    JSON.stringify(compat.obligations),
+  );
+  assert.ok(!compat.obligations.some((o) => o.lane_id === "ci.lint"));
+});
+
 // --- Architectural rules ---------------------------------------------------
 
 test("real model: architectural rules are exactly the active architecture-scope contracts", () => {
@@ -146,10 +184,47 @@ test("rendered guide states the process explicitly, without claiming to be a mer
   assert.match(markdown, /never required to complete the flow/);
 });
 
-test("adversarial-evidence section states 'none yet' explicitly and never blocks the other steps", () => {
-  const { markdown } = generateAgainstRealRepo();
-  assert.match(markdown, /no mutation\/adversarial evidence class exists yet/);
+// The adversarial section is a projection of report.mutation_cohort — the
+// same committed test/semantic/mutants/ records the full report's "Semantic
+// mutation pilot" section renders — never a hand-written sentence about
+// whether such evidence exists.
+test("adversarial-evidence section is derived from the mutation cohort: every real mutant's contracts appear with their disposition", () => {
+  const model = loadSemanticModel(DEFAULT_SEMANTIC_MODEL_DIR, { root: REPO_ROOT });
+  const mutants = realMutants(model);
+  const { guide, markdown } = generateAgainstRealRepo({ mutants });
+  const real = [...mutants.values()].filter((m) => !m.synthetic);
+  assert.ok(real.length > 0, "the committed corpus carries real mutants");
+  assert.doesNotMatch(markdown, /no mutation\/adversarial evidence class exists yet/);
   assert.match(markdown, /Optional adversarial probes/);
+  assert.equal(guide.adversarial_evidence.mutant_count, real.length);
+  for (const mutant of real) {
+    for (const contractId of mutant.violated_contracts) {
+      const row = guide.adversarial_evidence.by_contract.find((c) => c.contract === contractId);
+      assert.ok(row, `${contractId} (targeted by ${mutant.id}) must appear in the adversarial section`);
+      const entry = row.mutants.find((m) => m.id === mutant.id);
+      assert.ok(entry, `${mutant.id} must be listed under ${contractId}`);
+      assert.equal(entry.disposition, mutant.expected_detection);
+      assert.match(markdown, new RegExp(`${contractId}[^\\n]*${mutant.id}|${mutant.id}[^\\n]*${contractId}`));
+    }
+  }
+  const synthetic = [...mutants.values()].filter((m) => m.synthetic);
+  for (const mutant of synthetic) {
+    assert.ok(!guide.adversarial_evidence.by_contract.some((c) => c.mutants.some((m) => m.id === mutant.id)));
+  }
+});
+
+test("adversarial-evidence section with an empty cohort says so as a derived count, never as a hand-written claim", () => {
+  const { guide, markdown } = generateAgainstRealRepo();
+  assert.equal(guide.adversarial_evidence.mutant_count, 0);
+  assert.deepEqual(guide.adversarial_evidence.by_contract, []);
+  assert.match(markdown, /0 real \(non-synthetic\) mutant/);
+});
+
+test("CLI: the committed guide's adversarial section reflects the committed mutant corpus", () => {
+  const committed = JSON.parse(readFileSync(join(REPO_ROOT, "docs/semantic-guide.json"), "utf8"));
+  const model = loadSemanticModel(DEFAULT_SEMANTIC_MODEL_DIR, { root: REPO_ROOT });
+  const real = [...realMutants(model).values()].filter((m) => !m.synthetic);
+  assert.equal(committed.adversarial_evidence.mutant_count, real.length);
 });
 
 test("TraceQL/Tempo structural example, its blind spot and its required complement are all directly linked", () => {

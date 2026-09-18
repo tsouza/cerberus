@@ -120,6 +120,23 @@ const settingGroupByTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes
 // while a derived expectation stayed green.
 const wantExpHistogramTwoLevelThresholdBytes = "1"
 
+// settingEnableAnalyzer is the ClickHouse setting internal/engine's
+// applyNativeHistogramAnalyzerFix stamps to 0 on a native-histogram plan —
+// the PRIMARY sentinel's own mechanism, the one #2364 broke. Declared here
+// for the same reason the siblings above are: the engine's const is
+// unexported, and this corpus asserting the literal ClickHouse records is
+// what makes the mechanism's absence fail.
+const settingEnableAnalyzer = "enable_analyzer"
+
+// wantNativeHistogramEnableAnalyzer is the exact value ClickHouse records for
+// enable_analyzer under the native-histogram fix: "0". A literal, not derived
+// from the engine: two other rules (the condition cache and lazy
+// materialisation) co-stamp the SAME key to 1, and chclient's settings map is
+// last-write-wins — so "1" on this sentinel's query_log row means one of them
+// overwrote the fix, which is exactly the failure this assertion exists to
+// surface.
+const wantNativeHistogramEnableAnalyzer = "0"
+
 // joinSpillCapDenominator mirrors internal/engine/spill.go's
 // spillCapDenominator: applyJoinSpillSettings stamps spillThreshold(cap),
 // which is the live per-query memory cap divided by this. Both engine
@@ -257,8 +274,10 @@ var Sentinels = []Sentinel{
 		Step:   sentinelStep,
 		RequiredQuerySettings: func(int64) map[string]string {
 			// Not sized from the memory cap: the threshold is absolute, not
-			// cap-relative (see expHistogramTwoLevelThresholdBytes).
+			// cap-relative (see expHistogramTwoLevelThresholdBytes), and the
+			// analyzer stamp is a fixed 0.
 			return map[string]string{
+				settingEnableAnalyzer:                wantNativeHistogramEnableAnalyzer,
 				settingGroupByTwoLevelThresholdBytes: wantExpHistogramTwoLevelThresholdBytes,
 			}
 		},

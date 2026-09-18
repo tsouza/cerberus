@@ -54,8 +54,8 @@ import (
 //
 // [mixedLastFirstProjection] then caps the aggregate with an explicit
 // [chplan.Project] naming [chplan.MixedDiscriminatorColumn] as one of its
-// outputs — [chplan.RowShapeOf]'s own *Project case recognises exactly that
-// as still Mixed-shaped, the same convention
+// outputs — a Project that republishes the discriminator keeps
+// [chplan.LiveSampleKind]'s mixed answer, the same convention
 // histogram_shape_guard.go / label_fns.go's Mixed-preserving Projects
 // already rely on — so the final answer stays decodable by
 // internal/chclient's shapeSampleMixed exactly like every other Mixed

@@ -117,7 +117,9 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus loki patterns", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
-	lines, err := h.Client.QueryTimestampedLines(r.Context(), sqlStr, args...)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	lines, err := h.Client.QueryTimestampedLines(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki patterns CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(r.Context(), w, classifyMetadataErr(err))

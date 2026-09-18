@@ -34,7 +34,7 @@
 //      by GitHub Actions; absent locally, where source_sha/run_ref simply
 //      report null/a placeholder rather than failing the run).
 
-import { appendFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import process from "node:process";
@@ -47,21 +47,18 @@ import {
   scratchRootFor,
 } from "./lib/semantic-mutation.mjs";
 import { defaultRunRef, githubRunContext } from "./lib/semantic-execution-adapter.mjs";
-import { error, log, notice } from "./lib/gh.mjs";
+import { appendStepSummary, error, log, notice } from "./lib/gh.mjs";
+import { stampedRecordId } from "./lib/semantic-model.mjs";
 
 function appendSummary(body) {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (path) appendFileSync(path, body);
+  appendStepSummary(body, { quiet: true });
 }
 
-// Mirrors lib/semantic-execution-adapter.mjs's execIdFor's own
-// <PREFIX>-<subject>-<YYYYMMDDTHHMMSS> stamp scheme, for the mutant-ledger
-// id namespace (MUTEXEC-, not EXEC-) — not reused directly, since that
-// helper hardcodes stripping a "BINDING-" prefix this record ID never
-// carries.
+// The mutant-ledger id namespace (MUTEXEC-, not EXEC-), stamped the same
+// way lib/semantic-execution-adapter.mjs's execIdFor stamps executions.json
+// ids — one shared stampedRecordId, two prefixes.
 function mutantExecIdFor(mutantId, observedAt) {
-  const stamp = observedAt.replaceAll(/[-:]/g, "").slice(0, 15); // YYYYMMDDTHHMMSS
-  return `MUTEXEC-${mutantId.replace(/^MUTANT-/, "")}-${stamp}`;
+  return stampedRecordId("MUTEXEC", mutantId.replace(/^MUTANT-/, ""), observedAt);
 }
 
 export async function runPilot({

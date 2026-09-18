@@ -28,53 +28,33 @@ func metricScanRoles(s schema.Metrics, table string) []chplan.Column {
 		// Histogram storage has no float Value; the histogram lowering
 		// explicitly synthesizes any scalar placeholder in a later Project.
 		roles = roles[:len(roles)-1]
-		fields := []struct {
+		// histogramStorageField pairs a configured storage column with the
+		// canonical histogram field it holds; an empty name means the
+		// schema does not persist that field.
+		type histogramStorageField struct {
 			name     string
 			identity chplan.HistogramField
-		}{{s.CountColumn, chplan.HistogramFieldCount}, {s.SumColumn, chplan.HistogramFieldSum}}
+		}
+		fields := []histogramStorageField{
+			{s.CountColumn, chplan.HistogramFieldCount},
+			{s.SumColumn, chplan.HistogramFieldSum},
+		}
 		if table == s.ExpHistogramTable {
 			fields = append(
 				fields,
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.ScaleColumn, chplan.HistogramFieldScale},
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.ZeroThresholdColumn, chplan.HistogramFieldZeroThreshold},
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.ZeroCountColumn, chplan.HistogramFieldZeroCount},
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.PositiveOffsetColumn, chplan.HistogramFieldPositiveOffset},
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.PositiveBucketCountsColumn, chplan.HistogramFieldPositiveBucketCounts},
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.NegativeOffsetColumn, chplan.HistogramFieldNegativeOffset},
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.NegativeBucketCountsColumn, chplan.HistogramFieldNegativeBucketCounts},
+				histogramStorageField{s.ScaleColumn, chplan.HistogramFieldScale},
+				histogramStorageField{s.ZeroThresholdColumn, chplan.HistogramFieldZeroThreshold},
+				histogramStorageField{s.ZeroCountColumn, chplan.HistogramFieldZeroCount},
+				histogramStorageField{s.PositiveOffsetColumn, chplan.HistogramFieldPositiveOffset},
+				histogramStorageField{s.PositiveBucketCountsColumn, chplan.HistogramFieldPositiveBucketCounts},
+				histogramStorageField{s.NegativeOffsetColumn, chplan.HistogramFieldNegativeOffset},
+				histogramStorageField{s.NegativeBucketCountsColumn, chplan.HistogramFieldNegativeBucketCounts},
 			)
 		} else {
 			fields = append(
 				fields,
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.BucketCountsColumn, chplan.HistogramFieldBucketCounts},
-				struct {
-					name     string
-					identity chplan.HistogramField
-				}{s.ExplicitBoundsColumn, chplan.HistogramFieldExplicitBounds},
+				histogramStorageField{s.BucketCountsColumn, chplan.HistogramFieldBucketCounts},
+				histogramStorageField{s.ExplicitBoundsColumn, chplan.HistogramFieldExplicitBounds},
 			)
 		}
 		for _, field := range fields {

@@ -12,9 +12,18 @@ import (
 
 // This pins #1853. `.claude/hooks/guard-git.mjs` is a PreToolUse hook that refuses a `git
 // commit` / `git push` aimed at `main`, and refuses either while lefthook's
-// git hooks are missing. Its whole value is that it fires on the commands an
-// agent actually types, and its whole cost is that a false positive blocks
-// every commit in the session with no way around it.
+// git hooks are missing or bypassed. Its whole value is that it fires on the
+// commands an agent actually types, and its whole cost is that a false
+// positive blocks every commit in the session with no way around it.
+//
+// The second group of cases pins the shapes a line-splitting, branch-reading
+// guard got wrong: a push is judged by its REFSPECS (deleting or pushing a
+// feature branch from a checkout on `main` targets nothing protected; a bare
+// push does), quoted text is data (a commit message may say "git push origin
+// main"), a `bash -c` payload is a command, the LAST `cd` before the git
+// segment is where it runs, the hooks directory is resolved in THAT checkout
+// rather than the hook process's own, and `--no-verify` / `commit -n` /
+// `core.hooksPath` count as hooks-off.
 //
 // The command an agent actually types is the part that is easy to get wrong.
 // Agents work in linked worktrees and reach them by changing directory first —
@@ -123,6 +132,113 @@ func TestGuardGitHook(t *testing.T) {
 			cwd:     onMain,
 			command: "rtk git commit -m msg",
 			want:    guardBlock,
+		},
+		// A push is judged by its refspecs, not by the branch the shell is on.
+		{
+			name:    "deleting a feature branch from a checkout on main is allowed",
+			cwd:     onMain,
+			command: "git push origin --delete some-feature",
+			want:    guardAllow,
+		},
+		{
+			name:    "pushing a feature refspec from a checkout on main is allowed",
+			cwd:     onMain,
+			command: "git push origin feat/x:feat/x",
+			want:    guardAllow,
+		},
+		{
+			name:    "a bare push from a checkout on main is blocked",
+			cwd:     onMain,
+			command: "git push",
+			want:    guardBlock,
+		},
+		{
+			name:    "pushing HEAD from a checkout on main is blocked",
+			cwd:     onMain,
+			command: "git push origin HEAD",
+			want:    guardBlock,
+		},
+		{
+			name:    "deleting main by an empty-source refspec is blocked",
+			cwd:     onFeature,
+			command: "git push origin :main",
+			want:    guardBlock,
+		},
+		{
+			name:    "a forced main refspec is blocked",
+			cwd:     onFeature,
+			command: "git push --force-with-lease origin +HEAD:refs/heads/main",
+			want:    guardBlock,
+		},
+		// Quoted text is data, not a command.
+		{
+			name:    "a commit message that mentions pushing to main is allowed",
+			cwd:     onFeature,
+			command: "git commit -q -F - <<'EOF'\nfix: reword the guard\n\ngit push origin main is refused by branch protection\nEOF",
+			want:    guardAllow,
+		},
+		{
+			name:    "an echo that quotes a push to main is allowed",
+			cwd:     onFeature,
+			command: "echo \"git push origin HEAD:main\"",
+			want:    guardAllow,
+		},
+		// A wrapped shell still runs the command.
+		{
+			name:    "a push to main wrapped in bash -c is blocked",
+			cwd:     onFeature,
+			command: "bash -c \"git push origin HEAD:main\"",
+			want:    guardBlock,
+		},
+		// The LAST cd before the git segment is where it runs.
+		{
+			name:    "the last cd before the commit decides the directory",
+			cwd:     onMain,
+			command: "cd /tmp && cd " + onFeature + " && git commit -m msg",
+			want:    guardAllow,
+		},
+		{
+			name:    "a cd into a hookless checkout is judged there, not in the hook process's cwd",
+			cwd:     onFeature,
+			command: "cd " + noHooks + " && git commit -m msg",
+			want:    guardBlock,
+		},
+		// Turning the hooks off for one command is the "silently off" state.
+		{
+			name:    "commit --no-verify is blocked",
+			cwd:     onFeature,
+			command: "git commit --no-verify -m msg",
+			want:    guardBlock,
+		},
+		{
+			name:    "commit -n is blocked",
+			cwd:     onFeature,
+			command: "git commit -n -m msg",
+			want:    guardBlock,
+		},
+		{
+			name:    "push --no-verify is blocked",
+			cwd:     onFeature,
+			command: "git push --no-verify origin HEAD:feat/x",
+			want:    guardBlock,
+		},
+		{
+			name:    "a hooksPath override is blocked",
+			cwd:     onFeature,
+			command: "git -c core.hooksPath=/dev/null commit -m msg",
+			want:    guardBlock,
+		},
+		{
+			name:    "push -n is a dry run, not a hook bypass",
+			cwd:     onFeature,
+			command: "git push -n origin HEAD:feat/x",
+			want:    guardAllow,
+		},
+		{
+			name:    "the documented LEFTHOOK=0 escape hatch is allowed",
+			cwd:     onFeature,
+			command: "LEFTHOOK=0 git push origin HEAD:feat/x",
+			want:    guardAllow,
 		},
 	}
 

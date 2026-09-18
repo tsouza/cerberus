@@ -225,16 +225,12 @@ func expHistogramWindowCostOverBudgetExpr(maxCostUnits int64) chplan.Expr {
 // for the same reason: the predicate reads that reduction's own aliases,
 // so it can only ride directly on top of it.
 //
-// A non-positive ceiling means the caller resolved no bound and the guard
-// is omitted rather than rendered as "reject everything" — the opposite
-// of [ResourceBounds]'s other fields, whose zero value is filled by
-// [ResourceBounds.withDefaults] before any guard sees it. This branch
-// exists for the plan-building callers that construct a [lowerCtx]
-// directly in tests.
+// The ceiling is rendered as given, zero included: like every other
+// [ResourceBounds] field, a zero ceiling rejects rather than admits, and
+// the resolution to the derived default happens once, at the lowering
+// entry seam ([ResourceBounds.withDefaults]), never here. A caller that
+// builds a [lowerCtx] by hand resolves its bounds the same way.
 func wrapExpHistogramWindowSampleGuard(reduced chplan.Node, maxCostUnits int64) chplan.Node {
-	if maxCostUnits <= 0 {
-		return reduced
-	}
 	return &chplan.Filter{
 		Input: reduced,
 		Predicate: &chplan.Binary{

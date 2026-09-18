@@ -39,8 +39,8 @@ import (
 )
 
 // lokiDrainLogsDDL is the otel_logs projection the LogQL range-aggregation
-// lowering touches: SeverityText + LogAttributes feed the synthesized
-// detected_level label (folded into the series-identity ResourceAttributes
+// lowering touches: SeverityText + SeverityNumber + LogAttributes feed the
+// synthesized detected_level label (folded into the series-identity ResourceAttributes
 // map by the emitter), and ServiceName participates in the service_name
 // coalesce chain alongside ResourceAttributes. Engine = Memory keeps the
 // seed fast; the range-aggregation SQL does its own GROUP BY regardless of
@@ -49,6 +49,7 @@ const lokiDrainLogsDDL = `CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
     SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0,
     ResourceAttributes Map(String, String),
     ServiceName String DEFAULT '',
     LogAttributes Map(String, String)

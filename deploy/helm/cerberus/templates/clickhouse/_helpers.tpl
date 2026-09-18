@@ -336,6 +336,12 @@ with no usable storage tier:
   - hotVolume.enabled=true + objectStorage.enabled=false (hot-only) with no
     schema.ttl set would fill an unbounded local disk forever with no cold
     tier to relieve it and no retention to cap it -> fails, naming schema.ttl.
+  - objectStorage.enabled=true with no bucket / container to point the
+    object-store disk at, or on the static-credential route with no
+    credential source, would render a ClickHouse whose cold tier cannot
+    mount (an endpoint of `https://.s3.<region>.amazonaws.com/`, a
+    secretKeyRef naming a Secret nothing renders) -> fails, via
+    cerberus.clickhouse.validateObjectStore.
 Input is the root context.
 */}}
 {{- define "cerberus.clickhouse.mode" -}}
@@ -350,9 +356,52 @@ Input is the root context.
 {{- end -}}
 hot-only
 {{- else if and $hot $os -}}
+{{- include "cerberus.clickhouse.validateObjectStore" . -}}
 hot-cold
 {{- else -}}
+{{- include "cerberus.clickhouse.validateObjectStore" . -}}
 object-store
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.validateObjectStore — render-time refusal of an
+object-store tier that could never mount. Called by cerberus.clickhouse.mode
+whenever objectStorage.enabled is true. Emits nothing; fails the render when:
+  - the s3 / gcs backend has an empty objectStorage.bucket, or the azure
+    backend an empty objectStorage.azure.storageAccountUrl or .container —
+    the storage XML's <endpoint> / <container_name> would be built from an
+    empty string;
+  - the static-credential route is selected (s3 without
+    useEnvironmentCredentials, gcs always, azure without useManagedIdentity)
+    and neither a credentialsSecret nor BOTH inline keys are set — the
+    container env would reference a Secret this chart never renders.
+Each failure names the exact values keys that satisfy it. Input is the root
+context.
+*/}}
+{{- define "cerberus.clickhouse.validateObjectStore" -}}
+{{- $os := .Values.clickhouse.bundled.objectStorage -}}
+{{- if eq $os.backend "s3" -}}
+{{- if not $os.bucket -}}
+{{- fail "clickhouse.bundled.objectStorage.enabled is true with backend s3 but objectStorage.bucket is empty — the object-store disk's <endpoint> would point at no bucket at all. Set clickhouse.bundled.objectStorage.bucket (or disable objectStorage for hot-only mode)." -}}
+{{- end -}}
+{{- if and (not $os.s3.useEnvironmentCredentials) (not $os.s3.credentialsSecret) (not (and $os.s3.accessKeyId $os.s3.secretAccessKey)) -}}
+{{- fail "clickhouse.bundled.objectStorage (backend s3) has no credential source: set objectStorage.s3.credentialsSecret (an existing Secret with access-key-id / secret-access-key keys), or objectStorage.s3.accessKeyId + secretAccessKey inline, or objectStorage.s3.useEnvironmentCredentials=true for IRSA / instance-role credentials." -}}
+{{- end -}}
+{{- else if eq $os.backend "gcs" -}}
+{{- if not $os.bucket -}}
+{{- fail "clickhouse.bundled.objectStorage.enabled is true with backend gcs but objectStorage.bucket is empty — the object-store disk's <endpoint> would point at no bucket at all. Set clickhouse.bundled.objectStorage.bucket (or disable objectStorage for hot-only mode)." -}}
+{{- end -}}
+{{- if and (not $os.gcs.credentialsSecret) (not (and $os.gcs.accessKeyId $os.gcs.secretAccessKey)) -}}
+{{- fail "clickhouse.bundled.objectStorage (backend gcs) has no credential source: set objectStorage.gcs.credentialsSecret (an existing Secret with access-key-id / secret-access-key keys) or objectStorage.gcs.accessKeyId + secretAccessKey (HMAC) inline." -}}
+{{- end -}}
+{{- else if eq $os.backend "azure" -}}
+{{- if or (not $os.azure.storageAccountUrl) (not $os.azure.container) -}}
+{{- fail "clickhouse.bundled.objectStorage.enabled is true with backend azure but objectStorage.azure.storageAccountUrl and/or objectStorage.azure.container is empty — the object-store disk's <storage_account_url> / <container_name> would be blank. Set both (or disable objectStorage for hot-only mode)." -}}
+{{- end -}}
+{{- if and (not $os.azure.useManagedIdentity) (not $os.azure.credentialsSecret) (not (and $os.azure.accountName $os.azure.accountKey)) -}}
+{{- fail "clickhouse.bundled.objectStorage (backend azure) has no credential source: set objectStorage.azure.credentialsSecret (an existing Secret with account-name / account-key keys), or objectStorage.azure.accountName + accountKey inline, or objectStorage.azure.useManagedIdentity=true." -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 
@@ -597,8 +646,17 @@ is disabled, so non-bundled renders are byte-identical.
 {{- if not .Values.schema.replicated.enabled -}}
 {{- $_ := set .Values.schema.replicated "enabled" true -}}
 {{- end -}}
+{{- /* The path is the ROOT every replica of the Replicated database
+       registers under; the engine takes `{shard}` and `{replica}` as its
+       own separate arguments (ENGINE = Replicated(path, '{shard}',
+       '{replica}')) and registers each node at <path>/replicas/<shard>|
+       <replica>. ClickHouse expands macros inside the path too, so a path
+       carrying the macros gives every pod a DIFFERENT root — N unrelated
+       single-replica databases that never replicate. The macros must
+       therefore never appear here; cerberus.schema.replicatedPath refuses
+       a render that carries them. */ -}}
 {{- if not .Values.schema.replicated.zookeeperPath -}}
-{{- $_ := set .Values.schema.replicated "zookeeperPath" (printf "/clickhouse/databases/%s/{shard}/{replica}" .Values.clickhouse.database) -}}
+{{- $_ := set .Values.schema.replicated "zookeeperPath" (printf "/clickhouse/databases/%s" .Values.clickhouse.database) -}}
 {{- end -}}
 {{- if not .Values.schema.CLUSTER -}}
 {{- $_ := set .Values.schema "CLUSTER" "bwc_cluster" -}}

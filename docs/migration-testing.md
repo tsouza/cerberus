@@ -28,13 +28,14 @@ stories require. The lane proves the operator journey end-to-end: harvest →
 explain → classify → rulegraph → schema → verify → gate → cut over →
 decommission, against real ClickHouse and a real reference Prometheus.
 
-**Trigger posture — scheduled, not a PR gate.** The lane
-runs on the **same trigger posture as the existing `dashboard` lane**: nightly
-`schedule` cron + `workflow_dispatch` + **informational on push-to-main**, and
-never on `pull_request`, so it is not a branch-protection check. Informational
-does **not** mean tolerated — a red migration lane is a real failure to fix or
-revert from main, exactly as the [CI-gate inventory](test-strategy.md#ci-gates)
-already says of every informational lane.
+**Trigger posture — a release gate, not a PR gate.** The lane runs on
+push to `main` and `release/*.x`, on a nightly `schedule`, on
+`workflow_dispatch`, and as a `workflow_call` target that `release.yml`
+re-runs against the built artifact. It has no `pull_request` trigger, so it
+is never a branch-protection check — but `release.yml`'s
+`RELEASE_REQUIRED_CHECKS` names `migration-e2e`, so a red lane blocks a
+publish. The [CI-gate inventory](test-strategy.md#ci-gates) records the same
+posture.
 
 **Placement — Layer 14.** It slots directly above Layer 13 (live-stack
 chaos): the slowest layer, asserting a workflow contract rather than a code
@@ -69,10 +70,14 @@ differ from a naive reading:
   semantic oracle for a non-Prometheus source composes **two two-way runs**
   feeding both backends identical synthetic data (see
   [section 5](#5-comparison-modes--the-honesty-contract)).
-- **`verify --tolerance` is a single flat absolute epsilon.** It is the
-  definition of "the same float", not a counter-aware or downsample-aware mode,
-  and it is shared by every head lane so no lane can be judged loosely out of
-  view. It has no per-shape sibling: a log line, a stream label set, a trace ID,
+- **`verify --tolerance` is a single epsilon.** Two values are the same
+  float when `|a − b| <= max(tolerance, 1e-9·max(|a|, |b|))` — the absolute
+  term absorbs round-trip slack near zero, the relative term keeps
+  "the same number" meaningful across the float range — and a
+  `--tolerance` at or above `1.0` is rejected outright
+  (`internal/migrateverify`). It is not a counter-aware or downsample-aware
+  mode, and it is shared by every head lane so no lane can be judged
+  loosely out of view. It has no per-shape sibling: a log line, a stream label set, a trace ID,
   a span set and a timestamp have no float axis, so those are compared exactly.
   A structural,
   counter-aware long-range delta (downsampling) therefore cannot live inside
@@ -96,9 +101,8 @@ differ from a naive reading:
 **Tier 0 — offline fixtures (no backend).** Pure `cerberus migrate` CLI over checked-in
 rule files, exported Grafana dashboard JSON, and canned corpus/schema fixtures.
 No Docker, no network, no ClickHouse — air-gap-faithful, seconds to run. Drives
-`harvest`, `explain`, `classify`, `rulegraph`, `--schema` (render), and `gate`
-(the pure aggregator). Cheap enough that it *may* also run per-PR later, but it
-ships informational-first.
+`harvest`, `explain`, `classify`, `rulegraph`, `schema` (render), and `gate`
+(the pure aggregator).
 
 **Tier 1 — dual-backend compose.**
 `test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml`: reference
@@ -417,12 +421,18 @@ seven comparison modes, and no scenario mixes them silently:
    correctness, it does not license a tolerance.
 
 2. **Estimator epsilon — exp-histogram quantiles.** `histogram_quantile` over
-   exponential histograms is an estimator, and both backends estimate. A bounded,
-   stated, *uniform* `--tolerance` is the correct definition of equality for an
-   estimator — still a single epsilon, still not a per-case allow-list — and it
-   applies only after the exp-histogram path is independently confirmed healthy
-   (MIG-12). This is `cerberus migrate verify` with a larger-but-declared epsilon, and the
-   diverge count under that epsilon must still reach zero.
+   exponential histograms is an estimator. This mode does not run through
+   `verify`: its epsilon (`tolerances.ExpHistogramQuantileEpsilon`, `2.0`)
+   is above the `< 1.0` cap `verify --tolerance` accepts, and the
+   comparison is not backend-versus-backend. MIG-17's step
+   (`test/e2e/migration/steps/then_histogram.go`) seeds one
+   exponential-histogram row per archetype whose true quantile is computed
+   independently in Go, asks cerberus alone for
+   `histogram_quantile(0.95, …)`, and asserts `|got − true| <= ε`. A
+   bounded, stated, *uniform* ε is the correct definition of equality for
+   an estimator — still a single epsilon, still not a per-case allow-list —
+   and it applies only after the exp-histogram path is independently
+   confirmed healthy (MIG-12).
 
 3. **Structural tolerant comparator — downsample only (MIG-20).** Long-range
    panels served from raw or MV-rollup data are compared against the incumbent's
@@ -589,24 +599,19 @@ cell uses only the verified flags from [section 2](#2-the-cerberus-migrate-cli-s
 | MIG-08 | 1       | replay heaviest harvested queries at production QPS; fault-inject via `docker compose kill/pause/stop` on CH / cerberus / collector         | widest-window × highest-cardinality queries from the kube-prometheus-stack + Thanos corpora; loaded CH | Any query tripping a resource-bound guard or Go-side result-buffering OOM is listed; `query.maxSamples` + result-buffering bound proven to stop one heavy range query OOMing the gateway; p50/p95/p99 + memory captured; a `docker compose kill` shows graceful degradation + a working datasource-flip rollback. |
 | MIG-09 | 2       | stand up query-only ruler → cerberus HTTP → CH; assert recorded series selectable via cerberus                                              | Tier-2 shadow ruler + dead-end Alertmanager; a small recording+alerting rule set                       | Ruler evaluates rules against cerberus and lands recording-rule output back into CH; those recorded series become selectable through cerberus; the shadow ruler fires into a null receiver (computes, never pages); the full loop validated in-lab.                                                               |
 
-**What MIG-08's shipped scenario does not yet reach.** The Tier-1 scenario
-asserts the fault-injection and rollback half of that PASS cell — a paused
-ClickHouse is refused inside cerberus's own per-query wall-clock cap, with a
-named error envelope, measurably slower than the healthy p50/p95/p99 the same
-query just recorded, while the reference Prometheus still serves the identical
-series set and cerberus recovers it on resume. Five clauses of the cell are
-outside what it exercises, and none of them is retired by it: no memory figure
-is captured beside the latencies; neither `query.maxSamples` nor the Go-side
-result-buffering bound is proven to stop a heavy range query exhausting the
-gateway; the fault is `docker compose pause` only, so `kill` and `stop` — and
-with them a hard process death rather than a freeze — stay unexercised, as do
-faults injected at cerberus and the collector rather than at ClickHouse; the
-heaviest query is synthesised from the archetype's own fixture declaration
-instead of drawn from the harvested corpus, so "heaviest harvested at
-production QPS" is a replay of one wide, high-churn range query at bounded
-concurrency; and the `prometheus-thanos` corpus half has no seeded Tier-1
-fixture, so only `kube-prometheus-stack` is soaked. Each remains owed by
-MIG-08, not reassigned and not dropped.
+**MIG-08's Tier-1 scope.** The scenario asserts the fault-injection and
+rollback half of that PASS cell: a paused ClickHouse is refused inside
+cerberus's own per-query wall-clock cap, with a named error envelope,
+measurably slower than the healthy p50/p95/p99 the same query just recorded,
+while the reference Prometheus still serves the identical series set and
+cerberus recovers it on resume. The scope is exactly that: latencies without
+a memory figure; a `docker compose pause` at ClickHouse (no `kill` / `stop`,
+no fault at cerberus or the collector); one wide, high-churn range query
+synthesised from the archetype's own fixture declaration, replayed at
+bounded concurrency; and the `kube-prometheus-stack` archetype only. Neither
+`query.maxSamples` nor the Go-side result-buffering bound is exercised by
+it — the sample budget is pinned by `internal/engine/anchor_budget_test.go`
+and the drain bound by the per-head `*_chdb_boundsdrain_test.go` harnesses.
 
 #### How MIG-06 and MIG-07 discharge those PASS assertions, and what they cannot reach
 
@@ -667,14 +672,14 @@ does not pin the additive set by name.
 
 ### VERIFY scenarios
 
-| ID     | Tier(s)          | CLI                                                                                                                                                                                                                                                                                                           | Fixtures                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | PASS assertion                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| MIG-16 | 1                | `cerberus migrate verify --corpus corpus.json --ref http://prometheus:9090 --cerberus http://cerberus:9090 --ref-loki http://loki:3100 --cerberus-loki http://cerberus:9090 --ref-tempo http://tempo:3200 --cerberus-tempo http://cerberus:9090 --start -1h --end now --step 60s --json --report verify.json` | full corpus + dual-write overlap window; VM/SaaS variants add a reference-Prometheus leg fed identical data                                                                                                                                                                                                                                                                                                                                                                     | Same query/`[start,end,step]`, step-aligned, over both backends; first-diff report gives series/timestamp/ref-value/cerberus-value; **diverge count must reach zero — no expected-diff allow-list**; each divergence attributed to cerberus-bug / ingest-artifact / data-window-gap / dialect-semantics; metadata endpoints diffed too.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| MIG-17 | 1                | `cerberus migrate verify` scoped to the hotspot sub-corpus (PromQL lane; the hotspots are PromQL-shaped and so is the attribution)                                                                                                                                                                            | high-churn counters with induced pod-restart counter-resets; target-down transitions; classic + native histograms                                                                                                                                                                                                                                                                                                                                                               | `rate`/`increase`/counter-reset verified across resets and pod-restart edges; staleness/absence (`up==0`, `absent()`, `absent_over_time()`, resolve edge) verified against the documented stale-marker-vs-gap expected answer (zero diverge, not tolerated); `histogram_quantile` verified within the stated estimator epsilon; per-query max/median divergence reported.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| MIG-18 | 2                | run the SAME multi-window multi-burn-rate rule set on both rulers over one fixture; diff the two notification streams                                                                                                                                                                                         | Tier-2 dual rulers, sharing no code: the shadow (Grafana-managed alerting over cerberus) and the incumbent (reference Prometheus over its own TSDB, dispatching through its own Alertmanager), each into its OWN dead-end receiver. One in-memory fixture is rendered into both backends, driving one burning and one intact `slo` identity through an MWMBR rule pair (fast page + slow ticket, each with a long and a short window). Plus the shadow-only fire/resolve probe. | The shadow ruler's own lifecycle: hold-down honored (pending observed, and firing not reported before the provisioned pending window elapsed); firing edge captured at the one receiver with the rule's provisioned labels and an annotation rendered from the alert's own label set; resolve edge captured for the same identity, ordered after the fire edge. AND the incumbent-vs-shadow diff: matched on the alert identity both rulers declare (name plus the routing labels — substrate labels naming which ruler emitted an edge are projected away, and a MISSING routing key fails rather than shrinking the identity), **false positives and false negatives must both be zero**, the intact `slo` is asserted by name to have been paged by neither ruler, and the diff must have compared something. Timing skew is quantized to the shared evaluation interval and its MAGNITUDE bounded by a derived value — one evaluation interval plus the harness's own measured write span — rather than asserted zero: the two schedulers cannot be phase-locked (Prometheus offsets a group by hash(group, file) % interval; prom v3.11.3 has no `align_evaluation_time_on_interval`), and section 5 names that sub-interval skew as not a cerberus artifact. The MWMBR burn rate both rulers page off must hold equal across the FULL bake window under the exact-parity epsilon, not at a spot instant. |
-| MIG-19 | 2                | diff CH-landed recorded series value-for-value against the incumbent ruler's own engine at the same instants                                                                                                                                                                                                  | Tier-2 ruler write-back plus the incumbent ruler recording the SAME rule over its own copy of the source series, remote-written from the one fixture that produced the ClickHouse rows                                                                                                                                                                                                                                                                                          | Each recorded series compared sample-by-sample under the exact-parity epsilon; divergences attributed (rule translation / input parity / write-back timing-lag); any diverging recorded output is a blocker until reconciled; comparison window = what dashboards/alerts actually query. Every landed sample reproduces a live re-evaluation of its source expression at the instant it was recorded, the landed samples hold the ruler's cadence with no dropped or duplicated tick, and are not all one value. AND, with cerberus on exactly ONE side: every landed sample equals what the INCUMBENT's engine computes for the same expression at the same instant, so a cerberus evaluation bug no longer cancels out against itself; and the incumbent's OWN recorded series is held to that same engine on the incumbent's own evaluation grid, so deleting its `record:` rule fails the scenario rather than leaving the incumbent leg an ad-hoc query endpoint. The two recorded series are not compared point-for-point to each other because the two rulers never record at the same instants and cannot be made to, and over a ramped source only a tolerance wide enough to swallow the ramp would let such a comparison pass.                                                                                                                                                                      |
-| MIG-20 | 1                | dedicated tolerant comparator (**not** `cerberus migrate verify`) comparing cerberus raw/MV-rollup vs the incumbent's 5m/1h downsampled counter-aware aggregates                                                                                                                                              | Thanos archetype with downsampled blocks + a delta band declared up front                                                                                                                                                                                                                                                                                                                                                                                                       | Long-range panels served cheaply verified against the incumbent's downsampled aggregates within the **declared, counter-aware** band; the band is stated before the run from the aggregation math; any excursion beyond it fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| MIG-21 | 1 (three-signal) | Grafana-driven correlation hops (Playwright, reusing the Layer-9 crawl engine) + direct CH `trace_id` index probe                                                                                                                                                                                             | three-signal seed: metrics + logs + traces with exemplars, span-metrics/service-graph; Loki + Tempo + Grafana added to the stack                                                                                                                                                                                                                                                                                                                                                | `trace_id` validated as an indexed first-class column in both logs and traces CH tables; each hop (exemplar→trace, trace→logs, logs→trace) resolves in Grafana against cerberus datasources; span-metrics + service-graph reproduced and verified equivalent; trace assembly regroups spans by `trace_id` honoring sampling/late spans.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ID     | Tier(s)          | CLI                                                                                                                                                                                                                                                                                                              | Fixtures                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | PASS assertion                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------ | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MIG-16 | 1                | `cerberus migrate verify --corpus corpus.json --ref http://prometheus:9090 --cerberus http://cerberus:27080 --ref-loki http://loki:3100 --cerberus-loki http://cerberus:27080 --ref-tempo http://tempo:3200 --cerberus-tempo http://cerberus:27080 --start -1h --end now --step 60s --json --report verify.json` | full corpus + dual-write overlap window; VM/SaaS variants add a reference-Prometheus leg fed identical data                                                                                                                                                                                                                                                                                                                                                                     | Same query/`[start,end,step]`, step-aligned, over both backends; first-diff report gives series/timestamp/ref-value/cerberus-value; **diverge count must reach zero — no expected-diff allow-list**; each divergence attributed to cerberus-bug / ingest-artifact / data-window-gap / dialect-semantics; metadata endpoints diffed too.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| MIG-17 | 1                | `cerberus migrate verify` scoped to the hotspot sub-corpus (PromQL lane; the hotspots are PromQL-shaped and so is the attribution)                                                                                                                                                                               | high-churn counters with induced pod-restart counter-resets; target-down transitions; classic + native histograms                                                                                                                                                                                                                                                                                                                                                               | `rate`/`increase`/counter-reset verified across resets and pod-restart edges; staleness/absence (`up==0`, `absent()`, `absent_over_time()`, resolve edge) verified against the documented stale-marker-vs-gap expected answer (zero diverge, not tolerated); `histogram_quantile` verified within the stated estimator epsilon; every replayed query individually evidenced in the report.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| MIG-18 | 2                | run the SAME multi-window multi-burn-rate rule set on both rulers over one fixture; diff the two notification streams                                                                                                                                                                                            | Tier-2 dual rulers, sharing no code: the shadow (Grafana-managed alerting over cerberus) and the incumbent (reference Prometheus over its own TSDB, dispatching through its own Alertmanager), each into its OWN dead-end receiver. One in-memory fixture is rendered into both backends, driving one burning and one intact `slo` identity through an MWMBR rule pair (fast page + slow ticket, each with a long and a short window). Plus the shadow-only fire/resolve probe. | The shadow ruler's own lifecycle: hold-down honored (pending observed, and firing not reported before the provisioned pending window elapsed); firing edge captured at the one receiver with the rule's provisioned labels and an annotation rendered from the alert's own label set; resolve edge captured for the same identity, ordered after the fire edge. AND the incumbent-vs-shadow diff: matched on the alert identity both rulers declare (name plus the routing labels — substrate labels naming which ruler emitted an edge are projected away, and a MISSING routing key fails rather than shrinking the identity), **false positives and false negatives must both be zero**, the intact `slo` is asserted by name to have been paged by neither ruler, and the diff must have compared something. Timing skew is quantized to the shared evaluation interval and its MAGNITUDE bounded by a derived value — one evaluation interval plus the harness's own measured write span — rather than asserted zero: the two schedulers cannot be phase-locked (Prometheus offsets a group by hash(group, file) % interval; prom v3.11.3 has no `align_evaluation_time_on_interval`), and section 5 names that sub-interval skew as not a cerberus artifact. The MWMBR burn rate both rulers page off must hold equal across the FULL bake window under the exact-parity epsilon, not at a spot instant. |
+| MIG-19 | 2                | diff CH-landed recorded series value-for-value against the incumbent ruler's own engine at the same instants                                                                                                                                                                                                     | Tier-2 ruler write-back plus the incumbent ruler recording the SAME rule over its own copy of the source series, remote-written from the one fixture that produced the ClickHouse rows                                                                                                                                                                                                                                                                                          | Each recorded series compared sample-by-sample under the exact-parity epsilon; divergences attributed (rule translation / input parity / write-back timing-lag); any diverging recorded output is a blocker until reconciled; comparison window = what dashboards/alerts actually query. Every landed sample reproduces a live re-evaluation of its source expression at the instant it was recorded, the landed samples hold the ruler's cadence with no dropped or duplicated tick, and are not all one value. AND, with cerberus on exactly ONE side: every landed sample equals what the INCUMBENT's engine computes for the same expression at the same instant, so a cerberus evaluation bug no longer cancels out against itself; and the incumbent's OWN recorded series is held to that same engine on the incumbent's own evaluation grid, so deleting its `record:` rule fails the scenario rather than leaving the incumbent leg an ad-hoc query endpoint. The two recorded series are not compared point-for-point to each other because the two rulers never record at the same instants and cannot be made to, and over a ramped source only a tolerance wide enough to swallow the ramp would let such a comparison pass.                                                                                                                                                                      |
+| MIG-20 | 1                | dedicated tolerant comparator (**not** `cerberus migrate verify`) comparing cerberus raw/MV-rollup vs the incumbent's 5m/1h downsampled counter-aware aggregates                                                                                                                                                 | Thanos archetype with downsampled blocks + a delta band declared up front                                                                                                                                                                                                                                                                                                                                                                                                       | Long-range panels served cheaply verified against the incumbent's downsampled aggregates within the **declared, counter-aware** band; the band is stated before the run from the aggregation math; any excursion beyond it fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| MIG-21 | 1 (three-signal) | Grafana-driven correlation hops (Playwright, reusing the Layer-9 crawl engine) + direct CH `trace_id` index probe                                                                                                                                                                                                | three-signal seed: metrics + logs + traces with exemplars, span-metrics/service-graph; Loki + Tempo + Grafana added to the stack                                                                                                                                                                                                                                                                                                                                                | `trace_id` validated as an indexed first-class column in both logs and traces CH tables; each hop (exemplar→trace, trace→logs, logs→trace) resolves in Grafana against cerberus datasources; span-metrics + service-graph reproduced and verified equivalent; trace assembly regroups spans by `trace_id` honoring sampling/late spans.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 #### MIG-18: how alert-firing parity is proven
 
@@ -683,9 +688,7 @@ MIG-18 runs two rulers that share no code and diffs what they page.
 The **shadow** leg is Grafana-managed alerting querying cerberus over
 ClickHouse, notifying its own dead-end receiver. The **incumbent** leg is
 reference Prometheus evaluating over its own TSDB and dispatching through its
-own Alertmanager into a *second* dead-end receiver. One receiver holding both
-streams would interleave them with nothing in the payload naming which ruler
-emitted an edge, so the diff would be a stream compared against itself.
+own Alertmanager into a *second* dead-end receiver.
 
 Both rulers are handed ONE in-memory fixture, rendered into each backend's wire
 shape — never regenerated per side, because two sample paths cannot land
@@ -695,17 +698,13 @@ rule pair: a fast-burn page and a slow-burn ticket off one 0.1% error budget,
 each requiring its long AND its short window over threshold at once. The
 fixture drives two `slo` identities through them — one burning, one intact — so
 the diff is two-sided: a shadow that misses the burn is a false negative, and
-one that pages the healthy SLO is a false positive. A single burning identity
-would only ever exercise one arm, and a ruler that paged indiscriminately would
-sail through it.
+one that pages the healthy SLO is a false positive.
 
 What the diff compares is the identity both rulers *declare*: the alert name
 plus the routing labels an operator's silences and routes are written against.
 Grafana additionally stamps labels naming itself (`grafana_folder`,
-`datasource_uid`, `ref_id`); those are projected away, because they are the one
-thing the two legs are guaranteed to differ on and the one thing the diff is
-not about — comparing them would make every identity mismatch on both sides and
-the diff would be uniformly dirty. The projection is a closed, positive list and
+`datasource_uid`, `ref_id`); those are projected away. The projection is a
+closed, positive list and
 cannot hide a divergence: an edge MISSING a routing key fails outright rather
 than projecting to a smaller identity that happens to match, and a wrong value
 lands as a false positive plus a false negative.
@@ -719,9 +718,7 @@ therefore owns the verdict that cannot be blamed on scheduling (false positives
 and false negatives, both zero), and `SkewBoundHolds` owns the magnitude
 quantization throws away — bounded by one evaluation interval plus the
 harness's own measured write span, every term a property of the substrate
-rather than a slack allowance. A shadow ruler firing four minutes late is a
-real defect that quantization alone would file indistinguishably from a 3s
-phase difference.
+rather than a slack allowance.
 
 Finally, the burn rate both rulers page off must hold equal across the FULL
 bake window under the exact-parity epsilon. Two rulers can agree on "fired"
@@ -760,10 +757,8 @@ Recovering the incumbent's own recording instants needs `timestamp()`, not a
 range-query grid: Prometheus carries a sample forward across its staleness
 window, so a grid reports a value at every point whether or not an evaluation
 landed there — the same trap the shadow side avoids by reading raw ClickHouse
-rows. The recovered instant is rounded to the nearest millisecond, which is
-exact rather than a concession: Prometheus stores every sample timestamp as an
-int64 count of milliseconds, so anything finer is float noise from the wire
-encoding.
+rows. The recovered instant is rounded to the nearest millisecond,
+Prometheus's own sample-timestamp resolution.
 
 Two further assertions exist so the verdict cannot hold by construction,
 because the value comparison alone has two silent degenerate modes:
@@ -779,13 +774,10 @@ because the value comparison alone has two silent degenerate modes:
    the landed samples are not all one value.
 
 The Tier-2 scenarios that seed this rule's source series each write it under
-their own `seed_scope` label. They share one long-lived ClickHouse and one
-metric name, so without distinct identities MIG-09's seed and MIG-13/MIG-19's
-seed interleave into a single non-monotonic series, every interleaving reads as
-a counter reset, and the recording rule's output stops meaning anything.
-Overlapping windows are fine; colliding identities are not. The MWMBR fixture carries the same scope for
-the same reason, and both rules keep it as a grouping key so each run gets its
-own series and its own alert identity.
+their own `seed_scope` label — they share one long-lived ClickHouse and one
+metric name, so overlapping windows are fine but colliding identities are
+not. The MWMBR fixture carries the same scope, and both rules keep it as a
+grouping key so each run gets its own series and its own alert identity.
 
 ### CUTOVER scenarios
 
@@ -953,25 +945,28 @@ guard pins the document parsers against the live document and proves each
 detector still fires, because a ratchet whose detectors have rotted into
 no-ops reports zero violations forever and looks exactly like a healthy one.
 
-Scheduled workflow skeleton (`migration-e2e.yml`):
+Workflow skeleton (`migration-e2e.yml`):
 
 ```yaml
 name: migration-e2e
 
 on:
   push:
-    branches: [main]          # informational on merge — not a PR gate
+    branches: [main, 'release/*.x']   # the source-tree run release.yml's preflight requires
   schedule:
-    - cron: '37 4 * * *'      # nightly, offset from e2e and the compat lanes
+    - cron: '37 4 * * *'      # nightly, offset from the e2e lane
   workflow_dispatch:
     inputs:
-      tier:  { type: choice, options: [all, tier0, tier1, tier2], default: all }   # each tier's option lands with its job
+      tier:  { type: choice, options: [all, tier0, tier1, tier2], default: all }
       story: { type: string, required: false }                        # a single MIG id, e.g. MIG-04
+  workflow_call:              # release.yml re-runs the lane against the built image
+    inputs: { tier: …, story: … }
 
 permissions:
   contents: read
 
-# NOTE: no `pull_request:` trigger — so it is never a branch-protection check.
+# NOTE: no `pull_request:` trigger — never a branch-protection check;
+# release.yml's RELEASE_REQUIRED_CHECKS is what makes it blocking.
 
 jobs:
   migration-setup:                     # enumerate + coverage ratchet + emit the tier list
@@ -1247,7 +1242,7 @@ here so it is legible rather than buried.
   boundary. The routing hop itself is out of scope by construction, not by
   omission.
 
-### 6.4. Declared scope limits
+### 6.5. Declared scope limits
 
 A PASS cell in [section 6](#6-story--scenario-map) is the contract; where a
 scenario cannot reach a clause of it on the substrate it runs on, the gap is

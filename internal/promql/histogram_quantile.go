@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -320,7 +321,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		if err != nil {
 			return nil, err
 		}
-		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily); err != nil {
+		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
 			return nil, err
 		}
 		return &chplan.Filter{
@@ -2196,47 +2197,122 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 
 // expHistogramMergeOffsetExpr renders the merged PositiveOffset (or
 // NegativeOffset) for a group of native-histogram rows: the minimum of
-// per-row downscaled-to-merged-scale offsets.
+// per-row downscaled-to-merged-scale offsets over the rows that carry a
+// bucket, exactly the start [expHistogramMergeBucketsBoundsExpr] aligns
+// the merged bucket array to — the two MUST agree or the array's first
+// element would sit at a different absolute index than the offset claims.
+// See [expHistogramMergedStartExpr] for the expression and the empty-row
+// rule.
+func expHistogramMergeOffsetExpr(offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string) chplan.Expr {
+	return expHistogramMergedStartExpr(
+		&chplan.ColumnRef{Name: scalesArrAlias},
+		&chplan.ColumnRef{Name: offArrAlias},
+		&chplan.ColumnRef{Name: bucArrAlias},
+		&chplan.ColumnRef{Name: mergedScaleAlias},
+	)
+}
+
+// expHistogramMergedStartExpr renders a group's merged bucket-range start:
+// the minimum of the per-row downscaled offsets, over the rows whose
+// ladder holds at least one bucket.
 //
 // Emitted CH expression:
 //
-//	arrayMin(arrayMap((s, off) -> bitShiftRight(off, s - <mergedScale>),
-//	                   <scalesArr>, <offArr>))
+//	arrayMin(arrayFilter((x, am) -> length(am) > 0,
+//	                     arrayMap((sm, om) -> bitShiftRight(om, sm - <mergedScale>), <scalesArr>, <offArr>),
+//	                     <bucArr>))
 //
 // CH's bitShiftRight on signed Int32 performs arithmetic right shift,
 // matching Prometheus's "(idx >> delta)" semantics for negative bucket
-// indices (sub-1 latencies). When all rows share Scale the delta is 0
-// for every row, so the shift is identity and the merged offset
-// reduces to arrayMin(offArr) — identical to classic-histogram
-// min-offset semantics.
-func expHistogramMergeOffsetExpr(offArrAlias, scalesArrAlias, mergedScaleAlias string) chplan.Expr {
-	return &chplan.FuncCall{
-		Fn: chplan.FnArrayMin,
+// indices (sub-1 latencies). When all rows share Scale the delta is 0 for
+// every row, so the shift is identity and the merged start reduces to the
+// minimum offset among the non-empty rows.
+//
+// A row with an EMPTY ladder — an all-zero-observation series, which the
+// OTel SDK and the CH exporter write as an offset (0) with no buckets — has
+// no bucket position at all, so its offset is filtered out before the
+// minimum: left in, it would stretch the merged range from its offset to
+// the real rows' buckets, and the width-driven scale refinement
+// ([refinedMergeScaleExpr]) would then downscale the whole group for a row
+// that contributes nothing. A group whose every row is empty has no start;
+// arrayMin over the empty filtered array renders 0, and
+// [expHistogramMergeBucketsBoundsExpr]'s length is 0 for that group, so
+// nothing reads that start.
+func expHistogramMergedStartExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) chplan.Expr {
+	downscaledStarts := &chplan.FuncCall{
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{
-				Fn: chplan.FnArrayMap,
-				Args: []chplan.Expr{
-					&chplan.Lambda{
-						Params: []string{paramExpRowScale, paramExpRowOffset},
-						Body: &chplan.FuncCall{
-							Fn: chplan.FnBitShiftRight,
-							Args: []chplan.Expr{
-								&chplan.BareIdent{Name: paramExpRowOffset},
-								&chplan.Binary{
-									Op:    chplan.OpSub,
-									Left:  &chplan.BareIdent{Name: paramExpRowScale},
-									Right: &chplan.ColumnRef{Name: mergedScaleAlias},
-								},
-							},
+			&chplan.Lambda{
+				Params: []string{paramExpMergeRowScale, paramExpMergeRowOffset},
+				Body: &chplan.FuncCall{
+					Fn: chplan.FnBitShiftRight,
+					Args: []chplan.Expr{
+						&chplan.BareIdent{Name: paramExpMergeRowOffset},
+						&chplan.Binary{
+							Op:    chplan.OpSub,
+							Left:  &chplan.BareIdent{Name: paramExpMergeRowScale},
+							Right: mergedScale,
 						},
 					},
-					&chplan.ColumnRef{Name: scalesArrAlias},
-					&chplan.ColumnRef{Name: offArrAlias},
 				},
 			},
+			scalesArr,
+			offArr,
 		},
 	}
+	return &chplan.FuncCall{Fn: chplan.FnArrayMin, Args: []chplan.Expr{
+		&chplan.FuncCall{
+			Fn: chplan.FnArrayFilter,
+			Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{paramExpMergeRowStart, paramExpMergeRowBuckets},
+					Body:   expHistogramLadderNonEmptyExpr(&chplan.BareIdent{Name: paramExpMergeRowBuckets}),
+				},
+				downscaledStarts,
+				bucArr,
+			},
+		},
+	}}
 }
+
+// expHistogramLadderNonEmptyExpr renders `length(buckets) > 0`: whether a
+// row's ladder carries any bucket position at all.
+func expHistogramLadderNonEmptyExpr(buckets chplan.Expr) chplan.Expr {
+	return &chplan.Binary{
+		Op:    chplan.OpGt,
+		Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{buckets}},
+		Right: &chplan.LitInt{V: 0},
+	}
+}
+
+// Lambda parameter names for the merged-range start/end expressions: one
+// (scale, offset, buckets) triple per stored row, plus the row's already
+// downscaled start for the non-empty filter that reads it alongside the
+// row's buckets.
+const (
+	paramExpMergeRowScale   = "sm"
+	paramExpMergeRowOffset  = "om"
+	paramExpMergeRowBuckets = "am"
+	paramExpMergeRowStart   = "st"
+)
+
+// expHistogramEmptyLadderEndSentinel stands in for the downscaled END of
+// a row whose ladder is empty. Such a row has no bucket position, so it
+// must not extend the merged range: pushed below every reachable end —
+// offsets are Int32, a ladder's last index is offset + length - 1, and an
+// arithmetic right shift never carries a value below MinInt32 — the
+// sentinel loses every arrayMax against a real row, and a group whose
+// every row is empty gets a merged length of greatest(0, sentinel - start
+// + 1) = 0, the empty output ladder it should have.
+const expHistogramEmptyLadderEndSentinel = int64(math.MinInt32) - 1
+
+// expHistogramEmptyLadderStartSentinel is the START-side counterpart of
+// [expHistogramEmptyLadderEndSentinel], for a merge path that reduces
+// per-row starts with a scalar MIN rather than an array it can filter
+// (exp_histogram_merge_summap.go's window chain): above every reachable
+// start, it loses every MIN against a real row, and an all-empty group's
+// width is greatest(0, endSentinel - startSentinel + 1) = 0.
+const expHistogramEmptyLadderStartSentinel = int64(math.MaxInt32) + 1
 
 // expHistogramMergeBucketsExpr renders the merged PositiveBucketCounts
 // (or NegativeBucketCounts) for a group of native-histogram rows: a
@@ -2312,10 +2388,13 @@ func expHistogramMergeBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, merg
 }
 
 // expHistogramMergeBucketsBoundsExpr builds the bucket-merge expression's
-// target range. Returned mergedStart is the arrayMin of per-row downscaled
-// offsets; mergedLengthFrom yields greatest(0, mergedEnd - start + 1) for
-// whatever spelling of mergedStart the caller passes it, clamped so an
-// all-empty group produces a zero-length output array.
+// target range. Returned mergedStart is [expHistogramMergedStartExpr] — the
+// arrayMin of the non-empty rows' downscaled offsets; mergedLengthFrom
+// yields greatest(0, mergedEnd - start + 1) for whatever spelling of
+// mergedStart the caller passes it, where mergedEnd is the arrayMax of the
+// per-row downscaled last indices with every empty row's end replaced by
+// [expHistogramEmptyLadderEndSentinel], so an empty row never widens the
+// range and an all-empty group produces a zero-length output array.
 //
 // Length is returned as a FUNCTION of the start rather than as a finished
 // expression because mergedStart is an arrayMin over a per-row array — real
@@ -2325,61 +2404,37 @@ func expHistogramMergeBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, merg
 // every per-bucket read as that one binding, instead of re-rendering the
 // arrayMin subtree into each reader. Only that binder calls this.
 func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) (mergedStart chplan.Expr, mergedLengthFrom func(start chplan.Expr) chplan.Expr) {
-	const (
-		paramScalesInner = "sm"
-		paramOffInner    = "om"
-		paramArrInner    = "am"
-	)
-
-	// per-row downscaled start: arrayMap((sm, om) -> bitShiftRight(om, sm - merged_scale), scalesArr, offArr)
-	downscaledStarts := &chplan.FuncCall{
-		Fn: chplan.FnArrayMap,
+	shift := &chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  &chplan.BareIdent{Name: paramExpMergeRowScale},
+		Right: mergedScale,
+	}
+	// per-row downscaled end: arrayMap((sm, om, am) -> if(length(am) > 0, bitShiftRight(om + length(am) - 1, sm - merged_scale), <end sentinel>), scalesArr, offArr, bucArr)
+	rowEnd := &chplan.FuncCall{
+		Fn: chplan.FnBitShiftRight,
 		Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramScalesInner, paramOffInner},
-				Body: &chplan.FuncCall{
-					Fn: chplan.FnBitShiftRight,
-					Args: []chplan.Expr{
-						&chplan.BareIdent{Name: paramOffInner},
-						&chplan.Binary{
-							Op:    chplan.OpSub,
-							Left:  &chplan.BareIdent{Name: paramScalesInner},
-							Right: mergedScale,
-						},
-					},
+			&chplan.Binary{
+				Op:   chplan.OpAdd,
+				Left: &chplan.BareIdent{Name: paramExpMergeRowOffset},
+				Right: &chplan.Binary{
+					Op:    chplan.OpSub,
+					Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpMergeRowBuckets}}},
+					Right: &chplan.LitInt{V: 1},
 				},
 			},
-			scalesArr,
-			offArr,
+			shift,
 		},
 	}
-
-	// per-row downscaled end: arrayMap((sm, om, am) -> bitShiftRight(om + length(am) - 1, sm - merged_scale), scalesArr, offArr, bucArr).
-	// Rows with empty arrays produce (om + 0 - 1) = om - 1 — slightly below their start, which is fine since they contribute nothing.
 	downscaledEnds := &chplan.FuncCall{
 		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
-				Params: []string{paramScalesInner, paramOffInner, paramArrInner},
-				Body: &chplan.FuncCall{
-					Fn: chplan.FnBitShiftRight,
-					Args: []chplan.Expr{
-						&chplan.Binary{
-							Op:   chplan.OpAdd,
-							Left: &chplan.BareIdent{Name: paramOffInner},
-							Right: &chplan.Binary{
-								Op:    chplan.OpSub,
-								Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.BareIdent{Name: paramArrInner}}},
-								Right: &chplan.LitInt{V: 1},
-							},
-						},
-						&chplan.Binary{
-							Op:    chplan.OpSub,
-							Left:  &chplan.BareIdent{Name: paramScalesInner},
-							Right: mergedScale,
-						},
-					},
-				},
+				Params: []string{paramExpMergeRowScale, paramExpMergeRowOffset, paramExpMergeRowBuckets},
+				Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+					expHistogramLadderNonEmptyExpr(&chplan.BareIdent{Name: paramExpMergeRowBuckets}),
+					rowEnd,
+					&chplan.LitInt{V: expHistogramEmptyLadderEndSentinel},
+				}},
 			},
 			scalesArr,
 			offArr,
@@ -2387,7 +2442,7 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 		},
 	}
 
-	mergedStart = &chplan.FuncCall{Fn: chplan.FnArrayMin, Args: []chplan.Expr{downscaledStarts}}
+	mergedStart = expHistogramMergedStartExpr(scalesArr, offArr, bucArr, mergedScale)
 	mergedEnd := &chplan.FuncCall{Fn: chplan.FnArrayMax, Args: []chplan.Expr{downscaledEnds}}
 	// merged_length = mergedEnd - start + 1.
 	// Guard the "no rows contribute" case by clamping to 0 via greatest(0, …).
@@ -2759,8 +2814,10 @@ func expHistogramBucketSliceBoundsExpr(
 	// target absolute index = mergedStart + t (t is 0-based).
 	targetAbs := addExpr(mergedStart, target)
 	// row's own last populated absolute index (off + length(arr) - 1;
-	// off - 1 for an empty row, matching
-	// expHistogramMergeBucketsBoundsExpr's own empty-row convention).
+	// off - 1 for an empty row, so that row's populated range is empty
+	// and it contributes nothing to any target — the same "an empty
+	// ladder holds no position" rule expHistogramMergeBucketsBoundsExpr
+	// applies when it sizes the merged range).
 	rowLastAbs := subExpr(addExpr(rowOffset, rowLength), &chplan.LitInt{V: 1})
 
 	// [chunkStartAbs, chunkEndAbs] = T's own absolute range

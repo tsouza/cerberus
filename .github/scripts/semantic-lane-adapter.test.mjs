@@ -260,6 +260,56 @@ test("resolveBindingLanes returns every lane covering the ref when more than one
   );
 });
 
+test("resolveBindingLanes never returns a catch-all lane: a tree-wide glob or a governance.* lane is not an obligation of any binding", () => {
+  const registry = {
+    lanes: [
+      lane({ id: "ci.lint", package_globs: ["**"] }),
+      lane({ id: "ci.link-check", package_globs: ["**/*.md"] }),
+      lane({ id: "security.codeql", package_globs: ["**/*.go", "**/*.mjs"] }),
+      lane({ id: "governance.pr-body", package_globs: [".github/**"] }),
+      lane({ id: "ci.check", package_globs: ["internal/**", "test/regression/**"] }),
+    ],
+  };
+  for (const testRef of [
+    "internal/promql/lower.go",
+    "test/regression/goleak_test.go:TestNoGoroutineLeak_PromQuery",
+    ".github/scripts/forbid-skip.mjs",
+    "docs/anything.md",
+  ]) {
+    const ids = resolveBindingLanes({ id: "b1", test_ref: testRef }, registry, matchesGlob).map((l) => l.id);
+    assert.ok(!ids.includes("ci.lint"), `${testRef} resolved to ci.lint`);
+    assert.ok(!ids.includes("ci.link-check"), `${testRef} resolved to ci.link-check`);
+    assert.ok(!ids.includes("security.codeql"), `${testRef} resolved to security.codeql`);
+    assert.ok(!ids.includes("governance.pr-body"), `${testRef} resolved to governance.pr-body`);
+  }
+  assert.deepEqual(
+    resolveBindingLanes({ id: "b1", test_ref: "internal/promql/lower.go" }, registry, matchesGlob).map((l) => l.id),
+    ["ci.check"],
+  );
+});
+
+test("resolveBindingLanes treats a bare directory ref as dir/** and a file:TestName ref by its file", () => {
+  const registry = {
+    lanes: [
+      lane({ id: "compatibility.prometheus", package_globs: ["compatibility/prometheus/**"] }),
+      lane({ id: "compatibility.loki", package_globs: ["compatibility/loki/**"] }),
+      lane({ id: "ci.chaos-sleep", package_globs: ["internal/api/prom/chaos_sleep_test.go"] }),
+    ],
+  };
+  assert.deepEqual(
+    resolveBindingLanes({ id: "b1", test_ref: "compatibility/prometheus" }, registry, matchesGlob).map((l) => l.id),
+    ["compatibility.prometheus"],
+  );
+  assert.deepEqual(
+    resolveBindingLanes(
+      { id: "b2", test_ref: "internal/api/prom/chaos_sleep_test.go:TestChaosSleep" },
+      registry,
+      matchesGlob,
+    ).map((l) => l.id),
+    ["ci.chaos-sleep"],
+  );
+});
+
 test("resolveBindingLanes rejects a binding with no test_ref", () => {
   const registry = { lanes: [lane()] };
   assert.throws(

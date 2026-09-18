@@ -63,35 +63,97 @@ func TestRouteBExecCtx_AppliesSettingsRules(t *testing.T) {
 // This is what makes applySharedQuerySettings load-bearing rather than
 // cosmetic. Route A and route B previously kept two hand-maintained parallel
 // lists, which is how route B came to be missing SettingsRules.apply in the
-// first place; this test fails for ANY future setting added to one seam and
-// not the other, not just the ones #3184 happened to catch.
+// first place.
+//
+// It runs over a table of shape-bearing plans, one per plan-shape-gated
+// stamp, with every rule flag on: a key that only ever appears on an
+// exp-histogram plan is equal-because-absent on a bare Scan, so a bare-Scan
+// comparison alone says nothing about it. The stamps this covers are the
+// ones the seams carry today; a stamp gated on a shape none of these plans
+// wears is not seen here and needs its own row.
 func TestRouteBExecCtx_SettingsMatchRouteAAtK1(t *testing.T) {
 	t.Parallel()
 
-	rules := routeBParityRules()
-	plan := routeBTestPlan()
+	rules := compositionBaseRules()
+	for _, f := range compositionRuleFlags {
+		f.set(&rules)
+	}
+	rules.LogCommentShape = true
 	decision := &solver.Decision{K: 1}
 
-	// A nil Client means queryMemoryCap() is 0 on the route-A side, and
-	// apportionShardMemoryCap(0, K) is 0 by its no-cap sentinel, so both seams
-	// size their thresholds from the same input. The memory-cap SIZING itself
-	// is pinned separately by TestRouteBExecCtx_SpillThresholdsSizedFromTheShardCap;
-	// what this test pins is which KEYS each seam stamps.
-	e := &Engine{Settings: rules}
-	routeACtx, _ := e.execContext(context.Background(), plan, "promql", decision)
-	routeA := chclient.QuerySettingsFromContext(routeACtx)
+	// The plan table is the composition test's own: every plan shape a
+	// setting is gated on, including the ones where two rules meet.
+	for _, p := range compositionPlans() {
+		p := p
+		t.Run(p.name, func(t *testing.T) {
+			t.Parallel()
 
-	routeBCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix,
-		decision, plan, 0, rules, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
-	routeB := chclient.QuerySettingsFromContext(routeBCtx)
+			// A nil Client means queryMemoryCap() is 0 on the route-A side,
+			// and apportionShardMemoryCap(0, K) is 0 by its no-cap sentinel,
+			// so both seams size their thresholds from the same input. The
+			// memory-cap SIZING itself is pinned separately by
+			// TestRouteBExecCtx_SpillThresholdsSizedFromTheShardCap; what this
+			// test pins is which KEYS each seam stamps, and with what value.
+			e := &Engine{Settings: rules}
+			routeACtx, _ := e.execContext(context.Background(), p.plan, "promql", decision)
+			routeA := chclient.QuerySettingsFromContext(routeACtx)
 
-	if len(routeA) == 0 {
-		t.Fatal("route A stamped no settings at all; the equality below would be vacuous")
+			routeBCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix,
+				decision, p.plan, 0, rules, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+			routeB := chclient.QuerySettingsFromContext(routeBCtx)
+
+			if len(routeA) == 0 {
+				t.Fatal("route A stamped no settings at all; the equality below would be vacuous")
+			}
+			if !maps.Equal(routeA, routeB) {
+				t.Errorf("route-A and route-B ClickHouse settings diverge at K=1 on %s.\n route A: %v\n route B: %v\n"+
+					"Both seams must read ONE list (applySharedQuerySettings); a key present on one side only is exactly the drift issue #3184 reported.",
+					p.name, routeA, routeB)
+			}
+		})
 	}
-	if !maps.Equal(routeA, routeB) {
-		t.Errorf("route-A and route-B ClickHouse settings diverge at K=1.\n route A: %v\n route B: %v\n"+
-			"Both seams must read ONE list (applySharedQuerySettings); a key present on one side only is exactly the drift issue #3184 reported.",
-			routeA, routeB)
+}
+
+// TestRouteBExecCtx_ParityTableCoversEveryStampedKey keeps the table above
+// honest: the union of keys route A stamps across it must include every
+// setting the seam can stamp, so a plan-shape-gated key with no plan in the
+// table wearing its shape fails here by name rather than being
+// equal-because-absent on every row.
+func TestRouteBExecCtx_ParityTableCoversEveryStampedKey(t *testing.T) {
+	t.Parallel()
+
+	rules := compositionBaseRules()
+	for _, f := range compositionRuleFlags {
+		f.set(&rules)
+	}
+	e := &Engine{Settings: rules}
+	seen := map[string]bool{}
+	for _, p := range compositionPlans() {
+		ctx, _ := e.execContext(context.Background(), p.plan, "promql", &solver.Decision{K: 1})
+		for k := range chclient.QuerySettingsFromContext(ctx) {
+			seen[k] = true
+		}
+	}
+	for _, key := range []string{
+		settingMaxBytesBeforeExternalGroupBy,
+		settingMaxBytesBeforeExternalSort,
+		settingMaxBytesBeforeExternalJoin,
+		settingMaxThreads,
+		settingMaxBlockSize,
+		settingGroupByTwoLevelThresholdBytes,
+		settingEnableAnalyzer,
+		settingOptimizeAggregationInOrder,
+		settingUseQueryConditionCache,
+		settingMinTableRowsToUseProjectionIndex,
+		settingLogComment,
+		settingQueryPlanOptimizeLazyMaterialization,
+		settingQueryPlanMaxLimitForLazyMaterialization,
+		chclient.SettingUseQueryCache,
+		chclient.SettingWorkload,
+	} {
+		if !seen[key] {
+			t.Errorf("no plan in compositionPlans() makes the seam stamp %s; the K=1 parity over that table cannot see a route drift on it", key)
+		}
 	}
 }
 

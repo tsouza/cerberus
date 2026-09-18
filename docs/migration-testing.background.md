@@ -42,16 +42,34 @@ the other; it closed when the Tier-2 substrate grew its incumbent leg — a seco
 ruler, its own Alertmanager and its own receiver — and the pin moved in the same
 diff as the scenarios that earned it.
 
+## Why MIG-18's diff is shaped the way it is
+
+Each ruler notifies its own dead-end receiver because one receiver holding
+both streams would interleave them with nothing in the payload naming which
+ruler emitted an edge — the diff would be a stream compared against itself.
+The fixture drives two `slo` identities, one burning and one intact, because a
+single burning identity would only ever exercise one arm of the diff and a
+ruler that paged indiscriminately would sail through it. Grafana's
+self-naming labels (`grafana_folder`, `datasource_uid`, `ref_id`) are
+projected away because they are the one thing the two legs are guaranteed to
+differ on and the one thing the diff is not about — comparing them would make
+every identity mismatch on both sides and the diff would be uniformly dirty.
+
 ## Why MIG-18's timing skew is bounded rather than asserted zero
 
 Observed live, the two rulers fire the same correct alert about three seconds
 apart, which straddles a 10s quantization boundary roughly as often as not — so
-demanding zero quantized skew would fail on a healthy substrate.
+demanding zero quantized skew would fail on a healthy substrate. The bound is
+one evaluation interval plus the measured write span rather than a slack
+allowance because a shadow ruler firing four minutes late is a real defect that
+quantization alone would file indistinguishably from a 3s phase difference.
 
 ## What MIG-19's oracle, rounding and fixture were fixed against
 
 Recovering the incumbent's own recording instants rounds to the nearest
-millisecond. Skipping that rounding made a re-evaluation land 77ns off the
+millisecond, which is exact rather than a concession: Prometheus stores every
+sample timestamp as an int64 count of milliseconds, so anything finer is float
+noise from the wire encoding. Skipping that rounding made a re-evaluation land 77ns off the
 ruler's own instant and, over the ramp, showed up as a 2.7e-06 divergence
 against a 1e-09 epsilon.
 
@@ -61,7 +79,9 @@ fixture accrued exactly one idle-second per wall-clock second, so
 or not the write-back path preserved anything.
 
 The per-scenario `seed_scope` label exists because MIG-09's seed and
-MIG-13/MIG-19's seed otherwise interleave into a single non-monotonic series.
+MIG-13/MIG-19's seed otherwise interleave into a single non-monotonic series,
+every interleaving reads as a counter reset, and the recording rule's output
+stops meaning anything.
 That was observed on the first live Tier-2 run as a landed sample of `0.05`
 against a re-evaluation of `-27.8`, a negative CPU utilisation.
 

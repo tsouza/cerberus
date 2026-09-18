@@ -13,7 +13,7 @@
           "past returning if err != nil",
           "past returning if err != nil",
           "if rowsMayContainHistograms(wideInner)",
-          "past returning if err := requireMixedPlanPolicy(wideInner, mixedSubqueryFamily); err != nil",
+          "past returning if err := requireMixedPlanPolicy(wideInner, mixedSubqueryFamily, mixedBespoke); err != nil",
           "past returning if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, kind, call.Func.Name, sub, innerSub, step, s, ctx); matched",
           "if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name)"
         ],

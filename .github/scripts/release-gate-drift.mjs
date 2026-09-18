@@ -98,7 +98,10 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
+import { DEFAULT_REGISTRY_PATH, loadRegistry } from './ci-lane-contract.mjs';
 import { error, notice, log, appendStepSummary } from './lib/gh.mjs';
+import { GITHUB_PER_PAGE, NOT_FOUND_THROW, ghHeaders, ghJSON, ghPaginate } from './lib/gh-api.mjs';
+import { matchesInformational, registryInformationalMatchers } from './release-preflight.mjs';
 
 // How far back the lane-drift scan looks. A single commit is not enough: lanes
 // legitimately condition themselves off (a docs-only push skips `check`), so
@@ -108,7 +111,7 @@ const defaultHistoryCommits = 20;
 
 // GitHub caps `per_page` at 100 for the commit list, the check-run list and the
 // combined-status list.
-const maxPerPage = 100;
+const maxPerPage = GITHUB_PER_PAGE;
 
 // A busy commit on `main` carries far more than one page of check-runs — 146 on
 // 2733b38c7, across 26 check suites — so a single-page read is a TRUNCATED
@@ -159,27 +162,30 @@ export function parseCheckLists(yamlText) {
   return { required, informational };
 }
 
-// Same prefix rule release-preflight.mjs applies, so "covered" here means
-// exactly what "not gated on" means there. Duplicating the semantics with a
-// different match would make this detector agree with a preflight that
-// disagrees with it.
-function isInformational(name, informational) {
-  return (informational ?? []).some((p) => p && name.startsWith(p));
+// The SAME matcher release-preflight.mjs applies — the explicit prefix list
+// plus every registry lane whose release_posture is not `required` — so
+// "covered" here means exactly what "not gated on" means there. Duplicating
+// the semantics with a different match would make this detector agree with a
+// preflight that disagrees with it.
+function isInformational(name, informational, matchers) {
+  return matchesInformational(name, informational, matchers);
 }
 
 // Direction A. A live required context is accounted for when the release either
-// WAITS for it (exact name in `required`) or has explicitly DE-GATED it (prefix
-// in `informational`). Anything else is a context the repo gates PRs on and the
-// release does not gate publishes on.
-export function protectionDrift({ liveContexts, required, informational }) {
+// WAITS for it (exact name in `required`) or has DE-GATED it (a prefix in
+// `informational`, or a non-required release_posture on its registry lane —
+// `matchers`). Anything else is a context the repo gates PRs on and the release
+// does not gate publishes on.
+export function protectionDrift({ liveContexts, required, informational, matchers }) {
   const req = new Set(required);
   return (liveContexts ?? [])
-    .filter((ctx) => !req.has(ctx) && !isInformational(ctx, informational))
+    .filter((ctx) => !req.has(ctx) && !isInformational(ctx, informational, matchers))
     .map(
       (ctx) =>
         `${ctx}: ruleset-REQUIRED context in neither RELEASE_REQUIRED_CHECKS nor ` +
-        `RELEASE_INFORMATIONAL_CHECKS — the release publishes without waiting for it. ` +
-        `Add it to the required set, or de-gate it explicitly with a reason.`,
+        `RELEASE_INFORMATIONAL_CHECKS, and its registry lane (if any) is release-required — ` +
+        `the release publishes without waiting for it. Add it to the required set, or ` +
+        `de-gate it explicitly with a reason.`,
     );
 }
 
@@ -267,41 +273,21 @@ export function laneDrift({ required, observed }) {
     );
 }
 
+// Every read here is a resource that must exist (the branch rules, the
+// commit list, each commit's check-runs), so a 404 is a failure.
 export async function apiJson(url, headers, what, fetchImpl = globalThis.fetch) {
-  const res = await fetchImpl(url, { headers });
-  if (!res.ok) {
-    throw new Error(`${what}: HTTP ${res.status} ${res.statusText} for ${url}`);
-  }
-  return res.json();
+  return ghJSON(url, { headers, what, notFound: NOT_FOUND_THROW, fetchImpl });
 }
 
-// apiPaged — every item across every page, not just the first. `pick` pulls the
-// item array out of a page body, because the check-run and combined-status
-// endpoints wrap theirs under different keys. A short page ends the walk; a
+// apiPaged — every item across every page, bounded by maxObservationPages: a
 // walk that never shortens throws rather than silently returning a prefix,
-// since a prefix is exactly the truncation this function exists to remove.
+// since a prefix is exactly the truncation this detector exists to remove.
 export async function apiPaged({ url, headers, what, pick, fetchImpl = globalThis.fetch }) {
-  const join = url.includes('?') ? '&' : '?';
-  const items = [];
-  for (let page = 1; page <= maxObservationPages; page++) {
-    const body = await apiJson(`${url}${join}per_page=${maxPerPage}&page=${page}`, headers, what, fetchImpl);
-    const batch = pick(body) ?? [];
-    items.push(...batch);
-    if (batch.length < maxPerPage) return items;
-  }
-  throw new Error(
-    `${what}: still returning full pages after ${maxObservationPages} of them ` +
-      `(${maxObservationPages * maxPerPage} items) — the observation set would be truncated, ` +
-      `which reports healthy lanes as dead`,
-  );
+  return ghPaginate({ url, headers, what, pick, maxPages: maxObservationPages, fetchImpl });
 }
 
 export function tokenHeaders(token) {
-  return {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
+  return ghHeaders(token);
 }
 
 // The one rule type this script models. Everything else the rules endpoint
@@ -429,6 +415,9 @@ async function main() {
   }
 
   const { required, informational } = parseCheckLists(readFileSync(workflowPath, 'utf8'));
+  const matchers = registryInformationalMatchers(
+    loadRegistry(process.env.CI_LANE_REGISTRY || DEFAULT_REGISTRY_PATH, { root: process.cwd() }),
+  );
   const pinned = parsePinnedContexts(readFileSync(pinPath, 'utf8'));
 
   const headers = tokenHeaders(token);
@@ -466,7 +455,7 @@ async function main() {
   }
 
   const problems = [
-    ...protectionDrift({ liveContexts, required, informational }),
+    ...protectionDrift({ liveContexts, required, informational, matchers }),
     ...laneDrift({ required, observed: [...observed] }),
     ...pinnedProtectionDrift({ liveContexts, pinned, branch, rulesetIds }),
   ];
@@ -533,6 +522,16 @@ async function selfTest() {
   const aDrift = protectionDrift({ liveContexts: ['check', 'brand-new-gate'], required, informational });
   assert.equal(aDrift.length, 1, `expected exactly one problem, got: ${aDrift.join('; ')}`);
   assert.match(aDrift[0], /^brand-new-gate: ruleset-REQUIRED context in neither/);
+  // A live context whose registry lane is not release-required is covered by
+  // that posture alone, the same way the preflight de-gates it.
+  const matchers = registryInformationalMatchers({
+    lanes: [{ release_posture: 'advisory', context: { name: 'brand-new-gate', match: 'exact' } }],
+  });
+  assert.deepEqual(
+    protectionDrift({ liveContexts: ['check', 'brand-new-gate'], required, informational, matchers }),
+    [],
+    'a registry-de-gated context is accounted for',
+  );
 
   // Direction B: a name nothing posts, versus a full set that everything posts.
   assert.deepEqual(laneDrift({ required, observed: required }), []);

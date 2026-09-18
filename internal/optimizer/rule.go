@@ -27,6 +27,7 @@ package optimizer
 
 import (
 	"context"
+	"log/slog"
 
 	"go.opentelemetry.io/otel"
 
@@ -49,9 +50,18 @@ type Rule interface {
 
 // defaultMaxIterations is the fixpoint cap used by Default()'s
 // FixedPoint batches and by the New() back-compat wrapper. Generous;
-// rules that don't converge typically signal a bug rather than a
-// tuning concern.
+// a batch whose rules don't converge within it is a rule bug rather
+// than a tuning concern, and runBatch reports the cap being hit (a
+// WARN log naming the batch, plus the
+// cerberus_optimizer_fixpoint_cap_hits_total counter) rather than
+// returning silently — see fixpointCapHitMsg.
 const defaultMaxIterations = 100
+
+// fixpointCapHitMsg is the WARN message runBatch logs when a FixedPoint
+// batch exhausts its iteration cap with a rule still reporting change.
+// A fixed string so an operator can grep for it; the batch name and the
+// cap ride as attributes.
+const fixpointCapHitMsg = "optimizer: fixpoint batch hit its iteration cap without converging"
 
 // Driver runs a sequence of Batches over a chplan tree.
 type Driver struct {
@@ -150,8 +160,10 @@ func Default() *Driver {
 		// Scan would still reach emit unbounded. Establishing + verifying the
 		// "bound the scan" contract here makes the recurring unbounded-scan
 		// bug class an enforced plan-build invariant rather than a per-emitter
-		// memory. Runs before the heuristic batches; the verification rule
-		// never mutates, so the batch is idempotent.
+		// memory. Runs before the heuristic batches. NormalizeScanTimeBound
+		// does mutate (it records the bound); the batch is idempotent because
+		// that rule is, which applyAnalyzerRule's verification pass proves on
+		// every run rather than assumes.
 		AnalyzerBatch(
 			"analyzer.scan-time-bound",
 			NormalizeScanTimeBound{},
@@ -204,7 +216,7 @@ func (d *Driver) Run(ctx context.Context, plan chplan.Node) chplan.Node {
 	defer span.End()
 	rulesApplied := 0
 	for _, batch := range d.batches {
-		plan, rulesApplied = runBatch(plan, batch, rulesApplied)
+		plan, rulesApplied = runBatch(ctx, plan, batch, rulesApplied)
 	}
 	span.SetAttributes(cerbtrace.AttrRulesApplied.Int(rulesApplied))
 	telemetry.RecordRulesApplied(ctx, rulesApplied)
@@ -223,7 +235,15 @@ func (d *Driver) Run(ctx context.Context, plan chplan.Node) chplan.Node {
 // must-run contract violation and panics with the offending rule's
 // name. This makes the contract surface at test time rather than
 // silently misbehaving in production.
-func runBatch(plan chplan.Node, batch Batch, rulesApplied int) (chplan.Node, int) {
+//
+// A FixedPoint batch that exhausts its iteration cap with a rule still
+// reporting change returns the plan as it stands — every rule is
+// result-preserving, so the plan is correct, just not at a fixpoint —
+// and reports the cap hit through a WARN log (fixpointCapHitMsg, with
+// the batch name) and telemetry.RecordOptimizerFixpointCapHit. Two
+// rules undoing each other, or one that always reports a change, is a
+// rule bug that otherwise shows up only as a slower optimize stage.
+func runBatch(ctx context.Context, plan chplan.Node, batch Batch, rulesApplied int) (chplan.Node, int) {
 	if _, isAnalyzer := batch.Strategy.(analyzerStrategy); isAnalyzer {
 		for _, rule := range batch.Rules {
 			if _, ok := rule.(AnalyzerRule); !ok {
@@ -252,6 +272,8 @@ func runBatch(plan chplan.Node, batch Batch, rulesApplied int) (chplan.Node, int
 			return plan, rulesApplied
 		}
 	}
+	slog.Default().Warn(fixpointCapHitMsg, "batch", batch.Name, "max_iterations", maxIter)
+	telemetry.RecordOptimizerFixpointCapHit(ctx, batch.Name)
 	return plan, rulesApplied
 }
 

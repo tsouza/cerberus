@@ -14,8 +14,9 @@
 // `QueryMetricMeta`) — the SQL these handlers build is exactly the SQL that
 // reaches ClickHouse in production, with no `engine.QueryPlan` /
 // `ProjectSamples` stage in between. That makes them the tractable half of
-// #1510 (see the sibling issue #1635 for the Tempo-search half, which DOES
-// have a hidden pipeline stage to reproduce) — but until this file existed,
+// #1510 (the Tempo-search half, which has a hidden pipeline stage to
+// reproduce, is strict-scanned through traceqlWrapForStrictScan) — but until
+// this file existed,
 // `test/spec/{promql,logql,traceql}` carried no fixture corpus for them at
 // all: every TXTAR fixture is query-body-shaped (a PromQL/LogQL/TraceQL
 // string that lowers into a chplan), and these endpoints are matcher +

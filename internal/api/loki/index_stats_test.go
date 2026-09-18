@@ -49,8 +49,15 @@ func TestIndexStats_HappyPath(t *testing.T) {
 	// going through the Builder (no fmt.Sprintf string concatenation),
 	// and the time bounds must be present as DateTime64 literals.
 	lastSQL := q.LastSQL()
-	if !strings.Contains(lastSQL, "uniqExact(mapSort(`ResourceAttributes`))") {
-		t.Errorf("missing canonicalised uniqExact in SQL: %q", lastSQL)
+	// The stream identity is the SERVED label set: the normalising rewrite
+	// over the stored Map (mapKeys / mapValues of ResourceAttributes),
+	// canonicalised by mapSort, under uniqExact. The exact rewrite is
+	// adjudicated against the Go normaliser by
+	// TestNormalizedLabelsFrag_ChDB_MatchesGoNormalizer; here only the
+	// composition is pinned.
+	if !strings.HasPrefix(lastSQL, "SELECT uniqExact(mapSort(") ||
+		!strings.Contains(lastSQL, "mapKeys(`ResourceAttributes`), mapValues(`ResourceAttributes`)") {
+		t.Errorf("missing served-identity uniqExact in SQL: %q", lastSQL)
 	}
 	if !strings.Contains(lastSQL, "sum(length(`Body`))") {
 		t.Errorf("missing bytes agg in SQL: %q", lastSQL)

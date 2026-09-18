@@ -67,15 +67,15 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	switch parsed.pipeline.kind {
 	case pipelineNone, pipelineSelect:
 		// Selector-only (or selector + select()): one row per matching
-		// span, TraceID set to that span's trace — CompareTraceIdentityOutcomes
-		// multiset-counts rows per TraceID, so a trace contributing N
-		// matching spans produces N rows here, matching the cerberus side's
-		// per-trace SpanSet.Matched count. Labels stay empty (this family
-		// never uses the default label-keyed comparator); Timestamp + Value
-		// stay zero so nothing beyond TraceID drives the comparison.
+		// span, carrying that span's (TraceID, SpanID) —
+		// CompareTraceIdentityOutcomes compares the two sides as SETS of
+		// span identities, matching the cerberus side's per-trace
+		// SpanSet.Spans. Labels stay empty (this family never uses the
+		// default label-keyed comparator); Timestamp + Value stay zero so
+		// nothing beyond the identity drives the comparison.
 		rows := make([]property.OutcomeRow, 0, len(matched))
 		for _, sv := range matched {
-			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: sv.traceID})
+			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: sv.traceID, SpanID: sv.spanID})
 		}
 		return property.Outcome{Rows: rows}
 	case pipelineCount:

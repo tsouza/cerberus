@@ -77,40 +77,17 @@ jobs:
     name: changes
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.compute.outputs.docs_only }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
+      # Unconditional: a `./`-referenced composite action needs the checkout
+      # to exist on every event, not only on a pull request.
       - uses: actions/checkout@v7
-        if: github.event_name == 'pull_request'
 
-      - id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4
-        with:
-          predicate-quantifier: 'every'
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!**/*.markdown'
-              - '!docs/**'
-              - '!LICENSE*'
-              - '!CHANGELOG.md'
-              - '!.markdownlint*'
-              - '!CLAUDE.md'
-              - '!AGENTS.md'
-              - '!README*'
-
-      - id: compute
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
-              echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-          fi
+      # The docs-only verdict comes from the lane registry's non-impact globs,
+      # rendered by ./.github/actions/docs-only — one list for every workflow
+      # that short-circuits on a docs-only pull request.
+      - id: docs
+        uses: ./.github/actions/docs-only
 
   schema-ddl:
     name: schema-ddl
@@ -140,8 +117,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - uses: ./.github/actions/registry-login
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

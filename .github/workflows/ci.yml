@@ -29,70 +29,33 @@ jobs:
   # `compose-smoke.yml`, and `chdb.yml` for the matching short-circuit
   # in the other PR-gate workflows.
   #
-  # Only computed on `pull_request`. On `push` events (main + tags) the
-  # output is the empty string, so the boolean check `!= 'true'` in
-  # downstream `if:` clauses falls through and the heavy job runs — that
-  # is the safe-by-default behaviour for force-pushes, tag pushes, and
+  # Only decided on `pull_request`. On every other event (push, tags,
+  # schedule, dispatch) the output is `false`, so the boolean check
+  # `!= 'true'` in downstream `if:` clauses falls through and the heavy job
+  # runs — the safe-by-default behaviour for force-pushes, tag pushes, and
   # any other event where the diff isn't a clean two-commit range.
   #
-  # The filter convention: `code` matches "any changed file that is NOT
-  # documentation". If `code == 'false'` we know every changed file was
-  # a doc file → docs_only. If `code == 'true'` at least one non-doc
-  # file changed → full suite.
+  # What counts as documentation is the lane registry's
+  # `impact_selection.known_nonimpact_globs`, rendered into the paths filter
+  # by ./.github/actions/docs-only (see that action and
+  # .github/scripts/docs-only-filter.mjs): `code` matches "any changed file
+  # that is NOT documentation", so `code == 'false'` means every changed
+  # file was a doc file → docs_only.
   changes:
     name: changes
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.compute.outputs.docs_only }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
+      # Unconditional: a `./`-referenced composite action needs the checkout
+      # to exist on every event, not only on a pull request.
       - uses: actions/checkout@v7
-        if: github.event_name == 'pull_request'
 
-      - id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4
-        with:
-          # `every` makes the negation patterns subtractive: a file is
-          # in `code` iff it matches `**` AND does NOT match any of the
-          # `!`-prefixed doc patterns. Under the default `some`
-          # quantifier, `**` matches everything and the negations never
-          # fire — every PR would be flagged as code-touching.
-          predicate-quantifier: 'every'
-          # `code` matches "any changed file that is NOT documentation".
-          # The `!`-prefixed patterns subtract docs files from the `**`
-          # baseline. If `code == 'false'` after the filter runs, every
-          # changed file was a doc file → docs_only short-circuit. If
-          # `code == 'true'`, at least one non-doc file changed → full
-          # suite.
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!**/*.markdown'
-              - '!docs/**'
-              - '!LICENSE*'
-              - '!CHANGELOG.md'
-              - '!.markdownlint*'
-              - '!CLAUDE.md'
-              - '!AGENTS.md'
-              - '!README*'
-
-      - id: compute
-        # On non-PR events, leave docs_only as the empty string so the
-        # downstream `!= 'true'` guard falls through and heavy jobs run.
-        # This is the safe-by-default branch for tag pushes, force-
-        # pushes, and any event where the diff isn't a clean two-commit
-        # range.
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
-              echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-          fi
+      # The docs-only verdict comes from the lane registry's non-impact globs,
+      # rendered by ./.github/actions/docs-only — one list for every workflow
+      # that short-circuits on a docs-only pull request.
+      - id: docs
+        uses: ./.github/actions/docs-only
 
   # `check` is the test + build gate, split across two CONCURRENT jobs plus an
   # aggregator that carries the branch-protection name. Linting is separate
@@ -126,8 +89,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: test
         run: |
           just test-chaos-sleep
@@ -154,8 +116,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: build + type-check the tagged lanes
         run: |
           just build
@@ -198,15 +159,7 @@ jobs:
       # cmd/cerberus imported it directly. Both modules, since the nested
       # oracle module drifts the same way and the root suite never reaches it.
       - name: go.mod is tidy
-        run: |
-          for mod in . test/oracle; do
-            (cd "$mod" && go mod tidy)
-          done
-          if ! git diff --quiet -- '**/go.mod' '**/go.sum' go.mod go.sum; then
-            echo "::error::go mod tidy changed go.mod/go.sum — commit the result:"
-            git --no-pager diff -- '**/go.mod' '**/go.sum' go.mod go.sum
-            exit 1
-          fi
+        run: node .github/scripts/go-mod-tidy-check.mjs
 
   # The AGGREGATOR, and the only branch-protection context of the three: one
   # rolled-up verdict over both halves, so the required check name survives the
@@ -358,9 +311,10 @@ jobs:
       # "invalid workflow file" failure runs, which silently prevents
       # required pull_request checks from ever being scheduled — the
       # #749 secrets-in-step-if incident left a PR BLOCKED on four
-      # required contexts that could never report. Version pinned in
-      # lock-step with Justfile's ACTIONLINT_VERSION; no first-party
-      # Action exists, `go install` reuses setup-go's module cache
+      # required contexts that could never report. The version is held to
+      # Justfile's ACTIONLINT_VERSION by test/regression/tool_version_pins_
+      # test.go (as is golangci-lint's below and every `tool: just@` pin); no
+      # first-party Action exists, `go install` reuses setup-go's module cache
       # (same pattern as go-arch-lint above).
       - name: install actionlint
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
@@ -533,6 +487,27 @@ jobs:
       - name: resolve-source-pr self-test (fail-closed PR-match guard)
         run: node --test .github/scripts/lib/resolve-source-pr.test.mjs
 
+      # The one GitHub REST client every API-reading script shares. What it
+      # pins is the behaviour the per-script copies used to disagree on: a
+      # caller must state whether a 404 is `null` or an error, and pagination
+      # never returns a silent prefix.
+      - name: gh-api self-test (404 policy + pagination)
+        run: node --test .github/scripts/lib/gh-api.test.mjs
+
+      # The two release.yml steps that used to be inline shell: the tag cut
+      # (idempotent at the merge commit, refuses to move a tag) and the
+      # "highest stable release" signal. Same rationale as the preflight
+      # suites above — release.yml has no pull_request trigger.
+      - name: release tag + is-latest self-tests
+        run: |
+          node --test .github/scripts/release-tag.test.mjs
+          node --test .github/scripts/release-is-latest.test.mjs
+
+      # The `go.mod is tidy` gate in check-build; the suite drives it with a
+      # stub `go` so both verdicts run on every PR.
+      - name: go-mod-tidy-check self-test
+        run: node --test .github/scripts/go-mod-tidy-check.test.mjs
+
       # tsouza/cerberus#2361's fix: release.yml's preflight re-reads the
       # release-staging PR's OWN `dashboard` check-run (the only run that ever
       # exercises the k3d crawl leg for a release commit) instead of trusting
@@ -642,25 +617,30 @@ jobs:
           fetch-depth: 0
       # The discipline scans below are implemented in
       # .github/scripts/forbid-skip.mjs (one $CHECK per scan) — see
-      # `.github/scripts/README.md` for the convention. The regexes are
-      # kept byte-identical to scripts/test-forbid-skip.sh (the self-test
-      # step at the end of this job pins them).
+      # `.github/scripts/README.md` for the convention. That file holds the
+      # only copy of every regex; lefthook.yml invokes the same script.
       #
       # This CLI-level self-test runs FIRST: it builds a throwaway git repo
-      # and proves each scan fires on an UNTRACKED violating file (present in
-      # the working tree, never `git add`-ed), not only a committed one —
-      # every scan derives its file set from lib/gh.mjs's lsFiles(), which
-      # used to read the git INDEX only and so reported clean on exactly this
-      # shape locally (issue #1938).
+      # and, for every arm, proves the scan fires on each canonical
+      # violating fixture and stays quiet on each canonical counter-example,
+      # including an UNTRACKED violating file (present in the working tree,
+      # never `git add`-ed) — every scan derives its file set from
+      # lib/gh.mjs's lsFiles(), which used to read the git INDEX only and so
+      # reported clean on exactly this shape locally (issue #1938).
       - name: Self-test the forbid-skip CLI
         run: node --test .github/scripts/forbid-skip.test.mjs
       - name: Validate the CI lane registry contract
         run: |
           node --test .github/scripts/ci-lane-contract.test.mjs
           MODE=registry node .github/scripts/ci-lane-contract.mjs
+      # The docs-only composite (./.github/actions/docs-only) renders its
+      # paths filter from the registry's known_nonimpact_globs through this
+      # script; the suite pins the rendering and the verdict truth table.
+      - name: Self-test the docs-only filter
+        run: node --test .github/scripts/docs-only-filter.test.mjs
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
+          tool: just@1.46.0
       # The four steps below are cerberus issue #3436's merge fence: the
       # Semantic Conformance Framework's structural model, lane-policy,
       # evidence-liveness and generated-report validators, enrolled in
@@ -805,6 +785,7 @@ jobs:
           node --test .github/scripts/lib/poll.test.mjs
           node --test .github/scripts/lib/k8s.test.mjs
           node --test .github/scripts/k3d-image-import.test.mjs
+          node --test .github/scripts/wait-container-ready.test.mjs
           node --test .github/scripts/e2e-datasource-sync.test.mjs
           node --test .github/scripts/e2e-wait-otel.test.mjs
           node --test .github/scripts/e2e-seed.test.mjs
@@ -894,15 +875,6 @@ jobs:
         run: node .github/scripts/forbid-skip.mjs
         env:
           CHECK: should-skip
-      # Regex self-test for the forbid-skip gate. Every pattern
-      # documented in docs/forbid-skip.md has a canonical match-example
-      # and a counter-example; this step asserts the regexes still
-      # classify both correctly. When a future PR widens or normalises
-      # the gate, update docs/forbid-skip.md AND
-      # scripts/test-forbid-skip.sh in the same change.
-      - name: Self-test forbid-skip regex set
-        run: |
-          scripts/test-forbid-skip.sh
       # Reject test-suite escape-hatch primitives. Each pattern below
       # is a documented anti-pattern that masks real bugs:
       #
@@ -1305,6 +1277,18 @@ jobs:
       # count satisfied, and the gate must still fail.
       - name: Assert the parity ratchet gates on per-case identity
         run: node --test .github/scripts/compat-ratchet.test.mjs
+
+      # The prometheus runner's pure decisions: the comparer deadline a
+      # server version gets (the floor widening must not reach the 26.5
+      # lanes), the idempotent comparer patch, and that a run with no usable
+      # report never exits 0.
+      - name: Assert the prometheus runner's deadline choice and report gate
+        run: node --test .github/scripts/run-prometheus-compatibility.test.mjs
+
+      # The lanes' shared housekeeping step: the tester-report tally and the
+      # one-row parity table every compatibility lane appends.
+      - name: Assert the compatibility step summary renders the tally and table
+        run: node --test .github/scripts/compat-step-summary.test.mjs
 
       # The ratchet, updater, doc-count gate, and structural guard all trust
       # one shard loader. These pins prove its manifest/bucket roster fails

@@ -291,10 +291,12 @@ func TestWriteDeltaPrefixVerifyReport_FailKeepsOutsideRetentionNoteSeparate(t *t
 	}
 }
 
-// TestWriteDeltaPrefixVerifyReport_NoNoteWhenNothingExcluded confirms an
-// ordinary PASS/FAIL report — no outside-retention days at all — prints no
-// NOTE section, so the common case's output is unchanged from before this
-// fix.
+// TestWriteDeltaPrefixVerifyReport_NoNoteWhenNothingExcluded confirms a
+// report that excludes NOTHING — no outside-retention days and no cutover
+// day, the shape deltaprefix.Diff builds — prints no NOTE section. A report
+// deltaprefix.Verify builds always carries a CutoverDay and therefore
+// always prints the cutover NOTE (TestWriteCutoverDayNote); what this
+// pins is that neither note is emitted unconditionally.
 func TestWriteDeltaPrefixVerifyReport_NoNoteWhenNothingExcluded(t *testing.T) {
 	rep := deltaprefix.Diff(map[string]float64{"m": 10}, map[string]float64{"m": 10}, time.Now(), 0.01)
 	var buf bytes.Buffer
@@ -302,7 +304,33 @@ func TestWriteDeltaPrefixVerifyReport_NoNoteWhenNothingExcluded(t *testing.T) {
 		t.Fatalf("writeDeltaPrefixVerifyReport: %v", err)
 	}
 	if got := buf.String(); strings.Contains(got, "NOTE:") {
-		t.Errorf("expected no NOTE section with zero excluded days, got: %q", got)
+		t.Errorf("expected no NOTE section with zero excluded days and no cutover day, got: %q", got)
+	}
+}
+
+// TestWriteCutoverDayNote pins the note a Verify report always carries: the
+// cutover day is named as excluded, the --before instant the backfill and
+// the MV meet at is named beside it, and a report with no cutover day (the
+// Diff shape) prints nothing — the day is invisible to the comparison, so a
+// reader must be told which day a PASS did not speak for.
+func TestWriteCutoverDayNote(t *testing.T) {
+	before := time.Date(2026, 5, 14, 12, 30, 0, 0, time.UTC)
+	rep := deltaprefix.Diff(map[string]float64{"m": 10}, map[string]float64{"m": 10}, before, 0.01)
+
+	var none bytes.Buffer
+	writeCutoverDayNote(&none, rep)
+	if none.Len() != 0 {
+		t.Errorf("a report with no cutover day printed a note: %q", none.String())
+	}
+
+	rep.CutoverDay = time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
+	var got bytes.Buffer
+	writeCutoverDayNote(&got, rep)
+	out := got.String()
+	for _, want := range []string{"NOTE:", "2026-05-14", "EXCLUDED", before.Format(time.RFC3339)} {
+		if !strings.Contains(out, want) {
+			t.Errorf("cutover note lacks %q: %q", want, out)
+		}
 	}
 }
 

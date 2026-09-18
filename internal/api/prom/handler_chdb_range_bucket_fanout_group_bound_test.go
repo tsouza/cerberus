@@ -99,12 +99,30 @@ func rangeBucketFanoutGroupBoundRun(t *testing.T, seriesCount, anchorCount, buck
 // rangeBucketFanoutGroupBoundSeries / …Anchors are the group count the
 // rejection case and its same-count control share, so the ONLY thing that
 // differs between them is the ladder width. …WideAnchors is the larger
-// count the narrow-payload case uses to reach past issue #3468's own
-// 800-group ceiling.
+// count the narrow-payload case uses: about 1,200 (series, anchor) groups,
+// the count the replaced group-count bound would have rejected outright.
 const (
 	rangeBucketFanoutGroupBoundSeries      = 30
 	rangeBucketFanoutGroupBoundAnchors     = 20
 	rangeBucketFanoutGroupBoundWideAnchors = 40
+)
+
+// rangeBucketFanoutGroupBoundWidestAnsweringLadder is the widest positive
+// ladder the rejection case's own seed (30 series, a 21-anchor grid, five
+// one-minute samples per full `[5m]` window) still answers under the
+// 15,000,000-unit default ceiling, and …NarrowestRejectedLadder the next
+// width up. The probe charges each (series, anchor) group `E + (E/S)^2`
+// units, E being the group's accumulated payload in 8-byte elements and S
+// its in-window sample count; the ladder's W buckets dominate E, so at
+// this group count the per-group budget of ~23,800 units is crossed
+// between these two widths. Measured on chDB by bisection over W. The pair
+// pins the calibrated MARGIN, which the coarse rejection (300 wide) and
+// control (1 wide) cases both sit far from: the element width the byte
+// count is divided by moving from 8 to 1 (a cost 8x-64x larger), or the
+// ceiling moving by more than about 1%, flips at least one of them.
+const (
+	rangeBucketFanoutGroupBoundWidestAnsweringLadder   = 146
+	rangeBucketFanoutGroupBoundNarrowestRejectedLadder = 147
 )
 
 // rangeBucketFanoutGroupBoundWideLadder / …NarrowLadder are the two stored
@@ -169,5 +187,35 @@ func TestQueryRange_RangeBucketFanoutFoldCostBound_ManyCheapGroupsAnswer_ChDB(t 
 	}
 	if strings.Contains(body, chsql.RangeBucketFanoutGroupBudgetMessage) {
 		t.Errorf("answered 200 but still names the bound: %s", body)
+	}
+}
+
+// TestQueryRange_RangeBucketFanoutFoldCostBound_JustUnderCeilingAnswers_ChDB
+// and …JustOverCeilingRejects_ChDB bracket the ceiling itself — see
+// rangeBucketFanoutGroupBoundWidestAnsweringLadder's doc for the
+// derivation and for what a drift in either direction means.
+func TestQueryRange_RangeBucketFanoutFoldCostBound_JustUnderCeilingAnswers_ChDB(t *testing.T) {
+	status, body := rangeBucketFanoutGroupBoundRun(t,
+		rangeBucketFanoutGroupBoundSeries, rangeBucketFanoutGroupBoundAnchors, rangeBucketFanoutGroupBoundWidestAnsweringLadder)
+	if status != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 — a %d-wide ladder sits just under the fold-cost ceiling at this group count; "+
+			"a rejection means the probe's cost per element or the ceiling moved; body=%s",
+			status, rangeBucketFanoutGroupBoundWidestAnsweringLadder, body)
+	}
+	if strings.Contains(body, chsql.RangeBucketFanoutGroupBudgetMessage) {
+		t.Errorf("answered 200 but still names the bound: %s", body)
+	}
+}
+
+func TestQueryRange_RangeBucketFanoutFoldCostBound_JustOverCeilingRejects_ChDB(t *testing.T) {
+	status, body := rangeBucketFanoutGroupBoundRun(t,
+		rangeBucketFanoutGroupBoundSeries, rangeBucketFanoutGroupBoundAnchors, rangeBucketFanoutGroupBoundNarrowestRejectedLadder)
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("status: got %d, want %d — a %d-wide ladder sits just over the fold-cost ceiling at this group count; "+
+			"an answer means the probe's cost per element or the ceiling moved; body=%s",
+			status, http.StatusUnprocessableEntity, rangeBucketFanoutGroupBoundNarrowestRejectedLadder, body)
+	}
+	if !strings.Contains(body, chsql.RangeBucketFanoutGroupBudgetMessage) {
+		t.Errorf("body does not name the bound: %s", body)
 	}
 }

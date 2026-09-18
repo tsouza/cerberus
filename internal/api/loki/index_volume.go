@@ -86,7 +86,9 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus loki index_volume", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
-	rows, err := h.Client.QueryIndexVolume(r.Context(), sqlStr, args...)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	rows, err := h.Client.QueryIndexVolume(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki index_volume CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(r.Context(), w, classifyMetadataErr(err))
@@ -94,7 +96,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stamp := float64(end.UnixMilli()) / 1e3
-	ranked := rankIndexVolumeRows(rows, limit)
+	ranked := rankIndexVolumeRows(rows, limit, aggregateBy)
 	result := make([]VectorSample, 0, len(ranked))
 	for _, row := range ranked {
 		result = append(result, VectorSample{
@@ -155,21 +157,27 @@ type rankedVolumeRow struct {
 // first `limit` — the same two-step upstream performs, with the sort in
 // the same place upstream has it and only the pre-filter pushed down.
 //
-// The name is built with upstream's own renderer ([labels.Labels.String],
-// via [labels.FromMap]) rather than a hand-rolled equivalent, so the two
-// cannot drift. Reproducing that renderer in ClickHouse instead — and
+// The tie-break key depends on the aggregation. In SERIES mode it is the
+// rendered label set, built with upstream's own renderer
+// ([labels.Labels.String], via [labels.FromMap]) rather than a hand-rolled
+// equivalent, so the two cannot drift. In LABELS mode it is the bare label
+// NAME: upstream accumulates `labelVolumes[l.Name]` and its
+// MapToVolumeResponse compares that name, so `a` ranks before `a0` — while
+// the rendered `{a0=""}` sorts before `{a=""}` ('0' is 0x30, '=' is 0x3D),
+// which is exactly the framing artefact the SQL-side comparison above is
+// avoided for. Reproducing either renderer in ClickHouse instead — and
 // cutting in SQL after all — is not available at any reasonable price: it
 // would have to reproduce Go's byte-wise (not rune-wise) grammar rewrite,
 // [format.NormalizeLabelMap]'s entry-DROPPING collision policy, and
 // `strconv.Quote`'s escaping of arbitrary attribute VALUES, which
 // `Labels.String()` compares once two rows agree on their names.
-func rankIndexVolumeRows(rows []chclient.IndexVolumeRow, limit int) []rankedVolumeRow {
+func rankIndexVolumeRows(rows []chclient.IndexVolumeRow, limit int, aggregateBy string) []rankedVolumeRow {
 	ranked := make([]rankedVolumeRow, 0, len(rows))
 	for _, row := range rows {
 		metric := format.NormalizeLabelMap(row.Labels)
 		ranked = append(ranked, rankedVolumeRow{
 			metric: metric,
-			name:   labels.FromMap(metric).String(),
+			name:   volumeRankName(metric, aggregateBy),
 			bytes:  row.Bytes,
 		})
 	}
@@ -183,6 +191,19 @@ func rankIndexVolumeRows(rows []chclient.IndexVolumeRow, limit int) []rankedVolu
 		ranked = ranked[:limit]
 	}
 	return ranked
+}
+
+// volumeRankName is the tie-break key rankIndexVolumeRows compares for one
+// served metric: the sole label NAME in labels mode (each row is the
+// `{<name>=""}` framing volumeLabelNameMapFrag builds, so the name is its
+// only key), the rendered label set otherwise.
+func volumeRankName(metric map[string]string, aggregateBy string) string {
+	if aggregateBy == aggregateByLabels {
+		for name := range metric {
+			return name
+		}
+	}
+	return labels.FromMap(metric).String()
 }
 
 // Loki's two `aggregateBy` options

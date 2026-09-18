@@ -26,9 +26,10 @@ mutants:
 # exclusions from `unleash.exclude-files` (a single RE2 regex), so a
 # top-level `excluded-files:` list of globs is never read at all — this file
 # carried one for several rounds and it silently did nothing. Per-leg
-# exclusions live in `.github/workflows/mutation.yml` as the
-# `--exclude-files` CLI flag, which is bound correctly and is the only
-# mechanism that actually partitions files across legs.
+# exclusions live in `.github/scripts/mutation-phases.mjs` as each phase's
+# `include_files` / `exclude_files`, which `.github/scripts/mutation-matrix.mjs`
+# resolves into the `--exclude-files` CLI flag gremlins binds correctly — the
+# only mechanism that actually partitions files across legs.
 #
 # NOTE: there is deliberately no `timeout-coefficient` key here either, and
 # for the same dead-key reason: gremlins reads it as
@@ -76,8 +77,15 @@ mutants:
 # See `docs/test-strategy.md` § "Gremlins phased rollout" for the
 # rationale + the actual-vs-bar table.
 #
-# Promotion to a required CI gate happens after all phases stay
-# stable for a week.
+# The `mutation` aggregator posts on every pull request (diff-scoped) and
+# sweeps the full matrix after a change lands on `main`; whether it is a
+# REQUIRED status check is a repository ruleset decision, recorded by
+# test/regression/release_required_checks_test.go and
+# test/semantic/policy-snapshot.json, not by this file. Every mutator above
+# must stay `enabled: true`: test/regression/gremlins_mutators_enabled_test.go
+# pins it, because a `.gremlins.yaml` edit selects no mutation phase on a
+# pull request and a disabled mutator would otherwise shrink every leg's
+# population unnoticed until the post-merge sweep.
 #
 # A file-level threshold would in any case be GLOBAL (gremlins v0.6.0 has no
 # per-package threshold — see `gremlins unleash --help`), which is why the bar

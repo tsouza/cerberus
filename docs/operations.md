@@ -79,7 +79,7 @@ isolates the fast-fail to that head:
   consecutive CH-health failures trips ONLY the `prom` breaker; Prom queries
   short-circuit to `ErrCircuitOpen` → `503` + `Retry-After`, while Loki and
   Tempo keep their own CLOSED breakers and serve normally. One head's CH-path
-  problem no longer 503s the other two.
+  problem never 503s the other two.
 - **`/readyz` stays green under a single head's storm, and names the tripped
   head.** The readiness probe pings through the dedicated `probe` breaker, which
   is driven ONLY by the low-rate, TTL-coalesced readiness pings — never by
@@ -261,8 +261,10 @@ it logs a deprecation notice at startup. Two more knobs tune it:
 
 The `ts_grid_range` optimization opts the eligible
 `rate(<counter>[<range>])` query_range shape into ClickHouse's compiled
-`timeSeriesRateToGrid` aggregate instead of the arrayJoin fan-out. Its maturity
-label stays experimental, but it is **auto-selected** under the default
+`timeSeriesRateToGrid` aggregate instead of the arrayJoin fan-out. The registry
+labels it `Stability: Experimental` (the aggregate sits behind ClickHouse's own
+`allow_experimental_time_series_aggregate_functions` setting), but it is
+**auto-selected** under the default
 `CERBERUS_CH_OPTIMIZATIONS=auto` on any server `>= 25.9`. The deprecated
 `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` boolean (**default `false`**) still works
 as an override under `auto` — `true` force-enables, `false` force-disables (the
@@ -284,8 +286,15 @@ the SQL array machinery leaves at high cardinality. See
   points where reference Prometheus emits nothing — a systematic divergence, not
   a measure-zero edge. So the auto floor for the whole family is **25.9**. The
   compose / e2e deployment runs **26.6** and the compatibility deployment and the
-  chDB test substrate run **26.5**, both ABOVE that floor, so the native path is
-  genuinely exercised on every substrate.
+  chDB test substrate run **26.5** (`versions.yaml` `chdb_substrate`), both
+  ABOVE that floor, so the native path is genuinely exercised on every
+  substrate. 26.5 is a line operators must not run — see "ClickHouse 26.5 —
+  known-defective line" below — but its defect is confined to the top-K
+  prefilter behind `LIMIT n <= 1000`, and the Loki harness's
+  `/detected_fields` probe sends `line_limit=2000` (so both backends parse
+  every seeded row), which sits above that gate. The substrate therefore
+  exercises the native path validly while never reaching the defective
+  shape; it is not evidence that 26.5 is safe to deploy.
   The auto-picker gates on this floor automatically — it enables
   `ts_grid_range` only when the probed server is ≥ 25.9, so a connected older
   server keeps the fan-out and never diverges. (Force-enabling via the legacy
@@ -318,8 +327,8 @@ the SQL array machinery leaves at high cardinality. See
   one-point grid instead of query_range's materialised one — the same flat
   per-series memory the matrix shape gets, in place of the alerting/
   recording-rule path's unbounded `groupArray` over the lookback window.
-  `increase` / `delta` stay fan-out-only in instant mode (their own instant
-  coverage is a deferred follow-up, not a technical gap).
+  `ts_grid_instant` governs exactly those five functions; an instant
+  `increase` / `delta` query takes the fan-out.
 - **The fan-out remains byte-for-byte available.** Pinning `ts_grid_range` off
   (an explicit list omitting it, or the legacy `=false`) restores the
   established fan-out exactly; on a < 25.9 server it is the only path. Every
@@ -499,9 +508,10 @@ proxy negotiates HTTP/2 with the client and forwards h2c upstream to
 cerberus. This is the standard pattern for in-cluster gRPC services
 and needs no cerberus-side configuration.
 
-For direct internet exposure you would need a `tls.Config` on the
-listener (`CERBERUS_TLS_CERT`/`_KEY`) — not currently implemented;
-deploy behind a TLS-terminating proxy or sidecar.
+Cerberus's own listener is plain HTTP/h2c and has no TLS configuration
+(the only `CERBERUS_*_TLS_*` knobs are the client-side ones for the
+ClickHouse connection). Terminate TLS at the ingress, proxy or sidecar in
+front of it.
 
 ## Security posture
 
@@ -642,17 +652,17 @@ panels may point at one replica at once", and size it against the
 per-session steady load: each tail re-queries ClickHouse about once a
 second, so the cap is also tailing's background query rate per replica.
 
-Exhausting the tail budget now costs ordinary Loki queries nothing:
-the two semaphores are independent, and a saturated tail budget rejects
-only new `/tail` upgrades.
+Exhausting the tail budget costs ordinary Loki queries nothing: the two
+semaphores are independent, and a saturated tail budget rejects only new
+`/tail` upgrades.
 
 To tell which budget rejected a request, group the rejection counter by
 the `budget` label: `sum by (cerberus_ql, budget, reason)
 (rate(cerberus_admit_rejected_total[5m]))` splits `budget="request"` from
 `budget="tail"`. Sustained `budget="tail"` rejections mean live-tail
 demand exceeds `CERBERUS_ADMIT_TAIL`; sustained `budget="request"`
-rejections on `cerberus_ql="logql"` are ordinary query saturation and are
-now unaffected by how many tails are open.
+rejections on `cerberus_ql="logql"` are ordinary query saturation,
+unaffected by how many tails are open.
 
 The tail budget is independent of `CERBERUS_ADMIT_LOKI` in both
 directions, including when that knob is off: a replica running
@@ -736,7 +746,7 @@ separate from the query-concurrency-control thread pool queries draw from —
 so out of the box, merges are not queued behind queries in any scheduler,
 they just time-slice at the OS level. The moment an operator creates a
 workload literally named `default`, merges are pulled OUT of that separate
-pool and INTO the SAME weighted CPU/IO scheduler queries now use — which is
+pool and INTO the SAME weighted CPU/IO scheduler queries use — which is
 a NET REGRESSION for merges if that `default` workload is left at an
 unweighted or low-weighted default alongside a heavier query workload.
 Standing up workload scheduling for the query side only earns the intended
@@ -780,7 +790,7 @@ schema:
   ttl: "2w"
   replicated:
     enabled: true                           # Replicated DB + ReplicatedMergeTree
-    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+    zookeeperPath: "/clickhouse/databases/otel"
 prom:
   resourceLabels:                           # bounded allowlist — see below
     - service.name
@@ -800,7 +810,11 @@ Each typed block lowers to the canonical env:
   `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH`, driving the bare
   `ReplicatedMergeTree` emission documented under
   [Auto-create schema](#auto-create-schema-single-node-vs-clustered). The
-  path **must** carry the `{shard}` / `{replica}` macros.
+  path is the one shared Keeper root every replica registers under and
+  must **not** contain `{shard}` / `{replica}`: the `Replicated` engine
+  takes those as its own separate arguments and expands macros inside the
+  path too, so a path carrying them gives every replica an unrelated root
+  and nothing replicates. The chart render refuses such a path.
 - `requirementsCheck` → `CERBERUS_REQUIREMENTS_CHECK=true` (see
   [Startup requirements preflight](#startup-requirements-preflight)).
 - `prom.resourceLabels` → comma-joined `CERBERUS_PROM_RESOURCE_LABELS`. This
@@ -823,9 +837,10 @@ reaches the node-local replica only ~`1/N` of the time. The preset is worth
 enabling to cut cross-AZ hops (set `topologyKey:
 topology.kubernetes.io/zone`, or pair it with `Service.spec.trafficDistribution:
 PreferClose` / `internalTrafficPolicy: Local` on the ClickHouse Service), but it
-does **not** guarantee a node-local query path. True node-local CH preference —
-a headless Service or per-pod endpoint with client-side replica locality — is a
-deferred, app-side concern, not something the scheduling preset can deliver.
+does **not** guarantee a node-local query path. Node-local replica preference
+is a property of how the ClickHouse Service routes (a headless Service or
+per-pod endpoints with client-side locality), which the scheduling preset does
+not control; cerberus dials whatever `clickhouse.addr` resolves to.
 
 ### Helm: bundled ClickHouse on object storage (bwc data tier)
 
@@ -1088,18 +1103,17 @@ Two source-level facts anchor every row below, verified directly against
   so any setting a query carries rides along to every shard's connection
   unless something explicitly strips or overrides it first.
 - **A small, named set of settings IS stripped or remapped before that
-  forward, and — as of cerberus issue #3086 — exactly ONE of cerberus's
-  stamped settings is conditionally reachable by it, and provably never
-  actually reached.** Fetched `src/Interpreters/ClusterProxy/executeQuery.cpp`
-  at the exact pinned tag (`v26.6.4.55-stable`, matching the
-  `clickhouse/clickhouse-server:26.6` image) rather than `master` — the file
-  has no `stripInitiatorOnlySettings` at this version; that helper is a later
-  refactor. All of the stripping and remapping lives in one function,
-  `updateSettingsAndClientInfoForCluster`, and the exact set of settings that
-  function touches is identical at `v26.6.4.55-stable` and at
-  `v25.8.1.5101-lts`, the tag this analysis was first written against — so
-  every conclusion below survived the bundled image's move across five minors
-  rather than being carried forward on trust. It zeroes `offset` and
+  forward, and exactly TWO of cerberus's stamped settings are touched by it:
+  one is only read, the other is conditionally overridden and provably never
+  overridden in practice (cerberus issue #3086).** At the pinned tag
+  (`v26.6.4.55-stable`, matching the `clickhouse/clickhouse-server:26.6`
+  image) all of the stripping and remapping lives in one function,
+  `src/Interpreters/ClusterProxy/executeQuery.cpp`'s
+  `updateSettingsAndClientInfoForCluster` (there is no
+  `stripInitiatorOnlySettings` at this version; that helper is a later
+  refactor), and the exact set of settings that function touches is
+  identical at `v26.6.4.55-stable` and at `v25.8.1.5101-lts` — ten minor
+  releases apart — so the conclusions below hold at both. It zeroes `offset` and
   `limit` (query-shaping settings that make sense only once, on the
   initiator's own merge), zeroes `max_concurrent_queries_for_user` /
   `max_memory_usage_for_user` (a different-user note: "Does not matter on
@@ -1111,18 +1125,22 @@ Two source-level facts anchor every row below, verified directly against
   (`!settings[Setting::load_balancing].changed`), and — only when the QUERY
   itself left it unset — substitutes `skip_unavailable_shards` from the
   `Distributed` table's own DDL-level `distributed_settings` default.
-  Cerberus's own `load_balancing` pin (issue #3086, see the table below)
-  always marks the setting `.changed`, so this override's `!...changed` guard
-  never passes against a cerberus-issued query — the override is reachable in
-  principle, but provably not in practice, confirmed directly against this
-  function's source at the pinned tag. Every other cerberus-stamped setting
-  is absent from this function entirely.
+  The two cerberus-stamped settings it touches: `max_execution_time`
+  (`CERBERUS_QUERY_TIMEOUT`, stamped on every data-plane query) is only READ,
+  to derive `queue_max_wait_ms` — it still forwards to every shard unchanged,
+  and the derived setting is an addition, not a strip; and `load_balancing`,
+  whose cerberus pin (issue #3086, see the table below) always marks the
+  setting `.changed`, so the `!...changed` override guard never passes against
+  a cerberus-issued query — reachable in principle, provably not in practice.
+  Every other cerberus-stamped setting is absent from this function entirely.
 
 #### Per-query setting → `Distributed` behavior
 
 Column 3 is a fact about `Distributed`-forwarding mechanics, independent of
 whether cerberus's own `internal/chopt` registry ever actually stamps the
-setting on the pinned image. Column 4 is that second, separate fact,
+setting on the pinned image (the rows marked *unconditional* are stamped by
+the engine on every matching plan shape with no registry feature behind
+them). Column 4 is that second, separate fact,
 cross-checked against each feature's `MinVersion` in
 `internal/chopt/registry.go` against the pinned 26.6 image. Every feature
 row below clears its own floor there, so the two columns agree throughout
@@ -1133,26 +1151,31 @@ one needs to know which rows their server reaches; the highest floor in the
 table (26.4, `join_spill`) is what the bundled image has to keep clearing
 for the column to stay all-yes.
 
-| Setting(s)                                                                                                                        | `internal/chopt` feature                                       | Behavior under `Distributed`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Reachable on pinned 26.6?                                                                                                                                                                         | Source/doc citation                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `optimize_aggregation_in_order`                                                                                                   | `aggregation_in_order`                                         | Forwards as-is; each shard applies it to its own local `GROUP BY`, which is exactly the granularity the setting already targets                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Yes — floor 24.8                                                                                                                                                                                  | [docs: optimize-aggregation-in-order](https://clickhouse.com/docs/reference/settings/session-settings/optimize-aggregation-in-order) — "Enables GROUP BY optimization … for aggregating data in corresponding order in MergeTree tables"; absent from `updateSettingsAndClientInfoForCluster` (verified against `executeQuery.cpp` at tag `v25.8.1.5101-lts`)                                                                                                                                    |
-| `use_query_condition_cache` (+ co-stamped `enable_analyzer=1`)                                                                    | `condition_cache`                                              | Forwards as-is; the condition cache is a per-part server-side cache, so each shard populates and reads its OWN cache for its OWN local parts — no cross-shard sharing is expected or needed                                                                                                                                                                                                                                                                                                                                                                                                | Yes — floor 25.3                                                                                                                                                                                  | [docs: use_query_condition_cache](https://clickhouse.com/docs/reference/settings/session-settings/use-query#use_query_condition_cache) — "The cache stores ranges of granules in data parts …"; `allow_experimental_analyzer` (alias `enable_analyzer`) confirmed via `src/Core/Settings.cpp` (`DECLARE_WITH_ALIAS(Bool, allow_experimental_analyzer, true, …, enable_analyzer)`, marked `IMPORTANT`)                                                                                            |
-| `max_bytes_before_external_join`                                                                                                  | `join_spill`                                                   | Forwards as-is BY NAME, but — like `max_memory_usage` below — the threshold is evaluated independently by each shard's own local join build, so a K-way fan-out gets K independent spill decisions at the SAME threshold, not one shared one                                                                                                                                                                                                                                                                                                                                               | Yes — floor 26.4 (`FeatureJoinSpill`), the highest in this table; on a pre-26.4 server the setting is absent from `src/Core/Settings.cpp` entirely, not merely un-stamped                         | [docs: max_bytes_before_external_join](https://clickhouse.com/docs/reference/settings/session-settings/max-bytes#max_bytes_before_external_join)                                                                                                                                                                                                                                                                                                                                                 |
-| `group_by_two_level_threshold_bytes`                                                                                              | `exp_histogram_two_level`                                      | Forwards as-is; each shard evaluates the threshold against its OWN local aggregation state and converts its own hash table independently, which is exactly the granularity the setting targets — the per-series `groupArray` state this bounds is built per shard, and the initiator only merges the resulting partial states                                                                                                                                                                                                                                                              | Yes — no floor (`FeatureExpHistogramTwoLevel` is `AlwaysAvailable`; the setting long predates the 24.8 baseline)                                                                                  | [docs: group_by_two_level_threshold_bytes](https://clickhouse.com/docs/reference/settings/session-settings/group-by#group_by_two_level_threshold_bytes) — "From what size of the aggregation state in bytes, a two-level aggregation begins to be used. 0 - the threshold is not set"                                                                                                                                                                                                            |
-| `min_table_rows_to_use_projection_index`                                                                                          | `trace_id_bitmap_filter`                                       | Forwards as-is; each shard evaluates its OWN local table's row count against the threshold, which is correct — a shard's local `_local` table is what actually carries the projection                                                                                                                                                                                                                                                                                                                                                                                                      | Yes — floor 25.11 (`FeatureTraceIDBitmapFilter`); on a pre-25.11 server the setting is absent from `src/Core/Settings.cpp` entirely, not merely un-stamped                                        | [docs: min_table_rows_to_use_projection_index](https://clickhouse.com/docs/reference/settings/session-settings/min#min_table_rows_to_use_projection_index)                                                                                                                                                                                                                                                                                                                                       |
-| `query_plan_optimize_lazy_materialization` + `query_plan_max_limit_for_lazy_materialization` (+ co-stamped `enable_analyzer=1`)   | `lazy_materialization`                                         | Forwards as-is; lazy materialisation is a per-shard read-order optimization over that shard's own local `ORDER BY … LIMIT N`, composing normally with the initiator's own merge-and-re-limit of the per-shard results                                                                                                                                                                                                                                                                                                                                                                      | Yes — floor 25.11 (`FeatureLazyMaterialization`); the ClickHouse setting itself already exists at 25.8 (default `true`/`10`), but cerberus's OWN registry gate withholds the stamp until 25.11    | [docs: query_plan_optimize_lazy_materialization](https://clickhouse.com/docs/reference/settings/session-settings/query-plan#query_plan_optimize_lazy_materialization)                                                                                                                                                                                                                                                                                                                            |
-| `use_query_cache` + `query_cache_ttl` + `query_cache_nondeterministic_function_handling`                                          | `result_cache`                                                 | Forwards as-is; ClickHouse's query result cache keys and stores the INITIATOR's final merged result (not a per-shard partial), so caching composes with `Distributed` exactly as it does with a plain table                                                                                                                                                                                                                                                                                                                                                                                | Yes — floor 24.8                                                                                                                                                                                  | [docs: use_query_cache](https://clickhouse.com/docs/reference/settings/session-settings/use-query#use_query_cache), [query_cache_ttl](https://clickhouse.com/docs/reference/settings/session-settings/query-cache#query_cache_ttl)                                                                                                                                                                                                                                                               |
-| `allow_experimental_time_series_aggregate_functions`                                                                              | the `ts_grid_*` family (native `timeSeries*ToGrid` aggregates) | Forwards as-is; each shard evaluates the aggregate over its own local rows and returns a normal partial aggregate STATE, which the initiator merges exactly as it merges any other `AggregateFunction` state across shards — no `Distributed`-specific interaction                                                                                                                                                                                                                                                                                                                         | Yes — floor 25.9 (`FeatureTSGridRange`, the family's own gate)                                                                                                                                    | [docs: allow_experimental_time_series_aggregate_functions](https://clickhouse.com/docs/reference/settings/session-settings/allow-experimental#allow_experimental_time_series_aggregate_functions)                                                                                                                                                                                                                                                                                                |
-| `skip_unavailable_shards`                                                                                                         | pinned in `internal/chclient` (this issue)                     | Forwards as-is; because cerberus stamps it on EVERY query, ClickHouse's `!settings[skip_unavailable_shards].changed` guard never fires, so cerberus's own `0` always wins over any DDL-level `distributed_settings` default the `Distributed` table itself might carry                                                                                                                                                                                                                                                                                                                     | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: skip_unavailable_shards](https://clickhouse.com/docs/reference/settings/session-settings/skip-unavailable-shards#skip_unavailable_shards); the changed-flag gate is `src/Interpreters/ClusterProxy/executeQuery.cpp`'s `updateSettingsAndClientInfoForCluster`, confirmed at line 170 of the pinned `v25.8.1.5101-lts` tag                                                                                                                                                                |
-| `fallback_to_stale_replicas_for_distributed_queries`                                                                              | pinned in `internal/chclient` (this issue)                     | Forwards as-is; consumed directly by `ConnectionPoolWithFailover`/`PoolWithFailoverBase` at replica-selection time, one shard at a time                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: fallback_to_stale_replicas_for_distributed_queries](https://clickhouse.com/docs/reference/settings/session-settings/other#fallback_to_stale_replicas_for_distributed_queries) — "Forces a query to an out-of-date replica if updated data is not available … By default, 1 (enabled)"; consumption site is `src/Common/PoolWithFailoverBase.h`                                                                                                                                            |
-| `load_balancing` (`first_or_random`) + `load_balancing_first_offset` (`0`)                                                        | pinned in `internal/chclient` (cerberus issue #3086)           | Forwards as-is, PER SHARD's own remote-connection pool; `GetPriorityForLoadBalancing::getPriorityFunc` gives priority 0 to the replica at the configured offset and priority 1 to every other replica, so — absent recorded errors — every fan-out statement against a shard's `Distributed` connection deterministically selects the SAME (offset-0) replica, closing the cross-statement replica-divergence gap `sessionAffinity` cannot reach past shard 0                                                                                                                              | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: load_balancing](https://clickhouse.com/docs/reference/settings/session-settings/other#load_balancing) ("First or random" section); priority-function source is `src/Common/GetPriorityForLoadBalancing.cpp`; ClickHouse's own default is `random` (`src/Core/Settings.cpp`: `DECLARE(LoadBalancing, load_balancing, LoadBalancing::RANDOM, ...)`), all confirmed at the pinned `v25.8.1.5101-lts` tag; see `internal/chclient/distributed_query_settings.go` for the full decision record |
-| `distributed_product_mode` (`global`)                                                                                             | pinned in `internal/chclient` (cerberus issue #3118)           | Rewrites any non-GLOBAL IN/JOIN whose inner subquery ALSO touches a `Distributed` table into a GLOBAL IN/GLOBAL JOIN: the inner side is computed once at the query initiator and broadcast to every shard, so TraceQL's structural-join / `select(nestedSet*)` / `compare()` self-references against `otel_traces` see the full cross-shard result instead of tripping ClickHouse's own `deny`-mode guard (code 288). `local`/`allow` were rejected — both would silently drop matches whose two self-joined sides land on different shards under cerberus's default `rand()` sharding key | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: distributed_product_mode](https://clickhouse.com/docs/reference/settings/session-settings/other#distributed_product_mode); see `internal/chclient/distributed_query_settings.go` for the full decision record and the rejected-alternatives analysis                                                                                                                                                                                                                                      |
+| Setting(s)                                                                                                                        | `internal/chopt` feature                                                                                                                                                                                     | Behavior under `Distributed`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Reachable on pinned 26.6?                                                                                                                                                                         | Source/doc citation                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `optimize_aggregation_in_order`                                                                                                   | `aggregation_in_order`                                                                                                                                                                                       | Forwards as-is; each shard applies it to its own local `GROUP BY`, which is exactly the granularity the setting already targets                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Yes — floor 24.8                                                                                                                                                                                  | [docs: optimize-aggregation-in-order](https://clickhouse.com/docs/reference/settings/session-settings/optimize-aggregation-in-order) — "Enables GROUP BY optimization … for aggregating data in corresponding order in MergeTree tables"; absent from `updateSettingsAndClientInfoForCluster` (verified against `executeQuery.cpp` at tag `v25.8.1.5101-lts`)                                                                                                                                    |
+| `use_query_condition_cache` (+ co-stamped `enable_analyzer=1`)                                                                    | `condition_cache`                                                                                                                                                                                            | Forwards as-is; the condition cache is a per-part server-side cache, so each shard populates and reads its OWN cache for its OWN local parts — no cross-shard sharing is expected or needed                                                                                                                                                                                                                                                                                                                                                                                                | Yes — floor 25.3                                                                                                                                                                                  | [docs: use_query_condition_cache](https://clickhouse.com/docs/reference/settings/session-settings/use-query#use_query_condition_cache) — "The cache stores ranges of granules in data parts …"; `allow_experimental_analyzer` (alias `enable_analyzer`) confirmed via `src/Core/Settings.cpp` (`DECLARE_WITH_ALIAS(Bool, allow_experimental_analyzer, true, …, enable_analyzer)`, marked `IMPORTANT`)                                                                                            |
+| `max_bytes_before_external_join`                                                                                                  | `join_spill`                                                                                                                                                                                                 | Forwards as-is BY NAME, but — like `max_memory_usage` below — the threshold is evaluated independently by each shard's own local join build, so a K-way fan-out gets K independent spill decisions at the SAME threshold, not one shared one                                                                                                                                                                                                                                                                                                                                               | Yes — floor 26.4 (`FeatureJoinSpill`), the highest in this table; on a pre-26.4 server the setting is absent from `src/Core/Settings.cpp` entirely, not merely un-stamped                         | [docs: max_bytes_before_external_join](https://clickhouse.com/docs/reference/settings/session-settings/max-bytes#max_bytes_before_external_join)                                                                                                                                                                                                                                                                                                                                                 |
+| `max_bytes_before_external_group_by` + `max_bytes_before_external_sort`                                                           | unconditional — `applySpillSettings` (`internal/engine/spill.go`), stamped on every data-plane statement, sized at half the statement's own memory cap                                                       | Forwards as-is BY NAME; like `max_bytes_before_external_join` above, each shard evaluates the threshold against its OWN local aggregation / sort state, so a K-way fan-out gets K independent spill decisions at the SAME threshold                                                                                                                                                                                                                                                                                                                                                        | Yes — no chopt floor; both settings predate cerberus's 24.8 floor                                                                                                                                 | [docs: max_bytes_before_external_group_by](https://clickhouse.com/docs/reference/settings/session-settings/max-bytes#max_bytes_before_external_group_by)                                                                                                                                                                                                                                                                                                                                         |
+| `max_threads` (`4`)                                                                                                               | unconditional on a TraceQL `compare()` plan — `applyCompareMemoryBound` (`internal/engine/query_settings_rules.go`)                                                                                          | Forwards as-is; each shard caps its OWN local read parallelism (and so its own concurrent read buffers, which is what the bound exists for), independently of the initiator's merge                                                                                                                                                                                                                                                                                                                                                                                                        | Yes — no chopt floor                                                                                                                                                                              | `compareMaxThreads` in `internal/engine/query_settings_rules.go` records the measurement; ClickHouse `src/Core/Settings.cpp`                                                                                                                                                                                                                                                                                                                                                                     |
+| `max_block_size` (`1`)                                                                                                            | unconditional on a sorted-slab `RangeWindow` — `applySortedSlabOverTimeMemoryBound`; the shape itself is opt-in (`sorted_slab_over_time`, `AutoSelect: false`)                                               | Forwards as-is; each shard batches its OWN local pipeline one row per block, which is where the per-anchor intermediates the bound frees are built                                                                                                                                                                                                                                                                                                                                                                                                                                         | Yes — no chopt floor for the setting; the shape needs an explicit `CERBERUS_CH_OPTIMIZATIONS` listing                                                                                             | `sortedSlabOverTimeMaxBlockSize` in `internal/engine/query_settings_rules.go` records the measurement; ClickHouse `src/Core/Settings.cpp`                                                                                                                                                                                                                                                                                                                                                        |
+| `enable_analyzer` (`0`)                                                                                                           | unconditional on a native (exponential) histogram plan — `applyNativeHistogramAnalyzerFix`; takes precedence over the `condition_cache` / `lazy_materialization` co-stamps, which are skipped on such a plan | Forwards as-is; the initiator and every shard plan their part of the statement with the older analyzer, which is where the merge/window-fold expressions the fix targets are compiled                                                                                                                                                                                                                                                                                                                                                                                                      | Yes — no chopt floor; both spellings of the setting alias the same flag on every supported version                                                                                                | `applyNativeHistogramAnalyzerFix` in `internal/engine/query_settings_rules.go` records the measurements; ClickHouse `src/Core/Settings.cpp`                                                                                                                                                                                                                                                                                                                                                      |
+| `group_by_two_level_threshold_bytes`                                                                                              | `exp_histogram_two_level`                                                                                                                                                                                    | Forwards as-is; each shard evaluates the threshold against its OWN local aggregation state and converts its own hash table independently, which is exactly the granularity the setting targets — the per-series `groupArray` state this bounds is built per shard, and the initiator only merges the resulting partial states                                                                                                                                                                                                                                                              | Yes — no floor (`FeatureExpHistogramTwoLevel` is `AlwaysAvailable`; the setting long predates the 24.8 baseline)                                                                                  | [docs: group_by_two_level_threshold_bytes](https://clickhouse.com/docs/reference/settings/session-settings/group-by#group_by_two_level_threshold_bytes) — "From what size of the aggregation state in bytes, a two-level aggregation begins to be used. 0 - the threshold is not set"                                                                                                                                                                                                            |
+| `min_table_rows_to_use_projection_index`                                                                                          | `trace_id_bitmap_filter`                                                                                                                                                                                     | Forwards as-is; each shard evaluates its OWN local table's row count against the threshold, which is correct — a shard's local `_local` table is what actually carries the projection                                                                                                                                                                                                                                                                                                                                                                                                      | Yes — floor 25.11 (`FeatureTraceIDBitmapFilter`); on a pre-25.11 server the setting is absent from `src/Core/Settings.cpp` entirely, not merely un-stamped                                        | [docs: min_table_rows_to_use_projection_index](https://clickhouse.com/docs/reference/settings/session-settings/min#min_table_rows_to_use_projection_index)                                                                                                                                                                                                                                                                                                                                       |
+| `query_plan_optimize_lazy_materialization` + `query_plan_max_limit_for_lazy_materialization` (+ co-stamped `enable_analyzer=1`)   | `lazy_materialization`                                                                                                                                                                                       | Forwards as-is; lazy materialisation is a per-shard read-order optimization over that shard's own local `ORDER BY … LIMIT N`, composing normally with the initiator's own merge-and-re-limit of the per-shard results                                                                                                                                                                                                                                                                                                                                                                      | Yes — floor 25.11 (`FeatureLazyMaterialization`); the ClickHouse setting itself already exists at 25.8 (default `true`/`10`), but cerberus's OWN registry gate withholds the stamp until 25.11    | [docs: query_plan_optimize_lazy_materialization](https://clickhouse.com/docs/reference/settings/session-settings/query-plan#query_plan_optimize_lazy_materialization)                                                                                                                                                                                                                                                                                                                            |
+| `use_query_cache` + `query_cache_ttl` + `query_cache_nondeterministic_function_handling`                                          | `result_cache`                                                                                                                                                                                               | Forwards as-is; ClickHouse's query result cache keys and stores the INITIATOR's final merged result (not a per-shard partial), so caching composes with `Distributed` exactly as it does with a plain table                                                                                                                                                                                                                                                                                                                                                                                | Yes — floor 24.8                                                                                                                                                                                  | [docs: use_query_cache](https://clickhouse.com/docs/reference/settings/session-settings/use-query#use_query_cache), [query_cache_ttl](https://clickhouse.com/docs/reference/settings/session-settings/query-cache#query_cache_ttl)                                                                                                                                                                                                                                                               |
+| `allow_experimental_time_series_aggregate_functions`                                                                              | the `ts_grid_*` family (native `timeSeries*ToGrid` aggregates)                                                                                                                                               | Forwards as-is; each shard evaluates the aggregate over its own local rows and returns a normal partial aggregate STATE, which the initiator merges exactly as it merges any other `AggregateFunction` state across shards — no `Distributed`-specific interaction                                                                                                                                                                                                                                                                                                                         | Yes — floor 25.9 (`FeatureTSGridRange`, the family's own gate)                                                                                                                                    | [docs: allow_experimental_time_series_aggregate_functions](https://clickhouse.com/docs/reference/settings/session-settings/allow-experimental#allow_experimental_time_series_aggregate_functions)                                                                                                                                                                                                                                                                                                |
+| `skip_unavailable_shards`                                                                                                         | pinned in `internal/chclient` (cerberus issue #3078)                                                                                                                                                         | Forwards as-is; because cerberus stamps it on EVERY query, ClickHouse's `!settings[skip_unavailable_shards].changed` guard never fires, so cerberus's own `0` always wins over any DDL-level `distributed_settings` default the `Distributed` table itself might carry                                                                                                                                                                                                                                                                                                                     | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: skip_unavailable_shards](https://clickhouse.com/docs/reference/settings/session-settings/skip-unavailable-shards#skip_unavailable_shards); the changed-flag gate is `src/Interpreters/ClusterProxy/executeQuery.cpp`'s `updateSettingsAndClientInfoForCluster`, confirmed at line 170 of the pinned `v25.8.1.5101-lts` tag                                                                                                                                                                |
+| `fallback_to_stale_replicas_for_distributed_queries`                                                                              | pinned in `internal/chclient` (cerberus issue #3078)                                                                                                                                                         | Forwards as-is; consumed directly by `ConnectionPoolWithFailover`/`PoolWithFailoverBase` at replica-selection time, one shard at a time                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: fallback_to_stale_replicas_for_distributed_queries](https://clickhouse.com/docs/reference/settings/session-settings/other#fallback_to_stale_replicas_for_distributed_queries) — "Forces a query to an out-of-date replica if updated data is not available … By default, 1 (enabled)"; consumption site is `src/Common/PoolWithFailoverBase.h`                                                                                                                                            |
+| `load_balancing` (`first_or_random`) + `load_balancing_first_offset` (`0`)                                                        | pinned in `internal/chclient` (cerberus issue #3086)                                                                                                                                                         | Forwards as-is, PER SHARD's own remote-connection pool; `GetPriorityForLoadBalancing::getPriorityFunc` gives priority 0 to the replica at the configured offset and priority 1 to every other replica, so — absent recorded errors — every fan-out statement against a shard's `Distributed` connection deterministically selects the SAME (offset-0) replica, closing the cross-statement replica-divergence gap `sessionAffinity` cannot reach past shard 0                                                                                                                              | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: load_balancing](https://clickhouse.com/docs/reference/settings/session-settings/other#load_balancing) ("First or random" section); priority-function source is `src/Common/GetPriorityForLoadBalancing.cpp`; ClickHouse's own default is `random` (`src/Core/Settings.cpp`: `DECLARE(LoadBalancing, load_balancing, LoadBalancing::RANDOM, ...)`), all confirmed at the pinned `v25.8.1.5101-lts` tag; see `internal/chclient/distributed_query_settings.go` for the full decision record |
+| `distributed_product_mode` (`global`)                                                                                             | pinned in `internal/chclient` (cerberus issue #3118)                                                                                                                                                         | Rewrites any non-GLOBAL IN/JOIN whose inner subquery ALSO touches a `Distributed` table into a GLOBAL IN/GLOBAL JOIN: the inner side is computed once at the query initiator and broadcast to every shard, so TraceQL's structural-join / `select(nestedSet*)` / `compare()` self-references against `otel_traces` see the full cross-shard result instead of tripping ClickHouse's own `deny`-mode guard (code 288). `local`/`allow` were rejected — both would silently drop matches whose two self-joined sides land on different shards under cerberus's default `rand()` sharding key | Yes — unconditional, no chopt floor                                                                                                                                                               | [docs: distributed_product_mode](https://clickhouse.com/docs/reference/settings/session-settings/other#distributed_product_mode); see `internal/chclient/distributed_query_settings.go` for the full decision record and the rejected-alternatives analysis                                                                                                                                                                                                                                      |
 
 No `internal/chopt`-stamped setting was found to be unsafe or produce wrong
 results under `Distributed`, at any version — every row above is
 **forwards-as-is**, and the taxonomy has no `disabled-until-fixed` row.
-All seven feature rows, plus the five unconditional distributed-query pins,
-are reachable against the bundled 26.6 image, and the `datashard` lane runs
+All eight feature rows, the four unconditional plan-shape stamps the engine
+applies without a chopt feature, and the five unconditional distributed-query
+pins are reachable against the bundled 26.6 image, and the `datashard` lane runs
 that same image (`test/e2e/k3s/cerberus-values-datashard.yaml`,
 `E2E_BUNDLED_CH_IMAGES` in `just/e2e.just`), so every row — the `join_spill`
 row at its 26.4 floor included — is observed live under fan-out, not only
@@ -1220,8 +1243,8 @@ path every shard fan-out runs through:
   tries failed." Mapped by `prom`/`loki`/`tempo` to a `503`
   `errorType=unavailable` response — the same class as a tripped circuit
   breaker, since ClickHouse's initiator is healthy and one data shard is not.
-  It is already classified `breakerScopeServerHealth` in
-  `internal/chclient/breaker_classify.go` (pre-existing).
+  It is classified `breakerScopeServerHealth` in
+  `internal/chclient/breaker_classify.go`.
 - **`ALL_REPLICAS_ARE_STALE` (code 369)** — `*chclient.StaleReplicaFallbackDeniedError`
   — thrown when a shard's reachable replicas are all stale AND
   `fallback_to_stale_replicas_for_distributed_queries=0`: "Could not find
@@ -1272,7 +1295,7 @@ substrate cannot exercise it either.
 
 The concrete emitter-grounded subquery and derived-table shapes this risk was
 executed against on a real multi-shard cluster — and which of them the
-`datashard` lane now runs unconditionally — are recorded in
+`datashard` lane runs unconditionally — are recorded in
 [`operations.background.md`](operations.background.md).
 
 ### Multi-data-shard e2e-hardening leg
@@ -1316,23 +1339,30 @@ that script's own header comment for the full query_id-trace-grouping
 mechanism this relies on. `datashard`, like `bwc-minio`, is INFORMATIONAL —
 never a PR gate.
 
-**Current status (experimental lane, advisory only).** The lane is green on
-both legs (`N=2` and `N=4`) and on its `datashard-replica-affinity` sibling —
-the first fully green run was
-[run 34059346299](https://github.com/tsouza/cerberus/actions/runs/34059346299).
-Each leg brings the multi-shard cluster up, seeds it, runs the full Go e2e
-correctness suite and the concurrent burst, and every `query_log` assertion
-above holds: the solver-split evidence, the memory-apportionment bound, and
-the admission ceiling in BOTH scopes — per cerberus process (every per-shard
-statement attributed to the pod whose gate admitted it) and cluster-wide
-(`replicas x per-process cap`, the chart's `dataShards.fanoutCap` budget
-read back from the live Deployment and env ConfigMap). The path stays
-EXPERIMENTAL because no production support is offered for it, not because
-an assertion is red: this lane's verdict is reported under an advisory
-heading by `.github/scripts/notify-nightly-failure.mjs` (`EXPERIMENTAL_LANES`)
-and never counts toward the nightly's clean-pass decision — a supported lane
-regressing is exactly as loud as it always was. `workflow_dispatch` with
-`datashard_only=true` runs just this lane for a fast, focused iteration.
+**Posture (experimental lane, advisory only).** Each leg (`N=2` and `N=4`,
+plus the `datashard-replica-affinity` sibling) brings the multi-shard cluster
+up, seeds it, runs the full Go e2e correctness suite and the concurrent
+burst, and asserts every `query_log` claim above: the solver-split evidence,
+the memory-apportionment bound, and the admission ceiling in BOTH scopes —
+per cerberus process (every per-shard statement attributed to the pod whose
+gate admitted it) and cluster-wide (`replicas x per-process cap`, the
+chart's `dataShards.fanoutCap` budget read back from the live Deployment and
+env ConfigMap). The path stays EXPERIMENTAL because no production support is
+offered for it, not because an assertion is red: this lane's verdict is
+reported under an advisory heading by
+`.github/scripts/notify-nightly-failure.mjs` (`EXPERIMENTAL_LANES`) and never
+counts toward the nightly's clean-pass decision — a supported lane regressing
+is exactly as loud. `workflow_dispatch` with `datashard_only=true` runs just
+this lane for a fast, focused iteration.
+
+**What the lane does and does not observe.** It runs
+`clickhouse/clickhouse-server:26.3` (`test/e2e/k3s/cerberus-values-datashard.yaml`,
+`E2E_DATASHARD_IMAGES` in `just/e2e.just`), not the bundled 26.6 the settings
+table above is verified against. Every row whose floor is at or below 26.3 is
+therefore observed live under fan-out; the `join_spill` row (floor 26.4) is
+not — on 26.3 its setting does not exist, so cerberus never stamps it there,
+and its `Distributed` behaviour rests on the source-level verification above
+alone until the lane's image moves.
 
 ### Compat and migration-lane scope: single ClickHouse data shard
 
@@ -1738,7 +1768,7 @@ runbooks above.
 Trace-by-id lookups and logs<->traces correlation hops filter on `TraceId`,
 but neither `otel_traces` (`ORDER BY (ServiceName, SpanName, Timestamp)`) nor
 `otel_logs` (`ORDER BY (toStartOfFiveMinutes(Timestamp), ServiceName,
-Timestamp)`) sorts on it — today these lookups are served only by the
+Timestamp)`) sorts on it — these lookups are served only by the
 `idx_trace_id` bloom_filter skip index, a probabilistic, GRANULARITY-coarse
 filter, not exact row addressing.
 
@@ -2342,24 +2372,20 @@ before embedding.
   through Go's `regexp/syntax` (RE2 — the same engine ClickHouse's `match()`
   runs) as a single `OpLiteral` — a regex only in name, with no
   metacharacters. Any other regex shape (alternation, anchors, character
-  classes, quantifiers) renders byte-identical to today; this package does
+  classes, quantifiers) renders exactly as without the feature; this package does
   not compile partial RE2 semantics into index predicates.
 
 **Independent of `full_text_index`, but inert without it**: the floors are
 strictly ordered (26.4 > 26.2), so a server can satisfy one without the
 other, and the rewrite is a harmless (if pointless) no-op on any table that
 carries no text index at all — every LIKE conjunct just evaluates against
-the same undexed `lower(Body)` scan the row predicate already pays for.
-Live-confirmed against a real ClickHouse 26.6 server rather than assumed
-(cerberus issue #2839): a 2,002,000-row logs-shaped table with ONLY the
-legacy `idx_lower_body` tokenbf_v1 index (no text index at all) reads
-2,002,000 rows for a `lower(Body) LIKE '%peer%'` query — byte-identical to a
-table with no index whatsoever — confirming the rewrite is genuinely inert,
-not merely assumed inert, on that shape. The same probe is also the
-definitive answer to a narrower question the tokenbf_v1 branch's own history
-left open: whether `idx_lower_body`, specifically, could still prune THIS
-exact `lower(Body) LIKE '%tok%'` conjunct shape once it exists — see
-"Retiring the legacy `idx_lower_body` tokenbf index" immediately below.
+the same unindexed `lower(Body)` scan the row predicate already pays for.
+The legacy `idx_lower_body` tokenbf_v1 index cannot prune that conjunct
+shape either — see
+[`operations.background.md`](operations.background.md#why-the-text-index-takes-a-second-name-instead-of-an-in-place-type-swap)
+for the live 26.6 measurement behind both statements, and "Retiring the
+legacy `idx_lower_body` tokenbf index" immediately below for what to do
+with the old index.
 
 ##### Retiring the legacy `idx_lower_body` tokenbf index
 
@@ -2413,7 +2439,7 @@ supplements). Unlike the metadata projections and the skip index above, no
 upstream template backs this table — it never appears unless the operator
 opts in, and it is entirely additive.
 
-**Query answering now CAN read from this table**, gated behind a separate,
+**Query answering CAN read from this table**, gated behind a separate,
 later opt-in from provisioning: `Config.DeltaPrefixReadEnabled`
 (`CERBERUS_DELTA_PREFIX_READ_ENABLED`, default `false`). Provisioning the
 table (`CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED`) only says the table + MV
@@ -2429,8 +2455,9 @@ cerberus's only DELTA-prefix mechanism, unchanged.
 
 **Provisioning** needs *two* independent flags, both default `false`:
 `CERBERUS_AUTO_CREATE_SCHEMA=true` (as for every other auto-created table) AND
-`CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED=true`. This is new, unproven machinery,
-so a deployment that already has schema auto-create on for the five upstream
+`CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED=true`. The table is an opt-in
+derived tier with its own storage and write-amplification cost, so a
+deployment that already has schema auto-create on for the five upstream
 tables does **not** get this table for free — the operator opts in a second
 time, explicitly.
 
@@ -2641,15 +2668,13 @@ Both terms resolve to the same series through cerberus's ordinary
 column-name GroupBy resolution — see `chplan.RangeWindow.DeltaPrefixAggregateInput`'s
 doc — not a new join-key derivation.
 
-**No PK-level pruning exists below `MetricName`.** The series-identity predicate
-is a `GROUP BY` key computed from the scan output, never a `WHERE`-testable
-column, so this read's cost scales with `date-range × metric-cardinality`
-regardless of dataset size. That is enormously cheaper than an unbounded
-retention scan, but it is a real, named cost for a single-series
-`rate()`/`increase()` query against a high-cardinality DELTA metric, and belongs
-in capacity planning for any deployment enabling
-`CERBERUS_DELTA_PREFIX_READ_ENABLED` against such a metric. See
-[`operations.background.md`](operations.background.md) for the measurement.
+**No PK-level pruning exists below `MetricName`**: this read's cost scales
+with `date-range × metric-cardinality` regardless of dataset size, even for a
+single-series `rate()`/`increase()` query, and belongs in capacity planning
+for any deployment enabling `CERBERUS_DELTA_PREFIX_READ_ENABLED` against a
+high-cardinality DELTA metric. See
+[`operations.background.md`](operations.background.md) for why the
+series-identity predicate cannot prune and for the measurement.
 
 ### Downsampled long-range tier (multi-bucket merge, Gauge `last_over_time`)
 
@@ -2831,17 +2856,17 @@ precise boot-time finding:
     instead (the upstream OTel exporter's `json:true` schema variant),
     startup **boots** rather than failing, with a **warning** logged naming
     the table/column.
-    - **Logs**: per-key attribute lookups now work against a JSON-typed
+    - **Logs**: per-key attribute lookups work against a JSON-typed
       column — stream-selector label matchers (`{app="foo"}`),
-      `detected_level`, and any other bare `MapAccess`/`mapContains` read.
-      [#3063](https://github.com/tsouza/cerberus/issues/3063) closed the
-      remaining LogQL-side gaps this warning used to name:
+      `detected_level`, and any other bare `MapAccess`/`mapContains` read —
+      and so do the full-map and metadata shapes
+      ([#3063](https://github.com/tsouza/cerberus/issues/3063)):
       - **Full-map operations** — `withDetectedLevelAndColumns`'s
         `mapConcat`/`mapFilter` identity synthesis (runs on essentially
         every log-stream query), `structuredMetadataExpr`'s `mapFilter`
         over `LogAttributes`, every parser-stage label merge
         (`PipelineLabelsExpr`'s `mapConcat`/`mapApply` chain), and a bare
-        attribute-map projection with no wrapping stage at all — all now
+        attribute-map projection with no wrapping stage at all — all
         render correctly against a JSON-typed column via a bounded-depth
         reconstruction into a genuine `Map(String,String)`
         (`internal/chsql/attr_strategy_fullmap.go`). ClickHouse's JSON type
@@ -2861,8 +2886,8 @@ precise boot-time finding:
       - **Metadata/discovery endpoints** — `/labels`, `/series`,
         `/label/<name>/values`, `/detected_labels` and `/detected_fields`
         build their SQL directly against `chsql.NewQuery()` rather than
-        through `chplan`, so they never reached `AttrStrategies` threading
-        at all; each now resolves the Handler's `AttrStrategies` itself
+        through `chplan`, so they do not inherit `AttrStrategies` from a
+        plan; each resolves the Handler's `AttrStrategies` itself
         (`internal/api/loki/attr_strategy.go`) and renders `JSONAllPaths`
         for key discovery / the same bounded reconstruction for whole-map
         reads. `/patterns` needed no change — it never reads an
@@ -2870,13 +2895,12 @@ precise boot-time finding:
       - **`json_type_escape_dots_in_keys` / mixed-history hazard** — see
         the dedicated callout below this list, shared verbatim with
         traces.
-    - **Traces**: per-key attribute lookups and comparisons now work against
+    - **Traces**: per-key attribute lookups and comparisons work against
       a JSON-typed column too — span/resource/scope attribute matchers
       (`{ span.foo = "bar" }`), numeric/duration comparisons
       (`{ span.http.status_code > 100 }`), and existence checks
-      (`{ span.foo != nil }`).
-      [#3065](https://github.com/tsouza/cerberus/issues/3065) closed the
-      remaining TraceQL-side gaps this warning used to name:
+      (`{ span.foo != nil }`) — and so do the response and discovery shapes
+      ([#3065](https://github.com/tsouza/cerberus/issues/3065)):
       - **`/api/search`'s baseline response** — `canonicalSampleProjections`
         / `sampleProjectionsWithSelected` (`internal/api/tempo/handler.go`)
         unconditionally merge `ResourceAttributes` with synthetic
@@ -2907,8 +2931,8 @@ precise boot-time finding:
       - **`/api/search/tags` / `/api/v2/search/tags` /
         `/api/search/tag/{name}/values`** — these discovery endpoints
         build their SQL directly against `chsql.NewQuery()` rather than
-        through `chplan`, so they never reached `AttrStrategies` threading
-        at all — the identical gap Logs' metadata endpoints had. Each now
+        through `chplan`, so they do not inherit `AttrStrategies` from a
+        plan — the same shape as Logs' metadata endpoints. Each
         resolves the Handler's `AttrStrategies` itself
         (`internal/api/tempo/attr_strategy.go`) and threads it onto every
         `chsql.QueryBuilder` it builds, reaching `chsql.Builder.MapAt` /
@@ -3262,10 +3286,12 @@ point of auditing at all.
 the cut is what clears it.** `TestReleasePerfRegression` compares the corpus
 against `test/perf/release-baseline/<version>/`, a FROZEN snapshot of the
 previous release. That reference moves at exactly one moment — the cut —
-because `just release-prep <version>` runs `just capture-release-perf-baseline
-<version>` and stages `test/perf/release-baseline/<version>/` into the release
-commit itself, sourced byte-for-byte from the working tree's own rolling
-`test/perf/cardinality-baseline/`. The gate resolves the SEMVER-HIGHEST
+because both ways of cutting a release, `prepare-release.yml` and `just
+release-prep <version>`, run `just capture-release-perf-baseline <version>`
+and stage `test/perf/release-baseline/<version>/` into the release commit
+itself, sourced byte-for-byte from the working tree's own rolling
+`test/perf/cardinality-baseline/`
+(`TestBothReleasePathsStageThePerfBaseline` holds the two to that shape). The gate resolves the SEMVER-HIGHEST
 subdirectory present, so the release commit is judged against a copy of the
 rolling baseline it is shipping — which clears the lane exactly when
 `TestCardinalityRatchet` was already green on those fixtures. A fixture drifting
@@ -3307,8 +3333,11 @@ selection between them:
 - **Release gate** — the full matrix: every merge-gate check plus the
   cost-dominating lanes an ordinary PR does not need to wait on —
   `perf-guards` and `benchstat diff`, the chDB `roundtrip` / `integration` /
-  `chdb-build` lanes, the full `gremlins` mutation sweep, all six `compatibility/*`
-  differential heads, `migration-e2e`, `perf-nightly` (the #2370 real-data
+  `chdb-build` lanes, the full `gremlins` mutation sweep, the four required
+  `compatibility/*` differential heads (`prometheus`, `loki`, `tempo`,
+  `prometheus-forced-route`; the `prometheus-floor` and `promql-surface` probes
+  are `release_posture: advisory` in `.github/ci-lanes.json` and do not gate a
+  publish), `migration-e2e`, `perf-nightly` (the #2370 real-data
   regression gate — like `migration-e2e` it has no `pull_request:` trigger
   at all, only `push: [main, release/*.x]` + `schedule` + manual dispatch,
   so it never runs on an ordinary PR, heavy or otherwise), and the substrate
@@ -3345,7 +3374,9 @@ a raw tag is pushed (release-please-style). The flow:
 1. **Open a release PR.** Apply a `release:*` label to any issue (or run the
    `prepare-release` workflow manually). `prepare-release.yml` bumps the chart
    `version:` and/or `appVersion:`, rewrites the CHANGELOG, regenerates the
-   chart README, and opens a PR from a `release/v<app>-chart-<chart>` branch.
+   chart README, freezes the release perf baseline
+   (`test/perf/release-baseline/<version>/`), and opens a PR from a
+   `release/v<app>-chart-<chart>` branch.
 2. **The PR runs the release gate.** Because the head branch starts with
    `release/`, every release-gate lane above (the e2e `split` + `crawl` legs
    included) does its real work instead of short-circuiting to a no-op, so a
@@ -3408,9 +3439,9 @@ Each edge is a gate, not a sequence:
   merge commit's, so this lets a lane's `push:`-triggered re-run become
   provably unnecessary for a future release without `preflight` losing
   visibility into the validation that already happened on the PR
-  (tsouza/cerberus#2394). It changes nothing about `preflight`'s behaviour
-  today — every lane still posts its own check-run on the push commit, same
-  as before — and resolves to nothing on the maintenance path, which merges
+  (tsouza/cerberus#2394). It changes nothing about `preflight`'s behaviour —
+  every lane still posts its own check-run on the push commit — and resolves
+  to nothing on the maintenance path, which merges
   no PR at all (see "Maintenance lines" below).
 - **`goreleaser`** builds and uploads, but leaves the GitHub release a **draft**.
 - **`release-artifact-migration`** re-runs the migration lane
@@ -3442,30 +3473,36 @@ or a stable backport never drags any of the three backwards.
 
 #### De-gated lanes on the publish path
 
-The preflight's expected set (`RELEASE_REQUIRED_CHECKS`) covers every
-branch-protection context except those below, which are listed in
-`RELEASE_INFORMATIONAL_CHECKS` instead: they run, they report, and their
-verdict does not hold a publish. Each one is a deliberate trade, so each one
-carries its reason here — `TestReleasePreflightCoversEveryBranchProtectionContext`
-and `TestDeGatedLanesAreDocumentedWithAReason` (both in
+A lane's release posture is declared once, in `.github/ci-lanes.json`
+(`release_posture`). `release.yml`'s preflight reads the registry from its
+checkout and treats every lane whose posture is not `required` as
+informational: it runs, it reports, and its verdict does not hold a publish.
+That covers the `advisory` lanes (`chaos`, `datashard (N=…)`, `startup-bench`,
+`mutation`, `drought`, `update-golden-guard`, `datashard-replica-affinity`, the
+`compatibility/prometheus-floor` and `compatibility/promql-surface` probes, the
+chDB `integration (…)` legs, `agpl-oracle`, …) and the `post_publish` ones
+(`brew-verify`, `external-links`). `TestCILaneRegistry` pins that the
+`required` lanes are exactly `RELEASE_REQUIRED_CHECKS`, that no non-required
+lane's context swallows a required name, and that `RELEASE_INFORMATIONAL_CHECKS`
+never restates a lane the registry already de-gates.
+
+`RELEASE_INFORMATIONAL_CHECKS` is left for check-runs that are NOT a lane's
+context — a matrix child or a per-leg check-run posted under its own name —
+and each of those carries its reason here.
+`TestReleasePreflightCoversEveryBranchProtectionContext` and
+`TestDeGatedLanesAreDocumentedWithAReason` (both in
 `test/regression/release_required_checks_test.go`) assert that this table and
-`RELEASE_INFORMATIONAL_CHECKS` name exactly the same lanes, so a lane cannot be
-de-gated without the reason landing here.
+`RELEASE_INFORMATIONAL_CHECKS` name exactly the same entries.
 
 Note the direction of travel: de-gating here is the exception. The substrate
-lanes `compose-smoke`, `dashboard` and `profile` went the OTHER way — they
-stopped gating pull requests and became release-required, so this preflight is
-now the only thing standing between them and a publish.
+lanes `compose-smoke`, `dashboard` and `profile` sit the OTHER way — they do
+not gate pull requests and are release-required, so this preflight is the
+only thing standing between them and a publish.
 
-| Lane                         | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `compose-smoke-shard-info`   | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `mutation`                   | The diff-scoped aggregate runs on every PR and merge-group entry for early author-time signal, but it is not a required status check on `main` or the publish path (it is required on a `release/*.x` maintenance-line PR — see [maintenance lines](#maintenance-lines-hotfix-backports)), and it is not re-run by the publish preflight. Full mutation runs after landing on `main`, nightly, or by manual dispatch rather than on a release PR. The individual `gremlins …` legs remain implementation details of the aggregate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `gremlins`                   | The `mutation` aggregator's own matrix legs (e.g. `gremlins phase4-promql-a`) post their OWN check-runs, under their own names — they do not share the `mutation` prefix, so de-gating `mutation` alone never covered them. Same reasoning as that row: a test-quality ratchet, not a property of the artifact. Caught when v1.16.0's release commit blocked on 6 pre-existing, already-tracked red `gremlins phase4-promql-*` legs even though `mutation` itself was already de-gated.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `drought`                    | `chaos-not-applicable-rate.yml`'s Wednesday-cron detector for the chaos lane's silent not-applicable outcomes. It mines chaos-job run HISTORY, not the commit it happens to post against, so a red run says nothing about the commit being released — its own header comment already excludes it from PR gating for the identical reason. Left required, an unlucky coincidence between the cron and a release push would hold a release hostage to accumulated chaos-lane drift the release itself did not cause.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `update-golden-guard`        | Structural, not a cost trade. It guards a PULL REQUEST against merging while an `update-golden.yml` dispatch is still regenerating its head branch (#2350). A publish commit has no head branch to strand and no pull request to hold back, and `update-golden-guard.yml` triggers on `pull_request` / `merge_group` / `workflow_run` only — with no push trigger on `main` or a maintenance line, a release commit can never carry that check-run, so requiring it would make the preflight wait out its window and abort every publish. It is not currently a required status check anywhere: absent from `main`'s sixteen-check ruleset (`docs/test-strategy.md`'s "CI gates" section) and from the separate `release/*.x` maintenance-line ruleset alike, so today a pending or red run does not by itself block a merge or a queue entry — it still runs and reports on every PR and merge-group entry, and stays out of `RELEASE_REQUIRED_CHECKS` for the structural reason above regardless of that. |
-| `datashard-replica-affinity` | Sharding is EXPERIMENTAL and off by default; `.github/ci-lanes.json`'s `e2e.datashard-replica-affinity` entry already declares `release_posture: advisory`, and `notify-nightly-failure.mjs`'s `EXPERIMENTAL_LANES` lists it alongside `datashard` for the same reason. It was not in this set until it blocked v1.20.0's publish (#3155): unlisted in both `RELEASE_REQUIRED_CHECKS` and `RELEASE_INFORMATIONAL_CHECKS`, it fell into the preflight's own documented "gates by default" fallback despite its declared posture saying it should not gate.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `brew-verify`                | Verifies the ALREADY-PUBLISHED Homebrew cask (`.github/ci-lanes.json`'s `release.brew-verify` entry: `main_posture: never`, `release_posture: post_publish`) — there is nothing meaningful to check pre-publish. `brew-verify.yml` runs on a `schedule`, independent of any push to main, so its check-run attaches to whatever main HEAD happens to be when the cron fires — the same "unlucky coincidence" `drought` above is de-gated against. v1.20.0's own publish was blocked this way: a nightly `brew-migration` run (that job has since been removed — see #3156) landed on the release merge commit by pure timing and reported a bug unrelated to the commit being released.                                                                                                                                                                                                                                                                                                                     |
+| Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                                      |
+| `gremlins`                 | The `mutation` aggregator's own matrix legs (e.g. `gremlins phase4-promql-a`) post their OWN check-runs, under their own names — they do not share the `mutation` prefix, so de-gating `mutation` alone never covered them. Same reasoning as that row: a test-quality ratchet, not a property of the artifact. Caught when v1.16.0's release commit blocked on 6 pre-existing, already-tracked red `gremlins phase4-promql-*` legs even though `mutation` itself was already de-gated. |
 
 #### Homebrew tap
 
@@ -3482,15 +3519,13 @@ machine that holds an operator's rules and dashboards, so the migration
 playbook points at it as the default install path — see
 [getting the `cerberus` binary](migration.md#step-1-install-the-binary).
 
-The cask is emitted by the goreleaser `homebrew_casks:` block. Its sole artifact
-is a plain `binary`, and goreleaser emits `on_linux` url/sha256 pairs for
-`linux_amd64` and `linux_arm64` from the same `builds:` matrix that feeds the
-darwin ones, so it installs under Linuxbrew as well as on macOS. Because the
-release binaries are neither Apple-signed nor notarised, the cask carries a
-post-install hook that strips the `com.apple.quarantine` xattr, without which
-the first run on macOS dies with "cerberus is damaged and can't be opened". See
-[`operations.background.md`](operations.background.md) for why a cask rather
-than a formula, and for how Homebrew's Linux gate actually decides.
+The cask is emitted by the goreleaser `homebrew_casks:` block. It installs
+under Linuxbrew as well as on macOS, and it carries a post-install hook that
+strips the `com.apple.quarantine` xattr so the first run on macOS does not
+die with "cerberus is damaged and can't be opened". See
+[`operations.background.md`](operations.background.md#why-the-homebrew-tap-ships-a-cask-and-why-it-installs-under-linuxbrew)
+for why a cask rather than a formula, how Homebrew's Linux gate decides, and
+why the quarantine hook is needed.
 
 The tap holds a SINGLE `cerberus` cask, so `skip_upload` is templated on
 `RELEASE_IS_LATEST` — the highest-stable-tag signal `release.yml` computes after
@@ -3684,10 +3719,12 @@ is the `admin` RepositoryRole in `always` mode, which is why `eol-retire` needs
 `deletion` rule (GitHub records this as `Bypassed rule violations`), whereas the
 default `GITHUB_TOKEN` acts as `github-actions[bot]` — write, never admin — and
 is refused. The `compatibility/*` lanes are not a status check on either
-branch: on a maintenance line, as on `main`, they are release gates enforced
-by `release.yml`'s preflight (`RELEASE_REQUIRED_CHECKS`) on the commit being
-published, as are the substrate lanes (`compose-smoke`, `dashboard`), which
-gate no pull request anywhere.
+branch: on a maintenance line, as on `main`, the four required heads
+(`prometheus`, `loki`, `tempo`, `prometheus-forced-route`) are release gates
+enforced by `release.yml`'s preflight (`RELEASE_REQUIRED_CHECKS`) on the commit
+being published, as are the substrate lanes (`compose-smoke`, `dashboard`),
+which gate no pull request anywhere; the `prometheus-floor` and
+`promql-surface` probes are advisory there too.
 
 EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
 their GitHub Releases — and the already-pushed images, charts, and binaries —

@@ -39,9 +39,9 @@ import (
 
 // limitPushdownLogsDDL is the otel_logs projection the log-line
 // wrap-projection (internal/logql/lang.go's ProjectSamples) always
-// selects — Body, LogAttributes, ResourceAttributes, SeverityText,
-// Timestamp — regardless of which columns the query itself touches, so
-// every column has to exist even for the bare-selector case. `__error__`
+// selects — Body, LogAttributes, ResourceAttributes, SeverityNumber,
+// SeverityText, Timestamp — regardless of which columns the query itself
+// touches, so every column has to exist even for the bare-selector case. `__error__`
 // rides as an ordinary ResourceAttributes key in the unsafe-shape test —
 // see its doc comment for why that is a faithful, not contrived, way to
 // exercise [FiltersErrorLabel]'s SQL-fallback path.
@@ -49,6 +49,7 @@ const limitPushdownLogsDDL = `CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
     SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0,
     ResourceAttributes Map(String, String),
     LogAttributes Map(String, String)
 ) ENGINE = Memory;`

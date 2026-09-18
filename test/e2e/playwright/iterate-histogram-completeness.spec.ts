@@ -13,7 +13,9 @@
  * response":
  *
  *   - N5 (`<name>_bucket` series MUST exist when the panel is meant
- *     to render). The cerberus dashboard's "P95 latency by language" panel
+ *     to render). The cerberus dashboard's "P95 latency by language"
+ *     panel — which at the time read the classic
+ *     `cerberus_queries_duration_seconds_bucket`, removed in v1.21.0 —
  *     went flat at 0 because the underlying bucket series were
  *     emitted under a sibling metric root (cerberus_pipeline vs the
  *     query-duration histogram's own `_bucket`), and
@@ -52,8 +54,9 @@
  * `query_range` fire).
  *
  * What this catches (resolved on main; this is a pin, not a hunt):
- *   - N5: P95 latency by language flat at 0 (bucket series missing
- *     from the query-duration histogram's scope).
+ *   - N5: a classic-bucket quantile panel flat at 0 because its
+ *     `_bucket` series are emitted under a different metric root
+ *     (the original P95-latency incident shape).
  *   - N6: histogram_quantile over foo_total fabricates a float
  *     (resolved by PR #644 + #642).
  *
@@ -80,12 +83,14 @@ import {
   iterateDashboards,
   iteratePanels,
 } from './helpers/index.js';
+import { truncate, BODY_EXCERPT_CHARS, CONTEXT_EXCERPT_CHARS } from './helpers/index.js';
 
 // Self-traffic warmup duration. Picked at the low end of "long enough
-// to populate cerberus_queries_duration_exp_hist across the three
-// heads" — without traffic the histogram's series are legitimately
-// absent and neither the native branch nor the N5 pin can distinguish
-// "regressed lowering" from "no traffic yet".
+// to populate cerberus's query-duration histograms across the three
+// heads" (the native cerberus_queries_duration_exp_hist the P95 panel
+// reads, and the classic-bucket families other quantile panels read)
+// — without traffic a family's series are legitimately absent and the
+// N5 / native pins can't distinguish "regressed" from "no traffic yet".
 const SEED_TRAFFIC_SECONDS = 30;
 
 // The /api/v1/query_range window. 5 minutes covers the
@@ -168,7 +173,7 @@ async function seriesExists(
     const body = await resp.text().catch(() => '<unreadable>');
     return {
       exists: false,
-      diag: `/api/v1/series → ${resp.status()}: ${body.slice(0, 300)}`,
+      diag: `/api/v1/series → ${resp.status()}: ${truncate(body, CONTEXT_EXCERPT_CHARS)}`,
     };
   }
   const series = (await resp.json()) as PromSeriesResponse;
@@ -314,7 +319,7 @@ test('histogram-completeness: every histogram_quantile panel has its _bucket / _
         if (resp.status() < 200 || resp.status() > 299) {
           const body = await resp.text().catch(() => '<unreadable>');
           failures.push(
-            `[${t.dashboardTitle} :: ${t.panelTitle} :: ${t.refId}] cerberus query_range → ${resp.status()}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+            `[${t.dashboardTitle} :: ${t.panelTitle} :: ${t.refId}] cerberus query_range → ${resp.status()}\n  url: ${queryURL}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
           );
           return;
         }

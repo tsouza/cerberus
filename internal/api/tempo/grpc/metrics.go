@@ -15,9 +15,8 @@ import (
 
 // This file implements the two metrics StreamingQuerier RPCs:
 // MetricsQueryRange + MetricsQueryInstant. Both are SINGLE-FRAME
-// streams per .claude/plans/tempo-grpc-streaming-design.md §6 (range
-// mode emits one QueryRangeResponse after eager drain; instant is the
-// single-bucket variant of the same shape). Frame batching does not
+// streams (range mode emits one QueryRangeResponse after eager drain;
+// instant is the single-bucket variant of the same shape). Frame batching does not
 // apply — the matrix / instant pivot pipelines need the full row set
 // in hand before quantile post-processing can produce a well-formed
 // series envelope (matrix-grid zero-fill happens SQL-side; see
@@ -76,7 +75,8 @@ func (s *Service) MetricsQueryRange(req *tempopb.QueryRangeRequest, stream tempo
 		return status.Error(codes.InvalidArgument, "tempo gRPC: 'start' / 'end' / 'step' must fit in int64 nanoseconds")
 	}
 
-	ctx := stream.Context()
+	ctx, cancel := s.queryContext(stream.Context())
+	defer cancel()
 	start := nanosToTime(req.Start)
 	end := nanosToTime(req.End)
 	step := time.Duration(req.Step) //nolint:gosec // bounded above by req.Step <= math.MaxInt64
@@ -114,7 +114,8 @@ func (s *Service) MetricsQueryInstant(req *tempopb.QueryInstantRequest, stream t
 		return status.Error(codes.InvalidArgument, "tempo gRPC: 'start' / 'end' must fit in int64 nanoseconds")
 	}
 
-	ctx := stream.Context()
+	ctx, cancel := s.queryContext(stream.Context())
+	defer cancel()
 	start := nanosToTime(req.Start)
 	end := nanosToTime(req.End)
 

@@ -76,7 +76,7 @@ func comparisonVectorPlainOverMixedExpHistogramSetOp(expr parser.Expr, s schema.
 		// the narrower isExpHistogramValuedShape here let a forwarded
 		// operand (`hist_x and other_selector`) slip past this guard and
 		// only fail later, less clearly, inside
-		// [lowerPlainOperandForMixedJoin]'s RowShapeOf switch.
+		// [widenPlainVectorToMixedShape]'s sample-kind check.
 		return nil, nil, false, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
 	}
 

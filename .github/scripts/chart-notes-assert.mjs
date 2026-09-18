@@ -54,6 +54,15 @@ import { error as ghError, notice as ghNotice } from './lib/gh.mjs'
 const CHART_DIR = process.env.CHART_DIR || 'deploy/helm/cerberus'
 const NAMESPACE = process.env.NAMESPACE || 'default'
 
+// The bundled data tier on, with the bucket and credential source the
+// object-store tier refuses to render without (chart-render-assert.mjs
+// section 17) — every scenario below is about NOTES, not storage validity.
+const BUNDLED = [
+  '--set', 'clickhouse.bundled.enabled=true',
+  '--set', 'clickhouse.bundled.objectStorage.bucket=notes-assert-bucket',
+  '--set', 'clickhouse.bundled.objectStorage.s3.useEnvironmentCredentials=true',
+]
+
 function extractNotes(out, how) {
   const idx = out.indexOf('NOTES:')
   if (idx === -1) throw new Error(`${how} produced no NOTES: section`)
@@ -108,13 +117,13 @@ const MULTIPLIER_NEEDLE = 'MULTIPLIES by clickhouse.bundled.replicas'
 // --- 1 + 2. hotVolume on, no dedicated persistence: base warning, and the
 // replica-count multiplier ONLY once replicas > 1. ---
 {
-  const single = notesFor(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=true'])
+  const single = notesFor([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=true'])
   check(single.includes(WARNING_NEEDLE), 'hotVolume enabled + no dedicated persistence: capacity warning renders')
   check(single.includes('persistence.size'), 'capacity warning names persistence.size')
   check(!single.includes(MULTIPLIER_NEEDLE), 'replicas=1 (default): no replica-count multiplier line')
 
   const multi = notesFor([
-    '--set', 'clickhouse.bundled.enabled=true',
+    ...BUNDLED,
     '--set', 'clickhouse.bundled.hotVolume.enabled=true',
     '--set', 'clickhouse.bundled.replicas=3',
   ])
@@ -126,7 +135,7 @@ const MULTIPLIER_NEEDLE = 'MULTIPLIES by clickhouse.bundled.replicas'
 // --- 3. Dedicated hot-volume persistence: no capacity warning. ---
 {
   const dedicated = notesFor([
-    '--set', 'clickhouse.bundled.enabled=true',
+    ...BUNDLED,
     '--set', 'clickhouse.bundled.hotVolume.enabled=true',
     '--set', 'clickhouse.bundled.hotVolume.persistence.enabled=true',
   ])
@@ -137,7 +146,7 @@ const MULTIPLIER_NEEDLE = 'MULTIPLIES by clickhouse.bundled.replicas'
 // defaults to true since #3075 (hot-cold is the chart's default storage
 // mode), so this scenario needs an EXPLICIT false, not the bare default. ---
 {
-  const off = notesFor(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false'])
+  const off = notesFor([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=false'])
   check(!off.includes(WARNING_NEEDLE), 'hotVolume disabled: no capacity warning')
 }
 
@@ -147,18 +156,18 @@ const MULTIPLIER_NEEDLE = 'MULTIPLIES by clickhouse.bundled.replicas'
 {
   const UPGRADE_WARNING_NEEDLE = 'WARNING — UPGRADE:';
 
-  const freshHotCold = notesFor(['--set', 'clickhouse.bundled.enabled=true']);
+  const freshHotCold = notesFor([...BUNDLED]);
   check(!freshHotCold.includes(UPGRADE_WARNING_NEEDLE), 'fresh install (hot-cold, bare default): no upgrade-hazard warning');
 
-  const upgradeHotCold = notesForUpgrade(['--set', 'clickhouse.bundled.enabled=true']);
+  const upgradeHotCold = notesForUpgrade([...BUNDLED]);
   check(upgradeHotCold.includes(UPGRADE_WARNING_NEEDLE), 'upgrade + hot-cold (bare default): upgrade-hazard warning renders');
   check(upgradeHotCold.includes('hotVolume.enabled=false'), 'upgrade-hazard warning names the fix (hotVolume.enabled=false)');
 
-  const upgradeObjectStore = notesForUpgrade(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.hotVolume.enabled=false']);
+  const upgradeObjectStore = notesForUpgrade([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=false']);
   check(!upgradeObjectStore.includes(UPGRADE_WARNING_NEEDLE), 'upgrade + explicit object-store mode: no upgrade-hazard warning (already pinned)');
 
   const upgradeHotOnly = notesForUpgrade([
-    '--set', 'clickhouse.bundled.enabled=true',
+    ...BUNDLED,
     '--set', 'clickhouse.bundled.objectStorage.enabled=false',
     '--set', 'schema.ttl=30d',
   ]);

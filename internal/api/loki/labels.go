@@ -50,7 +50,9 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus loki labels", "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
-	vals, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	vals, err := h.Client.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki labels CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(r.Context(), w, classifyMetadataErr(err))

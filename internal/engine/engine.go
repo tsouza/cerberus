@@ -292,62 +292,71 @@ type QuerySettingsProbe struct {
 	EnabledOpts []string
 }
 
-// ProbeQuerySettings uses the same rule composition as query execution. Callers
-// supply the optimized plan, resolved rules, and statement memory cap; a fixed
-// rules.Now makes result-cache eligibility reproducible in diagnostics and tests.
+// ProbeQuerySettings uses the same rule composition as query execution —
+// routeAQuerySettings, the function execContext itself calls — so a stamp
+// the route-A seam carries is by construction what the probe (and the spec
+// goldens' -- settings -- sections) report. Callers supply the optimized
+// plan, resolved rules, and statement memory cap; a fixed rules.Now makes
+// result-cache eligibility reproducible in diagnostics and tests.
 func ProbeQuerySettings(plan chplan.Node, rules SettingsRules, memCap int64) QuerySettingsProbe {
-	ctx := context.Background()
-	if planHasTSGridNative(plan) {
-		ctx = chclient.WithTSGridSetting(ctx)
-	}
-	ctx = applySharedQuerySettings(ctx, plan, memCap, rules)
+	ctx := routeAQuerySettings(context.Background(), plan, memCap, rules)
 	return QuerySettingsProbe{
 		Settings:    chclient.QuerySettingsFromContext(ctx),
 		EnabledOpts: rules.enabledOpts(),
 	}
 }
 
-// execContext wraps the execute-stage ctx with any per-plan ClickHouse
-// settings the emitted plan requires. Today the single rule is: when the
-// optimized plan contains a chplan.RangeWindowGridNative node (the
-// experimental timeSeriesRateToGrid lowering), mark the ctx with
-// chclient.WithTSGridSetting so the chclient query path adds
-// `allow_experimental_time_series_aggregate_functions=1` to THAT query's
-// settings. Plans without the native node return ctx unchanged, so the
-// experimental setting never rides an unrelated query (a plain unknown
-// setting can itself error on a ClickHouse < 25.6).
-//
-// Applied identically on the eager (QueryPlan) and streaming
-// (QueryPlanCursor) execute sites so the native path is gated the same
-// way regardless of which one runs.
-//
-// On top of the always-on ts-grid gate, spill bound, compare() memory bound,
-// native-histogram analyzer fix and sorted-slab memory bound, execContext
-// applies the join spill bound
-// — gated on BOTH the join_spill chopt feature (server >= 26.4, resolved once
-// at boot into e.settings().JoinSpill) AND the plan containing a join-bearing
-// node, so it is absent on every server too old to carry
-// max_bytes_before_external_join — and layers the DARK, flag-gated settings
-// rules from e.settings() (optimize_aggregation_in_order, log_comment shape
-// id). Each of THOSE rules is OFF unless its CERBERUS_* flag is set, so the
-// default ctx is byte-identical to before they existed; the always-on rules
-// above them fire unconditionally whenever their plan shape matches. Every
-// rule writes through chclient.WithQuerySetting, so a plan that triggers more
-// than one rule carries all of them on the one per-request settings map.
-func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string, decision *solver.Decision) (context.Context, string) {
-	if planHasTSGridNative(plan) {
+// routeAQuerySettings stamps every per-query ClickHouse setting a route-A
+// statement carries: the ts-grid gate, read off the plan itself (route B
+// reads it off the decision's shard plans instead — see routeBExecCtx), and
+// the shared list applySharedQuerySettings composes. It is the ONE route-A
+// composition, called by execContext (the dispatch) and ProbeQuerySettings
+// (the diagnostics / spec-golden read-out), so a stamp added to one cannot
+// silently drop out of the other.
+func routeAQuerySettings(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
+	f := inspectPlanShape(plan, rules.Traces.TraceIDColumn)
+	if f.tsGridNative {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
-	// The data-shard fan-out multiplier (chclient.WithDataShardFanoutMultiplier,
-	// cerberus issue #3128) is NOT stamped here: it is the physical-table scan
-	// count of the EMITTED statement (chsql.EmitCounted), which only exists
-	// once emitForHead has rendered the SQL, so every dispatch site stamps it
-	// onto the ctx this function returns, right after the emit.
-	// Every plan-shape-gated per-query setting BOTH routes must carry, sized
-	// from this statement's own memory cap. Shared verbatim with route B's
-	// seam (routeBExecCtx) so the two can never drift — see
-	// applySharedQuerySettings' own doc.
-	ctx = applySharedQuerySettings(ctx, plan, e.queryMemoryCap(), e.settings())
+	return applySharedQuerySettings(ctx, f, memCap, rules)
+}
+
+// execContext wraps the execute-stage ctx with every per-plan ClickHouse
+// setting the emitted plan requires, then fixes the dispatch's query_id and
+// feeds the corpus observer. The settings (routeAQuerySettings) come in two
+// layers:
+//
+//   - the ts-grid gate: when the optimized plan contains a node from the
+//     experimental timeSeries*ToGrid family (planHasTSGridNative), the ctx is
+//     marked with chclient.WithTSGridSetting so the chclient query path adds
+//     `allow_experimental_time_series_aggregate_functions=1` to THAT query's
+//     settings and never to an unrelated one (a plain unknown setting can
+//     itself error on a ClickHouse < 25.6);
+//   - applySharedQuerySettings: the always-on bounds (spill, compare(),
+//     native-histogram analyzer fix, sorted slab), the feature-gated bounds
+//     (join spill, exp-histogram two-level) and the flag-gated
+//     SettingsRules from e.settings() — each of those driven by the
+//     boot-resolved chopt EnabledSet, so on a capable server under the
+//     default `auto` posture most of them are ON; `CERBERUS_CH_OPTIMIZATIONS=off`
+//     turns each off. The always-on bounds fire whenever their plan shape
+//     matches regardless of posture.
+//
+// Every rule writes through chclient.WithQuerySetting, so a plan that
+// triggers more than one rule carries all of them on the one per-request
+// settings map. Applied identically on the eager (QueryPlan) and streaming
+// (QueryPlanCursor) execute sites so both are gated the same way.
+//
+// The data-shard fan-out multiplier (chclient.WithDataShardFanoutMultiplier,
+// cerberus issue #3128) is NOT stamped here: it is the physical-table scan
+// count of the EMITTED statement (chsql.EmitCounted), which only exists
+// once emitForHead has rendered the SQL, so every dispatch site stamps it
+// onto the ctx this function returns, right after the emit.
+func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string, decision *solver.Decision) (context.Context, string) {
+	// Every per-query setting a route-A statement carries, sized from this
+	// statement's own memory cap. The plan-shape-gated part is shared
+	// verbatim with route B's seam (routeBExecCtx) so the two can never
+	// drift — see applySharedQuerySettings' own doc.
+	ctx = routeAQuerySettings(ctx, plan, e.queryMemoryCap(), e.settings())
 	// Issue #2789: tag this route-A dispatch for actuals capture — see
 	// applyActualsCapture's own doc. No-op (ctx unchanged) whenever Actuals
 	// is nil or decision carries no ShapeID (either because Actuals was nil
@@ -391,53 +400,58 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 // individual settings' own docs) — which is what makes applying the identical
 // list on both routes safe rather than a behaviour change per route.
 //
-// It lives here, with the other dispatch-seam wiring, rather than beside the
-// rules it composes: .github/scripts/perf-sentinel-obligation.mjs derives the
-// memory-bounding surface from internal/engine/spill.go and
-// internal/engine/query_settings_rules.go, closing over each file's own
-// reference graph. A function sitting in one of those files and naming BOTH a
-// spill bound and SettingsRules.apply would splice the neutral knobs into that
-// surface and make every future edit to an unrelated setting owe a perf
-// sentinel. This function computes no bound of its own — it is composition —
-// so engine.go, where execContext already composed exactly these, is where it
-// belongs.
+// f is the plan's shape, inspected ONCE by the caller (inspectPlanShape) and
+// read by every rule below as a lookup: the seam used to run a full-tree walk
+// per predicate, and the walk cost was the per-request allocation regression
+// commit 27c3476d9 (PR #3559) first measured.
+//
+// This function computes no bound of its own — it is composition — and the
+// perf-sentinel-obligation gate (.github/scripts/perf-sentinel-obligation.mjs)
+// reads it as such: a composition that names a memory bound joins the gate's
+// surface (so deleting a call here owes a sentinel), while the neutral rules
+// it also names do not follow it in. See the gate's own header for the
+// closure rule.
 //
 // The timeSeries*ToGrid setting is deliberately NOT here: route A reads it off
-// the plan (planHasTSGridNative) while route B reads it off the decision's
-// shard plans (decisionHasTSGridNative), so the two seams genuinely need
-// different predicates for it and each stamps it itself.
-func applySharedQuerySettings(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
+// the plan (routeAQuerySettings, f.tsGridNative) while route B reads it off
+// the decision's shard plans (decisionHasTSGridNative), so the two seams
+// genuinely need different predicates for it and each stamps it itself.
+func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int64, rules SettingsRules) context.Context {
 	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
 	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
 	ctx = applySpillSettings(ctx, memCap)
 	// Join-bearing plans only, and only when the join_spill feature resolved
 	// in (server >= 26.4): the same guardrail for a large join's hash build.
-	ctx = applyJoinSpillSettings(ctx, plan, memCap, rules.JoinSpill)
+	ctx = applyJoinSpillSettings(ctx, f, memCap, rules.JoinSpill)
 	// Compare()-only: cap read parallelism so the concurrent S3 read buffers
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills.
-	ctx = applyCompareMemoryBound(ctx, plan, memCap)
+	ctx = applyCompareMemoryBound(ctx, f, memCap)
 	// Native-histogram-only: disable ClickHouse's newer query analyzer, whose
 	// cost on the merge/window-fold machinery's deeply nested lambda/arrayMap
 	// expressions is wildly superlinear on the floor-pinned CH 24.8 relative
-	// to the older analyzer (cerberus issue #2355).
-	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
+	// to the older analyzer (cerberus issue #2355). rules.applyFacts below
+	// reads the same fact so its analyzer-gated rules never co-stamp
+	// enable_analyzer=1 over this fix's 0 — see that method's own doc.
+	ctx = applyNativeHistogramAnalyzerFix(ctx, f)
 	// Sorted-slab-eligible shapes only: cap max_block_size at 1 so the
 	// per-anchor arrayFilter/arrayMap intermediates the emitter builds per
 	// series row are freed row-by-row instead of retained across an entire
 	// vectorized block (cerberus issue #3046).
-	ctx = applySortedSlabOverTimeMemoryBound(ctx, plan)
+	ctx = applySortedSlabOverTimeMemoryBound(ctx, f)
 	// Windowed exponential-histogram plans only, and only when the
 	// exp_histogram_two_level feature resolved in: force ClickHouse's
 	// aggregator to its two-level table so the array stages above the
 	// per-series groupArray see 256 small blocks instead of one whole-state
 	// block (cerberus issue #3247).
-	ctx = applyExpHistogramTwoLevelBound(ctx, plan, rules.ExpHistogramTwoLevel)
-	// The DARK, flag-gated rules (workload, log_comment shape id, result
-	// cache, aggregation-in-order, condition cache, lazy materialisation,
-	// trace-id bitmap filter). Each is OFF unless its CERBERUS_* flag is set,
-	// so a default deployment's ctx is unchanged on both routes.
-	return rules.apply(ctx, plan)
+	ctx = applyExpHistogramTwoLevelBound(ctx, f, rules.ExpHistogramTwoLevel)
+	// The flag-gated rules (workload, log_comment shape id, result cache,
+	// aggregation-in-order, condition cache, lazy materialisation, trace-id
+	// bitmap filter), driven by the boot-resolved chopt EnabledSet: most
+	// auto-select on a server that carries the feature, and
+	// `CERBERUS_CH_OPTIMIZATIONS=off` (or a listing without the feature)
+	// turns each off.
+	return rules.applyFacts(ctx, f)
 }
 
 // observeQuery feeds the corpus reconciler (when registered) the dispatch-seam
@@ -858,29 +872,19 @@ func clampU8(v int64) uint8 {
 // assembly reads timeSeriesGroupArray — both share the SAME experimental
 // gate the four type-checked members above do.
 //
-// The sweep is chplan.WalkDeep, not chplan.Walk: a per-step scalar parameter
-// binds its vector as a chplan.ScalarSubquery, so a query whose ONLY ts-grid
-// node sits inside that scalar interior — `vector(scalar(m))`, `topk(scalar(m)
-// * 2, m)` — hangs off an Expr slot that Walk does not follow. Missing it
-// leaves the setting unstamped and ClickHouse answers code 63 ("aggregate
-// function ... is experimental and disabled by default") on every such query.
+// The inspection is deep (chplan.WalkDeep's reach), not chplan.Walk's: a
+// per-step scalar parameter binds its vector as a chplan.ScalarSubquery, so a
+// query whose ONLY ts-grid node sits inside that scalar interior —
+// `vector(scalar(m))`, `topk(scalar(m) * 2, m)` — hangs off an Expr slot that
+// Walk does not follow. Missing it leaves the setting unstamped and
+// ClickHouse answers code 63 ("aggregate function ... is experimental and
+// disabled by default") on every such query.
+//
+// Route A reads the fact off the inspection it already runs
+// (routeAQuerySettings); this standalone form serves route B's per-shard
+// check (decisionHasTSGridNative) and the tests.
 func planHasTSGridNative(plan chplan.Node) bool {
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		switch v := n.(type) {
-		case *chplan.RangeWindowGridNative, *chplan.RangeWindowGridNativeInstant,
-			*chplan.RangeWindowStaleResample, *chplan.RangeBucketGridNative:
-			found = true
-			return false // stop descending this branch
-		case *chplan.RangeWindow:
-			if v.DownsampleTier || v.NativeGroupArray {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
+	return inspectPlanShape(plan, "").tsGridNative
 }
 
 // Querier is the subset of *chclient.Client Engine needs. Each handler
@@ -961,11 +965,12 @@ type Engine struct {
 	// default config.
 	Solver *solver.Solver
 
-	// Settings carries the optional, DARK-by-default per-query ClickHouse
-	// settings rules the engine evaluates against the post-optimize plan
-	// (optimize_aggregation_in_order, log_comment shape id). The zero value
-	// is "every rule off": every existing call path is byte-unchanged. Wired
-	// from the CERBERUS_* flags in cmd/cerberus. See SettingsRules.
+	// Settings carries the flag-gated per-query ClickHouse settings rules the
+	// engine evaluates against the post-optimize plan. The zero value is
+	// "every rule off" — the `CERBERUS_CH_OPTIMIZATIONS=off` posture; under
+	// the default `auto` cmd/cerberus wires it from the boot-resolved chopt
+	// EnabledSet (internal/choptwire.SettingsRules), so on a capable server
+	// most rules are on. See SettingsRules.
 	//
 	// It is the value in force until SetSettings installs a replacement, and it
 	// is never read directly on the query path — see settings.
@@ -1978,7 +1983,7 @@ func routeBExecCtx(
 	// cache, aggregation-in-order): route B carried none of them before
 	// cerberus issue #3184, while observeRoutedQuery recorded enabledOpts()
 	// for its corpus row regardless.
-	ctx = applySharedQuerySettings(ctx, plan, shardMemCap, rules)
+	ctx = applySharedQuerySettings(ctx, inspectPlanShape(plan, rules.Traces.TraceIDColumn), shardMemCap, rules)
 	if decisionHasTSGridNative(decision) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}

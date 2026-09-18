@@ -51,12 +51,12 @@ import { readFileSync } from 'node:fs';
 import process from 'node:process';
 
 import { error, notice, log, appendStepSummary } from './lib/gh.mjs';
+import { GITHUB_PER_PAGE, NOT_FOUND_THROW, ghHeaders, ghJSON } from './lib/gh-api.mjs';
 
 const defaultWorkflow = 'e2e.yml';
 const defaultJob = 'chaos';
 const defaultWindow = 12;
 const defaultMinRuns = 5;
-const maxPerPage = 100;
 
 const CHAOS_RUN_MJS = new URL('./chaos-run.mjs', import.meta.url);
 
@@ -130,12 +130,10 @@ export function droughtReport({ scenarios, logs, minRuns }) {
   return { tally, drought };
 }
 
+// Every read here targets a workflow, a run, or a job log that must exist —
+// a 404 is a broken wiring, never an empty answer.
 async function apiJson(url, headers, what) {
-  const res = await fetch(url, { headers });
-  if (!res.ok) {
-    throw new Error(`${what}: HTTP ${res.status} ${res.statusText} for ${url}`);
-  }
-  return res.json();
+  return ghJSON(url, { headers, what, notFound: NOT_FOUND_THROW });
 }
 
 async function apiText(url, headers, what) {
@@ -160,11 +158,7 @@ async function main() {
   if (!repo) throw new Error('GITHUB_REPOSITORY is unset');
   if (!token) throw new Error('GITHUB_TOKEN is unset');
 
-  const headers = {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
+  const headers = ghHeaders(token);
 
   const scenarios = scenariosWithNotApplicableBranch(readFileSync(CHAOS_RUN_MJS, 'utf8'));
   if (scenarios.length === 0) {
@@ -177,7 +171,7 @@ async function main() {
 
   const runsResp = await apiJson(
     `${apiBase}/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs` +
-      `?status=completed&per_page=${Math.min(window, maxPerPage)}`,
+      `?status=completed&per_page=${Math.min(window, GITHUB_PER_PAGE)}`,
     headers,
     `list ${workflow} runs`,
   );
@@ -190,7 +184,7 @@ async function main() {
   let expiredLogCount = 0;
   for (const run of runs) {
     const jobsResp = await apiJson(
-      `${apiBase}/repos/${repo}/actions/runs/${run.id}/jobs?per_page=${maxPerPage}`,
+      `${apiBase}/repos/${repo}/actions/runs/${run.id}/jobs?per_page=${GITHUB_PER_PAGE}`,
       headers,
       `list jobs for run ${run.id}`,
     );

@@ -980,6 +980,9 @@ func rewriteMapProjections(query string, mapColumns []string) string {
 		return query
 	}
 	projs := splitProjections(head)
+	if nested, ok := nestMapProjectionOverTrailer(query, projs, tail, mapColumns); ok {
+		return nested
+	}
 	for i, p := range projs {
 		expr, alias := splitAlias(p)
 		if alias == "" {
@@ -991,6 +994,103 @@ func rewriteMapProjections(query string, mapColumns []string) string {
 		projs[i] = "toJSONString(" + expr + ") AS `" + alias + "`"
 	}
 	return "SELECT " + strings.Join(projs, ", ") + tail
+}
+
+// nestMapProjectionOverTrailer handles the one shape an in-place wrap
+// mis-rewrites: a SELECT that projects a Map column under its own name
+// AND references that column again in its trailing clauses (WHERE /
+// QUALIFY / HAVING / ORDER BY / LIMIT BY). ClickHouse resolves the
+// trailing reference to the projection alias, so wrapping in place turns
+// “ `ResourceAttributes`[?] “ into arrayElement over a String — the
+// spanset-intersect emitter's explicit column list is exactly this shape
+// (`SELECT <13 columns> FROM otel_traces WHERE … QUALIFY … LIMIT 1 BY …`).
+// The wrap moves one level up instead: the original SELECT runs untouched
+// as a subquery and an outer projection re-names every column by its
+// alias, JSON-wrapping the Map ones there.
+//
+// It fires only when every projection has a referenceable alias (a bare
+// column or an explicit `AS`), so an aggregate or expression projection
+// with no alias still takes the in-place path and its failure stays loud.
+func nestMapProjectionOverTrailer(query string, projs []string, tail string, mapColumns []string) (string, bool) {
+	if _, _, subquery := splitParenthesisedFrom(tail); subquery {
+		// A parenthesised FROM is [NestMapWhere]'s shape: it pushes the
+		// colliding WHERE below the wrapped projection instead.
+		return "", false
+	}
+	outer := make([]string, len(projs))
+	var wrapped []string
+	for i, p := range projs {
+		expr, alias := splitAlias(p)
+		name := alias
+		if name == "" {
+			trimmed := strings.TrimSpace(expr)
+			name = mapColAlias(trimmed)
+			if !isColumnReference(trimmed) {
+				return "", false
+			}
+		}
+		if IsDriverOpaqueColumn(name) || isKnownMapProjection(expr, mapColumns) {
+			wrapped = append(wrapped, name)
+			outer[i] = "toJSONString(`" + name + "`) AS `" + name + "`"
+			continue
+		}
+		outer[i] = "`" + name + "`"
+	}
+	if !trailerReferencesAny(tail, wrapped) {
+		return "", false
+	}
+	return "SELECT " + strings.Join(outer, ", ") + " FROM (" + query + ")", true
+}
+
+// trailerReferencesAny reports whether the clauses after the projection
+// list use one of the given columns AS A MAP — a subscript
+// (“ `name`[ “) or a Map function over it. A plain alias reference
+// (`GROUP BY `name“, `ORDER BY `name“) binds to the String alias and
+// still means the same grouping, so it is left to the in-place wrap; only
+// a Map-typed use of the raw column is what the alias cannot satisfy.
+// The emitter binds a column with its backtick-quoted identifier in every
+// position, so the substring forms are exact.
+func trailerReferencesAny(tail string, names []string) bool {
+	for _, name := range names {
+		quoted := "`" + name + "`"
+		if strings.Contains(tail, quoted+"[") {
+			return true
+		}
+		for _, fn := range mapTypedFunctions {
+			if strings.Contains(tail, fn+"("+quoted) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mapTypedFunctions are the ClickHouse Map functions the emitters apply to
+// a raw Map column in a trailing clause; each takes the Map as its first
+// argument, so fn(<quoted name> is its only spelling. The canonical key-order
+// function is deliberately absent: this package is a leaf and may not name
+// chplan.CanonicalMapFunc, and the emitters apply it on projections, never
+// in a trailing clause.
+var mapTypedFunctions = []string{"mapContains", "mapKeys", "mapValues", "mapFilter", "mapConcat", "mapApply", "mapExtractKeyLike", "mapUpdate", "length"}
+
+// isColumnReference reports whether expr is a plain column reference —
+// `name`, “ `name` “, or `qualifier.name` with either side optionally
+// backtick-quoted — as opposed to a function call or any other expression.
+func isColumnReference(expr string) bool {
+	for _, part := range strings.Split(expr, ".") {
+		part = unquoteBackticks(part)
+		if part == "" {
+			return false
+		}
+		for i, c := range part {
+			isAlpha := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+			isDigit := c >= '0' && c <= '9'
+			if !isAlpha && (!isDigit || i == 0) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // isKnownMapProjection reports whether expr is a direct projection of a

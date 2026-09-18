@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tsouza/cerberus/test/e2e/seed/cadence"
 )
 
 // seedSource is the single Go file holding the deterministic INSERT
@@ -282,8 +285,8 @@ func TestShowcaseTraceReseedInsertsBeforeDelete(t *testing.T) {
 //     mutation's predicate is evaluated late under load;
 //  2. the margin must exceed the INSERT's own timestamp spread (so the
 //     freshest tick's oldest row is always spared) and stay below the
-//     30 s re-seed interval (so the previous tick is always collected
-//     and duplication stays bounded at ≤2 copies);
+//     re-seed interval (cadence.RollingReSeedInterval — so the previous
+//     tick is always collected and duplication stays bounded at ≤2 copies);
 //  3. the DELETE itself must compare against a literal {cutoff:DateTime64(9)}
 //     resolved by a separate step-A SELECT, never a max(...) subquery nested
 //     inside the mutation — ClickHouse rejects a subquery-bearing mutation
@@ -357,14 +360,19 @@ func TestShowcaseTraceStaleDeleteIsDataAnchored(t *testing.T) {
 	}
 	spread := maxOff - minOff
 
-	// 30 s is the rolling re-seed cadence: docker-compose.yml passes
-	// `--re-seed-interval=30s` to the seed container.
-	const tickSeconds = 30
+	tickSeconds := int(cadence.RollingReSeedInterval / time.Second)
 	if margin <= spread {
 		t.Errorf("%s: stale-delete margin (%ds) must exceed the INSERT timestamp spread (%ds = %d-%d) or the freshest tick's oldest rows fall past the cutoff and get deleted", showcaseTraceSeedSource, margin, spread, maxOff, minOff)
 	}
+	// Below one tick the DELETE collects the previous tick every time, so at
+	// most two copies of the range are ever visible. A wider margin does not
+	// grow without bound — the data-anchored DELETE still caps it at roughly
+	// margin/tick copies (the trade-off stale.go accepts for the other
+	// families) — but the showcase range feeds structural-join closures that
+	// multiply every duplicate per recursion level (#762), so it keeps the
+	// tight bound.
 	if margin >= tickSeconds {
-		t.Errorf("%s: stale-delete margin (%ds) must stay below the %ds re-seed interval or previous ticks survive every delete and duplicates accumulate unbounded (#762)", showcaseTraceSeedSource, margin, tickSeconds)
+		t.Errorf("%s: stale-delete margin (%ds) must stay below the %ds re-seed interval so the previous tick is always collected and the showcase range never carries more than two copies (#762)", showcaseTraceSeedSource, margin, tickSeconds)
 	}
 }
 

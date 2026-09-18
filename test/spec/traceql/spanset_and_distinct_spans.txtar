@@ -6,7 +6,7 @@
 [2] string = "left"
 [3] string = "right"
 -- sql --
-SELECT * FROM `otel_traces` WHERE ((`SpanName` = ?) OR (`SpanName` = ?)) QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) AND max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
+SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM `otel_traces` WHERE ((`SpanName` = ?) OR (`SpanName` = ?)) QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) AND max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
@@ -51,4 +51,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `SpanAttributes`, `SpanId`, `SpanKind`, `SpanName`, `StatusCode`, `StatusMessage`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ((`SpanName` = ?) OR (`SpanName` = ?)) QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) AND max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`)
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM `otel_traces` WHERE ((`SpanName` = ?) OR (`SpanName` = ?)) QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) AND max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`)

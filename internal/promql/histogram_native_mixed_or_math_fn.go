@@ -1,8 +1,6 @@
 package promql
 
 import (
-	"fmt"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -45,7 +43,7 @@ func mathCallOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx 
 
 func lowerMathCallOverMixedExpHistogramSetOp(call *parser.Call, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	// The policy must authorize this root before the union lowerer runs.
-	inner, err := prepareMixedMathOperand(mixedRootAdmission, func() (chplan.Node, error) {
+	inner, err := lowerFloatOnlyMixedOperand(mixedMathFamily, mixedRootAdmission, func() (chplan.Node, error) {
 		return lowerMixedExpHistogramSetOp(b, s, ctx)
 	})
 	if err != nil {
@@ -53,32 +51,4 @@ func lowerMathCallOverMixedExpHistogramSetOp(call *parser.Call, b *parser.Binary
 	}
 	return lowerMathCall(call, s, ctx, instantFnCH[call.Func.Name],
 		func() (chplan.Node, error) { return inner, nil }, directCanonical)
-}
-
-// prepareMixedMathOperand implements the table's payload mode, not merely
-// admission. It retains the union before strict narrowing, so a histogram on
-// the left still shadows a colliding float on the right. Existing-plan callers
-// invoke this only for Mixed inputs and before adding a bounds Filter.
-func prepareMixedMathOperand(site mixedAdmissionSite, load mathOperandLoader) (chplan.Node, error) {
-	prepare, err := mathPayloadPreparation(site)
-	if err != nil {
-		return nil, err
-	}
-	inner, err := load()
-	if err != nil {
-		return nil, err
-	}
-	return prepare(inner), nil
-}
-
-// mathPayloadPreparation resolves executable payload behavior. An admission
-// check may retain this policy without running it for a terminal empty result.
-func mathPayloadPreparation(site mixedAdmissionSite) (func(chplan.Node) chplan.Node, error) {
-	key := mixedWrapperKey{family: mixedMathFamily, site: site}
-	switch mixedOperandPolicies[key] {
-	case mixedFloatOnly:
-		return mixedRowsFloatOnly, nil
-	default:
-		return nil, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
-	}
 }

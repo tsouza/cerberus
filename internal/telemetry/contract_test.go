@@ -31,6 +31,7 @@ func TestMetricNames_PublicContract(t *testing.T) {
 	telemetry.ObserveStage(telemetry.StageEmit, telemetry.QLPromQL).Done(t.Context())
 	telemetry.ObserveStage(telemetry.StageExecute, telemetry.QLPromQL).Done(t.Context())
 	telemetry.RecordRulesApplied(t.Context(), 1)
+	telemetry.RecordOptimizerFixpointCapHit(t.Context(), "heuristic.fusion")
 	telemetry.RecordClickHouseProgress(t.Context(), "promql", 100, 2000)
 	telemetry.ObserveQueryInflight(t.Context(), "promql")()
 
@@ -40,13 +41,14 @@ func TestMetricNames_PublicContract(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"cerberus_queries_total":                   false,
-		"cerberus_queries_duration_exp_hist":       false,
-		"cerberus_pipeline_stage_duration_seconds": false,
-		"cerberus_optimizer_rules_applied":         false,
-		"cerberus_clickhouse_rows_read":            false,
-		"cerberus_clickhouse_bytes_read":           false,
-		"cerberus_query_inflight":                  false,
+		"cerberus_queries_total":                     false,
+		"cerberus_queries_duration_exp_hist":         false,
+		"cerberus_pipeline_stage_duration_seconds":   false,
+		"cerberus_optimizer_rules_applied":           false,
+		"cerberus_optimizer_fixpoint_cap_hits_total": false,
+		"cerberus_clickhouse_rows_read":              false,
+		"cerberus_clickhouse_bytes_read":             false,
+		"cerberus_query_inflight":                    false,
 	}
 	var unexpected []string
 	for _, sm := range rm.ScopeMetrics {
@@ -141,6 +143,7 @@ func TestMetricUnits_PublicContract(t *testing.T) {
 	telemetry.ObserveQuery("promql", "GET /api/v1/query").Done(t.Context(), telemetry.OutcomeOK())
 	telemetry.ObserveStage(telemetry.StageParse, telemetry.QLPromQL).Done(t.Context())
 	telemetry.RecordRulesApplied(t.Context(), 1)
+	telemetry.RecordOptimizerFixpointCapHit(t.Context(), "heuristic.fusion")
 	telemetry.RecordClickHouseProgress(t.Context(), "promql", 100, 2000)
 
 	var rm metricdata.ResourceMetrics
@@ -149,12 +152,13 @@ func TestMetricUnits_PublicContract(t *testing.T) {
 	}
 
 	wantUnits := map[string]string{
-		"cerberus_queries_total":                   "{query}",
-		"cerberus_queries_duration_exp_hist":       "s",
-		"cerberus_pipeline_stage_duration_seconds": "s",
-		"cerberus_optimizer_rules_applied":         "{rule}",
-		"cerberus_clickhouse_rows_read":            "{row}",
-		"cerberus_clickhouse_bytes_read":           "By",
+		"cerberus_queries_total":                     "{query}",
+		"cerberus_queries_duration_exp_hist":         "s",
+		"cerberus_pipeline_stage_duration_seconds":   "s",
+		"cerberus_optimizer_rules_applied":           "{rule}",
+		"cerberus_optimizer_fixpoint_cap_hits_total": "{batch}",
+		"cerberus_clickhouse_rows_read":              "{row}",
+		"cerberus_clickhouse_bytes_read":             "By",
 	}
 	for _, sm := range rm.ScopeMetrics {
 		if !strings.HasSuffix(sm.Scope.Name, "internal/telemetry") {

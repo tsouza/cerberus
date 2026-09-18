@@ -128,6 +128,26 @@ func TestOptdocRenderStabilityAndAutoSelect(t *testing.T) {
 	}
 }
 
+// TestOptdocRenderExperimentalSettingAndDoc pins the two columns that
+// replaced hand-maintained prose: the experimental-setting cell is read
+// from the registry flag (so the set of features needing the setting can
+// never be miscounted by hand), and the doc cell is the registry's own
+// text with the one character that would break a markdown table escaped.
+func TestOptdocRenderExperimentalSettingAndDoc(t *testing.T) {
+	if got := optdocRenderExperimentalSetting(true); got != optdocExperimentalTSGridSetting {
+		t.Errorf("optdocRenderExperimentalSetting(true) = %q; want the setting name", got)
+	}
+	if got := optdocRenderExperimentalSetting(false); got != optdocNoExperimentalSetting {
+		t.Errorf("optdocRenderExperimentalSetting(false) = %q; want %q", got, optdocNoExperimentalSetting)
+	}
+	if got := optdocRenderDoc("plain text"); got != "plain text" {
+		t.Errorf("optdocRenderDoc(plain) = %q; want it unchanged", got)
+	}
+	if got := optdocRenderDoc("a | b"); got != `a \| b` {
+		t.Errorf("optdocRenderDoc(with pipe) = %q; want the pipe escaped so the cell does not end early", got)
+	}
+}
+
 // TestOptdocWidthsFor pins the column sizing that keeps the emitted table
 // MD060-aligned: each width is the max of the header label and every cell in
 // that column, and the columns are sized independently. A width taken from
@@ -138,7 +158,8 @@ func TestOptdocWidthsFor(t *testing.T) {
 	t.Run("headers floor the widths", func(t *testing.T) {
 		w := optdocWidthsFor(nil)
 		if w.ID != len("id") || w.MinVersion != len("minVersion") ||
-			w.Stability != len("stability") || w.AutoSelect != len("autoSelect") {
+			w.Stability != len("stability") || w.AutoSelect != len("autoSelect") ||
+			w.ExperimentalSetting != len("experimental setting") || w.Doc != len("doc") {
 			t.Errorf("optdocWidthsFor(nil) = %+v; want each column at its header's length", w)
 		}
 	})
@@ -147,8 +168,8 @@ func TestOptdocWidthsFor(t *testing.T) {
 		// Each cell is longer than its own header and a DIFFERENT length from
 		// every other cell, so a width copied from the wrong column is visible.
 		rows := []optdocRow{
-			{ID: "aaaaa", MinVersion: "bbbbbbbbbbbb", Stability: "ccccccccccccc", AutoSelect: "dddddddddddddd"},
-			{ID: "aa", MinVersion: "bb", Stability: "cc", AutoSelect: "dd"},
+			{ID: "aaaaa", MinVersion: "bbbbbbbbbbbb", Stability: "ccccccccccccc", AutoSelect: "dddddddddddddd", ExperimentalSetting: strings.Repeat("e", 21), Doc: strings.Repeat("f", 22)},
+			{ID: "aa", MinVersion: "bb", Stability: "cc", AutoSelect: "dd", ExperimentalSetting: "ee", Doc: "ff"},
 		}
 		w := optdocWidthsFor(rows)
 		if w.ID != 5 {
@@ -162,6 +183,22 @@ func TestOptdocWidthsFor(t *testing.T) {
 		}
 		if w.AutoSelect != 14 {
 			t.Errorf("AutoSelect width = %d; want 14", w.AutoSelect)
+		}
+		if w.ExperimentalSetting != 21 {
+			t.Errorf("ExperimentalSetting width = %d; want 21", w.ExperimentalSetting)
+		}
+		if w.Doc != 22 {
+			t.Errorf("Doc width = %d; want 22", w.Doc)
+		}
+	})
+
+	t.Run("widths count characters, not bytes", func(t *testing.T) {
+		// An em dash is one column to markdownlint and three bytes to len();
+		// a byte-measured width pads the row two columns short and MD060
+		// rejects the whole generated block.
+		rows := []optdocRow{{Doc: "a — b"}}
+		if w := optdocWidthsFor(rows); w.Doc != 5 {
+			t.Errorf("Doc width of %q = %d; want 5 characters", rows[0].Doc, w.Doc)
 		}
 	})
 }
@@ -221,6 +258,21 @@ func TestOptdocRenderBlock_ShapeAndRegistryCoverage(t *testing.T) {
 	for _, f := range features {
 		if !strings.Contains(block, "`"+f.ID+"`") {
 			t.Errorf("feature %q has no row in the generated block", f.ID)
+			continue
+		}
+		// Each row carries the feature's own registry doc and the setting
+		// its flag demands: the columns that used to be hand-authored and
+		// drifted (thirteen features with no prose anywhere, a count of
+		// "seven" features needing the setting against seventeen flagged).
+		row := optdocRowFor(t, block, f.ID)
+		if f.Doc == "" {
+			t.Errorf("feature %q has an empty registry Doc; every feature needs one line of prose", f.ID)
+		} else if !strings.Contains(row, optdocRenderDoc(f.Doc)) {
+			t.Errorf("feature %q's row lacks its registry Doc:\n%s", f.ID, row)
+		}
+		want := optdocRenderExperimentalSetting(f.RequiresExperimentalTSGrid)
+		if !strings.Contains(row, "| "+want+" ") {
+			t.Errorf("feature %q's row lacks its experimental-setting cell %q:\n%s", f.ID, want, row)
 		}
 	}
 	// Every table line begins a new line with `|`: the header row, the
@@ -343,4 +395,16 @@ func TestOptdocsRun_FlagParsing(t *testing.T) {
 			t.Error("optdocsRun with an unknown flag = nil; want a parse error rather than a silent regeneration of the default doc")
 		}
 	})
+}
+
+// optdocRowFor returns the one table line of block whose id cell is id.
+func optdocRowFor(t *testing.T, block, id string) string {
+	t.Helper()
+	for _, line := range strings.Split(block, "\n") {
+		if strings.HasPrefix(line, "| `"+id+"` ") {
+			return line
+		}
+	}
+	t.Fatalf("no table row for %q", id)
+	return ""
 }

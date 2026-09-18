@@ -243,7 +243,7 @@ func TestDataShardCount_Traces(t *testing.T) {
 // explicitly calls out as needing a real test (cerberus issue #3077's
 // acceptance criteria): schema.replicated.enabled=true (DatabaseEngine.
 // Replicated) together with DataShardCount>1, sharing the SAME
-// {shard}/{replica} macro slot. The local tables must render the BARE
+// {shard}/{replica} macro slot through the engine's own arguments. The local tables must render the BARE
 // ReplicatedMergeTree engine (no explicit args — a Replicated database
 // rejects them with code 36, see TestRenderSignal_ReplicatedDatabaseDefaultsToReplicatedMergeTree),
 // exactly as they would with DataShardCount<=1; DataShardCount changes only
@@ -258,7 +258,7 @@ func TestDataShardCount_ReplicatedCombination(t *testing.T) {
 		Cluster:  "bwc_cluster",
 		DatabaseEngine: DatabaseEngine{
 			Replicated:        true,
-			ReplicatedZooPath: "/clickhouse/databases/otel/{shard}/{replica}",
+			ReplicatedZooPath: "/clickhouse/databases/otel",
 		},
 		DataShardCount: 2,
 	}.withDefaults()

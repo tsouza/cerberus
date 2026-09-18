@@ -31,7 +31,7 @@ func TestSortPolicyDrivesPreparation(t *testing.T) {
 			for _, policy := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedPreserve, unknownPolicy} {
 				mixedOperandPolicies[key] = policy
 				called := false
-				plan, err := prepareSortOperand(site, func() (chplan.Node, error) {
+				plan, err := lowerFloatOnlyMixedOperand(mixedSortFamily, site, func() (chplan.Node, error) {
 					called = true
 					return mixed(), nil
 				})
@@ -41,7 +41,7 @@ func TestSortPolicyDrivesPreparation(t *testing.T) {
 			}
 			delete(mixedOperandPolicies, key)
 			called := false
-			plan, err := prepareSortOperand(site, func() (chplan.Node, error) {
+			plan, err := lowerFloatOnlyMixedOperand(mixedSortFamily, site, func() (chplan.Node, error) {
 				called = true
 				return &chplan.OneRow{}, nil
 			})
@@ -50,13 +50,13 @@ func TestSortPolicyDrivesPreparation(t *testing.T) {
 			}
 			mixedOperandPolicies[key] = mixedFloatOnly
 			floatInput := &chplan.OneRow{}
-			floatPlan, floatErr := prepareSortOperand(site, func() (chplan.Node, error) { return floatInput, nil })
+			floatPlan, floatErr := lowerFloatOnlyMixedOperand(mixedSortFamily, site, func() (chplan.Node, error) { return floatInput, nil })
 			if floatErr != nil || floatPlan != floatInput {
 				t.Fatalf("already-float input changed: plan=%v err=%v", floatPlan, floatErr)
 			}
 			originalUnion := mixed()
 			calls := 0
-			plan, err = prepareSortOperand(site, func() (chplan.Node, error) {
+			plan, err = lowerFloatOnlyMixedOperand(mixedSortFamily, site, func() (chplan.Node, error) {
 				calls++
 				return originalUnion, nil
 			})
@@ -65,13 +65,13 @@ func TestSortPolicyDrivesPreparation(t *testing.T) {
 				t.Fatalf("float-only mode must narrow original union once: plan=%#v calls=%d err=%v", plan, calls, err)
 			}
 			sentinel := errors.New("sort operand sentinel")
-			plan, err = prepareSortOperand(site, func() (chplan.Node, error) {
+			plan, err = lowerFloatOnlyMixedOperand(mixedSortFamily, site, func() (chplan.Node, error) {
 				return nil, sentinel
 			})
 			if plan != nil || err != sentinel {
 				t.Fatalf("loader error changed: plan=%v err=%v", plan, err)
 			}
-			again, err := prepareSortOperand(site, func() (chplan.Node, error) { return narrow, nil })
+			again, err := lowerFloatOnlyMixedOperand(mixedSortFamily, site, func() (chplan.Node, error) { return narrow, nil })
 			if err != nil || again != narrow {
 				t.Fatalf("prepared input narrowed twice: plan=%v err=%v", again, err)
 			}

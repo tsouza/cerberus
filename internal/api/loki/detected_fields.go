@@ -228,7 +228,9 @@ func (h *Handler) detectedFieldsPeek(w http.ResponseWriter, r *http.Request, rou
 	}
 	h.Logger.Debug("cerberus loki "+route, "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
-	rows, err = h.Client.QueryDetectedFieldRows(r.Context(), sqlStr, args...)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	rows, err = h.Client.QueryDetectedFieldRows(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki "+route+" CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(r.Context(), w, classifyMetadataErr(err))

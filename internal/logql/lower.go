@@ -2703,9 +2703,12 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 // metric one, because reference Loki's two paths differ exactly there —
 // see [lowerCtx.logLineWindow] for the upstream sites. A log-line query
 // that kept the inclusive bound returned one extra line, the one whose
-// timestamp equals `end` — and since `/query_range` pages by feeding the
-// previous page's last timestamp back as the next page's `start`, that
-// line is the one a paging client then sees TWICE.
+// timestamp equals `end` — and since a BACKWARD-paging `/query_range`
+// client feeds the previous page's last (oldest) timestamp back as the
+// next page's `end`, that line is the one it then sees TWICE. (Forward
+// paging feeds the last timestamp back as `start`, whose bound is
+// inclusive on both paths, so it repeats a line whichever way `end` is
+// bounded; the exclusive `end` is what the backward direction needs.)
 func andFoldTimeWindow(pred chplan.Expr, s schema.Logs, lc lowerCtx) chplan.Expr {
 	if !lc.hasTimeWindow() {
 		return pred

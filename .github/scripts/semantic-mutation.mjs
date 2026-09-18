@@ -27,7 +27,7 @@
 // paths that still exist at the moment they are printed, not ones already
 // removed by an earlier cleanup() call.
 
-import { appendFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import process from "node:process";
@@ -40,7 +40,7 @@ import {
   runMutant,
   scratchRootFor,
 } from "./lib/semantic-mutation.mjs";
-import { error, log, notice } from "./lib/gh.mjs";
+import { appendStepSummary, error, log, notice } from "./lib/gh.mjs";
 
 // SIGINT/SIGTERM exit codes follow the POSIX convention of 128 + signal
 // number (SIGINT = 2, SIGTERM = 15) that most shells and CI runners already
@@ -73,8 +73,7 @@ function parseArgs(argv) {
 }
 
 function appendSummary(body) {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (path) appendFileSync(path, body);
+  appendStepSummary(body, { quiet: true });
 }
 
 async function main() {

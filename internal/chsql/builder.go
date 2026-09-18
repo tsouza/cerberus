@@ -6,6 +6,7 @@ import (
 	"regexp/syntax"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -2220,16 +2221,52 @@ func RawAs(expr Frag, bareAlias string) Frag {
 	}
 }
 
+// operandObserver, when installed, sees every infix operator this file
+// renders — [binOp], [And], [Or] and [Not] — together with the exact text
+// each operand rendered to. None of those constructors parenthesises a
+// compound operand (see [Paren]'s contract: the caller wraps), so the
+// observer is the one place a caller-side precedence mistake — a
+// lower-precedence operator sitting at depth 0 inside an operand — is
+// visible with its structure intact; the rendered text alone cannot tell
+// `x + y * z` built from Mul(Add(x, y), z) apart from the intended one.
+//
+// nil in production: the render path pays one atomic load per operator
+// and nothing else. The precedence guard test installs it over the emit
+// suites (builder_precedence_guard_test.go).
+var operandObserver atomic.Pointer[func(op string, operands []string)]
+
+// renderOperands renders each part in turn, joining consecutive parts with
+// sep, and hands the operator plus every operand's text to the installed
+// [operandObserver], if any.
+func renderOperands(b *Builder, op, sep string, parts []Frag) {
+	observer := operandObserver.Load()
+	if observer == nil {
+		for i, p := range parts {
+			if i > 0 {
+				b.sb.WriteString(sep)
+			}
+			p(b)
+		}
+		return
+	}
+	texts := make([]string, 0, len(parts))
+	for i, p := range parts {
+		if i > 0 {
+			b.sb.WriteString(sep)
+		}
+		start := b.sb.Len()
+		p(b)
+		texts = append(texts, b.sb.String()[start:])
+	}
+	(*observer)(op, texts)
+}
+
 // binOp returns a Frag that renders "<l> <op> <r>" with single spaces
 // around op. Shared shape for the comparison + arithmetic operator
 // constructors below — each typed wrapper just supplies its op token.
 func binOp(op string, l, r Frag) Frag {
 	return func(b *Builder) {
-		l(b)
-		b.sb.WriteByte(' ')
-		b.sb.WriteString(op)
-		b.sb.WriteByte(' ')
-		r(b)
+		renderOperands(b, op, " "+op+" ", []Frag{l, r})
 	}
 }
 
@@ -2263,12 +2300,7 @@ func And(parts ...Frag) Frag {
 		panic("chsql: And requires at least one part")
 	}
 	return func(b *Builder) {
-		for i, p := range parts {
-			if i > 0 {
-				b.sb.WriteString(" AND ")
-			}
-			p(b)
-		}
+		renderOperands(b, "AND", " AND ", parts)
 	}
 }
 
@@ -2278,12 +2310,7 @@ func Or(parts ...Frag) Frag {
 		panic("chsql: Or requires at least one part")
 	}
 	return func(b *Builder) {
-		for i, p := range parts {
-			if i > 0 {
-				b.sb.WriteString(" OR ")
-			}
-			p(b)
-		}
+		renderOperands(b, "OR", " OR ", parts)
 	}
 }
 
@@ -2292,7 +2319,7 @@ func Or(parts ...Frag) Frag {
 func Not(f Frag) Frag {
 	return func(b *Builder) {
 		b.sb.WriteString("NOT ")
-		f(b)
+		renderOperands(b, "NOT", "", []Frag{f})
 	}
 }
 

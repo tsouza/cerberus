@@ -70,6 +70,7 @@ import {
   reportableConsoleErrors,
   waitForAppInstalled,
 } from './helpers/index.js';
+import { truncate, BODY_EXCERPT_CHARS, MESSAGE_EXCERPT_CHARS } from './helpers/index.js';
 
 // Every `role="alert"` banner counts as a failure. No allow-list of
 // "expected" alert text — if Grafana surfaces the banner, that is a
@@ -290,7 +291,7 @@ async function sweepDrilldownApp(
             sleep(BODY_FINISH_TIMEOUT_MS),
           ]);
           try {
-            bodyPreview = truncate(await resp.text(), 600);
+            bodyPreview = truncate(await resp.text(), BODY_EXCERPT_CHARS);
           } catch {
             try {
               bodyPreview = truncate((await resp.body()).toString('utf8'), 600);
@@ -331,7 +332,7 @@ async function sweepDrilldownApp(
       failures.push({
         app: app.id,
         rule: 'role-alert-banner',
-        detail: `role=alert banner rendered: ${truncate(banner, 400)}`,
+        detail: `role=alert banner rendered: ${truncate(banner, MESSAGE_EXCERPT_CHARS)}`,
       });
     }
   } catch (err) {
@@ -415,7 +416,7 @@ async function sweepDrilldownApp(
       app: app.id,
       rule: 'console-error',
       detail: `${reportableErrors.length} console error(s):\n${reportableErrors
-        .map((m) => `  - ${truncate(m, 400)}`)
+        .map((m) => `  - ${truncate(m, MESSAGE_EXCERPT_CHARS)}`)
         .join('\n')}`,
     });
   }
@@ -447,10 +448,6 @@ async function sweepDrilldownApp(
   return failures;
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max)}…<truncated, ${s.length - max} more char(s)>`;
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {

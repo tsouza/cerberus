@@ -27,8 +27,8 @@ to declare:
 
 80-98% of the budget went to the compiler, so every contended runner pushed
 ordinary mutants over it and gremlins recorded them as `TIMED OUT` — which
-the gate then scored as detections (#2903, and the "Timed-out mutants"
-section of `test-strategy.md`). Measuring sized the number to what it was
+the gate then scored as detections (#2903, and the "Which timeout is which,
+and which one counts" section of `test-strategy.md`). Measuring sized the number to what it was
 really bounding; splitting the bounds stopped it having to bound both.
 
 `mutation-run.mjs` also neutralises gremlins' own run-bound formula
@@ -155,9 +155,39 @@ real, for every package whose coverage comes from chdb-tagged tests.
 (`resolveLanes` against `FULL_LANES`, and `COVERAGE_REQUIRE_LANES` to stop a
 silently narrowed profile passing as a full one). Making a PR-time measurement
 sound would need a second, default-only ledger carrying its own ratchet — a
-doubling of the floor surface. Until someone wants to own that, the honest answer
+doubling of the floor surface. Without that second ledger, the honest answer
 on a pull request is to say plainly that nothing was measured, which is what the
-verdict does.
+verdict does; the ledger's pre-merge defence is the always-on
+`coverage-enrollment` structural scan, and the floor ratchet judges the landed
+commit.
+
+## Why some main-push lanes are queue-coalesced rather than cancelled
+
+`QUEUE_COALESCED_WORKFLOWS` exists for a lane whose run outlasts the median
+push gap. `coverage.yml` takes ~52 minutes against a 38-minute median push
+cadence, and cancelling an in-progress run on every newer push left 71 of 120
+pushes measured by nothing at all — each run was killed by its successor before
+it could post a verdict. Keeping the shared latest-main group (so a run still
+pending is replaced) while setting `cancel-in-progress: false` (so a run already
+executing finishes) closed that hole.
+
+The two enrollment questions in `test-strategy.md` are ordered the way they are
+because a main-push run measures a commit that is now permanently on `main`,
+and the successor measures its own commit rather than the killed one, so the
+default answer to "does the trunk lose a record?" is yes; determinism alone is
+not a reason to answer no, because a deterministic verdict still posts a
+per-commit check-run that a release preflight and a bisect both read. The
+second question filters out lanes where cancellation lands in the first quarter
+of a run and discards single-digit minutes per day — not worth trading latency
+for.
+
+The trade is latency and nothing else: `false` costs no runner minutes, because
+a superseded run is still dropped while pending and a pending run holds no
+runner. What it can cost is time-to-verdict on `main`'s head, bounded by one
+run duration, since GitHub keeps at most one in-progress plus one pending run
+per group. The same flip suppresses the schedule branch, so a nightly queues
+behind a slow predecessor rather than replacing it — immaterial for every
+enrolled lane, which are daily crons against runs well under a day.
 
 ## `-merge` only protects a LOCAL git merge — verified 2026-08-04
 
@@ -178,33 +208,26 @@ branch pair, run in a scratch worktree, refused with "Cannot merge binary
 files" / `CONFLICT (content)`, exactly as `.gitattributes` documents. The
 throwaway PR was closed unmerged and both branches deleted immediately after.
 
-Auditing every `-merge` path for what actually protects it turned up good
-news: nearly all of them already carry a content-exact ratchet that
-regenerates the artefact from source and diffs it against the committed file
-— `TestCardinalityRatchet` / `TestSolverDecisionRatchet` / `TestScaleWallPin`
-(`perf-guards`), `TestCatalogueIsRegenerable` and the surface-parity
-inventory tests (`check`), `compat-ratchet.mjs` (`compatibility/*`),
-`coverage-summary.mjs` (`coverage`), and the Tier-0 migration goldens via
-`go test -tags=migration ./test/e2e/migration/tiers/tier0-offline/...`
-(`lint`). Those are the strong "re-run the generator on the merge commit and
-diff it" defence #1568 asked for, and they were already there for most of
-the list. `check`, `coverage` and `lint` are REQUIRED and PR-blocking, so
-those three ratchets stop a corrupted merge before it lands. `perf-guards`
-and `compat-ratchet.mjs` (`compatibility/*`) are release-gate lanes (#2230):
-they still run their real ratchet unconditionally on every push to `main`, so
-a corrupted merge is still caught and reported, but no longer PRE-merge —
-the defence is detection on the landed commit, not prevention of the landing.
-That is an accepted, deliberate narrowing of this specific guarantee for
-those two ratchets, traded for keeping them off the ordinary-PR critical
-path; release.yml's preflight still refuses to publish past a red one.
+Checking every `-merge` path for what actually protects it found that nearly
+all of them already carried a content-exact ratchet that regenerates the
+artefact from source and diffs it against the committed file — the list, and
+which of those ratchets run pre-merge versus on the landed commit, is in
+`test-strategy.md`'s "Generated baselines never auto-merge" section. Those are
+the strong "re-run the generator on the merge commit and diff it" defence
+that issue #1568 asked for. Leaving the `perf-guards` and `compatibility/*` ratchets on
+the release-gate tier (#2230) is an accepted, deliberate narrowing for those
+two: detection on the landed commit rather than prevention of the landing,
+traded for keeping them off the ordinary-PR critical path, with `release.yml`'s
+preflight still refusing to publish past a red one.
 
-The residual gap is procedural rather than a missing validator: branch
-protection's "require branches to be up to date before merging" is OFF
-(`strict: false` as of this writing), so a stale PR's squash-merge computes
-its diff against whatever `main` has moved to WITHOUT re-running any of the
-checks above against the resulting content. Turning `strict: true` on closes
-that window — it forces the "Update branch" step, which re-runs every
-required check (including all of the above) against the exact content that
-will land — and is recommended to the maintainer as a follow-up; it is a
-branch-protection admin setting, not a code change, so no PR flips it
-unilaterally.
+The residual gap is procedural rather than a missing validator: the ruleset's
+"require branches to be up to date before merging" (`strict`) is off, so a
+stale PR's squash-merge computes its diff against whatever `main` has moved to
+without re-running the checks above against the resulting content. Turning
+`strict` on would close that window by forcing the "Update branch" step on
+every PR, and was rejected: it taxes every pull request for a race that only
+the ones writing under a generated artefact's root can lose. The targeted form
+is `merge-risk.mjs`, which REJECTS a stale-base golden race — both the change
+and `main` writing under one shard's golden root while either side moves Go
+code — and so forces an update-branch only on the PRs that actually race a
+generated artefact.

@@ -57,10 +57,12 @@ difference, so your existing dashboards and alerts keep working unchanged.
 </pre></td></tr></table>
 </div>
 
-**Cerberus never ingests or stores anything.** Your OpenTelemetry Collector
-already writes telemetry into ClickHouse through its ClickHouse exporter, and
-cerberus only reads it back. Writers keep pointing at ClickHouse exactly as
-they do today — never at cerberus.
+**Cerberus never ingests telemetry.** Your OpenTelemetry Collector already
+writes telemetry into ClickHouse through its ClickHouse exporter, and cerberus
+reads it back. Writers keep pointing at ClickHouse exactly as they do today —
+never at cerberus. The only writes cerberus ever issues are opt-in and
+operator-driven: the `CERBERUS_AUTO_CREATE_SCHEMA=true` provisioning DDL and
+the `cerberus schema …` derived-table backfills.
 
 > [!NOTE]
 > **1.0 — stable wire API, young project.** The Prometheus / Loki / Tempo
@@ -96,8 +98,10 @@ one table per signal, not one giant table: `otel_traces`, `otel_logs`, and
 metrics split by type across `otel_metrics_gauge`, `otel_metrics_sum`,
 `otel_metrics_histogram`, `otel_metrics_exponential_histogram`, and
 `otel_metrics_summary`. That is what the Collector's ClickHouse exporter
-writes by default. Cerberus reads those tables and never creates or writes
-them. Different column layout? Point cerberus at it with the
+writes by default. Cerberus reads those tables; by default it neither creates
+nor writes them (`CERBERUS_AUTO_CREATE_SCHEMA=true` provisioning and the
+`cerberus schema` derived-table backfills are the opt-in exceptions).
+Different column layout? Point cerberus at it with the
 [`CERBERUS_SCHEMA_*` overrides](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
 
 Every query takes the same path:
@@ -112,8 +116,9 @@ implementation instead of three. The full breakdown is in
 
 > **Rate-over-range is exact by default.** `rate(…)` range queries match
 > reference Prometheus bit-for-bit and stay sub-second at realistic scale.
-> For million-row queries an experimental native ClickHouse path
-> (`timeSeriesRateToGrid`) trades a sub-observable last-bit rounding
+> For million-row queries a native ClickHouse path (`timeSeriesRateToGrid`,
+> behind ClickHouse's own `allow_experimental_time_series_aggregate_functions`
+> setting) trades a sub-observable last-bit rounding
 > difference for flat memory and an order-of-magnitude speed-up — see the
 > [exactness-vs-scale guide](docs/performance.md#native-rate-exactness-vs-scale-should-i-enable-it).
 
@@ -227,8 +232,10 @@ at startup and turns on the result-equivalent optimizations it finds:
 - the native `timeSeries*ToGrid` aggregates — 25.9+, so an eligible
   `rate(<counter>[range])` range query lowers to the compiled
   `timeSeriesRateToGrid` aggregate there and emits the 24.8-safe SQL
-  unchanged below it. Validated result-correct at flat memory, still
-  labelled experimental.
+  unchanged below it. Validated result-correct at flat memory; the
+  aggregates sit behind ClickHouse's
+  `allow_experimental_time_series_aggregate_functions` setting, which
+  cerberus stamps per query.
 - `columnar_result_decode` — opt-in only; a perf tradeoff `auto` never
   selects for you.
 

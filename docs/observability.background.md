@@ -4,7 +4,7 @@ This document collects the design rationale, rejected alternatives, and
 incident history behind [`observability.md`](observability.md). It answers "why
 is the telemetry shaped this way" rather than "what does it emit" — nothing
 here is required to consume cerberus's own metrics, logs or traces correctly;
-`observability.md` carries the full inventory, the label sets and the
+`observability.md` carries the instrument inventory, the label sets and the
 cardinality contract.
 
 ## Why `cerberus_queries_duration_exp_hist` is a native histogram
@@ -25,26 +25,35 @@ recovered breaker still exporting `state="open"=1` forever.
 
 ## Why statement-scoped rejections are counted separately
 
-Counting statement-scoped ClickHouse rejections as breaker failures turns a
+ClickHouse answering a statement with a typed exception is positive proof it
+is serving. Counting statement-scoped rejections as breaker failures turns a
 handful of bad queries into a shed-everything outage: exactly what happened
 when ~21 code-704 rejections became 1015 compat divergences and read like a
 total engine regression for 32 hours.
 
 ## Why `cerberus_error_reason` cannot be derived from the status
 
-Upstream wire parity pins two statuses onto three meanings, so a status-derived
-reason would file every timeout under `backend_unavailable`, indistinguishable
-from a real ClickHouse outage, and every capacity refusal under `bad_request`,
-indistinguishable from a malformed query.
+Upstream wire parity pins two statuses onto three meanings — every head
+answers a timeout with 503 because upstream Prometheus and Loki do, and a
+budget refusal with 422 — so a status-derived reason would file every timeout
+under `backend_unavailable`, indistinguishable from a real ClickHouse outage,
+and every capacity refusal under `bad_request`, indistinguishable from a
+malformed query. Recording the reason on a request-scoped cell keeps the wire
+bytes unchanged while the label tells the truth.
 
 A client cancellation is the third collision, and the one where the heads
-disagreed outright before the reason travelled on the error itself. Derived
-from the status, the same event read `bad_request` on one head (Tempo's 499)
-and `backend_unavailable` on the other two (Prometheus's and Loki's 503), and
-neither is true.
+disagreed outright before the reason travelled on the error itself. Tempo
+answers 499, deliberately outside the 5xx band so a client hanging up is never
+read as "cerberus is unhealthy"; Prometheus and Loki answer 503 to stay
+byte-compatible with upstream's `errorCanceled` envelope. Derived from the
+status, the same event read `bad_request` on one head and
+`backend_unavailable` on the other two, and neither is true.
 
 ## Why the duration ladders reach the minute scale
 
+The SDK default ladder is millisecond-shaped and these instruments record
+seconds; a gateway fronting an analytical database can serve a request slower
+than any single-digit-second bound, so both ladders reach the minute scale.
 Every observation past the top FINITE bucket is unresolvable — the `+Inf`
 bucket has no upper bound for `histogram_quantile` to interpolate against, so
 once it holds more than 5% of the observations p95 and p99 both collapse onto

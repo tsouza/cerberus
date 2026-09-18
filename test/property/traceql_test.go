@@ -331,6 +331,16 @@ func TestTraceQL_PropertyShapeRoster(t *testing.T) {
 // DefaultSearchLookback clamp.
 const propertyWindowMarginSec int64 = 366 * 24 * 60 * 60
 
+// propertySpansPerSpanSet is the `spss` this runner requests: every matched
+// span's identity must come back so the comparison is over the SET of
+// (TraceID, SpanID), never a display-capped prefix of it. Tempo's default
+// (DefaultSpansPerSpanSet, 3) would truncate a generated trace's spanset;
+// no generated trace holds anywhere near this many spans
+// (traceQLMaxChainDepth, traceQLBranchingTreeSpanCount in test/property/
+// gen/traceql.go), and traceIdentityRows fails closed if a spanset ever
+// arrives shorter than its own Matched count.
+const propertySpansPerSpanSet = 64
+
 func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) property.Outcome {
 	// Thread an explicit time window bracketing the dataset anchor. A
 	// windowless /api/search clamps to [now-1h, now] (DefaultSearchLookback,
@@ -342,7 +352,10 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 	// safe). Tests what Grafana's Traces Drilldown actually sends — a window.
 	anchorSec := gen.TraceQLAnchorTime().Unix()
 	startSec, endSec := anchorSec-propertyWindowMarginSec, anchorSec+propertyWindowMarginSec
-	u := fmt.Sprintf("%s/api/search?q=%s&start=%d&end=%d", baseURL, wire.EscapeQuery(q.String, ""), startSec, endSec)
+	u := fmt.Sprintf(
+		"%s/api/search?q=%s&start=%d&end=%d&spss=%d",
+		baseURL, wire.EscapeQuery(q.String, ""), startSec, endSec, propertySpansPerSpanSet,
+	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return property.Outcome{Err: fmt.Errorf("property: build request: %w", err)}
@@ -382,7 +395,10 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 		}
 	}
 
-	rows, matchedTotal, anySpanSet := traceIdentityRows(parsed.Traces)
+	rows, matchedTotal, anySpanSet, err := traceIdentityRows(parsed.Traces)
+	if err != nil {
+		return property.Outcome{Err: err}
+	}
 	if anySpanSet && matchedTotal != inspectedSpans {
 		return property.Outcome{
 			Err: fmt.Errorf("property: trace summaries' matched-span total=%d disagrees with %s header=%d",
@@ -394,9 +410,8 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 
 // traceIdentityRows reshapes a /api/search response's TraceSummary array
 // into the OutcomeRow shape property.CompareTraceIdentityOutcomes expects:
-// one row per matched SPAN (TraceID repeated by SpanSet.Matched — the
-// trace's true matched-span count, uncapped by the spss display limit;
-// see internal/api/tempo/handler.go's observeSpan) for a
+// one row per matched SPAN, carrying the span's own (TraceID, SpanID) from
+// SpanSet.Spans (see internal/api/tempo/handler.go's observeSpan), for a
 // selector/structural/select() shape, or exactly one row per trace for a
 // trace-scoped aggregate (count()/avg|min|max|sum(duration)) shape, whose
 // collapsed-to-one-row-per-trace summaries carry no SpanSet at all
@@ -407,22 +422,37 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 // parser: a summary's SpanSet presence already tells us which projection
 // its endpoint promises.
 //
+// The runner requests propertySpansPerSpanSet spans per spanset so every
+// matched span's identity is present; a spanset whose Spans list is shorter
+// than its own Matched count (the trace's true matched-span count, uncapped
+// by spss) is an error, never a silently narrower comparison.
+//
 // Returns the rows, the summed per-trace matched-span count (0 when no
 // summary carried a SpanSet), and whether any summary carried one at all
 // (so the caller's inspected-span cross-check can skip the aggregate shape,
 // which has no wire-observable per-trace count to check it against).
-func traceIdentityRows(traces []tempo.TraceSummary) (rows []property.OutcomeRow, matchedTotal int, anySpanSet bool) {
+func traceIdentityRows(traces []tempo.TraceSummary) (rows []property.OutcomeRow, matchedTotal int, anySpanSet bool, err error) {
 	for _, tr := range traces {
 		if len(tr.SpanSets) == 0 {
 			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: tr.TraceID})
 			continue
 		}
 		anySpanSet = true
-		matched := tr.SpanSets[0].Matched
-		matchedTotal += matched
-		for i := 0; i < matched; i++ {
-			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: tr.TraceID})
+		set := tr.SpanSets[0]
+		matchedTotal += set.Matched
+		if len(set.Spans) != set.Matched {
+			return nil, 0, false, fmt.Errorf(
+				"property: trace %s spanset carries %d span(s) but reports matched=%d; the comparison needs "+
+					"every matched span's identity (request spss=%d)",
+				tr.TraceID, len(set.Spans), set.Matched, propertySpansPerSpanSet,
+			)
+		}
+		for _, span := range set.Spans {
+			if span.SpanID == "" {
+				return nil, 0, false, fmt.Errorf("property: trace %s spanset carries a span with no spanID", tr.TraceID)
+			}
+			rows = append(rows, property.OutcomeRow{Labels: map[string]string{}, TraceID: tr.TraceID, SpanID: span.SpanID})
 		}
 	}
-	return rows, matchedTotal, anySpanSet
+	return rows, matchedTotal, anySpanSet, nil
 }

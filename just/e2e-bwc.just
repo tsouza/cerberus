@@ -43,10 +43,8 @@ e2e-bwc-up scenario="object-storage": e2e-down
     @# lane runs the chart-bundled ClickHouse (the non-alpine tag in
     @# E2E_BWC_IMAGES) instead, so skip pulling the unused standalone image (it
     @# is filtered from the k3d import step below via IMAGE_IMPORT_EXCLUDE too).
-    @for img in {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}; do \
-        case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
-        just _pull-retry "$img"; \
-    done
+    @IMAGE_PULL_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
+    just _pull-retry {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}
     @echo "==> [bwc] importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
     @# Same retry+verify loop `e2e-up` runs (cerberus issue #3096), reused
     @# unchanged via .github/scripts/k3d-image-import.mjs — only the image list
@@ -200,10 +198,8 @@ e2e-datashard-up count="2" replicas="1": e2e-down
     node .github/scripts/build-with-registry-retry.mjs \
         docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
     @echo "==> [datashard] pre-pulling external + bundled-CH images on host docker"
-    @for img in {{E2E_EXTERNAL_IMAGES}} {{E2E_BUNDLED_CH_IMAGES}}; do \
-        case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
-        just _pull-retry "$img"; \
-    done
+    @IMAGE_PULL_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
+    just _pull-retry {{E2E_EXTERNAL_IMAGES}} {{E2E_BUNDLED_CH_IMAGES}}
     @echo "==> [datashard] importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
     @# Same retry+verify loop `e2e-up` runs (cerberus issue #3096), reused
     @# unchanged via .github/scripts/k3d-image-import.mjs — only the image list

@@ -20,11 +20,14 @@ an already-decided strategy; it never asks what the server supports.
 MUST be a named feature in the `chopt` registry, reached through
 `CERBERUS_CH_OPTIMIZATIONS` — never a standalone `CERBERUS_*` environment bool
 with its own parse, default, and read site. Register it in
-`internal/chopt/registry.go` with an `ID`, a `Stability` (`Stable` for
-auto-eligible result-equivalent features; `Experimental` / opt-in for tradeoffs
-that must stay off by default), and a floor — a real `minVersion`, or
-`chopt.AlwaysAvailable` when it depends on no server version (a purely
-client-side optimization).
+`internal/chopt/registry.go` with an `ID`, a `Stability` (`Stable` for a
+mature, production-documented feature; `Experimental` for one that is
+honestly young), an `AutoSelect` flag (`true` for a result-equivalent,
+version-gated win that `auto` should pick; `false` for a deliberate
+trade-off that stays reachable only by explicit listing — the two axes are
+independent, so an `Experimental` feature can be auto-selected), and a floor
+— a real `minVersion`, or `chopt.AlwaysAvailable` when it depends on no
+server version (a purely client-side optimization).
 
 **2. Resolve it off the request path.** The feature is read when
 `chopt.EnabledSet` is resolved from a server-version probe — at startup, and

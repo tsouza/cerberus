@@ -474,26 +474,40 @@ func expHistogramMergeScaleWindowProject(perSeries chplan.Node, anchor *chplan.C
 	// 1's hqWinMergedScaleAlias) — mirroring
 	// [expHistogramMergeBucketsBoundsExpr]'s per-row arrayMap body, but
 	// reading each row's own Scale/Offset/BucketCounts columns directly
-	// rather than a groupArray.
+	// rather than a groupArray. A row whose ladder is EMPTY has no bucket
+	// position and must not move the group's range, so both of its
+	// endpoints are replaced by the sentinels stage 3's MIN/MAX always lose
+	// against a real row ([expHistogramEmptyLadderStartSentinel] /
+	// [expHistogramEmptyLadderEndSentinel]); an all-empty group then
+	// measures a negative span, which stage 4's greatest(0, ...) reads as
+	// width 0.
 	rawMergedScale := &chplan.ColumnRef{Name: hqWinMergedScaleAlias}
 	shiftAmount := subExpr(&chplan.ColumnRef{Name: s.ScaleColumn}, rawMergedScale)
-	rowStartExpr := func(offsetCol string) chplan.Expr {
-		return &chplan.FuncCall{Fn: chplan.FnBitShiftRight, Args: []chplan.Expr{&chplan.ColumnRef{Name: offsetCol}, shiftAmount}}
+	rowStartExpr := func(offsetCol, bucketsCol string) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+			expHistogramLadderNonEmptyExpr(&chplan.ColumnRef{Name: bucketsCol}),
+			&chplan.FuncCall{Fn: chplan.FnBitShiftRight, Args: []chplan.Expr{&chplan.ColumnRef{Name: offsetCol}, shiftAmount}},
+			&chplan.LitInt{V: expHistogramEmptyLadderStartSentinel},
+		}}
 	}
 	rowEndExpr := func(offsetCol, bucketsCol string) chplan.Expr {
 		lastIdx := subExpr(
 			addExpr(&chplan.ColumnRef{Name: offsetCol}, &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.ColumnRef{Name: bucketsCol}}}),
 			&chplan.LitInt{V: 1},
 		)
-		return &chplan.FuncCall{Fn: chplan.FnBitShiftRight, Args: []chplan.Expr{lastIdx, shiftAmount}}
+		return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+			expHistogramLadderNonEmptyExpr(&chplan.ColumnRef{Name: bucketsCol}),
+			&chplan.FuncCall{Fn: chplan.FnBitShiftRight, Args: []chplan.Expr{lastIdx, shiftAmount}},
+			&chplan.LitInt{V: expHistogramEmptyLadderEndSentinel},
+		}}
 	}
 	stage2Projs := passthroughAll(baseCols)
 	stage2Projs = append(
 		stage2Projs,
 		passthrough(hqWinMergedScaleAlias), passthrough(hqWinTotalRowCountAlias), passthrough(hqWinTotalGroupCountAlias),
-		chplan.Projection{Expr: rowStartExpr(s.PositiveOffsetColumn), Alias: hqWinRowPosStartAlias},
+		chplan.Projection{Expr: rowStartExpr(s.PositiveOffsetColumn, s.PositiveBucketCountsColumn), Alias: hqWinRowPosStartAlias},
 		chplan.Projection{Expr: rowEndExpr(s.PositiveOffsetColumn, s.PositiveBucketCountsColumn), Alias: hqWinRowPosEndAlias},
-		chplan.Projection{Expr: rowStartExpr(s.NegativeOffsetColumn), Alias: hqWinRowNegStartAlias},
+		chplan.Projection{Expr: rowStartExpr(s.NegativeOffsetColumn, s.NegativeBucketCountsColumn), Alias: hqWinRowNegStartAlias},
 		chplan.Projection{Expr: rowEndExpr(s.NegativeOffsetColumn, s.NegativeBucketCountsColumn), Alias: hqWinRowNegEndAlias},
 	)
 	stage2 := &chplan.Project{Roles: expHistogramRoles(s), Input: stage1, Projections: stage2Projs}

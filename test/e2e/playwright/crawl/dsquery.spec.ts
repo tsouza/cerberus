@@ -55,8 +55,8 @@ import {
   awaitSelfTelemetryRangeSignal,
   generateSelfTraffic,
 } from '../helpers/index.js';
-import { truncate } from './lib.js';
 import { activeStack } from './stacks.js';
+import { truncate, BODY_EXCERPT_CHARS, CONTEXT_EXCERPT_CHARS } from '../helpers/excerpt.js';
 
 const SEED_TRAFFIC_SECONDS = 20;
 
@@ -260,7 +260,7 @@ test('ds-query replays: every provisioned datasource answers through the plugin 
       const bodyText = await resp.text();
       if (status < 200 || status > 299) {
         failures.push(
-          `${where} POST /api/ds/query → ${status}\n  body: ${truncate(bodyText, 600)}`,
+          `${where} POST /api/ds/query → ${status}\n  body: ${truncate(bodyText, BODY_EXCERPT_CHARS)}`,
         );
         continue;
       }
@@ -269,7 +269,7 @@ test('ds-query replays: every provisioned datasource answers through the plugin 
         parsed = JSON.parse(bodyText) as DsQueryResults;
       } catch (err) {
         failures.push(
-          `${where} 2xx body is not JSON: ${(err as Error).message}\n  body: ${truncate(bodyText, 300)}`,
+          `${where} 2xx body is not JSON: ${(err as Error).message}\n  body: ${truncate(bodyText, CONTEXT_EXCERPT_CHARS)}`,
         );
         continue;
       }
@@ -280,7 +280,7 @@ test('ds-query replays: every provisioned datasource answers through the plugin 
       }
       if (typeof result.error === 'string' && result.error !== '') {
         failures.push(
-          `${where} tunneled results.A.error: ${truncate(result.error, 600)}` +
+          `${where} tunneled results.A.error: ${truncate(result.error, BODY_EXCERPT_CHARS)}` +
             (result.errorSource ? ` (errorSource=${result.errorSource})` : ''),
         );
         continue;

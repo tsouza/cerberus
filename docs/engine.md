@@ -55,14 +55,31 @@ and the result types.
 
 ```go
 type Engine struct {
+    // pipeline
     Optimizer       *optimizer.Driver
     Client          Querier
-    Solver          *solver.Solver
     Settings        SettingsRules
     liveSettings    atomic.Pointer[SettingsRules]
-    QueryObserver   QueryObserver
-    MaxQuerySamples int64
-    RouteMemo       *routememo.Memo
+    // optional seams (nil keeps the single-statement path)
+    Solver                  *solver.Solver
+    QueryObserver           QueryObserver
+    RouteMemo               *routememo.Memo
+    PerRungAdmission        *PerRungAdmissionLearner
+    ScanEstimateAdvisor     *ScanEstimateAdvisor
+    CardinalityProbeAdvisor *CardinalityProbeAdvisor
+    Actuals                 *actuals.Tracker
+    // plan-side bounds (0 disables each)
+    MaxQuerySamples                      int64
+    MaxEmittedSQLBytes                   int64
+    RangeBucketFanoutMaxRows             int64
+    RangeLWRFanoutMaxRows                int64
+    RateWindowFanoutMaxRows              int64
+    RangeBucketFanoutFoldCostMaxUnits    int64
+    RangeBucketGridNativeMaxRows         int64
+    RangeBucketGridNativeMaxDensityUnits int64
+    // DELTA-temporality prefix reconstruction
+    DeltaPrefixLookback    time.Duration
+    DeltaPrefixReadEnabled bool
 }
 ```
 
@@ -81,9 +98,19 @@ type Engine struct {
 - `QueryObserver` optionally records dispatches and outcomes for the
   asynchronous query-log performance corpus.
 - `MaxQuerySamples` rejects oversized subquery anchor grids before
-  dispatch; `0` disables that plan-side gate.
+  dispatch; `0` disables that plan-side gate. The other `*MaxRows` /
+  `*MaxUnits` / `MaxEmittedSQLBytes` fields are the per-carrier resource
+  bounds `cmd/cerberus` threads in from configuration; each is a
+  plan-side rejection and `0` disables it.
 - `RouteMemo` optionally remembers resource-failure routing outcomes and
   can steer a later eligible PromQL request to route B.
+- `PerRungAdmission`, `ScanEstimateAdvisor`, `CardinalityProbeAdvisor`
+  and `Actuals` are the remaining optional seams — evidence-based
+  admission, the advisory `EXPLAIN ESTIMATE` and cardinality pre-flights,
+  and the predicted-vs-actual drift tracker. `docs/solver.md` describes
+  each; `nil` leaves it inert.
+- `DeltaPrefixLookback` / `DeltaPrefixReadEnabled` bound and gate the
+  DELTA-temporality prefix-reconstruction scan (`docs/operations.md`).
 
 One Engine instance is constructed per HTTP head in
 `cmd/cerberus/main.go` and lives for the lifetime of the process.
@@ -94,7 +121,7 @@ One Engine instance is constructed per HTTP head in
 type Lang interface {
     Name() string
     Parse(ctx context.Context, query string) (chplan.Node, Meta, error)
-    ProjectSamples(plan chplan.Node, meta Meta) chplan.Node
+    ProjectSamples(plan chplan.Node, meta Meta) (chplan.Node, error)
 }
 ```
 
@@ -146,11 +173,13 @@ the plan alone:
   endpoint. The plan is built by the handler without a parser;
   the engine skips the optimizer pass since a row-by-id fetch has
   no rewrites worth running.
-- `ResponseShape` — handler-side pivot key
-  (`"prom-vector"`, `"loki-matrix"`, `"loki-streams"`,
-  `"tempo-trace"`, …). The engine does not read it; it is
-  threaded through `Result` so the response formatter does not
-  have to re-derive it.
+- `ResponseShape` — handler-side pivot key (`"loki-matrix"`,
+  `"loki-streams"`, `"tempo-trace"`, `"tempo-metrics-matrix"`,
+  `"tempo-metrics-instant"`, and `chclient.ResponseShapeMatrix` =
+  `"prom-matrix"` on the PromQL `/query_range` path). The engine does not
+  read it; it is threaded through `Result` so the response formatter does
+  not have to re-derive it, and `chclient` reads the matrix value off the
+  context to confirm caller intent before engaging the columnar decode.
 - `Guards` — ordered value-domain checks that the engine emits and
   executes before the main query. The first violation rejects the request.
 - `Extra` — adapter-specific bag for per-language knobs that ride
@@ -176,8 +205,9 @@ type Result struct {
 - `Samples` is the decoded row stream. Handlers pivot it into the
   upstream wire shape.
 - `SQL` + `Args` are surfaced for debug logging.
-- `Strategy` is a free-form label for the execution path taken. Empty today;
-  reserved for future fallback-evaluator wiring.
+- `Strategy` is the execution-path label — `"trace-by-id"` for the Tempo
+  `/traces/{id}` short-circuit, `"native"` otherwise — the same value the
+  `X-Cerberus-Strategy` header carries.
 - `CHMillis` is the wall-clock time spent in `Client.Query`,
   exposed through the `X-Cerberus-CH-Millis` response header.
 - `PlanNodeCount` is the optimised plan's node count, exposed
@@ -341,53 +371,47 @@ optimisations cost one implementation, not three.**
 “Shared” means head-agnostic, not backend-neutral. The algebra also carries
 physical ClickHouse capability nodes such as `RangeWindowGridNative` and
 `RangeWindowStaleResample`, plus a sealed function vocabulary whose symbols
-resolve at the `chsql` boundary. Those nodes let lowering and optimization
-select a concrete execution capability without leaking raw SQL spellings into
-the plan. A different storage backend would need its own emitter and would
-either implement or reject those physical capabilities explicitly.
+resolve at the `chsql` boundary.
 
 ### A real rule-based optimiser — `internal/optimizer`
 
-Catalyst- and DataFusion-style: rules are grouped into batches with
-three strategies — `Analyzer` (semantic, must-run, idempotent — panics
-on contract violation), `Once` (idempotent heuristics, single pass),
-and `FixedPoint(n)` (rules that unlock each other; iterates until no
-rule reports a change or `n` iterations have elapsed). The default
-pipeline ships:
+Catalyst- and DataFusion-style: rules are grouped into named batches,
+each with one of three strategies — `Analyzer` (semantic, must-run,
+idempotent — panics on contract violation), `Once` (a single pass), and
+`FixedPoint(n)` (rules that unlock each other; iterates until no rule
+reports a change or `n` iterations have elapsed). `optimizer.Default()`
+builds the driver every head runs; its batches, in execution order, are:
 
-| Stage                            | Rules                                                                    | What it buys                                                                                                                                                                  |
-| -------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Analyzer — pure-literal fold     | `ConstantFoldSemantic`                                                   | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`                                                                                            |
-| Once — heuristic fold            | `ConstantFoldHeuristic`                                                  | Boolean identity simplification (`true AND X → X`, `false OR X → X`)                                                                                                          |
-| FixedPoint — predicate pushdown  | `FilterFusion`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose` | Filters move below aggregates / range windows so CH skip-indexes can fire on a `Scan`                                                                                         |
-| FixedPoint — projection pushdown | `ProjectionPushdown`                                                     | Late materialisation: the narrowed column set is pushed through `Aggregate` / `RangeWindow` to the inner `Scan`, so wide columns are only read after `LIMIT` cuts the row set |
-| FixedPoint — set-op linearise    | `FlattenVectorSetOp`                                                     | Collapses a left-assoc `a or b or c …` / `and` chain into one N-ary `NaryVectorSetOp` so the emitter scans each arm once under a single window pass instead of K nested ones  |
+| Batch                              | Strategy   | Rules                                                                                              | What it buys                                                                                                                                                                  |
+| ---------------------------------- | ---------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `analyzer.constant-fold-semantic`  | Analyzer   | `ConstantFoldSemantic`                                                                             | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`                                                                                            |
+| `analyzer.scan-time-bound`         | Analyzer   | `NormalizeScanTimeBound`, `RequireScanTimeBound`, `RequireScanResourceBound`                       | Establishes and then fail-closes the instant scan time bound and the spans-scan resource bound (see the contracts below)                                                      |
+| `optimizer.predicate-pushdown`     | FixedPoint | `ConstantFoldHeuristic`, `FilterFusion`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose`  | Boolean identities (`true AND X → X`) fold, adjacent filters fuse, and filters move below aggregates / range windows so CH skip-indexes can fire on a `Scan`                  |
+| `optimizer.projection`             | FixedPoint | `ProjectionPushdown`                                                                               | Late materialisation: the narrowed column set is pushed through `Aggregate` / `RangeWindow` to the inner `Scan`, so wide columns are only read after `LIMIT` cuts the row set |
+| `optimizer.set-op-linearize`       | FixedPoint | `FlattenVectorSetOp`                                                                               | Collapses a left-assoc `a or b or c …` / `and` chain into one N-ary `NaryVectorSetOp` so the emitter scans each arm once under a single window pass instead of K nested ones  |
 
-`FilterAggregateTranspose` is retained as speculative correctness
-insurance (0 fires on the current corpus); `FilterRangeWindowTranspose`,
-`FilterFusion`, `ConstantFoldHeuristic`, `ProjectionPushdown`, and
-`FlattenVectorSetOp` all fire on real queries. `FlattenVectorSetOp` only
-flattens the associative `or` / `and` operators — `unless` is not
-associative, so an `unless` chain keeps its binary shape. The rule set
-carries only rules that can fire: there is no `FilterProjectTranspose`
-(no lowering emits `Filter(Project)`, so the rule would never match) and
-no `MVSubstitution` (the default schema ships no live rollups, so a
-substitution rule would be a guaranteed no-op).
+`ConstantFoldHeuristic` opens the predicate-pushdown batch and shares its
+fixpoint because `FilterFusion` constructs new `Binary` predicates
+(`p1 AND true`) that only exist once the batch is running. Nothing after
+that batch constructs a `Binary`, so its fixpoint is also the point past
+which no new foldable shape can appear. `test/regression` pins this
+table to `Default()`.
+
+`FilterAggregateTranspose` is retained as correctness insurance (0 fires
+on the current corpus); every other rule fires on real queries.
+`FlattenVectorSetOp` only flattens the associative `or` / `and`
+operators — an `unless` chain keeps its binary shape. There is no
+`FilterProjectTranspose` and no `MVSubstitution` rule.
 
 The optimiser is gated by termination, decision-pin, rule-interaction,
 property, and gremlins (mutation) tests.
 
 #### Scan time-bound contract
 
-An instant windowed range aggregation (`rate` / `increase` /
-`*_over_time` / …) reads per-sample rows out of MergeTree and
-`groupArray`s them per series at the innermost level before the
-post-`groupArray` `arrayFilter` discards out-of-window samples. If that
-innermost read carries no time predicate, ClickHouse cannot prune
-granules and materialises the full per-series retention — tens of
-millions of rows on a prod instant query. A bound that lived only in the
-emitter would be easy to forget as new `groupArray` emitters land, so it
-is an IR-level property instead.
+The innermost per-sample read of an instant windowed range aggregation
+(`rate` / `increase` / `*_over_time` / …) always carries a time
+predicate, and that bound is an IR-level property rather than an
+emitter-local one.
 
 An instant windowed-array **leaf**
 RangeWindow (`OuterRange == 0`, and `Input` is **not** a
@@ -427,17 +451,11 @@ flagged in the IR — by design, not by default):
   bounds.
 - The ClickHouse-native `timeSeries*ToGrid` family
   (`RangeWindowGridNative`, `RangeWindowStaleResample`) bounds its innermost read
-  through the same `maybePushRangeScanTimeBound` helper. Because that
-  bound changes only the rows *read* — the aggregate's own
-  `(start, end, step, window)` parameters already discard out-of-window
-  samples — dropping it produces no wrong answer and no failing golden.
-  The family is therefore pinned as a class by
+  through the same `maybePushRangeScanTimeBound` helper. The family is
+  pinned as a class by
   `internal/chsql/range_window_grid_native_scan_bound_test.go`, whose case
-  list is driven by the emitter's own `nativeTSGridFn` registry: a
-  native aggregate registered without a scan-bound case fails, as does
-  one whose emitter drops the predicate. The join case additionally
-  pins that the bound is rendered **per operand**, since each side of a
-  vector-vector join is an independent scan.
+  list is driven by the emitter's own `nativeTSGridFn` registry, and the
+  bound is rendered **per operand** of a vector-vector join.
 
 #### Deferred label shaping on the native grid
 
@@ -459,18 +477,12 @@ partial states with `-Merge`; the outer level renames each
 before. The row shape reaching a wrapping `Aggregate` is identical
 either way, so nothing downstream branches on which shape was emitted.
 
-The combinator pair — rather than arithmetic over two finished grids —
-is what makes the rewrite value-preserving. Label shaping is
-many-to-one, so several raw series can carry one output identity, and
-their samples must be POOLED before the window function runs; merging
-partial states pools samples, whereas combining finished grids computes
-a different number and yields NULL wherever one contributor holds too
-few samples in the window. `Recollapse` is consequently only populated
-for range functions whose `-State`/`-Merge` pair is proven exact under
-merged states; every other node passes an empty list and emits the
-two-level shape byte for byte. Lowering owns the eligibility decision
-(`hoistShaping` in `internal/promql`), the emitter owns the rendering,
-and `docs/clickhouse-optimizations.md` covers the `ts_grid_recollapse`
+`Recollapse` is only populated for range functions whose
+`-State`/`-Merge` pair is exact under merged states; every other node
+passes an empty list and emits the two-level shape byte for byte.
+Lowering owns the eligibility decision (`hoistShaping` in
+`internal/promql`), the emitter owns the rendering, and
+`docs/clickhouse-optimizations.md` covers the `ts_grid_recollapse`
 capability gate.
 
 #### Eval-grid carriers
@@ -481,13 +493,8 @@ timestamps. Consumers that need the request's outer grid (routing, cost
 accounting, telemetry) discover it through the
 `chplan.GridCarrier` interface rather than by enumerating node kinds.
 
-This is a correctness contract, not a style choice. A consumer written
-as a type switch has to list every grid-bearing node, and the failure
-mode when it misses one is **silent**: the walk finds no carrier, the
-consumer reads a zero grid, and a zero grid is indistinguishable from a
-genuine instant query — so a range query gets filed under the wrong
-evaluation mode instead of raising an error. `Step > 0` is the only
-range-vs-instant discriminator a consumer may branch on.
+`Step > 0` is the only range-vs-instant discriminator a consumer may
+branch on; a consumer never enumerates node kinds.
 
 The carrier set is closed in both directions.
 `internal/chplan/grid_carrier.go` holds a compile-time list proving
@@ -525,12 +532,10 @@ The emitter is also CH-native rather than ANSI-ish:
 
 Defaults to the
 [OpenTelemetry ClickHouse Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter)
-layout (`otel_metrics_*`, `otel_logs`, `otel_traces`). The schema
-source of truth is the upstream OTel-CH exporter via the
+layout (`otel_metrics_*`, `otel_logs`, `otel_traces`). The DDL templates
+come from the
 [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl)
-fork — cerberus consumes the same DDL templates the production
-exporter emits, so a deployment where the exporter writes and cerberus
-reads sees one schema across both sides. Runtime YAML and environment
+fork of the exporter. Runtime YAML and environment
 overrides cover the five metrics table names, the logs and spans table names,
 the traces timestamp-lookup toggle, and the Prometheus resource-label list.
 They do not provide a SigNoz preset or arbitrary column-name mapping.
@@ -558,9 +563,9 @@ To add a fourth query head, three pieces are needed:
    the shape of `internal/api/prom/handler.go` or
    `internal/api/loki/handler.go`.
 3. **Wire it in `cmd/cerberus/main.go`.** Construct the head's
-   `Engine` (sharing the optimizer driver and ClickHouse client
-   with the other heads) and register the handler against its
-   URL prefix on the HTTP mux.
+   `Engine` — its own `optimizer.Default()` driver, the ClickHouse
+   client shared with the other heads — and register the handler
+   against its URL prefix on the HTTP mux.
 
 The engine itself does not need to change — `Lang` is the
 extension point.
@@ -571,11 +576,12 @@ The engine populates `Result.CHMillis`, `Result.PlanNodeCount`,
 and `Result.Headers` so the handler can stamp them onto the HTTP
 response. The contract is:
 
-| Header                  | Source                             | Meaning                                                                                  |
-| ----------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
-| `X-Cerberus-CH-Millis`  | `Result.CHMillis`                  | Wall-clock milliseconds spent inside `Client.Query` (the ClickHouse roundtrip).          |
-| `X-Cerberus-Plan-Nodes` | `Result.PlanNodeCount`             | Node count of the optimised plan that produced the executed SQL.                         |
-| `X-Cerberus-Strategy`   | `Result.Headers[HeaderStrategy]`   | Execution-family label computed by `strategyFor(meta)`: `native` or `trace-by-id`.       |
+| Header                      | Source                                | Meaning                                                                                                                                                                                                                                                                          |
+| --------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `X-Cerberus-CH-Millis`      | `Result.CHMillis`                     | Wall-clock milliseconds spent inside `Client.Query` (the ClickHouse roundtrip).                                                                                                                                                                                                  |
+| `X-Cerberus-Plan-Nodes`     | `Result.PlanNodeCount`                | Node count of the optimised plan that produced the executed SQL.                                                                                                                                                                                                                 |
+| `X-Cerberus-Strategy`       | `Result.Headers[HeaderStrategy]`      | Execution-family label computed by `strategyFor(meta)`: `native` or `trace-by-id`.                                                                                                                                                                                               |
+| `X-Cerberus-Route-Decision` | `Result.Headers[HeaderRouteDecision]` | Stamped only when a `Solver` is wired and classified the plan (PromQL head); omitted otherwise. `<strategy>;reason=<reason>` — `route-a;reason=…` on a non-route, `sharded-timeslice;k=<K>;reason=…` on a route. Observational: never changes the body or `X-Cerberus-Strategy`. |
 
 Handlers stamp these headers from `Result` (or via the chclient
 millisecond counter where a per-request middleware is in play).
@@ -590,21 +596,23 @@ has no field for a number cerberus needs to report. The Tempo head's
 | ---------------------------- | ------------------------ | ----------------------------------------------------------------------------------- |
 | `X-Cerberus-Inspected-Spans` | `tempo.SearchMetricsFor` | Span ROWS drained from ClickHouse to answer the search — the resource-bound signal. |
 
-It is the companion to `SearchMetrics.InspectedTraces` in the response
-body, which counts distinct **traces** (upstream Tempo's semantics).
-The two are different quantities, so they get different names; the
-gRPC `StreamingQuerier.Search` RPC reports the span count on an
-identically-named trailer so both transports answer the same question
-the same way.
+`SearchMetrics.InspectedTraces` in the response body counts distinct
+**traces** (upstream Tempo's semantics); the header counts span rows.
+The gRPC `StreamingQuerier.Search` RPC reports the span count on an
+identically-named trailer.
 
 ## Extension points
 
-Beyond `Lang`, the engine has three optional runtime seams. `Solver` and
-`RouteMemo` own route classification, sharded execution, and failure-driven
-route selection. `Settings` plus `SetSettings` apply plan-gated ClickHouse
-settings and permit an atomic capability refresh. `QueryObserver` receives
-dispatch and outcome events for the performance corpus. Their nil or zero
-values preserve the ordinary single-statement path.
+Beyond `Lang`, the engine has seven optional runtime seams, each a
+pointer or interface field whose `nil` preserves the ordinary
+single-statement path: `Solver` (route classification and sharded
+execution), `RouteMemo` (failure-driven route selection),
+`PerRungAdmission` (evidence-based refinement of the solver's per-rung
+admission), `ScanEstimateAdvisor` and `CardinalityProbeAdvisor` (advisory
+pre-flights that feed the solver), `Actuals` (predicted-vs-actual drift
+tracking), and `QueryObserver` (dispatch and outcome events for the
+performance corpus). `Settings` plus `SetSettings` apply plan-gated
+ClickHouse settings and permit an atomic capability refresh.
 
 ### OTel hooks
 
@@ -621,22 +629,18 @@ parent HTTP span
                  Cursor.Close() for the streaming path)
 ```
 
-Span names are the constants in `internal/cerbtrace`. The
-stopwatch around each stage is the same `telemetry.ObserveStage`
-helper, so the OTel span tree and the cerberus stage-duration
-histograms stay aligned. It takes the language alongside the stage
-(`telemetry.ObserveStage(telemetry.StageEmit, lang.Name())`) — one
-process serves all three heads, so a stage timing without the language
-cannot be attributed to one. New cross-cutting hooks (request-id
-propagation, query-budget enforcement, per-tenant quotas) plug
-into the same context — no engine surface change required.
+Span names are the constants in `internal/cerbtrace`. The stopwatch
+around each stage is the same `telemetry.ObserveStage` helper, taking
+the language alongside the stage
+(`telemetry.ObserveStage(telemetry.StageEmit, lang.Name())`), so the
+OTel span tree and the cerberus stage-duration histograms stay aligned.
+Cross-cutting hooks (request-id propagation, query-budget enforcement,
+per-tenant quotas) plug into the same context.
 
 For the full OTel setup — exporters, env vars, dashboards — see
 [`observability.md`](observability.md).
 
 ## What the engine is not
-
-A short list, because the engine's narrow scope is deliberate:
 
 - **Not a query plan cache.** Plans are recomputed per request.
   The engine has no LRU, no memoisation, no plan store.
@@ -654,19 +658,13 @@ A short list, because the engine's narrow scope is deliberate:
   the engine never touches `http.ResponseWriter`.
 - **Not a streaming subquery reducer.** A PromQL subquery
   `<reducer>_over_time(<inner>[range:step])` materialises
-  `range/step + 1` anchor rows per series before collapsing them,
-  and the engine bounds that intermediate by refusing the query
-  rather than by fusing the reduction into a single streaming
-  pass. `requireSubquerySampleBudget`
-  (`internal/engine/anchor_budget.go`) measures one series' anchor
-  grid against `Config.MaxQuerySamples` and returns the same
-  Prom-shaped 422 upstream Prometheus returns once a subquery
-  would load more than `query.max-samples` into memory. Fusing the
-  reducer families into streaming passes would serve grids
-  upstream refuses, and a drop-in gateway's answer set is upstream's
-  answer set — so the bound is a rejection, which also keeps one
-  head's grid from exhausting the process the other two share.
+  `range/step + 1` anchor rows per series before collapsing them.
+  `requireSubquerySampleBudget` (`internal/engine/anchor_budget.go`)
+  measures one series' anchor grid against `Config.MaxQuerySamples` and
+  returns the same Prom-shaped 422 upstream Prometheus returns once a
+  subquery would load more than `query.max-samples` into memory.
 
-These boundaries keep the engine's surface small enough that
-adding a new query head — or a new extension point — is a local
-change rather than a refactor.
+---
+
+For the rationale behind these choices — alternatives considered, incidents,
+measurements — see [engine.background.md](engine.background.md).

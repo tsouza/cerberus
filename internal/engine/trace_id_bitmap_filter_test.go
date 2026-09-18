@@ -151,7 +151,7 @@ func TestEligibleForTraceIDBitmapFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := rules.eligibleForTraceIDBitmapFilter(tt.plan); got != tt.want {
+			if got := rules.eligibleForTraceIDBitmapFilter(inspectPlanShape(tt.plan, rules.Traces.TraceIDColumn)); got != tt.want {
 				t.Errorf("eligibleForTraceIDBitmapFilter() = %v, want %v", got, tt.want)
 			}
 		})

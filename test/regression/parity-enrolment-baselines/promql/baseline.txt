@@ -234,6 +234,7 @@ exp_histogram_sum_over_time.txtar
 exp_histogram_sum_over_ts_of_first_over_time.txtar
 exp_histogram_sum_over_ts_of_last_over_time.txtar
 exp_histogram_sum_range.txtar
+exp_histogram_sum_wide_merge_compaction_count.txtar
 exp_metric.txtar
 first_over_time.txtar
 fixed_accumulator_delta_range_step.txtar
@@ -278,7 +279,6 @@ histogram_quantile_classic_bare_at_pinned_range.txtar
 histogram_quantile_classic_bare_rate_min_samples.txtar
 histogram_quantile_classic_count_values_by_le.txtar
 histogram_quantile_classic_delta_temporality.txtar
-histogram_quantile_classic_duplicate_bounds.txtar
 histogram_quantile_classic_edge_p0.txtar
 histogram_quantile_classic_edge_p100.txtar
 histogram_quantile_classic_empty.txtar
@@ -560,6 +560,7 @@ rate_delta_temporality_range_prefix.txtar
 rate_empty_window.txtar
 rate_http_count.txtar
 rate_offset_5m.txtar
+rate_range_step_non_multiple_span.txtar
 regex_alternation.txtar
 regex_anchored.txtar
 regex_name_matcher_scans_exp_histogram_table.txtar

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"runtime"
 	"sort"
@@ -474,29 +475,9 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return
 	}
-	// ABSENT and MALFORMED are different requests. Upstream Loki
-	// auto-resolves an absent step (loghttp's `parseSecondsOrDuration`
-	// is only reached when the param is present) and returns 400 —
-	// `cannot parse %q to a valid duration` — for one it cannot parse.
-	// Collapsing both into a 1m default answered `?step=banana` with a
-	// 200 over a window the client never asked for. `parsePatternsStep`
-	// in patterns.go already splits them the same way.
-	stepRaw := r.FormValue("step")
-	step := time.Minute
-	if stepRaw != "" {
-		step, err = format.ParseDuration(stepRaw)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, ErrBadData,
-				fmt.Errorf("cannot parse %q to a valid duration", stepRaw))
-			return
-		}
-	}
-	if step <= 0 {
-		// An explicitly non-positive step would divide by zero in the
-		// resolution cap below. Upstream Loki rejects the same shape
-		// (loghttp.ParseRangeQuery's errZeroOrNegativeStep), as does the
-		// Prom head's `step <= 0` guard.
-		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'step' parameter"))
+	step, err := parseQueryRangeStep(r.FormValue("step"), start, end)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
 	// Only a STRICTLY inverted window is rejected. Upstream Loki's
@@ -585,6 +566,49 @@ func (h *Handler) langForRequest(start, end time.Time, limit int, dir logDirecti
 	}
 }
 
+// defaultQueryRangeStepDivisor is the number of grid points reference Loki
+// sizes an absent `?step=` to: `pkg/loghttp/params.go`'s
+// defaultQueryRangeStep is `max(floor((end-start).Seconds()/250), 1)`
+// seconds, so a one-hour window answers on a 14 s grid and a window under
+// 250 s on a 1 s one. Mirrored by value because the function is
+// unexported upstream.
+const defaultQueryRangeStepDivisor = 250
+
+// defaultQueryRangeStep is the step /loki/api/v1/query_range uses when the
+// request carries none — reference Loki's own derivation (see
+// defaultQueryRangeStepDivisor). A 1 m constant here answered a 1 h metric
+// query_range on a 60 s grid where Loki answers on a 14 s one: a different
+// sample count, and different per-anchor values for every window function.
+func defaultQueryRangeStep(start, end time.Time) time.Duration {
+	secs := math.Floor(end.Sub(start).Seconds() / defaultQueryRangeStepDivisor)
+	return time.Duration(math.Max(secs, 1)) * time.Second
+}
+
+// parseQueryRangeStep resolves the `?step=` of a /loki/api/v1/query_range
+// request. ABSENT and MALFORMED are different requests: upstream Loki
+// derives an absent step from the window (defaultQueryRangeStep — its
+// `parseSecondsOrDuration` is only reached when the param is present) and
+// returns 400 `cannot parse %q to a valid duration` for one it cannot
+// parse. Collapsing both into a default answered `?step=banana` with a 200
+// over a grid the client never asked for. An explicitly non-positive step
+// is rejected too — it would divide by zero in the resolution cap, and
+// upstream rejects the same shape (loghttp.ParseRangeQuery's
+// errZeroOrNegativeStep), as does the Prom head's `step <= 0` guard.
+// `parsePatternsStep` in patterns.go splits the same cases the same way.
+func parseQueryRangeStep(raw string, start, end time.Time) (time.Duration, error) {
+	if raw == "" {
+		return defaultQueryRangeStep(start, end), nil
+	}
+	step, err := format.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse %q to a valid duration", raw)
+	}
+	if step <= 0 {
+		return 0, errors.New("missing or invalid 'step' parameter")
+	}
+	return step, nil
+}
+
 // langForRangeRequest builds a per-request *logql.Lang carrying the
 // request's [start, end, step] for metric queries, plus the parsed
 // `limit` / `direction` for the log-line case — see [langForRequest].
@@ -622,6 +646,19 @@ func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration, 
 // the returned cancel (a no-op when no deadline was installed). A
 // malformed ?timeout= is a 400 bad_data; ok=false signals the caller
 // already wrote the error and must return.
+// metadataContext derives the context a metadata endpoint's ClickHouse
+// round trip runs under: the request context with the configured
+// QueryTimeout installed (reqctx.WithQueryBudget) — the same Go-side
+// watchdog /query and /query_range install through applyQueryTimeout, so a
+// hung backend answers 503 errorType=timeout at the deadline and the
+// handler returns, releasing its admit slot and pooled connection, instead
+// of blocking until the driver's own read timeout fires. Only the default
+// is installed: reference Loki reads no `?timeout=` on its metadata routes.
+// The caller MUST defer cancel.
+func (h *Handler) metadataContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return reqctx.WithQueryBudget(r.Context(), h.QueryTimeout)
+}
+
 func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
 	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, h.QueryTimeout)
 	if err != nil {
@@ -635,6 +672,30 @@ func classifyEngineErr(err error) error {
 	if err == nil {
 		return nil
 	}
+	if ae := classifySentinelErr(err); ae != nil {
+		return ae
+	}
+	msg := err.Error()
+	switch {
+	case strings.HasPrefix(msg, "engine: execute:"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	case strings.HasPrefix(msg, "engine: emit:"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	default:
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	}
+}
+
+// classifySentinelErr maps every classified sentinel — the errors a
+// ClickHouse round trip can surface that are NOT a backend fault — onto the
+// Loki error vocabulary, and returns nil for anything else. It is the ONE
+// list both classifyEngineErr (the query path) and classifyMetadataErr (the
+// metadata drains) read, so a sentinel answers the same status, errorType
+// and telemetry reason on every endpoint of the head; only the
+// unclassified remainder differs between the two (an engine-stage 500/502
+// split versus the metadata drains' plain transport-fault 502). An error
+// that already IS an *apiError passes through unchanged.
+func classifySentinelErr(err error) *apiError {
 	// Circuit-breaker fast-fail short-circuit: when the chclient
 	// breaker is OPEN, surface 503 + Retry-After directly, sized from the
 	// tripped breaker's own recovery interval. See internal/api/prom for
@@ -780,32 +841,26 @@ func classifyEngineErr(err error) error {
 	if errors.As(err, &apiErr) {
 		return apiErr
 	}
-	msg := err.Error()
-	switch {
-	case strings.HasPrefix(msg, "engine: execute:"):
-		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
-	case strings.HasPrefix(msg, "engine: emit:"):
-		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
-	default:
-		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
-	}
+	return nil
 }
 
 // classifyMetadataErr maps an error from a metadata drain (labels / series /
 // label-values / detected-labels / index-volume / patterns) onto the Loki
-// error vocabulary. The metadata endpoints don't run through the engine
-// stage-prefixed path, so a generic ClickHouse failure stays a 502; but a
-// resource-limit rejection — the per-query sample budget (now enforced on the
-// metadata drains too, see chclient.drainBudgetExceeded), the line-peek byte
-// budget (chclient.maxLogPeekBytes), or the CH memory cap — gets Loki's
-// "maximum ... reached for a single query" 400, the same as the query path,
-// instead of being mislabelled as a transport fault.
+// error vocabulary. Every classified sentinel — a resource-limit rejection
+// (the per-query sample budget, enforced on the metadata drains too, see
+// chclient.drainBudgetExceeded; the line-peek byte budget,
+// chclient.maxLogPeekBytes; the CH memory cap), a wall-clock timeout, a
+// caller cancellation, an open breaker, a Distributed shard outage —
+// answers exactly what the query path answers for it (classifySentinelErr):
+// a Grafana label-browser cancel is a 503 errorType=canceled here as it is
+// on /query_range, never a 502 that reads as a backend fault. The metadata
+// endpoints don't run through the engine stage-prefixed path, so an
+// UNCLASSIFIED ClickHouse failure is the upstream transport fault the
+// `engine: execute:` marker would have named: 502, not the 500 an
+// engine-routed handler defaults to.
 func classifyMetadataErr(err error) error {
-	var tooMany *chclient.TooManySamplesError
-	var memLimit *chclient.MemoryLimitError
-	var bytesLimit *chclient.LogPeekBytesError
-	if errors.As(err, &tooMany) || errors.As(err, &memLimit) || errors.As(err, &bytesLimit) {
-		return classifyEngineErr(err)
+	if ae := classifySentinelErr(err); ae != nil {
+		return ae
 	}
 	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 }

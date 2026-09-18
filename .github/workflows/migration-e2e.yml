@@ -269,8 +269,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # See migration-tier0's identical block: unconditional so the artifact
       # lane's GHCR pull can never silently degrade into a source build.
       - name: Log in to GHCR
@@ -424,8 +423,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # See migration-tier0's identical block.
       - name: Log in to GHCR
         env:

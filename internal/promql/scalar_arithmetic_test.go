@@ -38,7 +38,7 @@ func scalarArithmeticPriorProjection(inner chplan.Node, arg parser.Expr, s schem
 	}
 	inner = mixedRowsFloatOnly(inner)
 	inner = guardNameDropCollision(inner, arg, s, ctx)
-	return projectValueOverInner(inner, s, legacySampleProjectionLayout(inner), func(refs sampleRoleRefs) chplan.Expr { return build(refs.Value) })
+	return projectValueOverInner(inner, s, derivedSampleProjectionLayout(inner), func(refs sampleRoleRefs) chplan.Expr { return build(refs.Value) })
 }
 
 func assertScalarArithmeticPlansEqual(t *testing.T, got, want chplan.Node) {
@@ -138,7 +138,7 @@ func TestScalarArithmeticPolicyBeforeLoadAndProjection(t *testing.T) {
 				t.Cleanup(func() { mixedOperandPolicies[key] = previous })
 				if site == mixedRootAdmission {
 					called := false
-					plan, err := lowerArithmeticRoot(func() (chplan.Node, error) {
+					plan, err := lowerUnderMixedOperandPolicy(mixedArithmeticFamily, mixedRootAdmission, mixedFloatOnly, func() (chplan.Node, error) {
 						called = true
 						return nil, errors.New("must not lower")
 					})
@@ -167,7 +167,7 @@ func TestScalarArithmeticPolicyBeforeLoadAndProjection(t *testing.T) {
 	}
 	wantError := errors.New("histogram operand error")
 	calls := 0
-	_, err := lowerArithmeticRoot(func() (chplan.Node, error) { calls++; return nil, wantError })
+	_, err := lowerUnderMixedOperandPolicy(mixedArithmeticFamily, mixedRootAdmission, mixedFloatOnly, func() (chplan.Node, error) { calls++; return nil, wantError })
 	if calls != 1 || err != wantError {
 		t.Fatalf("loader error changed: calls=%d error=%v", calls, err)
 	}
@@ -281,14 +281,6 @@ func TestScalarArithmeticHistogramOnlyKeepsDroppingRecognizer(t *testing.T) {
 				})
 			}
 		}
-	}
-}
-
-func TestScalarArithmeticUnknownBoundaryFailsBeforeInput(t *testing.T) {
-	const unknownBoundary scalarArithmeticBoundary = 255
-	plan, err := finishScalarArithmetic(nil, nil, schema.DefaultOTelMetrics(), lowerCtx{}, chplan.OpAdd, 1, false, unknownBoundary)
-	if plan != nil || err == nil || !strings.Contains(err.Error(), "unknown scalar arithmetic projection boundary") {
-		t.Fatalf("unknown boundary continued: plan=%T error=%v", plan, err)
 	}
 }
 

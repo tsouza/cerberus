@@ -361,9 +361,7 @@ CERBERUS_SCHEMA_TTL: {{ . | quote }}
 {{- with .Values.schema.replicated }}
 {{- if .enabled }}
 CERBERUS_SCHEMA_DATABASE_REPLICATED: "true"
-{{- with .zookeeperPath }}
-CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: {{ . | quote }}
-{{- end }}
+CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: {{ include "cerberus.schema.replicatedPath" $ | quote }}
 {{- end }}
 {{- end }}
 {{- /* storage_policy shorthand -> its own dedicated env key (NOT the generic
@@ -514,18 +512,53 @@ Renders nothing (so the caller emits no env entry) when:
 {{- end }}
 
 {{/*
+cerberus.schema.replicatedPath — the validated Keeper root for the Replicated
+database (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH), read after
+cerberus.bundled.apply has had its chance to default it. Fails the render
+when schema.replicated.enabled is true and the path is empty (cerberus's own
+boot-time validation would otherwise refuse it as a crash-loop), and when the
+path carries `{shard}` or `{replica}`: the engine takes those as its own
+separate arguments and expands macros inside the path as well, so a path
+carrying them roots every replica at a different node — N unrelated
+single-replica databases that never replicate. Input is the root context.
+*/}}
+{{- define "cerberus.schema.replicatedPath" -}}
+{{- $path := .Values.schema.replicated.zookeeperPath -}}
+{{- if not $path -}}
+{{- fail "schema.replicated.enabled is true but schema.replicated.zookeeperPath is empty — the Replicated database has no Keeper path to coordinate on and cerberus refuses to boot without one. Set schema.replicated.zookeeperPath (e.g. /clickhouse/databases/otel); the bundled ClickHouse defaults it only for clickhouse.bundled.replicas > 1 at dataShards.count 1." -}}
+{{- end -}}
+{{- if or (contains "{shard}" $path) (contains "{replica}" $path) -}}
+{{- fail (printf "schema.replicated.zookeeperPath=%q must NOT contain {shard} or {replica}: the Replicated database engine takes them as its own separate arguments (ENGINE = Replicated(path, '{shard}', '{replica}')) and also expands macros inside the path, so every replica would register its own unrelated database root and nothing would replicate. Use the shared root only, e.g. /clickhouse/databases/otel." $path) -}}
+{{- end -}}
+{{- $path -}}
+{{- end }}
+
+{{/*
 cerberus.affinity — composes the optional colocateWithClickHouse podAffinity
 preset over the operator-supplied .Values.affinity. The preset only INJECTS a
 pod-affinity term (preferred/soft by default, required/hard opt-in) targeting
 the ClickHouse pods, appending to any podAffinity the operator already
 declared; every other affinity field the operator sets is preserved verbatim
 (.Values.affinity wins). Renders nothing when neither is set.
+
+The shipped podSelector default (`app.kubernetes.io/name: clickhouse`) names
+an external ClickHouse's conventional label. The bundled ClickHouse pods carry
+`<name>-clickhouse` instead (cerberus.clickhouse.selectorLabels, distinct so
+the gateway Service never over-selects them), which the shipped default can
+never match — a `preferred` term that silently never fires, a `required` term
+that leaves every cerberus pod Pending. So when the bundled tier is enabled
+and the selector is still the shipped default, the term targets the bundled
+pods' own selector labels; an operator-set selector is used verbatim.
 */}}
 {{- define "cerberus.affinity" -}}
 {{- $affinity := deepCopy (default (dict) .Values.affinity) -}}
 {{- $preset := dig "colocateWithClickHouse" (dict) (default (dict) .Values.affinityPresets) -}}
 {{- if $preset.enabled -}}
-{{- $term := dict "labelSelector" (dict "matchLabels" $preset.podSelector.matchLabels) "topologyKey" $preset.topologyKey -}}
+{{- $matchLabels := $preset.podSelector.matchLabels -}}
+{{- if and .Values.clickhouse.bundled.enabled (eq (toJson $matchLabels) (toJson (dict "app.kubernetes.io/name" "clickhouse"))) -}}
+{{- $matchLabels = fromYaml (include "cerberus.clickhouse.selectorLabels" .) -}}
+{{- end -}}
+{{- $term := dict "labelSelector" (dict "matchLabels" $matchLabels) "topologyKey" $preset.topologyKey -}}
 {{- $podAffinity := deepCopy (default (dict) $affinity.podAffinity) -}}
 {{- if eq (default "preferred" $preset.mode) "required" -}}
 {{- $existing := default (list) $podAffinity.requiredDuringSchedulingIgnoredDuringExecution -}}

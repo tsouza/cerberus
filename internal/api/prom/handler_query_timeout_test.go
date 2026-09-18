@@ -267,3 +267,24 @@ func TestQuery_TimeoutDisabledNoDeadline(t *testing.T) {
 		t.Errorf("query ctx carried a deadline %v; want none (timeout disabled, no param)", q.gotDeadline)
 	}
 }
+
+// TestQuery_NonPositiveTimeoutParamTimesOut pins reference Prometheus's
+// handling of a `?timeout=` that parses to zero or a negative duration:
+// parseDuration accepts both, and the handler installs the deadline as
+// given — already in the past — so the query answers 503 errorType=timeout
+// without running. Cerberus used to answer 400 for the negative and run
+// the query uncapped for the zero, two answers of its own.
+func TestQuery_NonPositiveTimeoutParamTimesOut(t *testing.T) {
+	t.Parallel()
+
+	srv := newServerWithTimeout(hangingQuerier{}, 2*time.Minute)
+	t.Cleanup(srv.Close)
+
+	for _, raw := range []string{"0", "0s", "-1"} {
+		resp, err := http.Get(srv.URL + "/api/v1/query?query=up&timeout=" + raw)
+		if err != nil {
+			t.Fatalf("timeout=%s: GET: %v", raw, err)
+		}
+		assertTimeout503(t, resp)
+	}
+}

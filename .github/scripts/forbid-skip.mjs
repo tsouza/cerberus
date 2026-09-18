@@ -7,20 +7,24 @@
 // the bash used, print matches, emit `::error::` + exit 1 on any hit,
 // exit 0 clean.
 //
-// The regexes are kept byte-identical to ci.yml's prior inline forms AND
-// to scripts/test-forbid-skip.sh (the self-test that pins them against
-// canonical match / no-match examples). When you widen or normalise a
-// pattern here, update docs/forbid-skip.md AND scripts/test-forbid-skip.sh
-// in the same change — the self-test is the contract.
+// This file is the ONLY copy of every discipline regex. ci.yml and
+// lefthook.yml both invoke it with `CHECK: <arm>`; neither holds a regex of
+// its own (test/regression/lefthook_forbid_skip_mirror_test.go pins the
+// hook side). forbid-skip.test.mjs drives this CLI against a throwaway git
+// repository with a match and a no-match fixture for every pattern, so a
+// regex mutated to match nothing goes red there. When you widen or
+// normalise a pattern here, update docs/forbid-skip.md AND
+// forbid-skip.test.mjs in the same change — the CLI test is the contract.
 //
 // Env contract:
 //   CHECK  `all` (run every scan below, in registry order), or one of:
-//     t-skip            Reject t.Skip / t.Skipf / t.SkipNow in *_test.go
-//     soft-assert       Reject soft-assertion / silent-recover patterns
-//     should-skip       Reject non-empty should_skip: overlay entries
-//     escape-hatch      Reject test escape-hatch primitives
+//     t-skip             Reject t.Skip / t.Skipf / t.SkipNow in *_test.go
+//     playwright-skip    Reject test.skip / test.fixme / test.only in specs
+//     soft-assert        Reject soft-assertion / silent-recover patterns
+//     should-skip        Reject non-empty should_skip: overlay entries
+//     escape-hatch       Reject test escape-hatch primitives
 //     feature-discipline Reject scenario-suppressing tags in .feature files
-//                       and the godog skip / pending routes in harness Go
+//                        and the godog skip / pending routes in harness Go
 //
 // Exit codes: 0 = clean, 1 = a banned pattern was found (or bad $CHECK).
 
@@ -45,16 +49,25 @@ function grepFiles({ pathspecs, grepFlags, regex, scan }) {
   return { matched: res.status === 0, output: res.stdout };
 }
 
-// perlSlurp — replicate the `git ls-files -z | xargs -0 perl -0777 -ne` shape.
-// Runs the perl program once per matched file (xargs would batch, but per
-// $ARGV the line-number arithmetic is identical) and concatenates output.
+// PERL_BATCH_FILES — how many files one `perl -0777 -ne` invocation slurps.
+// `-0777 -n` reads each argv file into `$_` in turn with `$ARGV` naming it,
+// so the per-file line arithmetic is identical to one process per file; the
+// batching only removes the process spawns (one per test file — ~1,600 of
+// them — was the whole of the pre-push hook's wall-clock). The batch is
+// bounded so the argv never approaches a platform ARG_MAX.
+const PERL_BATCH_FILES = 500;
+
+// perlSlurp — replicate the `git ls-files -z | xargs -0 perl -0777 -ne` shape,
+// batching files per invocation exactly as xargs would, and concatenating the
+// output.
 function perlSlurp({ pathspecs, program, scan }) {
   const files = lsFilesRequired(pathspecs, `forbid-skip: ${scan}`);
   let out = '';
-  for (const f of files) {
-    const res = capture('perl', ['-0777', '-ne', program, f]);
+  for (let start = 0; start < files.length; start += PERL_BATCH_FILES) {
+    const batch = files.slice(start, start + PERL_BATCH_FILES);
+    const res = capture('perl', ['-0777', '-ne', program, ...batch]);
     if (res.status > 1) {
-      error(`perl failed on ${f}: ${res.stderr.trim()}`);
+      error(`perl failed on ${batch.join(' ')}: ${res.stderr.trim()}`);
       process.exit(res.status);
     }
     out += res.stdout;

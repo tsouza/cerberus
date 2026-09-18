@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/attrmap"
+
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/api/format"
@@ -60,7 +62,9 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	// storage shape over the SAME logs table, and each arm is its own
 	// Distributed fan-out on a multi-data-shard deployment — so the weight is
 	// the arm count, not one (chclient.WithDataShardFanoutMultiplier's doc).
-	ctx := chclient.WithDataShardFanoutMultiplier(r.Context(), physicalScans)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	ctx = chclient.WithDataShardFanoutMultiplier(ctx, physicalScans)
 	vals, err := h.Client.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki label values CH query failed", "err", err, "sql", sqlStr)
@@ -113,21 +117,28 @@ func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name st
 	if topCol == "" && len(keys) == 1 {
 		// Fast path: single map-key lookup, no top-level fallback.
 		sb := chsql.NewQuery().
-			Select(chsql.As(distinctMapAtFrag(s.ResourceAttributesColumn, keys[0]), "v")).
+			Select(chsql.As(attrmap.DistinctAt(s.ResourceAttributesColumn, keys[0]), "v")).
 			From(chsql.PhysicalTable(s.LogsTable)).
 			WithAttrStrategies(strategies)
 		if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 			return "", nil, 0, err
 		}
-		sb.Where(nonEmptyMapAtFrag(s.ResourceAttributesColumn, keys[0]))
+		sb.Where(attrmap.NotEmpty(s.ResourceAttributesColumn, keys[0]))
 		sb.OrderBy(chsql.Col("v"), false)
 		sqlStr, args, physicalScans := sb.BuildCounted()
 		return sqlStr, args, physicalScans, nil
 	}
 
-	// Fallback path: UNION ALL one arm per storage shape, wrap in an
-	// outer SELECT DISTINCT for de-dup + ORDER BY.
-	arms := make([]chsql.Frag, 0, len(keys)+1)
+	// Fallback path: UNION ALL one arm per STORAGE SHAPE — the dedicated
+	// column, and ONE scan of the map covering every candidate spelling —
+	// wrapped in an outer SELECT DISTINCT for de-dup + ORDER BY. The map
+	// arm is attrmap.CollapsedValues, the same one-scan projection the
+	// Prometheus head's /api/v1/label/<name>/values uses: a label with two
+	// rewritable underscores (`k8s_pod_name`) expands to seven candidates,
+	// and one full scan of the logs table per candidate — the shape this
+	// replaced — is the 120 s timeout cerberus issue #3168 measured on the
+	// metrics tables, with no projection here to fall back on.
+	arms := make([]chsql.Frag, 0, 2)
 	if topCol != "" {
 		arm := chsql.NewQuery().
 			Select(chsql.As(chsql.Col(topCol), "v")).
@@ -139,17 +150,14 @@ func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name st
 		arm.Where(chsql.Neq(chsql.Col(topCol), chsql.Lit("")))
 		arms = append(arms, arm.Frag())
 	}
-	for _, k := range keys {
-		arm := chsql.NewQuery().
-			Select(chsql.As(mapAtFrag(s.ResourceAttributesColumn, k), "v")).
-			From(chsql.PhysicalTable(s.LogsTable)).
-			WithAttrStrategies(strategies)
-		if err := applySelectorAndWindow(arm, s, matchers, start, end); err != nil {
-			return "", nil, 0, err
-		}
-		arm.Where(nonEmptyMapAtFrag(s.ResourceAttributesColumn, k))
-		arms = append(arms, arm.Frag())
+	mapArm := chsql.NewQuery().
+		Select(chsql.As(attrmap.CollapsedValues(s.ResourceAttributesColumn, keys), "v")).
+		From(chsql.PhysicalTable(s.LogsTable)).
+		WithAttrStrategies(strategies)
+	if err := applySelectorAndWindow(mapArm, s, matchers, start, end); err != nil {
+		return "", nil, 0, err
 	}
+	arms = append(arms, mapArm.Frag())
 
 	outer := chsql.NewQuery().
 		Select(chsql.Distinct(chsql.Col("v"))).
@@ -218,26 +226,6 @@ func unionAllQuery(arms []chsql.Frag) chsql.Frag {
 		return arms[0]
 	}
 	return chsql.UnionAll(arms...)
-}
-
-// distinctMapAtFrag emits "DISTINCT `<col>`[?]" with name bound as a `?`
-// positional argument. Composed via the typed Distinct constructor
-// wrapping a typed map-access Frag.
-func distinctMapAtFrag(col, name string) chsql.Frag {
-	return chsql.Distinct(mapAtFrag(col, name))
-}
-
-// nonEmptyMapAtFrag emits "`<col>`[?] != ?" binding both the map key and
-// the empty-string sentinel as positional arguments. Composed via the
-// typed Neq operator so neither operand reaches a raw SQL literal.
-func nonEmptyMapAtFrag(col, name string) chsql.Frag {
-	return chsql.Neq(mapAtFrag(col, name), chsql.Lit(""))
-}
-
-// mapAtFrag adapts Builder.MapAt into a Frag — emits "`<col>`[?]" with
-// the key bound as a positional argument.
-func mapAtFrag(col, name string) chsql.Frag {
-	return func(b *chsql.Builder) { b.MapAt(col, name) }
 }
 
 // labelNameFromPath extracts <name> from /loki/api/v1/label/<name>/values.

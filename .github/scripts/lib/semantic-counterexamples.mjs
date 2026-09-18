@@ -67,6 +67,7 @@ import {
   isObject,
   nullableStringValue,
   parseJSONFile,
+  positiveIntegerValue,
   stringArray,
   stringValue,
 } from "./semantic-model.mjs";
@@ -131,13 +132,6 @@ const CONTRACT_ENTRY_KEYS = new Set([
   "replay_command",
 ]);
 
-function positiveIntegerValue(value, path, problems) {
-  if (!Number.isInteger(value) || value <= 0) {
-    fail(problems, "schema", `${path} must be a positive integer; got ${JSON.stringify(value)}`);
-    return false;
-  }
-  return true;
-}
 
 function validateContractEntry(entry, at, model, problems, opts) {
   if (!exactObject(entry, CONTRACT_ENTRY_KEYS, at, problems)) return;

@@ -5,7 +5,10 @@
 // evidence inventories it can resolve bindings against, and reports every
 // binding whose test_ref dangles: names an identity that no longer exists
 // in the property-shape rosters, the TXTAR spec corpus, the surface-parity
-// inventory, the rejection-parity catalogue, or the QL feature inventory.
+// inventory, the rejection-parity catalogue, the QL feature inventory, or
+// — for a plain path / path:TestName / path#token reference — the source
+// tree itself. Every binding is resolved; a test_ref no scheme can parse is
+// itself reported as dangling.
 //
 // Env:
 //   SEMANTIC_MODEL_DIR   directory holding the six semantic model JSON
@@ -15,17 +18,17 @@
 //
 // Node builtins only, plus a `go run` shell-out for the one Go export
 // helper (test/semantic/cmd/property-shape-export). Exit 0 when every
-// resolvable binding resolves; 1 (with an ::error:: annotation per dangling
-// binding) otherwise.
+// binding resolves; 1 (with an ::error:: annotation per dangling binding)
+// otherwise.
 
 import process from "node:process";
-import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
+import { appendStepSummary, errorStderr } from "./lib/gh.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import {
-  classifyTestRef,
+  EVIDENCE_SYSTEMS,
   diagnoseDanglingBindings,
   loadOracleInventory,
   loadPropertyShapeExport,
@@ -33,14 +36,14 @@ import {
   loadSurfaceParityInventory,
 } from "./lib/semantic-evidence-adapter.mjs";
 
+const ANNOTATION_TITLE = "Semantic evidence adapter";
+
 function appendSummary(body) {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (path) appendFileSync(path, body);
+  appendStepSummary(body, { quiet: true });
 }
 
 function errorAnnotation(message) {
-  const oneLine = message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-  process.stderr.write(`::error title=Semantic evidence adapter::${oneLine}\n`);
+  errorStderr(message, { title: ANNOTATION_TITLE });
 }
 
 function main() {
@@ -57,13 +60,11 @@ function main() {
   };
 
   const problems = diagnoseDanglingBindings(model, indices);
-  const resolvable = [...model.bindings.values()].filter(
-    (b) => classifyTestRef(b.test_ref).system !== null,
-  ).length;
+  const checked = model.bindings.size;
 
   const summary =
     `## Semantic evidence adapter\n\n` +
-    `- bindings checked against the five identity systems: **${resolvable}**\n` +
+    `- bindings checked against the ${EVIDENCE_SYSTEMS.length} evidence systems: **${checked}**\n` +
     `- dangling: **${problems.length}**\n`;
   appendSummary(summary);
 
@@ -73,8 +74,8 @@ function main() {
     process.exit(1);
   }
   process.stdout.write(
-    `semantic-evidence-adapter: ${resolvable} binding(s) resolved against property-shape/txtar/` +
-      "surface-parity/rejection-parity/oracle-inventory evidence, no dangling references\n",
+    `semantic-evidence-adapter: ${checked} binding(s) resolved against ${EVIDENCE_SYSTEMS.join("/")} ` +
+      "evidence, no dangling references\n",
   );
 }
 

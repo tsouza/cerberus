@@ -267,48 +267,44 @@ func TestExpHistogramWindowBound_AdmitsTheOrdinaryPanelAndRefusesTheDenseSeries(
 	}
 }
 
-// TestWrapExpHistogramWindowSampleGuard_NonPositiveCeilingOmitsTheGuard
-// pins the boundary of [wrapExpHistogramWindowSampleGuard]'s own gate,
-// and zero is the case that matters.
-//
-// A ceiling of zero means the caller resolved no bound. The guard must be
-// OMITTED there rather than rendered — rendering it would emit
-// `cost > 0`, which every non-empty group satisfies, turning "no bound
-// configured" into "refuse every exponential-histogram window query".
-//
-// Zero is also the only input that tells `<= 0` apart from `< 0`. Without
-// it that comparison is untested at its own boundary: every positive
-// ceiling takes the same branch under either spelling, and a negative one
-// does too.
-func TestWrapExpHistogramWindowSampleGuard_NonPositiveCeilingOmitsTheGuard(t *testing.T) {
+// TestWrapExpHistogramWindowSampleGuard_RendersEveryCeilingAsGiven pins
+// that [wrapExpHistogramWindowSampleGuard] has no "no bound" escape: a
+// zero or negative ceiling is rendered into the guard exactly like a
+// positive one, so a caller that skipped [ResourceBounds.withDefaults]
+// gets a guard that rejects, never a silently absent one — the same
+// posture every other ResourceBounds field takes. Resolution to the
+// derived default is the entry seam's job (see
+// TestExpHistogramWindowGuardEmittedByEveryEntryPoint).
+func TestWrapExpHistogramWindowSampleGuard_RendersEveryCeilingAsGiven(t *testing.T) {
 	t.Parallel()
 
 	reduced := chplan.Node(&chplan.Scan{Table: "otel_metrics_exponential_histogram"})
 	for _, tc := range []struct {
-		name     string
-		ceiling  int64
-		wantSame bool
+		name    string
+		ceiling int64
 	}{
-		{"zero — no bound resolved", 0, true},
-		{"negative", -1, true},
-		{"one — the smallest real bound", 1, false},
-		{"the derived default", ExpHistogramWindowCostUnitsForMemory(1 << 30), false},
+		{"zero — an unresolved bound rejects", 0},
+		{"negative", -1},
+		{"one — the smallest real bound", 1},
+		{"the derived default", ExpHistogramWindowCostUnitsForMemory(1 << 30)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := wrapExpHistogramWindowSampleGuard(reduced, tc.ceiling)
-			if same := got == reduced; same != tc.wantSame {
-				t.Fatalf("ceiling %d: returned-input=%v, want %v", tc.ceiling, same, tc.wantSame)
-			}
-			if tc.wantSame {
-				return
-			}
 			filter, ok := got.(*chplan.Filter)
 			if !ok {
 				t.Fatalf("ceiling %d: got %T, want *chplan.Filter", tc.ceiling, got)
 			}
 			if filter.Input != reduced {
-				t.Errorf("ceiling %d: the guard must wrap the reduction it reads, not replace it", tc.ceiling)
+				t.Fatalf("ceiling %d: the guard must wrap the reduction it reads, not replace it", tc.ceiling)
+			}
+			want := wrapExpHistogramWindowSampleGuard(reduced, tc.ceiling)
+			if !got.Equal(want) {
+				t.Fatalf("ceiling %d: guard is not deterministic", tc.ceiling)
+			}
+			other := wrapExpHistogramWindowSampleGuard(reduced, tc.ceiling+1)
+			if got.Equal(other) {
+				t.Fatalf("ceiling %d: the rendered guard does not carry the ceiling it was given", tc.ceiling)
 			}
 		})
 	}

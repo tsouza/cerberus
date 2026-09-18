@@ -508,9 +508,11 @@ func BenchmarkStreamingCursor_Stop_Mid(b *testing.B) {
 // TestAllocs_HandleQuery_Small pins the per-request alloc count for
 // the smallest /api/v1/query path. Compared to the other allocs tests,
 // this one is loose — the net/http stack contributes a lot of allocs
-// per request — but a 10× ceiling around the current baseline is a
-// useful regression detector for handler-side changes (e.g.
-// accidentally materialising the response twice).
+// per request — but a ceiling a few percent above the measured count
+// is a useful regression detector for handler-side and engine-seam
+// changes (accidentally materialising the response twice; a per-query
+// plan walk added to the dispatch seam, which is what commit 27c3476d9
+// caught).
 func TestAllocs_HandleQuery_Small(t *testing.T) {
 	// AllocsPerRun forbids parallel execution.
 	ts := time.Unix(1700000000, 0).UTC()
@@ -531,9 +533,16 @@ func TestAllocs_HandleQuery_Small(t *testing.T) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	})
-	// HTTP transport + handler envelope. Baseline ~281; ceiling
-	// includes 3× slack for net/http variance — the goal is
-	// regression detection, not optimisation.
+	// HTTP transport + handler envelope + the engine's dispatch seam.
+	// Measured 808 with the seam's plan predicates folded into one
+	// inspection (internal/engine/plan_shape.go); it was 826 with a
+	// closure-carrying walk per predicate and 851 with two more such
+	// walks (the regression commit 27c3476d9 reverted). The ceiling
+	// leaves ~5% over the measured value for net/http variance, which
+	// is roughly what a dozen extra full-tree walks cost — so this
+	// catches a gross regression (a response materialised twice, a
+	// per-predicate walk pattern creeping back), not a single added
+	// walk. The goal is regression detection, not optimisation.
 	const ceiling = 850.0
 	if got > ceiling {
 		t.Errorf("HandleQuery_Small avg allocs = %.1f; want <= %.1f", got, ceiling)

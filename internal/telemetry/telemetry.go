@@ -249,7 +249,11 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 // histogram spec's own documented defaults (the same values every major
 // OTel SDK ships when a caller doesn't override them): up to 160 buckets,
 // starting at the maximum resolution scale (20) and auto-narrowing as
-// measurements arrive. sdkmetric.AggregationBase2ExponentialHistogram's own
+// measurements arrive. The bucket budget is the same one the query side
+// caps a merged histogram's width at (chplan.OTelExpoHistogramDefaultMaxSize,
+// read by internal/promql's merge-scale refinement); this package imports
+// no internal layer, so test/regression pins the two values equal rather
+// than this file importing the constant. sdkmetric.AggregationBase2ExponentialHistogram's own
 // zero value is NOT a usable "use the SDK default" sentinel — its err()
 // rejects MaxSize <= 0, and sdkmetric.NewView silently drops (logs via
 // go.opentelemetry.io/otel's global error handler, otherwise unnoticed) an

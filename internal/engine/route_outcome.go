@@ -194,8 +194,8 @@ var timeSliceableResourceBoundMessages = []string{
 	// window fold — that scales with the request's own anchor grid
 	// exactly like its three siblings above, and a time-sliced shard's
 	// narrower grid genuinely lowers it while the ceiling stays whole-query
-	// (routeBExecCtx threads RangeBucketFanoutGroupMaxRows to every shard
-	// verbatim, via applyResourceBoundOverrides) — the same qualifying
+	// (routeBExecCtx threads RangeBucketFanoutFoldCostMaxUnits to every
+	// shard verbatim, via applyResourceBoundOverrides) — the same qualifying
 	// reasoning this list's own doc comment gives for the other three.
 	chsql.RangeBucketFanoutGroupBudgetMessage,
 }

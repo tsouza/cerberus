@@ -2,8 +2,10 @@
 #
 #   pre-commit — fast formatters on staged files only (sub-second).
 #   commit-msg — commitlint on the message being written.
-#   pre-push   — grep- and Node-based discipline scans plus actionlint,
-#                a couple of seconds in total.
+#   pre-push   — Node-based discipline scans plus actionlint, run in
+#                parallel: about a second of wall-clock on an idle host
+#                (actionlint is the longest single command at ~1 s; the
+#                whole set is ~5 s under a heavily loaded host).
 #
 # Every command here is one a developer cannot get from CI in time to
 # act on it, and cheap enough that paying for it on every push is
@@ -64,8 +66,9 @@ pre-commit:
         node .github/scripts/markdownlint-run.mjs --staged {staged_files}
 
 # pre-push runs once per `git push`. It carries the forbid-skip and
-# repo-hygiene gates — grep and Node scans that finish in about a second
-# — and actionlint. Set `LEFTHOOK=0` to bypass for WIP pushes.
+# repo-hygiene gates — Node scans of a few hundred milliseconds each — and
+# actionlint; in parallel the set finishes in about a second on an idle
+# host. Set `LEFTHOOK=0` to bypass for WIP pushes.
 pre-push:
   parallel: true
   commands:
@@ -81,125 +84,43 @@ pre-push:
       tags: lint
       run: |
         just lint-actions
+    # Mirrors of the CI `forbid-skip` gate, one command per arm of the
+    # CHECKS registry in .github/scripts/forbid-skip.mjs. The hook runs the
+    # SAME script CI runs, so there is exactly one copy of every discipline
+    # regex; test/regression/lefthook_forbid_skip_mirror_test.go pins that
+    # every registry arm is mirrored here and that no hook body re-spells a
+    # scan inline. The scans themselves are proved to go red by
+    # .github/scripts/forbid-skip.test.mjs (CI).
     forbid-skip-t-skip:
       tags: discipline
-      run: |
-        if git ls-files -z -- \
-            '*_test.go' \
-            ':!:compatibility/*/upstream/**' \
-            | xargs -0 grep -nE 't\.Skip[fN]?\(' --; then
-          echo "lefthook: t.Skip / t.Skipf / t.SkipNow in test files — fix the bug, do not skip"
-          exit 1
-        fi
-    # Mirrors the CI `forbid-skip` gate's `playwright-skip` arm. Playwright
-    # spells its own suppression routes in `.spec.ts`, which the Go scan
-    # above structurally cannot see; `.only` is here for the mirror-image
-    # reason, since it silences every OTHER spec in its file.
+      run: node .github/scripts/forbid-skip.mjs
+      env:
+        CHECK: t-skip
     forbid-skip-playwright:
       tags: discipline
-      run: |
-        if git ls-files -z -- \
-            '*.spec.ts' \
-            '*.spec.js' \
-            ':!:**/node_modules/**' \
-            | xargs -0 grep -nEH '(^|[^A-Za-z0-9_$.])(test|it|describe|suite)(\.describe)?\.(skip|fixme|only)\s*\(' --; then
-          echo "lefthook: test.skip / test.fixme / test.only in a Playwright spec — a spec runs and asserts, or it is deleted"
-          exit 1
-        fi
-    # Mirrors the CI `forbid-skip` gate's Gherkin-scenario discipline.
-    # A `@wip`-style tag filters a Scenario out of the migration lane
-    # while the run still reports green, and godog's Go-side skip
-    # routes (`godog.ErrSkip` / `godog.ErrPending` / a `Skip` call on
-    # the TestingT it hands a step) live in NON-test .go files that the
-    # `forbid-skip-t-skip` scan above cannot see.
-    forbid-feature-discipline:
+      run: node .github/scripts/forbid-skip.mjs
+      env:
+        CHECK: playwright-skip
+    forbid-skip-soft-assert:
       tags: discipline
-      run: |
-        fail=0
-        if git ls-files -z -- \
-            '*.feature' \
-            ':!:**/node_modules/**' \
-            | xargs -0 grep -nEH '(^|[ \t])@(wip|skip|ignore|manual|todo|pending)([ \t]|$)' --; then
-          fail=1
-        fi
-        if git ls-files -z -- \
-            'test/e2e/migration/**/*.go' \
-            | xargs -0 grep -nEH 'godog\.(ErrSkip|ErrPending)|\.Skip(f|Now)?\(' --; then
-          fail=1
-        fi
-        if [ "$fail" -ne 0 ]; then
-          echo "lefthook: scenario-suppressing tag or godog skip/pending route — a scenario runs and asserts, or it is deleted"
-          exit 1
-        fi
-    # Mirrors the `Self-test forbid-skip regex set` CI step. Runs the
-    # canonical match / no-match assertions documented in
-    # docs/forbid-skip.md against the regex set shared with the CI gate.
-    forbid-skip-self-test:
+      run: node .github/scripts/forbid-skip.mjs
+      env:
+        CHECK: soft-assert
+    forbid-skip-should-skip:
       tags: discipline
-      run: |
-        scripts/test-forbid-skip.sh
-    forbid-soft-assert:
+      run: node .github/scripts/forbid-skip.mjs
+      env:
+        CHECK: should-skip
+    forbid-skip-escape-hatch:
       tags: discipline
-      run: |
-        fail=0
-        if git ls-files -z -- \
-            '*_test.go' \
-            ':!:compatibility/*/upstream/**' \
-            | xargs -0 grep -nEH 'assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)|assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)' --; then
-          fail=1
-        fi
-        # Multi-line silent-recover scan — mirrors the CI `forbid-skip`
-        # gate so the inner loop catches both single-line and
-        # multi-line `defer func() { _ = recover() }()` blocks.
-        matches=$(git ls-files -z -- '*_test.go' ':!:compatibility/*/upstream/**' \
-          | xargs -0 perl -0777 -ne '
-              while (/defer\s+recover\s*\(\s*\)|defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)/g) {
-                my $pre = substr($_, 0, $-[0]);
-                my $line = ($pre =~ tr/\n//) + 1;
-                print "$ARGV:$line: silent-recover pattern\n";
-              }
-            ')
-        if [ -n "$matches" ]; then
-          printf '%s\n' "$matches"
-          fail=1
-        fi
-        if [ "$fail" -ne 0 ]; then
-          echo "lefthook: soft-assertion or silent-recover pattern — assert specific content / use assert.Panics"
-          exit 1
-        fi
-    # Mirrors the CI `forbid-skip` gate's test-escape-hatch rejection
-    # so the inner loop catches the same patterns. Every assertion
-    # must fail loud; never mask a failure with an allow-list /
-    # tolerance / soft-assert.
-    forbid-escape-hatch:
+      run: node .github/scripts/forbid-skip.mjs
+      env:
+        CHECK: escape-hatch
+    forbid-skip-feature-discipline:
       tags: discipline
-      run: |
-        if git ls-files -z -- \
-            '*.ts' '*.tsx' '*.go' \
-            ':!:compatibility/*/upstream/**' \
-            ':!:**/node_modules/**' \
-            ':!:vendor/**' \
-            ':!:.claude/**' \
-            | xargs -0 grep -nEH 'EXPECTED_EMPTY|EXPECTED_TOLERATED|isKnownTolerated|tolerated404|expect\.soft|should_tolerate|skipReason|SkipReason|APP_NOT_INSTALLED_BANNER_PATTERNS|DRILLDOWN_UPSTREAM_GRAFANA_CONSOLE_NOISE' --; then
-          echo "lefthook: test escape-hatch pattern — fix the bug at the source, never mask the failure"
-          exit 1
-        fi
-        matches=$(git ls-files -z -- \
-            'compatibility/**/*.yml' \
-            'compatibility/**/*.yaml' \
-            ':!:compatibility/*/upstream/**' \
-          | xargs -0 perl -0777 -ne '
-              while (/^[ \t]*should_skip:[ \t]*\n(?:[ \t]*\#[^\n]*\n|[ \t]*\n)*[ \t]+-/mg) {
-                my $pre = substr($_, 0, $-[0]);
-                my $line = ($pre =~ tr/\n//) + 1;
-                print "$ARGV:$line: non-empty should_skip block\n";
-              }
-            ')
-        if [ -n "$matches" ]; then
-          printf '%s\n' "$matches"
-          echo "lefthook: non-empty should_skip overlay entry — consumer code was removed; fix the underlying bug"
-          exit 1
-        fi
+      run: node .github/scripts/forbid-skip.mjs
+      env:
+        CHECK: feature-discipline
 
     # Mirrors the CI typed-chsql-API discipline gate. Scans internal/chsql/
     # (excluding builder.go and test files) for raw SQL token writes:

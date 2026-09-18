@@ -18,7 +18,68 @@ import (
 // per-row downscaled offsets that
 // expHistogramMergeBucketsBoundsExpr builds. Counting it is how this test
 // sees every RENDER of that subtree, whether or not the render is bound.
-const mergedStartRenderSQL = "arrayMin(arrayMap((sm, om) -> bitShiftRight(om, "
+const mergedStartRenderSQL = "arrayMin(arrayFilter((" + paramExpMergeRowStart + ", " + paramExpMergeRowBuckets + ") -> (length(" + paramExpMergeRowBuckets + ") > ?), arrayMap((" + paramExpMergeRowScale + ", " + paramExpMergeRowOffset + ") -> bitShiftRight(" + paramExpMergeRowOffset + ", "
+
+// mergedStartBoundRenderSQL is a render sitting inside its hqLet binding:
+// `array(<start>)` is the one-element array the binding lambda maps over.
+const mergedStartBoundRenderSQL = "array(" + mergedStartRenderSQL
+
+// isOffsetProjection reports whether the text following a render's closing
+// paren aliases it as the merged output's own PositiveOffset /
+// NegativeOffset column — under the canonical chplan.Histogram*Offset
+// names or the physical schema's own. That projection reads the same
+// expression once per GROUP, outside any per-target-bucket loop, and it
+// must be that expression: the offset the output claims and the start the
+// merged bucket array is aligned to have to agree
+// (expHistogramMergeOffsetExpr). It is the one render that is legitimately
+// not a binding.
+func isOffsetProjection(rest string) bool {
+	const aliasHead = " AS `"
+	if !strings.HasPrefix(rest, aliasHead) {
+		return false
+	}
+	alias, _, ok := strings.Cut(rest[len(aliasHead):], "`")
+	return ok && strings.HasSuffix(alias, "Offset")
+}
+
+// unboundMergedStartRenders returns how many renders of the merged start
+// sit outside a binding, and how many of THOSE are output offset
+// projections (the render's own closing paren is followed by the offset
+// alias). Any other unbound render is a re-evaluation inside a reader.
+func unboundMergedStartRenders(sql string) (unbound, offsetProjections int) {
+	for i := 0; ; {
+		at := strings.Index(sql[i:], mergedStartRenderSQL)
+		if at < 0 {
+			return unbound, offsetProjections
+		}
+		at += i
+		i = at + len(mergedStartRenderSQL)
+		if at >= len("array(") && strings.HasSuffix(sql[:at], "array(") {
+			continue
+		}
+		unbound++
+		// Walk to the arrayMin's own closing paren.
+		depth := 0
+		end := -1
+		for j := at; j < len(sql); j++ {
+			switch sql[j] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = j + 1
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end >= 0 && isOffsetProjection(sql[end:]) {
+			offsetProjections++
+		}
+	}
+}
 
 // mergedStartBindingSQL is the head of the hqLet binding
 // expHistogramOverMergedBucketRangeExpr wraps each merged bucket-range in
@@ -124,7 +185,9 @@ func TestExpHistogramMergedStartIsBoundOncePerSite(t *testing.T) {
 			}
 
 			renders := strings.Count(sql, mergedStartRenderSQL)
+			boundRenders := strings.Count(sql, mergedStartBoundRenderSQL)
 			bindings := strings.Count(sql, mergedStartBindingSQL)
+			unbound, offsetProjections := unboundMergedStartRenders(sql)
 
 			// Guard the guard: a query that fell off the exponential
 			// bucket-merge path entirely would satisfy "renders ==
@@ -133,8 +196,11 @@ func TestExpHistogramMergedStartIsBoundOncePerSite(t *testing.T) {
 				t.Fatalf("emitted SQL for %q contains no merged bucket-range start — it never reached %s, so the equality below would be vacuous\nSQL: %s", tc.query, tc.sites, sql)
 			}
 
-			if renders != bindings {
-				t.Errorf("emitted SQL for %q renders the merged bucket-range start %d time(s) but opens only %d binding(s) — every merged start must be bound once by expHistogramOverMergedBucketRangeExpr and read as `%s`, or ClickHouse re-evaluates an arrayMin over the group's rows once per target bucket (%s)\nSQL: %s", tc.query, renders, bindings, paramExpMergedStart, tc.sites, sql)
+			if boundRenders != bindings {
+				t.Errorf("emitted SQL for %q binds the merged bucket-range start %d time(s) but opens %d binding(s) — every binding expHistogramOverMergedBucketRangeExpr opens must be over the start itself (%s)\nSQL: %s", tc.query, boundRenders, bindings, tc.sites, sql)
+			}
+			if unbound != offsetProjections {
+				t.Errorf("emitted SQL for %q renders the merged bucket-range start %d time(s) outside a binding, of which only %d are the merged output's own offset projections — every other read must go through the binding's `%s`, or ClickHouse re-evaluates an arrayMin over the group's rows once per target bucket (%s)\nSQL: %s", tc.query, unbound, offsetProjections, paramExpMergedStart, tc.sites, sql)
 			}
 		})
 	}

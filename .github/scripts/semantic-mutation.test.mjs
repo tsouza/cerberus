@@ -94,6 +94,7 @@ function exampleMutantRecord(overrides = {}) {
         test_run: "^TestExample$",
         build_tags: [],
         timeout_seconds: 15,
+        evidence_kind: "execution",
       },
     ],
     expected_detection: "killed",
@@ -117,6 +118,38 @@ test("valid synthetic record passes with no problems", () => {
   const { id, problems } = validate(exampleMutantRecord());
   assert.equal(id, "MUTANT-SYNTH-EXAMPLE");
   assert.deepEqual(problems, []);
+});
+
+// --- Detector evidence kind ---------------------------------------------
+//
+// A detector that kills through a golden TEXT comparison (a TXTAR fixture's
+// sql/args/chplan sections, checked before the chDB round trip is reached)
+// fires on any change to the emitted SQL, including a semantics-preserving
+// one; it says nothing about whether a semantic verifier would catch the
+// bug. The record has to say which kind each detector is, so the cohort
+// report can keep the two rates apart.
+
+test("a detector must declare its evidence_kind, from the closed vocabulary", () => {
+  const record = exampleMutantRecord();
+  delete record.detectors[0].evidence_kind;
+  const { problems } = validate(record);
+  assert.ok(problems.some((p) => p.includes("detectors[0].evidence_kind is required")), problems.join("; "));
+
+  const bad = exampleMutantRecord();
+  bad.detectors[0].evidence_kind = "vibes";
+  const { problems: badProblems } = validate(bad);
+  assert.ok(badProblems.some((p) => p.includes("detectors[0].evidence_kind must be one of")), badProblems.join("; "));
+});
+
+test("a TestLower fixture detector cannot declare execution evidence: spec.Match runs before the chDB round trip", () => {
+  const record = exampleMutantRecord();
+  record.detectors[0].test_run = "^TestLower$/^some_fixture$";
+  record.detectors[0].evidence_kind = "execution";
+  const { problems } = validate(record);
+  assert.ok(problems.some((p) => p.includes("golden-text")), problems.join("; "));
+
+  record.detectors[0].evidence_kind = "golden-text";
+  assert.deepEqual(validate(record).problems, []);
 });
 
 test("rejects an unknown top-level key", () => {
@@ -436,8 +469,64 @@ test("classifyGoTestOutput: a crash is never a kill — a bare package-level FAI
 
 // --- aggregateClassifications (pure) -------------------------------------
 
-test("aggregateClassifications: killed from any detector wins outright", () => {
-  assert.equal(aggregateClassifications(["survived", "killed", "timeout"]), "killed");
+test("aggregateClassifications: killed from any detector wins over survived", () => {
+  assert.equal(aggregateClassifications(["survived", "killed", "survived"]), "killed");
+});
+
+// A detector whose harness never adjudicated (build-failed / timeout /
+// infrastructure-error) is an INCOMPLETE measurement on that detector. It
+// must never be hidden behind a sibling detector's clean PASS (which,
+// with a non-null equivalence_review, would then be promoted to
+// equivalent-reviewed and exit 0) nor behind a sibling's kill.
+test("aggregateClassifications: a harness outcome on any detector wins over survived", () => {
+  assert.equal(aggregateClassifications(["survived", "build-failed"]), "build-failed");
+  assert.equal(aggregateClassifications(["survived", "timeout"]), "timeout");
+  assert.equal(aggregateClassifications(["survived", "infrastructure-error"]), "infrastructure-error");
+});
+
+test("aggregateClassifications: a harness outcome on any detector wins over killed", () => {
+  assert.equal(aggregateClassifications(["killed", "infrastructure-error"]), "infrastructure-error");
+  assert.equal(aggregateClassifications(["killed", "build-failed"]), "build-failed");
+  assert.equal(aggregateClassifications(["survived", "killed", "timeout"]), "timeout");
+});
+
+test("runMutant: a build failure on one detector is never masked by a sibling's PASS plus an equivalence review", async () => {
+  const scratchRoot = mkdtempSync(join(tmpdir(), "semantic-mutation-scratch-"));
+  const scratchDir = createScratchDir(scratchRoot);
+  try {
+    const base = exampleMutantRecord();
+    const record = exampleMutantRecord({
+      expected_detection: "equivalent-reviewed",
+      equivalence_review: {
+        reviewer: "test-suite",
+        reviewed_at: "2026-01-01T00:00:00Z",
+        source_fingerprint: REAL_SOURCE_FINGERPRINT,
+        rationale: "test double",
+      },
+      transformation: {
+        target_path: REAL_TARGET_PATH,
+        patch_path: REAL_PATCH_PATH,
+        source_fingerprint: REAL_SOURCE_FINGERPRINT,
+        expected_mutated_fingerprint: computeMutatedFingerprint(REAL_PATCH_PATH),
+      },
+      detectors: [
+        { ...base.detectors[0], id: "passes", test_run: "^TestPasses$" },
+        { ...base.detectors[0], id: "does-not-compile", test_run: "^TestDoesNotCompile$" },
+      ],
+    });
+    const result = await runMutant({
+      record,
+      root: REPO_ROOT,
+      scratchDir,
+      runGoTestFn: async ({ overlayPath, testRun }) => {
+        if (overlayPath === null || testRun === "^TestPasses$") return fakeCleanPass();
+        return { exitCode: 1, signal: null, stdout: "FAIL\tpkg [build failed]\n", stderr: "", timedOut: false, durationMs: 1 };
+      },
+    });
+    assert.equal(result.status, "build-failed");
+  } finally {
+    rmSync(scratchRoot, { recursive: true, force: true });
+  }
 });
 
 test("aggregateClassifications: an all-equal set collapses to that value", () => {

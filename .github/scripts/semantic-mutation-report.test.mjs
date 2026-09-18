@@ -47,6 +47,7 @@ function mutantRecord(overrides = {}) {
         test_run: "^TestExample$",
         build_tags: [],
         timeout_seconds: 30,
+        evidence_kind: "execution",
       },
     ],
     expected_detection: "killed",
@@ -128,9 +129,9 @@ test("buildMutationCohortReport: a mutant with N correlated detectors still cont
       id: "MUTANT-MULTI-DETECTOR",
       expected_detection: "killed",
       detectors: [
-        { id: "d1", package: "./internal/fixture", test_run: "^Test1$", build_tags: [], timeout_seconds: 30 },
-        { id: "d2", package: "./internal/fixture", test_run: "^Test2$", build_tags: [], timeout_seconds: 30 },
-        { id: "d3", package: "./internal/fixture", test_run: "^Test3$", build_tags: [], timeout_seconds: 30 },
+        { id: "d1", package: "./internal/fixture", test_run: "^Test1$", build_tags: [], timeout_seconds: 30, evidence_kind: "execution" },
+        { id: "d2", package: "./internal/fixture", test_run: "^Test2$", build_tags: [], timeout_seconds: 30, evidence_kind: "execution" },
+        { id: "d3", package: "./internal/fixture", test_run: "^Test3$", build_tags: [], timeout_seconds: 30, evidence_kind: "execution" },
       ],
     }),
   ]);
@@ -142,8 +143,8 @@ test("buildMutationCohortReport: a mutant with N correlated detectors still cont
 
 test("buildMutationCohortReport: two multi-detector records (correlated within each) sum to their own record count, not detector count", () => {
   const twoDetectors = [
-    { id: "d1", package: "./internal/fixture", test_run: "^Test1$", build_tags: [], timeout_seconds: 30 },
-    { id: "d2", package: "./internal/fixture", test_run: "^Test2$", build_tags: [], timeout_seconds: 30 },
+    { id: "d1", package: "./internal/fixture", test_run: "^Test1$", build_tags: [], timeout_seconds: 30, evidence_kind: "execution" },
+    { id: "d2", package: "./internal/fixture", test_run: "^Test2$", build_tags: [], timeout_seconds: 30, evidence_kind: "execution" },
   ];
   const records = recordsMap([
     mutantRecord({ id: "MUTANT-KILLED-PAIR", expected_detection: "killed", detectors: twoDetectors }),
@@ -389,6 +390,47 @@ test("buildMutationCohortReport + renderMutationCohortMarkdown: byte-identical a
 });
 
 // --- Real committed corpus (end to end) ----------------------------------
+
+test("buildMutationCohortReport: the semantic cohort's kill rate is reported per detector evidence kind, never blended", () => {
+  const goldenDetector = { id: "g", package: "./internal/logql", test_run: "^TestLower$/^fixture$", build_tags: [], timeout_seconds: 30, evidence_kind: "golden-text" };
+  const execDetector = { id: "e", package: "./test/property", test_run: "^TestProp$", build_tags: ["chdb"], timeout_seconds: 30, evidence_kind: "execution" };
+  const records = recordsMap([
+    mutantRecord({ id: "MUTANT-GOLDEN", detectors: [goldenDetector] }),
+    mutantRecord({ id: "MUTANT-EXEC-A", detectors: [execDetector] }),
+    mutantRecord({ id: "MUTANT-EXEC-B", detectors: [{ ...execDetector, id: "e2" }] }),
+    mutantRecord({ id: "MUTANT-MIXED", detectors: [goldenDetector, execDetector] }),
+  ]);
+  const report = buildMutationCohortReport(records);
+  const byKind = report.semantic_cohort.by_evidence_kind;
+  assert.deepEqual(byKind["golden-text"].record_ids, ["MUTANT-GOLDEN"]);
+  assert.deepEqual(byKind.execution.record_ids, ["MUTANT-EXEC-A", "MUTANT-EXEC-B"]);
+  assert.deepEqual(byKind.mixed.record_ids, ["MUTANT-MIXED"]);
+  assert.equal(byKind["golden-text"].rates.denominator, 1);
+  assert.equal(byKind.execution.rates.denominator, 2);
+  assert.equal(byKind.execution.rates.kill_rate, 1);
+  assert.equal(report.records.find((r) => r.id === "MUTANT-MIXED").evidence_kind, "mixed");
+  const markdown = renderMutationCohortMarkdown(report);
+  assert.match(markdown, /golden-text/);
+  assert.match(markdown, /By detector evidence kind/);
+});
+
+test("real corpus: the two TestLower-detector LogQL mutants are golden-text and the property/grpc-detector mutants are execution", () => {
+  const records = loadMutants();
+  const model = loadSemanticModel(DEFAULT_SEMANTIC_MODEL_DIR);
+  const report = buildMutationCohortReport(records, { contracts: model.contracts });
+  const byKind = report.semantic_cohort.by_evidence_kind;
+  assert.deepEqual(byKind["golden-text"].record_ids, [
+    "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+    "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED",
+  ]);
+  assert.deepEqual(byKind.execution.record_ids, [
+    "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
+    "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
+    "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
+    "MUTANT-TRACEQL-SCOPE-SWAP",
+  ]);
+  assert.deepEqual(byKind.mixed.record_ids, []);
+});
 
 test("real corpus: every canonical head has real, non-empty membership, including the cross-head record", () => {
   const records = loadMutants();
