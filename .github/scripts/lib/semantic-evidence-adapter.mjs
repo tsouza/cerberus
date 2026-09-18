@@ -87,7 +87,7 @@
 // module exists to avoid cannot arise for data that is never actually
 // copied anywhere.
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -414,6 +414,26 @@ function hasGoFileBelow(dir) {
   return false;
 }
 
+
+/**
+ * The directory arm of {@link resolveSourcePathEvidence}: a bare directory
+ * must hold at least one `.go` file somewhere below it and cannot carry a
+ * `:symbol` / `#token` suffix.
+ */
+function resolveSourceDirectoryEvidence(testRef, path, abs, symbol, token) {
+  if (symbol !== null || token !== null) {
+    return fail([
+      `${path} (test_ref ${JSON.stringify(testRef)}) is a directory, so a :${symbol ?? ""}${token !== null ? `#${token}` : ""} suffix names nothing inside it`,
+    ]);
+  }
+  if (!hasGoFileBelow(abs)) {
+    return fail([
+      `${path} (test_ref ${JSON.stringify(testRef)}) is a directory with no .go file anywhere below it — not a package or harness anyone can run`,
+    ]);
+  }
+  return ok({ path, kind: "directory", symbol: null, token: null });
+}
+
 /**
  * Resolves a `source-path` test_ref against the checkout at `repoRoot`:
  * the path must exist; a `:TestName` suffix requires a FILE declaring
@@ -427,29 +447,20 @@ export function resolveSourcePathEvidence(testRef, repoRoot) {
     return fail([`test_ref ${JSON.stringify(testRef)} is not a source-path reference`]);
   }
   const abs = join(repoRoot, path);
-  let stat;
+  // The read IS the existence check: reading first and classifying the
+  // failure leaves no window between a check and the use it guards.
+  let text;
   try {
-    stat = statSync(abs);
+    text = readFileSync(abs, "utf8");
   } catch (err) {
+    if (err?.code === "EISDIR") {
+      return resolveSourceDirectoryEvidence(testRef, path, abs, symbol, token);
+    }
     if (err?.code === "ENOENT" || err?.code === "ENOTDIR") {
       return fail([`${path} referenced by test_ref ${JSON.stringify(testRef)} does not exist on disk`]);
     }
     throw err;
   }
-  if (stat.isDirectory()) {
-    if (symbol !== null || token !== null) {
-      return fail([
-        `${path} (test_ref ${JSON.stringify(testRef)}) is a directory, so a :${symbol ?? ""}${token !== null ? `#${token}` : ""} suffix names nothing inside it`,
-      ]);
-    }
-    if (!hasGoFileBelow(abs)) {
-      return fail([
-        `${path} (test_ref ${JSON.stringify(testRef)}) is a directory with no .go file anywhere below it — not a package or harness anyone can run`,
-      ]);
-    }
-    return ok({ path, kind: "directory", symbol: null, token: null });
-  }
-  const text = readFileSync(abs, "utf8");
   if (symbol !== null && !text.includes(`func ${symbol}(`)) {
     return fail([
       `${path} does not declare \`func ${symbol}(\` (test_ref ${JSON.stringify(testRef)}) — the test was removed or renamed`,
