@@ -42,13 +42,16 @@ const nonReplicatingTableEngine = "MergeTree()"
 //
 // Both halves matter, and neither is redundant. Without the first, the DDL is
 // executed only on whichever node served the connection: under
-// CERBERUS_CH_DATA_SHARDS > 1 the `otel` database is necessarily Atomic (a
-// Replicated database engine and an ON CLUSTER cluster are mutually exclusive),
-// so nothing propagates and every INSERT that later lands on one of the other
-// nodes fails with "Table otel.cerberus_router_corpus does not exist" —
-// cerberus issue #3225. Without the second, a fix could satisfy the first by
-// stamping ON CLUSTER unconditionally, which would break every single-node and
-// Replicated-database deployment (there is no cluster to name).
+// CERBERUS_CH_DATA_SHARDS > 1 the `otel` database is Atomic on the chart's
+// classic ON CLUSTER path, so nothing propagates and every INSERT that later
+// lands on one of the other nodes fails with "Table otel.cerberus_router_corpus
+// does not exist" — cerberus issue #3225. Without the second, a fix could
+// satisfy the first by stamping ON CLUSTER unconditionally, which would break
+// every single-node deployment (there is no cluster to name) and every
+// Replicated-database one: there the cluster IS named — it is what cerberus's
+// CREATE DATABASE fans out over so every replica attaches the database
+// (cerberus issue #3581) — but the database replicates table DDL itself and
+// ClickHouse rejects a table-level ON CLUSTER inside it (code 80).
 //
 // It asserts over the statements the SINK ACTUALLY EXECUTES rather than over
 // the three renderers one by one, because the failure this pins is precisely a
@@ -58,19 +61,28 @@ func TestCorpusDDL_OnCluster(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name    string
-		cluster string
-		want    bool
+		name       string
+		cluster    string
+		replicated bool
+		want       bool
 	}{
 		{name: "sharded", cluster: clusterName, want: true},
 		{name: "single-node", cluster: "", want: false},
+		{name: "replicated-database", cluster: clusterName, replicated: true, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			// A replicating topology refuses a deployed non-replicating
+			// engine before it reaches the ALTERs, so the fake reports the
+			// engine that topology would have created.
 			fe := &fakeExecer{}
-			if _, err := NewCHTableSink(context.Background(), fe, CorpusTableTopology{Cluster: tc.cluster}); err != nil {
-				t.Fatalf("NewCHTableSink(cluster=%q): %v", tc.cluster, err)
+			if tc.replicated {
+				fe.deployedEngine = "ReplicatedMergeTree"
+			}
+			topology := CorpusTableTopology{Cluster: tc.cluster, DatabaseReplicated: tc.replicated}
+			if _, err := NewCHTableSink(context.Background(), fe, topology); err != nil {
+				t.Fatalf("NewCHTableSink(%+v): %v", topology, err)
 			}
 			// One CREATE, one ADD COLUMN per corpus column, one MODIFY
 			// COLUMN per reconciled enum column: anything less means a

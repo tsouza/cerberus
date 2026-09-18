@@ -59,6 +59,13 @@ type Config struct {
 	// name backtick-quoted, matching upstream's Config.clusterString)
 	// into the templates. Cerberus's single-node deployment leaves it
 	// empty.
+	//
+	// Under a Replicated database engine the clause lands on the CREATE
+	// DATABASE statement alone — the one statement that must run on every
+	// host, because a Replicated database replicates DDL only to the hosts
+	// that have attached it — and every table statement stays bare: the
+	// database replicates those itself, and ClickHouse rejects a table-level
+	// ON CLUSTER inside a Replicated database (code 80). See tableCluster.
 	Cluster string
 
 	// Engine overrides the ClickHouse table engine. When empty it defaults to
@@ -363,14 +370,18 @@ type Config struct {
 //
 // When Replicated is true the database is created with
 // `ENGINE = Replicated(<path>, <shard>, <replica>)`. A Replicated database
-// auto-replicates all DDL across replicas, so no ON CLUSTER clause is used
-// (the two are mutually exclusive — the Replicated database replicates DDL
-// itself). It does NOT auto-convert MergeTree tables to ReplicatedMergeTree,
-// though: replicated DDL gives each replica an independent table, but only a
-// ReplicatedMergeTree engine replicates the DATA. So withDefaults resolves an
-// empty table Engine to the BARE ReplicatedMergeTree under a Replicated
-// database — no explicit (path, replica) args, which the database rejects with
-// code 36 (see defaultTableEngine).
+// auto-replicates all DDL across the hosts that have ATTACHED it, so the
+// table statements carry no ON CLUSTER clause — but the CREATE DATABASE
+// itself reaches only the host it runs on, so Config.Cluster, when set, fans
+// that one statement out (`CREATE DATABASE ... ON CLUSTER <cluster> ENGINE =
+// Replicated(...)`) and every host of the cluster attaches the database
+// before the first table is created. It does NOT auto-convert MergeTree
+// tables to ReplicatedMergeTree, though: replicated DDL gives each replica an
+// independent table, but only a ReplicatedMergeTree engine replicates the
+// DATA. So withDefaults resolves an empty table Engine to the BARE
+// ReplicatedMergeTree under a Replicated database — no explicit (path,
+// replica) args, which the database rejects with code 36 (see
+// defaultTableEngine).
 type DatabaseEngine struct {
 	// Replicated turns on the Replicated database engine. When false the
 	// other fields are ignored and no ENGINE clause is emitted.
@@ -642,10 +653,27 @@ func defaultTableEngine(replicated bool) string {
 // this matches upstream's `Config.clusterString` semantics without any
 // hand-rolled fmt.Sprintf / strings.ReplaceAll.
 func (c Config) clusterClause() string {
-	if c.Cluster == "" {
+	cluster := c.tableCluster()
+	if cluster == "" {
 		return ""
 	}
-	return chsql.RenderDDL(chsql.OnCluster(c.Cluster))
+	return chsql.RenderDDL(chsql.OnCluster(cluster))
+}
+
+// tableCluster returns the cluster every TABLE-level statement (CREATE
+// TABLE, ALTER, materialized view, Distributed wrapper) fans out over, or ""
+// for none. Inside a Replicated database that is always "": the database
+// replicates its own DDL to every host that has attached it, and ClickHouse
+// rejects a table-level ON CLUSTER there outright ("ON CLUSTER is not allowed
+// for Replicated database", code 80). Config.Cluster then applies to the
+// CREATE DATABASE statement alone (renderCreateDatabase), which is the one
+// statement that has to reach every host — a host that never ran it has no
+// database for the replicated table DDL to land in.
+func (c Config) tableCluster() string {
+	if c.DatabaseEngine.Replicated {
+		return ""
+	}
+	return c.Cluster
 }
 
 // ttlExpr renders the TTL clause upstream templates expect as one slot per
@@ -914,9 +942,12 @@ func RenderAll(cfg Config, signals []Signal) ([]string, error) {
 // exporter does not quote it either, and the configured names are simple
 // identifiers); IF NOT EXISTS keeps it idempotent. An ON CLUSTER clause is
 // added when a cluster is configured, and a `ENGINE = Replicated(...)` clause
-// when DatabaseEngine.Replicated is set — the two are mutually exclusive in
-// practice (a Replicated database replicates DDL itself), but the builder
-// leaves that policy to the caller / config validation.
+// when DatabaseEngine.Replicated is set. The two combine on purpose: a
+// Replicated database replicates DDL only to the hosts that have attached
+// it, so the CREATE DATABASE is the one statement that must run on every
+// host of the cluster, and ON CLUSTER is what runs it there (each host
+// expands its own {shard}/{replica} macros). It is also the ONLY statement
+// that carries the clause under a Replicated database — see tableCluster.
 func renderCreateDatabase(cfg Config) string {
 	stmt := chsql.CreateDatabase(cfg.Database).IfNotExists()
 	if cfg.Cluster != "" {
@@ -1037,14 +1068,17 @@ func (c Config) dataShardingKey() chsql.Frag {
 // renderDistributedWrapper renders the Distributed-engine `CREATE TABLE
 // <table> ON CLUSTER <cluster> AS <db>.<localTable> ENGINE =
 // Distributed(...)` statement wrapping localTable under table — the name
-// internal/schema's read path expects. Built entirely via the typed
-// chsql.CreateTableBuilder / EngineDistributed constructors — no
-// hand-assembled SQL (invariant 10).
+// internal/schema's read path expects. The ON CLUSTER clause follows
+// tableCluster (absent inside a Replicated database, which replicates the
+// wrapper's DDL itself); the Distributed engine's own cluster argument is
+// Config.Cluster regardless, since that names the query fan-out topology,
+// not the DDL's. Built entirely via the typed chsql.CreateTableBuilder /
+// EngineDistributed constructors — no hand-assembled SQL (invariant 10).
 func renderDistributedWrapper(cfg Config, table, localTable string) string {
 	return chsql.CreateTable(table).
 		Database(cfg.Database).
 		IfNotExists().
-		OnCluster(cfg.Cluster).
+		OnCluster(cfg.tableCluster()).
 		As(cfg.Database, localTable).
 		Engine(chsql.EngineDistributed(cfg.Cluster, cfg.Database, localTable, cfg.dataShardingKey())).
 		SQL()
@@ -1386,8 +1420,8 @@ var metricCatalogProjections = []metricProjection{
 // both freshly-created and pre-existing tables.
 func renderAddMetricProjection(cfg Config, table string, p metricProjection, hasMonotonic bool) string {
 	stmt := chsql.AlterTableAddProjection(cfg.Database, table, p.name, p.body(hasMonotonic))
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -1430,8 +1464,8 @@ func traceIDProjectionBody() *chsql.QueryBuilder {
 // applySignal's own comment), so this needs no unsupported-server tolerance.
 func renderAddTraceIDProjection(cfg Config, table string) string {
 	stmt := chsql.AlterTableAddProjection(cfg.Database, table, traceIDProjectionName, traceIDProjectionBody())
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -1499,8 +1533,8 @@ const (
 func renderAddBodyTextIndex(cfg Config) string {
 	expr := chsql.Call("lower", chsql.Col(bodyColumn))
 	stmt := chsql.AlterTableAddIndex(cfg.Database, cfg.Tables.Logs, bodyTextIndexName, expr, bodyTextIndexType, bodyTextIndexGranularity)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -1557,8 +1591,8 @@ const legacyBodyTokenBFIndexName = "idx_lower_body" //nolint:gosec // G101: an i
 func DropLegacyBodyTokenBFIndexSQL(cfg Config) string {
 	cfg = cfg.withDefaults()
 	stmt := chsql.AlterTableDropIndex(cfg.Database, cfg.Tables.Logs, legacyBodyTokenBFIndexName)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -1615,8 +1649,8 @@ const (
 func renderAddTemporalityIndex(cfg Config, table string) string {
 	stmt := chsql.AlterTableAddIndex(cfg.Database, table, temporalityIndexName,
 		chsql.Col(aggregationTemporalityColumn), "minmax", temporalityIndexGranularity)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -1709,8 +1743,8 @@ func renderDeltaPrefixView(cfg Config) string {
 		IfNotExists().
 		To(cfg.Database, cfg.Tables.MetricsDeltaPrefix).
 		As(body)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -1873,8 +1907,8 @@ func renderDownsampleTierView(cfg Config) string {
 		IfNotExists().
 		To(cfg.Database, schema.DownsampleTierTable).
 		As(body)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -1935,8 +1969,8 @@ func renderDownsampleTierGaugeView(cfg Config) string {
 		IfNotExists().
 		To(cfg.Database, schema.DownsampleTierTable).
 		As(body)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -2053,8 +2087,8 @@ func renderLokiLabelCatalogView(cfg Config) string {
 		RefreshEveryMinutes(lokiLabelCatalogRefreshMinutes).
 		To(cfg.Database, schema.LabelCatalogTable).
 		As(body)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -2395,8 +2429,8 @@ func renderTempoTagCatalogView(cfg Config) string {
 		RefreshEveryMinutes(tempoTagCatalogRefreshMinutes).
 		To(cfg.Database, schema.TagCatalogTable).
 		As(body)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -2622,8 +2656,8 @@ func renderTracesCodecs(cfg Config) []string {
 // way the CREATE statements do.
 func renderModifyColumnCodec(cfg Config, table, column string, codec chsql.Frag) string {
 	stmt := chsql.AlterTableModifyColumnCodec(cfg.Database, table, column, codec)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -2702,8 +2736,8 @@ var durationStatTypes = []string{statTypeMinMax, statTypeUniq, statTypeTDigest}
 // renderAddTemporalityIndex.
 func renderAddColumnStatistics(cfg Config, table string, columns, types []string) string {
 	stmt := chsql.AlterTableAddStatistics(cfg.Database, table, columns, types)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -2854,8 +2888,8 @@ func renderTracesEventsLinksTTL(cfg Config) []string {
 // ttlExpr calls for the SAME tables' row-level TTL.
 func renderModifyColumnTTL(cfg Config, table, column, colType string, ttl time.Duration) string {
 	stmt := chsql.AlterTableModifyColumnTTL(cfg.Database, table, column, chsql.BareIdent(colType), "Timestamp", ttl)
-	if cfg.Cluster != "" {
-		stmt.OnCluster(cfg.Cluster)
+	if cluster := cfg.tableCluster(); cluster != "" {
+		stmt.OnCluster(cluster)
 	}
 	return stmt.SQL()
 }
@@ -2935,8 +2969,8 @@ func renderAddMaterializedAttrColumns(cfg Config, mapColumn string, keyToColumn 
 		}
 		stmt := chsql.AlterTableAddColumn(cfg.Database, cfg.Tables.Traces, keyToColumn[key], colType).
 			Default(defaultExpr)
-		if cfg.Cluster != "" {
-			stmt.OnCluster(cfg.Cluster)
+		if cluster := cfg.tableCluster(); cluster != "" {
+			stmt.OnCluster(cluster)
 		}
 		stmts = append(stmts, stmt.SQL())
 	}

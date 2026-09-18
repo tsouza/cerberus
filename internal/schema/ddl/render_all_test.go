@@ -2,6 +2,7 @@ package ddl
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -109,5 +110,54 @@ func TestRenderAll_ReplicatedRequiresZooPath(t *testing.T) {
 	}
 	if _, err := RenderAll(cfg, All); err == nil {
 		t.Fatal("expected error: Replicated engine without a ZooKeeper/Keeper path must be rejected")
+	}
+}
+
+// TestRenderAll_ReplicatedDatabaseClusterAttachesEveryHost pins how Cluster
+// combines with a Replicated database engine: the ON CLUSTER clause lands on
+// the CREATE DATABASE statement — the one statement that has to run on every
+// host, because a Replicated database replicates DDL only to the hosts that
+// have attached it — and on nothing else. Every table statement stays bare:
+// the database replicates it, and ClickHouse rejects a table-level ON CLUSTER
+// inside a Replicated database outright ("ON CLUSTER is not allowed for
+// Replicated database", code 80). This is the shape the bundled chart's
+// replicas>1 tier renders (cerberus issue #3581): without the fan-out the
+// database was attached on the one replica cerberus dialled and the others
+// never received a table.
+func TestRenderAll_ReplicatedDatabaseClusterAttachesEveryHost(t *testing.T) {
+	cfg := Config{
+		Database: "otel",
+		Cluster:  "bwc_cluster",
+		DatabaseEngine: DatabaseEngine{
+			Replicated:        true,
+			ReplicatedZooPath: "/clickhouse/databases/otel",
+		},
+	}
+	stmts, err := RenderAll(cfg, All)
+	if err != nil {
+		t.Fatalf("RenderAll: %v", err)
+	}
+	const wantDB = "CREATE DATABASE IF NOT EXISTS otel ON CLUSTER `bwc_cluster` " +
+		"ENGINE = Replicated('/clickhouse/databases/otel', '{shard}', '{replica}')"
+	if stmts[0] != wantDB {
+		t.Errorf("CREATE DATABASE must fan out over the cluster:\n got: %s\nwant: %s", stmts[0], wantDB)
+	}
+	for i, s := range stmts[1:] {
+		if strings.Contains(s, "ON CLUSTER") {
+			t.Errorf("statement %d carries ON CLUSTER inside a Replicated database (ClickHouse rejects it, code 80):\n%s", i+1, s)
+		}
+	}
+
+	// The externally-managed-database path has no CREATE DATABASE to fan out,
+	// so a Cluster alongside SkipDatabaseCreate renders no ON CLUSTER at all.
+	cfg.SkipDatabaseCreate = true
+	stmts, err = RenderAll(cfg, All)
+	if err != nil {
+		t.Fatalf("RenderAll (SkipDatabaseCreate): %v", err)
+	}
+	for i, s := range stmts {
+		if strings.Contains(s, "ON CLUSTER") {
+			t.Errorf("SkipDatabaseCreate: statement %d carries ON CLUSTER inside a Replicated database:\n%s", i, s)
+		}
 	}
 }

@@ -578,22 +578,30 @@ is disabled, so non-bundled renders are byte-identical.
 {{- if kindIs "invalid" .Values.autoCreate.database -}}{{- $_ := set .Values.autoCreate "database" true -}}{{- end -}}
 {{- $dataShardCount := int (include "cerberus.clickhouse.dataShardCount" .) -}}
 {{- /* replicas > 1 -> Replicated schema, REUSING cerberus's existing
-       schema.replicated env wiring. ONLY when dataShardCount <= 1:
-       docs/operations.md's own "Auto-create schema" guidance is explicit
-       that a Replicated DATABASE engine and an ON CLUSTER cluster are
-       "mutually exclusive — pick one" (a Replicated database replicates its
-       OWN DDL; layering ON CLUSTER on top of it is unverified against a
-       real cluster and not a combination this chart assumes). dataShardCount
-       > 1 (cerberus issue #3077) always needs Cluster set (below), so a
-       multi-replica-PER-SHARD deployment gets the classic ON-CLUSTER +
-       explicit-engine defaulting instead — see the dataShardCount block
-       below. */ -}}
+       schema.replicated env wiring. ONLY when dataShardCount <= 1;
+       dataShardCount > 1 (cerberus issue #3077) gets the classic
+       ON-CLUSTER + explicit-engine defaulting instead — see the
+       dataShardCount block below.
+
+       A Replicated database replicates DDL only to the hosts that have
+       ATTACHED it, and cerberus issues its CREATE DATABASE once, through
+       the sessionAffinity-pinned Service — i.e. on ONE replica. So
+       schema.CLUSTER is defaulted to this chart's own cluster.xml
+       <cluster> name (bwc_cluster) as well: under a Replicated database
+       cerberus puts ON CLUSTER on the CREATE DATABASE statement alone, so
+       every replica attaches the database before the first table is
+       created, and the table DDL then replicates through the database
+       (cerberus issue #3581; the `bwc-replicated` e2e lane is the proof).
+       An operator-set schema.CLUSTER wins, as everywhere else. */ -}}
 {{- if and (gt (int $b.replicas) 1) (le $dataShardCount 1) -}}
 {{- if not .Values.schema.replicated.enabled -}}
 {{- $_ := set .Values.schema.replicated "enabled" true -}}
 {{- end -}}
 {{- if not .Values.schema.replicated.zookeeperPath -}}
 {{- $_ := set .Values.schema.replicated "zookeeperPath" (printf "/clickhouse/databases/%s/{shard}/{replica}" .Values.clickhouse.database) -}}
+{{- end -}}
+{{- if not .Values.schema.CLUSTER -}}
+{{- $_ := set .Values.schema "CLUSTER" "bwc_cluster" -}}
 {{- end -}}
 {{- end -}}
 {{- /* dataShards.count > 1 (cerberus issue #3077): a Distributed-engine

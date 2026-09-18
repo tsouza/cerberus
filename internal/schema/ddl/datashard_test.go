@@ -248,7 +248,10 @@ func TestDataShardCount_Traces(t *testing.T) {
 // rejects them with code 36, see TestRenderSignal_ReplicatedDatabaseDefaultsToReplicatedMergeTree),
 // exactly as they would with DataShardCount<=1; DataShardCount changes only
 // which table NAME that engine attaches to plus the trailing Distributed
-// wrapper, never the engine-selection logic.
+// wrapper, never the engine-selection logic. Cluster names the Distributed
+// engine's fan-out topology but puts ON CLUSTER on no table statement — the
+// Replicated database replicates the local tables and the wrapper itself,
+// and ClickHouse rejects a table-level ON CLUSTER inside one (code 80).
 func TestDataShardCount_ReplicatedCombination(t *testing.T) {
 	cfg := Config{
 		Database: "otel",
@@ -270,6 +273,12 @@ func TestDataShardCount_ReplicatedCombination(t *testing.T) {
 			t.Fatalf("renderSignal(%s): %v", sig, err)
 		}
 		for i, s := range stmts {
+			if strings.Contains(s, "ON CLUSTER") {
+				t.Errorf("%s[%d]: ON CLUSTER on a table statement inside a Replicated database:\n%s", sig, i, s)
+			}
+			if strings.Contains(s, "Distributed(") && !strings.Contains(s, "Distributed('bwc_cluster'") {
+				t.Errorf("%s[%d]: the Distributed engine must still name the cluster:\n%s", sig, i, s)
+			}
 			if strings.HasPrefix(s, "ALTER TABLE") || strings.Contains(s, "MATERIALIZED VIEW") || strings.Contains(s, "Distributed") {
 				continue
 			}

@@ -151,14 +151,16 @@ extraEnv:
 
 ## Production HA (Replicated ClickHouse)
 
-For a multi-replica ClickHouse cluster, enable the Replicated-DB schema and run
-cerberus with several replicas:
+For a multi-replica ClickHouse cluster, enable the Replicated-DB schema, name
+the cluster the `CREATE DATABASE` fans out over, and run cerberus with several
+replicas:
 
 ```yaml
 replicaCount: 3
 requirementsCheck: true               # boot-time CH readiness check
 schema:
   ttl: "2w"
+  CLUSTER: "main"                     # your remote_servers cluster spanning every replica
   replicated:
     enabled: true                     # ReplicatedMergeTree + Replicated database
     zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
@@ -173,6 +175,12 @@ prom:
 
 `schema.replicated.zookeeperPath` **must** contain the `{shard}` / `{replica}`
 macros and mirror the ClickHouse cluster's own Replicated-DB coordination path.
+`schema.CLUSTER` is what attaches the database on **every** replica: a
+Replicated database replicates DDL only to the hosts that have attached it,
+and cerberus issues its `CREATE DATABASE` once, so under a Replicated database
+that one statement runs `ON CLUSTER` while the table DDL stays bare and
+replicates through the database. The bundled `clickhouse.bundled.replicas > 1`
+tier defaults both keys.
 
 ### Co-locating with ClickHouse
 

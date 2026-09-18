@@ -878,12 +878,19 @@ the upstream OTel ClickHouse exporter templates; only the database engine,
 - **Single-node (default).** No cluster, no TTL, an Atomic database, plain
   `MergeTree` tables. Nothing to set.
 - **Replicated database (recommended for a cluster).** Set
-  `CERBERUS_SCHEMA_DATABASE_REPLICATED=true` and
-  `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH=/clickhouse/databases/otel`. The
-  database is created with `ENGINE = Replicated(<path>, {shard}, {replica})`,
-  which **auto-replicates all DDL** across replicas — so you leave
-  `CERBERUS_SCHEMA_CLUSTER` unset (no `ON CLUSTER` inside a Replicated
-  database). A Replicated database does **not**, however, auto-convert
+  `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`,
+  `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH=/clickhouse/databases/otel` and
+  `CERBERUS_SCHEMA_CLUSTER=<cluster>` — the `remote_servers` cluster spanning
+  every replica. The database is created with
+  `CREATE DATABASE ... ON CLUSTER <cluster> ENGINE = Replicated(<path>, {shard}, {replica})`:
+  a Replicated database **auto-replicates all table DDL**, but only to the
+  hosts that have **attached** it, and the `CREATE DATABASE` is the one
+  statement that reaches a host only by running on it — `ON CLUSTER` runs it
+  on every replica (each expanding its own macros) before the first table is
+  created. It is also the only statement that carries the clause: the table
+  DDL replicates through the database, and ClickHouse rejects a table-level
+  `ON CLUSTER` inside a Replicated database (code 80), so cerberus never
+  emits one there. A Replicated database does **not**, however, auto-convert
   `MergeTree` tables to `ReplicatedMergeTree`: replicated *DDL* gives each
   replica an independent table, but only a `ReplicatedMergeTree` engine
   replicates the *DATA*. So cerberus emits **bare `ReplicatedMergeTree`**
@@ -900,22 +907,22 @@ the upstream OTel ClickHouse exporter templates; only the database engine,
   `> 0` on **every** replica, and each row's `total_replicas` must equal the
   replica count: a Keeper path that differs per node (one carrying the
   `{shard}`/`{replica}` macros, which the engine expands) registers every
-  replica as its own single-replica database, with `count() > 0` on each.
-  A Replicated database replicates DDL only to the hosts that have
-  **attached** it — `CREATE DATABASE ... ENGINE = Replicated(<path>, ...)`
-  has to run on every replica — and cerberus issues that statement once,
-  over whichever address it dialled; a replica it did not dial gets no
-  database and no tables. For the bundled chart's
-  `clickhouse.bundled.replicas > 1` path this is what the `bwc-replicated`
-  e2e lane (`.github/workflows/e2e.yml`,
+  replica as its own single-replica database, with `count() > 0` on each,
+  and a replica the `CREATE DATABASE` never ran on (no
+  `CERBERUS_SCHEMA_CLUSTER`) has no database and no tables at all. For the
+  bundled chart's `clickhouse.bundled.replicas > 1` path — which defaults
+  all three knobs — this is what the `bwc-replicated` e2e lane
+  (`.github/workflows/e2e.yml`,
   `.github/scripts/e2e-bwc-replicated-verify.mjs`) asserts on every replica
   pod, together with a row written through one replica and read back from
   the other — see [helm-clickhouse.md](helm-clickhouse.md#support--validation-matrix).
-- **Classic `ON CLUSTER` cluster.** Set `CERBERUS_SCHEMA_CLUSTER=<name>` and,
-  if the engine isn't replicated by the cluster default, an explicit
+- **Classic `ON CLUSTER` cluster.** Set `CERBERUS_SCHEMA_CLUSTER=<name>`
+  with `CERBERUS_SCHEMA_DATABASE_REPLICATED` left unset and, if the engine
+  isn't replicated by the cluster default, an explicit
   `CERBERUS_SCHEMA_TABLE_ENGINE=ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')`.
-  `ON CLUSTER` and the Replicated database engine are mutually exclusive —
-  pick one. A replicating `CERBERUS_SCHEMA_TABLE_ENGINE` also tells the
+  Every `CREATE` and `ALTER` then carries the `ON CLUSTER` clause — this is
+  the model where the database is Atomic on every node and distributed DDL
+  is what keeps the nodes in step. A replicating `CERBERUS_SCHEMA_TABLE_ENGINE` also tells the
   router-calibration corpus table that this deployment replicates, so it is
   created with a bare `ReplicatedMergeTree` of its own — cerberus never reuses
   your engine expression for it, since that expression's Keeper path and engine

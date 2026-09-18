@@ -173,7 +173,8 @@ var reconciledEnumColumns = []reconciledEnumColumn{
 //   - Cluster answers WHERE THE TABLE EXISTS. It renders `ON CLUSTER <name>`
 //     into the CREATE and both ALTERs, so a classic distributed-DDL deployment
 //     gets the table on every node instead of on whichever one served this
-//     connection. Empty renders no clause at all.
+//     connection. Empty renders no clause at all — and so does a Replicated
+//     database, whatever Cluster says (see ddlCluster).
 //   - DatabaseReplicated and TableEngine answer WHERE THE ROWS LIVE, one per
 //     topology. Neither engine cerberus can be handed converts itself: a
 //     plain-MergeTree corpus table is ACCEPTED on a replicating deployment, and
@@ -190,8 +191,10 @@ type CorpusTableTopology struct {
 
 	// DatabaseReplicated is CERBERUS_SCHEMA_DATABASE_REPLICATED
 	// (internal/schema/ddl DatabaseEngine.Replicated). A Replicated DATABASE
-	// replicates the DDL on its own, which is why such a deployment leaves
-	// Cluster empty — the two are mutually exclusive.
+	// replicates table DDL on its own and ClickHouse rejects a table-level
+	// ON CLUSTER inside one, so under it Cluster names only the cluster
+	// cerberus's CREATE DATABASE fans out over (internal/schema/ddl's
+	// renderCreateDatabase) and no corpus statement carries the clause.
 	DatabaseReplicated bool
 
 	// TableEngine is CERBERUS_SCHEMA_TABLE_ENGINE (internal/schema/ddl
@@ -239,6 +242,19 @@ type CorpusTableTopology struct {
 // cluster name is set.
 func (t CorpusTableTopology) replicates() bool {
 	return t.DatabaseReplicated || engineReplicates(t.TableEngine)
+}
+
+// ddlCluster returns the cluster the corpus table's own DDL fans out over, or
+// "" for none. It is the same rule internal/schema/ddl's Config.tableCluster
+// applies to every signal-table statement: inside a Replicated database the
+// database replicates the DDL itself and ClickHouse rejects a table-level ON
+// CLUSTER outright ("ON CLUSTER is not allowed for Replicated database", code
+// 80), so Cluster there names only the cluster the CREATE DATABASE ran on.
+func (t CorpusTableTopology) ddlCluster() string {
+	if t.DatabaseReplicated {
+		return ""
+	}
+	return t.Cluster
 }
 
 // engineReplicates reports whether an operator-supplied engine EXPRESSION names
@@ -301,7 +317,7 @@ func NewCHTableSink(ctx context.Context, conn CHTableConn, topology CorpusTableT
 	if conn == nil {
 		return nil, fmt.Errorf("optcorpus: nil CH connection for table sink")
 	}
-	cluster := topology.Cluster
+	cluster := topology.ddlCluster()
 	if err := conn.Exec(ctx, corpusCreateTableSQL(topology)); err != nil {
 		return nil, fmt.Errorf("optcorpus: create %s: %w", CorpusTableName, err)
 	}
@@ -592,15 +608,16 @@ func parseEnum8Value(rs []rune) (int64, int, bool) {
 //	) ENGINE = <corpusTableEngine()> ORDER BY (shape_id, n_anchors, fanout)
 //	  TTL toDateTime(event_time) + toIntervalDay(30)
 //
-// topology.Cluster (CERBERUS_SCHEMA_CLUSTER, see CorpusTableTopology) adds the
-// `ON CLUSTER` clause between the table name and the column list, so a classic
-// distributed-DDL deployment — which is EVERY `CERBERUS_CH_DATA_SHARDS > 1`
-// deployment, since internal/schema/ddl's Config.Validate refuses that topology
-// without a cluster name — creates the table on every node instead of only on
-// the one that served this connection (cerberus issue #3225). Empty renders the
-// clause-free statement unchanged, which covers both the single-node default
-// and the single-shard multi-replica shape, where the `otel` database is itself
-// a Replicated database engine and replicates this DDL on its own.
+// topology.ddlCluster (CERBERUS_SCHEMA_CLUSTER outside a Replicated database,
+// see CorpusTableTopology) adds the `ON CLUSTER` clause between the table name
+// and the column list, so a classic distributed-DDL deployment — which is
+// EVERY `CERBERUS_CH_DATA_SHARDS > 1` deployment, since internal/schema/ddl's
+// Config.Validate refuses that topology without a cluster name — creates the
+// table on every node instead of only on the one that served this connection
+// (cerberus issue #3225). Empty renders the clause-free statement unchanged,
+// which covers both the single-node default and the single-shard
+// multi-replica shape, where the `otel` database is itself a Replicated
+// database engine that replicates this DDL on its own and rejects the clause.
 //
 // The ENGINE is the other half, and it answers a different question than the
 // clause above: ON CLUSTER decides where the table EXISTS, the engine decides
@@ -611,7 +628,7 @@ func parseEnum8Value(rs []rune) (int64, int, bool) {
 func corpusCreateTableSQL(topology CorpusTableTopology) string {
 	return chsql.CreateTable(CorpusTableName).
 		IfNotExists().
-		OnCluster(topology.Cluster).
+		OnCluster(topology.ddlCluster()).
 		Columns(CorpusColumns()...).
 		Engine(corpusTableEngine(topology)).
 		OrderBy("shape_id", "n_anchors", "fanout").
@@ -728,17 +745,17 @@ func verifyTableEngine(deployed string, topology CorpusTableTopology) error {
 	}
 	// Which knob declared this deployment replicating decides both what the
 	// operator is pointed at and how the DROP propagates — a Replicated
-	// database carries it to every replica itself, a classic cluster needs the
-	// ON CLUSTER clause topology.Cluster renders. The remedy is built by the
-	// same typed DDL surface the CREATE is, so the cluster name comes back
-	// quoted rather than pasted.
+	// database carries it to every replica itself (and rejects ON CLUSTER),
+	// a classic cluster needs the ON CLUSTER clause topology.ddlCluster
+	// renders. The remedy is built by the same typed DDL surface the CREATE
+	// is, so the cluster name comes back quoted rather than pasted.
 	declaredBy, propagation := envSchemaDatabaseReplicated,
 		"the Replicated database propagates the DROP itself; do not repeat it per replica"
 	if !topology.DatabaseReplicated {
 		declaredBy, propagation = envSchemaTableEngine,
 			"the ON CLUSTER clause carries the DROP to every node; do not repeat it per node"
 	}
-	drop := chsql.DropTable("", CorpusTableName).OnCluster(topology.Cluster).SQL()
+	drop := chsql.DropTable("", CorpusTableName).OnCluster(topology.ddlCluster()).SQL()
 	return fmt.Errorf("optcorpus: deployed %s engine %q does not replicate its rows, but this deployment's "+
 		"tables do (%s): each replica would hold only the rows written through it and the offline calibration "+
 		"would mine one replica's slice as if it were the whole corpus. Nothing converts a deployed engine — "+
