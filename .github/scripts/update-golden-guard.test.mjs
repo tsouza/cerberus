@@ -120,14 +120,44 @@ test('listInFlightRuns queries requested, in_progress and queued — one request
     api: 'https://api.github.com',
     repo: 'tsouza/cerberus',
     token: 't',
-    fetchJSON: async (url) => {
+    fetchPages: async (url, _token, pick) => {
       const status = new URL(url).searchParams.get('status');
       seenStatuses.push(status);
-      return { workflow_runs: [run({ status, html_url: `https://…/${status}` })] };
+      return pick({ workflow_runs: [run({ status, html_url: `https://…/${status}` })] });
     },
   });
   assert.deepEqual(seenStatuses.sort(), ['in_progress', 'queued', 'requested']);
   assert.equal(runs.length, 3);
+});
+
+test('listInFlightRuns walks every page of each status rather than reading the first hundred', async () => {
+  // The list endpoints used to be read as one `per_page=100` request with no
+  // page loop: a busy queue's 101st in-flight run was invisible to the guard.
+  const pageOf = (n, offset) => Array.from({ length: n }, (_, i) => run({ id: offset + i }));
+  const runs = await listInFlightRuns({
+    api: 'https://api.github.com',
+    repo: 'tsouza/cerberus',
+    token: 't',
+    fetchPages: async (url, _token, pick) => {
+      const status = new URL(url).searchParams.get('status');
+      const pages = status === 'queued' ? [pageOf(100, 0), pageOf(1, 100)] : [pageOf(1, 0)];
+      return pages.flatMap((workflow_runs) => pick({ workflow_runs }));
+    },
+  });
+  assert.equal(runs.length, 101 + 1 + 1);
+});
+
+test('listInFlightRuns rejects a page without a workflow_runs array', async () => {
+  await assert.rejects(
+    () =>
+      listInFlightRuns({
+        api: 'https://api.github.com',
+        repo: 'tsouza/cerberus',
+        token: 't',
+        fetchPages: async (_url, _token, pick) => pick({ message: 'not found' }),
+      }),
+    /unexpected response listing/,
+  );
 });
 
 test('findOpenPRsForBranch queries the Pulls API scoped to owner:branch and returns the array', async () => {
@@ -137,12 +167,12 @@ test('findOpenPRsForBranch queries the Pulls API scoped to owner:branch and retu
     repo: 'tsouza/cerberus',
     token: 't',
     branch: 'fix/example',
-    fetchJSON: async (url) => {
+    fetchPages: async (url, _token, pick) => {
       seenURL = url;
-      return [{ number: 42, head: { sha: 'abc123' } }];
+      return pick([{ number: 42, head: { sha: 'abc123' } }]);
     },
   });
-  assert.match(seenURL, /\/repos\/tsouza\/cerberus\/pulls\?state=open&head=tsouza%3Afix%2Fexample/);
+  assert.match(seenURL, /\/repos\/tsouza\/cerberus\/pulls\?state=open&head=tsouza%3Afix%2Fexample$/);
   assert.deepEqual(prs, [{ number: 42, head: { sha: 'abc123' } }]);
 });
 
@@ -154,7 +184,7 @@ test('findOpenPRsForBranch rejects a non-array response', async () => {
         repo: 'tsouza/cerberus',
         token: 't',
         branch: 'fix/example',
-        fetchJSON: async () => ({ message: 'not found' }),
+        fetchPages: async (_url, _token, pick) => pick({ message: 'not found' }),
       }),
     /unexpected response listing open PRs/,
   );

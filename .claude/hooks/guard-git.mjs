@@ -9,12 +9,27 @@
 //      work is done. Also catches the subtler form — an explicit
 //      `git push origin HEAD:main` from a feature branch.
 //
-//   2. A commit or push while lefthook's git hooks are not installed.
-//      `lefthook.yml` is the layer that actually owns local validation:
-//      `pre-commit` formats staged files, `commit-msg` runs commitlint, and
-//      `pre-push` mirrors the CI `check` + `lint` + `forbid-skip` jobs. When
-//      those hooks are absent every one of those gates is silently off, and the
-//      first signal is a red PR. `just hooks-install` is the fix.
+//   2. A commit or push while lefthook's git hooks are not installed — or
+//      with them turned off for the one command (`--no-verify`, `commit -n`,
+//      `-c core.hooksPath=…`). `lefthook.yml` is the layer that actually owns
+//      local validation: `pre-commit` formats staged files, `commit-msg` runs
+//      commitlint, and `pre-push` mirrors the CI `check` + `lint` +
+//      `forbid-skip` jobs. When those hooks are absent or skipped every one of
+//      those gates is silently off, and the first signal is a red PR. `just
+//      hooks-install` is the fix; `LEFTHOOK=0 git push` is the documented,
+//      visible escape hatch for a WIP push.
+//
+// WHAT "AIMED AT MAIN" MEANS. A push is judged by its REFSPECS, never by the
+// branch the shell happens to be on: `git push origin feat/x:feat/x` from a
+// checkout on `main` targets `feat/x`, and `git push origin --delete
+// some-feature` targets nothing protected, while `git push origin HEAD:main`
+// from any branch does. Only a push with no refspec (bare `git push`) is
+// judged by the current branch, because that is what it pushes. A commit is
+// judged by the current branch. The line is tokenised like a shell (see
+// shell-words.mjs): a commit message that says "git push origin main is
+// refused" is data, `bash -c "git push origin HEAD:main"` is a push, and the
+// directory a git command runs in is the LAST `cd` before it (or its own
+// `-C`), not the first `cd` on the line.
 //
 // WHAT IT DELIBERATELY DOES NOT DO
 //
@@ -49,6 +64,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import process from 'node:process';
 
+import { segments } from './shell-words.mjs';
+
 const ALLOW = 0;
 const BLOCK = 2;
 
@@ -58,11 +75,11 @@ const FULL_CI_ENV = 'CERBERUS_PRECOMMIT_FULL_CI';
 
 // Git's own global options that consume the following argument, so the
 // subcommand scanner does not mistake their value for the subcommand.
-const GIT_GLOBAL_OPTS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+const GIT_GLOBAL_OPTS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
 
-// Command wrappers that may precede `git` on the line. `rtk` is this repo's
-// token-reducing CLI proxy, invoked either as `rtk git ...` or `rtk proxy git ...`.
-const COMMAND_WRAPPERS = new Set(['rtk', 'proxy', 'command', 'sudo', 'time', 'nice', 'env']);
+// `git push` options that consume the following argument, so a value is never
+// read as the remote or a refspec.
+const PUSH_OPTS_WITH_VALUE = new Set(['-o', '--push-option', '--receive-pack', '--exec', '--repo']);
 
 function readPayload() {
   try {
@@ -72,67 +89,67 @@ function readPayload() {
   }
 }
 
-// splitSegments — break a shell line into independently-executed segments so a
-// `git commit` buried in a `&&` chain is still seen. Quoting is not modelled;
-// the cost of a rare false positive here is one explanatory message, while a
-// false negative is the failure this guard exists to prevent.
-function splitSegments(command) {
-  return command.split(/&&|\|\||[;\n|]/g);
-}
-
-// effectiveCwd — the directory the guarded git command actually runs in.
-//
-// The payload's `cwd` is the session's project directory, which is not where
-// the command runs when the line starts by changing directory: agents work in
-// linked worktrees and reach them with `cd <worktree> && git commit ...`. The
-// project directory and the worktree are different checkouts of the same
-// repository on different branches, so reading the branch from the payload's
-// `cwd` answers a question nobody asked — and blocks every commit made from a
-// worktree whenever the main checkout happens to sit on `main`.
-//
-// `git -C <dir>` on the guarded segment itself takes precedence, since it binds
-// tighter than any earlier `cd`.
-function effectiveCwd(command, segment, payloadCwd) {
-  const dirOpt = gitDirOption(segment);
-  if (dirOpt) return resolveDir(dirOpt, payloadCwd);
-  for (const seg of splitSegments(command)) {
-    const words = seg.trim().split(/\s+/).filter(Boolean);
-    if (words[0] === 'cd' && words[1] && !words[1].startsWith('-')) {
-      const resolved = resolveDir(words[1], payloadCwd);
-      if (resolved) return resolved;
-    }
-  }
-  return payloadCwd;
-}
-
-// gitDirOption — the value of `-C <dir>` on a git invocation, or null.
-function gitDirOption(segment) {
-  const words = segment.trim().split(/\s+/).filter(Boolean);
-  const at = words.indexOf('-C');
-  return at >= 0 && words[at + 1] ? words[at + 1] : null;
-}
-
 function resolveDir(dir, base) {
   const abs = isAbsolute(dir) ? dir : join(base, dir);
   return existsSync(abs) ? abs : null;
 }
 
-// gitInvocation — given one segment, return the git subcommand it runs, or null.
-// Skips leading `VAR=value` assignments and known wrappers, then walks git's
-// global options to find the first bare word, which is the subcommand.
-function gitInvocation(segment) {
-  const words = segment.trim().split(/\s+/).filter(Boolean);
-  let i = 0;
-  while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || COMMAND_WRAPPERS.has(words[i]))) i += 1;
-  if (i >= words.length || (words[i] !== 'git' && !words[i].endsWith('/git'))) return null;
-  i += 1;
-  while (i < words.length) {
-    const w = words[i];
-    if (!w.startsWith('-')) return w;
-    if (GIT_GLOBAL_OPTS_WITH_VALUE.has(w)) i += 2;
-    else i += 1;
+// parseGit — given one executed segment's words (wrappers already stripped by
+// shell-words.mjs), return the git invocation it is, or null:
+//   { sub, args, dir, hooksOff } — the subcommand, its own arguments, the
+//   `-C <dir>` value if any, and whether a global `-c core.hooksPath=…` turned
+//   the repository's hooks off for this one invocation.
+function parseGit(w) {
+  if (w.length === 0 || (w[0] !== 'git' && !w[0].endsWith('/git'))) return null;
+  let i = 1;
+  let dir = null;
+  let hooksOff = false;
+  while (i < w.length) {
+    const a = w[i];
+    if (!a.startsWith('-')) return { sub: a, args: w.slice(i + 1), dir, hooksOff };
+    if (a === '-C') dir = w[i + 1] ?? dir;
+    if (a === '-c' && /^core\.hooksPath=/i.test(w[i + 1] ?? '')) hooksOff = true;
+    if (a.startsWith('-c') && a.length > 2 && /^-ccore\.hooksPath=/i.test(a)) hooksOff = true;
+    i += GIT_GLOBAL_OPTS_WITH_VALUE.has(a) ? 2 : 1;
   }
   return null;
+}
+
+// hooksBypassed — the subcommand's own way of skipping the hooks. `commit -n`
+// is `--no-verify`; `push -n` is `--dry-run`, which skips nothing and pushes
+// nothing, so it is not a bypass.
+function hooksBypassed(sub, args) {
+  if (args.includes('--no-verify')) return true;
+  if (sub === 'commit') return args.some((a) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--'));
+  return false;
+}
+
+// pushDestinations — the branches a `git push` writes to, from its refspecs
+// alone: `origin main`, `HEAD:main`, `+HEAD:refs/heads/main`, `:main` (a
+// delete), `--delete main`. An `HEAD` destination is the current branch; no
+// refspec at all (bare `git push`, `git push origin`) is the current branch too.
+function pushDestinations(args, cwd) {
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { positional.push(...args.slice(i + 1)); break; }
+    if (a.startsWith('-')) {
+      if (PUSH_OPTS_WITH_VALUE.has(a)) i++;
+      continue;
+    }
+    positional.push(a);
+  }
+  const refspecs = positional.slice(1); // the first positional is the remote
+  if (refspecs.length === 0) return [currentBranch(cwd)];
+  return refspecs.map((spec) => {
+    const raw = spec.replace(/^\+/, '');
+    const dst = raw.includes(':') ? raw.slice(raw.lastIndexOf(':') + 1) : raw;
+    return dst === 'HEAD' ? currentBranch(cwd) : dst;
+  });
+}
+
+function targetsProtected(dst) {
+  return dst === PROTECTED_BRANCH || dst === `refs/heads/${PROTECTED_BRANCH}`;
 }
 
 function git(args, cwd) {
@@ -147,19 +164,12 @@ function currentBranch(cwd) {
   }
 }
 
-// pushesToProtectedBranch — a push from a feature branch can still target
-// `main` via an explicit refspec (`main`, `HEAD:main`, `+HEAD:refs/heads/main`).
-function pushesToProtectedBranch(segment) {
-  const refspecs = segment.trim().split(/\s+/).slice(1).filter((w) => !w.startsWith('-'));
-  return refspecs.some((spec) => {
-    const dst = spec.includes(':') ? spec.slice(spec.lastIndexOf(':') + 1) : spec;
-    return dst === PROTECTED_BRANCH || dst === `refs/heads/${PROTECTED_BRANCH}`;
-  });
-}
-
 // hooksDir — where git will look for hook scripts in THIS working tree.
 // `core.hooksPath` wins when set; otherwise hooks live in the common git dir,
 // which is what makes the check work identically from a linked worktree.
+// `--path-format=absolute` matters: in a non-linked checkout git prints the
+// relative `.git`, which joined against the HOOK PROCESS's cwd is another
+// repository's hooks directory whenever the command `cd`-ed somewhere else.
 function hooksDir(cwd) {
   try {
     const configured = git(['config', '--get', 'core.hooksPath'], cwd);
@@ -167,7 +177,7 @@ function hooksDir(cwd) {
   } catch {
     // core.hooksPath unset: `git config --get` exits 1, which is the common case.
   }
-  return join(git(['rev-parse', '--git-common-dir'], cwd), 'hooks');
+  return join(git(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd), 'hooks');
 }
 
 // lefthookInstalled — a hook file exists AND delegates to lefthook. The name
@@ -213,29 +223,48 @@ function main() {
 
   const payloadCwd = payload.cwd && existsSync(payload.cwd) ? payload.cwd : process.cwd();
 
+  // Walk the executed segments in order, tracking the LAST `cd` before each
+  // git invocation: agents reach a worktree with `cd <worktree> && git …`, and
+  // `cd /tmp && cd <worktree> && git …` runs in the second directory, not the
+  // first. `git -C <dir>` on the invocation itself binds tighter than any cd.
   const guarded = [];
-  for (const segment of splitSegments(command)) {
-    const sub = gitInvocation(segment);
-    if (sub && GUARDED_SUBCOMMANDS.has(sub)) {
-      guarded.push({ sub, segment, cwd: effectiveCwd(command, segment, payloadCwd) });
+  let cwd = payloadCwd;
+  for (const w of segments(command)) {
+    if (w[0] === 'cd') {
+      const target = w[1] && !w[1].startsWith('-') ? w[1] : null;
+      const resolved = target ? resolveDir(target, cwd) : null;
+      if (resolved) cwd = resolved;
+      continue;
     }
+    const inv = parseGit(w);
+    if (!inv || !GUARDED_SUBCOMMANDS.has(inv.sub)) continue;
+    const segCwd = (inv.dir && resolveDir(inv.dir, cwd)) || cwd;
+    guarded.push({ ...inv, cwd: segCwd });
   }
   if (guarded.length === 0) return ALLOW;
 
-  const cwd = guarded[0].cwd;
-  for (const { sub, segment, cwd: segCwd } of guarded) {
-    const targetsMain = currentBranch(segCwd) === PROTECTED_BRANCH || (sub === 'push' && pushesToProtectedBranch(segment));
-    if (targetsMain) {
+  for (const g of guarded) {
+    const targets = g.sub === 'push' ? pushDestinations(g.args, g.cwd) : [currentBranch(g.cwd)];
+    if (targets.some(targetsProtected)) {
       return block([
-        `guard-git: refusing to ${sub} against \`${PROTECTED_BRANCH}\`.`,
+        `guard-git: refusing to ${g.sub} against \`${PROTECTED_BRANCH}\`.`,
         'This repository is PR-per-change and branch protection rejects direct pushes to main.',
         'Branch off the current origin/main, then push and `gh pr create` in the same step.',
       ]);
     }
+    if (g.hooksOff || hooksBypassed(g.sub, g.args)) {
+      return block([
+        `guard-git: refusing to ${g.sub} with the git hooks turned off (--no-verify / -n / core.hooksPath).`,
+        'lefthook owns local validation: the formatters, commitlint, and the pre-push mirror of',
+        'the CI check / lint / forbid-skip gates. Bypassing it here is the "silently off" state',
+        'this guard exists to prevent. For a WIP push use `LEFTHOOK=0 git push`, which says so.',
+      ]);
+    }
   }
 
+  const cwdOfFirst = guarded[0].cwd;
   const hookNames = guarded.some((g) => g.sub === 'push') ? ['pre-commit', 'commit-msg', 'pre-push'] : ['pre-commit', 'commit-msg'];
-  const hooks = lefthookInstalled(cwd, hookNames);
+  const hooks = lefthookInstalled(cwdOfFirst, hookNames);
   if (!hooks.ok) {
     return block([
       `guard-git: lefthook's git hooks are not installed — ${hooks.reason}.`,
@@ -246,7 +275,7 @@ function main() {
   }
 
   if (process.env[FULL_CI_ENV] === '1') {
-    const ci = runFullCI(cwd);
+    const ci = runFullCI(cwdOfFirst);
     if (!ci.ok) {
       return block([`guard-git: ${FULL_CI_ENV}=1 is set and ${ci.reason}.`, 'Fix the failure, or unset the variable to fall back to the lefthook + CI layers.']);
     }
@@ -255,4 +284,7 @@ function main() {
   return ALLOW;
 }
 
-process.exit(main());
+// Only dispatch when run as the hook — a test may import the module.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  process.exit(main());
+}

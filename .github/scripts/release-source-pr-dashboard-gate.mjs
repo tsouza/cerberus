@@ -55,6 +55,8 @@
 
 import process from 'node:process';
 
+import { GITHUB_PER_PAGE, NOT_FOUND_THROW, ghHeaders, ghJSON, ghPaginate } from './lib/gh-api.mjs';
+
 // dashboard-matrix.mjs / e2e.yml's own `dashboard-setup` select the crawl leg
 // off exactly this prefix on `github.head_ref` — mirrored here so a PR is
 // recognised as a release-staging PR the same way the lane that ran its crawl
@@ -148,37 +150,28 @@ export function evaluateSourcePRs({ pulls, checkRunsByPR }) {
 // network (thin — the decision logic above is what the self-test pins)
 // ---------------------------------------------------------------------------
 
-async function getJSON(url, headers, fetchImpl) {
-  const res = await fetchImpl(url, { headers });
-  if (!res.ok) {
-    throw new Error(`GET ${url} -> ${res.status} ${res.statusText}`);
-  }
-  return res.json();
-}
-
 // associatedPulls — every pull request GitHub associates with a commit. For a
 // squash-merged commit on `main` this is normally exactly the one PR that
-// produced it, even after its head branch was deleted post-merge.
+// produced it, even after its head branch was deleted post-merge. The commit
+// itself must exist, so a 404 is a failure rather than "no PR".
 export async function associatedPulls({ apiBase, repo, sha, headers, fetchImpl = globalThis.fetch }) {
-  return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/pulls?per_page=100`, headers, fetchImpl);
+  return ghJSON(`${apiBase}/repos/${repo}/commits/${sha}/pulls?per_page=${GITHUB_PER_PAGE}`, {
+    headers,
+    what: `list pulls for ${sha}`,
+    notFound: NOT_FOUND_THROW,
+    fetchImpl,
+  });
 }
 
 // checkRunsForSha — every check-run GitHub has posted on a commit (paginated).
 export async function checkRunsForSha({ apiBase, repo, sha, headers, fetchImpl = globalThis.fetch }) {
-  const out = [];
-  let page = 1;
-  for (;;) {
-    const data = await getJSON(
-      `${apiBase}/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`,
-      headers,
-      fetchImpl,
-    );
-    const runs = data.check_runs ?? [];
-    out.push(...runs);
-    if (runs.length < 100) break;
-    page += 1;
-  }
-  return out;
+  return ghPaginate({
+    url: `${apiBase}/repos/${repo}/commits/${sha}/check-runs`,
+    headers,
+    what: `list check-runs for ${sha}`,
+    pick: (data) => data.check_runs,
+    fetchImpl,
+  });
 }
 
 function ghNotice(msg) {
@@ -200,11 +193,7 @@ async function main() {
     process.exit(1);
   }
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
+  const headers = ghHeaders(token);
 
   const pulls = await associatedPulls({ apiBase, repo, sha, headers });
   const releasePRs = releaseStagingSourcePRs(pulls);

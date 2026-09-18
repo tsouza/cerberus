@@ -62,8 +62,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Four of the six real records are chdb-tagged (both PROMQL records —
       # COUNTER-RESET-COMPENSATION and RANGE-WINDOW-BOUNDARY-CLOSED-LEFT —
       # and both TRACEQL records) — same requirement as ci.yml's check-build

@@ -25,6 +25,26 @@ files. `setOutput` and `exportEnv` differ by consumer, not by mechanism: a step
 output has to be named by whoever reads it, while `$GITHUB_ENV` carries a
 decision that changes how the REST of the job behaves and has no single reader.
 
+`lib/image-globs.mjs` is the one image-ref glob (`*` never crosses a `/`)
+behind every "skip these images" filter: `k3d-image-import.mjs`'s
+`IMAGE_IMPORT_EXCLUDE` and `pull-images.mjs`'s `IMAGE_PULL_EXCLUDE`.
+
+`lib/gh-api.mjs` is the one GitHub REST client: `ghHeaders(token)` (the
+`Accept` / `Authorization` / `X-GitHub-Api-Version` block), `ghJSON(url,
+{ token, what, notFound, init, fetchImpl })` (one request, parsed; `notFound`
+is REQUIRED — `NOT_FOUND_NULL` for a lookup that may legitimately miss,
+`NOT_FOUND_THROW` for a resource that must exist — so every caller states
+what a 404 means to it instead of inheriting one of eleven pasted copies that
+disagreed), and `ghPaginate({ url, token, pick, maxPages })` (every item across
+every `per_page=100` page, stopping on the first short one; with `maxPages`, a
+walk that never shortens throws instead of returning a silent prefix).
+`GITHUB_PER_PAGE` is the one named copy of the page size. Used by every
+script that reads the API: `forbid-deferral`, `rejection-parity-divergence-
+liveness`, `update-golden-guard`, `issue-label`, `chaos-not-applicable-rate`,
+`release-gate-drift`, `coverage-verdict`, `release-source-pr-dashboard-gate`,
+`release-preflight`, `brew-smoke`, `lib/resolve-source-pr`. Tested by
+`lib/gh-api.test.mjs`.
+
 `lib/k8s.mjs` (started as `lib/bwc-k8s.mjs`, promoted and renamed once a
 third consumer outside the bwc lane showed up — cerberus issue #3096) holds
 the k8s + in-cluster-ClickHouse lookups the e2e Node scripts share: a namespaced
@@ -810,24 +830,22 @@ behind `GOTEST_JSON_OUT` so a bare local run is unaffected), then its
 "Generate semantic execution observations (property)" step runs
 `MODE=property` over the result and uploads the normalized records as the
 `semantic-executions-property` build artifact. `compatibility.yml`'s three
-per-head jobs (`prometheus`, `tempo`, `loki`) run `compat-execution-report.mjs`
-— see its own entry below — over their already-produced `compat-cases.json`
-and upload `semantic-executions-compat-<head>`. Neither can redden its
-required check — but NOT via a workflow-level `continue-on-error: true`:
-`property (…)` and the three `compatibility/*` heads are protected/
-release-required lanes, and `test/regression/ci_lane_registry_test.go`
-bans `continue-on-error: true` on ANY step of a job backing one, with no
-exceptions (a real failure there would be indistinguishable from a masked
-one). Both `semantic-execution-adapter.mjs` and `compat-execution-report.mjs`
-instead honour `SOFT_FAIL=1` — set on these steps only — which catches any
-error the script would otherwise exit 1 on, annotates it with `::warning::`,
-and exits 0; a developer running either script by hand leaves it unset and
-keeps the immediate hard-fail feedback every other error path already has.
-Each gates on a DIFFERENT `if:` condition matching what evidence it can
-actually produce: the property step runs whenever `run_heavy` was true regardless of
-whether the property tests themselves passed (`always()` — a captured
-go-test-json stream still carries real FAIL evidence even on a failing
-run), while each compat step gates on that head's own harness step outcome
+`semantic-observations-<head>` jobs run `compat-execution-report.mjs` — see
+its own entry below — over the `compat-cases.json` the head job uploaded and
+upload `semantic-executions-compat-<head>`. Neither can redden a required
+check, because neither runs inside one: `property (…)` and the three
+`compatibility/*` heads are protected/release-required lanes, and
+`test/regression/ci_lane_registry_test.go` bans both `continue-on-error:
+true` and a script-side `SOFT_FAIL` on ANY step of a job backing one, with
+no exceptions (a real failure there would be indistinguishable from a masked
+one). The observation steps are therefore their own non-gating jobs that
+`needs:` the gating one and read its artifacts; a real failure of the
+adapter reds that job's own check-run, visible rather than masked. Each
+gates on a DIFFERENT `if:` condition matching what evidence it can actually
+produce: the property job runs whenever the fan-out step wrote its events
+file (`success` or `failure` — a captured go-test-json stream still carries
+real FAIL evidence even on a failing run), and not at all on a non-heavy PR,
+while each compat job gates on that head's own harness step outcome
 being `success`, never on a downstream ratchet (a harness that never
 produced a `compat-cases.json` has nothing to classify, but a ratchet that
 failed AFTER the harness succeeded still has real evidence to report). In
@@ -2164,6 +2182,37 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     failure, or zero mutants surviving the full fallback.
   - Tests: `node --test .github/scripts/mutation-run.test.mjs` (run by the
     `forbid-skip` job).
+- **`release-tag.mjs`** — `release.yml`, the `goreleaser` job's `Create +
+  push v<appVersion> tag at merge commit` step. Creates the annotated release
+  tag at `GITHUB_SHA` and pushes it; a re-run that finds the tag already at
+  that commit is a no-op, and a tag at a DIFFERENT commit is a hard error (a
+  moved release tag is never correct). Invoked only from release.yml — never
+  from a Justfile recipe, because release-version-gate.mjs reads an existing
+  tag as "already released" (`TestNoJustfileRecipePushesAReleaseTag`).
+  - Env: `TAG`, `GITHUB_SHA` (required); `REMOTE` (default `origin`).
+  - Exit: `0` when the tag exists at `GITHUB_SHA`; `1` otherwise.
+  - Tests: `release-tag.test.mjs` (run in `ci.yml`, against a throwaway
+    repository with a bare remote).
+- **`release-is-latest.mjs`** — `release.yml`, the `goreleaser` job's
+  `Compute RELEASE_IS_LATEST` step. Whether the tag being released is the
+  highest STABLE `vX.Y.Z` (prereleases never count): the one signal that
+  decides the rolling `:latest` images, the Homebrew cask and the GitHub
+  `Latest` pointer, so a stable backport cut after a newer minor takes none
+  of them. Writes `RELEASE_IS_LATEST` to `$GITHUB_ENV` and `is_latest` to
+  `$GITHUB_OUTPUT`; replaced an inline `git tag -l | awk | sed | sort -V`
+  pipeline.
+  - Env: `TAG` (required); reads the checkout's tags (`fetch-depth: 0`).
+  - Exit: `0`; `1` on a missing `TAG`.
+  - Tests: `release-is-latest.test.mjs` (run in `ci.yml`).
+- **`go-mod-tidy-check.mjs`** — `ci.yml`, the `check-build` job's `go.mod is
+  tidy` step. Runs `go mod tidy` in every module (the root and the nested
+  `test/oracle`, which drifts the same way) and fails with the diff when
+  go.mod / go.sum changed — goreleaser's `before` hook tidies on every
+  release, so an untidy module means the release mutates the tree it cuts
+  from. Replaced an inline loop plus diff branch.
+  - Env: `MODULES` (optional; default `. test/oracle`).
+  - Exit: `0` when tidy changed nothing; `1` with the diff otherwise.
+  - Tests: `go-mod-tidy-check.test.mjs` (run in `ci.yml`, with a stub `go`).
 - **`release-version-gate.mjs`** — `release.yml`, the `gate` job (app side).
   The publish-on-merge pipeline ships when a validated `release/*` PR is MERGED
   to main (not on a raw pushed tag — that trigger is retired). On the resulting
@@ -2284,10 +2333,13 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   job. Rot detector for the EXPECTED set `release-preflight.mjs` gates on. Reads
   `RELEASE_REQUIRED_CHECKS` + `RELEASE_INFORMATIONAL_CHECKS` out of release.yml
   itself (one copy of the data, one parser; an empty parse throws rather than
-  comparing against nothing) and checks two directions the preflight structurally
-  cannot see from the inside. PROTECTION DRIFT: a live required context in
-  neither list is a lane every PR must pass and the release does not wait for —
-  the dangerous direction, and invisible to an allow-list of names to wait for.
+  comparing against nothing) plus the registry-derived de-gate set
+  (`registryInformationalMatchers`, the same one the preflight applies) and
+  checks two directions the preflight structurally cannot see from the inside.
+  PROTECTION DRIFT: a live required context in neither list, whose registry lane
+  is release-required, is a lane every PR must pass and the release does not
+  wait for — the dangerous direction, and invisible to an allow-list of names to
+  wait for.
   LANE DRIFT: a required name that posted no check-run anywhere in the scanned
   commit window no longer matches a lane, so the next release waits out its full
   window and aborts mid-publish. The window spans many commits because a single
@@ -2405,7 +2457,11 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     self-job names to exclude), `RELEASE_REQUIRED_CHECKS` (newline-separated
     EXPECTED set — every name must have posted a green check-run; empty is a
     hard failure), `RELEASE_INFORMATIONAL_CHECKS` (newline-separated name
-    PREFIXES to observe but not gate on). All three are split on the NEWLINE
+    PREFIXES to observe but not gate on — only for check-runs that are not a
+    registry lane's context; every lane whose `release_posture` in
+    `.github/ci-lanes.json` is not `required` is de-gated by that declaration,
+    via `registryInformationalMatchers`, and `CI_LANE_REGISTRY` overrides the
+    registry path). All three lists are split on the NEWLINE
     and only the newline: check-run names are job display names that may
     contain commas — `property (PromQL + LogQL + TraceQL, rapid N=500)` is a
     branch-protection required context — so a comma-separated value yields
@@ -2594,11 +2650,39 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   nothing.
   - Env: `CHART_DIR` (default `deploy/helm/cerberus`).
   - Exit: `0` when every assertion holds; `1` on the first failure.
-- **`compat-step-summary.mjs`** — `compatibility.yml`, the three
-  `Append score to step summary` steps.
+- **`compat-step-summary.mjs`** — `compatibility.yml`, every lane's
+  `Summarise report and append score to step summary` / `Append score to step
+  summary` step. Logs the upstream tester's raw report tally (the three
+  prometheus lanes — the tester encodes "no error" as an empty string, not
+  null, and the tally partitions on that; this replaced an inline `jq` copied
+  three times) and appends the one-row parity table to the step summary (the
+  forced-route and floor lanes used to carry an inline bash copy of it).
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
-    head's `compat-score.json`).
+    head's `compat-score.json`), `TITLE` / `LABEL` (optional heading and row
+    label for a variant lane), `REPORT` (optional path to the tester's
+    `report.json` to tally).
   - Exit: always `0` (housekeeping; never gates).
+  - Tests: `compat-step-summary.test.mjs` (run in `ci.yml`).
+- **`run-prometheus-compatibility.mjs`** — `compatibility.yml`, the
+  `prometheus`, `prometheus-forced-route` and `prometheus-floor` harness
+  steps, and `just compat-promql`. Brings the compose stack up, seeds it,
+  build-time patches the vendored promql-compliance-tester's comparer
+  (symmetric matrix sort; the per-comparison deadline — 45s on the 26.5
+  lanes, 90s only for a `CH_IMAGE` below the native-rate floor, chosen by
+  `comparerTimeoutSeconds()`), runs the tester at
+  `DEFAULT_TESTER_QUERY_PARALLELISM` (2) unless overridden, then the
+  rejection-parity, metadata-parity and scorer passes. A run whose report
+  is unparseable or EMPTY exits non-zero whatever the tester's rc — the
+  tester exits 0 on "every query passed", which an empty report also
+  satisfies. The comparer patch matches `N*time.Second` by shape, so a
+  checkout an earlier run already patched (the submodule is `ignore =
+  dirty`) re-patches instead of failing.
+  - Env: see the script header (`TESTER_*`, `CH_IMAGE`, `FAIL_ON_DIFF`,
+    `COMPOSE_KEEP`).
+  - Exit: `0` on a completed run (parity drift lives in `report.json`, not
+    the exit code, unless `FAIL_ON_DIFF`); non-zero on an infrastructure
+    failure, an unusable report, or (under `FAIL_ON_DIFF`) any drift.
+  - Tests: `run-prometheus-compatibility.test.mjs` (run in `ci.yml`).
 - **`compat-ratchet.mjs`** — `compatibility.yml`, the three
   `Parity-regression ratchet` steps. The GATE that makes the required
   `compatibility/{prometheus,loki,tempo}` checks fail on a parity
@@ -2663,8 +2747,8 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     every scenario that the checkout came out on its original branch with
     its files and scratch-worktree count unchanged.
 - **`compat-execution-report.mjs`** — `compatibility.yml`, the three
-  `Generate semantic execution observations (compat/<head>)` steps (issue
-  #3499). `lib/semantic-execution-adapter.mjs`'s own CLI (`MODE=compat`)
+  `semantic-observations-<head>` jobs' `Generate semantic execution
+  observations (compat/<head>)` steps (issue #3499). `lib/semantic-execution-adapter.mjs`'s own CLI (`MODE=compat`)
   classifies exactly ONE caller-named `BINDING` per invocation by design — a
   compat binding is scoped to the whole driver invocation, and tempo's HTTP/
   gRPC transports are two bindings/two case sets for exactly that reason.
@@ -2707,16 +2791,12 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `hashCorpus`'s array form — loki's harness draws from two separate
     roots), `REFERENCE_VERSION` / `EXPECT_REFERENCE_VERSION`
     (optional), `CANDIDATE_SHA` / `RUN_REF` / `OBSERVED_AT` / `MODEL_DIR` /
-    `OUT` (same defaults as the CLI's own `sharedContext`), `SOFT_FAIL`
-    (optional — `"1"` turns an error that would exit `1` into a
-    `::warning::` and exit `0`; set by `compatibility.yml`'s three steps,
-    since a protected/release-required lane's job may not declare
-    `continue-on-error: true` on any step).
+    `OUT` (same defaults as the CLI's own `sharedContext`).
   - Exit: `0` printing/writing one record per selected binding — a
     per-binding case-set read/parse failure degrades that binding's own
-    record rather than exiting non-zero — or (with `SOFT_FAIL=1`) on any
-    other error; `1` on error otherwise — `HEAD`/`CASES_PATH` missing, or no
-    active `"reference"` binding matches the head.
+    record rather than exiting non-zero; `1` on error otherwise —
+    `HEAD`/`CASES_PATH` missing, or no active `"reference"` binding matches
+    the head.
   - Tests: `compat-execution-report.test.mjs` (run in `ci.yml`), covering
     the gRPC-arm routing, the manual-review exclusion, the multi-binding
     fan-out against a prometheus-shaped model, the head-prefix segment-
@@ -3277,6 +3357,25 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
     unrecognised `MODE`.
 
+- **`docs-only-filter.mjs`** — `./.github/actions/docs-only`, the composite
+  every workflow with a docs-only short-circuit uses for its `changes` job
+  (`ci.yml`, `compatibility.yml`, `chdb.yml`, `schema-integration.yml`,
+  `strict-scan.yml`, `agpl-oracle.yml`). `MODE=filters` renders the
+  `dorny/paths-filter` input — a `code` key matching `**` minus every
+  `impact_selection.known_nonimpact_globs` entry of the lane registry — as the
+  multi-line `filters` output; `MODE=compute` turns the filter's `code`
+  verdict into `docs_only` (`true` only on a `pull_request` whose `code` came
+  back `false`; every other event is `false`, so the heavy jobs run). The six
+  workflows used to carry their own copies of the glob list and had drifted
+  from the registry; `test/regression/docs_only_action_test.go` refuses an
+  inline copy and pins the action's wiring.
+  - Env: `MODE` (`filters` | `compute`), `CI_LANE_REGISTRY` (filters; default
+    `.github/ci-lanes.json`), `EVENT_NAME` + `CODE_CHANGED` (compute),
+    `GITHUB_OUTPUT`.
+  - Exit: `0` with the output written; `1` on an unknown `MODE`, an
+    unreadable registry, or an empty glob list.
+  - Tests: `docs-only-filter.test.mjs` (run in `ci.yml`).
+
 - **`chdb-run-heavy.mjs`** — `chdb.yml`, the `changes` job's `decide run_heavy`
   step. A port of `coverage-run-heavy.mjs`'s #2416 fix to a fourth lane
   (tsouza/cerberus#2426), replacing the inline shell branch the `compute`
@@ -3701,8 +3800,25 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   failure ends the run: the lane cannot start without the image, and a second
   pull into a spent quota only deepens the deficit for every concurrent job.
   - Args: the image refs to acquire.
-  - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`).
-  - Exit: `0` when every ref is in the local daemon, `1` as soon as one is not.
+  - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`);
+    `IMAGE_PULL_EXCLUDE` (optional; whitespace-separated `lib/image-globs.mjs`
+    patterns to skip — the bwc / datashard recipes pass the standalone
+    `clickhouse/clickhouse-server:*-alpine` image their kustomization never
+    applies, the same pattern `k3d-image-import.mjs` takes as
+    `IMAGE_IMPORT_EXCLUDE`, instead of a hand-rolled `case … continue` loop
+    around `_pull-retry`).
+  - Exit: `0` when every non-excluded ref is in the local daemon, `1` as soon
+    as one is not.
+- **`wait-container-ready.mjs`** — `e2e.yml`, the `startup-bench` job's `Wait
+  for ClickHouse` step. Polls `docker exec <container> wget --spider <url>`
+  through `lib/poll.mjs` until the endpoint answers inside the container, and
+  prints the container's log tail on the deadline; replaced an inline
+  `for i in $(seq …)` loop.
+  - Env: `CONTAINER`, `URL` (required); `DEADLINE_SECONDS` (default `120`),
+    `POLL_INTERVAL_SECONDS` (default `5`).
+  - Exit: `0` once the probe answers; `1` on the deadline or a missing input.
+  - Tests: `wait-container-ready.test.mjs` (run in `ci.yml`, with a stub
+    `docker` on PATH).
 - **`assert-image-jobs-authenticate.mjs`** — the required `check` lane. Fails
   when a job that acquires an image has not logged in to the registry it
   acquires from. An anonymous pull is not an error: it succeeds until the shared
@@ -4053,11 +4169,12 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
 
 ## Notes
 
-- **`forbid-skip.mjs` regexes are a contract.** They are kept
-  byte-identical to `scripts/test-forbid-skip.sh` (the self-test step
-  that pins the patterns against canonical match / no-match examples) and
-  to `docs/forbid-skip.md`. When widening or normalising a pattern,
-  update all three in the same change.
+- **`forbid-skip.mjs` regexes are a contract.** The script is the only
+  copy of every discipline regex: `ci.yml` and `lefthook.yml` both invoke
+  it with `CHECK: <arm>`, and `forbid-skip.test.mjs` drives the real CLI
+  against a match and a no-match fixture per pattern. When widening or
+  normalising a pattern, update `docs/forbid-skip.md` and
+  `forbid-skip.test.mjs` in the same change.
 - **Local check / behaviour test.** Each script is plain Node — run it
   directly with representative env (e.g.
   `THRESHOLD=95 REPORT=/tmp/g.json node .github/scripts/gremlins-threshold.mjs`)

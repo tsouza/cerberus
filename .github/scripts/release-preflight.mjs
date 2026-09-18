@@ -152,8 +152,16 @@
 //                      Empty/unset is a blocking problem.
 //   RELEASE_INFORMATIONAL_CHECKS
 //                      newline-separated name PREFIXES of explicitly de-gated
-//                      informational lanes. An entry that swallows a
-//                      RELEASE_REQUIRED_CHECKS name is a wiring error.
+//                      informational check-runs that are NOT a registry lane's
+//                      context (a matrix child, a per-leg check-run). An entry
+//                      that swallows a RELEASE_REQUIRED_CHECKS name is a wiring
+//                      error.
+//   CI_LANE_REGISTRY   path of the lane registry (default .github/ci-lanes.json).
+//                      Every lane whose `release_posture` is not `required` is
+//                      informational by DERIVATION — see
+//                      registryInformationalMatchers — so a lane's declared
+//                      posture is the one place that decides whether it gates a
+//                      publish. Unreadable is a blocking problem.
 //
 //                      All three are split on the NEWLINE and only the newline
 //                      (see parseCheckList): a check-run name is a job display
@@ -195,6 +203,8 @@
 
 import process from 'node:process';
 
+import { DEFAULT_REGISTRY_PATH, loadRegistry } from './ci-lane-contract.mjs';
+import { DEFAULT_API_BASE, GITHUB_PER_PAGE, NOT_FOUND_THROW, ghHeaders, ghJSON, ghPaginate } from './lib/gh-api.mjs';
 import { resolveSourcePR } from './lib/resolve-source-pr.mjs';
 
 // A maintenance line is `release/<major>.<minor>.x` — `release/1.4.x`,
@@ -291,6 +301,37 @@ export function parseCheckList(raw) {
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+// registryInformationalMatchers — the de-gated set the lane registry itself
+// declares. A lane's `release_posture` is `required` (its context is named in
+// RELEASE_REQUIRED_CHECKS; TestCILaneRegistry pins the two equal) or it is
+// not, and "not" means its verdict must not hold a publish: `advisory` lanes
+// are experimental / evidence-only, `post_publish` lanes verify an artifact
+// that does not exist yet. Before this derivation the workflow carried a
+// hand-maintained RELEASE_INFORMATIONAL_CHECKS list that named seven of the
+// twenty-seven non-required lanes, and every other one — `chaos`, `datashard
+// (N=…)`, `startup-bench`, both compat floor/surface probes, the chDB
+// `integration (…)` legs, `agpl-oracle` — fell into the "gates by default"
+// branch below and could block a release with a verdict its own registry
+// entry says is advisory (#3155 was the first instance; it was fixed by
+// adding one more name to the list).
+//
+// A context matches the way its registry entry says it is emitted: `exact`
+// is the whole check-run name, `prefix` is a matrix-named family
+// (`datashard (N=`). An exact name is NOT widened to a prefix here — `chaos`
+// must not swallow a required `chaos-…`.
+export function registryInformationalMatchers(registry) {
+  return (registry?.lanes ?? [])
+    .filter((lane) => lane.release_posture !== 'required')
+    .map((lane) => ({ name: lane.context.name, match: lane.context.match }));
+}
+
+// matchesInformational — one check-run name against the union of the explicit
+// prefix list and the registry-derived matchers.
+export function matchesInformational(name, informational, matchers) {
+  if ((informational ?? []).some((p) => p && name.startsWith(p))) return true;
+  return (matchers ?? []).some((m) => (m.match === 'prefix' ? name.startsWith(m.name) : name === m.name));
 }
 
 export function allSuitesSettled(suites, ownSuiteId, workflowNames) {
@@ -490,6 +531,7 @@ export function evaluate({
   branchLabel,
   tags,
   informational,
+  informationalMatchers,
   required,
   mode = MODE_MAINTENANCE,
 }) {
@@ -504,7 +546,10 @@ export function evaluate({
   // `compose-smoke` aggregate already rolls up the gating shards, so the crawl
   // info shard is redundant — a flake there must not block a release. Everything
   // else that ran must be completed + green (a new lane gates by default).
-  const isInformational = (name) => (informational ?? []).some((p) => p && name.startsWith(p));
+  // `informationalMatchers` is the registry-derived half (see
+  // registryInformationalMatchers): a lane whose declared release_posture is
+  // not `required` is informational whether or not anyone listed it.
+  const isInformational = (name) => matchesInformational(name, informational, informationalMatchers);
   // Self-jobs match exactly, or as the parent of a reusable workflow's children
   // ("<job> / <child>"). Both are structurally downstream of this preflight.
   const isSelfJob = (name) =>
@@ -556,8 +601,9 @@ export function evaluate({
     }
     if (isInformational(name)) {
       problems.push(
-        `${name} is both REQUIRED and de-gated by RELEASE_INFORMATIONAL_CHECKS (prefix match) — ` +
-          `the informational prefix swallows a required lane, which is a hole, not a de-gate.`,
+        `${name} is both REQUIRED and de-gated (a RELEASE_INFORMATIONAL_CHECKS prefix, or a registry ` +
+          `lane whose release_posture is not required) — the informational match swallows a required ` +
+          `lane, which is a hole, not a de-gate.`,
       );
       continue;
     }
@@ -765,6 +811,37 @@ function selfTest() {
     required: requiredCheck,
   });
   assert(r.problems.some((p) => /some-new-lane: failure/.test(p)), 'an unlisted lane must gate by default');
+
+  // A lane the REGISTRY declares non-required is informational without being
+  // listed: exact contexts match whole names, prefix contexts match families,
+  // and an exact advisory name does not swallow a required name it prefixes.
+  const matchers = registryInformationalMatchers({
+    lanes: [
+      { release_posture: 'required', context: { name: 'check', match: 'exact' } },
+      { release_posture: 'advisory', context: { name: 'chaos', match: 'exact' } },
+      { release_posture: 'advisory', context: { name: 'datashard (N=', match: 'prefix' } },
+      { release_posture: 'post_publish', context: { name: 'brew-verify (', match: 'prefix' } },
+    ],
+  });
+  assert(matchers.length === 3, `registry derivation keeps only non-required lanes, got ${matchers.length}`);
+  r = evaluate({
+    branchHead: 'abc', pushedSha: 'abc', selfJobs: self, branchLabel: label, informational: info,
+    informationalMatchers: matchers,
+    checkRuns: [
+      cr('check', 'completed', 'success'),
+      cr('chaos', 'completed', 'failure'),
+      cr('datashard (N=2)', 'completed', 'failure'),
+      cr('brew-verify (macos-latest)', 'completed', 'failure'),
+      cr('chaos-sleep', 'completed', 'failure'),
+    ],
+    statuses: [],
+    required: requiredCheck,
+  });
+  assert(!r.problems.some((p) => /^chaos: /.test(p)), 'a registry-advisory exact lane must not block');
+  assert(!r.problems.some((p) => /datashard/.test(p)), 'a registry-advisory prefix family must not block');
+  assert(!r.problems.some((p) => /brew-verify/.test(p)), 'a registry post_publish lane must not block');
+  assert(r.problems.some((p) => /chaos-sleep: failure/.test(p)), 'an exact advisory name must not widen to a prefix');
+  assert(r.gated === 2, `only the two non-derived checks gate, got ${r.gated}`);
 
   // Pushed commit is NOT the branch tip -> reject (stale re-drive).
   r = evaluate({
@@ -1020,7 +1097,7 @@ async function main() {
   const repo = process.env.GITHUB_REPOSITORY;
   const pushedSha = process.env.GITHUB_SHA;
   const branch = process.env.GITHUB_REF_NAME ?? '';
-  const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
+  const apiBase = process.env.GITHUB_API_URL || DEFAULT_API_BASE;
   const token = process.env.GITHUB_TOKEN;
   const runId = process.env.GITHUB_RUN_ID;
   const selfJobs = new Set(parseCheckList(process.env.RELEASE_SELF_JOBS));
@@ -1028,6 +1105,19 @@ async function main() {
   // compose-smoke-shard-info crawl shard, the dashboard smoke). A flake in one
   // of these must not block a maintenance release; everything else still gates.
   const informational = parseCheckList(process.env.RELEASE_INFORMATIONAL_CHECKS);
+  // The registry-declared half of the de-gated set. The preflight runs in a
+  // checkout, so the registry is on disk; an unreadable registry is a blocking
+  // problem rather than an empty derivation, because an empty derivation would
+  // silently put every advisory lane back on the critical path.
+  let informationalMatchers;
+  try {
+    informationalMatchers = registryInformationalMatchers(
+      loadRegistry(process.env.CI_LANE_REGISTRY || DEFAULT_REGISTRY_PATH, { root: process.cwd() }),
+    );
+  } catch (e) {
+    ghError(`could not derive the informational lane set from the lane registry: ${e.message}`);
+    process.exit(1);
+  }
   // The EXPECTED set — exact check-run names that MUST have posted a run on the
   // commit. Parsed the same way as the informational list, but consumed as EXACT
   // names, not prefixes: a required lane is a specific job, not a family.
@@ -1045,18 +1135,13 @@ async function main() {
     process.exit(1);
   }
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-
+  // Every read below is a resource the gate needs to exist (the branch, the
+  // commit's check-runs and suites, the tag list, this run): a 404 blocks.
   async function getJSON(url) {
-    const res = await fetch(url, { headers });
-    if (!res.ok) {
-      throw new Error(`GET ${url} -> ${res.status} ${res.statusText}`);
-    }
-    return res.json();
+    return ghJSON(url, { token, notFound: NOT_FOUND_THROW });
+  }
+  async function getPages(url, pick) {
+    return ghPaginate({ url, token, pick });
   }
 
   // The pushed commit must be the current tip of the maintenance branch.
@@ -1069,53 +1154,25 @@ async function main() {
   // the source-PR credit below (tsouza/cerberus#2394) is the only caller that
   // passes an explicit sha (the resolved PR's tip commit).
   async function allCheckRuns(sha = pushedSha) {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const data = await getJSON(`${apiBase}/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`);
-      const runs = data.check_runs ?? [];
-      out.push(...runs);
-      if (runs.length < 100) break;
-      page += 1;
-    }
-    return out;
+    return getPages(`${apiBase}/repos/${repo}/commits/${sha}/check-runs`, (data) => data.check_runs);
   }
 
   async function combinedStatus(sha = pushedSha) {
-    return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/status?per_page=100`);
+    return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/status?per_page=${GITHUB_PER_PAGE}`);
   }
 
   // Every tag name — the support-window gate derives the current minor from the
   // stable `v<major>.<minor>.<patch>` subset. Listed via the API (not git) so
   // the preflight job needs no fetch-depth.
   async function allTags() {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const data = await getJSON(`${apiBase}/repos/${repo}/tags?per_page=100&page=${page}`);
-      const names = (data ?? []).map((t) => t.name);
-      out.push(...names);
-      if (names.length < 100) break;
-      page += 1;
-    }
-    return out;
+    const tags = await getPages(`${apiBase}/repos/${repo}/tags`);
+    return tags.map((t) => t.name);
   }
 
   // All check-suites on the pushed commit. The wait phase polls this until every
   // suite EXCEPT this release run's own is `completed`.
   async function allCheckSuites() {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const data = await getJSON(
-        `${apiBase}/repos/${repo}/commits/${pushedSha}/check-suites?per_page=100&page=${page}`,
-      );
-      const suites = data.check_suites ?? [];
-      out.push(...suites);
-      if (suites.length < 100) break;
-      page += 1;
-    }
-    return out;
+    return getPages(`${apiBase}/repos/${repo}/commits/${pushedSha}/check-suites`, (data) => data.check_suites);
   }
 
   // suite id -> workflow run name, for the wait loop's progress message. Every
@@ -1124,17 +1181,12 @@ async function main() {
   // resolve a name degrades the message to the app slug, never the gate.
   async function workflowNamesBySuite() {
     const names = new Map();
-    let page = 1;
-    for (;;) {
-      const data = await getJSON(
-        `${apiBase}/repos/${repo}/actions/runs?head_sha=${pushedSha}&per_page=100&page=${page}`,
-      );
-      const runs = data.workflow_runs ?? [];
-      for (const r of runs) {
-        if (r.check_suite_id != null && r.name) names.set(r.check_suite_id, r.name);
-      }
-      if (runs.length < 100) break;
-      page += 1;
+    const runs = await getPages(
+      `${apiBase}/repos/${repo}/actions/runs?head_sha=${pushedSha}`,
+      (data) => data.workflow_runs,
+    );
+    for (const r of runs) {
+      if (r.check_suite_id != null && r.name) names.set(r.check_suite_id, r.name);
     }
     return names;
   }
@@ -1297,6 +1349,7 @@ async function main() {
     branchLabel: branch,
     tags,
     informational,
+    informationalMatchers,
     required,
     mode,
   });
@@ -1350,35 +1403,21 @@ async function retireLine() {
   const repo = process.env.GITHUB_REPOSITORY;
   const token = process.env.GITHUB_TOKEN;
   const version = process.env.RELEASE_APP_VERSION ?? '';
-  const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
+  const apiBase = process.env.GITHUB_API_URL || DEFAULT_API_BASE;
 
   if (!repo || !token) {
     ghError('eol-retire-line: GITHUB_REPOSITORY and GITHUB_TOKEN are required');
     process.exit(1);
   }
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
+  const headers = ghHeaders(token);
 
   // All tags — the window anchors to the highest released stable minor. Fetched
   // via the API so the step needs no fetch-depth. Fail-open: if we cannot list
   // tags we cannot safely compute the window, so we retire nothing and return.
   async function allTags() {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const res = await fetch(`${apiBase}/repos/${repo}/tags?per_page=100&page=${page}`, { headers });
-      if (!res.ok) throw new Error(`GET tags -> ${res.status} ${res.statusText}`);
-      const data = await res.json();
-      const names = (data ?? []).map((t) => t.name);
-      out.push(...names);
-      if (names.length < 100) break;
-      page += 1;
-    }
-    return out;
+    const tags = await ghPaginate({ url: `${apiBase}/repos/${repo}/tags`, headers, what: 'GET tags' });
+    return tags.map((t) => t.name);
   }
 
   let tags;

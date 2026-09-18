@@ -90,6 +90,8 @@
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 
+import { HTTP_NOT_FOUND, ghHeaders } from './lib/gh-api.mjs';
+
 // The tap goreleaser's `homebrew_casks:` block writes to, and the cask path
 // inside it. Must stay in step with .goreleaser.yml's `directory: Casks`.
 const TAP_REPO = 'tsouza/homebrew-tap';
@@ -522,11 +524,7 @@ async function main() {
   if (!token) fail('GITHUB_TOKEN is required to read the tap cask');
   if (!repoRoot) fail('REPO_ROOT is required — the `config-docs -check` payload runs against this commit\'s docs');
 
-  const tapHeaders = (accept) => ({
-    Authorization: `Bearer ${token}`,
-    Accept: accept,
-    'X-GitHub-Api-Version': '2022-11-28',
-  });
+  const tapHeaders = (accept) => ghHeaders(token, { accept });
 
   // tapFile — read one path from the tap. Returns the source, or null on 404.
   // Any other status is an unknown tap state and fails the caller rather than
@@ -535,7 +533,7 @@ async function main() {
   const tapFile = async (path) => {
     const url = `${apiBase}/repos/${TAP_REPO}/contents/${path}`;
     const res = await fetch(url, { headers: tapHeaders('application/vnd.github.raw+json') });
-    if (res.status === 404) return null;
+    if (res.status === HTTP_NOT_FOUND) return null;
     if (!res.ok) {
       fail(`GET ${url} -> ${res.status} ${res.statusText}. ${TAP_REPO} is not readable.`);
     }

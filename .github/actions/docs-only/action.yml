@@ -1,0 +1,55 @@
+name: docs-only
+description: >
+  Decide whether a pull request touched only documentation, from the one
+  list of non-impact paths the lane registry declares, so the workflows that
+  short-circuit their heavy jobs on a docs-only change all agree on what
+  "documentation" means.
+
+# Why a composite action: six workflows (ci, compatibility, chdb,
+# schema-integration, strict-scan, agpl-oracle) carried the same ten-line
+# `dorny/paths-filter` block and the same `docs_only` shell, and the six copies
+# had drifted from `.github/ci-lanes.json`'s `impact_selection.
+# known_nonimpact_globs` — the list quickstart-canary.mjs reads for the same
+# decision. The filter is rendered from the registry by docs-only-filter.mjs
+# (MODE=filters) and the verdict computed by the same script (MODE=compute);
+# test/regression/docs_only_action_test.go refuses an inline copy in any
+# workflow.
+#
+# The caller must have checked the repository out (a `./`-referenced action
+# needs the checkout to exist, and the registry is read from it). Outside a
+# pull request there is no two-commit diff to filter, so `docs_only` is
+# `false` and the heavy jobs run — the safe default.
+
+outputs:
+  docs_only:
+    description: "'true' when every changed file of a pull request is documentation; 'false' otherwise (and on every non-PR event)."
+    value: ${{ steps.compute.outputs.docs_only }}
+
+runs:
+  using: composite
+  steps:
+    - id: globs
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        MODE: filters
+      run: node .github/scripts/docs-only-filter.mjs
+
+    - id: filter
+      if: github.event_name == 'pull_request'
+      uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4
+      with:
+        # `every` makes the negation patterns subtractive: a file is in
+        # `code` iff it matches `**` AND does NOT match any `!`-prefixed
+        # documentation pattern. Under the default `some` quantifier `**`
+        # matches everything and the negations never fire.
+        predicate-quantifier: 'every'
+        filters: ${{ steps.globs.outputs.filters }}
+
+    - id: compute
+      shell: bash
+      env:
+        MODE: compute
+        EVENT_NAME: ${{ github.event_name }}
+        CODE_CHANGED: ${{ steps.filter.outputs.code }}
+      run: node .github/scripts/docs-only-filter.mjs

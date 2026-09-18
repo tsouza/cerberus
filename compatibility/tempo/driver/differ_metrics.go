@@ -206,7 +206,12 @@ func decodeMetrics(body []byte) (MetricsResponse, error) {
 // Exemplar COUNTS are reported as a reason when they diverge but do not
 // by themselves drive Equal=false: both backends may sample exemplars
 // differently (Tempo caps at 100 by default), so a count difference is a
-// sampling difference rather than a defect.
+// sampling difference rather than a defect. Exemplar PRESENCE is not a
+// count: a test side that emits NONE where the reference emits some has
+// not sampled differently, it has stopped emitting exemplars — the shape
+// the producer degrades to on an emit or execute failure — and that is a
+// blocking mismatch. The reverse (test side has some, reference none) is
+// the reference's own sampling and stays informational.
 //
 // Exemplar SHAPE is not lenient, and the distinction matters. Comparing
 // counts alone was the whole of the exemplar check, and it let a real wire
@@ -380,10 +385,20 @@ func compareMetricsSeries(key string, a, b MetricsSeriesEntry, aLabel, bLabel st
 		}
 	}
 
-	// Exemplar count divergence is informational only — see the
-	// CompareMetrics doc-comment for why we don't drive Equal=false on
-	// exemplar disagreement.
-	if len(a.Exemplars) != len(b.Exemplars) {
+	// Exemplar PRESENCE is blocking in one direction: the reference (a) emits
+	// exemplars and the test side (b) emits none. A systematic exemplar
+	// failure on the test side is otherwise indistinguishable from a
+	// sampling difference — see the CompareMetrics doc-comment.
+	switch {
+	case len(a.Exemplars) > 0 && len(b.Exemplars) == 0:
+		reasons = append(reasons, DiffReason{
+			Kind:   reasonKindFieldMismatch,
+			Detail: fmt.Sprintf("key %s: exemplar presence %s=%d vs %s=0", key, aLabel, len(a.Exemplars), bLabel),
+		})
+	case len(a.Exemplars) != len(b.Exemplars):
+		// A count divergence between two populated sides (or exemplars only
+		// on the test side) is informational only — see the CompareMetrics
+		// doc-comment for why we don't drive Equal=false on it.
 		informational = append(informational, DiffReason{
 			Kind:   "exemplar_count",
 			Detail: fmt.Sprintf("key %s: exemplars %s=%d vs %s=%d (informational)", key, aLabel, len(a.Exemplars), bLabel, len(b.Exemplars)),

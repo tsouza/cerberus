@@ -124,8 +124,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Cached against the recipe's pinned version, so the common path (a shard
       # that does not need chDB at all) is a cache hit the install step below
       # skips outright.
@@ -204,8 +203,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
@@ -274,8 +272,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:

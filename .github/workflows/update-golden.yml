@@ -15,6 +15,12 @@ name: update-golden
 # merge racing it, and this is the one field the list-runs API does expose.
 # Keep the exact `update-golden[<branch>]` shape in sync with that workflow's
 # runTargetsBranch().
+#
+# Concurrency per target branch (`update-golden-<branch>`, cancel-in-progress
+# off): a second dispatch for the same branch waits for the first; GitHub
+# keeps at most ONE pending run per group, so a THIRD dispatch cancels the
+# waiting second (that run then shows no jobs at all). Re-dispatch once the
+# running one has finished rather than queueing several.
 run-name: update-golden[${{ inputs.branch }}]
 on:
   workflow_dispatch:
@@ -169,8 +175,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         if: matrix.needs_chdb
         working-directory: target
@@ -253,8 +258,18 @@ jobs:
     # failure still blocks: a predecessor's patch would then be missing or
     # stale, and a leg that profiled the previous (uncommitted) SQL text would
     # silently record the wrong baseline.
+    #
+    # `needs.plan.result == 'success'` is spelled out because `always()`
+    # removes the implicit one and `plan`'s OUTPUTS survive its failure: the
+    # "Validate dispatch" step writes every output, and the coverage check
+    # after it can still fail the job. Without this clause a rejected dispatch
+    # leaves `regenerate` skipped (its own implicit gate on `plan`) and
+    # `cardinality_selected` still `true`, so all eight legs start, each
+    # downloads libchdb, and each dies looking for predecessor patches nothing
+    # produced. test/regression/workflow_output_gate_test.go pins the rule.
     if: |
       always() &&
+      needs.plan.result == 'success' &&
       needs.plan.outputs.cardinality_selected == 'true' &&
       (needs.regenerate.result == 'success' || needs.regenerate.result == 'skipped')
     runs-on: ubuntu-latest
@@ -308,8 +323,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Deliberately NOT cached, unlike perf-guards-shard's identical-looking
       # step in chdb.yml: THIS job runs the TARGET branch's own (unreviewed)
       # `just chdb-install` recipe (`working-directory: target`, no write
@@ -384,8 +398,13 @@ jobs:
     # slice. `always()` is still needed so this job can see and report that
     # gap (a REAL leg failure) rather than being cascaded to `skipped` itself
     # — but the outcome is the same either way: no golden-patch-cardinality
-    # artifact, so `publish` below correctly refuses to push.
-    if: always() && needs.plan.outputs.cardinality_selected == 'true' && needs.cardinality-leg.result == 'success'
+    # artifact, so `publish` below correctly refuses to push. `plan` success is
+    # explicit for the same reason as on `cardinality-leg`.
+    if: |
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.plan.outputs.cardinality_selected == 'true' &&
+      needs.cardinality-leg.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -419,8 +438,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Deliberately NOT cached — same read-only trust-boundary reasoning as
       # `cardinality-leg`'s identical step above.
       - name: Install libchdb.so

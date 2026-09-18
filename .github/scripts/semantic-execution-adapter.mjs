@@ -56,25 +56,6 @@
 //   EXPECT_REFERENCE_VERSION (compat, verify) asserts a candidate
 //                         reference-version expectation; a mismatch
 //                         against REFERENCE_VERSION flags non-evidence
-//   SOFT_FAIL              when "1", an error that would otherwise exit 1
-//                         (a bad MODE, a missing/unreadable artifact, a
-//                         misconfigured BINDING, …) is instead annotated
-//                         with ::warning:: and this process exits 0. This
-//                         CLI's job is to surface evidence for a human to
-//                         review, never to gate anything itself (see the
-//                         header above) — but a CI step that WOULD exit
-//                         non-zero on a real error still needs a way to
-//                         guarantee it never fails the job it runs inside,
-//                         and `continue-on-error: true` cannot be that way
-//                         inside a protected/release-required lane
-//                         (test/regression/ci_lane_registry_test.go bans it
-//                         there with no exceptions: the flag makes a real
-//                         failure indistinguishable from a masked one).
-//                         property.yml/compatibility.yml (issue #3499) set
-//                         this; a developer running the CLI by hand leaves
-//                         it unset and keeps the immediate, hard-fail
-//                         feedback every other mode/error path already has.
-
 import process from "node:process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -235,10 +216,6 @@ if (invokedDirectly) {
     main();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (process.env.SOFT_FAIL === "1") {
-      warning(`semantic-execution-adapter: ${message}`, { title: "Semantic execution adapter (soft-fail)" });
-      process.exit(0);
-    }
     errorAnnotation(message);
     process.exit(1);
   }
