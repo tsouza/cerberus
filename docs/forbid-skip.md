@@ -50,6 +50,9 @@ nothing turns the `forbid-skip` job red. Every row below has such a pair:
 A runner of a regex is not an assertion about it: CI and lefthook cannot fail
 on a clean tree, so they prove nothing about whether a scan still
 discriminates. Only the fixture pairs in `forbid-skip.test.mjs` do (#3182).
+The file's last test reads the live `CHECKS` key set from the CLI's own
+unknown-`CHECK` error and fails when any arm has not been driven to both exits
+in that run, so an arm cannot be added to the registry without its pair.
 
 ## Patterns vs CHECK categories — the count that the gate pins
 

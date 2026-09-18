@@ -89,8 +89,12 @@ const (
 // add — and what this lane therefore does NOT prove — is that a row written
 // through one node is readable from the other: the cross-node visibility the
 // design's premise (every node resolving default_replica_path to the same
-// coordinates under ON CLUSTER) rests on. That needs a two-node rig; cerberus
-// issue #3566 tracks the lane.
+// coordinates under ON CLUSTER) rests on. That needs a two-node rig, which
+// testcontainers cannot cheaply give (a Keeper plus two servers); the
+// `bwc-replicated` e2e lane (.github/workflows/e2e.yml,
+// .github/scripts/e2e-bwc-replicated-verify.mjs) is where row replication
+// between two real ClickHouse replicas is proven, on the Helm chart's own
+// bundled `replicas: 2` topology.
 const classicClusterRemoteServers = `    <remote_servers>
         <` + classicClusterName + `>
             <shard>
@@ -128,7 +132,8 @@ const classicClusterServerConfigTemplate = "<clickhouse>\n" +
 //     while sitting in system.tables looking healthy, which is exactly how the
 //     corpus came to accumulate per node with nothing saying so. Registration
 //     is what one node can witness; that a second replica receives the rows is
-//     the two-node claim classicClusterRemoteServers' doc defers to #3566.
+//     the two-node claim classicClusterRemoteServers' doc points at the
+//     `bwc-replicated` e2e lane for.
 //  3. The corpus table's Keeper path is its OWN — not the path the operator's
 //     engine expression names for the signal tables. This is the assertion that
 //     discriminates this design from the rejected one: had cerberus threaded

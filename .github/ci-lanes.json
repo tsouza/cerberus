@@ -1049,6 +1049,35 @@
       "accountable_owner": "system-quality"
     },
     {
+      "id": "e2e.bwc-replicated",
+      "description": "Bundled ClickHouse at clickhouse.bundled.replicas=2 (Replicated database, the chart's supported replication path): the auto-created schema is asserted on every replica and rows written through one replica are read back from the other (cerberus issue #3566).",
+      "owner": {
+        "workflow": ".github/workflows/e2e.yml",
+        "jobs": ["bwc-replicated"],
+        "producer_jobs": [],
+        "context_job": "bwc-replicated"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "bwc-replicated", "protected": false },
+      "purpose": "correctness",
+      "layers": ["8", "9"],
+      "oracle_class": "consumer",
+      "recipes": ["e2e-bwc-replicated-up", "e2e-bwc-replicated-verify"],
+      "command": "bundled-ClickHouse replicated k3d scenario",
+      "build_tags": [],
+      "package_globs": ["deploy/helm/**", "test/e2e/k3s/**"],
+      "substrate": "k3d",
+      "risk_domains": ["deployment", "schema"],
+      "merge_posture": "never",
+      "main_posture": "always",
+      "release_posture": "advisory",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 30,
+      "slo_minutes": 30,
+      "accountable_owner": "system-quality"
+    },
+    {
       "id": "e2e.chaos",
       "description": "Live k3d fault injection over the gateway and its dependencies.",
       "owner": {

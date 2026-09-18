@@ -48,7 +48,13 @@ const minManifestImageRefs = 5
 var manifestImage = regexp.MustCompile(`^\s*-?\s*image:\s*["']?([^"'\s#]+)["']?\s*$`)
 
 // manifestTrees are the directories holding the manifests the k3d lanes apply,
-// and prePullPins the Justfile lists whose union must account for them.
+// and prePullPins the Justfile lists whose union must account for them. Every
+// list a k3d lane imports from is here: E2E_BUNDLED_CH_IMAGES backs the two
+// hot-only chart lanes (`e2e-datashard-up`, `e2e-bwc-replicated-up`), whose
+// values overlays live under test/e2e/k3s and pin the chart's bundled image
+// tag — a list left out of this set is a list this guard never reads, and
+// the datashard lane's own tag sat outside it (stale against the chart's pin)
+// until the lane's pin was brought under the same gate.
 //
 // The check is over the UNION rather than per-lane, and that is a deliberate
 // scope, not an oversight. A directory is not a lane: `cerberus-values-bwc.yaml`
@@ -68,7 +74,7 @@ var manifestImage = regexp.MustCompile(`^\s*-?\s*image:\s*["']?([^"'\s#]+)["']?\
 // it cannot hide.
 var (
 	manifestTrees = []string{"../../test/e2e/k3s", "../../test/e2e/k3s-bwc"}
-	prePullPins   = []string{"E2E_EXTERNAL_IMAGES", "E2E_BWC_IMAGES"}
+	prePullPins   = []string{"E2E_EXTERNAL_IMAGES", "E2E_BWC_IMAGES", "E2E_BUNDLED_CH_IMAGES"}
 )
 
 // prePulledImages is the union of the pre-pull lists.

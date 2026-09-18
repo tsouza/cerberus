@@ -1110,10 +1110,11 @@ guarded differently because each carries a different risk of becoming a
 tolerance in disguise:
 
 1. **Exact** — `== 0`, `== expected`. The assertion form of comparison mode 1 in
-   [section 5](#5-comparison-modes--the-honesty-contract). The lint's tag
-   vocabulary is `@MIG-nn`, `@tier0`..`@tier2` and `@archetype:<name>` (V9
-   rejects any other tag); an exact assertion names its relation in prose,
-   and V12/V13 keep any number or comparison operator out of the step text.
+   [section 5](#5-comparison-modes--the-honesty-contract). An exact step names
+   its relation in prose (`the diverge count is exactly zero`) and binds no
+   band; the coverage ratchet's tag vocabulary is `@MIG-nn`, `@tier0`..`@tier2`
+   and `@archetype:<name>` (V9 rejects any other tag), and V12/V13 keep any
+   number or comparison operator out of the step text.
 2. **Relational over two measured quantities** — `ttl >= max_lookback`,
    `ch_retention >= compliance_window`. Both operands come from artifacts, so
    there is no constant to tune and nothing to corrupt. This kind needs no extra
@@ -1139,15 +1140,28 @@ Gherkin invites most.
 #### The tolerances registry
 
 Every ε of kind 3 lives in `tolerances/`, never as an inline number in a feature
-file, and carries a **derivation**: a `tolerances.Band` pairs the value with
-the aggregation math it comes from (MIG-20's band is "stated before the run
-from the aggregation math"), and `ExpHistogramQuantileEpsilon` carries its
-live-measurement derivation in its doc comment. V12 keeps the number out of
-the feature text; the derivation itself is read by a person, not linted.
-Raising a value is an ordinary edit to that one file, held to section 6.3's
-"no per-case tolerance inflation" rule; the mechanical shrink-only ratchet
-and per-run headroom report that would enforce it are tracked in cerberus
-issue #3571.
+file, as a `tolerances.Band`: a `Value` that is a constant expression over
+named derivation inputs (a measured quantity or a structural ceiling, and the
+headroom multiple applied to it — `ExpHistogramQuantileMeasuredDiff ×
+ExpHistogramQuantileHeadroom`, `MIG20StructuralCeiling ×
+MIG20CounterPeakToMeanRatio`), and a prose `Derivation` stating that formula.
+MIG-20's band is "stated before the run from the aggregation math", and the
+registry is where that statement becomes structural.
+
+`tolerances/tolerances_test.go` runs on every pull request and holds each band
+to three checks: the `Value` recomputes from its named inputs (a `Value` edited
+to a bare number fails), the `Derivation` is non-empty, and the `Value` does
+not exceed a **reviewed ceiling** pinned in the test. That ceiling is what makes
+the registry **shrink-only**: an ε may be lowered freely, but raising one fails
+until the ceiling is raised in the same change — the explicit reviewed override,
+and section 6.3's "no per-case tolerance inflation" made mechanical rather than
+aspirational. The MIG-12 measurement is additionally derived, not only recorded:
+`steps/headroom_test.go` recomputes it from the probe's own geometry as the
+estimator's closed-form interpolation error. Each Tier-1 run prints one headroom
+line per band (`<story> <archetype> headroom: <subject> observed ε / declared ε
+= <ratio> of the band`) at the measurement, before the verdict, so the lane's
+log carries the evidence to tighten instead of ossifying at whatever number was
+first written down.
 
 ### 6.3. Honesty guardrails
 
@@ -1187,7 +1201,8 @@ issue #3571.
   on required pull-request checks, so a suppressed scenario cannot merge and
   wait for the next scheduled run to notice.
 - **No inline tolerance.** A numeric epsilon may not appear in feature text; it
-  lives in `tolerances/` with a derivation
+  lives in `tolerances/` as a `Band` whose value recomputes from named
+  derivation inputs, under the reviewed-ceiling shrink-only ratchet
   ([section 6.2](#62-scenario-language--what-a-step-may-assert)). The ban is
   structural rather than aspirational: the coverage ratchet rejects any digit
   and any comparison or arithmetic operator in step text, so the first epsilon

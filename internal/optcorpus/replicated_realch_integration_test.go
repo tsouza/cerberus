@@ -154,7 +154,10 @@ const keeperServerConfigSection = `    <keeper_server>
 //     system.tables looking healthy, which is exactly how the corpus came to be
 //     partitioned per replica with nothing saying so. One node witnesses the
 //     registration; that a second replica receives the rows is the two-node
-//     claim cerberus issue #3566 tracks a lane for.
+//     claim the `bwc-replicated` e2e lane (.github/workflows/e2e.yml,
+//     .github/scripts/e2e-bwc-replicated-verify.mjs) proves on the Helm
+//     chart's bundled `replicas: 2` topology — testcontainers cannot cheaply
+//     stand up a Keeper plus two servers here.
 //  3. A row written through the production sink lands and reads back. A
 //     replicating engine that could not take the columnar batch would trade one
 //     silent defect for a loud one.

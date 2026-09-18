@@ -33,6 +33,7 @@ const allGreen = {
   'bwc-minio': 'success',
   datashard: 'success',
   'datashard-replica-affinity': 'success',
+  'bwc-replicated': 'success',
 };
 
 test('every job success is a clean night', () => {
@@ -89,6 +90,16 @@ test('a supported-lane failure next to an experimental one is still caught, each
   assert.equal(v.ok, false);
   assert.deepEqual(v.failed, ['dashboard: failure']);
   assert.deepEqual(v.experimentalFailed, ['datashard-replica-affinity: cancelled']);
+});
+
+// The replicated lane (cerberus issue #3566) exercises the chart's SUPPORTED
+// replication path, so it is decisive: a night on which the second replica
+// did not receive the schema or the rows is not a clean night.
+test('the bwc-replicated lane is a supported lane: its failure alone fails the night', () => {
+  const v = classifyNightlyHealth({ ...allGreen, 'bwc-replicated': 'failure' }, { experimentalLanes: EXPERIMENTAL_LANES });
+  assert.equal(v.ok, false);
+  assert.deepEqual(v.failed, ['bwc-replicated: failure']);
+  assert.deepEqual(v.experimentalFailed, []);
 });
 
 test('without an experimental set every lane is decisive — the pre-existing contract is the default', () => {
@@ -185,7 +196,7 @@ const ciWorkflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
 test('nightly-health-notify needs every terminal job and runs on schedule only', () => {
   assert.match(
     e2eWorkflow,
-    /nightly-health-notify:\n    name: nightly-health-notify\n    needs:\n {6}\[compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard, datashard-replica-affinity\]\n {4}if: always\(\) && github\.event_name == 'schedule'/,
+    /nightly-health-notify:\n    name: nightly-health-notify\n    needs:\n {6}\[compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard, datashard-replica-affinity, bwc-replicated\]\n {4}if: always\(\) && github\.event_name == 'schedule'/,
   );
 });
 

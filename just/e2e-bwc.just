@@ -199,7 +199,7 @@ e2e-datashard-up count="2" replicas="1": e2e-down
         docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
     @echo "==> [datashard] pre-pulling external + bundled-CH images on host docker"
     @IMAGE_PULL_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
-    just _pull-retry {{E2E_EXTERNAL_IMAGES}} {{E2E_DATASHARD_IMAGES}}
+    just _pull-retry {{E2E_EXTERNAL_IMAGES}} {{E2E_BUNDLED_CH_IMAGES}}
     @echo "==> [datashard] importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
     @# Same retry+verify loop `e2e-up` runs (cerberus issue #3096), reused
     @# unchanged via .github/scripts/k3d-image-import.mjs — only the image list
@@ -208,7 +208,7 @@ e2e-datashard-up count="2" replicas="1": e2e-down
     @# (cerberus issue #3107).
     @IMAGE_IMPORT_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
     K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs \
-        {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_DATASHARD_IMAGES}}
+        {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_BUNDLED_CH_IMAGES}}
     @echo "==> [datashard] phase 1: namespace"
     kubectl apply -f test/e2e/k3s/namespace.yaml
     @echo "==> [datashard] phase 2: installing cerberus + bundled ClickHouse (dataShards.count={{count}}, replicas={{replicas}}) via Helm"
@@ -290,6 +290,75 @@ e2e-datashard-replica-affinity-verify count="2" replicas="2":
 
 # Tear the multi-data-shard lane down.
 e2e-datashard-down: e2e-down
+
+# Bundled-ClickHouse REPLICATED e2e leg (cerberus issue #3566): the chart's
+# SUPPORTED replication path — `clickhouse.bundled.replicas: 2` at the default
+# `dataShards.count: 1` — brought up on k3d with a built cerberus image and
+# nothing else. No fixtures, no seeder, no Go e2e suite: the one claim this
+# lane exists to prove is that what the chart renders for `replicas: 2`
+# actually REPLICATES, and `e2e-bwc-replicated-verify` proves it from the
+# ClickHouse pods themselves (system.tables / system.replicas on EACH pod,
+# plus a row written through one replica and read back from the other). It
+# is a sibling of `e2e-datashard-up count replicas>1`, not a variant of it:
+# that topology is the EXPERIMENTAL multi-shard path, where the chart
+# defaults the classic `ReplicatedMergeTree(path, '{replica}')` engine under
+# an ON CLUSTER database; this one is the Replicated-DATABASE path a
+# single-shard `replicas > 1` install gets (`cerberus.bundled.apply` sets
+# `schema.replicated.enabled` and defaults `zookeeperPath`), which no other
+# lane stands up. Same k3d cluster name and cerberus:e2e image as every other
+# lane, so `e2e-down` tears it down exactly.
+
+# Boot the k3d stack with the chart's bundled ClickHouse at replicas=2 (Replicated database).
+e2e-bwc-replicated-up: e2e-down
+    @just _e2e-k3d-cluster-create
+    @echo "==> [bwc-replicated] building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
+    node .github/scripts/build-with-registry-retry.mjs \
+        docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
+    @echo "==> [bwc-replicated] pre-pulling the bundled-CH image on host docker"
+    @just _pull-retry {{E2E_BUNDLED_CH_IMAGES}}
+    @echo "==> [bwc-replicated] importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
+    @# Same retry+verify loop `e2e-up` runs (cerberus issue #3096), reused
+    @# unchanged via .github/scripts/k3d-image-import.mjs; this lane applies
+    @# no fixture manifests, so only the cerberus image and the bundled-CH
+    @# image are needed — no E2E_EXTERNAL_IMAGES, no exclusion filter.
+    @K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs {{CERBERUS_IMAGE}} {{E2E_BUNDLED_CH_IMAGES}}
+    @echo "==> [bwc-replicated] namespace"
+    kubectl apply -f test/e2e/k3s/namespace.yaml
+    @echo "==> [bwc-replicated] installing cerberus + bundled ClickHouse (replicas=2) via Helm"
+    @# `--wait` blocks until cerberus reports ready, which it only does once
+    @# its auto-create DDL has run against the bundled Service — so by the
+    @# time this returns the schema exists on the replica cerberus dialled,
+    @# and the verify recipe's bounded DDL-sync wait covers the other one.
+    helm upgrade --install cerberus deploy/helm/cerberus \
+        --namespace cerberus \
+        --values test/e2e/k3s/cerberus-values.yaml \
+        --values test/e2e/k3s/cerberus-values-bwc-replicated.yaml \
+        --wait --timeout 420s
+    @echo "==> [bwc-replicated] waiting for the ClickHouse StatefulSet + cerberus"
+    kubectl -n cerberus rollout status statefulset/cerberus-clickhouse --timeout=300s
+    kubectl -n cerberus rollout status deployment/cerberus --timeout=180s
+    @echo "==> e2e-bwc-replicated-up done (clickhouse.bundled.replicas=2, Replicated database)"
+
+# Asserts, from the ClickHouse pods themselves and never from cerberus's own
+# HTTP responses, that the chart's `replicas: 2` render replicates: the
+# StatefulSet genuinely has >= 2 pods (read back, never a literal, so a
+# degenerate single-replica render cannot pass vacuously); every table in the
+# auto-created database is present on EVERY pod (polled to a bounded deadline
+# — the Replicated database applies DDL asynchronously on the pods cerberus
+# did not dial); every MergeTree-family table is a Replicated* engine and
+# `system.replicas` on every pod reports every one of them with
+# total_replicas = active_replicas = the pod count; and a marker row inserted
+# through each pod is read back from every other pod. Logic lives in the
+# env-driven Node module per the CLAUDE.md "non-trivial step logic in
+# .github/scripts/*.mjs" rule. Run AFTER `just e2e-bwc-replicated-up`.
+
+# Assert every auto-created table exists on both replicas and rows replicate between them (cerberus issue #3566).
+e2e-bwc-replicated-verify:
+    @echo "==> [bwc-replicated] verifying schema + row replication across every ClickHouse pod"
+    node .github/scripts/e2e-bwc-replicated-verify.mjs
+
+# Tear the bundled-ClickHouse replicated lane down.
+e2e-bwc-replicated-down: e2e-down
 
 # Assumes the quickstart compose stack is already up (`docker compose up
 # --wait`). Drives Grafana through every provisioned dashboard and asserts

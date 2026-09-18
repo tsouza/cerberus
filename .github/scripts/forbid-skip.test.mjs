@@ -53,12 +53,19 @@ function newFixtureRepo() {
   };
 }
 
+// observedRuns — every (CHECK, exit status) pair this file drove through the
+// CLI, in order. The registry-completeness test at the bottom reads it: an
+// arm is proved to discriminate only when the suite has seen it exit both
+// non-zero (a seeded violation found) and zero (a clean corpus passed).
+const observedRuns = [];
+
 function runGate(check, cwd) {
   const res = spawnSync(process.execPath, [CLI], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, CHECK: check },
   });
+  observedRuns.push({ check, status: res.status });
   return { status: res.status, out: `${res.stdout}${res.stderr}` };
 }
 
@@ -351,4 +358,54 @@ test('CHECK=t-skip does not fire on a receiver that merely starts with t', () =>
   write('ok2_test.go', 'package main\n\nfunc TestFoo(t *testing.T) { tx.Skipper() }\n');
   const { status, out } = runGate('t-skip', dir);
   assert.equal(status, 0, `tx.Skipper() must not trip the t-skip scan; got:\n${out}`);
+});
+
+// ---------------------------------------------------------------------------
+// Registry completeness — the class the cases above are instances of.
+//
+// Every case above proves ONE arm can go red. Nothing above proves that every
+// arm HAS such a case: an arm added to the CHECKS registry without one would
+// run in CI and lefthook, never fail on a clean tree, and so never be shown to
+// discriminate — the exact state soft-assert and feature-discipline sat in
+// before this file covered them. This test reads the live registry from the
+// CLI itself (the unknown-CHECK error enumerates it) and requires that the
+// suite has driven each arm to BOTH exit codes. It is declared last because
+// node:test runs a file's top-level tests in declaration order, so every run
+// this file makes has been recorded by the time it executes.
+// ---------------------------------------------------------------------------
+
+// registryArms — the CHECKS keys, as the CLI itself enumerates them when
+// handed a CHECK it does not know. Reading them from the running script
+// rather than from a copy here is what keeps this test honest when an arm is
+// added or renamed.
+function registryArms(cwd) {
+  const { status, out } = runGate('registry-probe-not-an-arm', cwd);
+  assert.notEqual(status, 0, 'the registry probe must be rejected as an unknown CHECK');
+  const m = out.match(/or one of: ([^)\n]+)\)/);
+  assert.ok(m, `the unknown-CHECK error must enumerate the registry; got:\n${out}`);
+  const arms = m[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  assert.ok(arms.length > 0, 'the CLI enumerated an empty registry');
+  return arms;
+}
+
+test('every CHECKS registry arm has been driven to BOTH a red and a green exit by this file', () => {
+  const { dir } = newFixtureRepo();
+  const arms = registryArms(dir);
+  const missing = [];
+  for (const arm of arms) {
+    const runs = observedRuns.filter((r) => r.check === arm);
+    const red = runs.some((r) => r.status !== 0);
+    const green = runs.some((r) => r.status === 0);
+    if (!red || !green) {
+      missing.push(`${arm}: red=${red} green=${green}`);
+    }
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `every registry arm needs a case in this file that seeds a violation and sees the CLI FAIL, and one that sees it pass on a clean corpus; unproved arms:\n${missing.join('\n')}`,
+  );
 });

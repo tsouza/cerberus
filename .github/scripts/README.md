@@ -56,8 +56,9 @@ the k8s + in-cluster-ClickHouse lookups the e2e Node scripts share: a namespaced
 hard failure) and an exits-on-failure `chQuery` form (with an optional
 `format`, the `TSVRaw` shape the verify scripts read multi-column rows
 through). Used by `e2e-bwc-verify-placement.mjs`,
-`e2e-bwc-verify-mode-toggle.mjs`, `e2e-datashard-verify.mjs`,
-`e2e-datashard-replica-affinity-verify.mjs`, and `e2e-wait-otel.mjs`. One
+`e2e-bwc-verify-mode-toggle.mjs`, `e2e-bwc-replicated-verify.mjs`,
+`e2e-datashard-verify.mjs`, `e2e-datashard-replica-affinity-verify.mjs`, and
+`e2e-wait-otel.mjs`. One
 source of truth so a new e2e verify/wait script never has to re-copy them.
 
 `lib/shard-coverage.mjs` holds the Playwright spec-partition rules the two
@@ -2853,6 +2854,32 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` no scenario in drought (or too few sampled runs to judge any
     of them), `1` a scenario was not-applicable in every sampled run it
     executed in.
+- **`e2e-bwc-replicated-verify.mjs`** — `e2e.yml`, the `bwc-replicated` job
+  (cerberus issue #3566), invoked via `just e2e-bwc-replicated-verify` after
+  `just e2e-bwc-replicated-up` has installed the chart at
+  `clickhouse.bundled.replicas: 2` (the supported Replicated-database path,
+  `dataShards.count: 1`) and cerberus has auto-created the schema. Reads EACH
+  ClickHouse pod directly via `kubectl exec` — never the bundled Service,
+  whose `sessionAffinity` would pin every query to one replica — and proves
+  the render replicates: the StatefulSet's `.spec.replicas` read back is
+  `>= 2` and that many pods exist (never vacuous); `system.tables` reports
+  an identical, non-empty table set on every pod (polled to
+  `DDL_SYNC_SECONDS`, since the Replicated database applies cerberus's DDL
+  to the pods it did not dial asynchronously); every MergeTree-family table
+  is a `Replicated*` engine and `system.replicas` on every pod reports each
+  one at `total_replicas = active_replicas =` the pod count (the
+  `{shard}/{replica}` Keeper-path bug reports `1`); and a marker row
+  inserted through each pod is read back from every other pod after
+  `SYSTEM SYNC REPLICA` on the reader. Pure verdict functions
+  (`tableSetDefects`, `engineDefects`, `replicaRegistryDefects`) are
+  unit-tested in `e2e-bwc-replicated-verify.test.mjs`. INFORMATIONAL —
+  never a PR gate — but a SUPPORTED-path lane, so its result counts toward
+  the nightly's clean pass.
+  - Env: `NAMESPACE` (default `cerberus`), `DB` (default `otel`),
+    `CH_USER`/`CH_PASSWORD` (default `cerberus`/`cerberus`), `STATEFULSET`
+    (default `cerberus-clickhouse`), `PROBE_TABLE` (default `otel_logs`),
+    `DDL_SYNC_SECONDS` (default `90`), `ROW_SYNC_SECONDS` (default `60`).
+  - Exit: `0` all assertions passed, `1` on any failure.
 - **`e2e-bwc-verify-mode-toggle.mjs`** — `e2e.yml`, the `bwc-minio` job's
   `mode-toggle` scenario (cerberus issue #3082), invoked via
   `just e2e-bwc-verify-mode-toggle` after `just e2e-bwc-toggle-mode` has

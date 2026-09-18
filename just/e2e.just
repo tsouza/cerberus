@@ -50,13 +50,22 @@ E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.6-alpine ghcr.io/open-te
 # e2e values), so the exact bundled-CH tag MUST be imported here.
 E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.3"
 
-# The multi-data-shard lane (cerberus issue #3079) needs only the bundled
-# ClickHouse image, at the SAME tag E2E_BWC_IMAGES already pins (gotcha #1's
-# dedicated-user ConfigMap applies regardless of dataShards.count) — no MinIO
-# (hot-only mode, see cerberus-values-datashard.yaml's own doc), so this is a
-# standalone constant rather than reusing E2E_BWC_IMAGES wholesale, which
-# would pull two MinIO images this lane never runs.
-E2E_DATASHARD_IMAGES := "clickhouse/clickhouse-server:26.3"
+# The bundled ClickHouse image the two hot-only chart lanes deploy: the
+# multi-data-shard lane (cerberus issue #3079, `e2e-datashard-up`) and the
+# replicated lane (cerberus issue #3566, `e2e-bwc-replicated-up`). Neither
+# runs MinIO (hot-only mode, see each lane's cerberus-values-*.yaml), so this
+# is a standalone constant rather than a reuse of E2E_BWC_IMAGES wholesale,
+# which would pull two MinIO images these lanes never run.
+#
+# Pinned to the chart's OWN bundled default (deploy/helm/cerberus/values.yaml
+# `clickhouse.bundled.image`, which tracks versions.yaml `quickstart_clickhouse`)
+# rather than the older tag E2E_BWC_IMAGES carries, so what these lanes observe
+# is what a default bundled install runs. docs/operations.md's Distributed
+# settings table is verified against that version, and its highest floor —
+# `join_spill` at 26.4 — is only reachable under fan-out when the datashard
+# lane's server clears it; on the 26.3 this used to pin the setting did not
+# exist server-side, so the row was never observed live.
+E2E_BUNDLED_CH_IMAGES := "clickhouse/clickhouse-server:26.6"
 
 # Extra args appended verbatim to `k3d cluster create` in `e2e-up`. Empty by
 # default (CI uses none). Interpolated unquoted, so the value is shell-parsed:
