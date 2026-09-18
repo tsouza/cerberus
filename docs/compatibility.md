@@ -86,6 +86,15 @@ branch as shields.io badge JSON; the README shows them live. On
   has no coverage for at all.
 - **Reference**: a real Loki container on `:23100`, seeded from the same
   in-memory fixture as cerberus.
+- **Beyond the corpus**: the range lane also diffs the routes Grafana's
+  UI is driven off — `/detected_fields`, `/detected_field/{name}/values`,
+  `/labels`, `/label/{name}/values`, `/series`, `/index/stats`,
+  `/index/volume`, `/detected_labels` and `/patterns` — status plus data
+  set, scored like corpus cases. `/index/stats` grades `streams` and
+  `entries`, `/index/volume` grades the label sets and the tie-break
+  ranking, and `/patterns` grades template text exactly against the
+  seeder's constant fixture line and nowhere else
+  (`compatibility/loki/README.md` names each route's graded fields).
 - **Today**: shipped and running as the release-gate `compatibility/loki`
   check; no allow-list exists. Solid confidence — a real backend on a
   real corpus — but Grafana's `bench` set is a benchmark corpus, not a

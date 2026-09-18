@@ -4,8 +4,10 @@
 // (cerberus issue #3224). Upstream's two values produce two genuinely
 // different response SHAPES, not two spellings of one:
 //
-//   - `series` (and the default) keys the result by the label SET — one
-//     row per distinct series.
+//   - `series` (and the default) keys the result by the label SET the
+//     request names — `targetLabels` when given, else the labels the
+//     selector's matchers name (upstream's `labelsToMatch`) — one row per
+//     distinct projection.
 //   - `labels` keys it by the bare label NAME, summing the volume across
 //     every value that label takes, and reports each row's metric as
 //     `labels.FromStrings(name, "")` — a single label whose name is the
@@ -29,6 +31,7 @@ package loki_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"testing"
 
@@ -67,17 +70,24 @@ func volumeShapeSeed() []keyOrderSeedRow {
 	}
 }
 
-// volumeSamples issues one /index/volume request and decodes the
-// Prometheus-vector envelope into its samples.
+// volumeSamples issues one /index/volume request for the `{env="prod"}`
+// selector and decodes the Prometheus-vector envelope into its samples.
 func volumeSamples(t *testing.T, srvURL, query string) []loki.VectorSample {
+	t.Helper()
+	return volumeSamplesFor(t, srvURL, `{env="prod"}`, query)
+}
+
+// volumeSamplesFor is volumeSamples with the selector spelled by the
+// caller — for the cases whose subject is the labels the selector names.
+func volumeSamplesFor(t *testing.T, srvURL, selector, query string) []loki.VectorSample {
 	t.Helper()
 	start, end := keyOrderWindow()
 	var parsed struct {
 		Data loki.QueryData `json:"data"`
 	}
 	getJSON(t, fmt.Sprintf(
-		`%s/loki/api/v1/index/volume?query=%%7Benv%%3D%%22prod%%22%%7D&start=%d&end=%d&%s`,
-		srvURL, start, end, query,
+		`%s/loki/api/v1/index/volume?query=%s&start=%d&end=%d&%s`,
+		srvURL, url.QueryEscape(selector), start, end, query,
 	), &parsed)
 
 	raw, err := json.Marshal(parsed.Data.Result)
@@ -189,37 +199,61 @@ func TestIndexVolume_ChDB_AggregateByLabelsTargetLabels(t *testing.T) {
 	}
 }
 
-// TestIndexVolume_ChDB_AggregateBySeriesUnchanged is the other half of
-// the contract: the default and the explicit `series` value must keep
-// answering the label-SET shape over the same seed. Routing "labels" to
-// its own SQL must not disturb the branch it was previously sharing.
-func TestIndexVolume_ChDB_AggregateBySeriesUnchanged(t *testing.T) {
+// TestIndexVolume_ChDB_AggregateBySeriesKeysByMatcherLabels is the other
+// half of the contract: the default and the explicit `series` value key
+// each row by the labels the selector's matchers NAME — upstream's
+// `labelsToMatch` (`PrepareLabelsAndMatchers`, pkg/util/series_volume.go)
+// — summing every stream that projects to the same key, and a label a
+// stream does not carry drops out of that stream's key (the `ls.Range`
+// walk visits only the labels the stream has). `{env="prod"}` is
+// therefore ONE row over this seed, not three, and naming `pod` through
+// a matcher that absent-pod streams still satisfy splits it in two.
+// Cerberus keyed series mode by the full stored label set, answering one
+// row per stream; the LogQL differential harness's metadata pass caught
+// it against reference Loki.
+func TestIndexVolume_ChDB_AggregateBySeriesKeysByMatcherLabels(t *testing.T) {
 	for _, mode := range []string{"", "aggregateBy=series"} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			srv, _ := seedKeyOrderServer(t, volumeShapeSeed())
 
-			samples := volumeSamples(t, srv.URL, mode)
-			// The three seeded label sets, keyed by their service_name +
-			// pod identity, with the byte volume of each.
-			want := map[string]string{
-				"a/":   "10",
-				"b/":   "5",
-				"a/p1": "2",
+			cases := []struct {
+				selector string
+				want     map[string]string // rendered key → bytes
+			}{
+				{
+					selector: `{env="prod"}`,
+					want:     map[string]string{"env=prod": "17"},
+				},
+				{
+					// `pod!="zzz"` matches the two pod-less streams too
+					// (an absent label compares as ""), and names `pod`
+					// as a key label; those two streams then project to
+					// {env} alone while the p1 stream keeps its pod.
+					selector: `{env="prod", pod!="zzz"}`,
+					want:     map[string]string{"env=prod": "15", "env=prod,pod=p1": "2"},
+				},
 			}
-			got := make(map[string]string, len(samples))
-			for _, s := range samples {
-				if s.Metric["env"] != "prod" {
-					t.Fatalf("series shape must keep the full label set with its VALUES; got %+v", s.Metric)
+			for _, tc := range cases {
+				samples := volumeSamplesFor(t, srv.URL, tc.selector, mode)
+				got := make(map[string]string, len(samples))
+				for _, s := range samples {
+					if _, leaked := s.Metric["service_name"]; leaked {
+						t.Fatalf("%s: series key must be the matcher labels only, got %+v", tc.selector, s.Metric)
+					}
+					key := "env=" + s.Metric["env"]
+					if pod, ok := s.Metric["pod"]; ok {
+						key += ",pod=" + pod
+					}
+					got[key] = fmt.Sprint(s.Value[1])
 				}
-				got[s.Metric["service_name"]+"/"+s.Metric["pod"]] = fmt.Sprint(s.Value[1])
-			}
-			if len(got) != len(want) {
-				t.Fatalf("series shape must report one row per label SET (%d here); got %d: %v",
-					len(want), len(got), got)
-			}
-			for key, bytes := range want {
-				if got[key] != bytes {
-					t.Errorf("series %q volume: got %q want %q; all=%v", key, got[key], bytes, got)
+				if len(got) != len(tc.want) {
+					t.Fatalf("%s: want one row per distinct matcher-label projection (%d); got %d: %v",
+						tc.selector, len(tc.want), len(got), got)
+				}
+				for key, bytes := range tc.want {
+					if got[key] != bytes {
+						t.Errorf("%s: series %q volume: got %q want %q; all=%v", tc.selector, key, got[key], bytes, got)
+					}
 				}
 			}
 		})

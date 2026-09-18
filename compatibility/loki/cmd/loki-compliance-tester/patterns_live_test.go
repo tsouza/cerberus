@@ -21,6 +21,7 @@ func livePatternsTestMetadata() livePatternsMetadata {
 		End:            end,
 		CreatedAt:      end,
 		EntriesByLevel: map[string]int{"error": 40, "info": 40, "warn": 40},
+		Line:           "live patterns fixture processed request",
 	}
 }
 
@@ -56,30 +57,34 @@ func TestReadLivePatternsMetadata_RejectsStaleAndMalformedHandshakes(t *testing.
 	withUnknown := map[string]any{
 		"version": metadata.Version, "selector": metadata.Selector, "start": metadata.Start,
 		"end": metadata.End, "created_at": metadata.CreatedAt, "entries_by_level": metadata.EntriesByLevel,
-		"unrecognised": true,
+		"line": metadata.Line, "unrecognised": true,
 	}
 	if _, err := readLivePatternsMetadata(write(t, withUnknown, ""), metadata.CreatedAt); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("unknown-field error=%v", err)
 	}
 }
 
-func TestCompareLivePatterns_GradesOnlyStableAxes(t *testing.T) {
+// TestCompareLivePatterns_ConstantLineGradesExactly — with both
+// backends returning the handshake's constant line as the single
+// pattern of every level, every axis passes, including the text axis,
+// regardless of sample layout.
+func TestCompareLivePatterns_ConstantLineGradesExactly(t *testing.T) {
 	t.Parallel()
 	metadata := livePatternsTestMetadata()
 	reference := livePatternsServer(t, metadata, `{
   "status":"success",
   "data":[
-    {"pattern":"upstream alpha <*> beta","level":"info","samples":[[%d,20],[%d,15]]},
-    {"pattern":"upstream error","level":"error","samples":[[%d,31]]},
-    {"pattern":"upstream warn","level":"warn","samples":[[%d,40]]}
+    {"pattern":"live patterns fixture processed request","level":"info","samples":[[%d,20],[%d,15]]},
+    {"pattern":"live patterns fixture processed request","level":"error","samples":[[%d,31]]},
+    {"pattern":"live patterns fixture processed request","level":"warn","samples":[[%d,40]]}
   ]
 }`)
 	testEndpoint := livePatternsServer(t, metadata, `{
   "status":"success",
   "data":[
-    {"pattern":"clean room cluster one","level":"warn","samples":[[%d,20],[%d,15]]},
-    {"pattern":"clean room cluster two","level":"info","samples":[[%d,40]]},
-    {"pattern":"clean room cluster three","level":"error","samples":[[%d,30]]}
+    {"pattern":"live patterns fixture processed request","level":"warn","samples":[[%d,20],[%d,15]]},
+    {"pattern":"live patterns fixture processed request","level":"info","samples":[[%d,40]]},
+    {"pattern":"live patterns fixture processed request","level":"error","samples":[[%d,30]]}
   ]
 }`)
 
@@ -89,11 +94,56 @@ func TestCompareLivePatterns_GradesOnlyStableAxes(t *testing.T) {
 	}
 	for _, result := range results {
 		if !result.success() {
-			t.Fatalf("stable-axis comparison failed for %s: %+v", result.TestCase.Kind, result)
+			t.Fatalf("axis %s failed on the constant fixture line: %+v", result.TestCase.Kind, result)
 		}
 		if result.TestCase.Source != livePatternsSource || result.TestCase.Query != metadata.Selector {
 			t.Fatalf("case envelope=%+v", result.TestCase)
 		}
+	}
+}
+
+// TestCompareLivePatterns_TextDivergenceFails — the class test for the
+// text axis: a backend whose template for the constant line is not the
+// line itself (a wildcard where a constant token belongs, a second
+// cluster, a dropped level) fails patterns_text and only patterns_text,
+// naming the side and the level.
+func TestCompareLivePatterns_TextDivergenceFails(t *testing.T) {
+	t.Parallel()
+	metadata := livePatternsTestMetadata()
+	reference := livePatternsServer(t, metadata, `{
+  "status":"success",
+  "data":[
+    {"pattern":"live patterns fixture processed request","level":"info","samples":[[%d,20],[%d,15]]},
+    {"pattern":"live patterns fixture processed request","level":"error","samples":[[%d,31]]},
+    {"pattern":"live patterns fixture processed request","level":"warn","samples":[[%d,40]]}
+  ]
+}`)
+	testEndpoint := livePatternsServer(t, metadata, `{
+  "status":"success",
+  "data":[
+    {"pattern":"live patterns fixture processed request","level":"warn","samples":[[%d,20],[%d,15]]},
+    {"pattern":"live patterns fixture <_> request","level":"info","samples":[[%d,40]]},
+    {"pattern":"live patterns fixture processed request","level":"error","samples":[[%d,30]]}
+  ]
+}`)
+
+	results := compareLivePatterns(&http.Client{Timeout: 5 * time.Second}, flags{addr1: reference.URL, addr2: testEndpoint.URL}, metadata)
+	var sawText bool
+	for _, result := range results {
+		if result.TestCase.Kind != "patterns_text" {
+			if !result.success() {
+				t.Fatalf("axis %s must not be affected by template text: %+v", result.TestCase.Kind, result)
+			}
+			continue
+		}
+		sawText = true
+		want := `pattern text: test endpoint=level="info" patterns=["live patterns fixture <_> request"], want exactly "live patterns fixture processed request"`
+		if result.Diff != want {
+			t.Fatalf("patterns_text diff=%q, want %q", result.Diff, want)
+		}
+	}
+	if !sawText {
+		t.Fatal("patterns_text result missing")
 	}
 }
 

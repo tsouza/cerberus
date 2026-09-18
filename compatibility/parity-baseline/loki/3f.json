@@ -3,6 +3,7 @@
   "head": "loki",
   "bucket": "3f",
   "cases": [
+    "cerberus/metadata-endpoints | index_volume | range | n/a | {cluster=~\"cluster-.+\"} | index volume parity (label sets): aggregateBy=series limit=1000 targetLabels=cluster selector={cluster=~\"cluster-.+\"}",
     "cerberus/status-parity | status_parity | range | n/a |  | missing query parameter on /query_range",
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} | detected_field values parity: service=web-server field=ts",
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | detected_field values parity: service=cache field=error",
