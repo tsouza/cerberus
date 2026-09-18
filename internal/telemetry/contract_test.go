@@ -40,12 +40,8 @@ func TestMetricNames_PublicContract(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"cerberus_queries_total":             false,
-		"cerberus_queries_duration_exp_hist": false,
-		// Deprecated, dual-emitted for one release: this is the name the
-		// histogram carried through v1.20.0. Remove it here and in
-		// metrics.go together, one release after the rename ships.
-		"cerberus_queries_duration_seconds":        false,
+		"cerberus_queries_total":                   false,
+		"cerberus_queries_duration_exp_hist":       false,
 		"cerberus_pipeline_stage_duration_seconds": false,
 		"cerberus_optimizer_rules_applied":         false,
 		"cerberus_clickhouse_rows_read":            false,
@@ -72,13 +68,63 @@ func TestMetricNames_PublicContract(t *testing.T) {
 	}
 	// The set is EXACT in both directions. Checking only that the wanted
 	// names appear let a rename pass as long as the author edited this map
-	// in the same commit, which is how cerberus_queries_duration_seconds
-	// disappeared from a shipped release with no dual-emit period. An
-	// unexpected name now fails here, so adding one is a deliberate edit
-	// to this list rather than a silent side effect.
+	// in the same commit, which is how a renamed histogram once shipped
+	// with no dual-emit period. An unexpected name now fails here, so
+	// adding one is a deliberate edit to this list rather than a silent
+	// side effect.
 	sort.Strings(unexpected)
 	for _, name := range unexpected {
 		t.Errorf("metric %q is emitted but not in the pinned public contract; add it here deliberately", name)
+	}
+}
+
+// retiredMetricNames are names cerberus once exposed and has since removed
+// after their dual-emit release. A retired name must never be registered
+// again, under any aggregation: a dashboard or alert rule that still
+// references it went dark at the removal and a re-registration would
+// silently resurrect it under whatever shape the new instrument happens
+// to have, so the name is retired for good rather than free for reuse.
+var retiredMetricNames = []string{
+	// Classic explicit-bucket histogram carried through v1.20.0, renamed
+	// to cerberus_queries_duration_exp_hist and dual-emitted for one
+	// release, removed in v1.21.0.
+	"cerberus_queries_duration_seconds",
+}
+
+// TestMetricNames_RetiredNamesNeverReturn is the negative half of the
+// public-contract pin: TestMetricNames_PublicContract fails on any name
+// outside its exact set, but an author can extend that set. A retired
+// name fails here regardless of what the exact set says.
+func TestMetricNames_RetiredNamesNeverReturn(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	telemetry.Install(mp)
+	t.Cleanup(func() { telemetry.Install(nil) })
+
+	telemetry.ObserveQuery("promql", "GET /api/v1/query").Done(t.Context(), telemetry.OutcomeOK())
+	telemetry.ObserveStage(telemetry.StageParse, telemetry.QLPromQL).Done(t.Context())
+	telemetry.RecordRulesApplied(t.Context(), 1)
+	telemetry.RecordClickHouseProgress(t.Context(), "promql", 100, 2000)
+	telemetry.ObserveQueryInflight(t.Context(), "promql")()
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+
+	emitted := make(map[string]struct{})
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			emitted[m.Name] = struct{}{}
+		}
+	}
+	if len(emitted) == 0 {
+		t.Fatal("no metrics collected; the retired-name check would be vacuous")
+	}
+	for _, name := range retiredMetricNames {
+		if _, ok := emitted[name]; ok {
+			t.Errorf("retired metric %q is registered again; retired names are never reused", name)
+		}
 	}
 }
 

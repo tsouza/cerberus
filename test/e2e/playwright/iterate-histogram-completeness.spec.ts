@@ -15,13 +15,17 @@
  *   - N5 (`<name>_bucket` series MUST exist when the panel is meant
  *     to render). The cerberus dashboard's "P95 latency by language" panel
  *     went flat at 0 because the underlying bucket series were
- *     emitted under a sibling metric root (cerberus_pipeline vs
- *     cerberus_queries_duration_seconds_bucket), and
+ *     emitted under a sibling metric root (cerberus_pipeline vs the
+ *     query-duration histogram's own `_bucket`), and
  *     `histogram_quantile` over an absent bucket resolved to nothing
  *     visible on the wire (no tunneled error, just 200 + empty).
  *     The pin: probe `/api/v1/series?match[]=<name>_bucket` returns
  *     ≥ 1 series; AND when the buckets exist, the
- *     `histogram_quantile` response itself is non-empty.
+ *     `histogram_quantile` response itself is non-empty. That panel
+ *     now reads the native cerberus_queries_duration_exp_hist, which
+ *     has no `_bucket` series by design and takes the native branch
+ *     below instead; the N5 pin stays for every classic histogram
+ *     panel.
  *
  *   - N6 (`histogram_quantile` over a non-bucket metric used to
  *     fabricate a value). Typing `histogram_quantile(0.95, foo_total)`
@@ -49,7 +53,7 @@
  *
  * What this catches (resolved on main; this is a pin, not a hunt):
  *   - N5: P95 latency by language flat at 0 (bucket series missing
- *     from cerberus_queries_duration_seconds_bucket scope).
+ *     from the query-duration histogram's scope).
  *   - N6: histogram_quantile over foo_total fabricates a float
  *     (resolved by PR #644 + #642).
  *
@@ -78,10 +82,10 @@ import {
 } from './helpers/index.js';
 
 // Self-traffic warmup duration. Picked at the low end of "long enough
-// to populate cerberus_queries_duration_seconds_bucket across the
-// three heads" — without traffic the histogram's _bucket series is
-// legitimately absent and the N5 pin can't distinguish "regressed
-// scope" from "no traffic yet".
+// to populate cerberus_queries_duration_exp_hist across the three
+// heads" — without traffic the histogram's series are legitimately
+// absent and neither the native branch nor the N5 pin can distinguish
+// "regressed lowering" from "no traffic yet".
 const SEED_TRAFFIC_SECONDS = 30;
 
 // The /api/v1/query_range window. 5 minutes covers the

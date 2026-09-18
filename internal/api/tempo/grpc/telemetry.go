@@ -19,7 +19,7 @@ import (
 // implemented RPCs — Search, the four tag-list RPCs, the two metrics
 // RPCs — recorded a query outcome at all: a client running exclusively
 // through Grafana's gRPC/h2c "Streaming" toggle was invisible to
-// cerberus_queries_total / cerberus_queries_duration_seconds, so any
+// cerberus_queries_total / cerberus_queries_duration_exp_hist, so any
 // dashboard or alert built on those instruments silently excluded the
 // whole streaming surface.
 //

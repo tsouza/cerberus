@@ -35,7 +35,7 @@ import (
 //   - queryTelemetryInterceptor(telemetry.QLTraceQL) as the second
 //     stream interceptor — the gRPC counterpart of the
 //     telemetry.QueryMiddleware every HTTP route already gets, so
-//     cerberus_queries_total / cerberus_queries_duration_seconds cover
+//     cerberus_queries_total / cerberus_queries_duration_exp_hist cover
 //     the streaming surface too (#1452). Listed after the limiter so
 //     an admission-rejected RPC is not double-counted: only RPCs that
 //     actually ran the query pipeline are recorded, mirroring

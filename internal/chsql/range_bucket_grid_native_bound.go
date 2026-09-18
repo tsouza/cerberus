@@ -114,11 +114,13 @@ import (
 //
 // Issue #2522 recalibration (real ClickHouse 25.9-alpine via `docker run`,
 // same 1 GiB cap): the nightly e2e dashboard's OWN self-monitoring panel —
-// `histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(
-// cerberus_queries_duration_seconds_bucket[5m])))` at a 24h/15s window
-// (5,760 anchors) — started hitting this exact throwIf in run 32688649627,
-// even though `cerberus_queries_duration_seconds` is a LOW-cardinality
-// self-telemetry histogram (one series per distinct (cerberus.ql,
+// `histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(<query-duration>_bucket[5m])))`
+// over the query-duration histogram's then-classic `_bucket` series (since
+// moved to the native `cerberus_queries_duration_exp_hist`, see
+// internal/telemetry/telemetry.go's queryDurationNativeHistogramView) at a
+// 24h/15s window (5,760 anchors) — started hitting this exact throwIf in
+// run 32688649627, even though the query-duration histogram is a
+// LOW-cardinality self-telemetry histogram (one series per distinct (cerberus.ql,
 // http.Pattern route, ok/error result) combo — internal/telemetry/
 // metrics.go's QueryTimer.Done — a few dozen to a couple hundred series
 // even across all three heads, nowhere near the 3,741-series production

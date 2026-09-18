@@ -196,9 +196,9 @@ func TestRangeBucketGridNativeBound_PassesWhenUnderBudget(t *testing.T) {
 // TestRangeBucketGridNativeBound_PassesLowCardinalityWideAnchorShape is
 // issue #2522's own regression pin: a LOW-series-cardinality, WIDE-anchor
 // query — the shape a self-monitoring dashboard panel like
-// `histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(
-// cerberus_queries_duration_seconds_bucket[5m])))` at a 24h/15s window
-// (5,760 anchors) produces — must NOT trip the guard, even though
+// `histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(<query-duration>_bucket[5m])))`
+// over a classic query-duration histogram at a 24h/15s window (5,760
+// anchors) produces — must NOT trip the guard, even though
 // `groups x anchors` here (60 series x 51 rungs x 5,760 anchors =
 // 17,625,600) comfortably exceeds the ORIGINAL maxRangeBucketGridNativeRows
 // (4,000,000) that wrongly rejected run 32688649627's real nightly
