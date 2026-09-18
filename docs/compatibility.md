@@ -15,9 +15,15 @@ numerical confidence is honestly lower (see
 [Per-head confidence](compatibility.background.md#per-head-confidence)
 below).
 
-> **What gates vs. what scores.** All four `compatibility/<head>` checks
-> (the three per-language legs plus `compatibility/prometheus-forced-route`)
-> are **release-gate** lanes, not PR-blocking ones (#2230): they short-circuit
+> **What gates vs. what scores.** `.github/workflows/compatibility.yml` posts
+> six `compatibility/<lane>` checks: `compatibility/prometheus`,
+> `compatibility/loki`, `compatibility/tempo`,
+> `compatibility/prometheus-forced-route`, `compatibility/prometheus-floor`
+> (the PromQL differential against the minimum supported ClickHouse) and
+> `compatibility/promql-surface` (the live function-surface probe). The first
+> four are named in `release.yml`'s `RELEASE_REQUIRED_CHECKS`; the last two
+> carry `release_posture: advisory` in `.github/ci-lanes.json`. All six are
+> **release-gate** lanes, not PR-blocking ones (#2230): they short-circuit
 > to a fast no-op on an ordinary PR or merge-group entry, and run for real on
 > push to `main`, on schedule/dispatch, and on a `release/*` head-branch PR —
 > where `release.yml`'s preflight requires each to post a green check-run
@@ -66,7 +72,50 @@ branch as shields.io badge JSON; the README shows them live. On
   histograms, whose data upstream's float-only demo fixture never carries.
   The case count is reconstructed as `heads.prometheus.total` from
   [`compatibility/parity-baseline/`](../compatibility/parity-baseline/manifest.json).
-- **Today**: every case passes; no allow-list exists. This is the
+- **Native-histogram merge width**: a merge of exponential histograms —
+  `sum()` / `avg()` across series, `histogram_quantile()` over an
+  aggregate, `histogram + histogram` — whose natural bucket range at the
+  rows' minimum scale exceeds 160 buckets (the OTel SDK default bucket
+  budget, `chplan.OTelExpoHistogramDefaultMaxSize`) is answered at a
+  coarser scale than Prometheus computes: the scale is lowered by
+  `ceil(log2(width / 160))` so the merged ladder holds at most 161
+  buckets. Count, sum and zero-count are exact at any scale; only the
+  bucket ladder, and any quantile read from it, is coarser. Prometheus
+  merges at the minimum scale with sparse spans and applies no budget.
+- **Native-grid duplicate-timestamp NaN survivor**: when a query lowers
+  onto a `timeSeries*ToGrid` aggregate (the auto-enabled `ts_grid_*`
+  features on a server >= 25.9 — see
+  [`clickhouse-optimizations.md`](clickhouse-optimizations.md)) and one
+  series carries two samples at the SAME timestamp, one of them `NaN`, the
+  sample that survives depends on the order the rows reach the aggregate,
+  not on the sample multiset. Prometheus, and cerberus's own array-fold
+  fan-out, always answer from the same survivor (`arraySort` ranks `NaN`
+  greatest). Reproduced on chDB 26.5.1.1 directly against the aggregate,
+  isolated from cerberus's lowering:
+
+  ```sql
+  SELECT gv FROM (
+    SELECT
+      timeSeriesDeltaToGrid(toDateTime(60), toDateTime(60), 60, 60)(ts, val) AS grid,
+      timeSeriesRange(toDateTime(60), toDateTime(60), 60) AS grid_ts
+    FROM (
+      SELECT toDateTime(20) AS ts, nan AS val
+      UNION ALL SELECT toDateTime(20), 25.0
+      UNION ALL SELECT toDateTime(50), 40.0
+    )
+  ) ARRAY JOIN grid AS gv, grid_ts AS gt
+  SETTINGS allow_experimental_time_series_aggregate_functions = 1
+  -- NaN inserted first: returns nan. Swap the first two rows: returns 30.
+  ```
+
+  `timeSeriesRateToGrid` over the same rows answers `nan` / `0.5` the same
+  way; the two instant members (`timeSeriesInstantRateToGrid`,
+  `timeSeriesInstantDeltaToGrid`) invert which order keeps the finite sample.
+  The shape needs two samples at one series' exact timestamp with one of
+  them `NaN`; a window without such a duplicate is unaffected, and
+  `CERBERUS_CH_OPTIMIZATIONS=off` (or a list omitting the `ts_grid_*` ids)
+  keeps every query on the order-independent fan-out.
+- **Posture**: every case passes; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
   a real reference. (Parity drift is report-only in CI; the score is a
   measurement, not a merge gate — see the note at the top of this
@@ -95,7 +144,7 @@ branch as shields.io badge JSON; the README shows them live. On
   ranking, and `/patterns` grades template text exactly against the
   seeder's constant fixture line and nowhere else
   (`compatibility/loki/README.md` names each route's graded fields).
-- **Today**: shipped and running as the release-gate `compatibility/loki`
+- **Posture**: runs as the release-gate `compatibility/loki`
   check; no allow-list exists. Solid confidence — a real backend on a
   real corpus — but Grafana's `bench` set is a benchmark corpus, not a
   standardised conformance suite like PromQL's. Parity drift is
@@ -111,7 +160,7 @@ branch as shields.io badge JSON; the README shows them live. On
   TraceQL conformance suite** (no TraceQL analogue of
   `prometheus/compliance`), so this corpus is author-written rather than
   derived from an external standard — the lightest of the three legs.
-- **Today**: shipped and running. `/api/search`, `/api/traces/<id>`, the
+- **Posture**: `/api/search`, `/api/traces/<id>`, the
   four tag / tag-values endpoints (V1 + V2), and the metrics endpoints
   (`/api/metrics/query_range` + `/api/metrics/query`) all run under the
   release-gate `compatibility/tempo` check; no allow-list exists. Parity
@@ -124,7 +173,8 @@ branch as shields.io badge JSON; the README shows them live. On
   at all. Both arms run inside the one `compatibility/tempo` job and gate
   independently (`compatibility/parity-baseline/`'s reconstructed `heads.tempo` /
   `heads.tempo-grpc`), so a regression on either transport fails the
-  check. The gRPC arm's roster is 59 cases, not 61: `traces` /
+  check. The gRPC arm's roster (`heads.tempo-grpc`) is two cases smaller
+  than the HTTP arm's (`heads.tempo`): `traces` /
   `traces_v2` have no `StreamingQuerier` RPC (trace-by-id is
   HTTP/proto-only on both backends) and are reported as skipped rather
   than run — see `compatibility/tempo/driver/grpc_diff.go`'s file-level
@@ -258,66 +308,28 @@ one:
   (`CLAUDE.md`), the one whose behaviour is authoritative for all three
   heads.
 
-"Matches the reference" has exactly one meaning only if both surfaces run
-the reference engine's semantics-affecting options identically.
-[Cerberus issue #3271](https://github.com/tsouza/cerberus/issues/3271)
-found they did not: the spec oracle built its engine via
-`promqltest.NewTestEngine`, which hardcodes `EnableDelayedNameRemoval:
-true`, while `compatibility/prometheus/docker-compose.yml` enables only
-`promql-experimental-functions` on the real server, leaving delayed name
-removal at Prometheus's own documented default of **off**
-(`docs/feature_flags.md` in the vendored Prometheus source).
-
-On most shapes the two settings agree. They diverge on exactly one: a
-name-dropping fold (`rate`, `increase`, `sum_over_time`, …, plus their
-`sum()`/`avg()` wrappers) over a colliding histogram/float `or`. With the
-flag off, reference raises `vector cannot contain metrics with the same
-labelset`. With it on, reference silently answers **one
-histogram-valued series**, discarding the float sample. The mechanism:
-reference's `mergeSeriesWithSameLabelset` merges the two name-collided
-series and checks duplicate timestamps SEPARATELY for its Floats and
-Histograms slices, so a float point and a histogram point at the same
-timestamp slip past the check; materialising the instant vector then
-prefers whichever slice is non-empty by TYPE. Reversing the `or`'s arms
-still answers the histogram (ruling out left bias), and the same
-engine's RANGE answer for the identical query is one series carrying
-BOTH a float and a histogram sample at that timestamp — an
-instant-query-only artefact no emitter here can reproduce. See
-`combineMixedFoldBranches`'s doc in
-`internal/promql/histogram_native_mixed_or_aggregate.go` for the full
-mechanism and its bearing on cerberus's own plan shape.
-
-**Decision: the real server wins, and the spec oracle was aligned down to
-it.** `promql-delayed-name-removal` is Prometheus's own opt-in,
-EXPERIMENTAL feature — introduced under a feature flag in 3.6.0
-(upstream #14477) and still opt-in through the v3.11.3 tag the compat
-lane pins, including two rounds of its OWN bugfixes in that span
-(upstream #17161, #17678 — both released well before 3.11.3, neither
-covering this shape). Nothing in that history signals it is close to
-becoming Prometheus's default, so aligning the spec oracle DOWN to the
-real server's off default is aligning to the stable, currently-shipping
-behaviour, not chasing a setting about to change under it. The spec
-oracle now builds its `promql.Engine` explicitly instead of via
-`promqltest.NewTestEngine`, and its `EnableDelayedNameRemoval` constant
-documents the reasoning above at the point where a future reader would
-otherwise silently flip it back.
-
+Both surfaces run the reference engine's semantics-affecting options
+identically: the real server enables only `promql-experimental-functions`
+(`compatibility/prometheus/docker-compose.yml`), leaving
+`promql-delayed-name-removal` at Prometheus's documented default of
+**off**, and the spec oracle builds its `promql.Engine` explicitly with
+`EnableDelayedNameRemoval` set to match. The real server is the
+authority; when the two disagree, the oracle is aligned to the server.
 `test/regression/promql_oracle_engine_parity_test.go` is the mechanical
 guard: it reads the compose file's `--enable-feature` line and the
-oracle's `EnableDelayedNameRemoval` constant and fails if they ever
-disagree again, so a future change to either side surfaces as a CI
-failure naming both sites instead of a silent per-fixture disagreement.
+oracle's `EnableDelayedNameRemoval` constant and fails if they disagree,
+so a change to either side surfaces as a CI failure naming both sites.
 
-**One residual difference is intentional and not held to the same
-rule.** The oracle's parser options (`promqltest.TestParserOpts`) accept
-a broader grammar — experimental functions, extended range selectors,
-duration expressions, binop fill modifiers — than the compat server's
-single enabled flag. This is a PARSE acceptance difference, not an
-ANSWER difference: `Evaluate`'s own doc explains that an upstream parse
-rejection on a cerberus-only extension is a fact about the fixture, not
-a parity failure, so letting the oracle parse a broader grammar only
-means fewer fixtures go unattempted — it never changes what counts as a
-passing answer the way `EnableDelayedNameRemoval` does.
+One residual difference is intentional: the oracle's parser options
+(`promqltest.TestParserOpts`) accept a broader grammar — experimental
+functions, extended range selectors, duration expressions, binop fill
+modifiers — than the compat server's single enabled flag. That is a PARSE
+acceptance difference, not an ANSWER difference (an upstream parse
+rejection on a cerberus-only extension is a fact about the fixture, not a
+parity failure), so it is not held to the same rule. See
+[`compatibility.background.md`](compatibility.background.md#why-the-spec-oracle-runs-delayed-name-removal-off)
+for the shape on which the two settings diverge and why the server's
+default won.
 
 ## Upstream-skip baseline (LogQL)
 
@@ -347,7 +359,7 @@ in either direction fails the harness:
   gaining quantile support) would otherwise silently add a query to
   the scored set without anyone triaging cerberus's parity for it.
 
-After a corpus re-snapshot, audit the skip-set diff, then regenerate
+After a corpus re-snapshot, inspect the skip-set diff, then regenerate
 the baseline with:
 
 ```sh
@@ -372,10 +384,18 @@ real bug rather than a silent wrong-rejection:
 1. **Catalogue** — `test/rejection-parity/catalogue/` is the
    machine-readable inventory of every prefixed error-construction
    site in the three lowerings, derived by a go/ast scan
-   (`test/rejection-parity`). Every site is classified either
-   `rejection` (reachable from a parseable query; carries a minimal
-   trigger query) or `internal` (parser-enforced shape, invariant, or
-   `%w` wrapper; carries a rationale). It is stored as one JSON shard
+   (`test/rejection-parity`). Every site is classified into one of
+   three classes: `rejection` (reachable from a parseable query, and the
+   reference rejects it too; carries a minimal trigger query),
+   `internal` (parser-enforced shape, invariant, or `%w` wrapper; carries
+   a rationale), or `divergence` (cerberus rejects a query the reference
+   answers, on purpose; carries everything `rejection` carries PLUS an
+   open tracking issue number and a `since` date). The `divergence` set
+   is held under two ratchets pinned by `divergence_ratchet_test.go`: a
+   monotonic count ceiling (`divergence-ceiling.json`, which only a
+   hand-edited bump in the same diff can raise) and a per-entry age cap
+   (`divergenceStaleAfter`) that fails the build once an entry has sat
+   open past the threshold. It is stored as one JSON shard
    per lowering SOURCE FILE —
    `catalogue/internal__promql__subquery.go.json` holds exactly the
    entries whose site keys name `internal/promql/subquery.go` — so two
@@ -389,14 +409,16 @@ real bug rather than a silent wrong-rejection:
    `test/oracle/inventory`), every entry must be classified, every
    `rejection` trigger must parse with the head's reference parser
    AND fail the head's lowering with the catalogued message, and the
-   parity corpus is derived 1:1 from the rejection entries. Adding a
-   new rejection to a lowering therefore *requires* a catalogue entry,
-   a trigger query, and — by construction — a parity case.
+   parity corpus is derived 1:1 from the `rejection` and `divergence`
+   entries. Adding a new rejection to a lowering therefore *requires* a
+   catalogue entry, a trigger query, and — by construction — a parity
+   case.
 3. **Parity driver** — `compatibility/cmd/rejection-parity` runs
    inside each harness (wired into the three run scripts, after the
    main tester) and sends every trigger query to both backends. It
    compares the rejection **status class** only (both 4xx = parity);
-   message text is never compared. Verdicts:
+   message text is never compared. Seven verdicts; the first four apply
+   to `rejection` entries, the next three to `divergence` entries:
    - `parity` — both backends reject; the claim holds.
    - `wrong_rejection` — the reference backend accepts a query
      cerberus rejects: a real bug to fix at the source (the
@@ -404,6 +426,13 @@ real bug rather than a silent wrong-rejection:
    - `stale_catalogue` — cerberus accepted a query the catalogue says
      it rejects; regenerate + re-curate the catalogue.
    - `hard_error` — 5xx / transport failure (infrastructure).
+   - `divergence_confirmed` — cerberus rejects, the reference answers:
+     the expected, passing state for a live divergence.
+   - `divergence_resolved` — cerberus now answers the query; the
+     divergence closed from cerberus's side and the entry must be
+     deleted.
+   - `divergence_closed` — the reference now also rejects; the entry
+     must be reclassified to `rejection`.
 
    Reports land at `compatibility/prometheus/rejection-parity.json`,
    `compatibility/loki/reports/rejection-parity.json`, and
@@ -444,19 +473,21 @@ Each harness job uploads its report as a workflow artifact (30-day
 retention). On push-to-main, the per-head pass-rate is appended to the
 orphan `compat-scores` branch so the README badges refresh.
 
-**Release-gated: scored, plus a regression ratchet.** All four
-`compatibility/<head>` checks (the three per-language legs plus
-`compatibility/prometheus-forced-route`) are **release-gate** lanes (#2230,
+**Release-gated: scored, plus a regression ratchet.** All six
+`compatibility/<lane>` checks are **release-gate** lanes (#2230,
 the merge/release two-tier test fence), not required PR status checks —
 `gh api repos/tsouza/cerberus/rules/branches/main --jq '[.[] |
 select(.type == "required_status_checks") |
 .parameters.required_status_checks[].context] | unique[]'` does not list any
 of them. Instead,
-`release.yml`'s `RELEASE_REQUIRED_CHECKS` names each one and its preflight
-blocks a publish until every one has posted a green check-run on the commit
-being shipped: the gate moved from the PR to the release, it did not
-disappear. On a real (non-short-circuited) run, the *harness* step itself is
-still report-only on parity — per
+`release.yml`'s `RELEASE_REQUIRED_CHECKS` names the three per-language legs
+and `compatibility/prometheus-forced-route`, and its preflight blocks a
+publish until each has posted a green check-run on the commit being
+shipped: the gate moved from the PR to the release, it did not disappear.
+(`compatibility/prometheus-floor` and `compatibility/promql-surface` carry
+`release_posture: advisory` in `.github/ci-lanes.json`.) On a real
+(non-short-circuited) run, the *harness* step itself is report-only on
+parity — per
 [#503](https://github.com/tsouza/cerberus/pull/503) it captures per-case
 numeric drift in `report.json` + the badge and exits 0, failing only on
 **infrastructure** errors (compose-up, seed, build, unparseable report). The

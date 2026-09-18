@@ -101,3 +101,55 @@ The selected head's deterministic buckets are synced from its
 corpus-adding PR has to re-type — and that two such PRs conflict over.
 That is the drift `doc-counts.mjs` exists to prevent, and why the
 contract doc states the counts by reference instead of printing them.
+
+## Why the spec oracle runs delayed name removal off
+
+"Matches the reference" has exactly one meaning only if both surfaces run
+the reference engine's semantics-affecting options identically.
+[Cerberus issue #3271](https://github.com/tsouza/cerberus/issues/3271)
+found they did not: the spec oracle built its engine via
+`promqltest.NewTestEngine`, which hardcodes `EnableDelayedNameRemoval:
+true`, while `compatibility/prometheus/docker-compose.yml` enables only
+`promql-experimental-functions` on the real server, leaving delayed name
+removal at Prometheus's own documented default of **off**
+(`docs/feature_flags.md` in the vendored Prometheus source).
+
+On most shapes the two settings agree. They diverge on exactly one: a
+name-dropping fold (`rate`, `increase`, `sum_over_time`, …, plus their
+`sum()`/`avg()` wrappers) over a colliding histogram/float `or`. With the
+flag off, reference raises `vector cannot contain metrics with the same
+labelset`. With it on, reference silently answers **one
+histogram-valued series**, discarding the float sample. The mechanism:
+reference's `mergeSeriesWithSameLabelset` merges the two name-collided
+series and checks duplicate timestamps SEPARATELY for its Floats and
+Histograms slices, so a float point and a histogram point at the same
+timestamp slip past the check; materialising the instant vector then
+prefers whichever slice is non-empty by TYPE. Reversing the `or`'s arms
+still answers the histogram (ruling out left bias), and the same
+engine's RANGE answer for the identical query is one series carrying
+BOTH a float and a histogram sample at that timestamp — an
+instant-query-only artefact no emitter here can reproduce. See
+`combineMixedFoldBranches`'s doc in
+`internal/promql/histogram_native_mixed_or_aggregate.go` for the full
+mechanism and its bearing on cerberus's own plan shape.
+
+The real server won, and the spec oracle was aligned down to it.
+`promql-delayed-name-removal` is Prometheus's own opt-in, EXPERIMENTAL
+feature — introduced under a feature flag in 3.6.0 (upstream #14477) and
+still opt-in through the v3.11.3 tag the compat lane pins, including two
+rounds of its OWN bugfixes in that span (upstream #17161, #17678 — both
+released well before 3.11.3, neither covering this shape). Nothing in
+that history signals it is close to becoming Prometheus's default, so
+aligning the spec oracle DOWN to the real server's off default is
+aligning to the stable, currently-shipping behaviour, not chasing a
+setting about to change under it. The spec oracle now builds its
+`promql.Engine` explicitly instead of via `promqltest.NewTestEngine`, and
+its `EnableDelayedNameRemoval` constant documents the reasoning above at
+the point where a future reader would otherwise silently flip it back.
+
+The parser-options difference is not held to the same rule because it
+changes which fixtures the oracle can ATTEMPT, never which answers count
+as passing: `Evaluate`'s own doc explains that an upstream parse
+rejection on a cerberus-only extension is a fact about the fixture, not
+a parity failure, so a broader oracle grammar only means fewer fixtures
+go unattempted.
